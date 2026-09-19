@@ -95,6 +95,23 @@ fn list_at_width(args: &[String], terminal_width: usize) -> tsk_tui::cli::CliOut
     )
 }
 
+#[test]
+fn list_does_not_seed_agent_profiles() {
+    let _env = env_lock();
+    let dir = temp_state_dir("no-agent-seed");
+    let output = list(&[
+        "tsk".into(),
+        "list".into(),
+        "--state-dir".into(),
+        state_dir_arg(&dir),
+        "--all".into(),
+    ]);
+
+    assert_eq!(output.code, 0);
+    assert!(!dir.join("agents.toml").exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 fn create_task(state: &mut DomainState, title: &str, scope: TaskScope, status: HumanStatus) {
     let id = state
         .create(title, None, scope, ProvenanceOrigin::Manual, None)

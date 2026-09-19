@@ -9,12 +9,29 @@ The board, CLI, and Herdr plugin share `~/.tsk/tsk.json`. The current store form
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `TSK_STATE_DIR` | `~/.tsk` | Task data, backups, trash, and release-check cache. With neither this nor `HOME` set, tsk refuses to run rather than pick a directory |
+| `TSK_STATE_DIR` | `~/.tsk` | Task data, agent profiles, backups, trash, and release-check cache. With neither this nor `HOME` set, tsk refuses to run rather than pick a directory |
 | `--state-dir <dir>` | State directory | Override storage for a data command |
 
 Use a local disk. NFS and synced folders such as Dropbox or iCloud Drive are unsupported. Directory roots must be real directories, not symlinks.
 
 Herdr's plugin-specific state/config directories do not override these locations. Removing tsk leaves its task data intact.
+
+## Agent profiles
+
+Agent profiles are read from `agents.toml` in the state directory, beside `tsk.json`. The first full board open creates a starter file when it is missing, with commented examples that define no profiles. Quick capture, CLI commands, and setup do not create it, and tsk never replaces an existing file, even an empty one. Each profile name must already be lowercase and use the same shape as a thread name: start with a letter or number, then use only letters, numbers, hyphens, and dots, up to 32 characters. Quote a name that contains dots, for example `[agent."review.strict"]`.
+
+```toml
+[agent.implementer]
+command = ["pi"]
+prompt = "Work on T{number}: {title}\n\n{notes}\n\n{steps}"
+
+[agent.implementer.env]
+PI_PROVIDER = "anthropic"
+```
+
+`command` is a required, non-empty argv template. `prompt` is optional; without it, tsk supplies a prompt that points the agent to `tsk guide` and the task, then asks it to set the task to review or blocked. The rendered prompt is always appended to the command as its last argument. `env` is an optional table of string values passed through unchanged.
+
+The command and prompt templates support `{number}`, `{title}`, `{notes}`, `{steps}`, `{worktree}`, and `{branch}`. tsk replaces only these placeholders. It quotes every argument and renders one command line as `$SHELL -lc '…'`; it never chains commands. Profiles are read-only in tsk, edit the file to change them.
 
 ## Backups
 
@@ -23,6 +40,7 @@ Herdr's plugin-specific state/config directories do not override these locations
 | `tsk.json` | Current tasks and archived-project records |
 | `tsk.json.1` | Previous valid task document |
 | `tsk.json.v<N>` | Backup made when migrating an older store format, such as `tsk.json.v4` for the v4 → v5 migration |
+| `agents.toml` | Agent launch profiles, seeded with commented examples on the first full board open |
 | `delivery.json` | Which starter tasks this install has received or dismissed, and the newest release note it has seen |
 
 An older binary refuses a newer or unversioned store instead of rewriting it. Use a compatible tsk version to open it. On first save, v4 stores migrate to v5 so one undo entry can cover a marked completion or deletion; the original document is saved as `tsk.json.v4`. Earlier stores still run through each migration in order, including the v3 to v4 move from ready to open.

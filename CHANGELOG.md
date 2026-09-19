@@ -9,6 +9,10 @@ the GitHub release notes verbatim.
 
 ## Unreleased
 
+### Added
+
+- Agent launch profiles can be defined in `<state dir>/agents.toml` with a command template, an always-appended default or custom prompt, and environment values; the first full board open seeds a commented starter file when none exists.
+
 ### Changed
 
 - `walkthrough.json` and `TSK_CONFIG_DIR` are gone: the retired onboarding card is replaced by the seeded tour tasks, and an existing file is simply ignored.

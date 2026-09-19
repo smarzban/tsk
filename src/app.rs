@@ -98,6 +98,7 @@ fn load_board_inner(
     let state_dir = default_state_dir();
     let store = TaskStore::new(state_dir.clone());
     if full_board_open {
+        seed_full_board_files_without_blocking_open(&store);
         seed_notices_without_blocking_open(&store);
     }
     let state = store.load()?;
@@ -111,6 +112,10 @@ fn load_board_inner(
         env!("CARGO_PKG_VERSION"),
     ));
     Ok((store, state, model))
+}
+
+fn seed_full_board_files_without_blocking_open(store: &TaskStore) {
+    let _ = crate::agents::seed_on_open(store.path());
 }
 
 fn seed_notices_without_blocking_open(store: &TaskStore) {

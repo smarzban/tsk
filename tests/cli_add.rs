@@ -53,6 +53,27 @@ fn task_store(dir: &std::path::Path) -> TaskStore {
 }
 
 #[test]
+fn add_does_not_seed_agent_profiles() {
+    let _env = env_lock();
+    let dir = temp_state_dir("no-agent-seed");
+    let output = add(
+        &[
+            "tsk".into(),
+            "add".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "--title".into(),
+            "headless task".into(),
+        ],
+        true,
+    );
+
+    assert_eq!(output.code, 0);
+    assert!(!dir.join("agents.toml").exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn add_thread_flag_applies_to_every_item_and_round_trips() {
     let _env = env_lock();
     let dir = temp_state_dir("thread-flag");
