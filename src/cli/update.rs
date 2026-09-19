@@ -408,6 +408,8 @@ fn normalized(path: &Path) -> PathBuf {
 mod tests {
     #[cfg(any(unix, windows))]
     use std::fs;
+    #[cfg(windows)]
+    use std::io::Read;
     #[cfg(unix)]
     use std::path::{Path, PathBuf};
     #[cfg(windows)]
@@ -449,6 +451,34 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    #[ignore = "helper process for windows_installer_handoff_streams_the_whole_script_and_sets_update_environment"]
+    fn windows_installer_capture_child() {
+        let mut script = Vec::new();
+        std::io::stdin()
+            .read_to_end(&mut script)
+            .expect("read installer stdin");
+        fs::write(
+            std::env::var_os("FAKE_SCRIPT").expect("FAKE_SCRIPT"),
+            script,
+        )
+        .expect("write captured script");
+        let version = std::env::var("TSK_VERSION").unwrap_or_else(|_| "unset".to_string());
+        fs::write(
+            std::env::var_os("FAKE_ENV").expect("FAKE_ENV"),
+            format!(
+                "{}|{}|{}|{}|{}",
+                std::env::var("TSK_INSTALL_DIR").expect("TSK_INSTALL_DIR"),
+                std::env::var("TSK_UPDATE").expect("TSK_UPDATE"),
+                std::env::var("TSK_UPDATE_PID").expect("TSK_UPDATE_PID"),
+                std::env::var("TSK_CURRENT_VERSION").expect("TSK_CURRENT_VERSION"),
+                version
+            ),
+        )
+        .expect("write captured environment");
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn windows_installer_handoff_streams_the_whole_script_and_sets_update_environment() {
         let dir = std::env::temp_dir().join(format!(
             "tsk-update-windows-{}-{}",
@@ -459,9 +489,13 @@ mod tests {
         let fake = dir.join("fake-installer.cmd");
         let script_copy = dir.join("script.bin");
         let env_log = dir.join("environment.txt");
+        let current_test = std::env::current_exe().expect("current test executable");
         fs::write(
             &fake,
-            "@echo off\r\nmore > \"%FAKE_SCRIPT%\"\r\nset VERSION=unset\r\nif defined TSK_VERSION set VERSION=%TSK_VERSION%\r\n> \"%FAKE_ENV%\" echo %TSK_INSTALL_DIR%^|%TSK_UPDATE%^|%TSK_UPDATE_PID%^|%TSK_CURRENT_VERSION%^|%VERSION%\r\n",
+            format!(
+                "@echo off\r\n\"{}\" --ignored --exact cli::update::tests::windows_installer_capture_child --nocapture\r\nexit /b %ERRORLEVEL%\r\n",
+                current_test.display()
+            ),
         )
         .expect("fake command");
         let install_dir = dir.join("installed bin");
