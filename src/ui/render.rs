@@ -518,10 +518,6 @@ pub struct QueueFrameModel<'a> {
     pub nav: NavPaint,
     /// Which board surface the list paints (section titles and row attribution).
     pub surface: BoardSurface,
-    /// Paint `#thread` labels beside task rows (project board, unfiltered only).
-    pub thread_labels: bool,
-    /// Paint project attribution in every row's meta (desk global lanes, thread view).
-    pub show_project_meta: bool,
     /// The projects index rows (Projects surface, Overview view). When `projects_index`
     /// is set the list paints these instead of task sections.
     pub projects: &'a [ProjectRow],
@@ -3869,19 +3865,14 @@ fn build_list_rows(
                      out: &mut Vec<ListRow>,
                      selected_idx: &mut Option<usize>,
                      anchor_last_idx: &mut Option<usize>,
-                     project_attribution: bool,
-                     thread_label: bool,
                      dim: bool| {
         let Some(task) = model.tasks.iter().find(|task| task.id == id) else {
             // Stale ids may outlive a snapshot refresh. Skip them without inventing a row.
             return;
         };
-        let meta = row_meta(
-            task,
-            model.now,
-            project_attribution || model.show_project_meta,
-            thread_label && model.thread_labels,
-        );
+        // Row metadata (assignee, thread, project) lives in the peek only; the row itself
+        // stays a title so the list reads as a list. The peek always names assignee,
+        // thread and project when set, whatever the lens.
         let peek_meta = row_meta(task, model.now, true, true);
         let selected = model.selection_id == Some(task.id)
             && !matches!(model.overlay, QueueOverlay::ScopeDropdown { .. });
@@ -3925,21 +3916,6 @@ fn build_list_rows(
                 content_x: painted.content_x,
                 content_width: painted.content_width,
             });
-        }
-        // Assignment is actionable row metadata, not hidden task-page detail. Keep the
-        // assignee · thread · project order and wrap rather than truncate.
-        if task.assignee.is_some() && !meta.is_empty() {
-            let room = geo.row_width.saturating_sub(7).max(1) as usize;
-            for row in crate::ui::edit::wrap_text(&meta, room) {
-                let text = format!("       {}", row.text);
-                out.push(ListRow::Task {
-                    id: task.id,
-                    line: Line::from(Span::styled(text, style_dim())),
-                    identifier: None,
-                    content_x: 7,
-                    content_width: display_width(&row.text) as u16,
-                });
-            }
         }
         if selected {
             // Selection follow anchors the whole block, so wrapped title and metadata lines
@@ -4049,15 +4025,7 @@ fn build_list_rows(
                 continue;
             }
             for id in section.task_ids.iter().copied() {
-                push_task(
-                    id,
-                    &mut out,
-                    &mut selected_idx,
-                    &mut anchor_last_idx,
-                    false,
-                    false,
-                    true,
-                );
+                push_task(id, &mut out, &mut selected_idx, &mut anchor_last_idx, true);
             }
             continue;
         }
@@ -4081,17 +4049,8 @@ fn build_list_rows(
             if model.inbox_collapsed {
                 continue;
             }
-            let thread_label = model.thread_labels;
             for id in section.task_ids.iter().copied() {
-                push_task(
-                    id,
-                    &mut out,
-                    &mut selected_idx,
-                    &mut anchor_last_idx,
-                    false,
-                    thread_label,
-                    false,
-                );
+                push_task(id, &mut out, &mut selected_idx, &mut anchor_last_idx, false);
             }
             continue;
         }
@@ -4109,20 +4068,8 @@ fn build_list_rows(
             out.push(ListRow::Hint(paint_empty_hint(geo.row_width)));
             continue;
         }
-        // Thread labels paint beside project-board rows while no filter narrows the
-        // board (a selected thread makes every label the same word). Cross-project
-        // surfaces carry project attribution instead, through the meta flag.
-        let thread_label = model.thread_labels;
         for id in section.task_ids.iter().copied() {
-            push_task(
-                id,
-                &mut out,
-                &mut selected_idx,
-                &mut anchor_last_idx,
-                false,
-                thread_label,
-                false,
-            );
+            push_task(id, &mut out, &mut selected_idx, &mut anchor_last_idx, false);
         }
     }
     (out, anchor_last_idx, selected_idx)
@@ -5143,8 +5090,6 @@ mod tests {
                 chip: None,
             },
             surface: BoardSurface::Projects,
-            thread_labels: false,
-            show_project_meta: false,
             projects: &[],
             projects_index: false,
             projects_cursor: 0,
@@ -5204,8 +5149,6 @@ mod tests {
                 chip: None,
             },
             surface: BoardSurface::Desk,
-            thread_labels: false,
-            show_project_meta: false,
             projects: &[],
             projects_index: false,
             projects_cursor: 0,
@@ -5330,8 +5273,6 @@ mod tests {
                 chip: None,
             },
             surface: BoardSurface::Projects,
-            thread_labels: false,
-            show_project_meta: false,
             projects: &projects,
             projects_index: true,
             projects_cursor: 0,

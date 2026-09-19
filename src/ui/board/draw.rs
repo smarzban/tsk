@@ -1317,9 +1317,6 @@ fn draw_board_hits(frame: &mut Frame, model: &BoardModel) -> render::QueueHitMap
         marked_ids: model.marked_ids.clone(),
         nav: nav_paint(model),
         surface,
-        thread_labels: surface == BoardSurface::Project
-            && model.thread_filter() == &ThreadFilter::All,
-        show_project_meta: matches!(surface, BoardSurface::Desk | BoardSurface::ThreadView),
         projects: &queue_view.projects,
         projects_index: surface == BoardSurface::Projects
             && matches!(model.projects_view(), ProjectsView::Overview),
@@ -1499,9 +1496,6 @@ fn draw_wide_board(
         marked_ids: model.marked_ids.clone(),
         nav: nav_paint(model),
         surface,
-        thread_labels: surface == BoardSurface::Project
-            && model.thread_filter() == &ThreadFilter::All,
-        show_project_meta: matches!(surface, BoardSurface::Desk | BoardSurface::ThreadView),
         projects: &queue_view.projects,
         projects_index: surface == BoardSurface::Projects
             && matches!(model.projects_view(), ProjectsView::Overview),
@@ -1748,8 +1742,6 @@ fn draw_projects_wide_board(
         marked_ids: BTreeSet::new(),
         nav: nav_paint(model),
         surface: BoardSurface::Projects,
-        thread_labels: false,
-        show_project_meta: false,
         projects: &outer_view.projects,
         projects_index: true,
         projects_cursor: model.projects_cursor(),
@@ -1785,8 +1777,6 @@ fn draw_projects_wide_board(
             marked_ids: right.marked_ids.clone(),
             nav: nav_paint(right),
             surface: BoardSurface::Project,
-            thread_labels: right.thread_filter() == &ThreadFilter::All,
-            show_project_meta: false,
             projects: &[],
             projects_index: false,
             projects_cursor: 0,

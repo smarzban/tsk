@@ -382,8 +382,6 @@ fn fixture_model_on_tab<'a>(
             }),
         },
         surface: tsk_tui::ui::render::BoardSurface::Desk,
-        thread_labels: false,
-        show_project_meta: true,
         projects: &[],
         projects_index: false,
         projects_cursor: 0,
@@ -1470,13 +1468,14 @@ fn assigned_task_renders_on_the_row_and_before_thread_in_the_page_footer() {
         )
         .expect("create assigned");
     let mut model = BoardModel::from_domain(&domain, None);
+    let closed = board_rows(&model, 80, 24).join("\n");
+    assert!(
+        !closed.contains("@reviewer"),
+        "a closed row shows no metadata under its title:\n{closed}"
+    );
     apply_intent(&mut domain, &mut model, BoardIntent::PeekDetail, None).expect("open peek");
     let rows = board_rows(&model, 80, 24);
     let row_body = rows.join("\n");
-    assert!(
-        rows.iter().any(|row| row.contains("@reviewer · desk")),
-        "board row metadata must order assignee before project:\n{row_body}"
-    );
     assert_eq!(
         rows.iter()
             .filter(|row| row.contains("└─ @reviewer · #release · desk"))
