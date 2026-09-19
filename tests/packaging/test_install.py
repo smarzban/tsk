@@ -186,6 +186,7 @@ echo installed-fixture
                 os.close(slave)
             os.close(master)
 
+    @unittest.skipIf(os.name == "nt", "Unix installer smoke")
     @unittest.skipUnless(os.environ.get("TSK_TEST_BINARY"), "set TSK_TEST_BINARY to smoke a built executable")
     def test_installed_real_binary_runs_isolated_cli(self):
         system, arch = platform.system(), platform.machine()

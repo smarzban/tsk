@@ -3,9 +3,11 @@ title: Install
 description: Install tsk, connect Herdr, and give your agent the skill.
 ---
 
-Available for macOS and Linux, on ARM64 and x86-64.
+Available for macOS and Linux on ARM64 and x86-64, and for Windows 10/11 on x86-64. Windows ARM64, package-manager submissions, and code signing are not included yet.
 
 ## Install
+
+### macOS and Linux
 
 ```sh
 curl -fsSL https://gettsk.sh/install.sh | sh
@@ -19,7 +21,18 @@ brew install smarzban/tap/tsk
 
 Reopen your terminal if prompted, or run the printed `export` command.
 
-If Herdr is already installed, the curl installer asks whether to run `tsk setup herdr` when a terminal is available. When global agent skill roots are detected, it also asks once whether to install or update the tsk skill for those agents. The installer closes with one `Done.` line — `Done. Run tsk in a project directory to open the board`, plus `, or press prefix+t in Herdr` after an accepted Herdr setup — and one row per step that did not run: `Herdr plugin:  tsk setup herdr` when Herdr setup was declined, skipped under CI or no TTY, or failed, and `Agent skills:  tsk setup` when the skill ask was declined or skipped. With `TSK_INSTALL_DIR` set, the installer skips both asks and prints `Custom install directory: setup was not run. When you are ready:` with the full binary path in both rows. Homebrew stays noninteractive and prints the `tsk setup herdr` and `tsk setup agents` commands as a caveat.
+### Windows 10/11 x86-64
+
+Download the complete installer before running it in Windows PowerShell 5.1 or newer:
+
+```powershell
+Invoke-WebRequest https://gettsk.sh/install.ps1 -OutFile "$env:TEMP\install-tsk.ps1"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-tsk.ps1"
+```
+
+The installer verifies the release ZIP against `SHA256SUMS`, installs `tsk.exe` under `%LOCALAPPDATA%\Programs\tsk\bin`, and adds that directory to your user PATH. Open a new terminal, then run `tsk setup herdr` and `tsk setup` if wanted. Windows artifacts are checksum-verified but not code-signed.
+
+On macOS and Linux, if Herdr is already installed, the curl installer asks whether to run `tsk setup herdr` when a terminal is available. When global agent skill roots are detected, it also asks once whether to install or update the tsk skill for those agents. The installer closes with one `Done.` line — `Done. Run tsk in a project directory to open the board`, plus `, or press prefix+t in Herdr` after an accepted Herdr setup — and one row per step that did not run: `Herdr plugin:  tsk setup herdr` when Herdr setup was declined, skipped under CI or no TTY, or failed, and `Agent skills:  tsk setup` when the skill ask was declined or skipped. With `TSK_INSTALL_DIR` set, the installer skips both asks and prints `Custom install directory: setup was not run. When you are ready:` with the full binary path in both rows. Homebrew stays noninteractive and prints the `tsk setup herdr` and `tsk setup agents` commands as a caveat.
 
 ## Add to Herdr
 
@@ -35,7 +48,7 @@ herdr server reload-config
 | **prefix+t** | Open or focus the board in this workspace |
 | **prefix+a** | Quick capture |
 
-Use your configured Herdr prefix. An existing board in this workspace is focused across tabs without resetting its view. If none exists here, a new board opens; other workspaces keep their boards. [Herdr keyboard guide](https://herdr.dev/docs/keyboard/).
+Use your configured Herdr prefix. An existing board in this workspace is focused across tabs without resetting its view. If none exists here, a new board opens; other workspaces keep their boards. Windows setup writes PowerShell launchers and uses `%APPDATA%\herdr\config.toml`; Herdr currently describes Windows plugin support as preview. [Herdr keyboard guide](https://herdr.dev/docs/keyboard/).
 
 ## Agent skill
 
@@ -62,7 +75,7 @@ For standalone use, run `tsk` directly in your terminal.
 
 ## Upgrade
 
-Run `tsk update` to upgrade an installer-managed copy. It downloads the same checksum-verifying installer used for the first install, and runs it only once the download completed, printing the version it replaces and the one it installs. It always follows the latest published release (a `TSK_VERSION` in your shell is ignored) and refuses to move backwards if the running copy is newer than that release. A Homebrew copy stays under Homebrew's control: `tsk update` prints `brew update && brew upgrade tsk` instead.
+Run `tsk update` to upgrade an installer-managed copy. It downloads the same checksum-verifying installer used for the first install, and runs it only once the download completed. It always follows the latest published release (a `TSK_VERSION` in your shell is ignored) and refuses to move backwards if the running copy is newer than that release. On Windows, close every other running board first. The verified replacement waits in the install directory until the `tsk update` process exits, then an out-of-process PowerShell helper atomically replaces it and refreshes existing integrations; a refresh failure is recorded as `.tsk-update-error.log` beside `tsk.exe` with the command to retry. A Homebrew copy stays under Homebrew's control: `tsk update` prints `brew update && brew upgrade tsk` instead.
 
 | Installed with | Upgrade |
 | --- | --- |
@@ -84,16 +97,16 @@ The board shows a notice when a newer release is available. [Update-check settin
 
 | Installed with | Remove |
 | --- | --- |
-| Installer | Delete `tsk` from its installation directory |
+| Installer | Delete `tsk` on macOS/Linux, or `%LOCALAPPDATA%\Programs\tsk\bin\tsk.exe` on Windows |
 | Homebrew | `brew uninstall tsk` |
 
 Task data remains in place.
 
 To remove Herdr integration, run `herdr plugin unlink herdr-tsk`, remove the two shortcut bindings, and reload Herdr's config.
 
-To undo installer PATH changes, remove the `# tsk PATH` comment and its following `case` line from the startup files named during installation.
+To undo installer PATH changes on macOS/Linux, remove the `# tsk PATH` comment and its following `case` line from the startup files named during installation. On Windows, remove the tsk install directory from your user `Path` environment variable. Neither uninstall path removes task data.
 
-## Installer details
+## macOS and Linux installer details
 
 The installer verifies the release's SHA-256 checksum and installs to `~/.local/bin`. It does not require sudo or change task data.
 
@@ -105,7 +118,19 @@ The installer verifies the release's SHA-256 checksum and installs to `~/.local/
 
 Requires `curl`, `tar`, `sed`, and `sha256sum` or `shasum`.
 
-### PATH
+## Windows installer details
+
+`install.ps1` requires Windows 10/11 x86-64 and Windows PowerShell 5.1 or newer. It downloads the x86-64 MSVC ZIP and `SHA256SUMS` over TLS, requires one exact matching digest, validates the archive's three root entries, and stages `tsk.exe` beside the destination before replacement. It refuses reparse-point destinations and install paths, directory destinations, relative paths, and PATH separators.
+
+| Setting | Purpose |
+| --- | --- |
+| `TSK_INSTALL_DIR` | Choose an absolute directory; a first install prints setup commands rather than running them |
+| `TSK_VERSION=vX.Y.Z` | Install a specific stable release |
+| `-Help` | Show help without network access |
+
+The default is `%LOCALAPPDATA%\Programs\tsk\bin`. The installer updates user PATH only, case-insensitively and without duplicates. `tsk update` supplies its process ID so a detached helper can wait out Windows executable locking; existing bound Herdr setup and outdated installed agent skills are refreshed after replacement.
+
+### macOS and Linux PATH
 
 If the install directory is missing from PATH, the installer adds it to:
 
@@ -155,8 +180,9 @@ Download the archive for your platform and `SHA256SUMS` from the same [release](
 | macOS Intel | `x86_64-apple-darwin` |
 | Linux ARM64 | `aarch64-unknown-linux-musl` |
 | Linux x86-64 | `x86_64-unknown-linux-musl` |
+| Windows 10/11 x86-64 | `x86_64-pc-windows-msvc` |
 
-Archives are named `tsk-vX.Y.Z-<target>.tar.gz`. Verify with `shasum -a 256` on macOS or `sha256sum` on Linux. Compare the full digest with `SHA256SUMS`, then extract `tsk` into a directory on PATH.
+Unix archives are named `tsk-vX.Y.Z-<target>.tar.gz`; the Windows archive uses `.zip` and contains `tsk.exe`. Verify with `shasum -a 256` on macOS, `sha256sum` on Linux, or `Get-FileHash -Algorithm SHA256` on Windows. Compare the full digest with `SHA256SUMS`, then extract the executable into a directory on PATH.
 
 ## Source build
 

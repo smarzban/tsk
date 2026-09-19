@@ -52,11 +52,22 @@ class WorkflowTests(unittest.TestCase):
         triggers = installer.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
         self.assertEqual(re.findall(r"^  ([a-z_]+):", triggers, re.M), ["push", "pull_request"])
         self.assertEqual(triggers.count("branches: [main]"), 2)
-        for path in ["site/public/install.sh", "scripts/release.py", "tests/packaging/**"]:
+        for path in ["site/public/install.sh", "site/public/install.ps1", "scripts/release.py", "tests/packaging/**"]:
             self.assertEqual(triggers.count(f'- "{path}"'), 2, path)
         self.assertIn("shellcheck site/public/install.sh", installer)
+        self.assertIn("runs-on: windows-2025", installer)
+        self.assertIn("powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File site/public/install.ps1 -Help", installer)
         self.assertIn("TSK_TEST_BINARY: ${{ github.workspace }}/target/release/tsk", ci)
         self.assertLess(ci.index("name: Verify"), ci.index("name: Packaging contract tests"))
+
+    def test_release_builds_and_packages_windows_natively(self):
+        source = WORKFLOW.read_text()
+        self.assertRegex(source, r"- os: windows-[^\n]+\n\s+target: x86_64-pc-windows-msvc")
+        self.assertIn('target/${{ matrix.target }}/release/tsk${{ matrix.exe_suffix }}', source)
+        self.assertIn("dist-release/*", source)
+        self.assertIn("cargo test --locked --target", source)
+        self.assertIn("powershell.exe -NoProfile -ExecutionPolicy Bypass -File site/public/install.ps1 -Help", source)
+        self.assertRegex(source, r"python(?:3)? -m unittest discover -s tests/packaging")
 
     def test_release_handoff_creates_only_a_draft_for_an_existing_tag(self):
         source = WORKFLOW.read_text()
@@ -80,7 +91,7 @@ class WorkflowTests(unittest.TestCase):
             mock.chmod(0o755)
             assets = root / "dist-release"
             assets.mkdir()
-            names = ["tsk-v1.2.3-aarch64-apple-darwin.tar.gz", "SHA256SUMS", "tsk.rb", "install.sh"]
+            names = ["tsk-v1.2.3-aarch64-apple-darwin.tar.gz", "tsk-v1.2.3-x86_64-pc-windows-msvc.zip", "SHA256SUMS", "tsk.rb", "install.sh", "install.ps1"]
             for name in names:
                 (assets / name).write_text("fixture")
             capture = root / "args.json"

@@ -22,6 +22,28 @@ impl Drop for Temp {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
+#[cfg(windows)]
+#[test]
+fn windows_setup_rejects_a_reparse_point_file_before_reading_it() {
+    use std::os::windows::fs::symlink_file;
+
+    let temp = Temp::new();
+    let outside = temp.0.join("outside.toml");
+    let linked = temp.0.join("config.toml");
+    fs::write(&outside, "outside").unwrap();
+    if let Err(error) = symlink_file(&outside, &linked) {
+        if error.kind() == io::ErrorKind::PermissionDenied {
+            eprintln!("symlink privilege unavailable; reparse-file assertion skipped");
+            return;
+        }
+        panic!("create file symlink: {error}");
+    }
+    let dir = Dir::open(&temp.0, false).unwrap();
+    assert!(dir.read(Path::new("config.toml")).is_err());
+    assert!(dir.exists(Path::new("config.toml")).is_err());
+    assert_eq!(fs::read_to_string(outside).unwrap(), "outside");
+}
+
 #[test]
 fn real_confirmation_parser_accepts_only_yes_and_rejects_eof() {
     for (answer, expected) in [
@@ -203,6 +225,7 @@ fn unsuccessful_upgrade_keeps_previous_registration_and_assets() {
     assert_eq!(*old.borrow(), Some(a.root));
     assert_eq!(fs::read(&config).unwrap(), before);
 }
+#[cfg(unix)]
 #[test]
 fn descriptor_writes_and_cleanup_stay_pinned_after_parent_swap() {
     use std::os::unix::fs::symlink;
@@ -270,7 +293,10 @@ fn cleanup_preserves_modified_or_incomplete_managed_roots() {
             &mut host,
         )
         .unwrap();
+        #[cfg(unix)]
         let file = a.root.join("scripts/open-capture.sh");
+        #[cfg(windows)]
+        let file = a.root.join("scripts/open-capture.ps1");
         if missing {
             fs::remove_file(&file).unwrap();
         } else {
@@ -294,7 +320,10 @@ fn cleanup_preserves_modified_or_incomplete_managed_roots() {
         }));
         assert!(error.contains(a.root.to_str().unwrap()));
         assert!(a.root.join("herdr-plugin.toml").exists());
+        #[cfg(unix)]
         assert!(a.root.join("scripts/open-board.sh").exists());
+        #[cfg(windows)]
+        assert!(a.root.join("scripts/open-board.ps1").exists());
         if !missing {
             assert_eq!(fs::read_to_string(file).unwrap(), "user edit");
         }

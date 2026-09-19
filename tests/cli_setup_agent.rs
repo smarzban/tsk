@@ -7,6 +7,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tsk_tui::cli::run_with;
 
+/// The plugin action IDs are platform-specific: `-windows` suffix on Windows,
+/// bare on Unix. `BINDINGS` in `src/setup.rs` mirrors this split.
+#[cfg(unix)]
+const OPEN_BOARD_ACTION: &str = "herdr-tsk.open-board";
+#[cfg(unix)]
+const QUICK_CAPTURE_ACTION: &str = "herdr-tsk.quick-capture";
+#[cfg(windows)]
+const OPEN_BOARD_ACTION: &str = "herdr-tsk.open-board-windows";
+#[cfg(windows)]
+const QUICK_CAPTURE_ACTION: &str = "herdr-tsk.quick-capture-windows";
+
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -38,6 +49,16 @@ fn cli_non_tty(args: &[&str]) -> tsk_tui::cli::CliOutput {
 
 fn skill_source() -> &'static str {
     include_str!("../skills/tsk-cli/SKILL.md")
+}
+
+/// Join path components with the native separator so assertions match `PathBuf::display()`
+/// output on both Unix (`/`) and Windows (`\`).
+fn native_path(components: &[&str]) -> String {
+    let mut path = PathBuf::new();
+    for component in components {
+        path.push(component);
+    }
+    path.display().to_string()
 }
 
 struct OmpEnvGuard(Vec<(&'static str, Option<std::ffi::OsString>)>);
@@ -84,7 +105,7 @@ fn skill_dir_writes_full_skill_prints_path_exits_0() {
         "--skill-dir",
         skill_dir.to_str().expect("utf-8"),
     ]);
-    let written = skill_dir.join("tsk-cli/SKILL.md");
+    let written = skill_dir.join("tsk-cli").join("SKILL.md");
     assert_eq!(output.code, 0);
     assert!(output.stderr.is_empty());
     assert!(
@@ -230,17 +251,21 @@ fn bare_setup_non_tty_lists_targets_and_writes_nothing() {
         );
     }
     assert!(
-        output.stdout.contains(".grok/skills"),
+        output.stdout.contains(&native_path(&[".grok", "skills"])),
         "bare setup should advertise the grok skills dir, got {:?}",
         output.stdout
     );
     assert!(
-        output.stdout.contains(".config/opencode/skills"),
+        output
+            .stdout
+            .contains(&native_path(&[".config", "opencode", "skills"])),
         "bare setup should advertise the opencode skills dir, got {:?}",
         output.stdout
     );
     assert!(
-        output.stdout.contains(".omp/agent/skills"),
+        output
+            .stdout
+            .contains(&native_path(&[".omp", "agent", "skills"])),
         "bare setup should advertise the omp skills dir, got {:?}",
         output.stdout
     );
@@ -248,14 +273,50 @@ fn bare_setup_non_tty_lists_targets_and_writes_nothing() {
     let profiled = cli_non_tty(&["tsk", "setup"]);
     assert_eq!(profiled.code, 0, "{profiled:?}");
     assert!(
-        profiled
-            .stdout
-            .contains(".omp/profiles/research/agent/skills/tsk-cli/SKILL.md"),
+        profiled.stdout.contains(&native_path(&[
+            ".omp", "profiles", "research", "agent", "skills", "tsk-cli", "SKILL.md"
+        ])),
         "the listing should resolve the active OMP profile: {profiled:?}"
     );
     assert!(
         !home.join(".claude").exists(),
         "bare setup must not write agent skills"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(windows)]
+#[test]
+fn userprofile_only_drives_windows_skill_install_and_listing() {
+    let _lock = env_lock();
+    let _omp_env = OmpEnvGuard::cleared();
+    let root = temp_dir("userprofile-only");
+    let profile = root.join("profile");
+    fs::create_dir_all(&profile).expect("profile");
+    let previous_home = std::env::var_os("HOME");
+    let previous_profile = std::env::var_os("USERPROFILE");
+    std::env::remove_var("HOME");
+    std::env::set_var("USERPROFILE", &profile);
+
+    let listed = cli_non_tty(&["tsk", "setup"]);
+    let installed = cli(&["tsk", "setup", "claude"]);
+
+    match previous_home {
+        Some(value) => std::env::set_var("HOME", value),
+        None => std::env::remove_var("HOME"),
+    }
+    match previous_profile {
+        Some(value) => std::env::set_var("USERPROFILE", value),
+        None => std::env::remove_var("USERPROFILE"),
+    }
+
+    let skill = profile.join(".claude/skills/tsk-cli/SKILL.md");
+    assert_eq!(listed.code, 0, "{listed:?}");
+    assert!(listed.stdout.contains(&skill.display().to_string()));
+    assert_eq!(installed.code, 0, "{installed:?}");
+    assert_eq!(
+        fs::read_to_string(&skill).expect("installed skill"),
+        skill_source()
     );
     let _ = fs::remove_dir_all(root);
 }
@@ -476,11 +537,22 @@ fn omp_target_resolves_profiles_and_directory_overrides() {
         "absolute-looking config dir: {absolute_config_output:?}"
     );
     let home_relative_config = absolute_config
-        .strip_prefix("/")
-        .expect("absolute path beneath root");
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => None,
+            std::path::Component::CurDir => None,
+            std::path::Component::ParentDir => Some("..".into()),
+            std::path::Component::Normal(part) => Some(part.to_owned()),
+        })
+        .collect::<std::path::PathBuf>();
     assert!(
-        home.join(home_relative_config)
-            .join("profiles/absolute/agent/skills/tsk-cli/SKILL.md")
+        home.join(&home_relative_config)
+            .join("profiles")
+            .join("absolute")
+            .join("agent")
+            .join("skills")
+            .join("tsk-cli")
+            .join("SKILL.md")
             .exists(),
         "PI_CONFIG_DIR follows OMP's home-relative path.join semantics"
     );
@@ -527,6 +599,7 @@ fn omp_target_resolves_profiles_and_directory_overrides() {
 
 #[cfg(unix)]
 #[test]
+#[cfg(unix)]
 fn omp_relative_agent_override_is_lexically_normalized() {
     let _lock = env_lock();
     let _omp_env = OmpEnvGuard::cleared();
@@ -676,6 +749,7 @@ fn omp_detection_uses_configured_and_overridden_roots() {
 
 #[cfg(unix)]
 #[test]
+#[cfg(unix)]
 fn omp_detection_and_batch_install_use_the_active_profile() {
     let _lock = env_lock();
     let _omp_env = OmpEnvGuard::cleared();
@@ -755,6 +829,7 @@ fn omp_detection_and_batch_install_use_the_active_profile() {
 
 #[cfg(unix)]
 #[test]
+#[cfg(unix)]
 fn force_refuses_a_symlinked_skill_file_and_directory() {
     let _lock = env_lock();
     let root = temp_dir("symlink");
@@ -840,6 +915,7 @@ fn detected_ids_prints_space_separated_agents() {
 
 #[cfg(unix)]
 #[test]
+#[cfg(unix)]
 fn opencode_detects_via_path_binary() {
     let _lock = env_lock();
     let _omp_env = OmpEnvGuard::cleared();
@@ -1007,6 +1083,7 @@ fn agents_yes_json_is_machine_readable() {
 
 #[cfg(unix)]
 #[test]
+#[cfg(unix)]
 fn agents_yes_reports_blocked_skill_roots() {
     let _lock = env_lock();
     let _omp_env = OmpEnvGuard::cleared();
@@ -1069,6 +1146,7 @@ fn bare_setup_non_tty_with_detected_agents_prints_guidance_without_writing() {
 }
 
 #[test]
+#[cfg(unix)]
 fn skill_states_probe_lists_each_detected_agent_with_state_version_and_path() {
     let _lock = env_lock();
     let _omp_env = OmpEnvGuard::cleared();
@@ -1165,7 +1243,10 @@ fn herdr_check_reports_bound_only_when_both_commands_are_in_the_config() {
 
     fs::write(
         &config,
-        "[[keys.command]]\nkey = 'prefix+b'\ntype = 'plugin_action'\ncommand = 'herdr-tsk.open-board'\n[[keys.command]]\nkey = 'prefix+a'\ntype = 'plugin_action'\ncommand = 'herdr-tsk.quick-capture'\n",
+        format!(
+            "[[keys.command]]\nkey = 'prefix+b'\ntype = 'plugin_action'\ncommand = '{}'\n[[keys.command]]\nkey = 'prefix+a'\ntype = 'plugin_action'\ncommand = '{}'\n",
+            OPEN_BOARD_ACTION, QUICK_CAPTURE_ACTION
+        ),
     )
     .expect("write config");
     let bound = cli_non_tty(&["tsk", "setup", "herdr", "--check"]);
@@ -1179,6 +1260,29 @@ fn herdr_check_reports_bound_only_when_both_commands_are_in_the_config() {
         "{unbound:?}"
     );
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let outside = root.join("outside.toml");
+        fs::write(
+            &outside,
+            format!(
+                "[[keys.command]]\nkey = 'prefix+b'\ntype = 'plugin_action'\ncommand = '{}'\n[[keys.command]]\nkey = 'prefix+a'\ntype = 'plugin_action'\ncommand = '{}'\n",
+                OPEN_BOARD_ACTION, QUICK_CAPTURE_ACTION
+            ),
+        )
+        .expect("outside config");
+        fs::remove_file(&config).expect("remove config");
+        symlink(&outside, &config).expect("linked config");
+        let linked = cli_non_tty(&["tsk", "setup", "herdr", "--check"]);
+        assert_ne!(
+            linked.code, 0,
+            "a linked final config must be refused: {linked:?}"
+        );
+        assert!(linked.stdout.trim().is_empty(), "{linked:?}");
+    }
+
     match previous {
         Some(value) => std::env::set_var("HERDR_CONFIG_PATH", value),
         None => std::env::remove_var("HERDR_CONFIG_PATH"),
@@ -1190,6 +1294,7 @@ fn herdr_check_reports_bound_only_when_both_commands_are_in_the_config() {
 /// file behind, a stale staging file from a killed run is cleared, and a symlink planted at
 /// the staging name is refused rather than written through.
 #[test]
+#[cfg(unix)]
 fn skill_updates_stage_and_rename_without_following_a_planted_symlink() {
     let _lock = env_lock();
     let root = temp_dir("stage-replace");

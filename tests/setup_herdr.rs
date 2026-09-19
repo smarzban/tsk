@@ -5,7 +5,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 use tsk_tui::setup::edit_bindings;
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
 fn temp() -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "tsk-setup-{}-{}",
@@ -15,6 +17,18 @@ fn temp() -> PathBuf {
     fs::create_dir_all(&path).unwrap();
     path
 }
+
+/// The plugin action IDs are platform-specific: `-windows` suffix on Windows,
+/// bare on Unix. `BINDINGS` in `src/setup.rs` mirrors this split.
+#[cfg(unix)]
+const OPEN_BOARD: &str = "herdr-tsk.open-board";
+#[cfg(unix)]
+const QUICK_CAPTURE: &str = "herdr-tsk.quick-capture";
+#[cfg(windows)]
+const OPEN_BOARD: &str = "herdr-tsk.open-board-windows";
+#[cfg(windows)]
+const QUICK_CAPTURE: &str = "herdr-tsk.quick-capture-windows";
+
 #[test]
 fn creates_bindings_once_and_preserves_other_settings() {
     let source =
@@ -22,8 +36,8 @@ fn creates_bindings_once_and_preserves_other_settings() {
     let first = edit_bindings(source, false, |_, _| panic!("no conflicts")).unwrap();
     assert!(first.contains("# my settings"));
     assert!(first.contains("prefix = 'alt+z' # custom prefix"));
-    assert!(first.contains("herdr-tsk.open-board"));
-    assert!(first.contains("herdr-tsk.quick-capture"));
+    assert!(first.contains(OPEN_BOARD));
+    assert!(first.contains(QUICK_CAPTURE));
     assert_eq!(
         first,
         edit_bindings(&first, false, |_, _| panic!("idempotent")).unwrap()
@@ -39,11 +53,11 @@ fn conflict_requires_terminal_and_decline_preserves_original_binding() {
     })
     .unwrap();
     assert!(declined.contains("my-tool"));
-    assert!(!declined.contains("herdr-tsk.open-board"));
-    assert!(declined.contains("herdr-tsk.quick-capture"));
+    assert!(!declined.contains(OPEN_BOARD));
+    assert!(declined.contains(QUICK_CAPTURE));
     let accepted = edit_bindings(source, true, |_, _| Ok(true)).unwrap();
     assert!(!accepted.contains("my-tool"));
-    assert!(accepted.contains("herdr-tsk.open-board"));
+    assert!(accepted.contains(OPEN_BOARD));
 }
 #[test]
 fn builtin_and_multi_binding_conflicts_preserve_unrelated_keys() {
@@ -95,6 +109,110 @@ fn setup_help_is_headless_and_bad_arguments_are_usage_errors() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
+}
+
+/// On Windows, `tsk setup herdr` must read/write keybindings at
+/// `%APPDATA%\herdr\config.toml`, the path Herdr actually reads -- not
+/// `%USERPROFILE%\.config\herdr\config.toml` (the Unix path). This test
+/// verifies `tsk setup herdr --check` finds a config at the APPDATA path.
+#[cfg(windows)]
+#[test]
+fn setup_reads_config_from_appdata_not_userprofile_config() {
+    let root = temp();
+    let appdata = root.join("appdata");
+    let config_dir = appdata.join("herdr");
+    let config = config_dir.join("config.toml");
+    fs::create_dir_all(&config_dir).unwrap();
+
+    // Write a config with the Windows action IDs bound.
+    fs::write(
+        &config,
+        "[keys]
+\n[[keys.command]]
+\nkey = 'prefix+t'
+\ntype = 'plugin_action'
+\ncommand = 'herdr-tsk.open-board-windows'
+\n[[keys.command]]
+\nkey = 'prefix+a'
+\ntype = 'plugin_action'
+\ncommand = 'herdr-tsk.quick-capture-windows'
+",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tsk"))
+        .args(["setup", "herdr", "--check"])
+        .env("APPDATA", &appdata)
+        .env_remove("HERDR_CONFIG_PATH")
+        .env("XDG_CONFIG_HOME", root.join("xdg-must-not-win"))
+        .env_remove("USERPROFILE")
+        .env_remove("HOME")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "bound",
+        "--check must find the config at %APPDATA%/herdr/config.toml and report bound"
+    );
+
+    // Remove the config and verify --check reports unbound (confirming it was
+    // reading from APPDATA, not somewhere else).
+    fs::remove_file(&config).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tsk"))
+        .args(["setup", "herdr", "--check"])
+        .env("APPDATA", &appdata)
+        .env_remove("HERDR_CONFIG_PATH")
+        .env("XDG_CONFIG_HOME", root.join("xdg-must-not-win"))
+        .env_remove("USERPROFILE")
+        .env_remove("HOME")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "unbound",
+        "--check must report unbound when the config is missing from APPDATA"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn setup_falls_back_to_userprofile_roaming_when_appdata_is_missing() {
+    let root = temp();
+    let config_dir = root.join("AppData").join("Roaming").join("herdr");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(
+        config_dir.join("config.toml"),
+        "[keys]\n\n[[keys.command]]\nkeys = 't'\ntype = 'plugin_action'\ncommand = 'herdr-tsk.open-board-windows'\n\n[[keys.command]]\nkeys = 'a'\ntype = 'plugin_action'\ncommand = 'herdr-tsk.quick-capture-windows'\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tsk"))
+        .args(["setup", "herdr", "--check"])
+        .env_remove("APPDATA")
+        .env("USERPROFILE", &root)
+        .env_remove("HERDR_CONFIG_PATH")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("HOME")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "bound");
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[cfg(unix)]
@@ -205,31 +323,46 @@ fn whitespace_in_chord_is_detected_but_shifted_uppercase_is_not_replaced() {
 #[test]
 fn an_action_bound_on_a_custom_key_is_kept_and_no_default_chord_is_added() {
     // The user moved the board to prefix+b; a rerun (or `tsk update`) must not add prefix+t.
-    let source = "[[keys.command]]\nkey = 'prefix+b'\ntype = 'plugin_action'\ncommand = 'herdr-tsk.open-board'\n";
-    let edited = edit_bindings(source, false, |_, _| panic!("no conflicts")).unwrap();
+    let source = format!(
+        "[[keys.command]]\nkey = 'prefix+b'\ntype = 'plugin_action'\ncommand = '{}'\n",
+        OPEN_BOARD
+    );
+    let edited = edit_bindings(&source, false, |_, _| panic!("no conflicts")).unwrap();
     let doc = edited.parse::<toml_edit::DocumentMut>().unwrap();
     let commands = doc["keys"]["command"].as_array_of_tables().unwrap();
     let boards: Vec<_> = commands
         .iter()
-        .filter(|t| t["command"].as_str() == Some("herdr-tsk.open-board"))
+        .filter(|t| t["command"].as_str() == Some(OPEN_BOARD))
         .collect();
     assert_eq!(boards.len(), 1, "{edited}");
     assert_eq!(boards[0]["key"].as_str(), Some("prefix+b"));
-    assert!(edited.contains("herdr-tsk.quick-capture"), "{edited}");
+    assert!(edited.contains(QUICK_CAPTURE), "{edited}");
     assert!(!edited.contains("'prefix+t'"), "{edited}");
 }
 
 #[test]
 fn commands_bound_matches_both_plugin_commands_on_any_key() {
     use tsk_tui::setup::commands_bound;
-    let both = "[[keys.command]]\nkey = 'prefix+b'\ntype = 'plugin_action'\ncommand = 'herdr-tsk.open-board'\n[[keys.command]]\nkey = 'prefix+q'\ntype = 'plugin_action'\ncommand = 'herdr-tsk.quick-capture'\n";
-    assert!(commands_bound(both));
-    let inline = "[keys]\ncommand = [{key = 'prefix+t', type = 'plugin_action', command = 'herdr-tsk.open-board'}, {key = 'prefix+a', type = 'plugin_action', command = 'herdr-tsk.quick-capture'}]\n";
-    assert!(commands_bound(inline));
-    let one = "[[keys.command]]\nkey = 'prefix+t'\ntype = 'plugin_action'\ncommand = 'herdr-tsk.open-board'\n";
-    assert!(!commands_bound(one));
-    let wrong_type = "[[keys.command]]\nkey = 'prefix+t'\ntype = 'shell'\ncommand = 'herdr-tsk.open-board'\n[[keys.command]]\nkey = 'prefix+a'\ntype = 'plugin_action'\ncommand = 'herdr-tsk.quick-capture'\n";
-    assert!(!commands_bound(wrong_type));
+    let both = format!(
+        "[[keys.command]]\nkey = 'prefix+b'\ntype = 'plugin_action'\ncommand = '{}'\n[[keys.command]]\nkey = 'prefix+q'\ntype = 'plugin_action'\ncommand = '{}'\n",
+        OPEN_BOARD, QUICK_CAPTURE
+    );
+    assert!(commands_bound(&both));
+    let inline = format!(
+        "[keys]\ncommand = [{{key = 'prefix+t', type = 'plugin_action', command = '{}'}}, {{key = 'prefix+a', type = 'plugin_action', command = '{}'}}]\n",
+        OPEN_BOARD, QUICK_CAPTURE
+    );
+    assert!(commands_bound(&inline));
+    let one = format!(
+        "[[keys.command]]\nkey = 'prefix+t'\ntype = 'plugin_action'\ncommand = '{}'\n",
+        OPEN_BOARD
+    );
+    assert!(!commands_bound(&one));
+    let wrong_type = format!(
+        "[[keys.command]]\nkey = 'prefix+t'\ntype = 'shell'\ncommand = '{}'\n[[keys.command]]\nkey = 'prefix+a'\ntype = 'plugin_action'\ncommand = '{}'\n",
+        OPEN_BOARD, QUICK_CAPTURE
+    );
+    assert!(!commands_bound(&wrong_type));
     assert!(!commands_bound(""));
     assert!(!commands_bound("not = [toml"));
 }
@@ -237,9 +370,12 @@ fn commands_bound_matches_both_plugin_commands_on_any_key() {
 #[test]
 fn a_keyless_or_empty_key_plugin_action_does_not_count_as_bound() {
     use tsk_tui::setup::commands_bound;
-    let keyless = "[[keys.command]]\ntype = 'plugin_action'\ncommand = 'herdr-tsk.open-board'\n[[keys.command]]\nkey = []\ntype = 'plugin_action'\ncommand = 'herdr-tsk.quick-capture'\n";
-    assert!(!commands_bound(keyless));
-    let edited = edit_bindings(keyless, false, |_, _| panic!("no conflicts")).unwrap();
+    let keyless = format!(
+        "[[keys.command]]\ntype = 'plugin_action'\ncommand = '{}'\n[[keys.command]]\nkey = []\ntype = 'plugin_action'\ncommand = '{}'\n",
+        OPEN_BOARD, QUICK_CAPTURE
+    );
+    assert!(!commands_bound(&keyless));
+    let edited = edit_bindings(&keyless, false, |_, _| panic!("no conflicts")).unwrap();
     let doc = edited.parse::<toml_edit::DocumentMut>().unwrap();
     let keys: Vec<Option<&str>> = doc["keys"]["command"]
         .as_array_of_tables()
@@ -255,10 +391,13 @@ fn a_keyless_or_empty_key_plugin_action_does_not_count_as_bound() {
 fn a_builtin_shadowing_the_default_chord_is_still_offered_for_repair() {
     // The plugin action sits on prefix+t, but a builtin also claims prefix+t: the action is
     // bound on its default key, so the custom-key skip must not hide the conflict.
-    let source = "[keys]\nnew_tab = ['prefix+t']\n[[keys.command]]\nkey = 'prefix+t'\ntype = 'plugin_action'\ncommand = 'herdr-tsk.open-board'\n";
-    assert!(edit_bindings(source, false, |_, _| panic!("must not prompt")).is_err());
+    let source = format!(
+        "[keys]\nnew_tab = ['prefix+t']\n[[keys.command]]\nkey = 'prefix+t'\ntype = 'plugin_action'\ncommand = '{}'\n",
+        OPEN_BOARD
+    );
+    assert!(edit_bindings(&source, false, |_, _| panic!("must not prompt")).is_err());
     let mut asked = Vec::new();
-    let repaired = edit_bindings(source, true, |key, _| {
+    let repaired = edit_bindings(&source, true, |key, _| {
         asked.push(key.to_string());
         Ok(true)
     })
@@ -270,12 +409,15 @@ fn a_builtin_shadowing_the_default_chord_is_still_offered_for_repair() {
 #[test]
 fn bound_shortcuts_report_the_keys_each_command_is_on() {
     use tsk_tui::setup::bound_shortcuts;
-    let source = "[[keys.command]]\nkey = ['prefix+b', 'prefix+t']\ntype = 'plugin_action'\ncommand = 'herdr-tsk.open-board'\n";
+    let source = format!(
+        "[[keys.command]]\nkey = ['prefix+b', 'prefix+t']\ntype = 'plugin_action'\ncommand = '{}'\n",
+        OPEN_BOARD
+    );
     assert_eq!(
-        bound_shortcuts(source),
+        bound_shortcuts(&source),
         vec![("prefix+b / prefix+t".to_string(), "board")]
     );
-    let edited = edit_bindings(source, false, |_, _| panic!("no conflicts")).unwrap();
+    let edited = edit_bindings(&source, false, |_, _| panic!("no conflicts")).unwrap();
     assert_eq!(
         bound_shortcuts(&edited),
         vec![

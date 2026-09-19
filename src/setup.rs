@@ -6,15 +6,25 @@ use std::{
     process::Command,
 };
 #[cfg(unix)]
-mod dir;
+mod dir_unix;
 #[cfg(unix)]
-use dir::{Dir, TempFile};
+use dir_unix::{Dir, TempFile};
+#[cfg(windows)]
+mod dir_windows;
+#[cfg(windows)]
+use dir_windows::{Dir, TempFile};
 
 use toml_edit::{value, Array, ArrayOfTables, DocumentMut, Item, Table};
 
+#[cfg(unix)]
 const BINDINGS: [(&str, &str); 2] = [
     ("prefix+t", "herdr-tsk.open-board"),
     ("prefix+a", "herdr-tsk.quick-capture"),
+];
+#[cfg(windows)]
+const BINDINGS: [(&str, &str); 2] = [
+    ("prefix+t", "herdr-tsk.open-board-windows"),
+    ("prefix+a", "herdr-tsk.quick-capture-windows"),
 ];
 fn error(message: impl Into<String>) -> io::Error {
     io::Error::other(message.into())
@@ -215,7 +225,7 @@ pub fn bound_shortcuts(source: &str) -> Vec<(String, &'static str)> {
                 return None;
             }
             let label = match *action {
-                "herdr-tsk.open-board" => "board",
+                "herdr-tsk.open-board" | "herdr-tsk.open-board-windows" => "board",
                 _ => "quick capture",
             };
             Some((bound.join(" / "), label))
@@ -249,10 +259,21 @@ pub fn commands_bound(source: &str) -> bool {
 /// A missing config is simply not bound.
 pub fn herdr_setup_present() -> io::Result<bool> {
     let path = config_path()?;
-    match fs::read_to_string(&path) {
-        Ok(source) => Ok(commands_bound(&source)),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e),
+    let parent = path
+        .parent()
+        .ok_or_else(|| error("Herdr config path has no parent directory"))?;
+    let child = Path::new(
+        path.file_name()
+            .ok_or_else(|| error("Herdr config path has no filename"))?,
+    );
+    let dir = match Dir::open(parent, false) {
+        Ok(dir) => dir,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    match dir.read(child)? {
+        Some(source) => Ok(commands_bound(&source)),
+        None => Ok(false),
     }
 }
 
@@ -267,6 +288,7 @@ fn config_path() -> io::Result<PathBuf> {
     if let Some(path) = env::var_os("HERDR_CONFIG_PATH").filter(|v| !v.is_empty()) {
         return absolute(path.into());
     }
+    #[cfg(unix)]
     let root = env::var_os("XDG_CONFIG_HOME")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
@@ -276,7 +298,17 @@ fn config_path() -> io::Result<PathBuf> {
                 .map(|h| PathBuf::from(h).join(".config"))
         })
         .ok_or_else(|| error("HOME or XDG_CONFIG_HOME is required"))?;
-    absolute(root.join("herdr/config.toml"))
+    #[cfg(windows)]
+    let root = env::var_os("APPDATA")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            env::var_os("USERPROFILE")
+                .filter(|v| !v.is_empty())
+                .map(|profile| PathBuf::from(profile).join("AppData").join("Roaming"))
+        })
+        .ok_or_else(|| error("APPDATA or USERPROFILE is required to locate the Herdr config"))?;
+    absolute(root.join("herdr").join("config.toml"))
 }
 /// Preserve the invocation symlink (e.g. Homebrew's bin/tsk), not its versioned Cellar target.
 fn installed_binary() -> io::Result<PathBuf> {
@@ -289,8 +321,16 @@ fn installed_binary() -> io::Result<PathBuf> {
         absolute(invoked)?
     } else {
         env::split_paths(&env::var_os("PATH").unwrap_or_default())
-            .map(|p| p.join(&invoked))
-            .find(|p| p.is_file())
+            .flat_map(|directory| {
+                let exact = directory.join(&invoked);
+                #[cfg(windows)]
+                let executable = (invoked.extension().is_none())
+                    .then(|| directory.join(&invoked).with_extension("exe"));
+                #[cfg(not(windows))]
+                let executable: Option<PathBuf> = None;
+                std::iter::once(exact).chain(executable)
+            })
+            .find(|path| path.is_file())
             .ok_or_else(|| error("could not locate tsk on PATH"))?
     };
     let candidate = absolute(candidate)?;
@@ -372,6 +412,22 @@ fn managed_assets(binary: &Path, version: &str) -> io::Result<Vec<(&'static str,
     let (major, minor, patch) = MIN_HERDR_VERSION;
     manifest["min_herdr_version"] = value(format!("{major}.{minor}.{patch}"));
     manifest["version"] = value(version);
+    #[cfg(windows)]
+    let platform = "windows";
+    #[cfg(target_os = "macos")]
+    let platform = "macos";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let platform = "linux";
+    manifest["actions"]
+        .as_array_of_tables_mut()
+        .expect("embedded actions")
+        .retain(|action| {
+            action["platforms"].as_array().is_some_and(|platforms| {
+                platforms
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(platform))
+            })
+        });
     let mut command = Array::new();
     command.push(path);
     manifest["panes"]
@@ -379,28 +435,56 @@ fn managed_assets(binary: &Path, version: &str) -> io::Result<Vec<(&'static str,
         .unwrap()
         .get_mut(0)
         .unwrap()["command"] = value(command);
-    let board = include_str!("../scripts/open-board.sh");
-    let quoted = format!("'{}'", path.replace('\'', "'\\''"));
-    let board = board
-        .lines()
-        .map(|line| {
-            if line.starts_with("plugin_bin=") {
-                format!("plugin_bin={quoted}")
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n";
-    Ok(vec![
-        ("herdr-plugin.toml", manifest.to_string()),
-        ("scripts/open-board.sh", board),
-        (
-            "scripts/open-capture.sh",
-            include_str!("../scripts/open-capture.sh").to_string(),
-        ),
-    ])
+    #[cfg(unix)]
+    {
+        let board = include_str!("../scripts/open-board.sh");
+        let quoted = format!("'{}'", path.replace('\'', "'\\''"));
+        let board = board
+            .lines()
+            .map(|line| {
+                if line.starts_with("plugin_bin=") {
+                    format!("plugin_bin={quoted}")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        Ok(vec![
+            ("herdr-plugin.toml", manifest.to_string()),
+            ("scripts/open-board.sh", board),
+            (
+                "scripts/open-capture.sh",
+                include_str!("../scripts/open-capture.sh").to_string(),
+            ),
+        ])
+    }
+    #[cfg(windows)]
+    {
+        let board = include_str!("../scripts/open-board.ps1");
+        let escaped = path.replace('\'', "''");
+        let board = board
+            .lines()
+            .map(|line| {
+                if line.starts_with("$pluginBin = ") {
+                    format!("$pluginBin = '{escaped}'")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        Ok(vec![
+            ("herdr-plugin.toml", manifest.to_string()),
+            ("scripts/open-board.ps1", board),
+            (
+                "scripts/open-capture.ps1",
+                include_str!("../scripts/open-capture.ps1").to_string(),
+            ),
+        ])
+    }
 }
 fn no_symlink(path: &Path) -> io::Result<()> {
     match fs::symlink_metadata(path) {
@@ -452,7 +536,7 @@ fn require_min_herdr(version_output: &str) -> io::Result<()> {
         (Some(Ok(a)), Some(Ok(b)), Some(Ok(c)), None) => (a, b, c),
         _ => return Err(unreadable()),
     };
-    // A pre-release sorts below its release, so 0.9.0-beta is not yet 0.9.0.
+    // A pre-release sorts below its release, so 0.9.0-preview is not yet 0.9.0.
     let too_old = found < MIN_HERDR_VERSION || (prerelease && found == MIN_HERDR_VERSION);
     if too_old {
         let (a, b, c) = MIN_HERDR_VERSION;
@@ -528,22 +612,14 @@ pub fn run(
     writer: &mut impl Write,
     interactive: bool,
 ) -> io::Result<SetupResult> {
-    #[cfg(unix)]
-    {
-        run_at(
-            &config_path()?,
-            env!("CARGO_PKG_VERSION"),
-            reader,
-            writer,
-            interactive,
-            &mut herdr,
-        )
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (reader, writer, interactive);
-        Err(error("Herdr setup requires macOS or Linux"))
-    }
+    run_at(
+        &config_path()?,
+        env!("CARGO_PKG_VERSION"),
+        reader,
+        writer,
+        interactive,
+        &mut herdr,
+    )
 }
 
 fn registered_root(
@@ -577,7 +653,6 @@ fn registered_root(
         .transpose()
 }
 
-#[cfg(unix)]
 fn run_at(
     config: &Path,
     version: &str,
@@ -770,6 +845,36 @@ fn run_at(
 
 #[cfg(unix)]
 fn cleanup_old(base: &Dir, current: &Dir, old: &Path) -> io::Result<()> {
+    cleanup_old_inner(base, current, old, &SHARED_ASSET_NAMES)
+}
+
+#[cfg(windows)]
+fn cleanup_old(base: &Dir, current: &Dir, old: &Path) -> io::Result<()> {
+    cleanup_old_inner(base, current, old, &WINDOWS_ASSET_NAMES)
+}
+
+/// The asset file names a platform writes, in the order `managed_assets` emits them.
+/// Used by `cleanup_old` to read and verify a stale registration before removing it.
+#[cfg(unix)]
+const SHARED_ASSET_NAMES: [&str; 3] = [
+    "herdr-plugin.toml",
+    "scripts/open-board.sh",
+    "scripts/open-capture.sh",
+];
+
+#[cfg(windows)]
+const WINDOWS_ASSET_NAMES: [&str; 3] = [
+    "herdr-plugin.toml",
+    "scripts/open-board.ps1",
+    "scripts/open-capture.ps1",
+];
+
+fn cleanup_old_inner(
+    base: &Dir,
+    current: &Dir,
+    old: &Path,
+    asset_names: &[&str],
+) -> io::Result<()> {
     base.validate()?;
     current.validate()?;
     // Never remove a source checkout or another installation. Only an intact generated root
@@ -798,11 +903,7 @@ fn cleanup_old(base: &Dir, current: &Dir, old: &Path) -> io::Result<()> {
     }
     let scripts = old.child(Path::new("scripts"), false)?;
     let mut contents = Vec::new();
-    for file in [
-        "herdr-plugin.toml",
-        "scripts/open-board.sh",
-        "scripts/open-capture.sh",
-    ] {
+    for &file in asset_names {
         let path = Path::new(file);
         let dir = if file.starts_with("scripts/") {
             &scripts
@@ -827,13 +928,19 @@ fn cleanup_old(base: &Dir, current: &Dir, old: &Path) -> io::Result<()> {
     }
     // Herdr 0.9 link replaces by plugin ID (online map insert, offline retain+push).
     // Do NOT unlink by ID here: that would remove the new registration too.
-    scripts.remove(Path::new("open-board.sh"), false)?;
-    scripts.remove(Path::new("open-capture.sh"), false)?;
-    old.remove(Path::new("herdr-plugin.toml"), false)?;
+    for &file in asset_names {
+        let path = Path::new(file);
+        let dir = if path.parent().is_some_and(|p| p != Path::new("")) {
+            &scripts
+        } else {
+            &old
+        };
+        dir.remove(Path::new(path.file_name().unwrap()), false)?;
+    }
     old.remove(Path::new("scripts"), true)?;
     base.remove(Path::new(name), true)?;
     Ok(())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests;

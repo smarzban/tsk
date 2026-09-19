@@ -73,10 +73,10 @@ Without a scope flag, `add` and filtered `list` use the launch repository inside
 | --- | --- |
 | `--desk` | Desk |
 | `-p name` / `--project name` | Existing project uniquely matching that basename, ignoring case |
-| `-p /path` | Existing absolute directory, creating a project there if needed |
+| `-p /path` or `-p C:\path` | Existing absolute directory, creating a project there if needed |
 | `--all` on list | All scopes |
 
-For adds, a bare project name must match exactly one project the board already knows: a project with tasks, an archived project, or the repository you launched from. Missing and ambiguous names refuse with `unknown-project`, for example `tsk add: unknown-project: project atlss is not on the board`. A new project destination requires an existing absolute directory (`/…` or `~/…`); relative and nonexistent paths refuse. Project-filtered reads remain permissive, so `tsk list -p typo` returns an empty list.
+For adds, a bare project name must match exactly one project the board already knows: a project with tasks, an archived project, or the repository you launched from. Missing and ambiguous names refuse with `unknown-project`, for example `tsk add: unknown-project: project atlss is not on the board`. A new project destination requires an existing absolute directory (`/…` or `~/…` on macOS/Linux, `C:\…` or `~\…` on Windows); relative and nonexistent paths refuse. Project-filtered reads remain permissive, so `tsk list -p typo` returns an empty list.
 
 ## add
 
@@ -277,7 +277,7 @@ Use top-level help to find a command, then use either one-command form for its f
 tsk update
 ```
 
-For an installer-managed copy, immediately downloads and runs the official installer to install the latest published release, then refreshes an already registered Herdr plugin and any outdated installed agent skills ([details](/docs/install/#upgrade)). For a Homebrew copy, it prints `brew update && brew upgrade tsk`; Homebrew remains responsible for its own upgrades. Reopen a running board after an upgrade.
+For an installer-managed copy, downloads and runs the official installer for the latest published release, then refreshes an already registered Herdr plugin and any outdated installed agent skills ([details](/docs/install/#upgrade)). Windows stages the verified executable, returns after starting a detached helper, and replaces `tsk.exe` after the running process exits. For a Homebrew copy, it prints `brew update && brew upgrade tsk`; Homebrew remains responsible for its own upgrades. Reopen a running board after an upgrade.
 
 ## setup
 
@@ -296,7 +296,7 @@ On a TTY, bare `tsk setup` detects global agent skill roots and asks once to ins
 
 ### Herdr
 
-Requires Herdr 0.9+ on PATH. Registers the installed binary and adds **prefix+t** and **prefix+a**. A plugin command you already bound to another key is left alone; setup never adds the default chord beside it. Shortcut conflicts require confirmation; noninteractive conflicts stop before writes. `tsk setup herdr --check` prints `bound` when both plugin commands are already in the config (on any keys), otherwise `unbound`, and changes nothing. It uses `HERDR_CONFIG_PATH`, then `XDG_CONFIG_HOME/herdr/config.toml`, then `~/.config/herdr/config.toml`.
+Requires Herdr 0.9+ on PATH. Registers the installed binary and adds **prefix+t** and **prefix+a**. A plugin command you already bound to another key is left alone; setup never adds the default chord beside it. Shortcut conflicts require confirmation; noninteractive conflicts stop before writes. `tsk setup herdr --check` prints `bound` when both plugin commands are already in the config (on any keys), otherwise `unbound`, and changes nothing. On macOS/Linux it uses `HERDR_CONFIG_PATH`, then `XDG_CONFIG_HOME/herdr/config.toml`, then `~/.config/herdr/config.toml`. On Windows it uses `HERDR_CONFIG_PATH`, then `%APPDATA%\herdr\config.toml`, with `%USERPROFILE%\AppData\Roaming\herdr\config.toml` as the fallback. Windows setup installs PowerShell launchers; Herdr's Windows plugin support is preview.
 
 [Reload, upgrades, and removal](/docs/install/#herdr-setup-with-an-installed-binary).
 

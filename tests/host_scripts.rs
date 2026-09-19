@@ -1,6 +1,7 @@
 //! Host Adapter launcher contract.
 //! Scripts are bash open/focus helpers; tests are path + mode + text contracts
 //! (no live herdr). Manual: second open-board focuses the same Tasks board.
+#![cfg(unix)]
 
 use std::fs;
 

@@ -9,13 +9,18 @@ the GitHub release notes verbatim.
 
 ## Unreleased
 
+### Added
+
+- First-class Windows 10/11 x86-64 support for the CLI and TUI, `%LOCALAPPDATA%\tsk` storage, `%APPDATA%\herdr\config.toml` integration with PowerShell launchers, agent setup under `%USERPROFILE%`, native release checks, and locked-executable-safe `tsk update`.
+- Windows releases include a checksum-covered MSVC ZIP and a complete-download PowerShell 5.1 installer that adds tsk to user PATH. Windows ARM64, signing, and package-manager submissions remain out of scope.
+
 ### Changed
 
 - `walkthrough.json` and `TSK_CONFIG_DIR` are gone: the retired onboarding card is replaced by the seeded tour tasks, and an existing file is simply ignored.
 - The `tsk.json.1` last-good backup is replaced by rename, so it is never missing mid-save; stale temp files from the release check and notice delivery are swept with the rest.
 - `tsk update` downloads the installer completely before running it, ignores a `TSK_VERSION` set in your shell, refuses to replace a newer copy with an older release, and prints the reason when a Herdr or skill refresh fails.
-- The board's release check uses the same HTTPS-only curl as `tsk update`, including `TSK_UPDATE_CURL`.
-- Agent skill installs replace `SKILL.md` atomically, so an interrupted `tsk setup` leaves the previous skill intact.
+- The board's release check uses the same HTTPS-only curl as `tsk update` on macOS/Linux, including `TSK_UPDATE_CURL`; Windows uses native HTTPS and the system trust store.
+- Agent skill installs replace `SKILL.md` atomically, so an interrupted `tsk setup` leaves the previous skill intact. The embedded skill now detects tsk with the shell-neutral `tsk --version`.
 - With neither `HOME` nor `TSK_STATE_DIR` set, tsk refuses to run instead of creating a board in the working directory.
 - The plugin manifest declares `min_herdr_version = "0.9.0"`, matching what setup and the launchers already require.
 

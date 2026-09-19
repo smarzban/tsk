@@ -44,18 +44,26 @@ jobs:
         include:
           - os: macos-15
             target: aarch64-apple-darwin
+            exe_suffix: ""
           - os: macos-15-intel
             target: x86_64-apple-darwin
+            exe_suffix: ""
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
+            exe_suffix: ""
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-musl
+            exe_suffix: ""
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            exe_suffix: .exe
     env:
       TAG: ${{ inputs.tag }}
       TARGET: ${{ matrix.target }}
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - name: Validate tag syntax
+        shell: bash
         run: '[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]'
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -74,18 +82,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/release.py check-version "$TAG"
-          python3 -m unittest discover -s tests/packaging
+          python scripts/release.py check-version "$TAG"
+          if [ "$RUNNER_OS" != Windows ]; then python -m unittest discover -s tests/packaging; fi
+          if [ "$RUNNER_OS" = Windows ]; then python tests/packaging/test_install_windows.py; fi
           if [ "$RUNNER_OS" = Linux ]; then export RUSTFLAGS='-C linker=musl-gcc'; fi
           cargo test --locked --target "$TARGET"
           cargo build --release --locked --target "$TARGET"
-          "target/$TARGET/release/tsk" --help
-          TSK_TEST_BINARY="$PWD/target/$TARGET/release/tsk" python3 -m unittest discover -s tests/packaging
-          python3 scripts/release.py package "$TAG" "$TARGET" "target/$TARGET/release/tsk" dist-release
+          binary="target/${{ matrix.target }}/release/tsk${{ matrix.exe_suffix }}"
+          "$binary" --help
+          TSK_TEST_BINARY="$PWD/$binary" python -m unittest discover -s tests/packaging
+          if [ "$RUNNER_OS" = Windows ]; then powershell.exe -NoProfile -ExecutionPolicy Bypass -File site/public/install.ps1 -Help; fi
+          python scripts/release.py package "$TAG" "$TARGET" "$binary" dist-release
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: release-${{ matrix.target }}
-          path: dist-release/*.tar.gz
+          path: dist-release/*
           if-no-files-found: error
 
   draft:

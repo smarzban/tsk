@@ -765,7 +765,7 @@ impl ScopeLabel {
 }
 
 fn path_segments(path: &str) -> Vec<String> {
-    path.split('/')
+    path.split(|character| character == '/' || (cfg!(windows) && character == '\\'))
         .filter(|segment| !segment.is_empty())
         .map(str::to_owned)
         .collect()
@@ -1537,6 +1537,19 @@ pub fn setup(result: crate::setup::SetupResult) -> CliOutput {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[cfg(windows)]
+    #[test]
+    fn path_labels_split_windows_and_unix_separators() {
+        assert_eq!(path_segments(r"C:\work\tsk"), ["C:", "work", "tsk"]);
+        assert_eq!(path_segments("/work/tsk"), ["work", "tsk"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_labels_keep_a_literal_unix_backslash() {
+        assert_eq!(path_segments(r"/work/tsk\name"), ["work", r"tsk\name"]);
+    }
 
     #[test]
     fn help_doc_wraps_hangs_aligns_per_group_and_omits_empty_sections() {

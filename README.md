@@ -32,6 +32,8 @@ in Herdr worktrees.
 
 ### Install
 
+macOS and Linux (ARM64 or x86-64):
+
 ```sh
 curl -fsSL https://gettsk.sh/install.sh | sh
 ```
@@ -42,14 +44,23 @@ Or install with Homebrew:
 brew install smarzban/tap/tsk
 ```
 
-The installer sets up PATH for Bash and Zsh. If prompted, reopen your terminal
+Windows 10/11 x86-64, from Windows PowerShell 5.1 or newer:
+
+```powershell
+Invoke-WebRequest https://gettsk.sh/install.ps1 -OutFile "$env:TEMP\install-tsk.ps1"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-tsk.ps1"
+```
+
+The Windows installer verifies the release ZIP, installs under `%LOCALAPPDATA%`, and adds tsk to user PATH. Windows ARM64, signing, and package-manager submissions are not included yet.
+
+On macOS and Linux, the installer sets up PATH for Bash and Zsh. If prompted, reopen your terminal
 or run the printed `export` command before continuing. When Herdr is already
 installed, an interactive curl install may also ask to run `tsk setup herdr`.
 When agent skill roots are detected, it asks once to install or update the tsk
 skill. The install wrap-up then points at the board (`prefix+t` after a
 successful Herdr setup, or `tsk setup herdr` / `tsk setup` when those asks are
 skipped). Noninteractive installs and Homebrew print the Herdr setup command
-without asking.
+without asking. The Windows installer prints the equivalent setup commands.
 
 ### Add to Herdr
 
