@@ -310,9 +310,10 @@ fn userprofile_only_drives_windows_skill_install_and_listing() {
         None => std::env::remove_var("USERPROFILE"),
     }
 
-    let skill = profile.join(".claude/skills/tsk-cli/SKILL.md");
+    let skills_root = profile.join(".claude/skills");
+    let skill = skills_root.join("tsk-cli/SKILL.md");
     assert_eq!(listed.code, 0, "{listed:?}");
-    assert!(listed.stdout.contains(&skill.display().to_string()));
+    assert!(listed.stdout.contains(&skills_root.display().to_string()));
     assert_eq!(installed.code, 0, "{installed:?}");
     assert_eq!(
         fs::read_to_string(&skill).expect("installed skill"),
