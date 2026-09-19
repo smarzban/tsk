@@ -54,7 +54,7 @@ public static class TskNativeInstall {
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool MoveFileEx(string existingName, string newName, int flags);
 }
-'@
+'@ | Out-Null
     }
 }
 
@@ -62,11 +62,17 @@ function Move-Atomic([string] $Source, [string] $Destination) {
     Add-NativeMoveType
     $MOVEFILE_REPLACE_EXISTING = 0x1
     $MOVEFILE_WRITE_THROUGH = 0x8
-    if ([TskNativeInstall]::MoveFileEx($Source, $Destination, ($MOVEFILE_REPLACE_EXISTING -bor $MOVEFILE_WRITE_THROUGH))) {
-        $script:LastMoveError = 0
-        return $true
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        if ([TskNativeInstall]::MoveFileEx($Source, $Destination, ($MOVEFILE_REPLACE_EXISTING -bor $MOVEFILE_WRITE_THROUGH))) {
+            $script:LastMoveError = 0
+            return $true
+        }
+        $script:LastMoveError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        if (($script:LastMoveError -ne 5 -and $script:LastMoveError -ne 32) -or $attempt -eq 19) {
+            return $false
+        }
+        Start-Sleep -Milliseconds 100
     }
-    $script:LastMoveError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
     return $false
 }
 

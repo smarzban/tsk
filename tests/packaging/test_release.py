@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import io
+import os
 import re
 from pathlib import Path
 import tarfile
@@ -176,9 +177,10 @@ class ReleaseTests(unittest.TestCase):
         release.package("v1.2.3", release.TARGETS[0], self.binary, self.out)
         with self.assertRaises(ValueError):
             release.package("v1.2.3", release.TARGETS[0], self.binary, self.out)
-        self.binary.chmod(0o644)
-        with self.assertRaises(ValueError):
-            release.package("v1.2.3", release.TARGETS[1], self.binary, self.out)
+        if os.name != "nt":
+            self.binary.chmod(0o644)
+            with self.assertRaises(ValueError):
+                release.package("v1.2.3", release.TARGETS[1], self.binary, self.out)
 
     def write_versions(self, cargo="1.2.3", lock="1.2.3", plugin="1.2.3", site="1.2.3"):
         (self.root / "Cargo.toml").write_text(f'[package]\nname = "tsk-tui"\nversion = "{cargo}"\n')

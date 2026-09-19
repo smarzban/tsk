@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = ROOT / "site/public/install.sh"
 
 
+@unittest.skipIf(os.name == "nt", "Unix installer tests run on Unix CI")
 class InstallerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -298,7 +299,7 @@ echo installed-fixture
         activated = subprocess.run(["sh", "-c", '. "$HOME/.zshrc"; tsk'], env=environment, text=True, capture_output=True, check=True)
         self.assertEqual(activated.stdout.strip(), "installed-fixture")
 
-    @unittest.skipIf(os.geteuid() == 0, "root bypasses write permissions")
+    @unittest.skipIf(getattr(os, "geteuid", lambda: -1)() == 0, "root bypasses write permissions")
     def test_unwritable_startup_file_keeps_binary_and_reports_manual_setup(self):
         self.archive()
         home = Path(self.env["HOME"])

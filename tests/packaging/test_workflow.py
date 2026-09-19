@@ -95,7 +95,7 @@ class WorkflowTests(unittest.TestCase):
             for name in names:
                 (assets / name).write_text("fixture")
             capture = root / "args.json"
-            environment = dict(os.environ, PATH=f"{commands_dir}:{os.environ['PATH']}", TAG="v1.2.3", GH_CAPTURE=str(capture))
+            environment = dict(os.environ, PATH=f"{commands_dir}{os.pathsep}{os.environ['PATH']}", TAG="v1.2.3", GH_CAPTURE=str(capture))
             for key in ["GH_TOKEN", "GITHUB_TOKEN"]:
                 environment.pop(key, None)
             subprocess.run(["bash", "-eu", "-c", commands[0]], cwd=root, env=environment, check=True, capture_output=True)
