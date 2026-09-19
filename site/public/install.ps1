@@ -186,6 +186,9 @@ public static class TskNativeInstall {
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern uint GetSystemDirectory(StringBuilder buffer, uint size);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UIntPtr wParam, string lParam, uint flags, uint timeout, out UIntPtr result);
+
     public static ushort GetNativeProcessorArchitecture() {
         SYSTEM_INFO info;
         GetNativeSystemInfo(out info);
@@ -198,6 +201,11 @@ public static class TskNativeInstall {
         if (length == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
         if (length >= (uint)buffer.Capacity) throw new PathTooLongException("Windows system directory path is too long");
         return Path.Combine(buffer.ToString(), @"WindowsPowerShell\v1.0\powershell.exe");
+    }
+
+    public static void BroadcastEnvironmentChange() {
+        UIntPtr result;
+        SendMessageTimeout(new IntPtr(0xffff), 0x001a, UIntPtr.Zero, "Environment", 0x0002, 5000, out result);
     }
 }
 '@ | Out-Null
@@ -212,6 +220,11 @@ function Get-NativeProcessorArchitecture {
 function Get-SystemPowerShellPath {
     Add-NativeMoveType
     return [TskNativeInstall]::GetSystemPowerShell()
+}
+
+function Notify-EnvironmentChanged {
+    Add-NativeMoveType
+    [TskNativeInstall]::BroadcastEnvironmentChange()
 }
 
 function Move-Atomic([string] $Source, [string] $Destination) {
@@ -365,11 +378,16 @@ function Refresh-ExistingSetup([string] $Executable) {
     }
 }
 
-function Add-UserPath([string] $InstallDirectory) {
-    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
-    if ($null -eq $key) {
-        $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+function Add-UserPath([string] $InstallDirectory, [Microsoft.Win32.RegistryKey] $EnvironmentKey = $null) {
+    $ownsKey = $null -eq $EnvironmentKey
+    $key = $EnvironmentKey
+    if ($ownsKey) {
+        $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+        if ($null -eq $key) {
+            $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+        }
     }
+    $changed = $false
     try {
         $hasPath = @($key.GetValueNames()) -contains 'Path'
         $current = if ($hasPath) {
@@ -394,11 +412,13 @@ function Add-UserPath([string] $InstallDirectory) {
             $separator = if (-not $current -or $current.EndsWith(';')) { '' } else { ';' }
             $updated = $current + $separator + $InstallDirectory
             $key.SetValue('Path', $updated, $kind)
+            $changed = $true
             Write-Output "Added $InstallDirectory to your user PATH. Open a new terminal to use tsk."
         }
     } finally {
-        $key.Dispose()
+        if ($ownsKey) { $key.Dispose() }
     }
+    if ($changed -and $ownsKey) { Notify-EnvironmentChanged }
 
     $processEntries = @($env:Path -split ';')
     if (-not ($processEntries | Where-Object { [String]::Equals($_.TrimEnd('\'), $InstallDirectory.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase) })) {

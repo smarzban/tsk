@@ -85,9 +85,7 @@ fn tighten_private_dir(path: &Path) -> io::Result<()> {
     directory.set_permissions(fs::Permissions::from_mode(mode & 0o700))
 }
 
-/// Create a file holding owner-only content (`0600` on Unix when created),
-/// truncating an existing one. Temp files and their renamed targets go through
-/// here so a document is never briefly world-readable.
+/// Reject any existing Windows path component that can redirect later filesystem operations.
 #[cfg(windows)]
 pub(crate) fn reject_reparse_ancestors(path: &Path) -> io::Result<()> {
     let absolute = if path.is_absolute() {
@@ -169,6 +167,9 @@ pub(crate) fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
     fs::rename(from, to)
 }
 
+/// Create a file holding owner-only content (`0600` on Unix when created),
+/// truncating an existing one. Temp files and their renamed targets go through
+/// here so a document is never briefly world-readable.
 pub fn create_private_file(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(true);

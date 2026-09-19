@@ -69,6 +69,8 @@ class WindowsInstallerTests(unittest.TestCase):
         self.assertRegex(self.source, r"(?is)SetValue\(.+\$updated.+\$kind")
         self.assertNotRegex(self.source, r"SetEnvironmentVariable\([^\n]+['\"]Machine['\"]")
         self.assertIn("ExpandEnvironmentVariables", self.source)
+        self.assertIn("SendMessageTimeout", self.source)
+        self.assertIn("0x001a", self.source)
         self.assertIn("OrdinalIgnoreCase", self.source)
         self.assertIn("installation directory cannot contain a semicolon or newline", self.source)
 
@@ -163,6 +165,16 @@ class WindowsInstallerTests(unittest.TestCase):
                 bundle.writestr("README.md", b"readme")
             digest = hashlib.sha256(archive.read_bytes()).hexdigest()
             (assets / "SHA256SUMS").write_text(f"{digest}  {archive_name}\n")
+            path_result = root / "path-result.txt"
+            bounded_result = root / "bounded-result.txt"
+            refresh_log = root / "refresh.log"
+            fake_tsk = root / "fake-tsk.ps1"
+            fake_tsk.write_text(
+                "Add-Content -LiteralPath $env:TSK_REFRESH_LOG -Value ($args -join ' ')\n"
+                "if (($args -join ' ') -eq 'setup herdr --check') { Write-Output 'bound'; exit 0 }\n"
+                "if (($args -join ' ') -eq 'setup --skill-states') { Write-Output \"claude`toutdated\"; exit 0 }\n"
+                "exit 0\n"
+            )
 
             quote = lambda value: str(value).replace("'", "''")
             harness = f"""
@@ -173,8 +185,51 @@ function Invoke-TskDownload {{
     Copy-Item -LiteralPath $source -Destination $Destination
 }}
 . '{quote(INSTALLER)}' -NoPathUpdate
+
+$testKeyPath = 'Software\\tsk-tests\\' + [Guid]::NewGuid().ToString('N')
+$key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($testKeyPath)
+try {{
+    $key.SetValue('Path', '%TSK_PATH_ROOT%\\existing', [Microsoft.Win32.RegistryValueKind]::ExpandString)
+    Add-UserPath 'C:\\Other\\tsk' $key | Out-Null
+    Add-UserPath 'C:\\Other\\tsk' $key | Out-Null
+    $rawPath = [string]$key.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    ($key.GetValueKind('Path').ToString() + '|' + $rawPath) | Set-Content -LiteralPath '{quote(path_result)}' -Encoding ASCII
+}} finally {{
+    $key.Dispose()
+    [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($testKeyPath, $false)
+}}
+
+$script:OversizedPayload = [Text.Encoding]::ASCII.GetBytes('0123456789abcdef')
+function Get-HttpsResponse {{
+    param([string] $Uri, [Diagnostics.Stopwatch] $Timer, [int] $TimeoutSeconds)
+    $response = [PSCustomObject]@{{
+        ResponseUri = [Uri]'https://example.test/asset'
+        StatusCode = [Net.HttpStatusCode]::OK
+        ContentLength = [long]-1
+    }}
+    $response | Add-Member -MemberType ScriptMethod -Name GetResponseStream -Value {{ [IO.MemoryStream]::new($script:OversizedPayload, $false) }}
+    $response | Add-Member -MemberType ScriptMethod -Name Dispose -Value {{ }}
+    return $response
+}}
+$boundedPath = Join-Path '{quote(root)}' 'oversized.bin'
+try {{
+    Invoke-BoundedHttpsDownload -Uri 'https://example.test/asset' -Destination $boundedPath -MaxBytes 4
+    throw 'oversized fixture was accepted'
+}} catch {{
+    if ($_.Exception.Message -notlike '*byte limit*') {{ throw }}
+}}
+if (Test-Path -LiteralPath $boundedPath) {{ throw 'partial oversized download was not removed' }}
+'bounded-ok' | Set-Content -LiteralPath '{quote(bounded_result)}' -Encoding ASCII
+
+$env:TSK_REFRESH_LOG = '{quote(refresh_log)}'
+Refresh-ExistingSetup '{quote(fake_tsk)}' | Out-Null
 """
-            environment = dict(os.environ, TSK_VERSION=version, TSK_INSTALL_DIR=str(destination))
+            environment = dict(
+                os.environ,
+                TSK_VERSION=version,
+                TSK_INSTALL_DIR=str(destination),
+                TSK_PATH_ROOT=str(root / "expanded-root"),
+            )
             result = subprocess.run(
                 ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", harness],
                 env=environment,
@@ -190,6 +245,20 @@ function Invoke-TskDownload {{
             )
             self.assertEqual(installed.read_bytes(), b"offline-windows-fixture")
             self.assertIn("Verifying checksum... ok", result.stdout)
+            self.assertEqual(
+                path_result.read_text().strip(),
+                "ExpandString|%TSK_PATH_ROOT%\\existing;C:\\Other\\tsk",
+            )
+            self.assertEqual(bounded_result.read_text().strip(), "bounded-ok")
+            self.assertEqual(
+                refresh_log.read_text().replace("\r\n", "\n").splitlines(),
+                [
+                    "setup herdr --check",
+                    "setup herdr",
+                    "setup --skill-states",
+                    "setup claude",
+                ],
+            )
 
             holder_script = (
                 "$stream=[IO.File]::Open('"
