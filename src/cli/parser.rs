@@ -352,6 +352,8 @@ pub struct FlagEdit {
     pub task: Option<TaskAddress>,
     pub title: Option<String>,
     pub notes: Option<String>,
+    pub assignee: Option<String>,
+    pub unassign: bool,
     pub state_dir: Option<PathBuf>,
     pub help: bool,
 }
@@ -366,6 +368,8 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
         task: None,
         title: None,
         notes: None,
+        assignee: None,
+        unassign: false,
         state_dir: None,
         help: false,
     };
@@ -392,6 +396,22 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
                 parsed.notes = Some(value(flag)?);
                 index += 2;
             }
+            flag if flag.starts_with("--assignee=") => {
+                parsed.assignee = Some(normalize_thread(&flag["--assignee=".len()..]).map_err(
+                    |error| format!("invalid agent name · {}", thread_refusal_message(error)),
+                )?);
+                index += 1;
+            }
+            "--assignee" => {
+                parsed.assignee = Some(normalize_thread(&value(flag)?).map_err(|error| {
+                    format!("invalid agent name · {}", thread_refusal_message(error))
+                })?);
+                index += 2;
+            }
+            "--unassign" => {
+                parsed.unassign = true;
+                index += 1;
+            }
             "--help" => {
                 parsed.help = true;
                 index += 1;
@@ -413,6 +433,9 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
                 index += 1;
             }
         }
+    }
+    if parsed.unassign && parsed.assignee.is_some() {
+        return Err("--unassign cannot be used with --assignee".into());
     }
     Ok(parsed)
 }
@@ -533,6 +556,8 @@ mod tests {
                 task: Some(TaskAddress::Number(12)),
                 title: Some("-fix parser".into()),
                 notes: Some("-5 degrees".into()),
+                assignee: None,
+                unassign: false,
                 state_dir: None,
                 help: false,
             }
@@ -601,6 +626,9 @@ pub struct FlagAdd {
     pub project: Option<String>,
     /// Normalized at the argv boundary so add only receives valid thread names.
     pub thread: Option<String>,
+    /// Normalized agent name, exact profile validation happens at execution.
+    pub assignee: Option<String>,
+    pub unassign: bool,
     pub global: bool,
     pub json: bool,
     pub state_dir: Option<PathBuf>,
@@ -620,6 +648,8 @@ pub fn parse_flag_add(args: &[String]) -> Result<FlagAdd, String> {
         notes: None,
         project: None,
         thread: None,
+        assignee: None,
+        unassign: false,
         global: false,
         json: false,
         state_dir: None,
@@ -682,6 +712,25 @@ pub fn parse_flag_add(args: &[String]) -> Result<FlagAdd, String> {
                 parsed.has_item_flags = true;
                 index += 2;
             }
+            flag if flag.starts_with("--assignee=") => {
+                parsed.assignee = Some(normalize_thread(&flag["--assignee=".len()..]).map_err(
+                    |error| format!("invalid agent name · {}", thread_refusal_message(error)),
+                )?);
+                parsed.has_item_flags = true;
+                index += 1;
+            }
+            "--assignee" => {
+                parsed.assignee = Some(normalize_thread(&value(flag)?).map_err(|error| {
+                    format!("invalid agent name · {}", thread_refusal_message(error))
+                })?);
+                parsed.has_item_flags = true;
+                index += 2;
+            }
+            "--unassign" => {
+                parsed.unassign = true;
+                parsed.has_item_flags = true;
+                index += 1;
+            }
             "--desk" => {
                 parsed.global = true;
                 parsed.has_item_flags = true;
@@ -717,6 +766,9 @@ pub fn parse_flag_add(args: &[String]) -> Result<FlagAdd, String> {
 
     if parsed.global && parsed.project.is_some() {
         return Err("--desk cannot be used with --project".into());
+    }
+    if parsed.unassign && parsed.assignee.is_some() {
+        return Err("--unassign cannot be used with --assignee".into());
     }
     if parsed.has_item_flags && parsed.file.is_some() {
         return Err("item flags cannot be used with --file".into());

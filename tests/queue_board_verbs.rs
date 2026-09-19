@@ -1,11 +1,14 @@
 //! Verb Surface reducers — primary verbs, done/reopen/block, drawer, Esc layers.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
+use tsk_tui::agents::AgentProfiles;
 use tsk_tui::context::InvocationSnapshot;
 use tsk_tui::domain::{DomainState, HumanStatus, ProvenanceOrigin, TaskEventKind, TaskScope};
 use tsk_tui::ui::board::{
@@ -78,6 +81,27 @@ fn select_done_task(domain: &mut DomainState, model: &mut BoardModel, id: uuid::
     apply_intent(domain, model, BoardIntent::SelectIndex(index), None).expect("select done");
 }
 
+fn set_agent_profiles(model: &mut BoardModel, names: &[&str]) {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-board-verbs-agents-{nanos}-{}",
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).expect("create profiles dir");
+    let content = names
+        .iter()
+        .map(|name| format!("[agent.{name}]\ncommand = [\"true\"]\n"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(dir.join("agents.toml"), content).expect("write profiles");
+    model.set_agent_profiles(&AgentProfiles::load(&dir).expect("load profiles"));
+    std::fs::remove_dir_all(dir).expect("remove profiles dir");
+}
+
 fn mark_tasks(domain: &mut DomainState, model: &mut BoardModel, ids: &[uuid::Uuid]) {
     if !model.mark_mode_active() {
         apply_intent(domain, model, BoardIntent::ToggleMarkMode, None).expect("enter mark mode");
@@ -91,6 +115,332 @@ fn mark_tasks(domain: &mut DomainState, model: &mut BoardModel, ids: &[uuid::Uui
         apply_intent(domain, model, BoardIntent::SelectIndex(index), None).expect("select task");
         apply_intent(domain, model, BoardIntent::MarkToggle, None).expect("mark task");
     }
+}
+
+#[test]
+fn palette_assignment_applies_to_marked_tasks_as_one_undoable_batch() {
+    let (mut domain, mut model, first) = board_with_task("first", HumanStatus::Started);
+    let second = domain
+        .create(
+            "second",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create second");
+    domain
+        .set_status(second, HumanStatus::Review)
+        .expect("set second status");
+    model.sync_from_domain(&domain);
+    set_agent_profiles(&mut model, &["reviewer"]);
+    mark_tasks(&mut domain, &mut model, &[first, second]);
+
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::BeginEditAssignee,
+        None,
+    )
+    .expect("open picker");
+    assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormAssigneeNext, None)
+        .expect("select reviewer");
+    assert!(board_intent_may_persist(&BoardIntent::ConfirmFormAssignee));
+    assert_eq!(
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmFormAssignee,
+            None,
+        )
+        .expect("assign"),
+        IntentOutcome::Persist
+    );
+    assert_eq!(
+        domain.get(first).expect("first").assignee.as_deref(),
+        Some("reviewer")
+    );
+    assert_eq!(
+        domain.get(second).expect("second").assignee.as_deref(),
+        Some("reviewer")
+    );
+    assert_eq!(
+        domain.get(first).expect("first").status,
+        HumanStatus::Started
+    );
+    assert_eq!(
+        domain.get(second).expect("second").status,
+        HumanStatus::Review
+    );
+    assert!(model.marked_ids().is_empty());
+
+    domain.undo().expect("one undo reverses batch");
+    assert_eq!(domain.get(first).expect("first").assignee, None);
+    assert_eq!(domain.get(second).expect("second").assignee, None);
+    assert_eq!(
+        domain.get(first).expect("first").status,
+        HumanStatus::Started
+    );
+    assert_eq!(
+        domain.get(second).expect("second").status,
+        HumanStatus::Review
+    );
+}
+
+#[test]
+fn task_page_assignee_save_persists_without_changing_human_status() {
+    let (mut domain, mut model, id) = board_with_task("started", HumanStatus::Started);
+    set_agent_profiles(&mut model, &["reviewer"]);
+
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::FocusFormField(CaptureField::Assignee),
+        None,
+    )
+    .expect("focus assignee");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormAssigneeNext, None)
+        .expect("pick reviewer");
+    assert_eq!(
+        apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None)
+            .expect("save task page"),
+        IntentOutcome::Persist
+    );
+
+    let task = domain.get(id).expect("started task");
+    assert_eq!(task.assignee.as_deref(), Some("reviewer"));
+    assert_eq!(task.status, HumanStatus::Started);
+}
+
+#[test]
+fn retargeted_task_page_keeps_all_assignee_options_and_the_saved_value() {
+    let (mut domain, mut model, first) = board_with_task("first", HumanStatus::Open);
+    let second = domain
+        .create(
+            "assigned second",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create second");
+    domain
+        .assign(second, Some("reviewer".into()))
+        .expect("seed assignee");
+    model.sync_from_domain(&domain);
+    set_agent_profiles(&mut model, &["implementer", "reviewer"]);
+
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+    assert_eq!(model.selected_id(), Some(first));
+    let second_index = model
+        .visible_ids()
+        .iter()
+        .position(|id| *id == second)
+        .expect("second visible");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::FocusBoardAndSelectIndex(second_index),
+        None,
+    )
+    .expect("retarget page");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::BeginEditAssignee,
+        None,
+    )
+    .expect("edit retargeted assignee");
+    for _ in 0..3 {
+        apply_intent(&mut domain, &mut model, BoardIntent::FormAssigneeNext, None)
+            .expect("cycle full assignee ring");
+    }
+    apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None)
+        .expect("save unchanged assignee");
+
+    assert_eq!(
+        domain.get(second).expect("second").assignee.as_deref(),
+        Some("reviewer"),
+        "the retargeted form must include unassigned and both configured profiles"
+    );
+}
+
+#[test]
+fn confirm_edit_clears_palette_targets_before_a_later_task_assignment() {
+    let (mut domain, mut model, first) = board_with_task("first", HumanStatus::Open);
+    let second = domain
+        .create(
+            "second",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create second");
+    model.sync_from_domain(&domain);
+    set_agent_profiles(&mut model, &["reviewer"]);
+    mark_tasks(&mut domain, &mut model, &[first, second]);
+
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::BeginEditAssignee,
+        None,
+    )
+    .expect("open marked assignment");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::FocusFormField(CaptureField::Title),
+        None,
+    )
+    .expect("leave assignee field");
+    apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None)
+        .expect("confirm through ordinary task save");
+    apply_intent(&mut domain, &mut model, BoardIntent::MarkClear, None).expect("clear old marks");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::FocusFormField(CaptureField::Assignee),
+        None,
+    )
+    .expect("focus first assignee");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormAssigneeNext, None)
+        .expect("pick reviewer");
+    assert_eq!(
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmFormAssignee,
+            None,
+        )
+        .expect("confirm assignee field"),
+        IntentOutcome::None
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).expect("save first");
+
+    assert_eq!(domain.get(first).expect("first").assignee, None);
+    assert_eq!(
+        domain.get(second).expect("second").assignee.as_deref(),
+        Some("reviewer")
+    );
+}
+
+#[test]
+fn selection_retarget_clears_palette_targets_before_assignee_confirmation() {
+    let (mut domain, mut model, first) = board_with_task("first", HumanStatus::Open);
+    let second = domain
+        .create(
+            "second",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create second");
+    let third = domain
+        .create(
+            "third",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create third");
+    model.sync_from_domain(&domain);
+    set_agent_profiles(&mut model, &["reviewer"]);
+    mark_tasks(&mut domain, &mut model, &[first, second]);
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::BeginEditAssignee,
+        None,
+    )
+    .expect("open marked assignment");
+
+    let third_index = model
+        .visible_ids()
+        .iter()
+        .position(|id| *id == third)
+        .expect("third visible");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::FocusBoardAndSelectIndex(third_index),
+        None,
+    )
+    .expect("retarget page to third");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormAssigneeNext, None)
+        .expect("pick reviewer");
+    assert_eq!(
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmFormAssignee,
+            None,
+        )
+        .expect("confirm assignee field"),
+        IntentOutcome::None
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).expect("save third");
+
+    assert_eq!(domain.get(first).expect("first").assignee, None);
+    assert_eq!(domain.get(second).expect("second").assignee, None);
+    assert_eq!(
+        domain.get(third).expect("third").assignee.as_deref(),
+        Some("reviewer")
+    );
+}
+
+#[test]
+fn canceling_palette_assignment_cannot_apply_its_old_marked_targets_later() {
+    let (mut domain, mut model, first) = board_with_task("first", HumanStatus::Open);
+    let second = domain
+        .create(
+            "second",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create second");
+    model.sync_from_domain(&domain);
+    set_agent_profiles(&mut model, &["reviewer"]);
+    mark_tasks(&mut domain, &mut model, &[first, second]);
+
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::BeginEditAssignee,
+        None,
+    )
+    .expect("open palette assignment");
+    apply_intent(&mut domain, &mut model, BoardIntent::CancelEdit, None)
+        .expect("cancel palette assignment");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::FocusFormField(CaptureField::Assignee),
+        None,
+    )
+    .expect("refocus task-page assignee");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormAssigneeNext, None)
+        .expect("select reviewer in the task form");
+
+    assert_eq!(
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmFormAssignee,
+            None,
+        )
+        .expect("confirm task-form field"),
+        IntentOutcome::None
+    );
+    assert_eq!(domain.get(first).expect("first").assignee, None);
+    assert_eq!(domain.get(second).expect("second").assignee, None);
 }
 
 #[test]
@@ -1262,6 +1612,7 @@ fn palette_lists_exactly_m1_commands_for_selection_filters_by_subsequence_and_di
         "set status: review",
         "edit notes",
         "change scope",
+        "set assignee",
         "new task",
         "delete",
         "undo",
@@ -2957,7 +3308,10 @@ fn task_edit_tab_cycles_every_step_between_notes_and_thread_then_scope() {
         .expect("Tab reaches Scope");
     assert_eq!(model.input_mode(), BoardInputMode::EditScope);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
-        .expect("Tab wraps Scope to Title");
+        .expect("Tab reaches Assignee after Scope");
+    assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("Tab wraps Assignee to Title");
     assert_eq!(model.input_mode(), BoardInputMode::EditTitle);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
         .expect("Tab advances Title to Notes");
@@ -3723,9 +4077,9 @@ fn first_step_up_deactivates_before_inactive_up_scrolls_then_down_reactivates() 
 
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditScope, None)
         .expect("enter Scope on the task edit traversal");
-    for _ in 0..3 {
+    for _ in 0..4 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
-            .expect("Tab completes Scope → Title → Notes → first step");
+            .expect("Tab completes Scope → Assignee → Title → Notes → first step");
     }
     let reactivated = rendered_board(&model, 80, 24);
     assert!(

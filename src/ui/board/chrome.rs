@@ -56,6 +56,11 @@ fn edit_chrome_legends(mode: BoardInputMode) -> [&'static str; 3] {
             "Space · Enter scopes · Esc",
             "Enter scopes · Esc",
         ],
+        BoardInputMode::EditAssignee => [
+            "Space / arrows cycle · Enter pick · Esc cancel",
+            "Space cycle · Enter pick · Esc",
+            "Enter pick · Esc",
+        ],
         BoardInputMode::SelectThread => [
             "Enter edit thread · Tab next · Esc cancel",
             "Enter edit · Tab next · Esc",

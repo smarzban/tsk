@@ -32,7 +32,7 @@ Use `--json` on `add` or `list` for machine-readable output. Read the [exit cont
 | `tsk add` | Add a task or JSON plan |
 | `tsk list` | Read tasks |
 | `tsk status` | Set task status |
-| `tsk edit` | Replace title or notes |
+| `tsk edit` | Replace title or notes; assign or unassign |
 | `tsk steps` | Add, toggle, rename, or remove steps |
 | `tsk archive` / `tsk unarchive` | Hide or restore a task |
 | `tsk project archive` / `tsk project unarchive` | Hide or restore a project |
@@ -81,7 +81,7 @@ For adds, a bare project name must match exactly one project the board already k
 ## add
 
 ```sh
-tsk add -t "Fix login timeout" -n "Reproduce on a slow connection" --thread auth
+tsk add -t "Fix login timeout" -n "Reproduce on a slow connection" --thread auth --assignee reviewer
 # new tasks start open; use `tsk status T<n> ready` when picked
 tsk add -t "Buy coffee" --desk
 tsk add -t "Draft release notes" -p atlas --json
@@ -93,15 +93,17 @@ tsk add -t "Draft release notes" -p atlas --json
 | `-n`, `--notes` | Optional notes |
 | `-p`, `--project` or `--desk` | Destination |
 | `--thread` | [Thread name](/docs/capture/#thread-names) |
+| `--assignee` | Exact configured agent profile name |
+| `--unassign` | Explicitly create without an assignee |
 | `--json` | One result object |
 | `--file <path>` or `--file -` | Read a JSON plan |
 | `--state-dir <dir>` | Alternate state directory |
 
-Duplicate detection compares the trimmed title, resolved project, and normalized thread. A matching non-deleted task succeeds without changing the task (`outcome: existing` in JSON), even if done or individually archived. Adding into an archived project refuses.
+Duplicate detection compares the trimmed title, resolved project, normalized thread, and assignee. A matching non-deleted task succeeds without changing the task (`outcome: existing` in JSON), even if done or individually archived. Adding into an archived project refuses.
 
 Plain output: `added <title>` or `task already exists`.
 
-JSON output: `outcome` (`created` or `existing`), `id`, `number`, `title`, and `project` (`null` for desk).
+JSON output: `outcome` (`created` or `existing`), `id`, `number`, `title`, `project` (`null` for desk), and `assignee` (`null` when unassigned).
 
 Values starting with `-` use equals syntax: `--title="-fix parser"`, `--notes="-5 degrees"`, `--project="-maintenance"`, `--file=...`, or `--state-dir=...`.
 
@@ -111,7 +113,7 @@ Blank notes are omitted. C0 control characters in titles are rejected before tri
 
 ```json
 [
-  {"title": "Reproduce login timeout", "project": "atlas", "thread": "auth"},
+  {"title": "Reproduce login timeout", "project": "atlas", "thread": "auth", "assignee": "reviewer"},
   {"title": "Draft release notes", "notes": "Include migration instructions"}
 ]
 ```
@@ -130,8 +132,10 @@ cat plan.json | tsk add
 | `project` string | Project name or path |
 | `thread` omitted or `null` | No thread |
 | `thread` string | Normalized thread |
+| `assignee` omitted or `null` | Unassigned |
+| `assignee` string | Exact configured agent profile name |
 
-Output contains `created`, `existing`, and `failed` arrays. Items carry their input index `i`; failures include `code` and `error`. Successful entries include task ID, number, and title. Notes are not echoed.
+Output contains `created`, `existing`, and `failed` arrays. Items carry their input index `i`; failures include `code` and `error`. Successful entries include task ID, number, and title. Notes and assignees are not echoed; read the task back when needed.
 
 Valid items persist even if another item fails. Retry only failed or confirmed-missing items.
 
@@ -143,7 +147,7 @@ Do not mix item flags with `--file`. Piped input is ignored when item flags are 
 tsk list
 tsk list T12
 tsk list --all --json
-tsk list -p atlas --thread auth
+tsk list -p atlas --thread auth --assignee reviewer
 tsk list --done --all
 tsk list --open --all
 tsk list --ready --all
@@ -152,7 +156,7 @@ tsk list --deleted --all
 ```
 
 ```text
-tsk list [<task>] [-p <project> | --desk | --all] [--thread <name>] [--open | --ready | --done | --deleted | --archived] [--json] [--state-dir <dir>]
+tsk list [<task>] [-p <project> | --desk | --all] [--thread <name>] [--assignee <name>] [--open | --ready | --done | --deleted | --archived] [--json] [--state-dir <dir>]
 ```
 
 | Filter | Result |
@@ -164,16 +168,17 @@ tsk list [<task>] [-p <project> | --desk | --all] [--thread <name>] [--open | --
 | `--archived` | Individually archived tasks and tasks in archived projects, across statuses |
 | `--deleted` | Live soft-deleted tasks and `trash.jsonl` entries, deduped by task with the live copy winning, newest deletion first. Trash is retained for 30 days, see [storage](/docs/storage/#deleted-tasks). |
 | `--thread` | Filter within the selected scope |
+| `--assignee` | Filter by exact normalized assignee name |
 
 Scope flags are mutually exclusive. So are `--open`, `--ready`, `--done`, `--deleted`, and `--archived`.
 
-A direct task address searches the main store, including done, archived, and recently deleted tasks. It cannot be combined with scope, thread, or status filters. A missing task exits 2. A task already moved to `trash.jsonl` is not addressable; find it with `tsk list --deleted` (optionally `-p`), or restore it with `tsk trash restore`.
+A direct task address searches the main store, including done, archived, and recently deleted tasks. It cannot be combined with scope, thread, assignee, or status filters. A missing task exits 2. A task already moved to `trash.jsonl` is not addressable; find it with `tsk list --deleted` (optionally `-p`), or restore it with `tsk trash restore`.
 
-Human output groups by status in `STARTED`, `READY`, `OPEN`, `BLOCKED`, `REVIEW` order; filtered rows include the task number and thread, and `--all` adds scope labels using a unique concise trailing path or desk. List output and errors wrap to the attached terminal width with hanging indentation. Task rows, scope labels, notes, steps, archived marks, and threads use the same wrapping behavior, supported from 50 columns. Redirected output keeps stored logical lines. Command help is reference text and instead always wraps at 80 columns.
+Human output groups by status in `STARTED`, `READY`, `OPEN`, `BLOCKED`, `REVIEW` order; filtered rows include the task number, assignee, and thread, and `--all` adds scope labels using a unique concise trailing path or desk. List output and errors wrap to the attached terminal width with hanging indentation. Task rows, scope labels, notes, steps, archived marks, and threads use the same wrapping behavior, supported from 50 columns. Redirected output keeps stored logical lines. Command help is reference text and instead always wraps at 80 columns.
 
-Single-task output removes the thread from the title row and presents notes, steps, then `#thread` as separate blocks. A blank line separates adjacent blocks that exist. Human step rows show state and text without machine-oriented short IDs.
+Single-task output removes metadata from the title row and presents notes, steps, `@assignee`, then `#thread` as separate blocks. A blank line separates adjacent blocks that exist. Human step rows show state and text without machine-oriented short IDs.
 
-JSON returns an array with `id`, `number`, `title`, `status`, `project`, and `thread`. Direct lookup returns the complete task, including `notes` (`null` when absent) and `steps` (an empty array when absent). Its fields are ordered `id`, `number`, `project`, `status`, `title`, `notes`, `steps`, `thread`; each JSON step retains its `short_id` for step commands. Archived listings include an `archived` mark: `archived` or `project archived`.
+JSON returns an array with `id`, `number`, `title`, `status`, `project`, `assignee`, and `thread`. Direct lookup returns the complete task, including `notes` (`null` when absent) and `steps` (an empty array when absent). Its fields are ordered `id`, `number`, `project`, `status`, `title`, `notes`, `steps`, `assignee`, `thread`; each JSON step retains its `short_id` for step commands. Archived listings include an `archived` mark: `archived` or `project archived`.
 
 ## status
 
@@ -195,9 +200,11 @@ Output: `status T12 <status> <title>`. The output uses `started`, even when the 
 ```sh
 tsk edit T12 --title "Fix timeout on slow connections"
 tsk edit T12 --notes "Reproduced with a delayed response"
+tsk edit T12 --assignee reviewer
+tsk edit T12 --unassign
 ```
 
-Requires `--title`, `--notes`, or both. Scope and thread stay unchanged.
+Requires `--title`, `--notes`, `--assignee`, `--unassign`, or a combination. `--assignee` and `--unassign` conflict. Scope and thread stay unchanged.
 
 Blank notes clear the field. Notes preserve newlines and tabs. Use `--title=...` or `--notes=...` for values starting with `-`.
 
@@ -343,22 +350,22 @@ For data commands:
 | --- | --- | --- |
 | `0` | Success, including an already-existing task or unchanged value | Continue |
 | `1` | Refusal; a plan may have saved other items | Correct refusals; retry only failed items |
-| `2` | Invalid arguments or input; nothing saved | Fix the invocation |
+| `2` | Invalid arguments, input, or assignee profile configuration; nothing saved | Fix the invocation or `agents.toml` |
 | `3` | Storage error; a write may have committed | Read back before retrying |
 
 After an uncertain add, inspect `tsk list --all --json`. Also check `--done` and `--archived` when a duplicate could be hidden there. If you know the task number, use direct lookup.
 
 | Command | Refusal codes |
 | --- | --- |
-| Add | `empty-title`, `invalid-title`, `invalid-thread`, `invalid-item`, `unknown-project`, `project-archived` |
+| Add | `empty-title`, `invalid-title`, `invalid-thread`, `invalid-item`, `unknown-project`, `unknown-agent`, `project-archived` |
+| Edit | `empty-title`, `invalid-title`, `unknown-task`, `soft-deleted-task`, `unknown-agent` |
 | Steps | `empty-step-text`, `invalid-step-text`, `unknown-task`, `soft-deleted-task`, `unknown-step`, `ambiguous-step` |
 | Status | `unknown-task`, `soft-deleted-task` |
-| Edit | `unknown-task`, `soft-deleted-task`, `empty-title`, `invalid-title` |
 | Archive / unarchive | `unknown-task`, `soft-deleted-task` |
 
 A refusal prints as `tsk <command>: <code>: <message>` on stderr, for example `tsk status: unknown-task: T99 is not on the board`. Branch on the code; the message is for people and may change.
 
-Invalid thread flags fail argument parsing with exit 2; an invalid thread in a JSON plan is an item refusal with exit 1. Unknown or archived project refusals save nothing for that item; other valid plan items can still save.
+Invalid thread flags fail argument parsing with exit 2; an invalid thread in a JSON plan is an item refusal with exit 1. When add or edit supplies an assignee, an invalid `agents.toml` also exits 2 without saving. Unknown agents and unknown or archived project refusals save nothing for that item; other valid plan items can still save.
 
 Human-readable output escapes stored terminal control characters. JSON retains the underlying text.
 

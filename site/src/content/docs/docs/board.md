@@ -46,7 +46,7 @@ The right preview names the selected project in its top row, in the space used b
 
 ## Search
 
-Press `/` on any board tab to search the rows that tab currently shows. On the Projects overview it matches project names or paths. On the desk, a project board, or a cross-project thread view it matches tasks by title, notes, step text, thread, or task number such as `T12`, case-insensitively. Every whitespace-separated word must match somewhere in the same task.
+Press `/` on any board tab to search the rows that tab currently shows. On the Projects overview it matches project names or paths. On the desk, a project board, or a cross-project thread view it matches tasks by title, notes, step text, thread, assignee, or task number such as `T12`, case-insensitively. Every whitespace-separated word must match somewhere in the same task.
 
 Typing or pasting filters immediately. Empty sections disappear and section counts show only matches. Search combines with a project thread filter; the done drawer is searched only while it is open. In the wide Projects preview, `/` searches the right project board when that seat has focus.
 
@@ -63,7 +63,11 @@ A thread groups related tasks within a project, such as `release` or `login-fix`
 
 Type to filter the choices. Use arrows or `Tab` to select, `Enter` to choose, and `Esc` to close. `j` and `k` are search text in these selectors.
 
-Assign threads when [capturing](/docs/capture/#title-tokens) or [editing a task](/docs/task-page/#scope-and-thread).
+Assign threads when [capturing](/docs/capture/#title-tokens) or [editing a task](/docs/task-page/#scope-thread-and-assignee).
+
+## Assignees
+
+An optional assignee links a task to the exact name of an agent profile in [`agents.toml`](/docs/storage/#agent-profiles). Assigned rows show `@name`. Use **set assignee** in the palette, then choose a profile or **unassigned**. With marked tasks, one choice updates the whole set and one `ctrl+u` reverses it.
 
 ## Status
 
@@ -182,7 +186,10 @@ Press `:` and type to find an action. Use arrows or `Tab` to select, `Enter` to 
 | --- | --- |
 | New task, undo, done drawer, help, quit | Always |
 | Set open/ready/started/blocked/review, edit notes, change scope, delete | A task is selected |
+| Set assignee | A task is selected |
 | Retry save, cancel save | A save has failed |
+
+**Set assignee** applies to the marked set when marks are present.
 
 Search matches letters in order: `ssr` finds `set status: review`.
 

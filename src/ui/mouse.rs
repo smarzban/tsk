@@ -346,6 +346,8 @@ fn form_verb_intent(model: &BoardModel, index: usize) -> Option<BoardIntent> {
         "shift+enter" => Some(BoardIntent::ConfirmEdit),
         "enter" if dropdown_open => Some(BoardIntent::ConfirmFormScopeDropdown),
         "enter" if focus == CaptureField::Scope => Some(BoardIntent::OpenFormScopeDropdown),
+        "space/←→" if focus == CaptureField::Assignee => Some(BoardIntent::FormAssigneeNext),
+        "enter" if focus == CaptureField::Assignee => Some(BoardIntent::ConfirmFormAssignee),
         // The Title bar paints `enter next`: the click must do what the key does.
         "enter" if focus == CaptureField::Title => Some(BoardIntent::FormFocusNext),
         "enter" => Some(BoardIntent::ConfirmEdit),
@@ -796,26 +798,30 @@ pub fn map_board_mouse(
             // triggering a second board action behind the capture surface.
             _ => Some(BoardIntent::CancelQuickAdd),
         },
-        BoardInputMode::EditTitle | BoardInputMode::EditNotes | BoardInputMode::EditScope => {
-            match hit_at(hits, pos) {
-                Some(QueueHitTarget::FormTitle) => {
-                    Some(BoardIntent::FocusFormField(CaptureField::Title))
-                }
-                Some(QueueHitTarget::FormNotes(_)) => {
-                    Some(BoardIntent::FocusFormField(CaptureField::Notes))
-                }
-                Some(QueueHitTarget::FormScope) => Some(BoardIntent::OpenFormScopeDropdown),
-                Some(QueueHitTarget::FormThread) => {
-                    Some(BoardIntent::FocusFormField(CaptureField::Thread))
-                }
-                Some(QueueHitTarget::Step(index)) if model.task_editing() => {
-                    Some(BoardIntent::SelectStep(index))
-                }
-                Some(QueueHitTarget::StepAdd) => Some(BoardIntent::BeginAddStep),
-                Some(QueueHitTarget::Verb(index)) => form_verb_intent(model, index),
-                _ => None,
+        BoardInputMode::EditTitle
+        | BoardInputMode::EditNotes
+        | BoardInputMode::EditScope
+        | BoardInputMode::EditAssignee => match hit_at(hits, pos) {
+            Some(QueueHitTarget::FormTitle) => {
+                Some(BoardIntent::FocusFormField(CaptureField::Title))
             }
-        }
+            Some(QueueHitTarget::FormNotes(_)) => {
+                Some(BoardIntent::FocusFormField(CaptureField::Notes))
+            }
+            Some(QueueHitTarget::FormScope) => Some(BoardIntent::OpenFormScopeDropdown),
+            Some(QueueHitTarget::FormAssignee) => {
+                Some(BoardIntent::FocusFormField(CaptureField::Assignee))
+            }
+            Some(QueueHitTarget::FormThread) => {
+                Some(BoardIntent::FocusFormField(CaptureField::Thread))
+            }
+            Some(QueueHitTarget::Step(index)) if model.task_editing() => {
+                Some(BoardIntent::SelectStep(index))
+            }
+            Some(QueueHitTarget::StepAdd) => Some(BoardIntent::BeginAddStep),
+            Some(QueueHitTarget::Verb(index)) => form_verb_intent(model, index),
+            _ => None,
+        },
         BoardInputMode::SelectThread | BoardInputMode::EditThread => match hit_at(hits, pos) {
             Some(QueueHitTarget::FormThread) => Some(BoardIntent::ToggleThreadEditing),
             Some(QueueHitTarget::FormTitle) => {
@@ -825,6 +831,9 @@ pub fn map_board_mouse(
                 Some(BoardIntent::FocusFormField(CaptureField::Notes))
             }
             Some(QueueHitTarget::FormScope) => Some(BoardIntent::OpenFormScopeDropdown),
+            Some(QueueHitTarget::FormAssignee) => {
+                Some(BoardIntent::FocusFormField(CaptureField::Assignee))
+            }
             Some(QueueHitTarget::Step(index)) if model.task_editing() => {
                 Some(BoardIntent::SelectStep(index))
             }
@@ -845,6 +854,9 @@ pub fn map_board_mouse(
             }
             Some(QueueHitTarget::FormScope) if model.task_editing() => {
                 Some(BoardIntent::OpenFormScopeDropdown)
+            }
+            Some(QueueHitTarget::FormAssignee) if model.task_editing() => {
+                Some(BoardIntent::FocusFormField(CaptureField::Assignee))
             }
             // Step clicks always select. In view mode this remains read-only; the reducer opens
             // the inline editor only when the task edit session is already active.
@@ -872,6 +884,9 @@ pub fn map_board_mouse(
                 Some(BoardIntent::FocusFormField(CaptureField::Thread))
             }
             Some(QueueHitTarget::FormScope) => Some(BoardIntent::OpenFormScopeDropdown),
+            Some(QueueHitTarget::FormAssignee) => {
+                Some(BoardIntent::FocusFormField(CaptureField::Assignee))
+            }
             Some(QueueHitTarget::Step(index)) => Some(BoardIntent::SelectStep(index)),
             Some(QueueHitTarget::StepAdd) => Some(BoardIntent::BeginAddStep),
             Some(QueueHitTarget::Verb(index)) => verb_intent(model, index),

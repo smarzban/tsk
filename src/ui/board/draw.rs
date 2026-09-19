@@ -606,6 +606,19 @@ fn build_task_page_overlay<'a>(
     let mut meta = String::new();
     let mut thread_slot = None;
     let capture_form = !form.is_task();
+    let shown_assignee = if capture_form || (form.is_task() && form.editing) {
+        form.assignee.as_deref()
+    } else {
+        bound_task.and_then(|task| task.assignee.as_deref())
+    };
+    if let Some(assignee) = shown_assignee {
+        meta.push_str(&format!("@{}", terminal_text(assignee)));
+    } else if capture_form || (form.is_task() && form.editing) {
+        meta.push_str("assignee");
+    }
+    if !meta.is_empty() {
+        thread_slot = Some(meta.clone());
+    }
     let shown_thread = if capture_form || (form.is_task() && form.editing) {
         Some(form.thread.value())
     } else {
@@ -633,8 +646,14 @@ fn build_task_page_overlay<'a>(
             None
         };
         if let Some(slot) = &thread_slot {
-            meta.push_str(slot);
+            if !meta.is_empty() && meta != *slot {
+                meta.push_str(" · ");
+            }
+            if meta != *slot {
+                meta.push_str(slot);
+            }
         }
+        thread_slot = (!meta.is_empty()).then(|| meta.clone());
     }
     let meta_scope_x = u16::try_from(render::display_width(&meta)).unwrap_or(u16::MAX);
     if !meta_scope.is_empty() {
@@ -667,6 +686,7 @@ fn build_task_page_overlay<'a>(
         BoardInputMode::EditNotes => Some(CaptureField::Notes),
         BoardInputMode::SelectThread | BoardInputMode::EditThread => Some(CaptureField::Thread),
         BoardInputMode::EditScope | BoardInputMode::FormScopeDropdown => Some(CaptureField::Scope),
+        BoardInputMode::EditAssignee => Some(CaptureField::Assignee),
         _ => None,
     };
 
@@ -978,7 +998,7 @@ impl<'a> OverlayPayloads<'a> {
                 input: crate::ui::render::BottomInputSlot {
                     text: title,
                     cursor_col: u16::try_from(cursor_column).unwrap_or(u16::MAX),
-                    placeholder: "title…   !p = desk · !p name = project · !t name = thread",
+                    placeholder: "title…   !p project · !t thread · !a assignee",
                     refusal: None,
                     // Save recovery owns the verb row; ordinary quick-add refusals
                     // use the shared slot's reserved row above the cursor. A wrapped
@@ -1336,6 +1356,7 @@ fn draw_wide_board(
                     &model.tasks,
                     CaptureField::Title,
                     &model.archived_projects,
+                    &model.agent_names,
                 )
             })
         })

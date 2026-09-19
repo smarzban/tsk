@@ -1,0 +1,70 @@
+{
+  "format_version": 6,
+  "next_task_number": 8,
+  "next_notice_number": 1,
+  "tasks": [
+    {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "number": 7,
+      "revision": "22222222-2222-4222-8222-222222222222",
+      "title": "Pinned wire task",
+      "notes": "Line one\nLine two",
+      "thread": "release-2026",
+      "status": "done",
+      "scope": {
+        "project": {
+          "path": "/tmp/example-project"
+        }
+      },
+      "provenance": "selection",
+      "history": [
+        {
+          "kind": "created",
+          "at": [
+            1700000000,
+            123456789
+          ]
+        },
+        {
+          "kind": "step_added",
+          "at": [
+            1700000050,
+            456789123
+          ]
+        },
+        {
+          "kind": "completed",
+          "at": [
+            1700000100,
+            987654321
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "id": "33333333-3333-4333-8333-333333333333",
+          "text": "Pinned step",
+          "done": true
+        }
+      ],
+      "soft_deleted": false,
+      "created_at": [
+        1700000000,
+        123456789
+      ],
+      "updated_at": [
+        1700000100,
+        987654321
+      ]
+    }
+  ],
+  "projects": {},
+  "undo_stack": [
+    {
+      "complete": {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "expected_revision": "22222222-2222-4222-8222-222222222222"
+      }
+    }
+  ]
+}

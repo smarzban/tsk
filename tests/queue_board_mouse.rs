@@ -805,7 +805,7 @@ fn click_and_wheel_match_keyboard_effects_for_each_control() {
 /// this rewrite (its `CaptureLayout`/`map_capture_mouse` route is separate from the board's
 /// hit-map, per the task's implementation boundary).
 #[test]
-fn footer_thread_precedes_scope_and_each_control_focuses_its_field() {
+fn footer_assignee_then_thread_then_scope_each_focuses_its_field() {
     let scope_path = "/repos/foo · thread";
     let mut domain = DomainState::new();
     domain
@@ -827,6 +827,11 @@ fn footer_thread_precedes_scope_and_each_control_focuses_its_field() {
         .iter()
         .find(|hit| hit.target == QueueHitTarget::FormScope)
         .expect("scope hit");
+    let assignee_hit = hits
+        .regions
+        .iter()
+        .find(|hit| hit.target == QueueHitTarget::FormAssignee)
+        .expect("empty assignee target");
     let thread_hit = hits
         .regions
         .iter()
@@ -838,17 +843,49 @@ fn footer_thread_precedes_scope_and_each_control_focuses_its_field() {
         "the entire project basename remains the scope target, excluding number chrome"
     );
     assert_eq!(
-        thread_hit.area.x, 2,
-        "the leading thread target starts at the footer inset"
+        assignee_hit.area.x, 2,
+        "the leading assignee target starts at the footer inset"
+    );
+    assert_eq!(
+        thread_hit.area.x,
+        2 + assignee_hit.area.width + 3,
+        "thread follows assignee and its separator"
     );
     assert_eq!(
         scope_hit.area.x,
-        2 + thread_hit.area.width + 3,
+        thread_hit.area.x + thread_hit.area.width + 3,
         "scope follows the thread and its separator"
     );
     assert_eq!(
         scope_hit.area.width, expected_scope_width,
         "the entire project basename remains the scope target"
+    );
+
+    let assignee = click(assignee_hit, &model, &hits).expect("assignee click intent");
+    assert_eq!(
+        assignee,
+        BoardIntent::FocusFormField(CaptureField::Assignee)
+    );
+    apply_intent(&mut domain, &mut model, assignee, None).expect("focus assignee");
+    assert_eq!(model.form_focus(), Some(CaptureField::Assignee));
+
+    let assignee_hits = board_hit_map(STANDARD, &model);
+    let assignee_verb = |index| {
+        assignee_hits
+            .regions
+            .iter()
+            .find(|hit| hit.target == QueueHitTarget::Verb(index))
+            .unwrap_or_else(|| panic!("missing assignee verb {index}"))
+    };
+    assert_eq!(
+        click(assignee_verb(0), &model, &assignee_hits),
+        Some(BoardIntent::FormAssigneeNext),
+        "the assignee cycle verb must follow the keyboard cycle route"
+    );
+    assert_eq!(
+        click(assignee_verb(1), &model, &assignee_hits),
+        Some(BoardIntent::ConfirmFormAssignee),
+        "the assignee pick verb must consume any marked-set assignment"
     );
 
     let thread = click(thread_hit, &model, &hits).expect("thread click intent");
@@ -1342,7 +1379,7 @@ fn the_modal_cards_close_control_and_chrome_behave_the_same_on_palette_help_and_
 }
 
 /// R-2: the standard-tier command surface windows to 6
-/// rows at 80x24 while 13 commands exist, and the painted `▲▼` marker is inert
+/// rows at 80x24 while 14 commands exist, and the painted `▲▼` marker is inert
 /// `CommandChrome`, so a mouse-only user could not reach the 7 commands outside the
 /// initial window (`quit`, the last one, among them). The wheel now moves the command
 /// selection the same `CommandNext`/`CommandPrev` the keyboard's `j`/`k` dispatch, which
@@ -1364,7 +1401,7 @@ fn wheel_scrolls_the_open_command_surface_so_every_command_becomes_reachable() {
     let commands = model.visible_commands();
     assert_eq!(
         commands.len(),
-        13,
+        14,
         "this ready fixture must expose every palette command a ready selection has: {commands:?}"
     );
     let last = commands.len() - 1;

@@ -1,6 +1,6 @@
 ---
 title: Task page
-description: Read and edit a task's title, notes, project, and thread.
+description: Read and edit a task's title, notes, project, thread, and assignee.
 ---
 
 Read notes and steps, then edit the task when you need to change it.
@@ -11,7 +11,7 @@ Double-click a task or select it and press `Enter`. A double-click follows the t
 
 At 110 usable columns or wider, click a task or press `→` to open details beside the board, keeping board focus. Use `→` and `←` to move between [board and task views](/docs/board/#wide-stage-slider). From the board-focused split, `Esc` closes the details column, keeping any parked draft. Press `Enter` from the board for full screen; `Esc` or click **esc close** returns. In view mode, `ctrl+q` quits the whole board rather than closing the page; save or cancel unsaved edits first.
 
-Click the task's `T` number to copy it. The page shows its status, notes, steps, project, thread, and dates. Its footer puts `#thread` before the project, then the created and updated dates. Long text wraps.
+Click the task's `T` number to copy it. The page shows its status, notes, steps, assignee, project, thread, and dates. Its footer puts `@assignee` before `#thread`, then the project and created and updated dates. Long text wraps.
 
 ## Edit
 
@@ -25,20 +25,21 @@ The page opens in view mode.
 | Save the task edit | `Shift+Enter` |
 | Cancel the current field | `Esc` or `ctrl+c` |
 
-Clicking Title, Notes, Scope, or Thread does not start an edit from view mode. Start editing first; then click the field you want.
+Clicking Title, Notes, Scope, Assignee, or Thread does not start an edit from view mode. Start editing first; then click the field you want.
 
 In view mode, `Tab` selects steps and **+ step**. It does not cycle task fields. Status shortcuts remain available on the task page; use `ctrl+e`, then `Tab` to reach Notes.
 
-During task editing, the forward order is Title → Notes → steps → **+ step** → Thread → Scope → Title. `Shift+Tab` reverses the ring. A field click moves the cursor and retains staged changes.
+During task editing, the forward order is Title → Notes → steps → **+ step** → Thread → Scope → Assignee → Title. `Shift+Tab` reverses the ring. A field click moves the cursor and retains staged changes.
 
-## Scope and thread
+## Scope, thread, and assignee
 
-**Scope** is the task's project or desk. **Thread** groups related work within a project.
+**Scope** is the task's project or desk. **Thread** groups related work within a project. **Assignee** optionally names one configured agent profile.
 
 | Field | Change it |
 | --- | --- |
 | Scope | Select it while editing, press `Enter`, choose a destination, then `Enter` again |
 | Thread | Select it, then press `Enter` or click again to edit its name |
+| Assignee | Select it, then use `Space` or arrows to cycle through exact profile names and **unassigned**; `Enter` confirms |
 
 Scope also supports cycling with `Space`, `←`, or `→`. Archived projects are not offered.
 
@@ -46,7 +47,7 @@ Thread is optional and follows the [thread name rules](/docs/capture/#thread-nam
 
 ## Save
 
-`Shift+Enter` saves the task's title, notes, scope, thread, and staged changes to existing steps.
+`Shift+Enter` saves the task's title, notes, scope, thread, assignee, and staged changes to existing steps.
 
 | While editing | `Enter` does this |
 | --- | --- |

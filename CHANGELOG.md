@@ -9,8 +9,13 @@ the GitHub release notes verbatim.
 
 ## Unreleased
 
+### Breaking
+
+- Store format 6 adds optional task assignees. Rolling back refuses the file; restore `tsk.json.v5`.
+
 ### Added
 
+- Tasks can be assigned to exact configured agent profiles from quick-add (`!a`), the task page, the palette (including marked sets), or CLI add/edit flags. Board and CLI output show assignees, and `tsk list --assignee` filters them.
 - Agent launch profiles can be defined in `<state dir>/agents.toml` with a command template, an always-appended default or custom prompt, and environment values; the first full board open seeds a commented starter file when none exists.
 
 ### Changed
@@ -25,6 +30,9 @@ the GitHub release notes verbatim.
 
 ### Fixed
 
+- A malformed `agents.toml` no longer blocks the board or CLI add/edit operations that do not assign a task; assignment reports the configuration error without saving.
+- Assignee choices remain available after task-page selection changes and in the wide projects preview; mouse picking follows the same marked-set route as the keyboard, and stale marked targets cannot affect a later task.
+- Assigned tasks show their metadata once when the board peek is open.
 - Docs: the palette table no longer lists a `Set done` action (use `ctrl+d`); the step editor's task shortcuts are `ctrl+d` and `ctrl+o` (`ctrl+x` removes the step); `ctrl+r` works from any non-done status; a trashed task is found with `tsk list --deleted`, not a task address.
 
 ## v0.10.1

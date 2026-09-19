@@ -459,7 +459,10 @@ fn task_form_unifies_palette_field_routes_scope_dropdown_and_atomic_save() {
     assert_eq!(model.form_scope(), Some(&TaskScope::Global));
 
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
-        .expect("Scope wraps to Title");
+        .expect("Scope advances to Assignee");
+    assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("Assignee wraps to Title");
     assert_eq!(model.input_mode(), BoardInputMode::EditTitle);
     let outcome = apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None)
         .expect("one atomic form save");
@@ -691,11 +694,17 @@ fn task_page_form_tab_cycle_wraps_through_title() {
         .expect("Thread to Scope");
     assert_eq!(model.input_mode(), BoardInputMode::EditScope);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
-        .expect("Scope to Title");
+        .expect("Scope to Assignee");
+    assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("Assignee to Title");
     assert_eq!(model.input_mode(), BoardInputMode::EditTitle);
 
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
-        .expect("Title reverses to Scope");
+        .expect("Title reverses to Assignee");
+    assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
+        .expect("Assignee reverses to Scope");
     assert_eq!(model.input_mode(), BoardInputMode::EditScope);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
         .expect("Scope reverses to Thread");

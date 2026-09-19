@@ -4,11 +4,14 @@ use std::cell::RefCell;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::{CrosstermBackend, TestBackend};
 use ratatui::layout::Rect;
 use ratatui::{Terminal, TerminalOptions, Viewport};
+use tsk_tui::agents::AgentProfiles;
 use tsk_tui::app::{apply_board_intent_with_save_recovery, BoardSaveContext};
 use tsk_tui::context::InvocationSnapshot;
 use tsk_tui::domain::{DomainState, ProvenanceOrigin, TaskEventKind, TaskScope};
@@ -50,6 +53,28 @@ fn type_title(domain: &mut DomainState, model: &mut BoardModel, title: &str) {
     for character in title.chars() {
         apply(domain, model, BoardIntent::QuickAddInsert(character), None);
     }
+}
+
+fn set_agent_profiles(model: &mut BoardModel, names: &[&str]) {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-quick-add-agents-{nanos}-{}",
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).expect("create agents dir");
+    let content = names
+        .iter()
+        .map(|name| format!("[agent.{name}]\ncommand = [\"true\"]\n"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(dir.join("agents.toml"), content).expect("write profiles");
+    let profiles = AgentProfiles::load(&dir).expect("load profiles");
+    model.set_agent_profiles(&profiles);
+    std::fs::remove_dir_all(dir).expect("remove agents dir");
 }
 
 #[test]
@@ -743,6 +768,8 @@ fn expanded_page_stashes_notes_and_scope_across_esc_and_saves_like_quick_add() {
     assert_eq!(model.input_mode(), BoardInputMode::EditScope);
     assert_eq!(model.form_scope(), Some(&TaskScope::Global));
     apply(&mut domain, &mut model, BoardIntent::FormFocusNext, None);
+    assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
+    apply(&mut domain, &mut model, BoardIntent::FormFocusNext, None);
     assert_eq!(model.input_mode(), BoardInputMode::EditTitle);
     apply(&mut domain, &mut model, BoardIntent::FormFocusNext, None);
     assert_eq!(model.input_mode(), BoardInputMode::EditNotes);
@@ -874,6 +901,66 @@ fn malformed_t_token_refuses_on_open_line_and_clears_on_close() {
     apply(&mut domain, &mut model, BoardIntent::CancelQuickAdd, None);
     assert_eq!(model.input_mode(), BoardInputMode::Normal);
     assert_eq!(model.message(), None);
+}
+
+#[test]
+fn quick_add_assignee_token_requires_an_exact_profile_and_saves_the_assignee() {
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from("/repos/invocation")));
+    set_agent_profiles(&mut model, &["reviewer", "researcher"]);
+    let snap = snapshot();
+
+    open(&mut domain, &mut model, &snap);
+    type_title(&mut domain, &mut model, "inspect change !a Reviewer");
+    assert_eq!(
+        apply(&mut domain, &mut model, BoardIntent::QuickAddSave, None),
+        IntentOutcome::Persist
+    );
+    assert_eq!(domain.tasks()[0].title, "inspect change");
+    assert_eq!(domain.tasks()[0].assignee.as_deref(), Some("reviewer"));
+}
+
+#[test]
+fn unknown_quick_add_assignee_keeps_the_draft_open() {
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from("/repos/invocation")));
+    set_agent_profiles(&mut model, &["reviewer"]);
+    let snap = snapshot();
+
+    open(&mut domain, &mut model, &snap);
+    type_title(&mut domain, &mut model, "inspect change !a missing");
+    assert_eq!(
+        apply(&mut domain, &mut model, BoardIntent::QuickAddSave, None),
+        IntentOutcome::None
+    );
+    assert!(domain.tasks().is_empty());
+    assert_eq!(model.input_mode(), BoardInputMode::QuickAdd);
+    assert_eq!(model.quick_add_title_value(), "inspect change !a missing");
+}
+
+#[test]
+fn bare_quick_add_assignee_token_explicitly_clears_a_stashed_assignment() {
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from("/repos/invocation")));
+    set_agent_profiles(&mut model, &["reviewer"]);
+    let snap = snapshot();
+
+    open(&mut domain, &mut model, &snap);
+    type_title(&mut domain, &mut model, "first !a reviewer");
+    apply(&mut domain, &mut model, BoardIntent::ExpandQuickAdd, None);
+    apply(&mut domain, &mut model, BoardIntent::CancelEdit, None);
+    assert_eq!(model.input_mode(), BoardInputMode::QuickAdd);
+    apply(
+        &mut domain,
+        &mut model,
+        BoardIntent::QuickAddInsertText(" !a".into()),
+        None,
+    );
+    assert_eq!(
+        apply(&mut domain, &mut model, BoardIntent::QuickAddSave, None),
+        IntentOutcome::Persist
+    );
+    assert_eq!(domain.tasks()[0].assignee, None);
 }
 
 #[test]
@@ -1141,7 +1228,7 @@ fn capture_bar_renders_spaced_three_row_block_and_stays_bounded_without_color_sg
     let standard = render_text(&model, 80, 24);
     for text in [
         "visible task",
-        "title…   !p = desk · !p name = project · !t name = thread",
+        "title…   !p project · !t thread · !a assignee",
         "add to invocation",
         "enter save · tab details · esc close",
     ] {

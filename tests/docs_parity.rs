@@ -56,7 +56,9 @@ fn promised_labels(cell: &str) -> Vec<String> {
     let mut labels = Vec::new();
     for part in cell.split(',') {
         let part = part.trim().to_lowercase();
-        if let Some(rest) = part.strip_prefix("set ") {
+        if part == "set assignee" {
+            labels.push(part);
+        } else if let Some(rest) = part.strip_prefix("set ") {
             // "Set open/ready/started/blocked/review" is five status commands.
             for status in rest.split('/') {
                 labels.push(format!("set status: {}", status.trim()));

@@ -925,6 +925,7 @@ mod tests {
             title: format!("task-{id}"),
             notes: None,
             thread: thread.map(str::to_string),
+            assignee: None,
             status,
             scope,
             provenance: ProvenanceOrigin::Manual,

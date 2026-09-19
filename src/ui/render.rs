@@ -668,6 +668,8 @@ pub enum QueueHitTarget {
     FormNotes(usize),
     /// Shared-form scope row. A click opens the pending scope dropdown, never cycles scope.
     FormScope,
+    /// Shared-form assignee portion of the task-page footer.
+    FormAssignee,
     /// Shared-form thread portion of the task-page footer.
     FormThread,
     /// One painted steps step row on the open task page, indexed by the step's
@@ -1610,6 +1612,20 @@ const FORM_SCOPE_VERBS: &[VerbEntry<'static>] = &[
         label: "cancel",
     },
 ];
+const FORM_ASSIGNEE_VERBS: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "space/←→",
+        label: "cycle",
+    },
+    VerbEntry {
+        key: "enter",
+        label: "pick",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "cancel",
+    },
+];
 const FORM_SCOPE_DROPDOWN_VERBS: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "↑↓",
@@ -1637,6 +1653,7 @@ pub(crate) fn form_verb_items(
         CaptureField::Notes => FORM_NOTES_VERBS,
         CaptureField::Thread => FORM_THREAD_VERBS,
         CaptureField::Scope => FORM_SCOPE_VERBS,
+        CaptureField::Assignee => FORM_ASSIGNEE_VERBS,
     }
 }
 
@@ -3174,6 +3191,28 @@ fn paint_task_page(
         );
 
         let thread_x = 2u16;
+        let mut component_x = thread_x;
+        let mut assignee_slot = None;
+        let mut thread_slot = None;
+        for component in meta.split(" · ") {
+            if component_x.saturating_sub(thread_x) >= meta_scope_x {
+                break;
+            }
+            let component_width = u16::try_from(display_width(component)).unwrap_or(u16::MAX);
+            if component == "assignee" || component.starts_with('@') {
+                assignee_slot = Some((component_x, component_width));
+            } else if component == "thread" || component.starts_with('#') {
+                thread_slot = Some((component_x, component_width));
+            }
+            component_x = component_x
+                .saturating_add(component_width)
+                .saturating_add(3);
+        }
+        // Hand-built renderer fixtures predating the assignee field carry only the old
+        // aggregate thread width. Keep that seam working when no component can be identified.
+        if thread_slot.is_none() {
+            thread_slot = thread_slot_width.map(|slot_width| (thread_x, slot_width));
+        }
         let scope_slot: String = meta.chars().skip(usize::from(meta_scope_x)).collect();
         // The separator stays footer chrome. Scope begins after it, while a leading Thread
         // slot starts at the footer inset and has no separator to exclude.
@@ -3184,9 +3223,8 @@ fn paint_task_page(
             .min(width);
         let selected = match focus {
             Some(CaptureField::Scope) => Some((scope_x, meta_scope_width)),
-            Some(CaptureField::Thread) => {
-                thread_slot_width.map(|slot_width| (thread_x, slot_width))
-            }
+            Some(CaptureField::Thread) => thread_slot,
+            Some(CaptureField::Assignee) => assignee_slot,
             _ => None,
         };
         if let Some((selected_x, selected_width)) = selected {
@@ -3212,11 +3250,26 @@ fn paint_task_page(
                 1,
             ),
         );
-        if let Some(thread_slot_width) = thread_slot_width.filter(|_| thread_x < width) {
-            let thread_width = thread_slot_width.min(width.saturating_sub(thread_x));
+        if let Some((assignee_x, assignee_width)) = assignee_slot.filter(|(x, _)| *x < width) {
+            hits.push(
+                QueueHitTarget::FormAssignee,
+                Rect::new(
+                    assignee_x,
+                    y,
+                    assignee_width.min(width.saturating_sub(assignee_x)),
+                    1,
+                ),
+            );
+        }
+        if let Some((thread_x, thread_width)) = thread_slot.filter(|(x, _)| *x < width) {
             hits.push(
                 QueueHitTarget::FormThread,
-                Rect::new(thread_x, y, thread_width, 1),
+                Rect::new(
+                    thread_x,
+                    y,
+                    thread_width.min(width.saturating_sub(thread_x)),
+                    1,
+                ),
             );
         }
     }
@@ -3858,14 +3911,31 @@ fn build_list_rows(
                 content_width: painted.content_width,
             });
         }
+        // Assignment is actionable row metadata, not hidden task-page detail. Keep the
+        // established project · @assignee · #thread order and wrap rather than truncate.
+        if task.assignee.is_some() && !meta.is_empty() {
+            let room = geo.row_width.saturating_sub(7).max(1) as usize;
+            for row in crate::ui::edit::wrap_text(&meta, room) {
+                let text = format!("       {}", row.text);
+                out.push(ListRow::Task {
+                    id: task.id,
+                    line: Line::from(Span::styled(text, style_dim())),
+                    identifier: None,
+                    content_x: 7,
+                    content_width: display_width(&row.text) as u16,
+                });
+            }
+        }
         if selected {
-            // Selection follow anchors the whole block, so a two-line selection
-            // never leaves its tail below the fold.
+            // Selection follow anchors the whole block, so wrapped title and metadata lines
+            // never leave the selected task's tail below the fold.
             *selected_idx = Some(out.len() - 1);
         }
         if detail_target == Some(task.id) {
             let mut details = detail_lines_for_task(task, geo.row_width);
-            if !meta.is_empty() {
+            // An unassigned task's meta row repaints the closing corner below; an assigned
+            // task already showed its meta on the row, so the corner stays here.
+            if task.assignee.is_none() && !meta.is_empty() {
                 details.pop();
             }
             for (line, content_x, content_width) in details {
@@ -3877,7 +3947,7 @@ fn build_list_rows(
             }
             *anchor_last_idx = Some(out.len() - 1);
         }
-        if detail_target == Some(task.id) && !meta.is_empty() {
+        if detail_target == Some(task.id) && task.assignee.is_none() && !meta.is_empty() {
             let room = geo.row_width.saturating_sub(9).max(1) as usize;
             for (index, row) in crate::ui::edit::wrap_text(&meta, room)
                 .into_iter()
@@ -4879,18 +4949,23 @@ fn row_meta(
     } else {
         None
     };
+    let assignee = task.assignee.as_deref().map(|name| format!("@{name}"));
     let thread = if thread_label {
         task.thread.as_deref().map(|name| format!("#{name}"))
     } else {
         None
     };
-    fit_row_meta(project, thread)
+    fit_row_meta(project, assignee, thread)
 }
 
 /// Keep the genuine project/thread attribution intact. Relative ages belong to task-page
 /// information, not task rows, so metadata has no fixed age reserve or artificial cap.
-fn fit_row_meta(project: Option<String>, thread: Option<String>) -> String {
-    [project, thread]
+fn fit_row_meta(
+    project: Option<String>,
+    assignee: Option<String>,
+    thread: Option<String>,
+) -> String {
+    [project, assignee, thread]
         .into_iter()
         .flatten()
         .filter(|value| !value.is_empty())

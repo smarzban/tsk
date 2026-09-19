@@ -159,14 +159,21 @@ fn run_edit(args: Vec<String>) -> CliOutput {
     let Some(task) = input.task else {
         return presenter::edit_usage("task number is required");
     };
-    if input.title.is_none() && input.notes.is_none() {
-        return presenter::edit_usage("title or notes is required");
+    if input.title.is_none() && input.notes.is_none() && input.assignee.is_none() && !input.unassign
+    {
+        return presenter::edit_usage("title, notes, assignee, or --unassign is required");
     }
+    let assignee = if input.unassign {
+        Some(None)
+    } else {
+        input.assignee.map(Some)
+    };
     match edit::run(
         task,
         edit::EditFields {
             title: input.title,
             notes: input.notes,
+            assignee,
         },
         input.state_dir,
     ) {

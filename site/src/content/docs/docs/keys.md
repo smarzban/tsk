@@ -84,6 +84,7 @@ Click a step to select it. Click **+ step** to add. Field clicks become editable
 | Stage selected-step removal | `ctrl+x` in task edit |
 | Open Scope picker / confirm selection | `Enter` |
 | Cycle Scope | `Space` or `←` / `→` |
+| Cycle Assignee / confirm | `Space` or `←` / `→`; `Enter` |
 | Open / close selected Thread editor | `Enter` |
 | Line start / end | `Home` / `End` |
 | Word left / right | `ctrl+←` / `ctrl+→` |
@@ -114,7 +115,7 @@ In Herdr quick capture, `Shift+Enter` saves and closes the popup. `Esc` closes a
 | Archived project view | `ctrl+u` restores; `Esc`, `p`, or `1`–`3` leaves |
 | Thread/view selector | Type or paste to filter; arrows or `Tab` select; `Enter` chooses; `Esc` closes |
 | Board search | Type or paste; `Backspace` edits; `Enter` pins; `Esc` clears and closes |
-| Palette | Type to filter; arrows or `Tab` select; `Enter` runs; `Esc` closes |
+| Palette | Type to filter; arrows or `Tab` select; `Enter` runs; `Esc` closes. **set assignee** offers exact agent profiles and **unassigned** |
 | Help | Type or paste to filter by key or action; arrows, page keys, or wheel scroll; `Esc` clears the search, then closes |
 | Archived-project launch prompt | `y` restores; `n` or `Esc` keeps archived; `?` opens Help |
 | Failed save | `r` or `Enter` retries; `c` or `Esc` cancels |

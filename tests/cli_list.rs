@@ -140,6 +140,64 @@ fn create_task_with_thread(
 }
 
 #[test]
+fn list_filters_by_assignee_and_json_includes_nullable_assignee() {
+    let _env = env_lock();
+    let dir = temp_state_dir("assignee");
+    let mut state = DomainState::new();
+    let assigned = state
+        .create(
+            "assigned",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create assigned");
+    state
+        .assign(assigned, Some("reviewer".into()))
+        .expect("assign");
+    state
+        .create(
+            "unassigned",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create unassigned");
+    TaskStore::new(&dir).save(&state).expect("save");
+
+    let filtered = list(&[
+        "tsk".into(),
+        "list".into(),
+        "--state-dir".into(),
+        state_dir_arg(&dir),
+        "--all".into(),
+        "--assignee".into(),
+        "reviewer".into(),
+    ]);
+    assert_eq!(filtered.code, 0, "{}", filtered.stderr);
+    assert!(filtered.stdout.contains("assigned"));
+    assert!(!filtered.stdout.contains("T2"), "{}", filtered.stdout);
+
+    let json = list(&[
+        "tsk".into(),
+        "list".into(),
+        "--state-dir".into(),
+        state_dir_arg(&dir),
+        "--all".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(json.code, 0, "{}", json.stderr);
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&json.stdout).expect("json rows");
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().any(|row| row["assignee"] == "reviewer"));
+    assert!(rows.iter().any(|row| row["assignee"].is_null()));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn list_defaults_to_invocation_project_open_tasks_in_human_and_json_group_order() {
     let _env = env_lock();
     let repo = project_repo("default-repo");
@@ -563,7 +621,7 @@ fn list_all_groups_each_status_by_concise_scope_for_every_filter() {
                 .keys()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
-            vec!["id", "number", "project", "status", "thread", "title"]
+            vec!["assignee", "id", "number", "project", "status", "thread", "title"]
         );
     }
     let done_human = list(&[
@@ -1432,6 +1490,7 @@ fn list_equals_project_form_accepts_dash_leading_scope() {
             "title": "maintenance task",
             "status": "ready",
             "project": "-maintenance",
+            "assignee": null,
             "thread": null,
         })]
     );
@@ -1609,7 +1668,7 @@ fn list_task_prints_step_lines_with_state_and_short_id() {
     ]);
     assert_eq!(json.code, 0);
     let expected_json = format!(
-        "[{{\"id\":\"{}\",\"number\":1,\"project\":null,\"status\":\"open\",\"title\":\"steps target\",\"notes\":\"First note\\nSecond note\",\"steps\":[{{\"id\":\"{}\",\"done\":true,\"short_id\":\"aaa1\",\"text\":\"First step\"}},{{\"id\":\"aaa22222-0000-4000-8000-000000000002\",\"done\":false,\"short_id\":\"aaa2\",\"text\":\"Second step\"}}],\"thread\":\"release\"}}]\n",
+        "[{{\"id\":\"{}\",\"number\":1,\"project\":null,\"status\":\"open\",\"title\":\"steps target\",\"notes\":\"First note\\nSecond note\",\"steps\":[{{\"id\":\"{}\",\"done\":true,\"short_id\":\"aaa1\",\"text\":\"First step\"}},{{\"id\":\"aaa22222-0000-4000-8000-000000000002\",\"done\":false,\"short_id\":\"aaa2\",\"text\":\"Second step\"}}],\"assignee\":null,\"thread\":\"release\"}}]\n",
         task, first_step.id
     );
     assert_eq!(
@@ -1659,7 +1718,7 @@ fn list_task_without_steps_keeps_task_rows_and_rejects_conflicting_flags() {
     assert_eq!(rows[0]["thread"], serde_json::Value::Null);
     let raw = plain_json.stdout.as_str();
     assert!(
-        raw.contains("\"status\":\"ready\",\"title\":\"plain target\",\"notes\":null,\"steps\":[],\"thread\":null"),
+        raw.contains("\"status\":\"ready\",\"title\":\"plain target\",\"notes\":null,\"steps\":[],\"assignee\":null,\"thread\":null"),
         "direct JSON keeps empty detail fields and their contract order: {raw}"
     );
 

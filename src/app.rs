@@ -104,6 +104,10 @@ fn load_board_inner(
     let state = store.load()?;
     let snapshot = load_snapshot();
     let mut model = BoardModel::from_domain_for_snapshot(&state, &snapshot);
+    match crate::agents::AgentProfiles::load(&state_dir) {
+        Ok(profiles) => model.set_agent_profiles(&profiles),
+        Err(error) => model.set_message(error.to_string()),
+    }
     if full_board_open {
         model.offer_launch_card(&state, &snapshot);
     }
@@ -2946,6 +2950,68 @@ mod tests {
         assert!(
             model.selected_id().is_none(),
             "the index has no task selection"
+        );
+    }
+
+    #[test]
+    fn projects_preview_right_seat_inherits_agent_profiles_when_it_is_created() {
+        let temp = TempStore::new("projects-preview-agents");
+        std::fs::write(
+            temp.dir.join("agents.toml"),
+            "[agent.reviewer]\ncommand = [\"true\"]\n",
+        )
+        .expect("write profiles");
+        let profiles = crate::agents::AgentProfiles::load(&temp.dir).expect("load profiles");
+        let mut domain = DomainState::new();
+        let id = domain
+            .create(
+                "preview assignment",
+                None,
+                TaskScope::Project {
+                    path: "/repos/preview".into(),
+                },
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create preview task");
+        let mut model = BoardModel::from_domain(&domain, None);
+        model.set_agent_profiles(&profiles);
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("open projects overview");
+        stage_right(&mut domain, &mut model, 2);
+
+        apply_intent(
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::BeginEditAssignee,
+            None,
+        )
+        .expect("open right-seat assignee");
+        apply_intent(
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::FormAssigneeNext,
+            None,
+        )
+        .expect("pick inherited profile");
+        assert_eq!(
+            apply_intent(
+                &mut domain,
+                model.input_target_mut(),
+                BoardIntent::ConfirmFormAssignee,
+                None,
+            )
+            .expect("assign in right seat"),
+            IntentOutcome::Persist
+        );
+        assert_eq!(
+            domain.get(id).expect("preview task").assignee.as_deref(),
+            Some("reviewer")
         );
     }
 

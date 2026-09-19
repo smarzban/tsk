@@ -159,6 +159,21 @@ impl AgentProfiles {
     pub fn is_empty(&self) -> bool {
         self.profiles.is_empty()
     }
+
+    /// Normalize a supplied name, then require one exact profile match.
+    pub fn resolve_name(&self, input: &str) -> Result<String, String> {
+        let normalized = normalize_thread(input)
+            .map_err(|error| thread_refusal_message(error).replacen("thread", "agent name", 1))?;
+        if self.profiles.contains_key(&normalized) {
+            Ok(normalized)
+        } else {
+            Err(format!("unknown agent {normalized}"))
+        }
+    }
+
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.profiles.keys().map(String::as_str)
+    }
 }
 
 /// One named launch profile from `agents.toml`.

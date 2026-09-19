@@ -88,6 +88,7 @@ impl BoardModel {
                 ),
                 command("edit notes", BoardIntent::BeginEditNotes),
                 command("change scope", BoardIntent::BeginEditScope),
+                command("set assignee", BoardIntent::BeginEditAssignee),
             ]);
         }
         // Always-available board commands, then selection-gated delete when present.

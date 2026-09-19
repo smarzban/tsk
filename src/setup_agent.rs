@@ -1058,15 +1058,15 @@ mod tests {
     #[test]
     fn embedded_skill_declares_semver() {
         let version = embedded_skill_version();
-        assert_eq!(version, "1.3.0");
-        assert_eq!(frontmatter_version(SKILL_MD).as_deref(), Some("1.3.0"));
+        assert_eq!(version, "1.4.0");
+        assert_eq!(frontmatter_version(SKILL_MD).as_deref(), Some("1.4.0"));
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         for byte in SKILL_MD.bytes() {
             hash ^= u64::from(byte);
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
         assert_eq!(
-            hash, 0x35d4_799a_3477_4349,
+            hash, 0x4522_dc30_8a99_d98e,
             "skills/tsk-cli/SKILL.md changed: refresh this hash pin, and bump `version:` only if this is the first skill edit since the last release"
         );
     }

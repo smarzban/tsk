@@ -12,7 +12,7 @@ your agent the task number when you're ready to work on it. New tasks start in t
 
 In Herdr, **prefix+t** opens or focuses your workspace's board, even across tabs;
 other workspaces keep their own views of the same tasks. **prefix+a** opens quick capture.
-Click a task's `T` number to copy it, then paste it into your agent conversation.
+Click a task's `T` number to copy it, then paste it into your agent conversation. Tasks can also carry an optional assignee tied to an exact configured agent profile.
 
 ### Room to think
 

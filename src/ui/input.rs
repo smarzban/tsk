@@ -153,6 +153,8 @@ pub enum BoardIntent {
     BeginEditNotes,
     /// Open the same bound task form as `e`, focused on Scope (palette Change scope).
     BeginEditScope,
+    /// Open the assignee field (palette "set assignee").
+    BeginEditAssignee,
     /// Open the steps section's one-line editor empty to add an step (page `a`).
     BeginAddStep,
     /// Move focus through the shared capture/task form fields.
@@ -167,6 +169,10 @@ pub enum BoardIntent {
     ToggleThreadEditing,
     /// Cycle the shared form's chosen task scope directly from its Scope field.
     FormCycleScope,
+    /// Cycle the shared form's assignee choices, or confirm the current choice.
+    FormAssigneeNext,
+    FormAssigneePrev,
+    ConfirmFormAssignee,
     /// Open the shared form's keyboard scope dropdown, move its pending selection, apply it,
     /// or return to the parent form without applying it.
     OpenFormScopeDropdown,
@@ -1226,6 +1232,7 @@ pub fn map_key(mode: BoardInputMode, key: KeyEvent) -> Option<BoardIntent> {
                 | BoardInputMode::CapturePage
                 | BoardInputMode::SelectThread
                 | BoardInputMode::EditScope
+                | BoardInputMode::EditAssignee
                 | BoardInputMode::FormScopeDropdown
                 | BoardInputMode::LaunchCard
                 | BoardInputMode::ProjectPicker
@@ -1249,6 +1256,7 @@ pub fn map_key(mode: BoardInputMode, key: KeyEvent) -> Option<BoardIntent> {
         BoardInputMode::QuickAdd => map_quick_add_key(key),
         BoardInputMode::FormScopeDropdown => map_board_form_key(CaptureField::Scope, true, key),
         BoardInputMode::EditScope => map_board_form_key(CaptureField::Scope, false, key),
+        BoardInputMode::EditAssignee => map_board_form_key(CaptureField::Assignee, false, key),
         BoardInputMode::SelectThread => map_selected_thread_key(key),
         BoardInputMode::EditThread => map_thread_edit_key(key),
         BoardInputMode::EditTitle | BoardInputMode::EditNotes => map_edit(mode, key),
@@ -1537,6 +1545,14 @@ fn map_form_edit_key(
             }
             _ => None,
         },
+        CaptureField::Assignee => match key.code {
+            KeyCode::Char('?') => Some(BoardIntent::OpenHelp),
+            KeyCode::Esc => Some(BoardIntent::CancelEdit),
+            KeyCode::Enter => Some(BoardIntent::ConfirmFormAssignee),
+            KeyCode::Char(' ') | KeyCode::Right => Some(BoardIntent::FormAssigneeNext),
+            KeyCode::Left => Some(BoardIntent::FormAssigneePrev),
+            _ => None,
+        },
         CaptureField::Title | CaptureField::Notes | CaptureField::Thread => match key.code {
             KeyCode::Enter if focused == CaptureField::Notes => {
                 Some(BoardIntent::EditInsertLineBreak)
@@ -1600,6 +1616,7 @@ pub fn map_edit_paste(mode: BoardInputMode, text: &str) -> Option<BoardIntent> {
         | BoardInputMode::EditStep => Some(BoardIntent::EditInsertText(text.to_string())),
         BoardInputMode::SelectThread
         | BoardInputMode::EditScope
+        | BoardInputMode::EditAssignee
         | BoardInputMode::FormScopeDropdown
         | BoardInputMode::LaunchCard
         | BoardInputMode::TaskPage
@@ -1637,6 +1654,7 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::MarkClear
         | BoardIntent::BeginEditNotes
         | BoardIntent::BeginEditScope
+        | BoardIntent::BeginEditAssignee
         | BoardIntent::BeginAddStep
         | BoardIntent::Quit
         | BoardIntent::EditInsert(_)
@@ -1677,6 +1695,9 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::FocusFormCursor(_, _, _)
         | BoardIntent::ToggleThreadEditing
         | BoardIntent::FormCycleScope
+        | BoardIntent::FormAssigneeNext
+        | BoardIntent::FormAssigneePrev
+        | BoardIntent::ConfirmFormAssignee
         | BoardIntent::OpenFormScopeDropdown
         | BoardIntent::FormScopeNext
         | BoardIntent::FormScopePrev
@@ -2115,6 +2136,7 @@ pub fn map_capture_key_state(
             KeyCode::Char('p') | KeyCode::Char('e') => Some(CaptureIntent::BeginScopePathEdit),
             _ => None,
         },
+        CaptureField::Assignee => None,
     }
 }
 
@@ -2157,7 +2179,7 @@ pub fn map_capture_paste_state(
             Some(CaptureIntent::InsertText(text.to_string()))
         }
         CaptureField::Scope if path_editing => Some(CaptureIntent::InsertText(text.to_string())),
-        CaptureField::Scope => None,
+        CaptureField::Scope | CaptureField::Assignee => None,
     }
 }
 
@@ -2187,7 +2209,7 @@ pub fn intent_primary_capture_action(intent: &CaptureIntent) -> Option<PrimaryCa
             CaptureField::Title | CaptureField::Notes | CaptureField::Thread,
         ) => Some(PrimaryCaptureAction::EditField),
         // Scope row click cycles; path edit and focusing scope are scope interaction.
-        CaptureIntent::FocusField(CaptureField::Scope)
+        CaptureIntent::FocusField(CaptureField::Scope | CaptureField::Assignee)
         | CaptureIntent::CycleScope
         | CaptureIntent::SelectScope(_)
         | CaptureIntent::BeginScopePathEdit => Some(PrimaryCaptureAction::ChangeScope),
