@@ -12,13 +12,16 @@ use ratatui::DefaultTerminal;
 
 use crate::agents::AgentProfiles;
 use crate::context::{build_snapshot, InvocationSnapshot, RawHostContext};
-use crate::dispatch::{self, DispatchError, DispatchHost, DispatchResult, SystemDispatchHost};
+use crate::dispatch::{
+    self, BranchCleanup, CleanupError, CleanupResult, DispatchError, DispatchHost, DispatchResult,
+    SystemDispatchHost, WorktreeCleanup,
+};
 use crate::domain::{DomainError, DomainState};
 use crate::save_recovery::SaveRecovery;
 use crate::store::{default_state_dir, StoreSignature, TaskStore};
 use crate::ui::board::{
     apply_intent, board_intent_may_persist, draw_board, resolve_board_command, BoardInputMode,
-    BoardModel, IntentOutcome, SaveResolution,
+    BoardModel, CleanupPrompt, IntentOutcome, SaveResolution,
 };
 use crate::ui::capture::{CaptureField, TITLE_REQUIRED_MESSAGE};
 use crate::ui::input::{
@@ -1751,7 +1754,14 @@ fn board_rejection_message(error: &DomainError) -> String {
 ///
 /// [`confirm_edit_consults_the_record_without_merging_it`]: self::tests
 pub fn board_intent_needs_fresh_state(intent: &BoardIntent) -> bool {
-    matches!(intent, BoardIntent::Undo | BoardIntent::Dispatch)
+    matches!(
+        intent,
+        BoardIntent::Undo
+            | BoardIntent::Dispatch
+            | BoardIntent::DispatchAgain
+            | BoardIntent::ConfirmCleanup
+            | BoardIntent::KeepCleanup
+    )
 }
 
 /// resolved decision 8: a soft-deleted task is not editable, and a stale in-memory snapshot is
@@ -1891,6 +1901,91 @@ pub fn dispatch_task_with_host(
     dispatch::run_with_host(domain, id, profiles, again, in_herdr, host)
 }
 
+/// Resolve the relaunch confirmation for ctrl+g, or accept the palette's explicit command.
+pub fn resolve_dispatch_again(
+    domain: &DomainState,
+    model: &mut BoardModel,
+    target: uuid::Uuid,
+    explicit: bool,
+) -> Option<bool> {
+    if explicit {
+        model.clear_dispatch_again();
+        return Some(true);
+    }
+    if domain
+        .get(target)
+        .and_then(|task| task.dispatch.as_ref())
+        .is_some()
+    {
+        if !model.take_dispatch_again(target) {
+            let path = domain
+                .get(target)
+                .and_then(|task| task.dispatch.as_ref())
+                .map(|dispatch| dispatch.worktree.as_str())
+                .unwrap_or("recorded worktree");
+            model.arm_dispatch_again(target);
+            model.clear_marks();
+            model.set_message(format!(
+                "already dispatched at {path} · ctrl+g again relaunches"
+            ));
+            return None;
+        }
+        Some(true)
+    } else {
+        model.clear_dispatch_again();
+        Some(false)
+    }
+}
+
+/// Offer cleanup only for one cursor task with an uncleaned, existing worktree.
+pub fn offer_cleanup_prompt_with_host(
+    domain: &DomainState,
+    model: &mut BoardModel,
+    id: uuid::Uuid,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<bool, CleanupError> {
+    if model.bulk_verb_active() {
+        return Ok(false);
+    }
+    let Some(dispatch) = domain.get(id).and_then(|task| task.dispatch.as_ref()) else {
+        return Ok(false);
+    };
+    if dispatch.cleaned {
+        return Ok(false);
+    }
+    let preview = dispatch::inspect_cleanup_with_host(domain, id, in_herdr, host)?;
+    if !preview.inspection.worktree_exists {
+        return Ok(false);
+    }
+    model.begin_cleanup_prompt(CleanupPrompt {
+        task_id: id,
+        worktree: preview.record.worktree,
+        branch: preview.record.branch,
+        dirty: preview.inspection.dirty,
+        branch_merged: preview.inspection.branch_merged,
+        workspace_exists: preview.inspection.workspace_exists,
+    });
+    Ok(true)
+}
+
+/// Apply one cleanup-modal completion choice. Completion is attempted even when cleanup refuses.
+pub fn cleanup_and_complete_with_host(
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    clean: bool,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<Option<Result<CleanupResult, CleanupError>>, DomainError> {
+    let Some(target) = model.cleanup_prompt().map(|prompt| prompt.task_id) else {
+        return Ok(None);
+    };
+    let cleanup = clean.then(|| dispatch::clean_with_host(domain, target, in_herdr, host));
+    domain.complete_after_cleanup(target)?;
+    model.close_popup();
+    Ok(cleanup)
+}
+
 /// Apply a board intent. Returns `true` when the board loop should quit.
 ///
 /// In the quick-capture popup (`quick_capture`), the loop also quits once the capture
@@ -1912,7 +2007,10 @@ fn handle_board_intent(
         copy_task_number(domain, model, id);
         return Ok(false);
     }
-    let dispatch_target = if intent == BoardIntent::Dispatch {
+    if !matches!(intent, BoardIntent::Dispatch | BoardIntent::DispatchAgain) {
+        model.clear_dispatch_again();
+    }
+    let dispatch_target = if matches!(intent, BoardIntent::Dispatch | BoardIntent::DispatchAgain) {
         model.selected_id()
     } else {
         None
@@ -1960,11 +2058,81 @@ fn handle_board_intent(
         refresh_before_mutation(&intent, &baseline, domain, model);
     }
 
+    if intent == BoardIntent::Complete && !save_recovery.is_pending() {
+        if let Some(target) = model.selected_id() {
+            let mut host = SystemDispatchHost;
+            match offer_cleanup_prompt_with_host(
+                domain,
+                model,
+                target,
+                dispatch::running_inside_herdr(),
+                &mut host,
+            ) {
+                Ok(true) => return Ok(false),
+                Ok(false) => {}
+                Err(error) => model.set_message(error.to_string()),
+            }
+        }
+    }
+
+    if matches!(
+        intent,
+        BoardIntent::ConfirmCleanup | BoardIntent::KeepCleanup
+    ) && !save_recovery.is_pending()
+    {
+        let clean = intent == BoardIntent::ConfirmCleanup;
+        let mut host = SystemDispatchHost;
+        let result = cleanup_and_complete_with_host(
+            domain,
+            model,
+            clean,
+            dispatch::running_inside_herdr(),
+            &mut host,
+        );
+        let cleanup = match result {
+            Ok(cleanup) => cleanup,
+            Err(error) => {
+                model.close_popup();
+                model.set_message(board_rejection_message(&error));
+                return Ok(false);
+            }
+        };
+        if let Err(error) = store.reload_merge_save(domain) {
+            let working = std::mem::take(domain);
+            save_recovery.fail(baseline, working, error.to_string());
+            model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+            return Ok(false);
+        }
+        model.sync_from_domain(domain);
+        match cleanup {
+            Some(Ok(result)) => {
+                let worktree = match result.worktree {
+                    WorktreeCleanup::Removed => "removed",
+                    WorktreeCleanup::Missing => "missing",
+                };
+                let branch = match result.branch {
+                    BranchCleanup::Removed => "removed",
+                    BranchCleanup::Kept => "kept",
+                };
+                model.set_message(format!(
+                    "done T{} · worktree {worktree} · branch {branch}",
+                    result.number
+                ));
+            }
+            Some(Err(error)) => model.set_message(format!("done · cleanup refused: {error}")),
+            None => model.set_message("done · worktree kept"),
+        }
+        record_notice_dismissals_without_blocking_persist(store, domain);
+        return Ok(false);
+    }
+
     // OpenCapture needs the invocation snapshot `load_board` seeded the board with
     // scope and provenance: the reducer stores it on `model.capture_snapshot` at
     // open and reads it back at ConfirmEdit, so a `None` here is what silently turned board
     // `a` into a no-op save that still reported success.
-    if intent == BoardIntent::Dispatch && !save_recovery.is_pending() {
+    if matches!(intent, BoardIntent::Dispatch | BoardIntent::DispatchAgain)
+        && !save_recovery.is_pending()
+    {
         let profiles = match AgentProfiles::load(store.path()) {
             Ok(profiles) => profiles,
             Err(error) => {
@@ -1979,12 +2147,17 @@ fn handle_board_intent(
             model.set_message(DispatchError::UnknownTask.to_string());
             return Ok(false);
         };
+        let Some(again) =
+            resolve_dispatch_again(domain, model, target, intent == BoardIntent::DispatchAgain)
+        else {
+            return Ok(false);
+        };
         match dispatch_task_with_host(
             domain,
             model,
             target,
             &profiles,
-            false,
+            again,
             dispatch::running_inside_herdr(),
             &mut host,
         ) {

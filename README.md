@@ -12,7 +12,7 @@ your agent the task number when you're ready to work on it. New tasks start in t
 
 In Herdr, **prefix+t** opens or focuses your workspace's board, even across tabs;
 other workspaces keep their own views of the same tasks. **prefix+a** opens quick capture.
-Click a task's `T` number to copy it, then paste it into your agent conversation. Tasks can also carry an optional assignee tied to an exact configured agent profile; `ctrl+g` dispatches assigned project work into a dedicated Git worktree and Herdr workspace.
+Click a task's `T` number to copy it, then paste it into your agent conversation. Tasks can also carry an optional assignee tied to an exact configured agent profile; `ctrl+g` dispatches assigned project work into a dedicated Git worktree and Herdr workspace, and completion can safely clean it up.
 
 ### Room to think
 
@@ -22,11 +22,11 @@ In a wide pane, click a task or press `→` to open its details beside the board
 Press `Enter` for a full-screen task and `Esc` to return. For a standalone board,
 run `tsk` in your terminal.
 
-### Coming soon
+### From task to implementation
 
-**From task to implementation.** The next phase brings agent execution into the
-board: assign a task to an agent, start implementation from tsk, and run the work
-in Herdr worktrees.
+Assign a project task to an agent, press `ctrl+g` to dispatch it into its own
+Herdr worktree, then review the result and safely clean the worktree when you
+complete the task.
 
 ## Quickstart
 

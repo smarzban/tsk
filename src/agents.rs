@@ -437,7 +437,7 @@ mod tests {
             .modified()
             .expect("mtime");
 
-        assert_eq!(seed_on_open(dir.path()).expect("seed"), false);
+        assert!(!seed_on_open(dir.path()).expect("seed"));
 
         let names: Vec<String> = fs::read_dir(dir.path())
             .expect("read dir")

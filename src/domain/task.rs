@@ -64,6 +64,10 @@ pub struct Dispatch {
     pub herdr_workspace_id: String,
     #[serde(with = "super::time_serde")]
     pub at: SystemTime,
+    /// The recorded worktree has been removed or was already missing. The record stays
+    /// available for inspection and a deliberate relaunch.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cleaned: bool,
 }
 
 /// One unit of intended work.
@@ -487,6 +491,19 @@ impl DomainState {
         Ok(())
     }
 
+    /// Complete after cleanup mutated the same task in this unsaved transaction.
+    ///
+    /// The cleanup revision must keep its original durable merge base across the completion,
+    /// while the completion alone remains the undoable part.
+    pub fn complete_after_cleanup(&mut self, id: Uuid) -> Result<(), DomainError> {
+        let cleanup_merge_base = self.task_mut(id)?.merge_base_revision;
+        self.complete(id)?;
+        if cleanup_merge_base.is_some() {
+            self.task_mut(id)?.merge_base_revision = cleanup_merge_base;
+        }
+        Ok(())
+    }
+
     /// Complete an ordered set of tasks as one atomic, undoable action.
     /// Duplicate ids keep their first position. Empty input is a no-op.
     pub fn complete_batch(&mut self, ids: &[Uuid]) -> Result<(), DomainError> {
@@ -654,12 +671,22 @@ impl DomainState {
 
     /// Record one successful launch and set human status to started as one mutation.
     /// Dispatch is external and deliberately creates no undo entry.
-    pub fn record_dispatch(&mut self, id: Uuid, dispatch: Dispatch) -> Result<(), DomainError> {
+    pub fn record_dispatch(&mut self, id: Uuid, mut dispatch: Dispatch) -> Result<(), DomainError> {
         let task = self.task_mut(id)?;
         task.status = HumanStatus::Started;
+        dispatch.cleaned = false;
         let at = dispatch.at;
         task.dispatch = Some(dispatch);
         record_mutation_at(task, TaskEventKind::Dispatched, at);
+        Ok(())
+    }
+
+    /// Mark the retained dispatch record cleaned without changing human status.
+    pub fn record_dispatch_cleaned(&mut self, id: Uuid) -> Result<(), DomainError> {
+        let task = self.task_mut(id)?;
+        let dispatch = task.dispatch.as_mut().ok_or(DomainError::UnknownId(id))?;
+        dispatch.cleaned = true;
+        record_mutation(task, TaskEventKind::Cleaned);
         Ok(())
     }
 

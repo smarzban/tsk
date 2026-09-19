@@ -10,6 +10,7 @@ pub enum Surface {
     List,
     Status,
     Dispatch,
+    Clean,
     Edit,
     Trash,
     Archive,
@@ -65,6 +66,7 @@ pub fn route<S: AsRef<str>>(
             "list" => Surface::List,
             "status" => Surface::Status,
             "dispatch" => Surface::Dispatch,
+            "clean" => Surface::Clean,
             "edit" => Surface::Edit,
             "trash" => Surface::Trash,
             "archive" => Surface::Archive,
@@ -164,6 +166,11 @@ mod tests {
             route(["tsk", "status", "T3", "started"], None),
             Surface::Status
         );
+    }
+
+    #[test]
+    fn clean_positional_selects_clean_surface() {
+        assert_eq!(route(["tsk", "clean", "T3"], None), Surface::Clean);
     }
 
     #[test]

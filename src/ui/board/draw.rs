@@ -606,8 +606,16 @@ fn build_task_page_overlay<'a>(
             }
             let when = render::format_age(SystemTime::now(), dispatch.at);
             for line in [
-                "dispatch".to_string(),
-                format!("worktree {}", terminal_text(&dispatch.worktree)),
+                if dispatch.cleaned {
+                    "dispatch · cleaned".to_string()
+                } else {
+                    "dispatch".to_string()
+                },
+                if dispatch.cleaned {
+                    format!("worktree removed · {}", terminal_text(&dispatch.worktree))
+                } else {
+                    format!("worktree {}", terminal_text(&dispatch.worktree))
+                },
                 format!("branch {}", terminal_text(&dispatch.branch)),
                 format!("when {when} ago"),
             ] {
@@ -1101,6 +1109,15 @@ impl OverlayPayloads {
             return Some(QueueOverlay::Palette {
                 query: model.command_query(),
                 commands: &self.palette_commands,
+            });
+        }
+        if let Some(prompt) = model.cleanup_prompt() {
+            return Some(QueueOverlay::CleanupConfirm {
+                worktree: &prompt.worktree,
+                branch: &prompt.branch,
+                dirty: prompt.dirty,
+                branch_merged: prompt.branch_merged,
+                workspace_exists: prompt.workspace_exists,
             });
         }
         if let Some(name) = self.launch_card_name.as_deref() {

@@ -405,6 +405,14 @@ pub enum QueueOverlay<'a> {
     },
     /// Launch card: the two-choice archived-project modal.
     LaunchCard { name: &'a str },
+    /// Dispatched worktree cleanup confirmation.
+    CleanupConfirm {
+        worktree: &'a str,
+        branch: &'a str,
+        dirty: bool,
+        branch_merged: bool,
+        workspace_exists: bool,
+    },
     /// Project-scope dropdown from the selector chip.
     ScopeDropdown {
         options: &'a [String],
@@ -811,7 +819,12 @@ pub fn status_glyph(status: HumanStatus) -> &'static str {
 
 /// Status glyph derived only from durable task state.
 pub fn task_status_glyph(task: &Task) -> &'static str {
-    if task.status == HumanStatus::Started && task.dispatch.is_some() {
+    if task.status == HumanStatus::Started
+        && task
+            .dispatch
+            .as_ref()
+            .is_some_and(|dispatch| !dispatch.cleaned)
+    {
         "◉"
     } else {
         status_glyph(task.status)
@@ -1464,6 +1477,7 @@ fn paint_footer(
             QueueOverlay::Palette { .. }
             | QueueOverlay::Help { .. }
             | QueueOverlay::LaunchCard { .. }
+            | QueueOverlay::CleanupConfirm { .. }
             | QueueOverlay::ScopeDropdown { .. } => &[],
             QueueOverlay::QuickAdd { recovery, .. } if *recovery => &[],
             QueueOverlay::QuickAdd { .. } => QUICK_ADD_VERBS,
@@ -1720,6 +1734,25 @@ fn paint_overlay(
         }
         QueueOverlay::LaunchCard { name } => {
             paint_launch_card(frame, geo, surface, name, hits);
+        }
+        QueueOverlay::CleanupConfirm {
+            worktree,
+            branch,
+            dirty,
+            branch_merged,
+            workspace_exists,
+        } => {
+            paint_cleanup_card(
+                frame,
+                geo,
+                surface,
+                worktree,
+                branch,
+                *dirty,
+                *branch_merged,
+                *workspace_exists,
+                hits,
+            );
         }
         QueueOverlay::ScopeDropdown {
             options,
@@ -3375,6 +3408,105 @@ fn paint_page_form_dropdown(
         let area = Rect::new(x, y, painted_width, 1);
         hits.push(QueueHitTarget::FormDropdownOption(j), area);
         hits.push_copyable(area);
+    }
+}
+
+pub(crate) const DIRTY_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "n",
+        label: "done only",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "cancel",
+    },
+];
+
+pub(crate) const CLEANUP_FOOTER: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "y",
+        label: "clean + done",
+    },
+    VerbEntry {
+        key: "n",
+        label: "done only",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "cancel",
+    },
+];
+
+#[allow(clippy::too_many_arguments)]
+fn paint_cleanup_card(
+    frame: &mut Frame<'_>,
+    geo: &TierGeometry,
+    surface: Rect,
+    worktree: &str,
+    branch: &str,
+    dirty: bool,
+    branch_merged: bool,
+    workspace_exists: bool,
+    hits: &mut QueueHitMap,
+) {
+    if geo.row_width == 0 {
+        return;
+    }
+    let bounds = Rect::new(0, 0, geo.row_width, geo.height);
+    let content = paint_modal_card(
+        frame,
+        geo,
+        surface,
+        bounds,
+        ModalCardSpec {
+            title: "Clean dispatch?",
+            content_rows: 5,
+            min_content_width: 24,
+            legend: if dirty {
+                DIRTY_CLEANUP_FOOTER
+            } else {
+                CLEANUP_FOOTER
+            },
+            dismiss: None,
+            legend_hits: None,
+        },
+        hits,
+    );
+    let lines = [
+        format!("worktree {worktree}"),
+        format!("branch {branch}"),
+        format!(
+            "state {}",
+            if dirty {
+                "dirty, cleanup will refuse"
+            } else {
+                "clean"
+            }
+        ),
+        format!(
+            "commits {}",
+            if branch_merged {
+                "merged"
+            } else {
+                "unmerged, branch will be kept"
+            }
+        ),
+        format!(
+            "agent pane {}",
+            if workspace_exists {
+                "will close"
+            } else {
+                "already closed"
+            }
+        ),
+    ];
+    for (row, line) in lines.iter().enumerate().take(content.height as usize) {
+        put_line_at(
+            frame,
+            surface,
+            Rect::new(content.x, content.y + row as u16, content.width, 1),
+            paint_bounded_line(line, content.width, style_plain()),
+        );
     }
 }
 

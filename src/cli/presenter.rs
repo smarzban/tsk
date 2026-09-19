@@ -11,7 +11,9 @@ use crate::cli::parser::TaskAddress;
 use crate::cli::status::{StatusError, StatusResult};
 use crate::cli::steps::{StepLine, StepsError, StepsResult};
 use crate::cli::trash::{TrashCliError, TrashRestoreResult};
-use crate::dispatch::{DispatchError, DispatchResult};
+use crate::dispatch::{
+    BranchCleanup, CleanupError, CleanupResult, DispatchError, DispatchResult, WorktreeCleanup,
+};
 use crate::domain::HumanStatus;
 use crate::ui::terminal_text;
 
@@ -120,6 +122,7 @@ pub fn top_level_help() -> String {
         "  list     inspect tasks\n",
         "  status   set a task's human status\n",
         "  dispatch hand a task to its assigned agent\n",
+        "  clean    remove a dispatched worktree safely\n",
         "  edit     update a task's title or notes\n",
         "  steps    add, toggle, rename, or remove one step on a task\n\n",
         "Board\n",
@@ -928,7 +931,10 @@ pub fn dispatch_help() -> CliOutput {
         groups: vec![group(
             "Options",
             &[
-                ("--again", "relaunch in the recorded worktree"),
+                (
+                    "--again",
+                    "relaunch, recreating a cleaned worktree when needed",
+                ),
                 ("--state-dir <dir>", "use another board store"),
             ],
         )],
@@ -952,6 +958,111 @@ pub fn dispatch_help() -> CliOutput {
             true,
         ),
     })
+}
+
+pub fn clean_help() -> CliOutput {
+    help(HelpDoc {
+        usage: vec!["tsk clean <task> [--json] [--state-dir <dir>]".into()],
+        purpose: "Remove a clean dispatched worktree, keeping an unmerged branch.".into(),
+        groups: vec![
+            group(
+                "Options",
+                &[
+                    ("--json", "print one machine-readable cleanup result"),
+                    ("--state-dir <dir>", "use another board store"),
+                ],
+            ),
+            group(
+                "Store failures",
+                &[("store-error (exit 3)", "verify the task with tsk list")],
+            ),
+        ],
+        examples: vec!["tsk clean T12".into(), "tsk clean 12 --json".into()],
+        refusals: vec![
+            "not-dispatched".into(),
+            "already-cleaned".into(),
+            "dirty-worktree".into(),
+            "herdr-failed".into(),
+        ],
+        exit: exit_line(
+            "dispatch cleaned, or its worktree was already missing",
+            Some("cleanup refused, task and dispatch record unchanged"),
+            true,
+        ),
+    })
+}
+
+pub fn cleaned(result: CleanupResult, json: bool) -> CliOutput {
+    let worktree = match result.worktree {
+        WorktreeCleanup::Removed => "removed",
+        WorktreeCleanup::Missing => "missing",
+    };
+    let branch = match result.branch {
+        BranchCleanup::Removed => "removed",
+        BranchCleanup::Kept => "kept",
+    };
+    let workspace = if result.workspace_removed {
+        "removed"
+    } else {
+        "kept"
+    };
+    let stdout = if json {
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "number": result.number,
+                "title": result.title,
+                "worktree": {"path": result.worktree_path, "outcome": worktree},
+                "branch": {"name": result.branch_name, "outcome": branch},
+                "workspace": {"id": result.workspace_id, "outcome": workspace},
+            })
+        )
+    } else {
+        format!(
+            "cleaned T{}: worktree {} ({}), branch {} ({}), workspace {} ({})\n",
+            result.number,
+            terminal_text(&result.worktree_path),
+            worktree,
+            terminal_text(&result.branch_name),
+            branch,
+            terminal_text(&result.workspace_id),
+            workspace,
+        )
+    };
+    CliOutput {
+        stdout,
+        stderr: String::new(),
+        code: 0,
+    }
+}
+
+pub fn clean_usage(reason: &str) -> CliOutput {
+    CliOutput {
+        stdout: String::new(),
+        stderr: format!(
+            "tsk clean: {}\nusage: tsk clean <task> [--json] [--state-dir <dir>]\n",
+            human_reason(reason)
+        ),
+        code: 2,
+    }
+}
+
+pub fn clean_rejected(error: CleanupError, task: TaskAddress) -> CliOutput {
+    let exit = if matches!(error, CleanupError::Store(_)) {
+        3
+    } else {
+        1
+    };
+    let refusal = error.code();
+    let detail = match error {
+        CleanupError::UnknownTask => format!("{} is not on the board", task.display()),
+        other => other.to_string(),
+    };
+    CliOutput {
+        stdout: String::new(),
+        stderr: format!("tsk clean: {refusal}: {}\n", human_reason(&detail)),
+        code: exit,
+    }
 }
 
 pub fn dispatched(result: DispatchResult) -> CliOutput {
@@ -998,8 +1109,9 @@ pub fn dispatch_rejected(error: DispatchError, task: TaskAddress) -> CliOutput {
 
 pub fn status_help() -> CliOutput {
     help(HelpDoc {
-        usage: vec!["tsk status <task> <status> [--state-dir <dir>]".into()],
-        purpose: "Set a task's human status.".into(),
+        usage: vec!["tsk status <task> <status> [--clean] [--state-dir <dir>]".into()],
+        purpose: "Set a task's human status, optionally cleaning its dispatch after done persists."
+            .into(),
         groups: vec![group(
             "Values",
             &[
@@ -1008,6 +1120,7 @@ pub fn status_help() -> CliOutput {
                     "<status>",
                     "open, ready, started (or start), blocked, review, or done",
                 ),
+                ("--clean", "after setting done, safely clean its dispatch"),
                 ("--state-dir <dir>", "use another board store"),
             ],
         )],
@@ -1707,6 +1820,31 @@ mod tests {
             alternatives,
             "usage: tsk pick\n       alpha | beta | gamma\n       [--long argument]\n"
         );
+    }
+
+    #[test]
+    fn clean_output_names_every_resource_in_human_and_json_forms() {
+        let result = CleanupResult {
+            number: 12,
+            title: "finished".into(),
+            worktree_path: "/tmp/task-12".into(),
+            branch_name: "tsk/t12-finished".into(),
+            workspace_id: "w12".into(),
+            worktree: WorktreeCleanup::Removed,
+            branch: BranchCleanup::Kept,
+            workspace_removed: true,
+        };
+        let human = cleaned(result.clone(), false);
+        assert_eq!(
+            human.stdout,
+            "cleaned T12: worktree /tmp/task-12 (removed), branch tsk/t12-finished (kept), workspace w12 (removed)\n"
+        );
+        let json = cleaned(result, true);
+        let value: serde_json::Value = serde_json::from_str(json.stdout.trim()).unwrap();
+        assert_eq!(value["number"], 12);
+        assert_eq!(value["worktree"]["outcome"], "removed");
+        assert_eq!(value["branch"]["outcome"], "kept");
+        assert_eq!(value["workspace"]["outcome"], "removed");
     }
 
     #[test]

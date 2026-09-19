@@ -15,6 +15,84 @@ pub const NOT_IN_HERDR: &str = "dispatch works inside herdr for now";
 pub const NEEDS_GIT_PROJECT: &str = "dispatch needs a project in a git repo";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupInspection {
+    pub worktree_exists: bool,
+    pub dirty: bool,
+    pub branch_merged: bool,
+    pub workspace_exists: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorktreeCleanup {
+    Removed,
+    Missing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchCleanup {
+    Removed,
+    Kept,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupPreview {
+    pub number: u64,
+    pub title: String,
+    pub project: PathBuf,
+    pub record: Dispatch,
+    pub inspection: CleanupInspection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupResult {
+    pub number: u64,
+    pub title: String,
+    pub worktree_path: String,
+    pub branch_name: String,
+    pub workspace_id: String,
+    pub worktree: WorktreeCleanup,
+    pub branch: BranchCleanup,
+    pub workspace_removed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CleanupError {
+    UnknownTask,
+    NotDispatched,
+    AlreadyCleaned,
+    DirtyWorktree,
+    Herdr(String),
+    Store(String),
+}
+
+impl CleanupError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::UnknownTask => "unknown-task",
+            Self::NotDispatched => "not-dispatched",
+            Self::AlreadyCleaned => "already-cleaned",
+            Self::DirtyWorktree => "dirty-worktree",
+            Self::Herdr(_) => "herdr-failed",
+            Self::Store(_) => "store-error",
+        }
+    }
+}
+
+impl std::fmt::Display for CleanupError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownTask => write!(formatter, "task is not on the board"),
+            Self::NotDispatched => write!(formatter, "task has no dispatch to clean"),
+            Self::AlreadyCleaned => write!(formatter, "dispatch is already cleaned"),
+            Self::DirtyWorktree => write!(formatter, "worktree has uncommitted changes"),
+            Self::Herdr(reason) | Self::Store(reason) => write!(formatter, "{reason}"),
+        }
+    }
+}
+
+impl std::error::Error for CleanupError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchResult {
     pub number: u64,
     pub title: String,
@@ -98,6 +176,23 @@ pub trait DispatchHost {
         branch: &str,
         label: &str,
     ) -> Result<CreatedWorktree, String>;
+    fn inspect_cleanup(
+        &mut self,
+        _project: &Path,
+        _dispatch: &Dispatch,
+        _in_herdr: bool,
+    ) -> Result<CleanupInspection, String> {
+        Err("cleanup inspection is not supported".into())
+    }
+    fn remove_herdr_worktree(&mut self, _workspace_id: &str) -> Result<(), String> {
+        Err("Herdr worktree removal is not supported".into())
+    }
+    fn remove_git_worktree(&mut self, _project: &Path, _worktree: &Path) -> Result<(), String> {
+        Err("git worktree removal is not supported".into())
+    }
+    fn delete_branch(&mut self, _project: &Path, _branch: &str) -> Result<(), String> {
+        Err("git branch removal is not supported".into())
+    }
     fn root_pane(&mut self, workspace_id: &str) -> Result<String, String>;
     fn run_in_pane(&mut self, pane_id: &str, command: &str) -> Result<(), String>;
 }
@@ -130,23 +225,106 @@ impl DispatchHost for SystemDispatchHost {
             .args(["--branch", branch, "--label", label])
             .output()
             .map_err(|error| format!("could not run herdr: {error}"))?;
-        let value = herdr_json(output)?;
-        let result = value
-            .get("result")
-            .ok_or_else(|| "herdr returned no result".to_string())?;
-        let string = |pointer: &str| {
-            result
-                .pointer(pointer)
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .ok_or_else(|| format!("herdr response is missing {pointer}"))
+        created_worktree_from_value(herdr_json(output)?)
+    }
+
+    fn inspect_cleanup(
+        &mut self,
+        project: &Path,
+        dispatch: &Dispatch,
+        in_herdr: bool,
+    ) -> Result<CleanupInspection, String> {
+        let worktree = Path::new(&dispatch.worktree);
+        if !worktree.exists() {
+            return Ok(CleanupInspection {
+                worktree_exists: false,
+                dirty: false,
+                branch_merged: false,
+                workspace_exists: false,
+            });
+        }
+        let status = Command::new("git")
+            .args(["-C"])
+            .arg(worktree)
+            .args(["status", "--porcelain", "--untracked-files=all"])
+            .output()
+            .map_err(|error| format!("could not run git: {error}"))?;
+        if !status.status.success() {
+            return Err(command_failure("git status", &status));
+        }
+        let merged = Command::new("git")
+            .args(["-C"])
+            .arg(project)
+            .args(["merge-base", "--is-ancestor", &dispatch.branch, "HEAD"])
+            .output()
+            .map_err(|error| format!("could not run git: {error}"))?;
+        let branch_merged = match merged.status.code() {
+            Some(0) => true,
+            Some(1) => false,
+            _ => return Err(command_failure("git merge-base", &merged)),
         };
-        Ok(CreatedWorktree {
-            path: PathBuf::from(string("/worktree/path")?),
-            branch: string("/worktree/branch")?,
-            workspace_id: string("/workspace/workspace_id")?,
-            root_pane_id: string("/root_pane/pane_id")?,
+        let workspace_exists = if in_herdr {
+            let listed = Command::new("herdr")
+                .args(["worktree", "list", "--cwd"])
+                .arg(project)
+                .output()
+                .map_err(|error| format!("could not run herdr: {error}"))?;
+            let value = herdr_json(listed)?;
+            value
+                .pointer("/result/worktrees")
+                .and_then(Value::as_array)
+                .is_some_and(|worktrees| {
+                    worktrees.iter().any(|entry| {
+                        entry.get("open_workspace_id").and_then(Value::as_str)
+                            == Some(dispatch.herdr_workspace_id.as_str())
+                    })
+                })
+        } else {
+            false
+        };
+        Ok(CleanupInspection {
+            worktree_exists: true,
+            dirty: !status.stdout.is_empty(),
+            branch_merged,
+            workspace_exists,
         })
+    }
+
+    fn remove_herdr_worktree(&mut self, workspace_id: &str) -> Result<(), String> {
+        let output = Command::new("herdr")
+            .args(["worktree", "remove", "--workspace", workspace_id])
+            .output()
+            .map_err(|error| format!("could not run herdr: {error}"))?;
+        herdr_json(output).map(|_| ())
+    }
+
+    fn remove_git_worktree(&mut self, project: &Path, worktree: &Path) -> Result<(), String> {
+        let output = Command::new("git")
+            .args(["-C"])
+            .arg(project)
+            .args(["worktree", "remove"])
+            .arg(worktree)
+            .output()
+            .map_err(|error| format!("could not run git: {error}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(command_failure("git worktree remove", &output))
+        }
+    }
+
+    fn delete_branch(&mut self, project: &Path, branch: &str) -> Result<(), String> {
+        let output = Command::new("git")
+            .args(["-C"])
+            .arg(project)
+            .args(["branch", "-d", branch])
+            .output()
+            .map_err(|error| format!("could not run git: {error}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(command_failure("git branch -d", &output))
+        }
     }
 
     fn root_pane(&mut self, workspace_id: &str) -> Result<String, String> {
@@ -172,6 +350,34 @@ impl DispatchHost for SystemDispatchHost {
     }
 }
 
+fn created_worktree_from_value(value: Value) -> Result<CreatedWorktree, String> {
+    let result = value
+        .get("result")
+        .ok_or_else(|| "herdr returned no result".to_string())?;
+    let string = |pointer: &str| {
+        result
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| format!("herdr response is missing {pointer}"))
+    };
+    Ok(CreatedWorktree {
+        path: PathBuf::from(string("/worktree/path")?),
+        branch: string("/worktree/branch")?,
+        workspace_id: string("/workspace/workspace_id")?,
+        root_pane_id: string("/root_pane/pane_id")?,
+    })
+}
+
+fn command_failure(name: &str, output: &Output) -> String {
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if detail.is_empty() {
+        format!("{name} exited with {}", output.status)
+    } else {
+        detail
+    }
+}
+
 fn herdr_json(output: Output) -> Result<Value, String> {
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -186,6 +392,86 @@ fn herdr_json(output: Output) -> Result<Value, String> {
     }
     serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("herdr returned invalid JSON: {error}"))
+}
+
+/// Inspect a retained dispatch without mutating host or domain state.
+pub fn inspect_cleanup_with_host(
+    state: &DomainState,
+    id: Uuid,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<CleanupPreview, CleanupError> {
+    let task = state.get(id).cloned().ok_or(CleanupError::UnknownTask)?;
+    let number = task.number.ok_or(CleanupError::UnknownTask)?;
+    let record = task.dispatch.clone().ok_or(CleanupError::NotDispatched)?;
+    if record.cleaned {
+        return Err(CleanupError::AlreadyCleaned);
+    }
+    let project = match task.scope {
+        TaskScope::Project { path } => PathBuf::from(path),
+        TaskScope::Global => return Err(CleanupError::NotDispatched),
+    };
+    let inspection = host
+        .inspect_cleanup(&project, &record, in_herdr)
+        .map_err(CleanupError::Herdr)?;
+    Ok(CleanupPreview {
+        number,
+        title: task.title,
+        project,
+        record,
+        inspection,
+    })
+}
+
+/// Remove a dispatched worktree under the shared cleanup guardrails.
+///
+/// Domain state changes only after all requested host work succeeds. A missing worktree is a
+/// successful convergence case and retains its branch.
+pub fn clean_with_host(
+    state: &mut DomainState,
+    id: Uuid,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<CleanupResult, CleanupError> {
+    let preview = inspect_cleanup_with_host(state, id, in_herdr, host)?;
+    if preview.inspection.dirty {
+        return Err(CleanupError::DirtyWorktree);
+    }
+
+    let (worktree, branch, workspace_removed) = if preview.inspection.worktree_exists {
+        let workspace_removed = in_herdr && preview.inspection.workspace_exists;
+        if workspace_removed {
+            host.remove_herdr_worktree(&preview.record.herdr_workspace_id)
+                .map_err(CleanupError::Herdr)?;
+        } else {
+            host.remove_git_worktree(&preview.project, Path::new(&preview.record.worktree))
+                .map_err(CleanupError::Herdr)?;
+        }
+        let branch = if preview.inspection.branch_merged {
+            host.delete_branch(&preview.project, &preview.record.branch)
+                .map_err(CleanupError::Herdr)?;
+            BranchCleanup::Removed
+        } else {
+            BranchCleanup::Kept
+        };
+        (WorktreeCleanup::Removed, branch, workspace_removed)
+    } else {
+        (WorktreeCleanup::Missing, BranchCleanup::Kept, false)
+    };
+
+    state
+        .record_dispatch_cleaned(id)
+        .map_err(|error| CleanupError::Store(error.to_string()))?;
+    Ok(CleanupResult {
+        number: preview.number,
+        title: preview.title,
+        worktree_path: preview.record.worktree,
+        branch_name: preview.record.branch,
+        workspace_id: preview.record.herdr_workspace_id,
+        worktree,
+        branch,
+        workspace_removed,
+    })
 }
 
 /// Launch the cursor task. Domain state changes only after every host command succeeds.
@@ -233,15 +519,30 @@ pub fn run_with_host(
         if !again {
             return Err(DispatchError::AlreadyDispatched(existing.worktree.clone()));
         }
-        let pane = host
-            .root_pane(&existing.herdr_workspace_id)
-            .map_err(DispatchError::Herdr)?;
-        (
-            existing.worktree.clone(),
-            existing.branch.clone(),
-            existing.herdr_workspace_id.clone(),
-            pane,
-        )
+        if existing.cleaned {
+            let label = format!("T{number} {}", task.title);
+            // Herdr's create command deliberately handles both cases: it creates a missing
+            // branch from the current base, or checks out an existing retained branch.
+            let recreated = host
+                .create_worktree(project, &existing.branch, &label)
+                .map_err(DispatchError::Herdr)?;
+            (
+                recreated.path.to_string_lossy().into_owned(),
+                recreated.branch,
+                recreated.workspace_id,
+                recreated.root_pane_id,
+            )
+        } else {
+            let pane = host
+                .root_pane(&existing.herdr_workspace_id)
+                .map_err(DispatchError::Herdr)?;
+            (
+                existing.worktree.clone(),
+                existing.branch.clone(),
+                existing.herdr_workspace_id.clone(),
+                pane,
+            )
+        }
     } else {
         let requested_branch = format!("tsk/t{number}-{}", slug(&task.title));
         let label = format!("T{number} {}", task.title);
@@ -274,6 +575,7 @@ pub fn run_with_host(
         branch,
         herdr_workspace_id: workspace_id,
         at: SystemTime::now(),
+        cleaned: false,
     };
     state
         .record_dispatch(id, record.clone())
@@ -351,6 +653,10 @@ mod tests {
         creates: usize,
         roots: usize,
         runs: Vec<(String, String)>,
+        cleanup: Option<CleanupInspection>,
+        removed_herdr: usize,
+        removed_git: usize,
+        deleted_branches: usize,
     }
 
     impl DispatchHost for FakeHost {
@@ -374,6 +680,32 @@ mod tests {
                 workspace_id: "w9".into(),
                 root_pane_id: "w9:p1".into(),
             })
+        }
+
+        fn inspect_cleanup(
+            &mut self,
+            _: &Path,
+            _: &Dispatch,
+            _: bool,
+        ) -> Result<CleanupInspection, String> {
+            self.cleanup
+                .clone()
+                .ok_or_else(|| "cleanup inspection not configured".into())
+        }
+
+        fn remove_herdr_worktree(&mut self, _: &str) -> Result<(), String> {
+            self.removed_herdr += 1;
+            Ok(())
+        }
+
+        fn remove_git_worktree(&mut self, _: &Path, _: &Path) -> Result<(), String> {
+            self.removed_git += 1;
+            Ok(())
+        }
+
+        fn delete_branch(&mut self, _: &Path, _: &str) -> Result<(), String> {
+            self.deleted_branches += 1;
+            Ok(())
         }
 
         fn root_pane(&mut self, _: &str) -> Result<String, String> {
@@ -737,6 +1069,159 @@ mod tests {
         assert!(state.get(second).expect("second").dispatch.is_none());
         assert_eq!(host.creates, 0);
         fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn cleanup_guardrails_cover_dirty_unmerged_merged_and_missing_worktrees() {
+        let (path, profiles) = profiles();
+        for (label, inspection, expected, herdr_removes, branch_deletes) in [
+            (
+                "dirty",
+                CleanupInspection {
+                    worktree_exists: true,
+                    dirty: true,
+                    branch_merged: false,
+                    workspace_exists: true,
+                },
+                Err(CleanupError::DirtyWorktree),
+                0,
+                0,
+            ),
+            (
+                "unmerged",
+                CleanupInspection {
+                    worktree_exists: true,
+                    dirty: false,
+                    branch_merged: false,
+                    workspace_exists: true,
+                },
+                Ok((WorktreeCleanup::Removed, BranchCleanup::Kept)),
+                1,
+                0,
+            ),
+            (
+                "merged",
+                CleanupInspection {
+                    worktree_exists: true,
+                    dirty: false,
+                    branch_merged: true,
+                    workspace_exists: true,
+                },
+                Ok((WorktreeCleanup::Removed, BranchCleanup::Removed)),
+                1,
+                1,
+            ),
+            (
+                "missing",
+                CleanupInspection {
+                    worktree_exists: false,
+                    dirty: false,
+                    branch_merged: false,
+                    workspace_exists: false,
+                },
+                Ok((WorktreeCleanup::Missing, BranchCleanup::Kept)),
+                0,
+                0,
+            ),
+        ] {
+            let (mut state, id) = task();
+            let mut launch = FakeHost {
+                git: true,
+                ..FakeHost::default()
+            };
+            run_with_host(&mut state, id, &profiles, false, true, &mut launch).expect("dispatch");
+            let before = state.clone();
+            let mut host = FakeHost {
+                cleanup: Some(inspection),
+                ..FakeHost::default()
+            };
+            let actual = clean_with_host(&mut state, id, true, &mut host)
+                .map(|result| (result.worktree, result.branch));
+            assert_eq!(actual, expected, "{label}");
+            assert_eq!(host.removed_herdr, herdr_removes, "{label}");
+            assert_eq!(host.deleted_branches, branch_deletes, "{label}");
+            if label == "dirty" {
+                assert_eq!(
+                    serde_json::to_value(&state).unwrap(),
+                    serde_json::to_value(&before).unwrap(),
+                    "dirty cleanup must mutate nothing"
+                );
+            } else {
+                let task = state.get(id).expect("task");
+                assert!(task.dispatch.as_ref().expect("dispatch").cleaned, "{label}");
+                assert_eq!(
+                    task.history.last().map(|event| event.kind),
+                    Some(TaskEventKind::Cleaned),
+                    "{label}"
+                );
+                assert_eq!(
+                    clean_with_host(&mut state, id, true, &mut host),
+                    Err(CleanupError::AlreadyCleaned),
+                    "{label} repeat"
+                );
+            }
+        }
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn cleaned_dispatch_again_recreates_removed_and_retained_branches() {
+        let (path, profiles) = profiles();
+        for branch_exists in [false, true] {
+            let (mut state, id) = task();
+            let mut launch = FakeHost {
+                git: true,
+                ..FakeHost::default()
+            };
+            run_with_host(&mut state, id, &profiles, false, true, &mut launch).expect("dispatch");
+            let mut clean = FakeHost {
+                cleanup: Some(CleanupInspection {
+                    worktree_exists: false,
+                    dirty: false,
+                    branch_merged: false,
+                    workspace_exists: false,
+                }),
+                ..FakeHost::default()
+            };
+            clean_with_host(&mut state, id, true, &mut clean).expect("clean");
+
+            let mut again = FakeHost {
+                git: true,
+                ..FakeHost::default()
+            };
+            let result = run_with_host(&mut state, id, &profiles, true, true, &mut again)
+                .expect("recreate cleaned dispatch");
+            assert!(!result.record.cleaned);
+            assert_eq!(again.creates, 1, "existing branch: {branch_exists}");
+            assert_eq!(again.roots, 0);
+        }
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn cleaned_marker_is_optional_and_store_format_stays_v6() {
+        assert_eq!(crate::domain::STORE_FORMAT_VERSION, 6);
+        let record = Dispatch {
+            argv: vec!["agent".into()],
+            worktree: "/tmp/worktree".into(),
+            branch: "tsk/t1-task".into(),
+            herdr_workspace_id: "w1".into(),
+            at: SystemTime::now(),
+            cleaned: false,
+        };
+        let value = serde_json::to_value(&record).unwrap();
+        assert!(value.get("cleaned").is_none());
+        let mut cleaned = record;
+        cleaned.cleaned = true;
+        assert_eq!(serde_json::to_value(cleaned).unwrap()["cleaned"], true);
+    }
+
+    #[test]
+    fn cleanup_refusal_codes_are_stable() {
+        assert_eq!(CleanupError::NotDispatched.code(), "not-dispatched");
+        assert_eq!(CleanupError::AlreadyCleaned.code(), "already-cleaned");
+        assert_eq!(CleanupError::DirtyWorktree.code(), "dirty-worktree");
+        assert_eq!(CleanupError::Herdr("failed".into()).code(), "herdr-failed");
     }
 
     #[test]

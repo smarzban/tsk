@@ -69,7 +69,9 @@ Assign threads when [capturing](/docs/capture/#title-tokens) or [editing a task]
 
 An optional assignee links a task to the exact name of an agent profile in [`agents.toml`](/docs/storage/#agent-profiles). Rows stay a title; the peek (`→`) footer names `@assignee · #thread · project`, in that order, for whatever is set. Use **set assignee** in the palette, then choose a profile or **none**. With marked tasks, one choice updates the whole set and one `ctrl+u` reverses it.
 
-Press `ctrl+g`, or choose **dispatch to @name** from the palette, to send the cursored task to its assigned agent. Dispatch is cursor-only: it clears any marked set rather than launching several agents. tsk creates a dedicated Git worktree and Herdr workspace, renders the profile command there, starts the task, then records the worktree, branch, workspace, command argv, and time as one save. If creating or launching fails, task state does not change. Dispatch requires Herdr, a project-scoped task in a Git repository, and a non-done, non-archived task with a known assignee. A task with a dispatch record refuses another launch unless you use [`tsk dispatch T12 --again`](/docs/cli/#dispatch), which reuses its workspace and worktree.
+Press `ctrl+g`, or choose **dispatch to @name** from the palette, to send the cursored task to its assigned agent. Dispatch is cursor-only: it clears any marked set rather than launching several agents. tsk creates a dedicated Git worktree and Herdr workspace, renders the profile command there, starts the task, then records the worktree, branch, workspace, command argv, and time as one save. If creating or launching fails, task state does not change. Dispatch requires Herdr, a project-scoped task in a Git repository, and a non-done, non-archived task with a known assignee.
+
+On a task with a dispatch record, the first `ctrl+g` names its worktree and asks for another press; the second relaunches there. The palette offers **dispatch again** instead. A cleaned record recreates the worktree, reopening a retained unmerged branch or recreating a removed merged branch.
 
 ## Status
 
@@ -81,7 +83,7 @@ Press `ctrl+g`, or choose **dispatch to @name** from the palette, to send the cu
 | ↳ **inbox** | `open` |
 | Done drawer | `done` |
 
-Status glyphs are `◌` open, `○` ready, `●` started, `■` blocked, `▲` review, and `✓` done. A started task with a dispatch record uses `◉` instead of `●`; changing its human status restores that status's normal glyph.
+Status glyphs are `◌` open, `○` ready, `●` started, `■` blocked, `▲` review, and `✓` done. A started task with a live dispatch uses `◉` instead of `●`; changing its human status or cleaning the dispatch restores the normal glyph.
 
 On your desk, **ON DECK** contains only desk tasks. On a project board, it contains that project's ready and open tasks. Ready tasks are the picked queue; open tasks are the untriaged inbox below it. Ready tasks sort by oldest pick first, open tasks by oldest capture first, and notice tasks lead within each group. The **inbox** group starts expanded; press `Enter` on its heading or `g` while the done drawer is closed to fold or unfold it. With the drawer open and archived tasks available, `g` addresses its archived group; otherwise it addresses the inbox. Use the thread filter to narrow the tasks.
 
@@ -96,13 +98,15 @@ On a task-board list, `ctrl+s`, `ctrl+n`, `ctrl+o`, `ctrl+d`, `ctrl+b`, `ctrl+r`
 | `ctrl+s` | Start an open or ready task |
 | `ctrl+n` | Set ready, the picked on-deck queue |
 | `ctrl+o` | Set open, the inbox |
-| `ctrl+d` | Mark done |
+| `ctrl+d` | Mark done; offer to clean a live dispatched worktree |
 | `ctrl+b` | Set blocked; press again to return to ready |
 | `ctrl+r` | Set review; press again to return to ready |
 
 `ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Bulk block and review toggles are all-or-nothing: if every target already has that status they all return to ready, otherwise they all move to that status. Other status verbs are absolute, so repeating the current status does nothing. Done tasks can be sent directly to ready or open.
 
-Agents can set any status with [the CLI](/docs/cli/#status). Task status does not change automatically when steps are checked or an agent stops.
+With no marks, `ctrl+d` on a live dispatched worktree asks before completing. The card shows the worktree, branch, whether branch commits are merged, and whether the agent pane will close. `y` safely cleans then marks done, `n` marks done and keeps everything, and `Esc` changes nothing. A dirty worktree cannot be cleaned, so the card offers only done-without-cleanup or cancel. Bulk done never opens this card.
+
+Cleanup removes a clean worktree and its Herdr workspace. It removes the branch only when it is merged; an unmerged branch is kept. The dispatch record remains marked cleaned, and undo reverses only the completion. Agents can set any status with [the CLI](/docs/cli/#status). Task status does not change automatically when steps are checked or an agent stops.
 
 ## Notices
 
@@ -191,10 +195,11 @@ Press `:` and type to find an action. Use arrows or `Tab` to select, `Enter` to 
 | New task, undo, done drawer, help, quit | Always |
 | Set open/ready/started/blocked/review, edit notes, change scope, delete | A task is selected |
 | Set assignee | A task is selected |
-| Dispatch to @name | An assigned task is selected |
+| Dispatch to @name | An assigned task without a dispatch record is selected |
+| Dispatch again | A task with a dispatch record is selected |
 | Retry save, cancel save | A save has failed |
 
-**Set assignee** applies to the marked set when marks are present. **Dispatch to @name** ignores and clears marks, then dispatches only the cursor.
+**Set assignee** applies to the marked set when marks are present. Dispatch commands ignore and clear marks, then dispatch only the cursor.
 
 Search matches letters in order: `ssr` finds `set status: review`.
 

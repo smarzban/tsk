@@ -93,15 +93,18 @@ impl BoardModel {
                 command("change scope", BoardIntent::BeginEditScope),
                 command("set assignee", BoardIntent::BeginEditAssignee),
             ]);
-            if let Some(assignee) = self
+            if let Some(task) = self
                 .selected_id()
                 .and_then(|id| self.tasks.iter().find(|task| task.id == id))
-                .and_then(|task| task.assignee.as_deref())
             {
-                commands.push(command(
-                    format!("dispatch to @{assignee}"),
-                    BoardIntent::Dispatch,
-                ));
+                if task.dispatch.is_some() {
+                    commands.push(command("dispatch again", BoardIntent::DispatchAgain));
+                } else if let Some(assignee) = task.assignee.as_deref() {
+                    commands.push(command(
+                        format!("dispatch to @{assignee}"),
+                        BoardIntent::Dispatch,
+                    ));
+                }
             }
         }
         // Always-available board commands, then selection-gated delete when present.

@@ -1513,6 +1513,7 @@ fn dispatched_started_task_uses_the_bullseye_glyph_on_rows_peek_and_page_only_wh
         branch: "tsk/t70-dispatched-task".into(),
         herdr_workspace_id: "workspace-70".into(),
         at: at_secs_ago(30),
+        cleaned: false,
     });
     let mut model = BoardModel::from_tasks(vec![dispatched.clone()], None);
     let board = board_rows(&model, 80, 24).join("\n");
