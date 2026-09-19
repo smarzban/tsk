@@ -39,17 +39,24 @@ impl Launcher {
             SEQ.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(root.join("state")).expect("temp root");
+        fs::write(
+            root.join("existing.json"),
+            r#"{"result":{"panes":[{"pane_id":"w0:p2","workspace_id":"w0","tab_id":"w0:t2","label":"tsk"}]}}"#,
+        )
+        .expect("existing panes fixture");
+        fs::write(root.join("empty.json"), r#"{"result":{"panes":[]}}"#)
+            .expect("empty panes fixture");
         let stub = root.join("herdr.cmd");
         fs::write(
             &stub,
             r#"@echo off
 >>"%STUB_ROOT%\calls.log" echo %*
 if "%1 %2"=="pane list" (
-  if "%STUB_MODE%"=="list-failure" exit /b 7
-  if "%STUB_MODE%"=="existing" (
-    echo {"result":{"panes":[{"pane_id":"w0:p2","workspace_id":"w0","tab_id":"w0:t2","label":"tsk"}]}}
+  if exist "%STUB_ROOT%\list-failure" exit /b 7
+  if exist "%STUB_ROOT%\existing" (
+    type "%STUB_ROOT%\existing.json"
   ) else (
-    echo {"result":{"panes":[]}}
+    type "%STUB_ROOT%\empty.json"
   )
   exit /b 0
 )
@@ -80,6 +87,9 @@ exit /b 0
     }
 
     fn run(&self, mode: &str) -> std::process::Output {
+        if mode == "existing" || mode == "list-failure" {
+            fs::write(self.root.join(mode), b"").expect("stub mode marker");
+        }
         self.command(&open_board_path(), mode)
             .env("HERDR_WORKSPACE_ID", "w0")
             .env("HERDR_PANE_ID", "w0:p1")

@@ -307,7 +307,7 @@ fn a_missing_home_refuses_instead_of_creating_a_board_in_the_working_directory()
         .expect("run tsk without HOME");
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("is not set"), "{stderr}");
+    assert!(stderr.contains("not set"), "{stderr}");
     assert!(stderr.contains("TSK_STATE_DIR"), "{stderr}");
     assert!(
         !cwd.join(".tsk-state").exists(),
