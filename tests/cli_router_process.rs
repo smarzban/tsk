@@ -373,7 +373,7 @@ fn a_missing_home_refuses_instead_of_creating_a_board_in_the_working_directory()
         let output = wait_with_output_before_deadline(child, &format!("tsk {args:?} without HOME"));
         assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("is not set"), "{args:?}: {stderr}");
+        assert!(stderr.contains("not set"), "{args:?}: {stderr}");
         assert!(
             !cwd.join(".tsk-state").exists(),
             "{args:?} created a cwd store"

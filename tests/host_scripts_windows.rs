@@ -46,21 +46,22 @@ impl Launcher {
         .expect("existing panes fixture");
         fs::write(root.join("empty.json"), r#"{"result":{"panes":[]}}"#)
             .expect("empty panes fixture");
-        let stub = root.join("herdr.cmd");
+        let stub = root.join("herdr.ps1");
         fs::write(
             &stub,
-            r#"@echo off
->>"%STUB_ROOT%\calls.log" echo %*
-if "%1 %2"=="pane list" (
-  if exist "%STUB_ROOT%\list-failure" exit /b 7
-  if exist "%STUB_ROOT%\existing" (
-    type "%STUB_ROOT%\existing.json"
-  ) else (
-    type "%STUB_ROOT%\empty.json"
-  )
-  exit /b 0
-)
-exit /b 0
+            r#"Add-Content -LiteralPath (Join-Path $env:STUB_ROOT 'calls.log') -Value ($args -join ' ')
+if ($args.Count -ge 2 -and $args[0] -eq 'pane' -and $args[1] -eq 'list') {
+  if (Test-Path -LiteralPath (Join-Path $env:STUB_ROOT 'list-failure')) {
+    & $env:ComSpec /c exit 7
+    return
+  }
+  if (Test-Path -LiteralPath (Join-Path $env:STUB_ROOT 'existing')) {
+    Get-Content -LiteralPath (Join-Path $env:STUB_ROOT 'existing.json') -Raw
+  } else {
+    Get-Content -LiteralPath (Join-Path $env:STUB_ROOT 'empty.json') -Raw
+  }
+}
+& $env:ComSpec /c exit 0
 "#,
         )
         .expect("stub");
