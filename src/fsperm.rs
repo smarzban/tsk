@@ -122,7 +122,7 @@ pub(crate) fn is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
         // FILE_ATTRIBUTE_REPARSE_POINT also covers junctions, which are not reported by
         // FileType::is_symlink but must not redirect state or setup writes.
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
     }
     #[cfg(not(windows))]
     false
@@ -161,7 +161,7 @@ pub(crate) fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
         {
             return Err(io::Error::last_os_error());
         }
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(windows))]
     fs::rename(from, to)

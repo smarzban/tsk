@@ -317,14 +317,14 @@ impl TaskStore {
             if read == 0 {
                 return None;
             }
-            return Some(StoreSignature {
+            Some(StoreSignature {
                 volume: Some(info.dwVolumeSerialNumber),
                 file_index: Some(
                     (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
                 ),
                 modified: metadata.modified().ok()?,
                 len: metadata.len(),
-            });
+            })
         }
         #[cfg(not(windows))]
         {

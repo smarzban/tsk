@@ -33,7 +33,7 @@ impl Drop for TempDirGuard {
 fn platform_nanos(nanos: u32) -> u32 {
     #[cfg(windows)]
     {
-        return nanos / 100 * 100;
+        nanos / 100 * 100
     }
     #[cfg(not(windows))]
     nanos
