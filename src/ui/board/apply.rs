@@ -129,29 +129,37 @@ fn stale_undo_message(id: Uuid) -> String {
 /// intent is applied, and [`apply_intent`] uses it to time the delete recovery notice
 ///. Both read this list rather than keeping one of their own, so the pinned
 /// definition and the classification cannot drift apart.
-pub fn board_intent_may_persist(intent: &BoardIntent) -> bool {
-    matches!(
+pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> bool {
+    let dropdown_assignment = matches!(
         intent,
-        BoardIntent::ConfirmEdit
-            | BoardIntent::ConfirmEditNext
-            | BoardIntent::ConfirmFormAssignee
-            | BoardIntent::ConfirmFormDropdown
-            | BoardIntent::SelectFormDropdownOption(_)
-            | BoardIntent::SetStatus(_)
-            | BoardIntent::Complete
-            | BoardIntent::Reopen
-            | BoardIntent::SoftDelete
-            | BoardIntent::Undo
-            | BoardIntent::File
-            | BoardIntent::LaunchUnarchive
-            | BoardIntent::PrimaryVerb
-            | BoardIntent::Dispatch
-            | BoardIntent::ToggleBlock
-            | BoardIntent::ToggleReview
-            | BoardIntent::ToggleStep
-            | BoardIntent::QuickAddSave
-            | BoardIntent::QuickAddSaveNext
-    )
+        BoardIntent::ConfirmFormDropdown | BoardIntent::SelectFormDropdownOption(_)
+    ) && model.input_mode == BoardInputMode::FormDropdown
+        && model
+            .form
+            .as_ref()
+            .is_some_and(|form| form.focus == CaptureField::Assignee)
+        && model.pending_assignee_targets.is_some();
+    dropdown_assignment
+        || matches!(
+            intent,
+            BoardIntent::ConfirmEdit
+                | BoardIntent::ConfirmEditNext
+                | BoardIntent::ConfirmFormAssignee
+                | BoardIntent::SetStatus(_)
+                | BoardIntent::Complete
+                | BoardIntent::Reopen
+                | BoardIntent::SoftDelete
+                | BoardIntent::Undo
+                | BoardIntent::File
+                | BoardIntent::LaunchUnarchive
+                | BoardIntent::PrimaryVerb
+                | BoardIntent::Dispatch
+                | BoardIntent::ToggleBlock
+                | BoardIntent::ToggleReview
+                | BoardIntent::ToggleStep
+                | BoardIntent::QuickAddSave
+                | BoardIntent::QuickAddSaveNext
+        )
 }
 
 /// The chrome row's lifetime rule, in one place.
@@ -191,7 +199,7 @@ pub fn board_intent_may_persist(intent: &BoardIntent) -> bool {
 /// When both channels are set the row carries **both**, notice first, message second, legend
 /// last (see [`fit_chrome_row`]). Nothing on this row wins by taking another thing off it.
 fn apply_chrome_row_lifetime(model: &mut BoardModel, intent: &BoardIntent) {
-    if board_intent_may_persist(intent) {
+    if board_intent_may_persist(model, intent) {
         model.clear_delete_notice();
         model.clear_message();
     }
@@ -203,11 +211,11 @@ fn apply_chrome_row_lifetime(model: &mut BoardModel, intent: &BoardIntent) {
 /// [`IntentOutcome::Persist`]. The capture snapshot is retained by the form.
 /// Intents the read-only archived focus refuses (AC-42): everything that would mutate a
 /// task or open a capture/edit surface. `Undo` is excluded: it is the unarchive route.
-fn read_only_focus_refuses(intent: &BoardIntent) -> bool {
+fn read_only_focus_refuses(model: &BoardModel, intent: &BoardIntent) -> bool {
     if matches!(intent, BoardIntent::Undo) {
         return false;
     }
-    if board_intent_may_persist(intent) {
+    if board_intent_may_persist(model, intent) {
         return true;
     }
     matches!(
@@ -301,7 +309,7 @@ pub fn apply_intent(
         && model.popup() == BoardPopup::None
         && model.project_picker.is_none()
         && model.surface == CommandSurface::None
-        && read_only_focus_refuses(&intent)
+        && read_only_focus_refuses(model, &intent)
     {
         if let Some(refusal) = model.archived_focus_refusal() {
             model.set_message(refusal);
@@ -312,7 +320,7 @@ pub fn apply_intent(
         model.delete_notice().map(str::to_string),
         model.delete_notice_count,
     );
-    let mutating = board_intent_may_persist(&intent);
+    let mutating = board_intent_may_persist(model, &intent);
     let result = apply_board_intent(domain, model, intent, snapshot);
     // A command confirmation carries no lifetime of its own: it recurses with the command it
     // resolved to, and that intent is classified on the way through, so it is the recursion
@@ -801,19 +809,20 @@ fn apply_board_intent(
             return Ok(IntentOutcome::None);
         }
         BoardIntent::ConfirmFormDropdown => {
-            if model.input_mode == BoardInputMode::FormDropdown {
-                model.close_form_dropdown(true);
-                if let Some(targets) = model.pending_assignee_targets.take() {
+            let field = model.form.as_ref().map(|form| form.focus);
+            if model.input_mode == BoardInputMode::FormDropdown
+                && model.close_form_dropdown(true)
+                && field == Some(CaptureField::Assignee)
+            {
+                if let Some(targets) = model.pending_assignee_targets.as_ref() {
                     let assignee = model.form.as_ref().and_then(|form| form.assignee.clone());
-                    let changed = domain.assign_batch(&targets, assignee)?;
+                    let changed = domain.assign_batch(targets, assignee)?;
                     model.clear_marks();
-                    model.form = None;
-                    model.input_mode = BoardInputMode::Normal;
-                    return Ok(if changed {
-                        IntentOutcome::Persist
-                    } else {
-                        IntentOutcome::None
-                    });
+                    if changed {
+                        return Ok(IntentOutcome::Persist);
+                    }
+                    model.finish_pending_assignee_assignment();
+                    return Ok(IntentOutcome::None);
                 }
             }
             return Ok(IntentOutcome::None);
@@ -825,19 +834,17 @@ fn apply_board_intent(
             return Ok(IntentOutcome::None);
         }
         BoardIntent::SelectFormDropdownOption(index) => {
-            model.select_form_dropdown_option(index);
-            if model.input_mode != BoardInputMode::FormDropdown {
-                if let Some(targets) = model.pending_assignee_targets.take() {
+            let field = model.form.as_ref().map(|form| form.focus);
+            if model.select_form_dropdown_option(index) && field == Some(CaptureField::Assignee) {
+                if let Some(targets) = model.pending_assignee_targets.as_ref() {
                     let assignee = model.form.as_ref().and_then(|form| form.assignee.clone());
-                    let changed = domain.assign_batch(&targets, assignee)?;
+                    let changed = domain.assign_batch(targets, assignee)?;
                     model.clear_marks();
-                    model.form = None;
-                    model.input_mode = BoardInputMode::Normal;
-                    return Ok(if changed {
-                        IntentOutcome::Persist
-                    } else {
-                        IntentOutcome::None
-                    });
+                    if changed {
+                        return Ok(IntentOutcome::Persist);
+                    }
+                    model.finish_pending_assignee_assignment();
+                    return Ok(IntentOutcome::None);
                 }
             }
             return Ok(IntentOutcome::None);

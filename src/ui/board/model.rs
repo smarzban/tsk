@@ -3238,18 +3238,19 @@ impl BoardModel {
         self.input_mode = BoardInputMode::FormDropdown;
     }
 
-    pub(super) fn close_form_dropdown(&mut self, apply: bool) {
+    pub(super) fn close_form_dropdown(&mut self, apply: bool) -> bool {
         let Some(form) = self.form.as_mut() else {
-            return;
+            return false;
         };
         match (form.focus, apply) {
             (CaptureField::Scope, true) => form.apply_scope_selection(),
             (CaptureField::Scope, false) => form.select_current_scope(),
             (CaptureField::Assignee, true) => form.apply_assignee_selection(),
             (CaptureField::Assignee, false) => form.select_current_assignee(),
-            _ => return,
+            _ => return false,
         }
         self.input_mode = form.parent_mode();
+        true
     }
 
     pub(super) fn move_form_dropdown(&mut self, forward: bool) {
@@ -3266,12 +3267,12 @@ impl BoardModel {
     }
 
     /// Apply a clicked source option exactly as keyboard navigation plus Enter would.
-    pub(super) fn select_form_dropdown_option(&mut self, index: usize) {
+    pub(super) fn select_form_dropdown_option(&mut self, index: usize) -> bool {
         if self.input_mode != BoardInputMode::FormDropdown {
-            return;
+            return false;
         }
         let Some(form) = self.form.as_mut() else {
-            return;
+            return false;
         };
         match form.focus {
             CaptureField::Scope if index < form.scope_options.len() => {
@@ -3282,9 +3283,20 @@ impl BoardModel {
                 form.assignee_selected = index;
                 form.apply_assignee_selection();
             }
-            _ => return,
+            _ => return false,
         }
         self.input_mode = form.parent_mode();
+        true
+    }
+
+    /// Close an assignment form only after its batch reached the persistence boundary.
+    pub fn finish_pending_assignee_assignment(&mut self) -> bool {
+        if self.pending_assignee_targets.take().is_none() {
+            return false;
+        }
+        self.form = None;
+        self.input_mode = BoardInputMode::Normal;
+        true
     }
 
     /// Help line listing primary key bindings.

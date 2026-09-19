@@ -271,7 +271,10 @@ fn palette_assignment_applies_to_marked_tasks_as_one_undoable_batch() {
     .expect("open dropdown");
     apply_intent(&mut domain, &mut model, BoardIntent::FormDropdownNext, None)
         .expect("select reviewer");
-    assert!(board_intent_may_persist(&BoardIntent::ConfirmFormDropdown));
+    assert!(board_intent_may_persist(
+        &model,
+        &BoardIntent::ConfirmFormDropdown
+    ));
     assert_eq!(
         apply_intent(
             &mut domain,
@@ -311,6 +314,173 @@ fn palette_assignment_applies_to_marked_tasks_as_one_undoable_batch() {
         domain.get(second).expect("second").status,
         HumanStatus::Review
     );
+}
+
+#[test]
+fn scope_dropdown_preserves_marked_assignment_until_assignee_is_picked() {
+    let (mut domain, mut model, first) = board_with_task("first", HumanStatus::Started);
+    let second = domain
+        .create(
+            "second",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create second");
+    model.sync_from_domain(&domain);
+    set_agent_profiles(&mut model, &["reviewer"]);
+    mark_tasks(&mut domain, &mut model, &[first, second]);
+
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::BeginEditAssignee,
+        None,
+    )
+    .expect("open marked assignment");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("move to thread");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("move to scope");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenFormDropdown(CaptureField::Scope),
+        None,
+    )
+    .expect("open scope dropdown");
+    assert_eq!(
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmFormDropdown,
+            None,
+        )
+        .expect("pick scope"),
+        IntentOutcome::None
+    );
+    assert_eq!(domain.get(first).expect("first").assignee, None);
+    assert_eq!(domain.get(second).expect("second").assignee, None);
+    assert_eq!(model.marked_ids().len(), 2);
+    assert_eq!(model.input_mode(), BoardInputMode::EditScope);
+
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenFormDropdown(CaptureField::Scope),
+        None,
+    )
+    .expect("reopen scope dropdown");
+    assert_eq!(
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectFormDropdownOption(0),
+            None,
+        )
+        .expect("click scope option"),
+        IntentOutcome::None
+    );
+    assert_eq!(domain.get(first).expect("first").assignee, None);
+    assert_eq!(domain.get(second).expect("second").assignee, None);
+    assert_eq!(model.marked_ids().len(), 2);
+    assert_eq!(model.input_mode(), BoardInputMode::EditScope);
+
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::FocusFormField(CaptureField::Assignee),
+        None,
+    )
+    .expect("return to assignee");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenFormDropdown(CaptureField::Assignee),
+        None,
+    )
+    .expect("open assignee dropdown");
+    assert!(
+        board_intent_may_persist(&model, &BoardIntent::ConfirmFormDropdown),
+        "the retained marked assignment must still be pending"
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::FormDropdownNext, None)
+        .expect("select reviewer");
+    assert_eq!(
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmFormDropdown,
+            None,
+        )
+        .expect("assign marked tasks"),
+        IntentOutcome::Persist
+    );
+    assert_eq!(
+        domain.get(first).expect("first").assignee.as_deref(),
+        Some("reviewer")
+    );
+    assert_eq!(
+        domain.get(second).expect("second").assignee.as_deref(),
+        Some("reviewer")
+    );
+}
+
+#[test]
+fn dropdown_persistence_classification_requires_pending_assignee_targets() {
+    let (mut domain, mut model, _) = board_with_task("classify dropdown", HumanStatus::Started);
+    set_agent_profiles(&mut model, &["reviewer"]);
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::BeginEditAssignee,
+        None,
+    )
+    .expect("begin assignment");
+    for _ in 0..2 {
+        apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+            .expect("move toward scope");
+    }
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenFormDropdown(CaptureField::Scope),
+        None,
+    )
+    .expect("open scope dropdown");
+    for intent in [
+        BoardIntent::ConfirmFormDropdown,
+        BoardIntent::SelectFormDropdownOption(0),
+    ] {
+        assert!(
+            !board_intent_may_persist(&model, &intent),
+            "{intent:?} on Scope must remain a draft-only action"
+        );
+    }
+
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::CancelFormDropdown,
+        None,
+    )
+    .expect("close scope dropdown");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenFormDropdown(CaptureField::Assignee),
+        None,
+    )
+    .expect("open assignee dropdown");
+    for intent in [
+        BoardIntent::ConfirmFormDropdown,
+        BoardIntent::SelectFormDropdownOption(0),
+    ] {
+        assert!(
+            board_intent_may_persist(&model, &intent),
+            "{intent:?} on Assignee must load a save baseline"
+        );
+    }
 }
 
 #[test]
@@ -1266,7 +1436,7 @@ fn space_on_todo_sets_doing_via_domain() {
         Some(HumanStatus::Started)
     );
     assert!(
-        board_intent_may_persist(&BoardIntent::PrimaryVerb),
+        board_intent_may_persist(&model, &BoardIntent::PrimaryVerb),
         "PrimaryVerb must load a save baseline when it can mutate"
     );
 }
@@ -1334,8 +1504,8 @@ fn d_completes_non_done_and_o_reopens_done() {
     assert_eq!(outcome, IntentOutcome::Persist);
     assert_eq!(domain.get(id).expect("task").status, HumanStatus::Open);
 
-    assert!(board_intent_may_persist(&BoardIntent::Complete));
-    assert!(board_intent_may_persist(&BoardIntent::Reopen));
+    assert!(board_intent_may_persist(&model, &BoardIntent::Complete));
+    assert!(board_intent_may_persist(&model, &BoardIntent::Reopen));
 }
 
 #[test]
@@ -1356,7 +1526,7 @@ fn b_on_blocked_sets_todo_and_keeps_task_on_deck_not_in_motion() {
         .sections
         .iter()
         .any(|section| section.kind == SectionKind::InMotion && section.task_ids.contains(&id)));
-    assert!(board_intent_may_persist(&BoardIntent::ToggleBlock));
+    assert!(board_intent_may_persist(&model, &BoardIntent::ToggleBlock));
 }
 
 #[test]
@@ -1399,7 +1569,10 @@ fn enter_opens_the_task_page_and_enter_again_closes_it_without_mutating() {
     assert_eq!(outcome, IntentOutcome::None);
     assert_eq!(model.input_mode(), BoardInputMode::Normal);
     assert_eq!(domain.get(id).expect("task").revision, rev_before);
-    assert!(!board_intent_may_persist(&BoardIntent::OpenTaskPage));
+    assert!(!board_intent_may_persist(
+        &model,
+        &BoardIntent::OpenTaskPage
+    ));
 }
 
 #[test]
@@ -1431,8 +1604,11 @@ fn right_arrow_peeks_detail_and_left_arrow_collapses_it() {
     assert_eq!(model.detail_open(), None);
     assert_eq!(domain.get(id).expect("task").revision, rev_before);
 
-    assert!(!board_intent_may_persist(&BoardIntent::PeekDetail));
-    assert!(!board_intent_may_persist(&BoardIntent::CollapseDetail));
+    assert!(!board_intent_may_persist(&model, &BoardIntent::PeekDetail));
+    assert!(!board_intent_may_persist(
+        &model,
+        &BoardIntent::CollapseDetail
+    ));
 }
 
 #[test]
@@ -2995,7 +3171,7 @@ fn page_scroll_intents_are_session_only_and_bounded() {
     for intent in [BoardIntent::PageScrollUp, BoardIntent::PageScrollDown] {
         let outcome = apply_intent(&mut domain, &mut model, intent.clone(), None).expect("scroll");
         assert_eq!(outcome, IntentOutcome::None);
-        assert!(!board_intent_may_persist(&intent));
+        assert!(!board_intent_may_persist(&model, &intent));
     }
     // Far more downs than the notes have lines must stay bounded and mutation-free.
     for _ in 0..50 {
@@ -3692,7 +3868,7 @@ fn ctrl_r_toggles_review_and_ready_and_refuses_on_done() {
     let review = map_key(BoardInputMode::Normal, ctrl(KeyCode::Char('r'))).expect("ctrl+r");
     assert_eq!(review, BoardIntent::ToggleReview);
     assert!(
-        board_intent_may_persist(&review),
+        board_intent_may_persist(&model, &review),
         "review is a durable status change"
     );
 

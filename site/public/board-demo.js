@@ -1252,8 +1252,9 @@ import { parseCapture } from "./capture.js";
 
   function metaFor(task) {
     const bits = [];
-    if (!state.focusProject && task.project) bits.push(projectName(task));
-    if (state.focusProject && task.thread) bits.push(`#${task.thread}`);
+    if (task.assignee) bits.push(`@${task.assignee}`);
+    if (task.thread) bits.push(`#${task.thread}`);
+    if (task.project) bits.push(projectName(task));
     return bits.join(" · ");
   }
 
@@ -2431,6 +2432,7 @@ import { parseCapture } from "./capture.js";
           (task.notes || "").trim() || "no notes yet",
           Math.max(8, width - 7),
         );
+        const label = metaFor(task);
         const peek =
           rail && preview.peekId === task.id
             ? [
@@ -2445,10 +2447,11 @@ import { parseCapture } from "./capture.js";
                       `<div class="tsk-peek dim">    │ … ${noteLines.length - 5} more lines</div>`,
                     ]
                   : []),
-                ...(task.thread
-                  ? [
-                      `<div class="tsk-attribution dim">    └─ #${esc(task.thread)}</div>`,
-                    ]
+                ...(label
+                  ? wrapText(label, width - 9).map(
+                      (line, i) =>
+                        `<div class="tsk-attribution dim">${i ? "       " : "    └─ "}${esc(line)}</div>`,
+                    )
                   : [`<div class="tsk-peek dim">    └</div>`]),
               ].join("")
             : "";
