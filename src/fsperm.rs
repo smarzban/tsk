@@ -32,6 +32,8 @@ fn run_before_lock_open_hook() {}
 /// stripping any group/other access from one that already exists. Stricter
 /// existing modes are kept.
 pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    reject_reparse_ancestors(path)?;
     match fs::symlink_metadata(path) {
         Ok(metadata) if is_reparse_or_symlink(&metadata) || !metadata.is_dir() => {
             return Err(io::Error::new(
@@ -86,6 +88,32 @@ fn tighten_private_dir(path: &Path) -> io::Result<()> {
 /// Create a file holding owner-only content (`0600` on Unix when created),
 /// truncating an existing one. Temp files and their renamed targets go through
 /// here so a document is never briefly world-readable.
+#[cfg(windows)]
+pub(crate) fn reject_reparse_ancestors(path: &Path) -> io::Result<()> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    for ancestor in absolute.ancestors() {
+        match fs::symlink_metadata(ancestor) {
+            Ok(metadata) if is_reparse_or_symlink(&metadata) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "path contains a reparse-point ancestor: {}",
+                        ancestor.display()
+                    ),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
     if metadata.file_type().is_symlink() {
         return true;
@@ -394,6 +422,42 @@ mod windows_tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn junction(link: &Path, target: &Path) {
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .expect("run mklink");
+        assert!(
+            output.status.success(),
+            "mklink failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn ensure_private_dir_rejects_a_junction_ancestor_without_creating_through_it() {
+        let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("tsk-fsperm-junction-{}-{seq}", std::process::id()));
+        fs::create_dir_all(&root).expect("root");
+        let target = root.join("target");
+        let link = root.join("redirect");
+        fs::create_dir(&target).expect("target");
+        junction(&link, &target);
+        assert!(
+            is_reparse_or_symlink(&fs::symlink_metadata(&link).expect("junction metadata")),
+            "a native junction must carry the reparse-point attribute"
+        );
+
+        ensure_private_dir(&link.join("state")).expect_err("junction ancestor must be refused");
+
+        assert!(!target.join("state").exists());
+        fs::remove_dir(&link).expect("remove junction");
+        fs::remove_dir_all(root).expect("cleanup");
+    }
 
     #[test]
     fn replace_file_atomically_replaces_an_existing_destination() {

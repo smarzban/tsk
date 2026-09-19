@@ -1860,8 +1860,11 @@ mod tests {
             let fresh = dir.join(format!("{prefix}2.2"));
             fs::write(&stale, b"stale").expect("seed stale");
             fs::write(&fresh, b"in flight").expect("seed fresh");
-            fs::File::open(&stale)
-                .expect("open stale")
+            // Windows needs a handle with write attributes to call SetFileTime.
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&stale)
+                .expect("open stale for metadata write")
                 .set_modified(two_minutes_ago)
                 .expect("age the stale temp");
             seeded.push((prefix, stale, fresh));

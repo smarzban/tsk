@@ -23,6 +23,102 @@ impl Drop for Temp {
     }
 }
 #[cfg(windows)]
+fn junction(link: &Path, target: &Path) {
+    let output = Command::new("cmd.exe")
+        .args(["/D", "/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .expect("run mklink");
+    assert!(
+        output.status.success(),
+        "mklink failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_setup_rejects_a_junction_ancestor_before_creating_directories() {
+    let temp = Temp::new();
+    let target = temp.0.join("outside");
+    let link = temp.0.join("redirect");
+    fs::create_dir(&target).unwrap();
+    junction(&link, &target);
+
+    let result = Dir::open(&link.join("herdr"), true);
+
+    assert!(result.is_err(), "a junction ancestor must be refused");
+    assert!(!target.join("herdr").exists());
+    fs::remove_dir(&link).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_generated_assets_are_filtered_and_pin_the_installed_binary() {
+    let binary = Path::new(r"C:\Program Files\O'Brien\tsk.exe");
+    let assets = managed_assets(binary, "9.8.7").unwrap();
+    let manifest = assets
+        .iter()
+        .find(|(name, _)| *name == "herdr-plugin.toml")
+        .unwrap()
+        .1
+        .parse::<DocumentMut>()
+        .unwrap();
+    let actions = manifest["actions"].as_array_of_tables().unwrap();
+    assert_eq!(actions.len(), 2);
+    assert_eq!(
+        actions.get(0).unwrap()["id"].as_str(),
+        Some("open-board-windows")
+    );
+    assert_eq!(
+        actions.get(1).unwrap()["id"].as_str(),
+        Some("quick-capture-windows")
+    );
+    assert!(actions.iter().all(|action| {
+        action["platforms"].as_array().is_some_and(|platforms| {
+            platforms.len() == 1
+                && platforms.get(0).and_then(|entry| entry.as_str()) == Some("windows")
+        })
+    }));
+    let pane = manifest["panes"]
+        .as_array_of_tables()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(
+        pane["command"]
+            .as_array()
+            .unwrap()
+            .get(0)
+            .and_then(|entry| entry.as_str()),
+        binary.to_str()
+    );
+
+    let board = &assets
+        .iter()
+        .find(|(name, _)| *name == "scripts/open-board.ps1")
+        .unwrap()
+        .1;
+    assert!(board.contains(r"$pluginBin = 'C:\Program Files\O''Brien\tsk.exe'"));
+    assert!(!board.contains("$env:TSK_BIN"));
+    assert!(!board.contains(r"target\release\tsk.exe"));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_bare_tsk_path_lookup_resolves_the_exe_suffix() {
+    let temp = Temp::new();
+    let executable = temp.0.join("tsk.exe");
+    fs::write(&executable, b"fixture").unwrap();
+
+    assert_eq!(
+        resolve_installed_binary(Path::new("tsk"), temp.0.as_os_str(), &executable).unwrap(),
+        executable
+    );
+}
+
+#[cfg(windows)]
 #[test]
 fn windows_setup_rejects_a_reparse_point_file_before_reading_it() {
     use std::os::windows::fs::symlink_file;

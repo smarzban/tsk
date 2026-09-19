@@ -1,6 +1,8 @@
 //! Explicit, user-approved registration of the installed binary with Herdr.
 use std::{
-    env, fs,
+    env,
+    ffi::OsStr,
+    fs,
     io::{self, BufRead, Write},
     path::{Path, PathBuf},
     process::Command,
@@ -317,15 +319,24 @@ fn installed_binary() -> io::Result<PathBuf> {
             .next()
             .ok_or_else(|| error("missing executable path"))?,
     );
+    let search_path = env::var_os("PATH").unwrap_or_default();
+    resolve_installed_binary(&invoked, &search_path, &env::current_exe()?)
+}
+
+fn resolve_installed_binary(
+    invoked: &Path,
+    search_path: &OsStr,
+    running_executable: &Path,
+) -> io::Result<PathBuf> {
     let candidate = if invoked.components().count() > 1 || invoked.is_absolute() {
-        absolute(invoked)?
+        absolute(invoked.to_path_buf())?
     } else {
-        env::split_paths(&env::var_os("PATH").unwrap_or_default())
+        env::split_paths(search_path)
             .flat_map(|directory| {
-                let exact = directory.join(&invoked);
+                let exact = directory.join(invoked);
                 #[cfg(windows)]
                 let executable = (invoked.extension().is_none())
-                    .then(|| directory.join(&invoked).with_extension("exe"));
+                    .then(|| directory.join(invoked).with_extension("exe"));
                 #[cfg(not(windows))]
                 let executable: Option<PathBuf> = None;
                 std::iter::once(exact).chain(executable)
@@ -334,7 +345,7 @@ fn installed_binary() -> io::Result<PathBuf> {
             .ok_or_else(|| error("could not locate tsk on PATH"))?
     };
     let candidate = absolute(candidate)?;
-    if fs::canonicalize(&candidate)? != fs::canonicalize(env::current_exe()?)? {
+    if fs::canonicalize(&candidate)? != fs::canonicalize(running_executable)? {
         return Err(error("invoked tsk path does not match running binary"));
     }
     Ok(candidate)

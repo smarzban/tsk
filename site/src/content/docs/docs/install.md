@@ -23,7 +23,7 @@ Reopen your terminal if prompted, or run the printed `export` command.
 
 ### Windows 10/11 x86-64
 
-Download the complete installer before running it in Windows PowerShell 5.1 or newer:
+Download the complete installer before running it in Windows PowerShell 5.1 or PowerShell 7:
 
 ```powershell
 Invoke-WebRequest https://gettsk.sh/install.ps1 -OutFile "$env:TEMP\install-tsk.ps1"
@@ -120,15 +120,16 @@ Requires `curl`, `tar`, `sed`, and `sha256sum` or `shasum`.
 
 ## Windows installer details
 
-`install.ps1` requires Windows 10/11 x86-64 and Windows PowerShell 5.1 or newer. It downloads the x86-64 MSVC ZIP and `SHA256SUMS` over TLS, requires one exact matching digest, validates the archive's three root entries, and stages `tsk.exe` beside the destination before replacement. It refuses reparse-point destinations and install paths, directory destinations, relative paths, and PATH separators.
+`install.ps1` requires Windows 10/11 x86-64 and Windows PowerShell 5.1 or PowerShell 7. It downloads the x86-64 MSVC ZIP and `SHA256SUMS` over TLS with finite time, redirect, compressed-size, and expanded-size limits, requires one exact matching digest, validates the archive's three root entries, and stages `tsk.exe` beside the destination before replacement. It refuses reparse-point destinations and install paths, directory destinations, relative paths, and PATH separators.
 
 | Setting | Purpose |
 | --- | --- |
 | `TSK_INSTALL_DIR` | Choose an absolute directory; a first install prints setup commands rather than running them |
 | `TSK_VERSION=vX.Y.Z` | Install a specific stable release |
+| `-NoPathUpdate` | Install without changing the user PATH |
 | `-Help` | Show help without network access |
 
-The default is `%LOCALAPPDATA%\Programs\tsk\bin`. The installer updates user PATH only, case-insensitively and without duplicates. `tsk update` supplies its process ID so a detached helper can wait out Windows executable locking; existing bound Herdr setup and outdated installed agent skills are refreshed after replacement.
+The default is `%LOCALAPPDATA%\Programs\tsk\bin`. Unless `-NoPathUpdate` is used, the installer updates user PATH only, case-insensitively and without duplicates, while preserving environment-variable references and the registry value's existing string kind. `tsk update` supplies its process ID so a detached stock Windows PowerShell helper can wait out Windows executable locking; existing bound Herdr setup and outdated installed agent skills are refreshed after replacement.
 
 ### macOS and Linux PATH
 

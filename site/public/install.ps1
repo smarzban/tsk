@@ -2,15 +2,23 @@
 # Compatible with Windows PowerShell 5.1. No task data is changed.
 [CmdletBinding()]
 param(
-    [switch] $Help
+    [switch] $Help,
+    [switch] $NoPathUpdate
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
+$MaxArchiveBytes = 100MB
+$MaxChecksumBytes = 1MB
+$MaxExpandedBytes = 250MB
 
 function Show-Help {
     @'
-Usage: powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 [-Help]
+Usage: powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 [-NoPathUpdate] [-Help]
+
+Options:
+  -NoPathUpdate     Install tsk without changing the user PATH
+  -Help             Show this help without network access
 
 Environment:
   TSK_VERSION       Stable release tag such as v1.2.3 (default: latest)
@@ -27,6 +35,106 @@ if ($Help) {
 
 function Fail([string] $Message) {
     throw $Message
+}
+
+function New-HttpsRequest([string] $Uri, [int] $TimeoutMilliseconds) {
+    $parsed = [Uri]$Uri
+    if (-not $parsed.IsAbsoluteUri -or $parsed.Scheme -ne 'https') {
+        Fail "refusing non-HTTPS download URL: $Uri"
+    }
+    $request = [Net.HttpWebRequest]::CreateHttp($parsed)
+    $request.AllowAutoRedirect = $false
+    $request.MaximumAutomaticRedirections = 5
+    $request.Timeout = $TimeoutMilliseconds
+    $request.ReadWriteTimeout = $TimeoutMilliseconds
+    $request.UserAgent = 'tsk-installer'
+    $request.Proxy = [Net.WebRequest]::DefaultWebProxy
+    if ($null -ne $request.Proxy) {
+        $request.Proxy.Credentials = [Net.CredentialCache]::DefaultNetworkCredentials
+    }
+    return $request
+}
+
+function Get-HttpsResponse([string] $Uri, [Diagnostics.Stopwatch] $Timer, [int] $TimeoutSeconds) {
+    $current = [Uri]$Uri
+    for ($redirects = 0; $redirects -le 5; $redirects++) {
+        $remaining = ($TimeoutSeconds * 1000) - $Timer.ElapsedMilliseconds
+        if ($remaining -le 0) { Fail "download exceeded the $TimeoutSeconds second limit" }
+        $requestTimeout = [Math]::Min(30000, [int]$remaining)
+        $request = New-HttpsRequest $current.AbsoluteUri $requestTimeout
+        try {
+            $response = [Net.HttpWebResponse]$request.GetResponse()
+        } catch {
+            $exception = $_.Exception
+            if ($exception -is [Net.WebException] -and $null -ne $exception.Response) { $exception.Response.Dispose() }
+            throw
+        }
+        $status = [int]$response.StatusCode
+        if ($status -lt 300 -or $status -ge 400) { return $response }
+        if ($redirects -eq 5) {
+            $response.Dispose()
+            Fail 'download exceeded the 5 redirect limit'
+        }
+        $location = $response.Headers['Location']
+        $response.Dispose()
+        if (-not $location) { Fail 'download redirect had no Location header' }
+        $current = [Uri]::new($current, $location)
+        if ($current.Scheme -ne 'https') { Fail 'download redirected away from HTTPS' }
+    }
+}
+
+function Invoke-BoundedHttpsDownload([string] $Uri, [string] $Destination, [long] $MaxBytes) {
+    $response = $null
+    $inputStream = $null
+    $outputStream = $null
+    $complete = $false
+    $timeoutSeconds = 120
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        $response = Get-HttpsResponse $Uri $timer $timeoutSeconds
+        if ($response.ResponseUri.Scheme -ne 'https') { Fail 'download redirected away from HTTPS' }
+        if ($response.StatusCode -ne [Net.HttpStatusCode]::OK) { Fail "download failed with HTTP status $([int]$response.StatusCode)" }
+        if ($response.ContentLength -gt $MaxBytes) { Fail "download exceeds the $MaxBytes byte limit" }
+        $inputStream = $response.GetResponseStream()
+        $outputStream = [IO.File]::Open($Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $buffer = New-Object byte[] 65536
+        [long]$written = 0
+        while (($count = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            if ($timer.Elapsed.TotalSeconds -gt $timeoutSeconds) { Fail "download exceeded the $timeoutSeconds second limit" }
+            $written += $count
+            if ($written -gt $MaxBytes) { Fail "download exceeds the $MaxBytes byte limit" }
+            $outputStream.Write($buffer, 0, $count)
+        }
+        $outputStream.Flush()
+        $complete = $true
+    } finally {
+        if ($null -ne $outputStream) { $outputStream.Dispose() }
+        if ($null -ne $inputStream) { $inputStream.Dispose() }
+        if ($null -ne $response) { $response.Dispose() }
+        if (-not $complete) { Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# Native smoke tests replace only this wrapper to supply local, already-built assets.
+if (-not (Test-Path Function:\Invoke-TskDownload)) {
+    function Invoke-TskDownload([string] $Uri, [string] $Destination, [long] $MaxBytes) {
+        Invoke-BoundedHttpsDownload -Uri $Uri -Destination $Destination -MaxBytes $MaxBytes
+    }
+}
+
+if (-not (Test-Path Function:\Get-LatestReleaseTag)) {
+    function Get-LatestReleaseTag([string] $Uri) {
+        $response = $null
+        $timer = [Diagnostics.Stopwatch]::StartNew()
+        try {
+            $response = Get-HttpsResponse $Uri $timer 120
+            if ($response.ResponseUri.Scheme -ne 'https') { Fail 'latest-release lookup redirected away from HTTPS' }
+            if ($response.StatusCode -ne [Net.HttpStatusCode]::OK) { Fail "latest-release lookup failed with HTTP status $([int]$response.StatusCode)" }
+            return $response.ResponseUri.AbsolutePath.TrimEnd('/').Split('/')[-1]
+        } finally {
+            if ($null -ne $response) { $response.Dispose() }
+        }
+    }
 }
 
 function Assert-NoReparsePath([string] $Path) {
@@ -48,14 +156,62 @@ function Add-NativeMoveType {
     if (-not ('TskNativeInstall' -as [type])) {
         Add-Type -TypeDefinition @'
 using System;
+using System.ComponentModel;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class TskNativeInstall {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SYSTEM_INFO {
+        internal ushort processorArchitecture;
+        internal ushort reserved;
+        internal uint pageSize;
+        internal IntPtr minimumApplicationAddress;
+        internal IntPtr maximumApplicationAddress;
+        internal UIntPtr activeProcessorMask;
+        internal uint numberOfProcessors;
+        internal uint processorType;
+        internal uint allocationGranularity;
+        internal ushort processorLevel;
+        internal ushort processorRevision;
+    }
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool MoveFileEx(string existingName, string newName, int flags);
+
+    [DllImport("kernel32.dll")]
+    private static extern void GetNativeSystemInfo(out SYSTEM_INFO systemInfo);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetSystemDirectory(StringBuilder buffer, uint size);
+
+    public static ushort GetNativeProcessorArchitecture() {
+        SYSTEM_INFO info;
+        GetNativeSystemInfo(out info);
+        return info.processorArchitecture;
+    }
+
+    public static string GetSystemPowerShell() {
+        var buffer = new StringBuilder(32768);
+        uint length = GetSystemDirectory(buffer, (uint)buffer.Capacity);
+        if (length == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+        if (length >= (uint)buffer.Capacity) throw new PathTooLongException("Windows system directory path is too long");
+        return Path.Combine(buffer.ToString(), @"WindowsPowerShell\v1.0\powershell.exe");
+    }
 }
 '@ | Out-Null
     }
+}
+
+function Get-NativeProcessorArchitecture {
+    Add-NativeMoveType
+    return [TskNativeInstall]::GetNativeProcessorArchitecture()
+}
+
+function Get-SystemPowerShellPath {
+    Add-NativeMoveType
+    return [TskNativeInstall]::GetSystemPowerShell()
 }
 
 function Move-Atomic([string] $Source, [string] $Destination) {
@@ -172,7 +328,11 @@ exit 1
 
     $command = '& {0} -UpdatePid {1} -Source {2} -Destination {3} -RetrySeconds {4}' -f (Quote-Single $helper), $UpdatePid, (Quote-Single $Source), (Quote-Single $Destination), $retrySeconds
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
-    Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded) -WindowStyle Hidden | Out-Null
+    $windowsPowerShell = Get-SystemPowerShellPath
+    if (-not (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf)) {
+        Fail 'stock Windows PowerShell is required to finish a locked update'
+    }
+    Start-Process -FilePath $windowsPowerShell -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded) -WindowStyle Hidden | Out-Null
 }
 
 function Refresh-ExistingSetup([string] $Executable) {
@@ -206,23 +366,40 @@ function Refresh-ExistingSetup([string] $Executable) {
 }
 
 function Add-UserPath([string] $InstallDirectory) {
-    $current = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $entries = @()
-    if ($current) {
-        $entries = @($current -split ';' | Where-Object { $_ })
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    if ($null -eq $key) {
+        $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
     }
-    $present = $false
-    foreach ($entry in $entries) {
-        if ([String]::Equals($entry.TrimEnd('\'), $InstallDirectory.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
-            $present = $true
-            break
+    try {
+        $hasPath = @($key.GetValueNames()) -contains 'Path'
+        $current = if ($hasPath) {
+            [string]$key.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        } else {
+            ''
         }
+        $kind = if ($hasPath) { $key.GetValueKind('Path') } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }
+        if ($kind -ne [Microsoft.Win32.RegistryValueKind]::String -and $kind -ne [Microsoft.Win32.RegistryValueKind]::ExpandString) {
+            Fail 'the user Path registry value is not a string'
+        }
+
+        $present = $false
+        foreach ($entry in @($current -split ';' | Where-Object { $_ })) {
+            $expandedEntry = [Environment]::ExpandEnvironmentVariables($entry)
+            if ([String]::Equals($expandedEntry.TrimEnd('\'), $InstallDirectory.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+                $present = $true
+                break
+            }
+        }
+        if (-not $present) {
+            $separator = if (-not $current -or $current.EndsWith(';')) { '' } else { ';' }
+            $updated = $current + $separator + $InstallDirectory
+            $key.SetValue('Path', $updated, $kind)
+            Write-Output "Added $InstallDirectory to your user PATH. Open a new terminal to use tsk."
+        }
+    } finally {
+        $key.Dispose()
     }
-    if (-not $present) {
-        $updated = if ($current) { $current.TrimEnd(';') + ';' + $InstallDirectory } else { $InstallDirectory }
-        [Environment]::SetEnvironmentVariable('Path', $updated, 'User')
-        Write-Output "Added $InstallDirectory to your user PATH. Open a new terminal to use tsk."
-    }
+
     $processEntries = @($env:Path -split ';')
     if (-not ($processEntries | Where-Object { [String]::Equals($_.TrimEnd('\'), $InstallDirectory.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase) })) {
         $env:Path = $InstallDirectory + ';' + $env:Path
@@ -233,9 +410,12 @@ function Main {
     if ($env:OS -ne 'Windows_NT' -or [Environment]::OSVersion.Version -lt [Version]'10.0' -or -not [Environment]::Is64BitOperatingSystem -or -not [Environment]::Is64BitProcess) {
         Fail 'Windows 10/11 x86-64 and a 64-bit PowerShell process are required'
     }
-    $nativeArchitecture = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
-    if (-not [String]::Equals($nativeArchitecture, 'AMD64', [StringComparison]::OrdinalIgnoreCase)) {
+    $nativeArchitecture = Get-NativeProcessorArchitecture
+    if ($nativeArchitecture -eq 12) {
         Fail 'Windows ARM64 is not supported; an x86-64 (AMD64) host is required'
+    }
+    if ($nativeArchitecture -ne 9) {
+        Fail 'Windows 10/11 x86-64 (AMD64) is required'
     }
     if ($PSVersionTable.PSVersion -lt [Version]'5.1') {
         Fail 'Windows PowerShell 5.1 or newer is required'
@@ -246,8 +426,7 @@ function Main {
     $version = $env:TSK_VERSION
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     if (-not $version) {
-        $latest = Invoke-WebRequest -Uri "$repo/releases/latest" -UseBasicParsing
-        $version = $latest.BaseResponse.ResponseUri.AbsolutePath.TrimEnd('/').Split('/')[-1]
+        $version = Get-LatestReleaseTag "$repo/releases/latest"
     }
     if ($version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
         Fail 'TSK_VERSION must be a stable release tag such as v1.2.3'
@@ -290,8 +469,10 @@ function Main {
         $archive = Join-Path $work $archiveName
         $sums = Join-Path $work 'SHA256SUMS'
         Write-Output "Downloading tsk $version for $target..."
-        Invoke-WebRequest -Uri "$base/$archiveName" -OutFile $archive -UseBasicParsing
-        Invoke-WebRequest -Uri "$base/SHA256SUMS" -OutFile $sums -UseBasicParsing
+        Invoke-TskDownload -Uri "$base/$archiveName" -Destination $archive -MaxBytes $MaxArchiveBytes
+        Invoke-TskDownload -Uri "$base/SHA256SUMS" -Destination $sums -MaxBytes $MaxChecksumBytes
+        if ((Get-Item -LiteralPath $archive).Length -gt $MaxArchiveBytes) { Fail 'release archive exceeds the compressed size limit' }
+        if ((Get-Item -LiteralPath $sums).Length -gt $MaxChecksumBytes) { Fail 'checksum file exceeds the size limit' }
 
         $pattern = '^([0-9a-fA-F]{64})  ' + [Regex]::Escape($archiveName) + '$'
         $matches = @(Get-Content -LiteralPath $sums | Where-Object { $_ -match $pattern })
@@ -310,6 +491,12 @@ function Main {
             $names = @($zip.Entries | ForEach-Object { $_.FullName })
             if ($names.Count -ne 3 -or $names[0] -ne 'tsk.exe' -or $names[1] -ne 'LICENSE' -or $names[2] -ne 'README.md' -or $zip.Entries[0].Length -eq 0) {
                 Fail 'release archive has unexpected contents'
+            }
+            [long]$expandedBytes = 0
+            foreach ($entry in $zip.Entries) {
+                if ($entry.Length -gt $MaxExpandedBytes) { Fail 'release archive entry exceeds the expanded size limit' }
+                $expandedBytes += $entry.Length
+                if ($expandedBytes -gt $MaxExpandedBytes) { Fail 'release archive exceeds the expanded size limit' }
             }
         } finally {
             $zip.Dispose()
@@ -346,7 +533,7 @@ function Main {
             Write-Output "Installed tsk $version to $destination"
             if ($env:TSK_UPDATE) { Refresh-ExistingSetup $destination }
         }
-        Add-UserPath $installDir
+        if (-not $NoPathUpdate) { Add-UserPath $installDir }
         if (-not $env:TSK_UPDATE) {
             Write-Output "Optional setup: $destination setup herdr"
             Write-Output "Agent skills:  $destination setup"

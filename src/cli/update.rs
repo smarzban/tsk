@@ -82,39 +82,46 @@ pub fn run() -> Result<UpdateOutcome, String> {
         .ok_or_else(|| "the running tsk executable has no installation directory".to_string())?;
     let script = download_https(INSTALLER_URL, 1024 * 1024, 120)?;
     let powershell = windows_powershell_path()?;
-    let mut child = Command::new(&powershell)
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            "$source = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($source))",
-        ])
+    let mut command = Command::new(&powershell);
+    command.args([
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$source = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($source))",
+    ]);
+    run_windows_installer(&mut command, &script, install_dir, std::process::id())?;
+    Ok(UpdateOutcome::Installed)
+}
+
+#[cfg(windows)]
+fn run_windows_installer(
+    command: &mut Command,
+    script: &[u8],
+    install_dir: &std::path::Path,
+    update_pid: u32,
+) -> Result<(), String> {
+    let mut child = command
         .stdin(Stdio::piped())
         .env("TSK_INSTALL_DIR", install_dir)
         .env("TSK_UPDATE", "1")
-        .env("TSK_UPDATE_PID", std::process::id().to_string())
+        .env("TSK_UPDATE_PID", update_pid.to_string())
         .env(
             "TSK_CURRENT_VERSION",
             concat!("v", env!("CARGO_PKG_VERSION")),
         )
         .env_remove(INSTALLER_VERSION_ENV)
         .spawn()
-        .map_err(|error| {
-            format!(
-                "could not start the Windows installer with {}: {error}",
-                powershell.display()
-            )
-        })?;
+        .map_err(|error| format!("could not start the Windows installer: {error}"))?;
     {
         use std::io::Write;
         let mut stdin = child
             .stdin
             .take()
             .ok_or_else(|| "could not open Windows PowerShell input".to_string())?;
-        if let Err(error) = stdin.write_all(&script) {
+        if let Err(error) = stdin.write_all(script) {
             drop(stdin);
             let _ = child.kill();
             let _ = child.wait();
@@ -134,7 +141,7 @@ pub fn run() -> Result<UpdateOutcome, String> {
                 .map_or_else(|| "terminated".to_string(), |code| code.to_string())
         ));
     }
-    Ok(UpdateOutcome::Installed)
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -233,11 +240,26 @@ fn run_installer(
 
 #[cfg(windows)]
 fn windows_powershell_path() -> Result<PathBuf, String> {
-    let root = std::env::var_os("SystemRoot")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .ok_or_else(|| "SystemRoot is not set; cannot locate Windows PowerShell".to_string())?;
-    let path = root.join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+
+    let mut buffer = vec![0_u16; 32_768];
+    // SAFETY: buffer is writable for the supplied length. GetSystemDirectoryW writes at most
+    // that many UTF-16 code units and does not retain the pointer.
+    let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
+    if length == 0 {
+        return Err(format!(
+            "could not locate the Windows system directory: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if length as usize >= buffer.len() {
+        return Err("the Windows system directory path is too long".to_string());
+    }
+    buffer.truncate(length as usize);
+    let path =
+        PathBuf::from(OsString::from_wide(&buffer)).join("WindowsPowerShell/v1.0/powershell.exe");
     if path.is_absolute() && path.is_file() {
         Ok(path)
     } else {
@@ -384,19 +406,21 @@ fn normalized(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use std::fs;
     #[cfg(unix)]
     use std::path::{Path, PathBuf};
-    #[cfg(unix)]
+    #[cfg(windows)]
+    use std::process::Command;
+    #[cfg(any(unix, windows))]
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    #[cfg(windows)]
-    use super::windows_powershell_path;
     #[cfg(unix)]
     use super::{configured_curl_path, is_homebrew_install, run_for, UpdateOutcome};
+    #[cfg(windows)]
+    use super::{run_windows_installer, windows_powershell_path};
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     static SEQ: AtomicU64 = AtomicU64::new(0);
 
     #[cfg(unix)]
@@ -421,6 +445,47 @@ mod tests {
                 .expect("make test command executable");
         }
         path
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_installer_handoff_streams_the_whole_script_and_sets_update_environment() {
+        let dir = std::env::temp_dir().join(format!(
+            "tsk-update-windows-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).expect("temporary directory");
+        let fake = dir.join("fake-installer.cmd");
+        let script_copy = dir.join("script.bin");
+        let env_log = dir.join("environment.txt");
+        fs::write(
+            &fake,
+            "@echo off\r\nmore > \"%FAKE_SCRIPT%\"\r\nset VERSION=unset\r\nif defined TSK_VERSION set VERSION=%TSK_VERSION%\r\n> \"%FAKE_ENV%\" echo %TSK_INSTALL_DIR%^|%TSK_UPDATE%^|%TSK_UPDATE_PID%^|%TSK_CURRENT_VERSION%^|%VERSION%\r\n",
+        )
+        .expect("fake command");
+        let install_dir = dir.join("installed bin");
+        let script = b"first line\r\nsecond line\r\n";
+        let mut command = Command::new(&fake);
+        command
+            .env("FAKE_SCRIPT", &script_copy)
+            .env("FAKE_ENV", &env_log)
+            .env("TSK_VERSION", "v0.0.1");
+
+        run_windows_installer(&mut command, script, &install_dir, 4242).expect("handoff");
+
+        assert_eq!(fs::read(&script_copy).expect("script bytes"), script);
+        assert_eq!(
+            fs::read_to_string(&env_log)
+                .expect("environment")
+                .trim_end(),
+            format!(
+                "{}|1|4242|v{}|unset",
+                install_dir.display(),
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+        fs::remove_dir_all(dir).expect("cleanup");
     }
 
     #[cfg(windows)]

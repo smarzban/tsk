@@ -43,11 +43,7 @@ jobs:
           python-version: "3.12"
 
       - name: Verify
-        run: |
-          cargo fmt --check
-          cargo clippy --all-targets -- -D warnings
-          cargo test
-          cargo build --release
+        run: cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --release
 
       - name: Packaging contract tests
         if: matrix.os != 'windows-latest'

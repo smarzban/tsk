@@ -43,36 +43,14 @@ fn platform_v5_fixture() -> Vec<u8> {
     #[cfg(not(windows))]
     return include_bytes!("fixtures/current_store_v5.json").to_vec();
     #[cfg(windows)]
-    let mut value: serde_json::Value =
-        serde_json::from_str(include_str!("fixtures/current_store_v5.json")).expect("v5 fixture");
-    #[cfg(windows)]
-    fn truncate_filetime_precision(value: &mut serde_json::Value) {
-        match value {
-            serde_json::Value::Array(items)
-                if items.len() == 2
-                    && items[0].as_u64().is_some()
-                    && items[1].as_u64().is_some_and(|nanos| nanos < 1_000_000_000) =>
-            {
-                let nanos = items[1].as_u64().unwrap();
-                items[1] = serde_json::json!(nanos / 100 * 100);
-            }
-            serde_json::Value::Array(items) => {
-                for item in items {
-                    truncate_filetime_precision(item);
-                }
-            }
-            serde_json::Value::Object(fields) => {
-                for item in fields.values_mut() {
-                    truncate_filetime_precision(item);
-                }
-            }
-            _ => {}
-        }
+    {
+        // Round-trip through the persisted type, not Value's sorted map. SystemTime applies
+        // Windows' 100 ns precision while DomainState preserves the canonical field order.
+        let state: DomainState =
+            serde_json::from_str(include_str!("fixtures/current_store_v5.json"))
+                .expect("v5 fixture");
+        serde_json::to_vec_pretty(&state).expect("encode platform fixture")
     }
-    #[cfg(windows)]
-    truncate_filetime_precision(&mut value);
-    #[cfg(windows)]
-    serde_json::to_vec_pretty(&value).expect("encode platform fixture")
 }
 
 fn current_store_fixture() -> serde_json::Value {

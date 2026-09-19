@@ -43,8 +43,9 @@ impl Launcher {
         fs::write(
             &stub,
             r#"@echo off
-echo %*>>"%STUB_ROOT%\calls.log"
+>>"%STUB_ROOT%\calls.log" echo %*
 if "%1 %2"=="pane list" (
+  if "%STUB_MODE%"=="list-failure" exit /b 7
   if "%STUB_MODE%"=="existing" (
     echo {"result":{"panes":[{"pane_id":"w0:p2","workspace_id":"w0","tab_id":"w0:t2","label":"tsk"}]}}
   ) else (
@@ -59,8 +60,9 @@ exit /b 0
         Self { root, stub }
     }
 
-    fn run(&self, mode: &str) -> std::process::Output {
-        Command::new("powershell.exe")
+    fn command(&self, script: &Path, mode: &str) -> Command {
+        let mut command = Command::new("powershell.exe");
+        command
             .args([
                 "-NoLogo",
                 "-NoProfile",
@@ -68,17 +70,28 @@ exit /b 0
                 "Bypass",
                 "-File",
             ])
-            .arg(open_board_path())
+            .arg(script)
             .env("HERDR_BIN_PATH", &self.stub)
             .env("TSK_BIN", env!("CARGO_BIN_EXE_tsk"))
             .env("TSK_STATE_DIR", self.root.join("state"))
             .env("STUB_ROOT", &self.root)
-            .env("STUB_MODE", mode)
+            .env("STUB_MODE", mode);
+        command
+    }
+
+    fn run(&self, mode: &str) -> std::process::Output {
+        self.command(&open_board_path(), mode)
             .env("HERDR_WORKSPACE_ID", "w0")
             .env("HERDR_PANE_ID", "w0:p1")
             .env("HERDR_TAB_ID", "w0:t1")
             .output()
             .expect("PowerShell launcher")
+    }
+
+    fn run_capture(&self) -> std::process::Output {
+        self.command(&open_capture_path(), "capture")
+            .output()
+            .expect("PowerShell capture launcher")
     }
 
     fn calls(&self) -> String {
@@ -200,6 +213,35 @@ fn open_board_focuses_an_existing_board_using_native_exit_status() {
 }
 
 #[test]
+fn open_board_refuses_missing_host_context_without_calling_herdr() {
+    let launcher = Launcher::new();
+    let output = launcher
+        .command(&open_board_path(), "absent")
+        .env_remove("HERDR_WORKSPACE_ID")
+        .env_remove("HERDR_PANE_ID")
+        .env_remove("HERDR_TAB_ID")
+        .output()
+        .expect("PowerShell launcher");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("without a Herdr workspace, tab and pane")
+    );
+    assert!(launcher.calls().is_empty());
+}
+
+#[test]
+fn open_board_refuses_a_failed_pane_list_without_opening_a_duplicate() {
+    let launcher = Launcher::new();
+    let output = launcher.run("list-failure");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("could not list panes"));
+    assert_eq!(
+        launcher.calls().replace("\r\n", "\n"),
+        "pane list --workspace w0\n"
+    );
+}
+
+#[test]
 fn open_board_opens_in_the_invoking_tab_when_absent() {
     let launcher = Launcher::new();
     let output = launcher.run("absent");
@@ -221,6 +263,31 @@ fn open_board_opens_in_the_invoking_tab_when_absent() {
     assert!(open.contains("--target-pane w0:p1"), "{open}");
     assert!(open.contains("--placement split"), "{open}");
     assert!(!open.contains("--workspace"), "{open}");
+}
+
+#[test]
+fn open_capture_executes_the_popup_command() {
+    let launcher = Launcher::new();
+    let output = launcher.run_capture();
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let calls = launcher.calls().replace("\r\n", "\n");
+    assert!(calls.contains("plugin pane open"), "{calls}");
+    for argument in [
+        "--plugin herdr-tsk",
+        "--entrypoint board",
+        "--placement popup",
+        "--width 80",
+        "--height 15",
+        "--focus",
+        "--env TSK_MODE=capture",
+    ] {
+        assert!(calls.contains(argument), "missing {argument:?}: {calls}");
+    }
 }
 
 #[test]

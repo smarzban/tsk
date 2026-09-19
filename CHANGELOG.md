@@ -12,7 +12,7 @@ the GitHub release notes verbatim.
 ### Added
 
 - First-class Windows 10/11 x86-64 support for the CLI and TUI, `%LOCALAPPDATA%\tsk` storage, `%APPDATA%\herdr\config.toml` integration with PowerShell launchers, agent setup under `%USERPROFILE%`, native release checks, and locked-executable-safe `tsk update`.
-- Windows releases include a checksum-covered MSVC ZIP and a complete-download PowerShell 5.1 installer that adds tsk to user PATH. Windows ARM64, signing, and package-manager submissions remain out of scope.
+- Windows releases include a checksum-covered MSVC ZIP and a complete-download PowerShell 5.1/7 installer that adds tsk to user PATH. Pass `-NoPathUpdate` to leave user PATH unchanged. Windows ARM64, signing, and package-manager submissions remain out of scope.
 
 ### Changed
 
@@ -26,6 +26,7 @@ the GitHub release notes verbatim.
 
 ### Fixed
 
+- The Windows installer bounds downloads and ZIP expansion, detects the native machine architecture, preserves expandable user PATH values, and completes locked updates started from PowerShell 7 with stock Windows PowerShell.
 - Docs: the palette table no longer lists a `Set done` action (use `ctrl+d`); the step editor's task shortcuts are `ctrl+d` and `ctrl+o` (`ctrl+x` removes the step); `ctrl+r` works from any non-done status; a trashed task is found with `tsk list --deleted`, not a task address.
 
 ## v0.10.1

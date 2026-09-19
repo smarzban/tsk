@@ -192,7 +192,7 @@ fn setup_falls_back_to_userprofile_roaming_when_appdata_is_missing() {
     fs::create_dir_all(&config_dir).unwrap();
     fs::write(
         config_dir.join("config.toml"),
-        "[keys]\n\n[[keys.command]]\nkeys = 't'\ntype = 'plugin_action'\ncommand = 'herdr-tsk.open-board-windows'\n\n[[keys.command]]\nkeys = 'a'\ntype = 'plugin_action'\ncommand = 'herdr-tsk.quick-capture-windows'\n",
+        "[keys]\n\n[[keys.command]]\nkey = 't'\ntype = 'plugin_action'\ncommand = 'herdr-tsk.open-board-windows'\n\n[[keys.command]]\nkey = 'a'\ntype = 'plugin_action'\ncommand = 'herdr-tsk.quick-capture-windows'\n",
     )
     .unwrap();
 

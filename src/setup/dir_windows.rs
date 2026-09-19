@@ -27,6 +27,7 @@ fn name(path: &Path) -> io::Result<&Path> {
 
 impl Dir {
     pub fn open(path: &Path, create: bool) -> io::Result<Self> {
+        crate::fsperm::reject_reparse_ancestors(path)?;
         match fs::symlink_metadata(path) {
             Ok(meta) if meta.is_dir() && !crate::fsperm::is_reparse_or_symlink(&meta) => Ok(Self {
                 path: path.to_path_buf(),
@@ -54,6 +55,7 @@ impl Dir {
     pub fn child(&self, child: &Path, create: bool) -> io::Result<Self> {
         let n = name(child)?;
         let path = self.path.join(n);
+        crate::fsperm::reject_reparse_ancestors(&path)?;
         if create {
             fs::create_dir_all(&path)?;
         }
@@ -148,6 +150,7 @@ impl Dir {
     /// Windows has no equivalent without extra handles; the lock file serializes
     /// concurrent setup runs, and the config dir is user-local.
     pub fn validate(&self) -> io::Result<()> {
+        crate::fsperm::reject_reparse_ancestors(&self.path)?;
         let meta = fs::symlink_metadata(&self.path)?;
         if !meta.is_dir() || crate::fsperm::is_reparse_or_symlink(&meta) {
             return Err(io::Error::other(format!(

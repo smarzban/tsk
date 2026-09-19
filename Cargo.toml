@@ -68,4 +68,4 @@ libc = "0.2.189"
 # Windows has no guaranteed system curl path. Use a native HTTPS client for the release
 # check and to fetch the signed-by-checksum PowerShell installer.
 ureq = { version = "3.2", default-features = false, features = ["native-tls", "gzip", "win-system-proxy"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem", "Win32_System_SystemInformation"] }
