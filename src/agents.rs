@@ -14,7 +14,7 @@ use toml_edit::{DocumentMut, TableLike};
 use crate::domain::{normalize_thread, thread_refusal_message};
 
 const AGENTS_FILE: &str = "agents.toml";
-const AGENTS_TEMP_PREFIX: &str = ".agents.toml.tmp.";
+pub const AGENTS_TEMP_PREFIX: &str = ".agents.toml.tmp.";
 static AGENTS_TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 const STARTER_AGENTS: &str = "# tsk agent profiles. Assign with `!a name`, dispatch with ctrl+g.\n\
@@ -38,8 +38,13 @@ const STARTER_AGENTS: &str = "# tsk agent profiles. Assign with `!a name`, dispa
 /// The temporary file is complete and synced before one atomic hard-link creates the target.
 /// A target that already exists wins without being changed, including an empty file.
 pub fn seed_on_open(state_dir: &Path) -> io::Result<bool> {
-    crate::fsperm::ensure_private_dir(state_dir)?;
     let target = state_dir.join(AGENTS_FILE);
+    // The common case is an existing file: answer without writing anything. The hard
+    // link below still decides the race when two opens find it missing at once.
+    if target.exists() {
+        return Ok(false);
+    }
+    crate::fsperm::ensure_private_dir(state_dir)?;
     let tmp = unique_tmp_path(state_dir);
     let write_result = (|| -> io::Result<bool> {
         let mut temp_file = create_private_temp(&tmp)?;
@@ -421,6 +426,39 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn seeding_an_existing_file_writes_nothing_to_the_state_dir() {
+        let dir = TempDir::new("seed-existing");
+        dir.write("");
+        let before = fs::metadata(dir.path().join("agents.toml"))
+            .expect("metadata")
+            .modified()
+            .expect("mtime");
+
+        assert_eq!(seed_on_open(dir.path()).expect("seed"), false);
+
+        let names: Vec<String> = fs::read_dir(dir.path())
+            .expect("read dir")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(names, vec!["agents.toml".to_string()], "{names:?}");
+        let after = fs::metadata(dir.path().join("agents.toml"))
+            .expect("metadata")
+            .modified()
+            .expect("mtime");
+        assert_eq!(before, after);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("agents.toml")).expect("read"),
+            ""
+        );
     }
 
     fn context<'a>() -> RenderContext<'a> {

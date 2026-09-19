@@ -785,6 +785,7 @@ impl TaskStore {
         let unlocked = [
             crate::update::UPDATE_TEMP_PREFIX,
             crate::delivery::DELIVERY_TEMP_PREFIX,
+            crate::agents::AGENTS_TEMP_PREFIX,
         ];
         let stale_after = Duration::from_secs(60);
         for entry in entries.flatten() {
@@ -848,6 +849,7 @@ fn is_private_state_name(name: &str) -> bool {
         || name.starts_with(&format!(".{BACKUP_FILE}.tmp."))
         || name.starts_with(crate::update::UPDATE_TEMP_PREFIX)
         || name.starts_with(crate::delivery::DELIVERY_TEMP_PREFIX)
+        || name.starts_with(crate::agents::AGENTS_TEMP_PREFIX)
 }
 
 /// RAII exclusive lock on the store lock file (released on drop via `File::unlock`).
@@ -1793,6 +1795,7 @@ mod tests {
         for prefix in [
             crate::update::UPDATE_TEMP_PREFIX,
             crate::delivery::DELIVERY_TEMP_PREFIX,
+            crate::agents::AGENTS_TEMP_PREFIX,
         ] {
             let stale = dir.join(format!("{prefix}1.1"));
             let fresh = dir.join(format!("{prefix}2.2"));
