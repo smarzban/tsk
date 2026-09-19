@@ -69,6 +69,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("powershell.exe -NoProfile -ExecutionPolicy Bypass -File site/public/install.ps1 -Help", source)
         self.assertRegex(source, r"python(?:3)? -m unittest discover -s tests/packaging")
 
+    @unittest.skipIf(os.name == "nt", "draft shell handoff runs on Unix CI")
     def test_release_handoff_creates_only_a_draft_for_an_existing_tag(self):
         source = WORKFLOW.read_text()
         commands = re.findall(r"^        run: (gh release create[^\n]+)$", source, re.M)
