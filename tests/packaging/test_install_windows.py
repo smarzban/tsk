@@ -31,7 +31,7 @@ class WindowsInstallerTests(unittest.TestCase):
         self.assertIn("Windows ARM64 is not supported", self.source)
 
     def test_download_is_pinned_and_checksum_verified_before_extract(self):
-        checksum = self.source.index("Get-FileHash")
+        checksum = self.source.index("$actual = Get-Sha256 $archive")
         extract = self.source.index("Expand-Archive")
         publish = self.source.index("Move-Atomic $staged")
         self.assertLess(checksum, extract)

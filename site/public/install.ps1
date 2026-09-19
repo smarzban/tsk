@@ -80,6 +80,17 @@ function Quote-Single([string] $Value) {
     return "'" + $Value.Replace("'", "''") + "'"
 }
 
+function Get-Sha256([string] $Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        return (($algorithm.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') }) -join '')
+    } finally {
+        $algorithm.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Find-OtherRunningCopies([string] $Destination, [int] $UpdatePid) {
     $matches = @()
     foreach ($process in @(Get-Process -Name 'tsk' -ErrorAction SilentlyContinue)) {
@@ -287,7 +298,7 @@ function Main {
         if ($matches.Count -ne 1) { Fail 'missing, malformed, or duplicate checksum' }
         [void]($matches[0] -match $pattern)
         $expected = $Matches[1]
-        $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+        $actual = Get-Sha256 $archive
         if (-not [String]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase)) {
             Fail 'checksum mismatch; existing installation unchanged'
         }
