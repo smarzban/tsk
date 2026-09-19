@@ -10,7 +10,9 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Position, Rect};
 use ratatui::DefaultTerminal;
 
+use crate::agents::AgentProfiles;
 use crate::context::{build_snapshot, InvocationSnapshot, RawHostContext};
+use crate::dispatch::{self, DispatchError, DispatchHost, DispatchResult, SystemDispatchHost};
 use crate::domain::{DomainError, DomainState};
 use crate::save_recovery::SaveRecovery;
 use crate::store::{default_state_dir, StoreSignature, TaskStore};
@@ -1032,7 +1034,8 @@ fn board_keyboard_intent(
             | BoardInputMode::EditNotes
             | BoardInputMode::EditThread
             | BoardInputMode::EditScope
-            | BoardInputMode::FormScopeDropdown
+            | BoardInputMode::EditAssignee
+            | BoardInputMode::FormDropdown
     );
     // A selected task-page add target has no field mapper, but its enclosing edit session
     // still owns the one Shift+Enter task-save chord.
@@ -1088,7 +1091,7 @@ fn board_keyboard_intent(
     }
 
     match model.form_focus().filter(|_| form_field_mode) {
-        Some(focus) => map_task_form_key(focus, mode == BoardInputMode::FormScopeDropdown, key),
+        Some(focus) => map_task_form_key(focus, mode == BoardInputMode::FormDropdown, key),
         None => map_key(mode, key),
     }
 }
@@ -1122,6 +1125,7 @@ pub fn apply_board_intent_with_save_recovery(
                 if let Some(working) = recovery.retry(|working| persist(working)) {
                     *domain = working;
                     model.release_task_edit_save();
+                    model.finish_pending_assignee_assignment();
                     model.sync_from_domain(domain);
                     model.end_save_recovery(SaveResolution::Retried);
                     if !model.has_saved_task() {
@@ -1136,6 +1140,7 @@ pub fn apply_board_intent_with_save_recovery(
                 model.close_command_surface();
                 *domain = recovery.cancel().expect("pending recovery has a baseline");
                 model.sync_from_domain(domain);
+                model.finish_pending_assignee_assignment();
                 let cancelled_quick_add = model.end_save_recovery(SaveResolution::Cancelled);
                 if !cancelled_quick_add {
                     model.set_message("save cancelled");
@@ -1199,6 +1204,10 @@ pub fn apply_board_intent_with_save_recovery(
         }
     }
 
+    let holds_assignee_form = matches!(
+        intent,
+        BoardIntent::ConfirmFormDropdown | BoardIntent::SelectFormDropdownOption(_)
+    ) && board_intent_may_persist(model, &intent);
     let holds_task_edit = matches!(
         intent,
         BoardIntent::ConfirmEdit | BoardIntent::ConfirmEditNext
@@ -1232,6 +1241,9 @@ pub fn apply_board_intent_with_save_recovery(
         return Ok(IntentOutcome::None);
     }
     model.release_task_edit_save();
+    if holds_assignee_form {
+        model.finish_pending_assignee_assignment();
+    }
     model.sync_from_domain(domain);
     Ok(IntentOutcome::Persisted)
 }
@@ -1739,7 +1751,7 @@ fn board_rejection_message(error: &DomainError) -> String {
 ///
 /// [`confirm_edit_consults_the_record_without_merging_it`]: self::tests
 pub fn board_intent_needs_fresh_state(intent: &BoardIntent) -> bool {
-    matches!(intent, BoardIntent::Undo)
+    matches!(intent, BoardIntent::Undo | BoardIntent::Dispatch)
 }
 
 /// resolved decision 8: a soft-deleted task is not editable, and a stale in-memory snapshot is
@@ -1864,6 +1876,21 @@ fn dispatch_board_intent(
     Ok(quit)
 }
 
+/// Dispatch the task that was under the cursor when the verb was invoked. Marks are cleared and
+/// never become targets, even if a refresh moves the visible cursor before host work begins.
+pub fn dispatch_task_with_host(
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    id: uuid::Uuid,
+    profiles: &AgentProfiles,
+    again: bool,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<DispatchResult, DispatchError> {
+    model.clear_marks();
+    dispatch::run_with_host(domain, id, profiles, again, in_herdr, host)
+}
+
 /// Apply a board intent. Returns `true` when the board loop should quit.
 ///
 /// In the quick-capture popup (`quick_capture`), the loop also quits once the capture
@@ -1878,10 +1905,18 @@ fn handle_board_intent(
     save_recovery: &mut SaveRecovery<DomainState>,
     quick_capture: bool,
 ) -> io::Result<bool> {
+    let Some(intent) = resolve_board_command(model, intent) else {
+        return Ok(false);
+    };
     if let BoardIntent::CopyTaskNumber(id) = intent {
         copy_task_number(domain, model, id);
         return Ok(false);
     }
+    let dispatch_target = if intent == BoardIntent::Dispatch {
+        model.selected_id()
+    } else {
+        None
+    };
 
     let quit_requested = intent == BoardIntent::Quit
         || (intent == BoardIntent::CloseLayer && model.root_escape_requests_quit());
@@ -1898,7 +1933,7 @@ fn handle_board_intent(
     // Quick capture: Esc on the expanded draft is the top-level cancel. The board's
     // collapse-to-line fallback would strand the popup on a retained one-line draft, so
     // the whole draft is discarded and the popup closes. Nested Escapes keep their own
-    // semantics: an open scope dropdown maps to CancelFormScopeDropdown, the inline step
+    // semantics: an open scope dropdown maps to CancelFormDropdown, the inline step
     // editor owns its CancelEdit, and an unresolved save routes Esc to CancelSave before
     // this dispatch.
     if quick_capture
@@ -1911,7 +1946,7 @@ fn handle_board_intent(
         return Ok(true);
     }
 
-    let baseline = if save_recovery.is_pending() || !board_intent_may_persist(&intent) {
+    let baseline = if save_recovery.is_pending() || !board_intent_may_persist(model, &intent) {
         DomainState::new()
     } else {
         store
@@ -1929,6 +1964,49 @@ fn handle_board_intent(
     // scope and provenance: the reducer stores it on `model.capture_snapshot` at
     // open and reads it back at ConfirmEdit, so a `None` here is what silently turned board
     // `a` into a no-op save that still reported success.
+    if intent == BoardIntent::Dispatch && !save_recovery.is_pending() {
+        let profiles = match AgentProfiles::load(store.path()) {
+            Ok(profiles) => profiles,
+            Err(error) => {
+                model.clear_marks();
+                model.set_message(error.to_string());
+                return Ok(false);
+            }
+        };
+        let mut host = SystemDispatchHost;
+        let Some(target) = dispatch_target else {
+            model.clear_marks();
+            model.set_message(DispatchError::UnknownTask.to_string());
+            return Ok(false);
+        };
+        match dispatch_task_with_host(
+            domain,
+            model,
+            target,
+            &profiles,
+            false,
+            dispatch::running_inside_herdr(),
+            &mut host,
+        ) {
+            Ok(result) => {
+                if let Err(error) = store.reload_merge_save(domain) {
+                    let working = std::mem::take(domain);
+                    save_recovery.fail(baseline, working, error.to_string());
+                    model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+                    return Ok(false);
+                }
+                model.sync_from_domain(domain);
+                model.set_message(format!(
+                    "dispatched T{} to @{}",
+                    result.number, result.assignee
+                ));
+                record_notice_dismissals_without_blocking_persist(store, domain);
+            }
+            Err(error) => model.set_message(error.to_string()),
+        }
+        return Ok(false);
+    }
+
     let loaded_snapshot;
     let snapshot_for_intent = if !save_recovery.is_pending() && intent == BoardIntent::OpenCapture {
         loaded_snapshot = load_snapshot();
@@ -4729,6 +4807,7 @@ mod tests {
 
     #[test]
     fn every_board_mutation_uses_a_real_persisted_baseline() {
+        let model = BoardModel::from_domain(&DomainState::new(), None);
         for intent in [
             BoardIntent::ConfirmEdit,
             BoardIntent::ConfirmEditNext,
@@ -4743,11 +4822,11 @@ mod tests {
             BoardIntent::ToggleStep,
         ] {
             assert!(
-                board_intent_may_persist(&intent),
+                board_intent_may_persist(&model, &intent),
                 "{intent:?} must load the persisted baseline before save recovery"
             );
         }
-        assert!(!board_intent_may_persist(&BoardIntent::SelectNext));
+        assert!(!board_intent_may_persist(&model, &BoardIntent::SelectNext));
 
         // Editing moves a draft, never the store: only ConfirmEdit above writes.
         for intent in [
@@ -4765,7 +4844,7 @@ mod tests {
             BoardIntent::CancelEdit,
         ] {
             assert!(
-                !board_intent_may_persist(&intent),
+                !board_intent_may_persist(&model, &intent),
                 "{intent:?} must not reload a persisted baseline"
             );
         }
@@ -4965,11 +5044,11 @@ mod tests {
         apply_intent(
             &mut domain,
             &mut model,
-            BoardIntent::OpenFormScopeDropdown,
+            BoardIntent::OpenFormDropdown(CaptureField::Scope),
             None,
         )
         .expect("open scope picker");
-        assert_eq!(model.input_mode(), BoardInputMode::FormScopeDropdown);
+        assert_eq!(model.input_mode(), BoardInputMode::FormDropdown);
         assert_eq!(
             board_keyboard_intent(&model, model.input_mode(), ctrl_q),
             Some(BoardIntent::Quit)
@@ -4978,7 +5057,7 @@ mod tests {
         apply_intent(
             &mut domain,
             &mut model,
-            BoardIntent::CancelFormScopeDropdown,
+            BoardIntent::CancelFormDropdown,
             None,
         )
         .expect("close scope picker");
@@ -6682,30 +6761,78 @@ mod tests {
     }
 
     #[test]
-    fn expanded_quick_add_tabs_past_the_selected_step_target() {
+    fn task_and_expanded_capture_edit_rings_follow_footer_order_in_both_directions() {
         let mut domain = DomainState::new();
-        let mut model = BoardModel::from_domain(&domain, None);
-        apply_intent(&mut domain, &mut model, BoardIntent::OpenCapture, None)
-            .expect("open quick add");
-        apply_intent(&mut domain, &mut model, BoardIntent::ExpandQuickAdd, None)
-            .expect("expand quick add");
-        apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
-            .expect("Tab from Notes selects + step");
-        assert_eq!(model.input_mode(), BoardInputMode::CapturePage);
+        domain
+            .create(
+                "ring task",
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("task");
+        let mut task = BoardModel::from_domain(&domain, None);
+        apply_intent(&mut domain, &mut task, BoardIntent::OpenTaskPage, None).expect("page");
+        apply_intent(&mut domain, &mut task, BoardIntent::BeginEditTitle, None).expect("edit");
+        assert_eq!(task.input_mode(), BoardInputMode::EditTitle);
+        for expected in [
+            BoardInputMode::EditNotes,
+            BoardInputMode::TaskPage,
+            BoardInputMode::EditAssignee,
+            BoardInputMode::SelectThread,
+            BoardInputMode::EditScope,
+            BoardInputMode::EditTitle,
+        ] {
+            apply_intent(&mut domain, &mut task, BoardIntent::FormFocusNext, None).expect("tab");
+            assert_eq!(task.input_mode(), expected);
+        }
+        for expected in [
+            BoardInputMode::EditScope,
+            BoardInputMode::SelectThread,
+            BoardInputMode::EditAssignee,
+            BoardInputMode::TaskPage,
+            BoardInputMode::EditNotes,
+            BoardInputMode::EditTitle,
+        ] {
+            apply_intent(&mut domain, &mut task, BoardIntent::FormFocusPrev, None)
+                .expect("shift tab");
+            assert_eq!(task.input_mode(), expected);
+        }
 
-        let intent = board_keyboard_intent(
-            &model,
-            model.input_mode(),
-            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-        );
-        assert_eq!(
-            intent,
-            Some(BoardIntent::FormFocusNext),
-            "Tab on expanded capture's + step must reach Thread"
-        );
-        apply_intent(&mut domain, &mut model, intent.expect("Tab intent"), None)
-            .expect("advance past + step");
-        assert_eq!(model.input_mode(), BoardInputMode::EditThread);
+        let mut capture_domain = DomainState::new();
+        let mut capture = BoardModel::from_domain(&capture_domain, None);
+        apply_intent(
+            &mut capture_domain,
+            &mut capture,
+            BoardIntent::OpenCapture,
+            None,
+        )
+        .expect("open quick add");
+        apply_intent(
+            &mut capture_domain,
+            &mut capture,
+            BoardIntent::ExpandQuickAdd,
+            None,
+        )
+        .expect("expand quick add");
+        assert_eq!(capture.input_mode(), BoardInputMode::EditNotes);
+        for expected in [
+            BoardInputMode::CapturePage,
+            BoardInputMode::EditAssignee,
+            BoardInputMode::EditThread,
+            BoardInputMode::EditScope,
+            BoardInputMode::EditTitle,
+        ] {
+            apply_intent(
+                &mut capture_domain,
+                &mut capture,
+                BoardIntent::FormFocusNext,
+                None,
+            )
+            .expect("capture tab");
+            assert_eq!(capture.input_mode(), expected);
+        }
     }
 
     #[test]
@@ -6813,10 +6940,10 @@ mod tests {
         assert_eq!(
             board_keyboard_intent(
                 &model,
-                BoardInputMode::FormScopeDropdown,
+                BoardInputMode::FormDropdown,
                 KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)
             ),
-            Some(BoardIntent::FormScopeNext),
+            Some(BoardIntent::FormDropdownNext),
             "the form scope dropdown must route through the shared form mapper"
         );
 
@@ -6899,6 +7026,126 @@ mod tests {
         );
     }
 
+    #[test]
+    fn dropdown_assignment_save_failure_retains_form_and_retry_finishes_batch() {
+        let temp = TempStore::new("dropdown-assignment-recovery");
+        std::fs::write(
+            temp.dir.join("agents.toml"),
+            "[agent.reviewer]\ncommand = [\"true\"]\n",
+        )
+        .expect("write profiles");
+        let profiles = AgentProfiles::load(&temp.dir).expect("load profiles");
+        let mut domain = DomainState::new();
+        let first = domain
+            .create(
+                "first",
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("first task");
+        let second = domain
+            .create(
+                "second",
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("second task");
+        let baseline = domain.clone();
+        let mut model = BoardModel::from_domain(&domain, None);
+        model.set_agent_profiles(&profiles);
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None)
+            .expect("enter mark mode");
+        for id in [first, second] {
+            let index = model
+                .visible_ids()
+                .iter()
+                .position(|visible| *visible == id)
+                .expect("marked task visible");
+            apply_intent(
+                &mut domain,
+                &mut model,
+                BoardIntent::SelectIndex(index),
+                None,
+            )
+            .expect("select mark target");
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None)
+                .expect("mark task");
+        }
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::BeginEditAssignee,
+            None,
+        )
+        .expect("begin assignment");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenFormDropdown(CaptureField::Assignee),
+            None,
+        )
+        .expect("open assignee dropdown");
+        apply_intent(&mut domain, &mut model, BoardIntent::FormDropdownNext, None)
+            .expect("select reviewer");
+
+        let mut recovery = SaveRecovery::new();
+        let outcome = apply_board_intent_with_save_recovery(
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardSaveContext {
+                baseline,
+                intent: BoardIntent::ConfirmFormDropdown,
+                snapshot: None,
+            },
+            |_| Err("injected save failure".into()),
+        )
+        .expect("failed assignment enters recovery");
+        assert_eq!(outcome, IntentOutcome::None);
+        assert!(recovery.is_pending());
+        assert!(model.board_form_open(), "the assignment form must survive");
+        assert_eq!(model.input_mode(), BoardInputMode::SaveRecovery);
+        assert_eq!(
+            board_keyboard_intent(
+                &model,
+                model.input_mode(),
+                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+            ),
+            Some(BoardIntent::RetrySave)
+        );
+
+        assert_eq!(
+            apply_board_intent_with_save_recovery(
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                BoardSaveContext {
+                    baseline: DomainState::new(),
+                    intent: BoardIntent::RetrySave,
+                    snapshot: None,
+                },
+                |_| Ok(()),
+            )
+            .expect("retry assignment"),
+            IntentOutcome::Persisted
+        );
+        assert!(!recovery.is_pending());
+        assert!(!model.board_form_open());
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+        assert_eq!(
+            domain.get(first).expect("first").assignee.as_deref(),
+            Some("reviewer")
+        );
+        assert_eq!(
+            domain.get(second).expect("second").assignee.as_deref(),
+            Some("reviewer")
+        );
+    }
+
     /// SaveRecovery outranks an open form, so Retry and both Cancel keys must retain the only
     /// routes that can resolve a failed save.
     #[test]
@@ -6965,7 +7212,7 @@ mod tests {
         let intent = board_keyboard_intent(&model, BoardInputMode::TaskPage, enter)
             .expect("enter on a step");
         assert_eq!(intent, BoardIntent::ToggleStep);
-        assert!(board_intent_may_persist(&intent));
+        assert!(board_intent_may_persist(&model, &intent));
         apply_intent(&mut domain, &mut model, intent, None).expect("toggle");
         assert!(domain.get(id).expect("task").steps[0].done, "alpha toggled");
         assert_eq!(
@@ -7443,12 +7690,12 @@ mod tests {
             pasted
                 .visible_commands()
                 .iter()
-                .map(|command| command.label)
+                .map(|command| command.label.clone())
                 .collect::<Vec<_>>(),
             typed
                 .visible_commands()
                 .iter()
-                .map(|command| command.label)
+                .map(|command| command.label.clone())
                 .collect::<Vec<_>>(),
             "a paste must narrow the palette exactly as typing the same run does"
         );

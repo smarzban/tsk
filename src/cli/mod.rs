@@ -7,6 +7,7 @@ use serde_json::Value;
 
 pub mod add;
 pub mod archive;
+pub mod dispatch;
 pub mod edit;
 pub mod guide;
 pub mod list;
@@ -67,6 +68,7 @@ where
         Some("steps") => run_steps(args),
         Some("list") => run_list(args, terminal_width),
         Some("status") => run_status(args),
+        Some("dispatch") => run_dispatch(args),
         Some("edit") => run_edit(args),
         Some("trash") => run_trash(args),
         Some("project") => run_project(args),
@@ -79,7 +81,7 @@ where
             run_archive(args, verb, archive)
         }
         _ => presenter::usage(
-            "expected add, steps, list, status, edit, trash, archive, unarchive, or project command",
+            "expected add, steps, list, status, dispatch, edit, trash, archive, unarchive, or project command",
         ),
     }
 }
@@ -96,6 +98,7 @@ fn run_help(args: Vec<String>) -> CliOutput {
             "steps" => presenter::steps_help(),
             "list" => presenter::list_help(None),
             "status" => presenter::status_help(),
+            "dispatch" => presenter::dispatch_help(),
             "edit" => presenter::edit_help(),
             "trash" => presenter::trash_help(),
             "archive" => presenter::archive_help("archive"),
@@ -124,6 +127,23 @@ fn run_steps(args: Vec<String>) -> CliOutput {
     match steps::run(task, action, input.state_dir) {
         Ok(result) => presenter::steps(result),
         Err(error) => presenter::steps_rejected(error, task),
+    }
+}
+
+fn run_dispatch(args: Vec<String>) -> CliOutput {
+    let input = match parser::parse_flag_dispatch(&args) {
+        Ok(input) => input,
+        Err(reason) => return presenter::dispatch_usage(&reason),
+    };
+    if input.help {
+        return presenter::dispatch_help();
+    }
+    let Some(task) = input.task else {
+        return presenter::dispatch_usage("task number is required");
+    };
+    match dispatch::run(task, input.again, input.state_dir) {
+        Ok(result) => presenter::dispatched(result),
+        Err(error) => presenter::dispatch_rejected(error, task),
     }
 }
 

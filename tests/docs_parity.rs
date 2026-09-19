@@ -73,12 +73,13 @@ fn promised_labels(cell: &str) -> Vec<String> {
 fn selected_model() -> BoardModel {
     let mut domain = DomainState::new();
     domain
-        .create(
+        .create_assigned(
             "palette witness",
             None,
             TaskScope::Global,
             ProvenanceOrigin::Manual,
             None,
+            Some("name".into()),
         )
         .expect("seed task");
     let model = BoardModel::from_tasks(domain.tasks().to_vec(), None);
@@ -116,7 +117,7 @@ fn board_md_palette_table_matches_the_palette_catalog() {
         let (actions, when) = (&row[0], &row[1]);
         let available = match when.as_str() {
             "Always" => &always,
-            "A task is selected" => &with_selection,
+            "A task is selected" | "An assigned task is selected" => &with_selection,
             "A save has failed" => &recovery,
             other => panic!("unknown palette condition {other:?} in board.md"),
         };
@@ -133,7 +134,7 @@ fn board_md_palette_table_matches_the_palette_catalog() {
     // selected, and a selection-only command really is absent from the empty board.
     for (label, when) in &documented {
         match *when {
-            "A task is selected" => assert!(
+            "A task is selected" | "An assigned task is selected" => assert!(
                 !always.contains(label),
                 "{label:?} is documented as selection-only but the empty board offers it"
             ),
@@ -160,7 +161,14 @@ fn board_md_palette_table_matches_the_palette_catalog() {
     }
     for label in &with_selection {
         assert!(
-            covers(label, &["Always", "A task is selected"]),
+            covers(
+                label,
+                &[
+                    "Always",
+                    "A task is selected",
+                    "An assigned task is selected"
+                ]
+            ),
             "a selected board offers {label:?} but board.md's table does not list it"
         );
     }
@@ -180,6 +188,8 @@ fn expected_intent(action: &str) -> Option<BoardIntent> {
         BoardIntent::BeginEditTitle
     } else if action.starts_with("start") {
         BoardIntent::PrimaryVerb
+    } else if action.starts_with("dispatch") {
+        BoardIntent::Dispatch
     } else if action.starts_with("set ready") {
         BoardIntent::SetStatus(HumanStatus::Ready)
     } else if action.starts_with("set open") {

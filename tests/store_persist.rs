@@ -414,7 +414,6 @@ fn every_removed_wire_token_is_refused_at_the_store_boundary() {
         "parked",
         "agent_linked",
         "agent_unlinked",
-        "dispatched",
     ] {
         let mut document = current_store_fixture();
         document["tasks"][0]["history"][0]["kind"] = serde_json::json!(kind);

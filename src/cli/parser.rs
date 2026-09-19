@@ -49,6 +49,63 @@ pub fn parse_task_address(value: &str) -> Result<TaskAddress, String> {
         .map_err(|_| format!("invalid task id {value}"))
 }
 
+/// Parsed `dispatch` input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlagDispatch {
+    pub task: Option<TaskAddress>,
+    pub again: bool,
+    pub state_dir: Option<PathBuf>,
+    pub help: bool,
+}
+
+pub fn parse_flag_dispatch(args: &[String]) -> Result<FlagDispatch, String> {
+    if args.get(1).map(String::as_str) != Some("dispatch") {
+        return Err("expected dispatch command".into());
+    }
+    let mut parsed = FlagDispatch {
+        task: None,
+        again: false,
+        state_dir: None,
+        help: false,
+    };
+    let mut index = 2;
+    while let Some(flag) = args.get(index).map(String::as_str) {
+        let value = |name: &str| match args.get(index + 1) {
+            Some(value) if !value.starts_with('-') => Ok(value.clone()),
+            _ => Err(format!("missing value for {name}")),
+        };
+        match flag {
+            "--again" => {
+                parsed.again = true;
+                index += 1;
+            }
+            "--help" => {
+                parsed.help = true;
+                index += 1;
+            }
+            flag if flag.starts_with("--state-dir=") => {
+                parsed.state_dir = Some(PathBuf::from(&flag["--state-dir=".len()..]));
+                index += 1;
+            }
+            "--state-dir" => {
+                parsed.state_dir = Some(PathBuf::from(value(flag)?));
+                index += 2;
+            }
+            flag if flag.starts_with('-') => {
+                return Err(format!("unknown dispatch argument {flag}"))
+            }
+            value => {
+                if parsed.task.is_some() {
+                    return Err(format!("unexpected dispatch argument {value}"));
+                }
+                parsed.task = Some(parse_task_address(value)?);
+                index += 1;
+            }
+        }
+    }
+    Ok(parsed)
+}
+
 /// Parsed `trash` input. Positionals are the action (`restore`) and the task address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlagTrash {

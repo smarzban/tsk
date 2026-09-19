@@ -11,7 +11,7 @@ Double-click a task or select it and press `Enter`. A double-click follows the t
 
 At 110 usable columns or wider, click a task or press `→` to open details beside the board, keeping board focus. Use `→` and `←` to move between [board and task views](/docs/board/#wide-stage-slider). From the board-focused split, `Esc` closes the details column, keeping any parked draft. Press `Enter` from the board for full screen; `Esc` or click **esc close** returns. In view mode, `ctrl+q` quits the whole board rather than closing the page; save or cancel unsaved edits first.
 
-Click the task's `T` number to copy it. The page shows its status, notes, steps, assignee, project, thread, and dates. Its footer puts `@assignee` before `#thread`, then the project and created and updated dates. Long text wraps.
+Click the task's `T` number to copy it. The page shows its status, notes, steps, assignee, project, thread, and dates. After a dispatch it also shows the worktree, branch, and relative dispatch time. Its footer puts `@assignee` before `#thread`, then the project and created and updated dates. Long text wraps.
 
 ## Edit
 
@@ -21,6 +21,7 @@ The page opens in view mode.
 | --- | --- |
 | Edit title, or the selected step | `ctrl+e` |
 | Edit notes | `ctrl+e`, then `Tab` |
+| Dispatch to the assigned agent | `ctrl+g` |
 | Move through editable fields | `Tab` / `Shift+Tab`, after starting an edit |
 | Save the task edit | `Shift+Enter` |
 | Cancel the current field | `Esc` or `ctrl+c` |
@@ -29,7 +30,7 @@ Clicking Title, Notes, Scope, Assignee, or Thread does not start an edit from vi
 
 In view mode, `Tab` selects steps and **+ step**. It does not cycle task fields. Status shortcuts remain available on the task page; use `ctrl+e`, then `Tab` to reach Notes.
 
-During task editing, the forward order is Title → Notes → steps → **+ step** → Thread → Scope → Assignee → Title. `Shift+Tab` reverses the ring. A field click moves the cursor and retains staged changes.
+During task editing, the forward order is Title → Notes → steps → **+ step** → Assignee → Thread → Scope → Title. `Shift+Tab` reverses the ring. The footer follows the same left-to-right order: Assignee, Thread, Scope. A field click moves the cursor and retains staged changes.
 
 ## Scope, thread, and assignee
 
@@ -39,9 +40,9 @@ During task editing, the forward order is Title → Notes → steps → **+ step
 | --- | --- |
 | Scope | Select it while editing, press `Enter`, choose a destination, then `Enter` again |
 | Thread | Select it, then press `Enter` or click again to edit its name |
-| Assignee | Select it, then use `Space` or arrows to cycle through exact profile names and **unassigned**; `Enter` confirms |
+| Assignee | Select it, press `Enter`, choose an exact profile name or **none**, then press `Enter` again |
 
-Scope also supports cycling with `Space`, `←`, or `→`. Archived projects are not offered.
+Scope and Assignee also support cycling without opening their lists with `Space`, `←`, or `→`. Archived projects are not offered.
 
 Thread is optional and follows the [thread name rules](/docs/capture/#thread-names).
 
@@ -64,7 +65,7 @@ If another writer deletes the task, saving refuses. If a save fails, use [retry 
 
 ## Status and steps
 
-In task view, status shortcuts act on the open task even when a step is selected. Multi-select and marks retained from the board are ignored and clear when an action runs. `ctrl+n` sets ready and `ctrl+o` sets open; `ctrl+s` starts an open or ready task. `Enter` toggles the selected step only.
+In task view, status shortcuts act on the open task even when a step is selected. `ctrl+g` dispatches that task to its assigned agent. Multi-select and marks retained from the board are ignored and clear when an action runs. `ctrl+n` sets ready and `ctrl+o` sets open; `ctrl+s` starts an open or ready task. `Enter` toggles the selected step only.
 
 While editing a field, use its edit keys. Save or cancel to return to the task's status actions.
 

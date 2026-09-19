@@ -82,7 +82,7 @@ fn edit_chrome_legends(mode: BoardInputMode) -> [&'static str; 3] {
             "Enter · Shift+Enter · Esc",
         ],
         BoardInputMode::QuickAdd
-        | BoardInputMode::FormScopeDropdown
+        | BoardInputMode::FormDropdown
         | BoardInputMode::Normal
         | BoardInputMode::ProjectPicker
         | BoardInputMode::ListPicker

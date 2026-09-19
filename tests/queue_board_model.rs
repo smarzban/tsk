@@ -39,6 +39,7 @@ fn task(id: u128, title: &str, status: HumanStatus, scope: TaskScope, updated_se
         notes: None,
         thread: None,
         assignee: None,
+        dispatch: None,
         status,
         scope,
         provenance: ProvenanceOrigin::Manual,

@@ -53,6 +53,19 @@ pub struct Notice {
     pub number: Option<u64>,
 }
 
+/// One durable record of an agent launch for a task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Dispatch {
+    /// Fully rendered profile argv, retained for inspection after launch.
+    pub argv: Vec<String>,
+    pub worktree: String,
+    pub branch: String,
+    pub herdr_workspace_id: String,
+    #[serde(with = "super::time_serde")]
+    pub at: SystemTime,
+}
+
 /// One unit of intended work.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -78,6 +91,9 @@ pub struct Task {
     /// Optional normalized agent profile name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
+    /// Last successful dispatch. Status changes never alter this record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch: Option<Dispatch>,
     pub status: HumanStatus,
     pub scope: TaskScope,
     pub provenance: ProvenanceOrigin,
@@ -391,6 +407,7 @@ impl DomainState {
             notes,
             thread,
             assignee: None,
+            dispatch: None,
             status: HumanStatus::Open,
             scope,
             provenance,
@@ -632,6 +649,17 @@ impl DomainState {
         let task = self.task_mut(id)?;
         task.assignee = assignee;
         record_mutation(task, TaskEventKind::Assigned);
+        Ok(())
+    }
+
+    /// Record one successful launch and set human status to started as one mutation.
+    /// Dispatch is external and deliberately creates no undo entry.
+    pub fn record_dispatch(&mut self, id: Uuid, dispatch: Dispatch) -> Result<(), DomainError> {
+        let task = self.task_mut(id)?;
+        task.status = HumanStatus::Started;
+        let at = dispatch.at;
+        task.dispatch = Some(dispatch);
+        record_mutation_at(task, TaskEventKind::Dispatched, at);
         Ok(())
     }
 

@@ -33,6 +33,7 @@ Use `--json` on `add` or `list` for machine-readable output. Read the [exit cont
 | `tsk list` | Read tasks |
 | `tsk status` | Set task status |
 | `tsk edit` | Replace title or notes; assign or unassign |
+| `tsk dispatch` | Launch an assigned task in a Herdr worktree |
 | `tsk steps` | Add, toggle, rename, or remove steps |
 | `tsk archive` / `tsk unarchive` | Hide or restore a task |
 | `tsk project archive` / `tsk project unarchive` | Hide or restore a project |
@@ -210,6 +211,21 @@ Blank notes clear the field. Notes preserve newlines and tabs. Use `--title=...`
 
 Output: `edited T12 <title>`. Repeating the same values is safe.
 
+## dispatch
+
+```sh
+tsk dispatch T12
+tsk dispatch T12 --again
+```
+
+Dispatch requires Herdr, an assigned project task whose project is a Git repository, and a matching profile in `agents.toml`. It creates a branch and worktree, opens a Herdr workspace there, and runs the profile's rendered command in its root pane. Only after the launch succeeds, tsk saves the dispatch record and sets the task to `started` in the same write. The dispatch itself is not undoable.
+
+A task with an existing record refuses with `already-dispatched`. Use `--again` deliberately to focus the recorded Herdr workspace and rerun the rendered command in its root pane; it does not create another branch or worktree. Ordinary status changes retain the record.
+
+Output: `dispatched T12 to @implementer in /path/to/worktree`.
+
+Refusals have stable codes: `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, and `herdr-failed`. Every refusal leaves task state unchanged. A storage failure after a successful launch exits 3; read the task before deciding whether to retry, because another launch could already be running.
+
 ## steps
 
 ```text
@@ -359,6 +375,7 @@ After an uncertain add, inspect `tsk list --all --json`. Also check `--done` and
 | --- | --- |
 | Add | `empty-title`, `invalid-title`, `invalid-thread`, `invalid-item`, `unknown-project`, `unknown-agent`, `project-archived` |
 | Edit | `empty-title`, `invalid-title`, `unknown-task`, `soft-deleted-task`, `unknown-agent` |
+| Dispatch | `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, `herdr-failed` |
 | Steps | `empty-step-text`, `invalid-step-text`, `unknown-task`, `soft-deleted-task`, `unknown-step`, `ambiguous-step` |
 | Status | `unknown-task`, `soft-deleted-task` |
 | Archive / unarchive | `unknown-task`, `soft-deleted-task` |

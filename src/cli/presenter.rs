@@ -11,6 +11,7 @@ use crate::cli::parser::TaskAddress;
 use crate::cli::status::{StatusError, StatusResult};
 use crate::cli::steps::{StepLine, StepsError, StepsResult};
 use crate::cli::trash::{TrashCliError, TrashRestoreResult};
+use crate::dispatch::{DispatchError, DispatchResult};
 use crate::domain::HumanStatus;
 use crate::ui::terminal_text;
 
@@ -118,6 +119,7 @@ pub fn top_level_help() -> String {
         "  add      create one task or apply a JSON plan\n",
         "  list     inspect tasks\n",
         "  status   set a task's human status\n",
+        "  dispatch hand a task to its assigned agent\n",
         "  edit     update a task's title or notes\n",
         "  steps    add, toggle, rename, or remove one step on a task\n\n",
         "Board\n",
@@ -916,6 +918,81 @@ fn status_name(status: HumanStatus) -> &'static str {
         HumanStatus::Blocked => "blocked",
         HumanStatus::Review => "review",
         HumanStatus::Done => "done",
+    }
+}
+
+pub fn dispatch_help() -> CliOutput {
+    help(HelpDoc {
+        usage: vec!["tsk dispatch <task> [--again] [--state-dir <dir>]".into()],
+        purpose: "Create a project worktree and launch the task's assigned agent in Herdr.".into(),
+        groups: vec![group(
+            "Options",
+            &[
+                ("--again", "relaunch in the recorded worktree"),
+                ("--state-dir <dir>", "use another board store"),
+            ],
+        )],
+        examples: vec!["tsk dispatch T12".into(), "tsk dispatch 12 --again".into()],
+        refusals: vec![
+            "unknown-task".into(),
+            "soft-deleted-task".into(),
+            "no-assignee".into(),
+            "not-in-herdr".into(),
+            "needs-git-project".into(),
+            "done-task".into(),
+            "archived-task".into(),
+            "already-dispatched".into(),
+            "unknown-agent".into(),
+            "agent-config".into(),
+            "herdr-failed".into(),
+        ],
+        exit: exit_line(
+            "task dispatched",
+            Some("dispatch refused, nothing persisted"),
+            true,
+        ),
+    })
+}
+
+pub fn dispatched(result: DispatchResult) -> CliOutput {
+    CliOutput {
+        stdout: format!(
+            "dispatched T{} to @{} in {}\n",
+            result.number,
+            terminal_text(&result.assignee),
+            terminal_text(&result.record.worktree)
+        ),
+        stderr: String::new(),
+        code: 0,
+    }
+}
+
+pub fn dispatch_usage(reason: &str) -> CliOutput {
+    CliOutput {
+        stdout: String::new(),
+        stderr: format!(
+            "tsk dispatch: {}\nusage: tsk dispatch <task> [--again] [--state-dir <dir>]\n",
+            human_reason(reason)
+        ),
+        code: 2,
+    }
+}
+
+pub fn dispatch_rejected(error: DispatchError, task: TaskAddress) -> CliOutput {
+    let exit = if matches!(error, DispatchError::Store(_)) {
+        3
+    } else {
+        1
+    };
+    let refusal = error.code();
+    let detail = match error {
+        DispatchError::UnknownTask => format!("{} is not on the board", task.display()),
+        other => other.to_string(),
+    };
+    CliOutput {
+        stdout: String::new(),
+        stderr: format!("tsk dispatch: {refusal}: {}\n", human_reason(&detail)),
+        code: exit,
     }
 }
 

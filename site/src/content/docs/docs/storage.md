@@ -29,7 +29,7 @@ prompt = "Work on T{number}: {title}\n\n{notes}\n\n{steps}"
 PI_PROVIDER = "anthropic"
 ```
 
-`command` is a required, non-empty argv template. `prompt` is optional; without it, tsk supplies a prompt that points the agent to `tsk guide` and the task, then asks it to set the task to review or blocked. The rendered prompt is always appended to the command as its last argument. `env` is an optional table of string values passed through unchanged.
+`command` is a required, non-empty argv template. `prompt` is optional; without it, tsk supplies a prompt that points the agent to `tsk guide` and the task, then asks it to set the task to review or blocked. The rendered prompt is always appended to the command as its last argument. `env` is an optional table of string values passed to the launched command unchanged.
 
 A malformed profile file does not block the board or CLI work that does not assign a task. The board opens without profiles and shows the error on its status row. `tsk add` and `tsk edit` read the file only when an assignee is supplied; a profile-file error then exits 2 without saving.
 
@@ -45,7 +45,7 @@ The command and prompt templates support `{number}`, `{title}`, `{notes}`, `{ste
 | `agents.toml` | Agent launch profiles, seeded with commented examples on the first full board open |
 | `delivery.json` | Which starter tasks this install has received or dismissed, and the newest release note it has seen |
 
-An older binary refuses a newer or unversioned store instead of rewriting it. Use a compatible tsk version to open it. On first save, v5 stores migrate to v6 to add optional task assignees; the original document is saved as `tsk.json.v5`. Earlier stores still run through each migration in order, including v5 batch undo and the v3 to v4 move from ready to open.
+An older binary refuses a newer or unversioned store instead of rewriting it. Use a compatible tsk version to open it. On first save, v5 stores migrate to v6 to add optional task assignees and dispatch records; the original document is saved as `tsk.json.v5`. Earlier stores still run through each migration in order, including v5 batch undo and the v3 to v4 move from ready to open.
 
 Archived tasks stay in the task document with their existing status. [Archive and restore](/docs/board/#archive).
 

@@ -67,7 +67,9 @@ Assign threads when [capturing](/docs/capture/#title-tokens) or [editing a task]
 
 ## Assignees
 
-An optional assignee links a task to the exact name of an agent profile in [`agents.toml`](/docs/storage/#agent-profiles). Assigned rows show `@name`. Use **set assignee** in the palette, then choose a profile or **unassigned**. With marked tasks, one choice updates the whole set and one `ctrl+u` reverses it.
+An optional assignee links a task to the exact name of an agent profile in [`agents.toml`](/docs/storage/#agent-profiles). Rows stay a title; the peek (`→`) footer names `@assignee · #thread · project`, in that order, for whatever is set. Use **set assignee** in the palette, then choose a profile or **none**. With marked tasks, one choice updates the whole set and one `ctrl+u` reverses it.
+
+Press `ctrl+g`, or choose **dispatch to @name** from the palette, to send the cursored task to its assigned agent. Dispatch is cursor-only: it clears any marked set rather than launching several agents. tsk creates a dedicated Git worktree and Herdr workspace, renders the profile command there, starts the task, then records the worktree, branch, workspace, command argv, and time as one save. If creating or launching fails, task state does not change. Dispatch requires Herdr, a project-scoped task in a Git repository, and a non-done, non-archived task with a known assignee. A task with a dispatch record refuses another launch unless you use [`tsk dispatch T12 --again`](/docs/cli/#dispatch), which reuses its workspace and worktree.
 
 ## Status
 
@@ -79,13 +81,15 @@ An optional assignee links a task to the exact name of an agent profile in [`age
 | ↳ **inbox** | `open` |
 | Done drawer | `done` |
 
+Status glyphs are `◌` open, `○` ready, `●` started, `■` blocked, `▲` review, and `✓` done. A started task with a dispatch record uses `◉` instead of `●`; changing its human status restores that status's normal glyph.
+
 On your desk, **ON DECK** contains only desk tasks. On a project board, it contains that project's ready and open tasks. Ready tasks are the picked queue; open tasks are the untriaged inbox below it. Ready tasks sort by oldest pick first, open tasks by oldest capture first, and notice tasks lead within each group. The **inbox** group starts expanded; press `Enter` on its heading or `g` while the done drawer is closed to fold or unfold it. With the drawer open and archived tasks available, `g` addresses its archived group; otherwise it addresses the inbox. Use the thread filter to narrow the tasks.
 
 Sections hold their order while you work: NEEDS YOU, IN MOTION, DONE, and the drawer's ARCHIVED group keep the most recent status change on top, while ON DECK lists ready and inbox backlogs oldest first. (`N` tasks lead each group until you clear them.) Editing a task or ticking a step never moves it; setting a status moves it to the top of its new section.
 
 Move the cursor with `↑`/`↓` or `j`/`k`. Press `Shift+M` to enter multi-select. While it is active, press `Space` to toggle the cursored task, hold `Shift` with `↑`/`↓` to mark the current task before moving, or click a task to toggle it. Marked rows show `▪`; the cursor remains `▸`. Removing the last mark leaves the mode active. `Shift+M` again while the board owns input, a task action, `Esc`, or a view change such as folding a group or switching tabs, projects, threads, or the done drawer exits the mode and clears the session-only set. Text entry keeps `Shift+M` as a capital `M`; `Esc` leaves multi-select before cancelling that surface.
 
-On a task-board list, `ctrl+s`, `ctrl+n`, `ctrl+o`, `ctrl+d`, `ctrl+b`, `ctrl+r`, `ctrl+x`, and `ctrl+f` act on the marked set when it is non-empty. With no marks they act on the cursor. `Enter`, `ctrl+e`, and actions from the task page always use only the cursor.
+On a task-board list, `ctrl+s`, `ctrl+n`, `ctrl+o`, `ctrl+d`, `ctrl+b`, `ctrl+r`, `ctrl+x`, and `ctrl+f` act on the marked set when it is non-empty. With no marks they act on the cursor. `Enter`, `ctrl+e`, `ctrl+g`, and actions from the task page always use only the cursor.
 
 | Key | Action |
 | --- | --- |
@@ -118,7 +122,7 @@ Your first board open seeds four desk tasks with `N` ids (not `T`). They teach t
 | Wheel or drag a scrollbar | Scroll |
 | Drag across text | Select and copy on release |
 
-Open peeks show notes and the task's project or thread. Below 110 columns, `→` opens a peek and `←` closes it. Peeks show up to five wrapped note lines; the [task page](/docs/task-page/) shows the rest.
+Open peeks show notes, followed by one metadata footer ordered `@assignee · #thread · project`, omitting unset parts. Below 110 columns, `→` opens a peek and `←` closes it. Peeks show up to five wrapped note lines; the [task page](/docs/task-page/) shows the rest.
 
 ## Wide stage slider
 
@@ -187,9 +191,10 @@ Press `:` and type to find an action. Use arrows or `Tab` to select, `Enter` to 
 | New task, undo, done drawer, help, quit | Always |
 | Set open/ready/started/blocked/review, edit notes, change scope, delete | A task is selected |
 | Set assignee | A task is selected |
+| Dispatch to @name | An assigned task is selected |
 | Retry save, cancel save | A save has failed |
 
-**Set assignee** applies to the marked set when marks are present.
+**Set assignee** applies to the marked set when marks are present. **Dispatch to @name** ignores and clears marks, then dispatches only the cursor.
 
 Search matches letters in order: `ssr` finds `set status: review`.
 

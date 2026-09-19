@@ -173,16 +173,16 @@ pub enum BoardIntent {
     FormAssigneeNext,
     FormAssigneePrev,
     ConfirmFormAssignee,
-    /// Open the shared form's keyboard scope dropdown, move its pending selection, apply it,
+    /// Open a shared form footer dropdown, move its pending selection, apply it,
     /// or return to the parent form without applying it.
-    OpenFormScopeDropdown,
-    FormScopeNext,
-    FormScopePrev,
-    ConfirmFormScopeDropdown,
-    CancelFormScopeDropdown,
+    OpenFormDropdown(CaptureField),
+    FormDropdownNext,
+    FormDropdownPrev,
+    ConfirmFormDropdown,
+    CancelFormDropdown,
     /// Choose a form dropdown option by its painted source index, apply only its parent
     /// draft, and return to that form (mouse).
-    SelectFormScopeOption(usize),
+    SelectFormDropdownOption(usize),
     EditInsert(char),
     /// Insert a pasted run at the cursor.
     EditInsertText(String),
@@ -307,6 +307,8 @@ pub enum BoardIntent {
     CommandQueryBackspace,
     /// `ctrl+s` — state-mapped primary verb. Reducer lands in.
     PrimaryVerb,
+    /// `ctrl+g` — dispatch the cursor task to its assignee.
+    Dispatch,
     /// `ctrl+b` — toggle blocked ↔ ready. Reducer lands in.
     ToggleBlock,
     /// `ctrl+r` — toggle review ↔ ready. Reducer lands in.
@@ -362,7 +364,7 @@ pub enum BoardIntent {
     OpenHelp,
     /// `Esc` — layered close. Full layer order lands in.
     CloseLayer,
-    /// Toggle all group headers on the active home tab (`Ctrl+G`).
+    /// Toggle all group headers on the active home tab (bare `g`).
     ToggleAllGroups,
 }
 
@@ -485,6 +487,13 @@ const NORMAL_KEYMAP: &[NormalKeyEntry] = &[
         intent: BoardIntent::PrimaryVerb,
         help_chord: "s",
         help_label: "start",
+        modifier: NormalModifier::Ctrl,
+    },
+    NormalKeyEntry {
+        code: KeyCode::Char('g'),
+        intent: BoardIntent::Dispatch,
+        help_chord: "g",
+        help_label: "dispatch",
         modifier: NormalModifier::Ctrl,
     },
     NormalKeyEntry {
@@ -750,6 +759,7 @@ fn board_help_group(intent: &BoardIntent) -> HelpGroup {
         | BoardIntent::PeekDetail
         | BoardIntent::CollapseDetail => HelpGroup::Navigation,
         BoardIntent::PrimaryVerb
+        | BoardIntent::Dispatch
         | BoardIntent::SetStatus(_)
         | BoardIntent::Complete
         | BoardIntent::Reopen
@@ -1233,7 +1243,7 @@ pub fn map_key(mode: BoardInputMode, key: KeyEvent) -> Option<BoardIntent> {
                 | BoardInputMode::SelectThread
                 | BoardInputMode::EditScope
                 | BoardInputMode::EditAssignee
-                | BoardInputMode::FormScopeDropdown
+                | BoardInputMode::FormDropdown
                 | BoardInputMode::LaunchCard
                 | BoardInputMode::ProjectPicker
                 | BoardInputMode::ListPicker
@@ -1254,7 +1264,7 @@ pub fn map_key(mode: BoardInputMode, key: KeyEvent) -> Option<BoardIntent> {
         BoardInputMode::Palette => map_palette(key),
         BoardInputMode::Help => map_help(key),
         BoardInputMode::QuickAdd => map_quick_add_key(key),
-        BoardInputMode::FormScopeDropdown => map_board_form_key(CaptureField::Scope, true, key),
+        BoardInputMode::FormDropdown => map_board_form_key(CaptureField::Scope, true, key),
         BoardInputMode::EditScope => map_board_form_key(CaptureField::Scope, false, key),
         BoardInputMode::EditAssignee => map_board_form_key(CaptureField::Assignee, false, key),
         BoardInputMode::SelectThread => map_selected_thread_key(key),
@@ -1443,7 +1453,7 @@ pub fn map_board_form_key(
         return None;
     }
     if dropdown_open {
-        return map_form_scope_dropdown_key(key);
+        return map_form_dropdown_key(key);
     }
     map_form_edit_key(focused, FormEditNavigation::Form, false, key)
 }
@@ -1455,15 +1465,14 @@ pub fn map_task_form_key(
     key: KeyEvent,
 ) -> Option<BoardIntent> {
     if dropdown_open {
-        map_form_scope_dropdown_key(key)
+        map_form_dropdown_key(key)
     } else {
         map_form_edit_key(focused, FormEditNavigation::Form, true, key)
     }
 }
 
-/// Scope dropdown keys are the one form-mode extra: it owns its temporary selection rather than
-/// an editable field.
-fn map_form_scope_dropdown_key(key: KeyEvent) -> Option<BoardIntent> {
+/// Form dropdown keys own a temporary selection rather than an editable field.
+fn map_form_dropdown_key(key: KeyEvent) -> Option<BoardIntent> {
     if key
         .modifiers
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
@@ -1472,10 +1481,10 @@ fn map_form_scope_dropdown_key(key: KeyEvent) -> Option<BoardIntent> {
     }
     match key.code {
         KeyCode::Char('?') => Some(BoardIntent::OpenHelp),
-        KeyCode::Esc => Some(BoardIntent::CancelFormScopeDropdown),
-        KeyCode::Enter => Some(BoardIntent::ConfirmFormScopeDropdown),
-        KeyCode::Up | KeyCode::Char('k') => Some(BoardIntent::FormScopePrev),
-        KeyCode::Down | KeyCode::Char('j') => Some(BoardIntent::FormScopeNext),
+        KeyCode::Esc => Some(BoardIntent::CancelFormDropdown),
+        KeyCode::Enter => Some(BoardIntent::ConfirmFormDropdown),
+        KeyCode::Up | KeyCode::Char('k') => Some(BoardIntent::FormDropdownPrev),
+        KeyCode::Down | KeyCode::Char('j') => Some(BoardIntent::FormDropdownNext),
         _ => None,
     }
 }
@@ -1539,7 +1548,7 @@ fn map_form_edit_key(
         CaptureField::Scope => match key.code {
             KeyCode::Char('?') => Some(BoardIntent::OpenHelp),
             KeyCode::Esc => Some(BoardIntent::CancelEdit),
-            KeyCode::Enter => Some(BoardIntent::OpenFormScopeDropdown),
+            KeyCode::Enter => Some(BoardIntent::OpenFormDropdown(CaptureField::Scope)),
             KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right => {
                 Some(BoardIntent::FormCycleScope)
             }
@@ -1548,7 +1557,7 @@ fn map_form_edit_key(
         CaptureField::Assignee => match key.code {
             KeyCode::Char('?') => Some(BoardIntent::OpenHelp),
             KeyCode::Esc => Some(BoardIntent::CancelEdit),
-            KeyCode::Enter => Some(BoardIntent::ConfirmFormAssignee),
+            KeyCode::Enter => Some(BoardIntent::OpenFormDropdown(CaptureField::Assignee)),
             KeyCode::Char(' ') | KeyCode::Right => Some(BoardIntent::FormAssigneeNext),
             KeyCode::Left => Some(BoardIntent::FormAssigneePrev),
             _ => None,
@@ -1617,7 +1626,7 @@ pub fn map_edit_paste(mode: BoardInputMode, text: &str) -> Option<BoardIntent> {
         BoardInputMode::SelectThread
         | BoardInputMode::EditScope
         | BoardInputMode::EditAssignee
-        | BoardInputMode::FormScopeDropdown
+        | BoardInputMode::FormDropdown
         | BoardInputMode::LaunchCard
         | BoardInputMode::TaskPage
         | BoardInputMode::CapturePage => None,
@@ -1698,12 +1707,12 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::FormAssigneeNext
         | BoardIntent::FormAssigneePrev
         | BoardIntent::ConfirmFormAssignee
-        | BoardIntent::OpenFormScopeDropdown
-        | BoardIntent::FormScopeNext
-        | BoardIntent::FormScopePrev
-        | BoardIntent::ConfirmFormScopeDropdown
-        | BoardIntent::CancelFormScopeDropdown
-        | BoardIntent::SelectFormScopeOption(_)
+        | BoardIntent::OpenFormDropdown(_)
+        | BoardIntent::FormDropdownNext
+        | BoardIntent::FormDropdownPrev
+        | BoardIntent::ConfirmFormDropdown
+        | BoardIntent::CancelFormDropdown
+        | BoardIntent::SelectFormDropdownOption(_)
         | BoardIntent::OpenProjectSelector
         | BoardIntent::ProjectPickerNext
         | BoardIntent::ProjectPickerPrev
@@ -1740,6 +1749,7 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::CommandQueryInsertText(_)
         | BoardIntent::CommandQueryBackspace
         | BoardIntent::PrimaryVerb
+        | BoardIntent::Dispatch
         | BoardIntent::ToggleBlock
         | BoardIntent::ToggleReview
         | BoardIntent::HelpQueryInsert(_)
@@ -1864,6 +1874,7 @@ fn map_task_page(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Char('q') if verb => Some(BoardIntent::Quit),
         KeyCode::Enter if !extra => Some(BoardIntent::OpenTaskPage),
         KeyCode::Char('s') if verb => Some(BoardIntent::PrimaryVerb),
+        KeyCode::Char('g') if verb => Some(BoardIntent::Dispatch),
         KeyCode::Char('a') if verb => Some(BoardIntent::BeginAddStep),
         KeyCode::Char('d') if verb => Some(BoardIntent::Complete),
         KeyCode::Char('n') if verb => Some(BoardIntent::SetStatus(HumanStatus::Ready)),

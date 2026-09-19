@@ -18,12 +18,15 @@ pub enum CommandSurface {
 /// One discoverable board command: a label plus the existing intent it dispatches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoardCommand {
-    pub label: &'static str,
+    pub label: String,
     pub intent: BoardIntent,
 }
 
-const fn command(label: &'static str, intent: BoardIntent) -> BoardCommand {
-    BoardCommand { label, intent }
+fn command(label: impl Into<String>, intent: BoardIntent) -> BoardCommand {
+    BoardCommand {
+        label: label.into(),
+        intent,
+    }
 }
 
 impl BoardModel {
@@ -63,9 +66,9 @@ impl BoardModel {
         }
         let mut commands = Vec::new();
         if self.selected_id().is_some() {
-            // the tail: set status x4, edit notes, change scope, then shared tail.
-            // No park / resume / link / dispatch entries.
-            commands.extend_from_slice(&[
+            // the tail: set status x4, edit notes, change scope, assignment and optional
+            // dispatch, then shared tail. No park / resume / link entries.
+            commands.extend([
                 command(
                     "set status: ready",
                     BoardIntent::SetStatus(HumanStatus::Ready),
@@ -90,6 +93,16 @@ impl BoardModel {
                 command("change scope", BoardIntent::BeginEditScope),
                 command("set assignee", BoardIntent::BeginEditAssignee),
             ]);
+            if let Some(assignee) = self
+                .selected_id()
+                .and_then(|id| self.tasks.iter().find(|task| task.id == id))
+                .and_then(|task| task.assignee.as_deref())
+            {
+                commands.push(command(
+                    format!("dispatch to @{assignee}"),
+                    BoardIntent::Dispatch,
+                ));
+            }
         }
         // Always-available board commands, then selection-gated delete when present.
         // The status commands above are absolute, so `set status: open` replaces the old
@@ -106,7 +119,7 @@ impl BoardModel {
             command("help", BoardIntent::OpenHelp),
             command("quit", BoardIntent::Quit),
         ]);
-        // Park / resume / link / dispatch stay out of the palette.
+        // Park / resume / link stay out of the palette.
         commands
     }
 
@@ -122,7 +135,7 @@ impl BoardModel {
         }
         commands
             .into_iter()
-            .filter(|command| subsequence_match(command.label, query))
+            .filter(|command| subsequence_match(&command.label, query))
             .collect()
     }
 

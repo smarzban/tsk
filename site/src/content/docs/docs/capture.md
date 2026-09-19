@@ -20,7 +20,7 @@ Clicking a task while the quick-add line is open discards the draft and selects 
 
 ## Details
 
-Press `Tab` from quick-add to add notes, steps, a thread, a scope, or an assignee. The draft uses the full pane and opens in Notes. Its forward field ring is Title → Notes → steps → **+ step** → Thread → Scope → Assignee → Title; `Shift+Tab` reverses it. In a project preview, its title stays in the right-column header while Notes is active.
+Press `Tab` from quick-add to add notes, steps, an assignee, a thread, or a scope. The draft uses the full pane and opens in Notes. Its forward field ring is Title → Notes → steps → **+ step** → Assignee → Thread → Scope → Title; `Shift+Tab` reverses it. The footer uses that same left-to-right order. In a project preview, its title stays in the right-column header while Notes is active.
 
 - `Shift+Enter` saves.
 - `Esc` returns to the quick-add line.

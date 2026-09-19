@@ -2092,7 +2092,9 @@ fn hit_signature(hits: &QueueHitMap, column: Rect) -> Vec<String> {
             QueueHitTarget::StepAdd => Some("StepAdd".to_string()),
             QueueHitTarget::FormNotes(_) => Some("FormNotes".to_string()),
             QueueHitTarget::FormThread => Some("FormThread".to_string()),
-            QueueHitTarget::FormScopeOption(index) => Some(format!("FormScopeOption({index})")),
+            QueueHitTarget::FormDropdownOption(index) => {
+                Some(format!("FormDropdownOption({index})"))
+            }
             QueueHitTarget::Verb(index) => Some(format!("Verb({index})")),
             _ => None,
         })
@@ -2112,8 +2114,8 @@ fn first_hit(hits: &QueueHitMap, column: Rect, name: &str) -> Rect {
                     QueueHitTarget::StepAdd => name == "StepAdd",
                     QueueHitTarget::FormNotes(_) => name == "FormNotes",
                     QueueHitTarget::FormThread => name == "FormThread",
-                    QueueHitTarget::FormScopeOption(index) => {
-                        format!("FormScopeOption({index})") == name
+                    QueueHitTarget::FormDropdownOption(index) => {
+                        format!("FormDropdownOption({index})") == name
                     }
                     QueueHitTarget::Verb(index) => format!("Verb({index})") == name,
                     _ => false,
@@ -2571,8 +2573,12 @@ fn dirty_scope_dropdown_same_bound_row_click_keeps_the_visible_editor() {
         &mut model,
         BoardIntent::FocusFormField(CaptureField::Scope),
     );
-    go(&mut domain, &mut model, BoardIntent::OpenFormScopeDropdown);
-    assert_eq!(model.input_mode(), BoardInputMode::FormScopeDropdown);
+    go(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenFormDropdown(CaptureField::Scope),
+    );
+    assert_eq!(model.input_mode(), BoardInputMode::FormDropdown);
     let bound = model.edit_target().expect("bound");
     let geometry = resolve_responsive(130, 24, WideStage::Rail);
     let (_, hits) = render(&model, 130, 24);
@@ -2582,13 +2588,9 @@ fn dirty_scope_dropdown_same_bound_row_click_keeps_the_visible_editor() {
         go(&mut domain, &mut model, intent);
     }
     assert_eq!(mapped, None);
-    assert_eq!(model.input_mode(), BoardInputMode::FormScopeDropdown);
+    assert_eq!(model.input_mode(), BoardInputMode::FormDropdown);
     assert_eq!(model.wide_stage(), WideStage::Rail);
-    go(
-        &mut domain,
-        &mut model,
-        BoardIntent::CancelFormScopeDropdown,
-    );
+    go(&mut domain, &mut model, BoardIntent::CancelFormDropdown);
     go(
         &mut domain,
         &mut model,

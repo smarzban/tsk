@@ -86,8 +86,9 @@ pub enum BoardInputMode {
     EditScope,
     /// The assignee field cycles defined agent profiles plus unassigned.
     EditAssignee,
-    /// A task/capture form's transient scope chooser. It returns to its parent form on Esc.
-    FormScopeDropdown,
+    /// A task/capture form footer chooser. The retained form focus identifies Scope or
+    /// Assignee, and Esc returns to that parent field without applying the highlight.
+    FormDropdown,
     /// The launch card owns input: a two-choice modal raised at most once per session
     /// when the invocation default resolved to an archived project.
     LaunchCard,
@@ -514,20 +515,20 @@ impl BoardForm {
     pub(super) fn focus_next(&mut self) {
         self.focus = match self.focus {
             CaptureField::Title => CaptureField::Notes,
-            CaptureField::Notes => CaptureField::Thread,
+            CaptureField::Notes => CaptureField::Assignee,
+            CaptureField::Assignee => CaptureField::Thread,
             CaptureField::Thread => CaptureField::Scope,
-            CaptureField::Scope => CaptureField::Assignee,
-            CaptureField::Assignee => CaptureField::Title,
+            CaptureField::Scope => CaptureField::Title,
         };
     }
 
     pub(super) fn focus_prev(&mut self) {
         self.focus = match self.focus {
-            CaptureField::Title => CaptureField::Assignee,
+            CaptureField::Title => CaptureField::Scope,
             CaptureField::Notes => CaptureField::Title,
-            CaptureField::Thread => CaptureField::Notes,
+            CaptureField::Assignee => CaptureField::Notes,
+            CaptureField::Thread => CaptureField::Assignee,
             CaptureField::Scope => CaptureField::Thread,
-            CaptureField::Assignee => CaptureField::Scope,
         };
     }
 
@@ -558,6 +559,25 @@ impl BoardForm {
             .iter()
             .position(|option| option == &self.assignee)
             .unwrap_or(0);
+    }
+
+    fn move_assignee_selection(&mut self, forward: bool) {
+        if self.assignee_options.is_empty() {
+            return;
+        }
+        self.assignee_selected = if forward {
+            (self.assignee_selected + 1) % self.assignee_options.len()
+        } else {
+            self.assignee_selected
+                .checked_sub(1)
+                .unwrap_or(self.assignee_options.len() - 1)
+        };
+    }
+
+    fn apply_assignee_selection(&mut self) {
+        if let Some(assignee) = self.assignee_options.get(self.assignee_selected) {
+            self.assignee = assignee.clone();
+        }
     }
 
     pub(super) fn cycle_scope(&mut self) {
@@ -2485,7 +2505,7 @@ impl BoardModel {
         }
     }
 
-    pub(super) fn clear_marks(&mut self) -> bool {
+    pub fn clear_marks(&mut self) -> bool {
         let had_mark_state = self.mark_mode || !self.marked_ids.is_empty();
         self.mark_mode = false;
         self.marked_ids.clear();
@@ -3073,7 +3093,7 @@ impl BoardModel {
         let Some(form) = self.form.as_mut() else {
             return;
         };
-        if self.input_mode == BoardInputMode::FormScopeDropdown {
+        if self.input_mode == BoardInputMode::FormDropdown {
             return;
         }
         if form.is_task() {
@@ -3200,56 +3220,83 @@ impl BoardModel {
         }
     }
 
-    pub(super) fn open_form_scope_dropdown(&mut self) {
-        if !self.park_rename_step_draft() {
+    pub(super) fn open_form_dropdown(&mut self, field: CaptureField) {
+        if !matches!(field, CaptureField::Scope | CaptureField::Assignee)
+            || !self.park_rename_step_draft()
+        {
             return;
         }
         let Some(form) = self.form.as_mut() else {
             return;
         };
-        // A Scope row click reaches this route directly. Keyboard only reaches it after focus
-        // has moved to Scope, but both routes leave the parent form focused there.
-        form.focus = CaptureField::Scope;
-        // Each opening starts from the parent form's chosen scope. Esc therefore discards
-        // only the dropdown's pending highlight, never a field draft or the whole form.
-        form.select_current_scope();
-        self.input_mode = BoardInputMode::FormScopeDropdown;
+        form.focus = field;
+        match field {
+            CaptureField::Scope => form.select_current_scope(),
+            CaptureField::Assignee => form.select_current_assignee(),
+            _ => unreachable!(),
+        }
+        self.input_mode = BoardInputMode::FormDropdown;
     }
 
-    pub(super) fn close_form_scope_dropdown(&mut self, apply: bool) {
+    pub(super) fn close_form_dropdown(&mut self, apply: bool) -> bool {
         let Some(form) = self.form.as_mut() else {
-            return;
+            return false;
         };
-        if apply {
-            form.apply_scope_selection();
-        } else {
-            form.select_current_scope();
+        match (form.focus, apply) {
+            (CaptureField::Scope, true) => form.apply_scope_selection(),
+            (CaptureField::Scope, false) => form.select_current_scope(),
+            (CaptureField::Assignee, true) => form.apply_assignee_selection(),
+            (CaptureField::Assignee, false) => form.select_current_assignee(),
+            _ => return false,
         }
         self.input_mode = form.parent_mode();
+        true
     }
 
-    pub(super) fn move_form_scope_dropdown(&mut self, forward: bool) {
-        if self.input_mode == BoardInputMode::FormScopeDropdown {
-            if let Some(form) = self.form.as_mut() {
-                form.move_scope_selection(forward);
+    pub(super) fn move_form_dropdown(&mut self, forward: bool) {
+        if self.input_mode != BoardInputMode::FormDropdown {
+            return;
+        }
+        if let Some(form) = self.form.as_mut() {
+            match form.focus {
+                CaptureField::Scope => form.move_scope_selection(forward),
+                CaptureField::Assignee => form.move_assignee_selection(forward),
+                _ => {}
             }
         }
     }
 
     /// Apply a clicked source option exactly as keyboard navigation plus Enter would.
-    pub(super) fn select_form_scope_option(&mut self, index: usize) {
-        if self.input_mode != BoardInputMode::FormScopeDropdown {
-            return;
+    pub(super) fn select_form_dropdown_option(&mut self, index: usize) -> bool {
+        if self.input_mode != BoardInputMode::FormDropdown {
+            return false;
         }
         let Some(form) = self.form.as_mut() else {
-            return;
+            return false;
         };
-        if index >= form.scope_options.len() {
-            return;
+        match form.focus {
+            CaptureField::Scope if index < form.scope_options.len() => {
+                form.scope_selected = index;
+                form.apply_scope_selection();
+            }
+            CaptureField::Assignee if index < form.assignee_options.len() => {
+                form.assignee_selected = index;
+                form.apply_assignee_selection();
+            }
+            _ => return false,
         }
-        form.scope_selected = index;
-        form.apply_scope_selection();
         self.input_mode = form.parent_mode();
+        true
+    }
+
+    /// Close an assignment form only after its batch reached the persistence boundary.
+    pub fn finish_pending_assignee_assignment(&mut self) -> bool {
+        if self.pending_assignee_targets.take().is_none() {
+            return false;
+        }
+        self.form = None;
+        self.input_mode = BoardInputMode::Normal;
+        true
     }
 
     /// Help line listing primary key bindings.
