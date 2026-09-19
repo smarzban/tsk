@@ -124,6 +124,10 @@ try {{ . '{quote(INSTALLER)}' }} finally {{ [Environment]::SetEnvironmentVariabl
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             installed = destination / "tsk.exe"
+            self.assertTrue(
+                installed.exists(),
+                f"installer output:\n{result.stdout}\n{result.stderr}\ncreated: {[str(path.relative_to(root)) for path in root.rglob('*')]}",
+            )
             self.assertEqual(installed.read_bytes(), b"offline-windows-fixture")
             self.assertIn("Verifying checksum... ok", result.stdout)
 
