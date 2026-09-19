@@ -28,6 +28,7 @@ fn read(path: &Path) -> String {
 struct Launcher {
     root: PathBuf,
     stub: PathBuf,
+    tsk_stub: PathBuf,
 }
 
 impl Launcher {
@@ -65,7 +66,25 @@ if ($args.Count -ge 2 -and $args[0] -eq 'pane' -and $args[1] -eq 'list') {
 "#,
         )
         .expect("stub");
-        Self { root, stub }
+        let tsk_stub = root.join("tsk.ps1");
+        fs::write(
+            &tsk_stub,
+            r#"if ($args[0] -eq '--find-board-pane') {
+  if (Test-Path -LiteralPath (Join-Path $env:STUB_ROOT 'existing')) { Write-Output 'w0:p2' }
+  return
+}
+if ($args[0] -eq '--find-board-tab') {
+  if (Test-Path -LiteralPath (Join-Path $env:STUB_ROOT 'existing')) { Write-Output 'w0:t2' }
+  return
+}
+"#,
+        )
+        .expect("tsk stub");
+        Self {
+            root,
+            stub,
+            tsk_stub,
+        }
     }
 
     fn command(&self, script: &Path, mode: &str) -> Command {
@@ -80,7 +99,7 @@ if ($args.Count -ge 2 -and $args[0] -eq 'pane' -and $args[1] -eq 'list') {
             ])
             .arg(script)
             .env("HERDR_BIN_PATH", &self.stub)
-            .env("TSK_BIN", env!("CARGO_BIN_EXE_tsk"))
+            .env("TSK_BIN", &self.tsk_stub)
             .env("TSK_STATE_DIR", self.root.join("state"))
             .env("STUB_ROOT", &self.root)
             .env("STUB_MODE", mode);
