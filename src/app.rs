@@ -3292,13 +3292,13 @@ mod tests {
     }
 
     #[test]
-    fn projects_preview_nested_arrows_keep_the_narrow_peek_keymap() {
+    fn projects_preview_h_and_l_keep_the_narrow_peek_keymap() {
         let (mut domain, mut model, _) = projects_preview_fixture();
         let area = Rect::new(0, 0, 110, 30);
         let peek = preview_key_intent(
             &mut model,
             area,
-            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
         );
         assert_eq!(peek, BoardIntent::PeekDetail);
         apply_intent(&mut domain, model.input_target_mut(), peek, None).expect("peek nested task");
@@ -3310,7 +3310,7 @@ mod tests {
         let collapse = preview_key_intent(
             &mut model,
             area,
-            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
         );
         assert_eq!(collapse, BoardIntent::CollapseDetail);
         apply_intent(&mut domain, model.input_target_mut(), collapse, None)
