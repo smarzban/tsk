@@ -982,6 +982,7 @@ pub fn clean_help() -> CliOutput {
             "not-dispatched".into(),
             "already-cleaned".into(),
             "dirty-worktree".into(),
+            "worktree-mismatch".into(),
             "herdr-failed".into(),
         ],
         exit: exit_line(

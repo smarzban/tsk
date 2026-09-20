@@ -235,9 +235,9 @@ tsk clean T12
 tsk clean T12 --json
 ```
 
-Cleanup never changes human status. It refuses a dirty worktree without touching anything. For a clean worktree it closes the Herdr workspace when running inside Herdr (otherwise it uses Git directly), removes the worktree, and removes the branch only when the branch is merged into the repository checkout's current base. An unmerged branch is kept. A missing worktree is successful: the dispatch record is marked cleaned without removing the retained branch.
+Cleanup never changes human status. It refuses a dirty worktree without touching anything. For a clean worktree it verifies that the recorded path is a non-root Git worktree for the project and that any matching Herdr workspace names the same checkout. It then closes that Herdr workspace when running inside Herdr (otherwise it uses Git directly), removes the recorded worktree, and removes the branch only when the branch is merged into its recorded dispatch base. An unmerged branch is kept. A legacy record with no base also keeps its branch. A missing registered worktree is successful: the dispatch record is marked cleaned without removing the retained branch.
 
-The task keeps its dispatch record and page history, marked `cleaned`. Human output names the worktree, branch, and workspace as removed or kept; `--json` returns the same outcomes. Refusal codes are `not-dispatched`, `already-cleaned`, `dirty-worktree`, and `herdr-failed`. Store failures exit 3 with `store-error`; other refusals exit 1. There is no force option.
+The task keeps its dispatch record and page history, marked `cleaned`. Human output names the worktree, branch, and workspace as removed or kept; `--json` returns the same outcomes. Refusal codes are `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, and `herdr-failed`. Store failures exit 3 with `store-error`; other refusals exit 1. There is no force option.
 
 ## steps
 
@@ -389,7 +389,7 @@ After an uncertain add, inspect `tsk list --all --json`. Also check `--done` and
 | Add | `empty-title`, `invalid-title`, `invalid-thread`, `invalid-item`, `unknown-project`, `unknown-agent`, `project-archived` |
 | Edit | `empty-title`, `invalid-title`, `unknown-task`, `soft-deleted-task`, `unknown-agent` |
 | Dispatch | `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, `herdr-failed` |
-| Clean | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `herdr-failed` |
+| Clean | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `herdr-failed` |
 | Steps | `empty-step-text`, `invalid-step-text`, `unknown-task`, `soft-deleted-task`, `unknown-step`, `ambiguous-step` |
 | Status | `unknown-task`, `soft-deleted-task`; with `--clean`, cleanup codes above |
 | Archive / unarchive | `unknown-task`, `soft-deleted-task` |

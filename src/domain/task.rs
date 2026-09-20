@@ -61,6 +61,9 @@ pub struct Dispatch {
     pub argv: Vec<String>,
     pub worktree: String,
     pub branch: String,
+    /// Branch or commit the dispatch branch was created from. Older v6 records omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
     pub herdr_workspace_id: String,
     #[serde(with = "super::time_serde")]
     pub at: SystemTime,

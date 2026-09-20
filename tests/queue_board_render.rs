@@ -1511,6 +1511,7 @@ fn dispatched_started_task_uses_the_bullseye_glyph_on_rows_peek_and_page_only_wh
         argv: vec!["agent".into()],
         worktree: "/tmp/tsk-t70".into(),
         branch: "tsk/t70-dispatched-task".into(),
+        base: None,
         herdr_workspace_id: "workspace-70".into(),
         at: at_secs_ago(30),
         cleaned: false,

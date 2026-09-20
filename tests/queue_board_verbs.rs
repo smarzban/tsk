@@ -11,6 +11,7 @@ use ratatui::Terminal;
 use tsk_tui::agents::AgentProfiles;
 use tsk_tui::app::{
     cleanup_and_complete_with_host, offer_cleanup_prompt_with_host, resolve_dispatch_again,
+    CleanupOffer,
 };
 use tsk_tui::context::InvocationSnapshot;
 use tsk_tui::dispatch::{CleanupError, CleanupInspection, CreatedWorktree, DispatchHost};
@@ -121,7 +122,13 @@ impl DispatchHost for CleanupHost {
         Ok(true)
     }
 
-    fn create_worktree(&mut self, _: &Path, _: &str, _: &str) -> Result<CreatedWorktree, String> {
+    fn create_worktree(
+        &mut self,
+        _: &Path,
+        _: &str,
+        _: Option<&str>,
+        _: &str,
+    ) -> Result<CreatedWorktree, String> {
         Err("not used".into())
     }
 
@@ -254,6 +261,7 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
                 argv: vec!["agent".into()],
                 worktree: "/tmp/first".into(),
                 branch: "tsk/t1-first".into(),
+                base: None,
                 herdr_workspace_id: "w1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
@@ -277,12 +285,14 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
             dirty: true,
             branch_merged: false,
             workspace_exists: true,
+            target_matches: true,
         }),
         ..CleanupHost::default()
     };
-    assert!(
-        !offer_cleanup_prompt_with_host(&domain, &mut model, first, true, &mut host)
-            .expect("bulk bypass")
+    assert_eq!(
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, first, true, &mut host)
+            .expect("bulk bypass"),
+        CleanupOffer::None
     );
     assert_eq!(
         host.inspections, 0,
@@ -302,16 +312,19 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
     )
     .expect("select dispatched task");
     apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
-    assert!(
-        offer_cleanup_prompt_with_host(&domain, &mut model, first, true, &mut host)
-            .expect("task page is cursor-only despite retained marks")
+    assert_eq!(
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, first, true, &mut host)
+            .expect("task page is cursor-only despite retained marks"),
+        CleanupOffer::Prompted
     );
     apply_intent(&mut domain, &mut model, BoardIntent::CancelCleanup, None).expect("cancel prompt");
     assert_eq!(host.inspections, 1);
 
     apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close page");
-    assert!(
-        offer_cleanup_prompt_with_host(&domain, &mut model, first, true, &mut host).expect("offer")
+    assert_eq!(
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, first, true, &mut host)
+            .expect("offer"),
+        CleanupOffer::Prompted
     );
     assert_eq!(model.input_mode(), BoardInputMode::CleanupDirtyConfirm);
     assert_eq!(
@@ -339,6 +352,191 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
 }
 
 #[test]
+fn missing_worktree_converges_cleaned_and_done_in_one_board_save_without_a_popup() {
+    let (mut domain, mut model, id) = board_with_task("already removed", HumanStatus::Started);
+    domain
+        .record_dispatch(
+            id,
+            Dispatch {
+                argv: vec!["agent".into()],
+                worktree: "/tmp/already-removed".into(),
+                branch: "tsk/t1-already-removed".into(),
+                base: Some("main".into()),
+                herdr_workspace_id: "w1".into(),
+                at: SystemTime::now(),
+                cleaned: false,
+            },
+        )
+        .expect("dispatch");
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cleanup-missing-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("temp store");
+    let store = TaskStore::new(&dir);
+    store.save(&domain).expect("seed");
+    domain = store.load().expect("numbered state");
+    model.sync_from_domain(&domain);
+    let mut host = CleanupHost {
+        inspection: Some(CleanupInspection {
+            worktree_exists: false,
+            dirty: false,
+            branch_merged: false,
+            workspace_exists: false,
+            target_matches: true,
+        }),
+        ..CleanupHost::default()
+    };
+
+    assert!(matches!(
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            .expect("missing worktree converges"),
+        CleanupOffer::MissingConverged(_)
+    ));
+    assert_eq!(model.popup(), BoardPopup::None);
+    assert!(domain.get(id).unwrap().dispatch.as_ref().unwrap().cleaned);
+    assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
+    store
+        .reload_merge_save(&mut domain)
+        .expect("one save contains cleanup and completion");
+    let saved = store.load().expect("reload");
+    let task = saved.get(id).unwrap();
+    assert_eq!(task.status, HumanStatus::Done);
+    assert!(task.dispatch.as_ref().unwrap().cleaned);
+    assert!(task
+        .history
+        .iter()
+        .any(|event| event.kind == TaskEventKind::Cleaned));
+    std::fs::remove_dir_all(dir).expect("cleanup temp store");
+}
+
+#[test]
+fn cleanup_offer_skips_done_and_archived_tasks_without_inspection_or_mutation() {
+    for archived in [false, true] {
+        let (mut domain, mut model, id) =
+            board_with_task("no second completion", HumanStatus::Started);
+        domain
+            .record_dispatch(
+                id,
+                Dispatch {
+                    argv: vec!["agent".into()],
+                    worktree: "/tmp/no-second-completion".into(),
+                    branch: "tsk/t1-no-second-completion".into(),
+                    base: Some("main".into()),
+                    herdr_workspace_id: "w1".into(),
+                    at: SystemTime::now(),
+                    cleaned: false,
+                },
+            )
+            .expect("dispatch");
+        if archived {
+            domain.archive_task(id).expect("archive");
+        } else {
+            domain.set_status(id, HumanStatus::Done).expect("done");
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "tsk-cleanup-noop-{}-{}-{archived}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp store");
+        let store = TaskStore::new(&dir);
+        store.save(&domain).expect("number task");
+        domain = store.load().expect("reload numbered task");
+        model.sync_from_domain(&domain);
+        let before = serde_json::to_value(&domain).unwrap();
+        let mut host = CleanupHost {
+            inspection: Some(CleanupInspection {
+                worktree_exists: true,
+                dirty: false,
+                branch_merged: true,
+                workspace_exists: true,
+                target_matches: true,
+            }),
+            ..CleanupHost::default()
+        };
+
+        assert_eq!(
+            offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+                .expect("no offer"),
+            CleanupOffer::None
+        );
+        assert_eq!(host.inspections, 0);
+        assert_eq!(model.popup(), BoardPopup::None);
+        assert_eq!(serde_json::to_value(&domain).unwrap(), before);
+        std::fs::remove_dir_all(dir).expect("cleanup temp store");
+    }
+}
+
+#[test]
+fn cleanup_offer_defers_to_the_archived_project_read_only_refusal() {
+    let (mut domain, mut model, id) = read_only_focus();
+    domain
+        .record_dispatch(
+            id,
+            Dispatch {
+                argv: vec!["agent".into()],
+                worktree: "/tmp/read-only".into(),
+                branch: "tsk/t1-read-only".into(),
+                base: Some("main".into()),
+                herdr_workspace_id: "w1".into(),
+                at: SystemTime::now(),
+                cleaned: false,
+            },
+        )
+        .expect("dispatch");
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cleanup-read-only-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("temp store");
+    let store = TaskStore::new(&dir);
+    store.save(&domain).expect("number task");
+    domain = store.load().expect("reload numbered task");
+    model.sync_from_domain(&domain);
+    let before = serde_json::to_value(&domain).unwrap();
+    let mut host = CleanupHost {
+        inspection: Some(CleanupInspection {
+            worktree_exists: true,
+            dirty: false,
+            branch_merged: true,
+            workspace_exists: true,
+            target_matches: true,
+        }),
+        ..CleanupHost::default()
+    };
+
+    assert_eq!(
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            .expect("read-only skips cleanup"),
+        CleanupOffer::None
+    );
+    assert_eq!(host.inspections, 0);
+    assert_eq!(model.popup(), BoardPopup::None);
+    assert_eq!(
+        apply_intent(&mut domain, &mut model, BoardIntent::Complete, None).unwrap(),
+        IntentOutcome::None
+    );
+    assert_eq!(
+        model.message(),
+        Some("project app is archived · ctrl+u unarchive")
+    );
+    assert_eq!(serde_json::to_value(&domain).unwrap(), before);
+    std::fs::remove_dir_all(dir).expect("cleanup temp store");
+}
+
+#[test]
 fn successful_popup_cleanup_and_completion_save_once_and_undo_only_status() {
     let (mut domain, _, id) = board_with_task("clean and done", HumanStatus::Started);
     domain
@@ -348,6 +546,7 @@ fn successful_popup_cleanup_and_completion_save_once_and_undo_only_status() {
                 argv: vec!["agent".into()],
                 worktree: "/tmp/clean-and-done".into(),
                 branch: "tsk/t1-clean-and-done".into(),
+                base: None,
                 herdr_workspace_id: "w1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
@@ -373,10 +572,14 @@ fn successful_popup_cleanup_and_completion_save_once_and_undo_only_status() {
             dirty: false,
             branch_merged: false,
             workspace_exists: true,
+            target_matches: true,
         }),
         ..CleanupHost::default()
     };
-    assert!(offer_cleanup_prompt_with_host(&domain, &mut model, id, true, &mut host).unwrap());
+    assert_eq!(
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host).unwrap(),
+        CleanupOffer::Prompted
+    );
     let result = cleanup_and_complete_with_host(&mut domain, &mut model, true, true, &mut host)
         .unwrap()
         .unwrap()
@@ -422,6 +625,7 @@ fn dispatched_task_page_renders_the_record_and_assigned_legend() {
                 argv: vec!["runner".into()],
                 worktree: "/tmp/dispatch-worktree".into(),
                 branch: "tsk/t1-send-it".into(),
+                base: None,
                 herdr_workspace_id: "w9".into(),
                 at: SystemTime::now(),
                 cleaned: false,
@@ -479,6 +683,7 @@ fn dispatched_task_page_hides_record_during_notes_edit_and_restores_it_in_view_m
                 argv: vec!["runner".into()],
                 worktree: "/tmp/notes-edit-dispatch-worktree".into(),
                 branch: "tsk/t1-notes-edit-dispatch".into(),
+                base: None,
                 herdr_workspace_id: "w9".into(),
                 at: SystemTime::now(),
                 cleaned: false,

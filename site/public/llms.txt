@@ -24,7 +24,7 @@ The quit shortcut exits from non-editor board surfaces, including task pages, He
 - The skill covers rules of engagement, board language, the exit contract, and workflows, and points at `tsk help <command>` for syntax; its `Refine a task` section shapes a rough task into a brief on the board (propose, then write)
 - `tsk list T<n>` returns the complete task, including notes, steps, assignee, and thread, in human-readable or JSON form
 - `tsk dispatch T<n>` launches assigned project work in Herdr; `--again` reuses a live dispatch or recreates a cleaned worktree
-- `tsk clean T<n> [--json]` safely removes a dispatched worktree; `tsk status T<n> done --clean` persists done before trying cleanup
+- `tsk clean T<n> [--json]` removes only the recorded non-root project worktree and matching Herdr workspace; `tsk status T<n> done --clean` persists done before trying cleanup
 - Guide: https://gettsk.sh/docs/agents.md
 - CLI: https://gettsk.sh/docs/cli.md
 - `tsk help [<command>]` prints the CLI or one command's syntax reference.

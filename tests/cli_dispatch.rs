@@ -26,10 +26,15 @@ impl DispatchHost for FakeHost {
         Ok(true)
     }
 
+    fn resolve_base(&mut self, _project: &Path) -> Result<String, String> {
+        Ok("main".into())
+    }
+
     fn create_worktree(
         &mut self,
         _project: &Path,
         branch: &str,
+        _base: Option<&str>,
         _label: &str,
     ) -> Result<CreatedWorktree, String> {
         Ok(CreatedWorktree {
@@ -194,6 +199,7 @@ fn clean_cli_help_and_success_report_each_removed_resource() {
             dirty: false,
             branch_merged: true,
             workspace_exists: true,
+            target_matches: true,
         }),
         ..FakeHost::default()
     };

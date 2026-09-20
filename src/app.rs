@@ -16,7 +16,7 @@ use crate::dispatch::{
     self, BranchCleanup, CleanupError, CleanupResult, DispatchError, DispatchHost, DispatchResult,
     SystemDispatchHost, WorktreeCleanup,
 };
-use crate::domain::{DomainError, DomainState};
+use crate::domain::{DomainError, DomainState, HumanStatus};
 use crate::save_recovery::SaveRecovery;
 use crate::store::{default_state_dir, StoreSignature, TaskStore};
 use crate::ui::board::{
@@ -1937,26 +1937,53 @@ pub fn resolve_dispatch_again(
     }
 }
 
-/// Offer cleanup only for one cursor task with an uncleaned, existing worktree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CleanupOffer {
+    None,
+    Prompted,
+    MissingConverged(CleanupResult),
+}
+
+/// Offer cleanup only when one cursor task would newly become done. A missing recorded
+/// worktree converges the retained dispatch and completion for one save without opening a popup.
 pub fn offer_cleanup_prompt_with_host(
-    domain: &DomainState,
+    domain: &mut DomainState,
     model: &mut BoardModel,
     id: uuid::Uuid,
     in_herdr: bool,
     host: &mut impl DispatchHost,
-) -> Result<bool, CleanupError> {
-    if model.bulk_verb_active() {
-        return Ok(false);
+) -> Result<CleanupOffer, CleanupError> {
+    if model.bulk_verb_active() || model.focus_is_archived() {
+        return Ok(CleanupOffer::None);
     }
-    let Some(dispatch) = domain.get(id).and_then(|task| task.dispatch.as_ref()) else {
-        return Ok(false);
+    let Some(task) = domain.get(id) else {
+        return Ok(CleanupOffer::None);
     };
-    if dispatch.cleaned {
-        return Ok(false);
+    if task.archived || task.status == HumanStatus::Done {
+        return Ok(CleanupOffer::None);
+    }
+    let Some(record) = task.dispatch.as_ref() else {
+        return Ok(CleanupOffer::None);
+    };
+    if record.cleaned {
+        return Ok(CleanupOffer::None);
     }
     let preview = dispatch::inspect_cleanup_with_host(domain, id, in_herdr, host)?;
     if !preview.inspection.worktree_exists {
-        return Ok(false);
+        domain
+            .record_dispatch_cleaned(id)
+            .and_then(|()| domain.complete_after_cleanup(id))
+            .map_err(|error| CleanupError::Store(error.to_string()))?;
+        return Ok(CleanupOffer::MissingConverged(CleanupResult {
+            number: preview.number,
+            title: preview.title,
+            worktree_path: preview.record.worktree,
+            branch_name: preview.record.branch,
+            workspace_id: preview.record.herdr_workspace_id,
+            worktree: WorktreeCleanup::Missing,
+            branch: BranchCleanup::Kept,
+            workspace_removed: false,
+        }));
     }
     model.begin_cleanup_prompt(CleanupPrompt {
         task_id: id,
@@ -1966,7 +1993,7 @@ pub fn offer_cleanup_prompt_with_host(
         branch_merged: preview.inspection.branch_merged,
         workspace_exists: preview.inspection.workspace_exists,
     });
-    Ok(true)
+    Ok(CleanupOffer::Prompted)
 }
 
 /// Apply one cleanup-modal completion choice. Completion is attempted even when cleanup refuses.
@@ -2068,8 +2095,23 @@ fn handle_board_intent(
                 dispatch::running_inside_herdr(),
                 &mut host,
             ) {
-                Ok(true) => return Ok(false),
-                Ok(false) => {}
+                Ok(CleanupOffer::Prompted) => return Ok(false),
+                Ok(CleanupOffer::MissingConverged(result)) => {
+                    if let Err(error) = store.reload_merge_save(domain) {
+                        let working = std::mem::take(domain);
+                        save_recovery.fail(baseline, working, error.to_string());
+                        model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+                        return Ok(false);
+                    }
+                    model.sync_from_domain(domain);
+                    model.set_message(format!(
+                        "done T{} · worktree missing · branch kept",
+                        result.number
+                    ));
+                    record_notice_dismissals_without_blocking_persist(store, domain);
+                    return Ok(false);
+                }
+                Ok(CleanupOffer::None) => {}
                 Err(error) => model.set_message(error.to_string()),
             }
         }

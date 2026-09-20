@@ -31,6 +31,8 @@ the GitHub release notes verbatim.
 
 ### Fixed
 
+- Dispatch cleanup is bound to the recorded non-root Git worktree and matching Herdr workspace, checks branch ancestry against the dispatch base instead of the current checkout, and keeps legacy branches whose base is unknown.
+- Board completion now converges an already-missing dispatched worktree to cleaned in the same save, while already-done or archived tasks and archived project views bypass the cleanup prompt.
 - A malformed `agents.toml` no longer blocks the board or CLI add/edit operations that do not assign a task; assignment reports the configuration error without saving.
 - Assignee choices remain available after task-page selection changes and in the wide projects preview; mouse picking follows the same marked-set route as the keyboard, and stale marked targets cannot affect a later task.
 - Docs: the palette table no longer lists a `Set done` action (use `ctrl+d`); the step editor's task shortcuts are `ctrl+d` and `ctrl+o` (`ctrl+x` removes the step); `ctrl+r` works from any non-done status; a trashed task is found with `tsk list --deleted`, not a task address.

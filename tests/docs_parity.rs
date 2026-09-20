@@ -91,6 +91,7 @@ fn selected_model(dispatched: bool) -> BoardModel {
                     argv: vec!["agent".into()],
                     worktree: "/tmp/worktree".into(),
                     branch: "tsk/t1-palette-witness".into(),
+                    base: None,
                     herdr_workspace_id: "w1".into(),
                     at: SystemTime::now(),
                     cleaned: false,
