@@ -3,7 +3,7 @@ title: Install
 description: Install tsk, connect Herdr, and give your agent the skill.
 ---
 
-Available for macOS and Linux on ARM64 and x86-64, and for Windows 10/11 on x86-64. Windows ARM64, package-manager submissions, and code signing are not included yet.
+Available for macOS, Linux, and Windows 10/11 on ARM64 and x86-64. Windows package-manager submissions and code signing are not included yet.
 
 ## Install
 
@@ -21,7 +21,7 @@ brew install smarzban/tap/tsk
 
 Reopen your terminal if prompted, or run the printed `export` command.
 
-### Windows 10/11 x86-64
+### Windows 10/11 ARM64 and x86-64
 
 Download the complete installer before running it in Windows PowerShell 5.1 or PowerShell 7:
 
@@ -120,7 +120,7 @@ Requires `curl`, `tar`, `sed`, and `sha256sum` or `shasum`.
 
 ## Windows installer details
 
-`install.ps1` requires Windows 10/11 x86-64 and Windows PowerShell 5.1 or PowerShell 7. It downloads the x86-64 MSVC ZIP and `SHA256SUMS` over TLS with finite time, redirect, compressed-size, and expanded-size limits, requires one exact matching digest, validates the archive's three root entries, and stages `tsk.exe` beside the destination before replacement. It refuses reparse-point destinations and install paths, directory destinations, relative paths, and PATH separators.
+`install.ps1` requires Windows 10/11 ARM64 or x86-64 and Windows PowerShell 5.1 or PowerShell 7. It detects the native machine architecture even from an emulated x86-64 process, downloads the matching MSVC ZIP and `SHA256SUMS` over TLS with finite time, redirect, compressed-size, and expanded-size limits, requires one exact matching digest, validates the archive's three root entries, and stages `tsk.exe` beside the destination before replacement. It refuses unsupported architectures, reparse-point destinations and install paths, directory destinations, relative paths, and PATH separators.
 
 | Setting | Purpose |
 | --- | --- |
@@ -181,9 +181,10 @@ Download the archive for your platform and `SHA256SUMS` from the same [release](
 | macOS Intel | `x86_64-apple-darwin` |
 | Linux ARM64 | `aarch64-unknown-linux-musl` |
 | Linux x86-64 | `x86_64-unknown-linux-musl` |
+| Windows 10/11 ARM64 | `aarch64-pc-windows-msvc` |
 | Windows 10/11 x86-64 | `x86_64-pc-windows-msvc` |
 
-Unix archives are named `tsk-vX.Y.Z-<target>.tar.gz`; the Windows archive uses `.zip` and contains `tsk.exe`. Verify with `shasum -a 256` on macOS, `sha256sum` on Linux, or `Get-FileHash -Algorithm SHA256` on Windows. Compare the full digest with `SHA256SUMS`, then extract the executable into a directory on PATH.
+Unix archives are named `tsk-vX.Y.Z-<target>.tar.gz`; Windows archives use `.zip` and contain `tsk.exe`. Verify with `shasum -a 256` on macOS, `sha256sum` on Linux, or `Get-FileHash -Algorithm SHA256` on Windows. Compare the full digest with `SHA256SUMS`, then extract the executable into a directory on PATH.
 
 ## Source build
 

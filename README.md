@@ -44,14 +44,14 @@ Or install with Homebrew:
 brew install smarzban/tap/tsk
 ```
 
-Windows 10/11 x86-64, from Windows PowerShell 5.1 or PowerShell 7:
+Windows 10/11 on ARM64 or x86-64, from Windows PowerShell 5.1 or PowerShell 7:
 
 ```powershell
 Invoke-WebRequest https://gettsk.sh/install.ps1 -OutFile "$env:TEMP\install-tsk.ps1"
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-tsk.ps1"
 ```
 
-The Windows installer verifies the release ZIP, installs under `%LOCALAPPDATA%`, and adds tsk to user PATH. Pass `-NoPathUpdate` to leave user PATH unchanged. Windows ARM64, signing, and package-manager submissions are not included yet.
+The Windows installer detects the native machine architecture, verifies the matching release ZIP, installs under `%LOCALAPPDATA%`, and adds tsk to user PATH. Pass `-NoPathUpdate` to leave user PATH unchanged. Signing and package-manager submissions are not included yet.
 
 On macOS and Linux, the installer sets up PATH for Bash and Zsh. If prompted, reopen your terminal
 or run the printed `export` command before continuing. When Herdr is already

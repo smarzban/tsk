@@ -445,7 +445,8 @@ fn named_agent_targets_write_under_home() {
 fn omp_target_resolves_profiles_and_directory_overrides() {
     let _lock = env_lock();
     let _omp_env = OmpEnvGuard::cleared();
-    let root = temp_dir("omp-paths");
+    // Keep the duplicated absolute-path case below clear of legacy MAX_PATH limits.
+    let root = temp_dir("omp");
     let home = root.join("home");
     fs::create_dir_all(&home).expect("home");
     let previous_home = std::env::var_os("HOME");

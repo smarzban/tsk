@@ -52,8 +52,10 @@ class ReleaseTests(unittest.TestCase):
     def test_package_and_formula_pin_all_platforms(self):
         self.package_all()
         release.assemble("v1.2.3", self.out)
-        formula = (self.out / "tsk.rb").read_text()
-        checksums = (self.out / "SHA256SUMS").read_text()
+        archives = list(self.out.glob("tsk-v1.2.3-*.tar.gz")) + list(self.out.glob("tsk-v1.2.3-*.zip"))
+        self.assertEqual(len(archives), 6)
+        formula = (self.out / "tsk.rb").read_text(encoding="utf-8")
+        checksums = (self.out / "SHA256SUMS").read_text(encoding="utf-8")
         for target in release.TARGETS:
             name = f"tsk-v1.2.3-{target}.tar.gz"
             archive = self.out / name
@@ -75,20 +77,25 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn('tsk setup agents', formula)
         self.assertIn('Homebrew installs are noninteractive', formula)
         self.assertIn('TSK_STATE_DIR', formula)
-        windows = self.out / "tsk-v1.2.3-x86_64-pc-windows-msvc.zip"
-        windows_digest = hashlib.sha256(windows.read_bytes()).hexdigest()
-        self.assertIn(f"{windows_digest}  {windows.name}", checksums)
-        self.assertNotIn(windows.name, formula)
-        with zipfile.ZipFile(windows) as contents:
-            self.assertEqual(contents.namelist(), ["tsk.exe", "LICENSE", "README.md"])
-            self.assertGreater(contents.getinfo("tsk.exe").file_size, 0)
+        self.assertEqual(
+            release.WINDOWS_TARGETS,
+            ("aarch64-pc-windows-msvc", "x86_64-pc-windows-msvc"),
+        )
+        for target in release.WINDOWS_TARGETS:
+            windows = self.out / f"tsk-v1.2.3-{target}.zip"
+            windows_digest = hashlib.sha256(windows.read_bytes()).hexdigest()
+            self.assertIn(f"{windows_digest}  {windows.name}", checksums)
+            self.assertNotIn(windows.name, formula)
+            with zipfile.ZipFile(windows) as contents:
+                self.assertEqual(contents.namelist(), ["tsk.exe", "LICENSE", "README.md"])
+                self.assertGreater(contents.getinfo("tsk.exe").file_size, 0)
 
     def test_formula_platform_blocks_pair_the_correct_url_and_digest(self):
         for target in release.RELEASE_TARGETS:
             self.binary.write_text(f"distinct fixture for {target}")
             release.package("v1.2.3", target, self.binary, self.out)
         release.assemble("v1.2.3", self.out)
-        formula = (self.out / "tsk.rb").read_text()
+        formula = (self.out / "tsk.rb").read_text(encoding="utf-8")
         expected = {
             "macos": {"arm": "aarch64-apple-darwin", "intel": "x86_64-apple-darwin"},
             "linux": {"arm": "aarch64-unknown-linux-musl", "intel": "x86_64-unknown-linux-musl"},
@@ -108,7 +115,7 @@ class ReleaseTests(unittest.TestCase):
     def test_installer_assets_are_exact_and_have_one_matching_checksum_each(self):
         self.package_all()
         release.assemble("v1.2.3", self.out)
-        entries = [line.split() for line in (self.out / "SHA256SUMS").read_text().splitlines()]
+        entries = [line.split() for line in (self.out / "SHA256SUMS").read_text(encoding="utf-8").splitlines()]
         for name in ["install.sh", "install.ps1"]:
             with self.subTest(name=name):
                 installed_script = (self.out / name).read_bytes()
@@ -144,23 +151,26 @@ class ReleaseTests(unittest.TestCase):
 
     def test_assemble_refuses_invalid_windows_zip_before_output(self):
         self.package_all()
-        archive = self.out / f"tsk-v1.2.3-{release.WINDOWS_TARGET}.zip"
-        for invalid in ["missing", "extra", "empty", "directory"]:
-            with self.subTest(invalid=invalid):
-                names = ["tsk.exe", "LICENSE", "README.md"]
-                if invalid == "missing":
-                    names.pop()
-                if invalid == "extra":
-                    names.append("unexpected")
-                with zipfile.ZipFile(archive, "w") as bundle:
-                    for name in names:
-                        if invalid == "directory" and name == "tsk.exe":
-                            name = "tsk.exe/"
-                        bundle.writestr(name, b"" if invalid == "empty" and name == "tsk.exe" else b"fixture")
-                with self.assertRaisesRegex(ValueError, "unexpected archive contents|invalid executable"):
-                    release.assemble("v1.2.3", self.out)
-                for name in ["tsk.rb", "SHA256SUMS", "install.sh", "install.ps1"]:
-                    self.assertFalse((self.out / name).exists())
+        for target in release.WINDOWS_TARGETS:
+            archive = self.out / f"tsk-v1.2.3-{target}.zip"
+            for invalid in ["missing", "extra", "empty", "directory"]:
+                with self.subTest(target=target, invalid=invalid):
+                    names = ["tsk.exe", "LICENSE", "README.md"]
+                    if invalid == "missing":
+                        names.pop()
+                    if invalid == "extra":
+                        names.append("unexpected")
+                    with zipfile.ZipFile(archive, "w") as bundle:
+                        for name in names:
+                            if invalid == "directory" and name == "tsk.exe":
+                                name = "tsk.exe/"
+                            bundle.writestr(name, b"" if invalid == "empty" and name == "tsk.exe" else b"fixture")
+                    with self.assertRaisesRegex(ValueError, "unexpected archive contents|invalid executable"):
+                        release.assemble("v1.2.3", self.out)
+                    for name in ["tsk.rb", "SHA256SUMS", "install.sh", "install.ps1"]:
+                        self.assertFalse((self.out / name).exists())
+            archive.unlink()
+            release.package("v1.2.3", target, self.binary, self.out)
 
     def test_invalid_tags_targets_and_missing_platform_refused(self):
         for tag in ["main", "v1.2.3/evil", "v1.2.3-rc1"]:
@@ -183,13 +193,14 @@ class ReleaseTests(unittest.TestCase):
                 release.package("v1.2.3", release.TARGETS[1], self.binary, self.out)
 
     def write_versions(self, cargo="1.2.3", lock="1.2.3", plugin="1.2.3", site="1.2.3"):
-        (self.root / "Cargo.toml").write_text(f'[package]\nname = "tsk-tui"\nversion = "{cargo}"\n')
+        (self.root / "Cargo.toml").write_text(f'[package]\nname = "tsk-tui"\nversion = "{cargo}"\n', encoding="utf-8")
         (self.root / "Cargo.lock").write_text(
-            f'[[package]]\nname = "serde"\nversion = "9.9.9"\n\n[[package]]\nname = "tsk-tui"\nversion = "{lock}"\n'
+            f'[[package]]\nname = "serde"\nversion = "9.9.9"\n\n[[package]]\nname = "tsk-tui"\nversion = "{lock}"\n',
+            encoding="utf-8",
         )
-        (self.root / "herdr-plugin.toml").write_text(f'id = "herdr-tsk"\nversion = "{plugin}"\n')
+        (self.root / "herdr-plugin.toml").write_text(f'id = "herdr-tsk"\nversion = "{plugin}"\n', encoding="utf-8")
         (self.root / "site" / "src").mkdir(parents=True, exist_ok=True)
-        (self.root / "site" / "src" / "version.mjs").write_text(f"export const VERSION = '{site}';\n")
+        (self.root / "site" / "src" / "version.mjs").write_text(f"export const VERSION = '{site}';\n", encoding="utf-8")
 
     def test_version_must_match_every_version_site(self):
         self.write_versions()

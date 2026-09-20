@@ -2,7 +2,7 @@
 """Prepare release artifacts and a tap formula locally. Never publishes anything.
 
 Requires Python 3.11+. Usage: check-version TAG | package TAG TARGET BINARY OUT |
-assemble TAG OUT. Assemble requires all five archives, so partial builds cannot ship.
+assemble TAG OUT. Assemble requires all six archives, so partial builds cannot ship.
 """
 import argparse
 import hashlib
@@ -21,8 +21,11 @@ TARGETS = (
     "aarch64-unknown-linux-musl",
     "x86_64-unknown-linux-musl",
 )
-WINDOWS_TARGET = "x86_64-pc-windows-msvc"
-RELEASE_TARGETS = TARGETS + (WINDOWS_TARGET,)
+WINDOWS_TARGETS = (
+    "aarch64-pc-windows-msvc",
+    "x86_64-pc-windows-msvc",
+)
+RELEASE_TARGETS = TARGETS + WINDOWS_TARGETS
 
 
 def version(tag):
@@ -68,15 +71,15 @@ def package(tag, target, binary, out):
     binary, out = Path(binary), Path(out)
     if not binary.is_file() or not binary.stat().st_size:
         raise ValueError("binary must be a nonempty executable file")
-    if target != WINDOWS_TARGET and not os.access(binary, os.X_OK):
+    if target not in WINDOWS_TARGETS and not os.access(binary, os.X_OK):
         raise ValueError("binary must be a nonempty executable file")
     out.mkdir(parents=True, exist_ok=True)
-    suffix = ".zip" if target == WINDOWS_TARGET else ".tar.gz"
+    suffix = ".zip" if target in WINDOWS_TARGETS else ".tar.gz"
     archive = out / f"tsk-{tag}-{target}{suffix}"
     if archive.exists():
         raise ValueError(f"refusing to replace {archive}")
-    members = [(binary, "tsk.exe" if target == WINDOWS_TARGET else "tsk"), (ROOT / "LICENSE", "LICENSE"), (ROOT / "README.md", "README.md")]
-    if target == WINDOWS_TARGET:
+    members = [(binary, "tsk.exe" if target in WINDOWS_TARGETS else "tsk"), (ROOT / "LICENSE", "LICENSE"), (ROOT / "README.md", "README.md")]
+    if target in WINDOWS_TARGETS:
         with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED) as bundle:
             for path, name in members:
                 info = zipfile.ZipInfo(name)
@@ -99,10 +102,10 @@ def assemble(tag, out):
     version(tag)  # validates the tag shape; the formula carries the version in its URLs
     out = Path(out)
     unix_archives = [out / f"tsk-{tag}-{target}.tar.gz" for target in TARGETS]
-    windows_archive = out / f"tsk-{tag}-{WINDOWS_TARGET}.zip"
-    archives = unix_archives + [windows_archive]
+    windows_archives = [out / f"tsk-{tag}-{target}.zip" for target in WINDOWS_TARGETS]
+    archives = unix_archives + windows_archives
     if any(not path.is_file() for path in archives):
-        raise ValueError("all five platform archives are required")
+        raise ValueError("all six platform archives are required")
     outputs = [out / name for name in ("install.sh", "install.ps1", "SHA256SUMS", "tsk.rb")]
     for path in outputs:
         if os.path.lexists(path):
@@ -116,13 +119,14 @@ def assemble(tag, out):
             if not members[0].size or members[0].mode != 0o755:
                 raise ValueError(f"invalid executable in {archive}")
         digests[target] = hashlib.sha256(archive.read_bytes()).hexdigest()
-    with zipfile.ZipFile(windows_archive) as bundle:
-        members = bundle.infolist()
-        if [member.filename for member in members] != ["tsk.exe", "LICENSE", "README.md"] or any(member.is_dir() for member in members):
-            raise ValueError(f"unexpected archive contents: {windows_archive}")
-        if not members[0].file_size:
-            raise ValueError(f"invalid executable in {windows_archive}")
-    digests[WINDOWS_TARGET] = hashlib.sha256(windows_archive.read_bytes()).hexdigest()
+    for target, archive in zip(WINDOWS_TARGETS, windows_archives):
+        with zipfile.ZipFile(archive) as bundle:
+            members = bundle.infolist()
+            if [member.filename for member in members] != ["tsk.exe", "LICENSE", "README.md"] or any(member.is_dir() for member in members):
+                raise ValueError(f"unexpected archive contents: {archive}")
+            if not members[0].file_size:
+                raise ValueError(f"invalid executable in {archive}")
+        digests[target] = hashlib.sha256(archive.read_bytes()).hexdigest()
     installers = {name: (ROOT / "site/public" / name).read_bytes() for name in ("install.sh", "install.ps1")}
     sums = [f"{digests[target]}  {archive.name}\n" for target, archive in zip(RELEASE_TARGETS, archives)]
     sums.extend(f"{hashlib.sha256(content).hexdigest()}  {name}\n" for name, content in installers.items())

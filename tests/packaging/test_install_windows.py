@@ -1,8 +1,8 @@
 """Offline contracts for the Windows PowerShell installer."""
 import hashlib
 import os
-from pathlib import Path
 import platform
+from pathlib import Path
 import re
 import shutil
 import subprocess
@@ -13,12 +13,31 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = ROOT / "site/public/install.ps1"
+WINDOWS_TARGETS = ("aarch64-pc-windows-msvc", "x86_64-pc-windows-msvc")
+
+
+def write_windows_archives(assets, version, executable):
+    checksums = []
+    for target in WINDOWS_TARGETS:
+        archive_name = f"tsk-{version}-{target}.zip"
+        archive = assets / archive_name
+        with zipfile.ZipFile(archive, "w") as bundle:
+            payload = executable[target] if isinstance(executable, dict) else executable
+            if isinstance(payload, Path):
+                bundle.write(payload, "tsk.exe")
+            else:
+                bundle.writestr("tsk.exe", payload)
+            bundle.writestr("LICENSE", b"license")
+            bundle.writestr("README.md", b"readme")
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        checksums.append(f"{digest}  {archive_name}\n")
+    (assets / "SHA256SUMS").write_text("".join(checksums), encoding="utf-8")
 
 
 class WindowsInstallerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.source = INSTALLER.read_text()
+        cls.source = INSTALLER.read_text(encoding="utf-8")
 
     def test_exposes_help_and_environment_configuration(self):
         self.assertRegex(self.source, r"(?i)\[switch\]\s*\$Help")
@@ -29,13 +48,18 @@ class WindowsInstallerTests(unittest.TestCase):
         self.assertIn("LOCALAPPDATA", self.source)
         self.assertRegex(self.source, r"(?i)Programs[\\/]tsk[\\/]bin")
         self.assertIn("x86_64-pc-windows-msvc", self.source)
+        self.assertIn("aarch64-pc-windows-msvc", self.source)
         self.assertIn("IsWow64Process2", self.source)
         self.assertIn("EntryPointNotFoundException", self.source)
         self.assertIn("GetNativeSystemInfo", self.source)
+        self.assertRegex(self.source, r"(?is)IsWow64Process2\(.+out nativeMachine.+return nativeMachine")
+        self.assertRegex(self.source, r"(?is)EntryPointNotFoundException.+processorArchitecture == 9.+0x8664.+0")
         self.assertNotIn("PROCESSOR_ARCHITEW6432", self.source)
         self.assertIn("0xaa64", self.source)
         self.assertIn("0x8664", self.source)
-        self.assertIn("Windows ARM64 is not supported", self.source)
+        self.assertNotIn("Windows ARM64 is not supported", self.source)
+        self.assertRegex(self.source, r"(?is)0xaa64.+aarch64-pc-windows-msvc")
+        self.assertRegex(self.source, r"(?is)0x8664.+x86_64-pc-windows-msvc")
         self.assertRegex(self.source, r"(?i)\[switch\]\s*\$NoPathUpdate")
         self.assertIn("-NoPathUpdate", self.source)
 
@@ -101,59 +125,69 @@ class WindowsInstallerTests(unittest.TestCase):
         self.assertNotRegex(self.source, r"(?is)Refresh-ExistingSetup.+setup agents")
 
     @unittest.skipUnless(os.name == "nt", "native Windows PowerShell smoke")
-    def test_rejects_arm64_reported_from_an_emulated_process(self):
+    def test_native_machine_selects_matching_archive_including_emulated_powershell(self):
         installer = str(INSTALLER).replace("'", "''")
-        harness = f"""
+        for machine, target in [
+            ("0xaa64", "aarch64-pc-windows-msvc"),
+            ("0x8664", "x86_64-pc-windows-msvc"),
+        ]:
+            with self.subTest(machine=machine):
+                harness = f"""
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 Add-Type -TypeDefinition @'
 public static class TskNativeInstall {{
-    public static ushort GetNativeMachine() {{ return 0xaa64; }}
+    public static ushort GetNativeMachine() {{ return {machine}; }}
 }}
 '@
+function Invoke-TskDownload {{
+    param([string] $Uri, [string] $Destination, [long] $MaxBytes)
+    throw "requested $Uri"
+}}
+. '{installer}' -NoPathUpdate
+"""
+                result = subprocess.run(
+                    [
+                        "powershell.exe",
+                        "-NoLogo",
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-Command",
+                        harness,
+                    ],
+                    env=dict(os.environ, TSK_VERSION="v1.2.3"),
+                    encoding="utf-8",
+                    errors="replace",
+                    capture_output=True,
+                    timeout=30,
+                )
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(f"tsk-v1.2.3-{target}.zip", result.stderr)
+
+    @unittest.skipUnless(os.name == "nt", "native Windows PowerShell smoke")
+    def test_rejects_unknown_native_machine_before_downloading(self):
+        installer = str(INSTALLER).replace("'", "''")
+        harness = f"""
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+Add-Type -TypeDefinition @'
+public static class TskNativeInstall {{
+    public static ushort GetNativeMachine() {{ return 0x014c; }}
+}}
+'@
+function Invoke-TskDownload {{ throw 'download should not run' }}
 . '{installer}' -NoPathUpdate
 """
         result = subprocess.run(
-            [
-                "powershell.exe",
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                harness,
-            ],
+            ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", harness],
             env=dict(os.environ, TSK_VERSION="v1.2.3"),
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             timeout=30,
         )
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("Windows ARM64 is not supported", result.stderr)
-        self.assertNotIn("Downloading", result.stdout)
-
-    @unittest.skipUnless(
-        os.name == "nt" and platform.machine().lower() in {"arm64", "aarch64"},
-        "native Windows ARM64 smoke",
-    )
-    def test_rejects_native_arm64_before_downloading(self):
-        result = subprocess.run(
-            [
-                "powershell.exe",
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(INSTALLER),
-                "-NoPathUpdate",
-            ],
-            env=dict(os.environ, TSK_VERSION="v1.2.3"),
-            text=True,
-            capture_output=True,
-            timeout=30,
-        )
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("Windows ARM64 is not supported", result.stderr)
-        self.assertNotIn("Downloading", result.stdout)
+        self.assertIn("unsupported native Windows architecture", result.stderr)
+        self.assertNotIn("download should not run", result.stderr)
 
     @unittest.skipUnless(os.name == "nt", "native Windows PowerShell smoke")
     def test_refuses_downgrade_before_downloading(self):
@@ -175,7 +209,8 @@ public static class TskNativeInstall {{
                 "-NoPathUpdate",
             ],
             env=environment,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             timeout=30,
         )
@@ -191,14 +226,17 @@ public static class TskNativeInstall {{
             assets.mkdir()
             destination = root / "Windows ü path" / "bin"
             version = "v1.2.3"
-            archive_name = f"tsk-{version}-x86_64-pc-windows-msvc.zip"
-            archive = assets / archive_name
-            with zipfile.ZipFile(archive, "w") as bundle:
-                bundle.writestr("tsk.exe", b"offline-windows-fixture")
-                bundle.writestr("LICENSE", b"license")
-                bundle.writestr("README.md", b"readme")
-            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-            (assets / "SHA256SUMS").write_text(f"{digest}  {archive_name}\n")
+            payloads = {
+                target: f"offline-windows-fixture-{target}".encode()
+                for target in WINDOWS_TARGETS
+            }
+            write_windows_archives(assets, version, payloads)
+            machine = platform.machine().lower()
+            expected_target = (
+                "aarch64-pc-windows-msvc"
+                if machine in {"arm64", "aarch64"}
+                else "x86_64-pc-windows-msvc"
+            )
             path_result = root / "path-result.txt"
             bounded_result = root / "bounded-result.txt"
             refresh_log = root / "refresh.log"
@@ -207,7 +245,8 @@ public static class TskNativeInstall {{
                 "Add-Content -LiteralPath $env:TSK_REFRESH_LOG -Value ($args -join ' ')\n"
                 "if (($args -join ' ') -eq 'setup herdr --check') { Write-Output 'bound'; exit 0 }\n"
                 "if (($args -join ' ') -eq 'setup --skill-states') { Write-Output \"claude`toutdated\"; exit 0 }\n"
-                "exit 0\n"
+                "exit 0\n",
+                encoding="utf-8",
             )
 
             quote = lambda value: str(value).replace("'", "''")
@@ -269,6 +308,7 @@ Refresh-ExistingSetup '{quote(fake_tsk)}' | Out-Null
                 ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", harness],
                 env=environment,
                 encoding="utf-8",
+                errors="replace",
                 capture_output=True,
                 timeout=60,
             )
@@ -278,15 +318,15 @@ Refresh-ExistingSetup '{quote(fake_tsk)}' | Out-Null
                 installed.exists(),
                 f"installer output:\n{result.stdout}\n{result.stderr}\ncreated: {[str(path.relative_to(root)) for path in root.rglob('*')]}",
             )
-            self.assertEqual(installed.read_bytes(), b"offline-windows-fixture")
+            self.assertEqual(installed.read_bytes(), payloads[expected_target])
             self.assertIn("Verifying checksum... ok", result.stdout)
             self.assertEqual(
-                path_result.read_text().strip(),
+                path_result.read_text(encoding="ascii").strip(),
                 "ExpandString|%TSK_PATH_ROOT%\\existing;C:\\Other\\tsk",
             )
-            self.assertEqual(bounded_result.read_text().strip(), "bounded-ok")
+            self.assertEqual(bounded_result.read_text(encoding="ascii").strip(), "bounded-ok")
             self.assertEqual(
-                refresh_log.read_text().replace("\r\n", "\n").splitlines(),
+                refresh_log.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n").splitlines(),
                 [
                     "setup herdr --check",
                     "setup herdr",
@@ -309,6 +349,7 @@ Refresh-ExistingSetup '{quote(fake_tsk)}' | Out-Null
             try:
                 time.sleep(1)
                 update_harness = f"""
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 function Invoke-TskDownload {{
     param([string] $Uri, [string] $Destination, [long] $MaxBytes)
     $source = Join-Path '{quote(assets)}' ([IO.Path]::GetFileName($Uri))
@@ -327,7 +368,8 @@ $env:TSK_UPDATE_PID = $PID
                 update = subprocess.run(
                     ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", update_harness],
                     env=update_environment,
-                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     capture_output=True,
                     timeout=60,
                 )
@@ -339,7 +381,7 @@ $env:TSK_UPDATE_PID = $PID
                         break
                     time.sleep(0.1)
                 self.assertTrue(error_log.exists(), "detached replacement timeout was not reported")
-                self.assertIn("run tsk update again", error_log.read_text())
+                self.assertIn("run tsk update again", error_log.read_text(encoding="utf-8-sig"))
                 self.assertFalse(list(destination.glob(".tsk-*.exe")))
                 self.assertFalse(list(destination.glob(".tsk-update-*.ps1")))
             finally:
@@ -364,14 +406,7 @@ $env:TSK_UPDATE_PID = $PID
             destination.mkdir()
             home.mkdir()
             version = "v1.2.3"
-            archive_name = f"tsk-{version}-x86_64-pc-windows-msvc.zip"
-            archive = assets / archive_name
-            with zipfile.ZipFile(archive, "w") as bundle:
-                bundle.write(binary, "tsk.exe")
-                bundle.writestr("LICENSE", b"license")
-                bundle.writestr("README.md", b"readme")
-            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-            (assets / "SHA256SUMS").write_text(f"{digest}  {archive_name}\n")
+            write_windows_archives(assets, version, binary)
             installed = destination / "tsk.exe"
             installed.write_bytes(b"old-binary")
 
@@ -390,6 +425,7 @@ $env:TSK_UPDATE_PID = $PID
             try:
                 time.sleep(1)
                 harness = f"""
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 function Get-LatestReleaseTag {{ param([string] $Uri) '{version}' }}
 function Invoke-TskDownload {{
     param([string] $Uri, [string] $Destination, [long] $MaxBytes)
@@ -419,7 +455,8 @@ $env:TSK_UPDATE_PID = $PID
                 update = subprocess.run(
                     [pwsh, "-NoLogo", "-NoProfile", "-Command", harness],
                     env=environment,
-                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     capture_output=True,
                     timeout=60,
                 )
@@ -448,7 +485,8 @@ $env:TSK_UPDATE_PID = $PID
             real.mkdir()
             made = subprocess.run(
                 ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(real)],
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 capture_output=True,
                 timeout=10,
             )
@@ -466,7 +504,8 @@ $env:TSK_UPDATE_PID = $PID
                     "-NoPathUpdate",
                 ],
                 env=dict(os.environ, TSK_VERSION="v1.2.3", TSK_INSTALL_DIR=str(junction / "bin")),
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 capture_output=True,
                 timeout=30,
             )

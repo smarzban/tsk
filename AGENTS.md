@@ -111,8 +111,8 @@ same PR, never leave them apart.
   bad pattern fails every production deploy silently.
 - CI runs on pushes to `main` and PRs targeting `main`. Site-only changes skip the Rust
   matrix; installer-only changes run the `Installer` workflow (packaging tests, ShellCheck,
-  and a Windows PowerShell smoke) on the PR and again on the push, since gettsk.sh serves
-  both installers straight from `main`.
+  and native x86-64 and ARM64 Windows PowerShell smokes) on the PR and again on the push,
+  since gettsk.sh serves both installers straight from `main`.
   Vercel production deploys only on pushes to `main`.
 
 ### Isolated state
@@ -264,7 +264,7 @@ approval. Tags are `v[0-9]+.[0-9]+.[0-9]+` only: the workflow, `release.py`, and
 both installers refuse anything else, so there are no `-rc` tags.
 
 **Build (owner-run).** Dispatch `Prepare release` with the existing tag. It pins the tag
-to one commit, tests and builds five targets from it, and creates a **draft** with the
+to one commit, tests and builds six targets from it, and creates a **draft** with the
 archives, `SHA256SUMS`, both installers, and a version-pinned `tsk.rb`. It refuses a moved
 tag or an existing release; it never publishes or updates the tap. The draft is named with
 `--title "$TAG"`: an unnamed GitHub release displays the tagged commit's subject instead.
@@ -301,9 +301,9 @@ Rehearsal traps, learned the hard way:
 - `brew install --formula tsk.rb` on a machine with the tap's `tsk` installed replaces the
   daily copy (same formula name) and removes the old keg. Use a throwaway machine or
   `brew unlink` first and expect to `brew reinstall smarzban/tap/tsk` afterwards.
-- Public installer flows plus Linux, Intel, and Windows smokes are owner steps. An agent
-  sandbox cannot execute a downloaded script, and the checked-in rehearsal can only run the macOS ARM
-  archive binary directly; the agent verifies checksums, the archive binary, the upgrade
+- Public installer flows plus Linux, Intel, and both Windows architecture smokes are owner
+  steps. An agent sandbox cannot execute a downloaded script, and the checked-in rehearsal
+  can only run the macOS ARM archive binary directly; the agent verifies checksums, the archive binary, the upgrade
   path and setup, and says which of these it did not run.
 
 **Official release.** Replace the draft's skeleton and checklist with the version's

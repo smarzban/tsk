@@ -11,8 +11,8 @@ the GitHub release notes verbatim.
 
 ### Added
 
-- First-class Windows 10/11 x86-64 support for the CLI and TUI, `%LOCALAPPDATA%\tsk` storage, `%APPDATA%\herdr\config.toml` integration with PowerShell launchers, agent setup under `%USERPROFILE%`, native release checks, and locked-executable-safe `tsk update`.
-- Windows releases include a checksum-covered MSVC ZIP and a complete-download PowerShell 5.1/7 installer that adds tsk to user PATH. Pass `-NoPathUpdate` to leave user PATH unchanged. Windows ARM64, signing, and package-manager submissions remain out of scope.
+- First-class Windows 10/11 ARM64 and x86-64 support for the CLI and TUI, `%LOCALAPPDATA%\tsk` storage, `%APPDATA%\herdr\config.toml` integration with PowerShell launchers, agent setup under `%USERPROFILE%`, native release checks, and locked-executable-safe `tsk update`.
+- Windows releases include checksum-covered native ARM64 and x86-64 MSVC ZIPs and a complete-download PowerShell 5.1/7 installer that selects the native architecture and adds tsk to user PATH. Pass `-NoPathUpdate` to leave user PATH unchanged. Signing and package-manager submissions remain out of scope.
 
 ### Changed
 

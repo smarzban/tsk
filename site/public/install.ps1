@@ -1,4 +1,4 @@
-# Install a published tsk release on Windows 10/11 x64.
+# Install a published tsk release on Windows 10/11 ARM64 or x64.
 # Compatible with Windows PowerShell 5.1. No task data is changed.
 [CmdletBinding()]
 param(
@@ -206,7 +206,7 @@ public static class TskNativeInstall {
             return nativeMachine;
         } catch (EntryPointNotFoundException) {
             // ARM64 Windows first shipped with IsWow64Process2. This fallback keeps
-            // earlier x86-64 Windows 10 releases usable without weakening ARM refusal.
+            // earlier x86-64 Windows 10 releases usable while refusing unknown hosts.
             SYSTEM_INFO info;
             GetNativeSystemInfo(out info);
             return info.processorArchitecture == 9 ? (ushort)0x8664 : (ushort)0;
@@ -446,20 +446,20 @@ function Add-UserPath([string] $InstallDirectory, [Microsoft.Win32.RegistryKey] 
 
 function Main {
     if ($env:OS -ne 'Windows_NT' -or [Environment]::OSVersion.Version -lt [Version]'10.0' -or -not [Environment]::Is64BitOperatingSystem -or -not [Environment]::Is64BitProcess) {
-        Fail 'Windows 10/11 x86-64 and a 64-bit PowerShell process are required'
+        Fail 'Windows 10/11 ARM64 or x86-64 and a 64-bit PowerShell process are required'
     }
     $nativeMachine = Get-NativeMachine
     if ($nativeMachine -eq 0xaa64) {
-        Fail 'Windows ARM64 is not supported; an x86-64 (AMD64) host is required'
-    }
-    if ($nativeMachine -ne 0x8664) {
-        Fail 'Windows 10/11 x86-64 (AMD64) is required'
+        $target = 'aarch64-pc-windows-msvc'
+    } elseif ($nativeMachine -eq 0x8664) {
+        $target = 'x86_64-pc-windows-msvc'
+    } else {
+        Fail ('unsupported native Windows architecture: 0x{0:x4}' -f $nativeMachine)
     }
     if ($PSVersionTable.PSVersion -lt [Version]'5.1') {
         Fail 'Windows PowerShell 5.1 or newer is required'
     }
 
-    $target = 'x86_64-pc-windows-msvc'
     $repo = 'https://github.com/smarzban/tsk'
     $version = $env:TSK_VERSION
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
