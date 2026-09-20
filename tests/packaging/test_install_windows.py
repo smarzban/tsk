@@ -335,11 +335,14 @@ Refresh-ExistingSetup '{quote(fake_tsk)}' | Out-Null
                 ],
             )
 
+            holder_ready = root / "holder-ready"
             holder_script = (
                 "$stream=[IO.File]::Open('"
                 + quote(installed)
                 + "',[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read); "
-                + "Start-Sleep -Seconds 8"
+                + "[IO.File]::WriteAllText('"
+                + quote(holder_ready)
+                + "','ready'); Start-Sleep -Seconds 120"
             )
             holder = subprocess.Popen(
                 ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", holder_script],
@@ -347,7 +350,11 @@ Refresh-ExistingSetup '{quote(fake_tsk)}' | Out-Null
                 stderr=subprocess.DEVNULL,
             )
             try:
-                time.sleep(1)
+                for _ in range(100):
+                    if holder_ready.exists():
+                        break
+                    time.sleep(0.1)
+                self.assertTrue(holder_ready.exists(), "lock holder did not become ready")
                 update_harness = f"""
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 function Invoke-TskDownload {{
