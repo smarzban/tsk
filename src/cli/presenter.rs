@@ -127,7 +127,7 @@ pub fn top_level_help() -> String {
         "  trash      restore a trashed task\n\n",
         "Setup\n",
         "  setup    register herdr, or install the agent skill\n",
-        "  update   install the latest published release\n",
+        "  update   install the latest stable release\n",
         "  guide    print the agent workflow skill\n\n",
         "Statuses\n",
         "  open     captured, not yet picked (inbox)\n",
@@ -1290,12 +1290,12 @@ pub fn setup_help() -> CliOutput {
 pub fn update_help() -> CliOutput {
     help(HelpDoc {
         usage: vec!["tsk update".into()],
-        purpose: "Install the latest published release for an installer-managed copy.".into(),
+        purpose: "Install the latest stable release for an installer-managed copy.".into(),
         groups: Vec::new(),
         examples: vec!["tsk update".into()],
         refusals: vec!["the update could not be installed".into()],
         exit: exit_line(
-            "latest release installed, or Homebrew guidance printed",
+            "latest stable release installed or staged, or Homebrew guidance printed",
             Some("update failed"),
             false,
         ),

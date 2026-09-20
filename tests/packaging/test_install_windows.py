@@ -102,6 +102,21 @@ class WindowsInstallerTests(unittest.TestCase):
         self.assertIn("OrdinalIgnoreCase", self.source)
         self.assertIn("installation directory cannot contain a semicolon or newline", self.source)
 
+    def test_path_failure_keeps_successful_binary_install_and_prints_manual_guidance(self):
+        self.assertIn("function Update-InstallerPath", self.source)
+        self.assertRegex(
+            self.source,
+            r"(?is)try\s*\{\s*Update-InstallerPath.+catch.+PATH setup failed; install succeeded.+Windows user PATH",
+        )
+
+    def test_help_names_public_knobs_and_latest_stable_without_internal_handoff(self):
+        help_text = self.source.split("function Show-Help", 1)[1].split("if ($Help)", 1)[0]
+        self.assertIn("https://www.gettsk.sh/install.ps1", help_text)
+        self.assertIn("public release tag", help_text)
+        self.assertIn("latest stable release", help_text)
+        self.assertNotIn("TSK_UPDATE_PID", help_text)
+        self.assertNotIn("TSK_UPDATE        ", help_text)
+
     def test_refuses_downgrades_and_reparse_paths(self):
         self.assertIn("TSK_CURRENT_VERSION", self.source)
         self.assertRegex(self.source, r"(?is)releaseVersion\s+-lt\s+\$currentVersion.+nothing changed")
@@ -123,6 +138,42 @@ class WindowsInstallerTests(unittest.TestCase):
         self.assertIn(".tsk-update-error.log", self.source)
         self.assertIn("run tsk setup herdr", self.source)
         self.assertNotRegex(self.source, r"(?is)Refresh-ExistingSetup.+setup agents")
+
+    def test_first_install_matches_unix_setup_and_closing_contract(self):
+        for text in [
+            "Herdr detected. Set up the Herdr plugin now? [y/N] ",
+            "Agents detected: {0}. Install the tsk skill for them? [y/N] ",
+            "Running tsk setup herdr...",
+            "Running tsk setup agents...",
+            "Done. Run tsk in a project directory to open the board",
+            "Herdr plugin:  tsk setup herdr",
+            "Agent skills:  tsk setup",
+            "Custom install directory: setup was not run. When you are ready:",
+        ]:
+            self.assertIn(text, self.source)
+        self.assertNotIn("Optional setup:", self.source)
+        self.assertRegex(self.source, r"(?is)setup --detected-ids.+setup agents --yes")
+        self.assertIn("Test-InstallerInteractive", self.source)
+        self.assertIn("Read-InstallerAnswer", self.source)
+
+    def test_update_skill_prompt_matches_unix_contract(self):
+        self.assertIn("update to v{1}? [Y/n] ", self.source)
+        self.assertRegex(self.source, r"(?is)setup --skill-states.+outdated.+Read-InstallerAnswer")
+        self.assertIn("Updated the tsk skill for {0}.", self.source)
+
+    def test_locked_update_defers_selected_integration_writes_until_replacement(self):
+        self.assertIn("Prepare-DeferredHerdrSetup $staged", self.source)
+        self.assertIn("Prepare-DeferredAgentSkills $staged", self.source)
+        self.assertNotIn("Invoke-AgentSkillPostInstall $staged", self.source)
+        deferred_herdr = self.source.split("function Prepare-DeferredHerdrSetup", 1)[1].split(
+            "function Get-SkillStateRows", 1
+        )[0]
+        self.assertNotIn("board_prefix", deferred_herdr)
+        helper = self.source.split("function Start-UpdateHelper", 1)[1].split(
+            "if (-not (Test-Path Function:\\Test-InstallerInteractive))", 1
+        )[0]
+        self.assertLess(helper.index("MoveFileEx($Source, $Destination"), helper.index("$SkillTargets -ne '-'"))
+        self.assertIn("setup $id", helper)
 
     @unittest.skipUnless(os.name == "nt", "native Windows PowerShell smoke")
     def test_native_machine_selects_matching_archive_including_emulated_powershell(self):
@@ -240,14 +291,17 @@ function Invoke-TskDownload {{ throw 'download should not run' }}
             path_result = root / "path-result.txt"
             bounded_result = root / "bounded-result.txt"
             refresh_log = root / "refresh.log"
+            prompt_log = root / "prompts.log"
             fake_tsk = root / "fake-tsk.ps1"
             fake_tsk.write_text(
                 "Add-Content -LiteralPath $env:TSK_REFRESH_LOG -Value ($args -join ' ')\n"
                 "if (($args -join ' ') -eq 'setup herdr --check') { Write-Output 'bound'; exit 0 }\n"
-                "if (($args -join ' ') -eq 'setup --skill-states') { Write-Output \"claude`toutdated\"; exit 0 }\n"
+                "if (($args -join ' ') -eq 'setup --skill-states') { Write-Output \"embedded`t1.3.0`t-`t-\"; Write-Output \"claude`toutdated`t1.2.0`tC:\\skill\"; exit 0 }\n"
+                "if (($args -join ' ') -eq 'setup --detected-ids') { Write-Output 'claude pi'; exit 0 }\n"
                 "exit 0\n",
                 encoding="utf-8",
             )
+            (root / "herdr.cmd").write_text("@exit /b 0\r\n", encoding="ascii")
 
             quote = lambda value: str(value).replace("'", "''")
             harness = f"""
@@ -297,12 +351,23 @@ if (Test-Path -LiteralPath $boundedPath) {{ throw 'partial oversized download wa
 
 $env:TSK_REFRESH_LOG = '{quote(refresh_log)}'
 Refresh-ExistingSetup '{quote(fake_tsk)}' | Out-Null
+$refreshCalls = @(Get-Content -LiteralPath '{quote(refresh_log)}')
+Remove-Item -LiteralPath '{quote(refresh_log)}'
+function Test-InstallerInteractive {{ return $true }}
+function Read-InstallerAnswer([string] $Prompt) {{
+    Add-Content -LiteralPath '{quote(prompt_log)}' -Value $Prompt
+    return 'yes'
+}}
+Invoke-HerdrPostInstall '{quote(fake_tsk)}' $true $false | Out-Null
+Invoke-AgentSkillPostInstall '{quote(fake_tsk)}' $true $false | Out-Null
+$refreshCalls | Set-Content -LiteralPath '{quote(refresh_log)}' -Encoding UTF8
 """
             environment = dict(
                 os.environ,
                 TSK_VERSION=version,
                 TSK_INSTALL_DIR=str(destination),
                 TSK_PATH_ROOT=str(root / "expanded-root"),
+                PATH=str(root) + os.pathsep + os.environ.get("PATH", ""),
             )
             result = subprocess.run(
                 ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", harness],
@@ -326,13 +391,32 @@ Refresh-ExistingSetup '{quote(fake_tsk)}' | Out-Null
             )
             self.assertEqual(bounded_result.read_text(encoding="ascii").strip(), "bounded-ok")
             self.assertEqual(
-                refresh_log.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n").splitlines(),
+                refresh_log.read_text(encoding="utf-8-sig", errors="replace").replace("\r\n", "\n").splitlines(),
                 [
                     "setup herdr --check",
                     "setup herdr",
                     "setup --skill-states",
                     "setup claude",
                 ],
+            )
+            self.assertEqual(
+                prompt_log.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n").splitlines(),
+                [
+                    "Herdr detected. Set up the Herdr plugin now? [y/N] ",
+                    "Agents detected: claude, pi. Install the tsk skill for them? [y/N] ",
+                ],
+            )
+
+            binary_value = os.environ.get("TSK_TEST_BINARY")
+            if not binary_value:
+                return
+            update_binary = Path(binary_value).resolve()
+            self.assertTrue(update_binary.is_file(), update_binary)
+            update_payload = update_binary.read_bytes()
+            write_windows_archives(
+                assets,
+                version,
+                {target: update_payload for target in WINDOWS_TARGETS},
             )
 
             holder_ready = root / "holder-ready"
@@ -363,11 +447,20 @@ function Invoke-TskDownload {{
     if ((Get-Item -LiteralPath $source).Length -gt $MaxBytes) {{ throw 'fixture exceeds download limit' }}
     Copy-Item -LiteralPath $source -Destination $Destination
 }}
+function Test-InstallerInteractive {{ return $true }}
+function Read-InstallerAnswer([string] $Prompt) {{ return 'yes' }}
 $env:TSK_UPDATE_PID = $PID
 . '{quote(INSTALLER)}' -NoPathUpdate
 """
+                profile = root / "isolated-profile"
+                appdata = profile / "AppData" / "Roaming"
+                profile.mkdir()
+                appdata.mkdir(parents=True)
                 update_environment = dict(
                     environment,
+                    HOME=str(profile),
+                    USERPROFILE=str(profile),
+                    APPDATA=str(appdata),
                     TSK_UPDATE="1",
                     TSK_CURRENT_VERSION="v1.2.2",
                     TSK_UPDATE_HELPER_RETRY_SECONDS="1",
@@ -382,6 +475,9 @@ $env:TSK_UPDATE_PID = $PID
                 )
                 self.assertEqual(update.returncode, 0, update.stderr)
                 self.assertIn("Update staged", update.stdout)
+                self.assertIn("Herdr setup selected; it will finish after tsk exits.", update.stdout)
+                self.assertIn("Done. Run tsk in a project directory to open the board.", update.stdout)
+                self.assertNotIn("prefix+t", update.stdout)
                 error_log = destination / ".tsk-update-error.log"
                 for _ in range(600):
                     if (

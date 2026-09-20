@@ -665,7 +665,7 @@ echo installed-fixture
             result = self.run_update(TSK_CURRENT_VERSION=current)
             self.assertEqual(result.returncode, 1, (current, result.stdout))
             self.assertIn(f"Current version {current}", result.stdout)
-            self.assertIn(f"latest published release is v1.2.3, older than the installed {current}; nothing changed", result.stderr)
+            self.assertIn(f"latest stable release is v1.2.3, older than the installed {current}; nothing changed", result.stderr)
             self.assertFalse((self.root / "managed-bin/tsk").exists())
         self.assertEqual(self.setup_calls(), [])
 

@@ -4,7 +4,9 @@
 use std::path::Path;
 use std::path::PathBuf;
 #[cfg(any(unix, windows))]
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(unix)]
+use std::process::Stdio;
 #[cfg(unix)]
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(unix)]
@@ -17,10 +19,10 @@ const CURL_PATH: &str = "/usr/bin/curl";
 #[cfg(unix)]
 const INSTALLER_URL: &str = "https://gettsk.sh/install.sh";
 #[cfg(windows)]
-const INSTALLER_URL: &str = "https://gettsk.sh/install.ps1";
+const INSTALLER_URL: &str = "https://www.gettsk.sh/install.ps1";
 #[cfg(unix)]
 const SH_PATH: &str = "/bin/sh";
-/// The installer's own pin. `tsk update` always follows the latest published release; an
+/// The installer's own pin. `tsk update` always follows the latest stable release; an
 /// inherited export must not pin or downgrade it.
 const INSTALLER_VERSION_ENV: &str = "TSK_VERSION";
 
@@ -82,18 +84,23 @@ pub fn run() -> Result<UpdateOutcome, String> {
         .ok_or_else(|| "the running tsk executable has no installation directory".to_string())?;
     let script = download_https(INSTALLER_URL, 1024 * 1024, 120)?;
     let powershell = windows_powershell_path()?;
-    let mut command = Command::new(&powershell);
+    let mut command = windows_installer_command(&powershell);
+    run_windows_installer(&mut command, &script, install_dir, std::process::id())?;
+    Ok(UpdateOutcome::Installed)
+}
+
+#[cfg(windows)]
+fn windows_installer_command(powershell: &std::path::Path) -> Command {
+    let mut command = Command::new(powershell);
     command.args([
         "-NoLogo",
         "-NoProfile",
-        "-NonInteractive",
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        "$source = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($source))",
+        "$encoded=$env:TSK_INSTALLER_GZIP_BASE64; if (-not $encoded) { throw 'invalid installer payload' }; [byte[]]$bytes=[Convert]::FromBase64String($encoded); $memory=New-Object IO.MemoryStream(,$bytes); $gzip=New-Object IO.Compression.GZipStream($memory,[IO.Compression.CompressionMode]::Decompress); $reader=New-Object IO.StreamReader($gzip); try { $source=$reader.ReadToEnd() } finally { $reader.Dispose(); $gzip.Dispose(); $memory.Dispose() }; Remove-Item Env:TSK_INSTALLER_GZIP_BASE64; & ([ScriptBlock]::Create($source))",
     ]);
-    run_windows_installer(&mut command, &script, install_dir, std::process::id())?;
-    Ok(UpdateOutcome::Installed)
+    command
 }
 
 #[cfg(windows)]
@@ -103,8 +110,9 @@ fn run_windows_installer(
     install_dir: &std::path::Path,
     update_pid: u32,
 ) -> Result<(), String> {
+    let payload = encode_installer_payload(script)?;
     let mut child = command
-        .stdin(Stdio::piped())
+        .env("TSK_INSTALLER_GZIP_BASE64", payload)
         .env("TSK_INSTALL_DIR", install_dir)
         .env("TSK_UPDATE", "1")
         .env("TSK_UPDATE_PID", update_pid.to_string())
@@ -115,21 +123,6 @@ fn run_windows_installer(
         .env_remove(INSTALLER_VERSION_ENV)
         .spawn()
         .map_err(|error| format!("could not start the Windows installer: {error}"))?;
-    {
-        use std::io::Write;
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "could not open Windows PowerShell input".to_string())?;
-        if let Err(error) = stdin.write_all(script) {
-            drop(stdin);
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!(
-                "could not pass the installer to Windows PowerShell: {error}"
-            ));
-        }
-    }
     let status = child
         .wait()
         .map_err(|error| format!("could not wait for Windows PowerShell: {error}"))?;
@@ -142,6 +135,28 @@ fn run_windows_installer(
         ));
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn encode_installer_payload(script: &[u8]) -> Result<String, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use flate2::{write::GzEncoder, Compression};
+    use std::io::Write as _;
+
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
+    encoder
+        .write_all(script)
+        .map_err(|error| format!("could not compress the Windows installer: {error}"))?;
+    let compressed = encoder
+        .finish()
+        .map_err(|error| format!("could not finish compressing the Windows installer: {error}"))?;
+    let payload = STANDARD.encode(compressed);
+    // Windows limits a process environment block to 32,767 characters. Leave room for
+    // the inherited environment and fail closed rather than falling back to a temp script.
+    if payload.len() > 24_000 {
+        return Err("compressed Windows installer is too large for an in-memory handoff".into());
+    }
+    Ok(payload)
 }
 
 #[cfg(unix)]
@@ -420,7 +435,7 @@ mod tests {
     #[cfg(unix)]
     use super::{configured_curl_path, is_homebrew_install, run_for, UpdateOutcome};
     #[cfg(windows)]
-    use super::{run_windows_installer, windows_powershell_path};
+    use super::{run_windows_installer, windows_installer_command, windows_powershell_path};
 
     #[cfg(any(unix, windows))]
     static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -451,12 +466,16 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    #[ignore = "helper process for windows_installer_handoff_streams_the_whole_script_and_sets_update_environment"]
+    #[ignore = "helper process for windows_installer_handoff_keeps_console_stdin_and_sets_update_environment"]
     fn windows_installer_capture_child() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let encoded = std::env::var("TSK_INSTALLER_GZIP_BASE64").expect("installer payload");
+        let compressed = STANDARD.decode(encoded).expect("base64 payload");
+        let mut decoder = flate2::read::GzDecoder::new(compressed.as_slice());
         let mut script = Vec::new();
-        std::io::stdin()
+        decoder
             .read_to_end(&mut script)
-            .expect("read installer stdin");
+            .expect("decompress installer payload");
         fs::write(
             std::env::var_os("FAKE_SCRIPT").expect("FAKE_SCRIPT"),
             script,
@@ -479,7 +498,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_installer_handoff_streams_the_whole_script_and_sets_update_environment() {
+    fn windows_installer_handoff_keeps_console_stdin_and_sets_update_environment() {
         let dir = std::env::temp_dir().join(format!(
             "tsk-update-windows-{}-{}",
             std::process::id(),
@@ -519,6 +538,34 @@ mod tests {
                 env!("CARGO_PKG_VERSION")
             )
         );
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_powershell_handoff_runs_the_payload_and_leaves_stdin_for_prompts() {
+        let dir = std::env::temp_dir().join(format!(
+            "tsk-update-powershell-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).expect("temporary directory");
+        let input = dir.join("input.txt");
+        let output = dir.join("output.txt");
+        fs::write(&input, b"yes\r\n").expect("prompt input");
+        let powershell = windows_powershell_path().expect("stock Windows PowerShell");
+        let mut command = windows_installer_command(&powershell);
+        command
+            .stdin(std::process::Stdio::from(
+                fs::File::open(&input).expect("open prompt input"),
+            ))
+            .env("FAKE_SCRIPT", &output);
+        let script = br#"if (Test-Path Env:TSK_INSTALLER_GZIP_BASE64) { throw 'payload leaked' }; [IO.File]::WriteAllText($env:FAKE_SCRIPT, [Console]::In.ReadLine())"#;
+
+        run_windows_installer(&mut command, script, &dir.join("installed bin"), 4242)
+            .expect("PowerShell handoff");
+
+        assert_eq!(fs::read_to_string(&output).expect("payload output"), "yes");
         fs::remove_dir_all(dir).expect("cleanup");
     }
 

@@ -14,17 +14,17 @@ $MaxExpandedBytes = 250MB
 
 function Show-Help {
     @'
-Usage: powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 [-NoPathUpdate] [-Help]
+Usage:
+  irm https://www.gettsk.sh/install.ps1 | iex
+  powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 [-NoPathUpdate] [-Help]
 
 Options:
   -NoPathUpdate     Install tsk without changing the user PATH
   -Help             Show this help without network access
 
 Environment:
-  TSK_VERSION       Stable release tag such as v1.2.3 (default: latest)
+  TSK_VERSION       Install a specific public release tag such as v1.2.3 (default: latest stable release)
   TSK_INSTALL_DIR   Install directory (default: %LOCALAPPDATA%\Programs\tsk\bin)
-  TSK_UPDATE        Set to 1 by `tsk update`
-  TSK_UPDATE_PID    Running tsk process to wait for when an update is locked
 '@ | Write-Output
 }
 
@@ -291,7 +291,7 @@ function Find-OtherRunningCopies([string] $Destination, [int] $UpdatePid) {
     return $matches
 }
 
-function Start-UpdateHelper([string] $Source, [string] $Destination, [int] $UpdatePid, [string] $InstallDirectory) {
+function Start-UpdateHelper([string] $Source, [string] $Destination, [int] $UpdatePid, [string] $InstallDirectory, [bool] $SetupHerdr, [string] $SkillTargets) {
     $retrySeconds = 30
     $configuredRetry = 0
     if ($env:TSK_UPDATE_HELPER_RETRY_SECONDS -and [int]::TryParse($env:TSK_UPDATE_HELPER_RETRY_SECONDS, [ref]$configuredRetry) -and $configuredRetry -gt 0) {
@@ -303,7 +303,9 @@ param(
     [Parameter(Mandatory=$true)][int] $UpdatePid,
     [Parameter(Mandatory=$true)][string] $Source,
     [Parameter(Mandatory=$true)][string] $Destination,
-    [Parameter(Mandatory=$true)][int] $RetrySeconds
+    [Parameter(Mandatory=$true)][int] $RetrySeconds,
+    [Parameter(Mandatory=$true)][bool] $SetupHerdr,
+    [Parameter(Mandatory=$true)][string] $SkillTargets
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @"
@@ -323,17 +325,14 @@ do {
     if ([TskUpdateNative]::MoveFileEx($Source, $Destination, (0x1 -bor 0x8))) {
         $refreshErrors = @()
         try {
-            $bound = @(& $Destination setup herdr --check 2>$null)
-            if ($LASTEXITCODE -eq 0 -and ($bound -join '') -eq 'bound') {
+            if ($SetupHerdr) {
                 $setupOutput = @(& $Destination setup herdr 2>&1)
                 if ($LASTEXITCODE -ne 0) { $refreshErrors += 'run tsk setup herdr: ' + ($setupOutput -join ' ') }
             }
-            $states = @(& $Destination setup --skill-states 2>$null)
-            foreach ($line in $states) {
-                $fields = $line -split "`t"
-                if ($fields.Count -ge 2 -and $fields[1] -eq 'outdated') {
-                    $setupOutput = @(& $Destination setup $fields[0] 2>&1)
-                    if ($LASTEXITCODE -ne 0) { $refreshErrors += 'run tsk setup ' + $fields[0] + ': ' + ($setupOutput -join ' ') }
+            if ($SkillTargets -ne '-') {
+                foreach ($id in @($SkillTargets -split ',' | Where-Object { $_ })) {
+                    $setupOutput = @(& $Destination setup $id 2>&1)
+                    if ($LASTEXITCODE -ne 0) { $refreshErrors += 'run tsk setup ' + $id + ': ' + ($setupOutput -join ' ') }
                 }
             }
         } catch {
@@ -357,7 +356,8 @@ Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction Silent
 exit 1
 '@ | Set-Content -LiteralPath $helper -Encoding UTF8
 
-    $command = '& {0} -UpdatePid {1} -Source {2} -Destination {3} -RetrySeconds {4}' -f (Quote-Single $helper), $UpdatePid, (Quote-Single $Source), (Quote-Single $Destination), $retrySeconds
+    $setupHerdrLiteral = if ($SetupHerdr) { '$true' } else { '$false' }
+    $command = '& {0} -UpdatePid {1} -Source {2} -Destination {3} -RetrySeconds {4} -SetupHerdr {5} -SkillTargets {6}' -f (Quote-Single $helper), $UpdatePid, (Quote-Single $Source), (Quote-Single $Destination), $retrySeconds, $setupHerdrLiteral, (Quote-Single $SkillTargets)
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
     $windowsPowerShell = Get-SystemPowerShellPath
     if (-not (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf)) {
@@ -366,31 +366,301 @@ exit 1
     Start-Process -FilePath $windowsPowerShell -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded) -WindowStyle Hidden | Out-Null
 }
 
-function Refresh-ExistingSetup([string] $Executable) {
-    try {
+if (-not (Test-Path Function:\Test-InstallerInteractive)) {
+    function Test-InstallerInteractive {
+        if ($env:CI) { return $false }
+        try { return -not [Console]::IsInputRedirected } catch { return $false }
+    }
+}
+
+if (-not (Test-Path Function:\Read-InstallerAnswer)) {
+    function Read-InstallerAnswer([string] $Prompt) {
+        [Console]::Error.Write($Prompt)
+        $answer = [Console]::ReadLine()
+        if ($null -eq $answer) { return '' }
+        return $answer
+    }
+}
+
+function Write-SetupFailure([string] $Command, [object[]] $Output) {
+    [Console]::Error.WriteLine("")
+    [Console]::Error.WriteLine("$Command failed; install succeeded.")
+    foreach ($line in $Output) {
+        if ($null -ne $line -and "$line".Length -gt 0) {
+            [Console]::Error.WriteLine("    $line")
+        }
+    }
+}
+
+function Invoke-HerdrPostInstall([string] $Executable, [bool] $PostInstallSetup, [bool] $UpdateMode) {
+    $script:HerdrWrap = 'board'
+    if ($null -eq (Get-Command herdr -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1)) { return }
+    if (-not $PostInstallSetup) {
+        $script:HerdrWrap = 'board_setup'
+        return
+    }
+
+    if ($UpdateMode) {
         $bound = @(& $Executable setup herdr --check 2>$null)
         if ($LASTEXITCODE -eq 0 -and ($bound -join '') -eq 'bound') {
             $setupOutput = @(& $Executable setup herdr 2>&1)
             if ($LASTEXITCODE -eq 0) {
+                Write-Output ''
                 Write-Output 'Herdr plugin refreshed.'
-            } else {
-                [Console]::Error.WriteLine('Herdr refresh failed; run tsk setup herdr: ' + ($setupOutput -join ' '))
+                return
+            }
+            Write-SetupFailure 'tsk setup herdr' $setupOutput
+            $script:HerdrWrap = 'board_setup'
+            return
+        }
+    }
+
+    if (-not (Test-InstallerInteractive)) {
+        $script:HerdrWrap = 'board_setup'
+        return
+    }
+    [Console]::Error.WriteLine('')
+    $answer = Read-InstallerAnswer 'Herdr detected. Set up the Herdr plugin now? [y/N] '
+    if ($answer -notmatch '^(?i:y|yes)$') {
+        $script:HerdrWrap = 'board_setup'
+        return
+    }
+
+    Write-Output ''
+    Write-Output 'Running tsk setup herdr...'
+    Write-Output ''
+    & $Executable setup herdr
+    if ($LASTEXITCODE -ne 0) {
+        Write-SetupFailure 'tsk setup herdr' @()
+        $script:HerdrWrap = 'board_setup'
+    } else {
+        $script:HerdrWrap = 'board_prefix'
+    }
+}
+
+function Prepare-DeferredHerdrSetup([string] $Executable) {
+    $script:HerdrWrap = 'board'
+    if ($null -eq (Get-Command herdr -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1)) { return $false }
+
+    $bound = @(& $Executable setup herdr --check 2>$null)
+    if ($LASTEXITCODE -eq 0 -and ($bound -join '') -eq 'bound') {
+        [Console]::Out.WriteLine('')
+        [Console]::Out.WriteLine('Herdr plugin refresh staged; it will finish after tsk exits.')
+        return $true
+    }
+    if (-not (Test-InstallerInteractive)) {
+        $script:HerdrWrap = 'board_setup'
+        return $false
+    }
+    [Console]::Error.WriteLine('')
+    $answer = Read-InstallerAnswer 'Herdr detected. Set up the Herdr plugin now? [y/N] '
+    if ($answer -notmatch '^(?i:y|yes)$') {
+        $script:HerdrWrap = 'board_setup'
+        return $false
+    }
+    # Do not promise prefix+t until the detached helper has actually completed setup.
+    $script:HerdrWrap = 'board'
+    [Console]::Out.WriteLine('')
+    [Console]::Out.WriteLine('Herdr setup selected; it will finish after tsk exits.')
+    return $true
+}
+
+function Get-SkillStateRows([string] $Executable) {
+    $rows = @(& $Executable setup --skill-states 2>$null)
+    if ($LASTEXITCODE -ne 0) { return @() }
+    return $rows
+}
+
+function Invoke-AgentSkillPostInstall([string] $Executable, [bool] $PostInstallSetup, [bool] $UpdateMode) {
+    $script:SkillsWrap = ''
+    if (-not $PostInstallSetup) { return }
+
+    $detectedIds = @()
+    if ($UpdateMode) {
+        $states = @(Get-SkillStateRows $Executable)
+        $embedded = $null
+        $outdated = @()
+        $outdatedLabels = @()
+        $missing = @()
+        $installed = @()
+        foreach ($line in $states) {
+            $fields = "$line" -split "`t"
+            if ($fields.Count -lt 2) { continue }
+            if ($fields[0] -eq 'embedded') {
+                $embedded = $fields[1]
+            } elseif ($fields[1] -eq 'outdated') {
+                $outdated += $fields[0]
+                $installed += $fields[0]
+                $installedVersion = if ($fields.Count -ge 3 -and $fields[2] -ne '-') { 'v' + $fields[2] } else { 'unknown version' }
+                $outdatedLabels += ($fields[0] + ' (' + $installedVersion + ')')
+            } elseif ($fields[1] -eq 'current') {
+                $installed += $fields[0]
+            } elseif ($fields[1] -eq 'missing') {
+                $missing += $fields[0]
+            } elseif ($fields[1] -eq 'blocked-symlink' -and $fields.Count -ge 4) {
+                [Console]::Error.WriteLine("tsk skill for $($fields[0]) not refreshed: $($fields[3]) is a symlink")
             }
         }
-        $states = @(& $Executable setup --skill-states 2>$null)
-        $updated = @()
-        foreach ($line in $states) {
-            $fields = $line -split "`t"
-            if ($fields.Count -ge 2 -and $fields[1] -eq 'outdated') {
-                $setupOutput = @(& $Executable setup $fields[0] 2>&1)
+
+        if ($embedded -and $outdated.Count -gt 0) {
+            $answer = 'y'
+            if (Test-InstallerInteractive) {
+                [Console]::Error.WriteLine('')
+                $answer = Read-InstallerAnswer (('tsk skill installed for {0}; update to v{1}? [Y/n] ' -f ($outdatedLabels -join ', '), $embedded))
+            }
+            if ($answer -match '^(?i:n|no)$') {
+                $script:SkillsWrap = 'nudge'
+                return
+            }
+            $updated = @()
+            foreach ($id in $outdated) {
+                $setupOutput = @(& $Executable setup $id 2>&1)
                 if ($LASTEXITCODE -eq 0) {
-                    $updated += $fields[0]
+                    $updated += $id
                 } else {
-                    [Console]::Error.WriteLine('Skill refresh failed for ' + $fields[0] + '; run tsk setup ' + $fields[0] + ': ' + ($setupOutput -join ' '))
+                    Write-SetupFailure "tsk setup $id" $setupOutput
+                    $script:SkillsWrap = 'nudge'
                 }
             }
+            if ($updated.Count -gt 0) {
+                Write-Output ''
+                Write-Output ('Updated the tsk skill for {0}.' -f ($updated -join ', '))
+            }
+            return
         }
-        if ($updated.Count -gt 0) { Write-Output ('Updated the tsk skill for ' + ($updated -join ', ') + '.') }
+        if ($embedded -and $installed.Count -gt 0) { return }
+        if ($embedded) {
+            if ($missing.Count -eq 0) { return }
+            $detectedIds = $missing
+        }
+    }
+
+    if ($detectedIds.Count -eq 0) {
+        $detectedOutput = @(& $Executable setup --detected-ids 2>$null)
+        if ($LASTEXITCODE -ne 0) { return }
+        $detectedIds = @((($detectedOutput -join ' ') -split '\s+') | Where-Object { $_ })
+    }
+    if ($detectedIds.Count -eq 0) { return }
+    if (-not (Test-InstallerInteractive)) {
+        $script:SkillsWrap = 'nudge'
+        return
+    }
+
+    [Console]::Error.WriteLine('')
+    $answer = Read-InstallerAnswer (('Agents detected: {0}. Install the tsk skill for them? [y/N] ' -f ($detectedIds -join ', ')))
+    if ($answer -notmatch '^(?i:y|yes)$') {
+        $script:SkillsWrap = 'nudge'
+        return
+    }
+    Write-Output ''
+    Write-Output 'Running tsk setup agents...'
+    Write-Output ''
+    & $Executable setup agents --yes
+    if ($LASTEXITCODE -ne 0) {
+        Write-SetupFailure 'tsk setup agents --yes' @()
+        $script:SkillsWrap = 'nudge'
+    }
+}
+
+function Prepare-DeferredAgentSkills([string] $Executable) {
+    $script:SkillsWrap = ''
+    $states = @(Get-SkillStateRows $Executable)
+    $embedded = $null
+    $outdated = @()
+    $outdatedLabels = @()
+    $missing = @()
+    $installed = @()
+    foreach ($line in $states) {
+        $fields = "$line" -split "`t"
+        if ($fields.Count -lt 2) { continue }
+        if ($fields[0] -eq 'embedded') {
+            $embedded = $fields[1]
+        } elseif ($fields[1] -eq 'outdated') {
+            $outdated += $fields[0]
+            $installed += $fields[0]
+            $installedVersion = if ($fields.Count -ge 3 -and $fields[2] -ne '-') { 'v' + $fields[2] } else { 'unknown version' }
+            $outdatedLabels += ($fields[0] + ' (' + $installedVersion + ')')
+        } elseif ($fields[1] -eq 'current') {
+            $installed += $fields[0]
+        } elseif ($fields[1] -eq 'missing') {
+            $missing += $fields[0]
+        } elseif ($fields[1] -eq 'blocked-symlink' -and $fields.Count -ge 4) {
+            [Console]::Error.WriteLine("tsk skill for $($fields[0]) not refreshed: $($fields[3]) is a symlink")
+        }
+    }
+
+    if ($embedded -and $outdated.Count -gt 0) {
+        $answer = 'y'
+        if (Test-InstallerInteractive) {
+            [Console]::Error.WriteLine('')
+            $answer = Read-InstallerAnswer (('tsk skill installed for {0}; update to v{1}? [Y/n] ' -f ($outdatedLabels -join ', '), $embedded))
+        }
+        if ($answer -match '^(?i:n|no)$') {
+            $script:SkillsWrap = 'nudge'
+            return '-'
+        }
+        [Console]::Out.WriteLine('')
+        [Console]::Out.WriteLine(('Agent skill update staged for {0}; it will finish after tsk exits.' -f ($outdated -join ', ')))
+        return ($outdated -join ',')
+    }
+    if ($embedded -and $installed.Count -gt 0) { return '-' }
+
+    $detectedIds = @()
+    if ($embedded) {
+        if ($missing.Count -eq 0) { return '-' }
+        $detectedIds = $missing
+    } else {
+        $detectedOutput = @(& $Executable setup --detected-ids 2>$null)
+        if ($LASTEXITCODE -ne 0) { return '-' }
+        $detectedIds = @((($detectedOutput -join ' ') -split '\s+') | Where-Object { $_ })
+    }
+    if ($detectedIds.Count -eq 0) { return '-' }
+    if (-not (Test-InstallerInteractive)) {
+        $script:SkillsWrap = 'nudge'
+        return '-'
+    }
+
+    [Console]::Error.WriteLine('')
+    $answer = Read-InstallerAnswer (('Agents detected: {0}. Install the tsk skill for them? [y/N] ' -f ($detectedIds -join ', ')))
+    if ($answer -notmatch '^(?i:y|yes)$') {
+        $script:SkillsWrap = 'nudge'
+        return '-'
+    }
+    [Console]::Out.WriteLine('')
+    [Console]::Out.WriteLine(('Agent skill setup staged for {0}; it will finish after tsk exits.' -f ($detectedIds -join ', ')))
+    return ($detectedIds -join ',')
+}
+
+function Write-InstallClosing([string] $Executable, [bool] $PostInstallSetup) {
+    Write-Output ''
+    if ($script:HerdrWrap -eq 'board_prefix') {
+        Write-Output 'Done. Run tsk in a project directory to open the board, or press prefix+t in Herdr.'
+    } else {
+        Write-Output 'Done. Run tsk in a project directory to open the board.'
+    }
+
+    $herdrRow = $null
+    $agentRow = $null
+    if ($PostInstallSetup) {
+        if ($script:HerdrWrap -eq 'board_setup') { $herdrRow = '    Herdr plugin:  tsk setup herdr' }
+        if ($script:SkillsWrap -eq 'nudge') { $agentRow = '    Agent skills:  tsk setup' }
+    } else {
+        Write-Output ''
+        Write-Output 'Custom install directory: setup was not run. When you are ready:'
+        if ($script:HerdrWrap -eq 'board_setup') { $herdrRow = "    Herdr plugin:  $Executable setup herdr" }
+        $agentRow = "    Agent skills:  $Executable setup"
+    }
+    if ($herdrRow -or $agentRow) {
+        Write-Output ''
+        if ($herdrRow) { Write-Output $herdrRow }
+        if ($agentRow) { Write-Output $agentRow }
+    }
+}
+
+function Refresh-ExistingSetup([string] $Executable) {
+    try {
+        Invoke-HerdrPostInstall $Executable $true $true
+        Invoke-AgentSkillPostInstall $Executable $true $true
     } catch {
         [Console]::Error.WriteLine('tsk setup refresh failed; the binary update succeeded: ' + $_.Exception.Message)
     }
@@ -444,6 +714,12 @@ function Add-UserPath([string] $InstallDirectory, [Microsoft.Win32.RegistryKey] 
     }
 }
 
+if (-not (Test-Path Function:\Update-InstallerPath)) {
+    function Update-InstallerPath([string] $InstallDirectory) {
+        Add-UserPath $InstallDirectory
+    }
+}
+
 function Main {
     if ($env:OS -ne 'Windows_NT' -or [Environment]::OSVersion.Version -lt [Version]'10.0' -or -not [Environment]::Is64BitOperatingSystem -or -not [Environment]::Is64BitProcess) {
         Fail 'Windows 10/11 ARM64 or x86-64 and a 64-bit PowerShell process are required'
@@ -464,16 +740,20 @@ function Main {
     $version = $env:TSK_VERSION
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     if (-not $version) {
-        $version = Get-LatestReleaseTag "$repo/releases/latest"
+        try {
+            $version = Get-LatestReleaseTag "$repo/releases/latest"
+        } catch {
+            Fail 'could not resolve latest stable release'
+        }
     }
     if ($version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
-        Fail 'TSK_VERSION must be a stable release tag such as v1.2.3'
+        Fail 'TSK_VERSION must be a public release tag such as v1.2.3'
     }
     if ($env:TSK_UPDATE -and $env:TSK_CURRENT_VERSION -match '^v[0-9]+\.[0-9]+\.[0-9]+$') {
         $currentVersion = [Version]($env:TSK_CURRENT_VERSION.Substring(1))
         $releaseVersion = [Version]($version.Substring(1))
         if ($releaseVersion -lt $currentVersion) {
-            Fail "latest published release is $version, older than installed $($env:TSK_CURRENT_VERSION); nothing changed"
+            Fail "latest stable release is $version, older than installed $($env:TSK_CURRENT_VERSION); nothing changed"
         }
     }
 
@@ -507,8 +787,16 @@ function Main {
         $archive = Join-Path $work $archiveName
         $sums = Join-Path $work 'SHA256SUMS'
         Write-Output "Downloading tsk $version for $target..."
-        Invoke-TskDownload -Uri "$base/$archiveName" -Destination $archive -MaxBytes $MaxArchiveBytes
-        Invoke-TskDownload -Uri "$base/SHA256SUMS" -Destination $sums -MaxBytes $MaxChecksumBytes
+        try {
+            Invoke-TskDownload -Uri "$base/$archiveName" -Destination $archive -MaxBytes $MaxArchiveBytes
+        } catch {
+            Fail "could not download $archiveName"
+        }
+        try {
+            Invoke-TskDownload -Uri "$base/SHA256SUMS" -Destination $sums -MaxBytes $MaxChecksumBytes
+        } catch {
+            Fail 'could not download checksums'
+        }
         if ((Get-Item -LiteralPath $archive).Length -gt $MaxArchiveBytes) { Fail 'release archive exceeds the compressed size limit' }
         if ((Get-Item -LiteralPath $sums).Length -gt $MaxChecksumBytes) { Fail 'checksum file exceeds the size limit' }
 
@@ -522,6 +810,12 @@ function Main {
             Fail 'checksum mismatch; existing installation unchanged'
         }
         Write-Output 'Verifying checksum... ok'
+        Write-Output ''
+        if ($env:TSK_UPDATE -and $env:TSK_CURRENT_VERSION) {
+            Write-Output "Current version $($env:TSK_CURRENT_VERSION)"
+        }
+        Write-Output "Installing tsk $version..."
+        Write-Output ''
 
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         $zip = [IO.Compression.ZipFile]::OpenRead($archive)
@@ -559,22 +853,37 @@ function Main {
                 if ($otherCopies.Count -gt 0) {
                     Fail ('close every other running tsk board and retry; active process ids: ' + ($otherCopies -join ', '))
                 }
-                Start-UpdateHelper -Source $staged -Destination $destination -UpdatePid $updatePid -InstallDirectory $installDir
+                $setupHerdr = Prepare-DeferredHerdrSetup $staged
+                $skillTargets = Prepare-DeferredAgentSkills $staged
+                Start-UpdateHelper -Source $staged -Destination $destination -UpdatePid $updatePid -InstallDirectory $installDir -SetupHerdr $setupHerdr -SkillTargets $skillTargets
                 $keepStaged = $true
                 Write-Output "Update staged. tsk $version will replace the running executable when process $updatePid exits."
-                Write-Output "If integration refresh fails, details are written to $(Join-Path $installDir '.tsk-update-error.log')."
+                Write-Output "If deferred setup fails, details are written to $(Join-Path $installDir '.tsk-update-error.log')."
+                Write-InstallClosing $destination $true
             } else {
                 Fail "could not replace $destination (Windows error $script:LastMoveError); existing installation unchanged"
             }
         } else {
             $staged = $null
-            Write-Output "Installed tsk $version to $destination"
-            if ($env:TSK_UPDATE) { Refresh-ExistingSetup $destination }
+            Write-Output 'Installed:'
+            Write-Output ''
+            Write-Output "    tsk $version to $destination"
         }
-        if (-not $NoPathUpdate) { Add-UserPath $installDir }
-        if (-not $env:TSK_UPDATE) {
-            Write-Output "Optional setup: $destination setup herdr"
-            Write-Output "Agent skills:  $destination setup"
+        if (-not $NoPathUpdate) {
+            try {
+                Update-InstallerPath $installDir
+            } catch {
+                [Console]::Error.WriteLine('PATH setup failed; install succeeded: ' + $_.Exception.Message)
+                [Console]::Error.WriteLine("Add $installDir to your Windows user PATH manually.")
+            }
+        }
+        if (-not $keepStaged) {
+            $updateMode = -not [String]::IsNullOrEmpty($env:TSK_UPDATE)
+            $customInstallDirectory = -not [String]::IsNullOrEmpty($env:TSK_INSTALL_DIR)
+            $postInstallSetup = -not $customInstallDirectory -or $updateMode
+            Invoke-HerdrPostInstall $destination $postInstallSetup $updateMode
+            Invoke-AgentSkillPostInstall $destination $postInstallSetup $updateMode
+            Write-InstallClosing $destination $postInstallSetup
         }
     } finally {
         if ($staged -and -not $keepStaged) { Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue }

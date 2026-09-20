@@ -140,7 +140,10 @@ impl Dir {
             }
         }
         if directory {
-            fs::remove_dir_all(&path)
+            // The cleanup caller removes only generated children it has verified. A plain
+            // directory removal then refuses unexpected files, matching unlinkat on Unix;
+            // recursive removal could delete a user's unrecognized file.
+            fs::remove_dir(&path)
         } else {
             fs::remove_file(&path)
         }

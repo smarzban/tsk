@@ -9,6 +9,16 @@ the GitHub release notes verbatim.
 
 ## Unreleased
 
+### Changed
+
+- The Windows PowerShell installer now offers the same Herdr and agent-skill setup prompts and closing guidance as macOS/Linux, while custom and unattended installs remain non-executing.
+- Windows `tsk update` keeps console input available for setup prompts without writing the downloaded installer to a replaceable temporary script.
+
+### Fixed
+
+- Windows installation uses the canonical `www.gettsk.sh/install.ps1` endpoint, reports a successful binary install even if user PATH could not be updated, and gives manual PATH guidance.
+- Windows plugin cleanup refuses unexpected files instead of recursively deleting them.
+
 ## v0.11.3
 
 ### Added

@@ -634,13 +634,12 @@ const softwareApplication = {
               </div>
               <p class="install-note">Windows 10/11 ARM64 or x86-64:</p>
               <div class="shell-wrap">
-                <pre class="shell" data-copy-source><span class="prompt">PS&gt;</span> Invoke-WebRequest https://gettsk.sh/install.ps1 -OutFile "$env:TEMP\install-tsk.ps1"
-<span class="prompt">PS&gt;</span> powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-tsk.ps1"</pre>
-                <button type="button" class="copy" data-copy aria-label="Copy Windows install commands">copy</button>
+                <pre class="shell" data-copy-source><span class="prompt">PS&gt;</span> irm https://www.gettsk.sh/install.ps1 | iex</pre>
+                <button type="button" class="copy" data-copy aria-label="Copy Windows install command">copy</button>
               </div>
               <p class="install-note">
-                If prompted, reopen your terminal or run the installer's printed <code>export</code> command.
-                When Herdr is already installed, an interactive curl install may ask to run <code>tsk setup herdr</code>;
+                If prompted on macOS or Linux, reopen your terminal or run the installer's printed <code>export</code> command.
+                When Herdr is already installed, an interactive install may ask to run <code>tsk setup herdr</code>;
                 when agent skill roots are detected it also asks once to install the tsk skill.
                 The wrap-up then points at the board (<code>prefix+t</code> after Herdr setup, or <code>tsk setup herdr</code> / <code>tsk setup</code> when those asks are skipped).
                 Open the board with <code>tsk</code>. Add a task with <code>tsk add -t "your task title"</code>.

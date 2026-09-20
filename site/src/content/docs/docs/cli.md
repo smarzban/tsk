@@ -277,7 +277,7 @@ Use top-level help to find a command, then use either one-command form for its f
 tsk update
 ```
 
-For an installer-managed copy, downloads and runs the official installer for the latest published release, then refreshes an already registered Herdr plugin and any outdated installed agent skills ([details](/docs/install/#upgrade)). Windows stages the verified executable, returns after starting a detached helper, and replaces `tsk.exe` after the running process exits. For a Homebrew copy, it prints `brew update && brew upgrade tsk`; Homebrew remains responsible for its own upgrades. Reopen a running board after an upgrade.
+For an installer-managed copy, downloads and runs the official installer for the latest stable release, then refreshes an already registered Herdr plugin and any outdated installed agent skills ([details](/docs/install/#upgrade)). Windows stages the verified executable, returns after starting a detached helper, and replaces `tsk.exe` after the running process exits, so success means installed or staged. For a Homebrew copy, it prints `brew update && brew upgrade tsk`; Homebrew remains responsible for its own upgrades. Reopen a running board after an upgrade.
 
 ## setup
 

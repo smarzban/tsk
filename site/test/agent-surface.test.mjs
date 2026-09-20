@@ -146,6 +146,16 @@ test("docs_html_has_rel_alternate_to_the_twin_once_and_landing_has_none", async 
   assert.doesNotMatch(landing, /rel="alternate" type="text\/markdown"/);
 });
 
+test("vercel serves the PowerShell installer as plain text", async () => {
+  const config = JSON.parse(await read(join(siteRoot, "vercel.json")));
+  const route = config.headers.find((entry) => entry.source === "/install.ps1");
+  assert.ok(route, "missing /install.ps1 headers");
+  assert.deepEqual(route.headers, [
+    { key: "Content-Type", value: "text/plain; charset=utf-8" },
+    { key: "X-Content-Type-Options", value: "nosniff" },
+  ]);
+});
+
 test("vercel_json_has_no_accept_rewrites_and_no_regex_lookaheads", async () => {
   // Vercel's route parser rejects lookaheads inside :param patterns, and static
   // files win over rewrites anyway. Markdown is reached by .md URLs and rel=alternate.

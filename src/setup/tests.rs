@@ -427,6 +427,28 @@ fn cleanup_preserves_modified_or_incomplete_managed_roots() {
 }
 
 #[test]
+fn cleanup_never_removes_an_unexpected_file_from_a_stale_managed_root() {
+    let temp = Temp::new();
+    let base = Dir::open(&temp.0.join("tsk-plugins"), true).unwrap();
+    let binary = temp.0.join("bin/tsk");
+    let assets = managed_assets(&binary, "0.5.0").unwrap();
+    let stale_name = asset_root_name(&assets);
+    let stale = base.child(Path::new(&stale_name), true).unwrap();
+    let scripts = stale.child(Path::new("scripts"), true).unwrap();
+    for (name, text) in assets {
+        fs::write(stale.path.join(name), text).unwrap();
+    }
+    let unexpected = scripts.path.join("keep-me.txt");
+    fs::write(&unexpected, "not owned by tsk").unwrap();
+    let current = base.child(Path::new("current"), true).unwrap();
+
+    cleanup_old(&base, &current, &stale.path)
+        .expect_err("unexpected file must prevent complete cleanup");
+
+    assert_eq!(fs::read_to_string(unexpected).unwrap(), "not owned by tsk");
+}
+
+#[test]
 fn asset_root_name_has_a_fixed_byte_encoding_and_known_digest() {
     assert_eq!(
         asset_root_name(&[("a", "hello".into()), ("notes", "world\n".into())]),

@@ -4,7 +4,7 @@ set -eu
 
 fail() { printf 'tsk install: %s\n' "$*" >&2; exit 1; }
 if [ "$#" -eq 1 ] && [ "$1" = --help ]; then
-    printf '%s\n' 'Usage: sh install.sh' 'TSK_VERSION=vX.Y.Z pins a stable release (default: latest published).' 'TSK_INSTALL_DIR=/absolute/path overrides ~/.local/bin.'
+    printf '%s\n' 'Usage: sh install.sh' 'TSK_VERSION=vX.Y.Z pins a public release tag (default: latest stable release).' 'TSK_INSTALL_DIR=/absolute/path overrides ~/.local/bin.'
     exit 0
 fi
 [ "$#" -eq 0 ] || fail 'unexpected arguments; use --help'
@@ -30,13 +30,13 @@ esac
 repo=https://github.com/smarzban/tsk
 version=${TSK_VERSION:-}
 if [ -z "$version" ]; then
-    latest=$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL -o /dev/null -w '%{url_effective}' "$repo/releases/latest") || fail 'could not resolve latest published release'
+    latest=$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL -o /dev/null -w '%{url_effective}' "$repo/releases/latest") || fail 'could not resolve latest stable release'
     case "$latest" in
         "$repo/releases/tag/"*) version=${latest##*/} ;;
         *) fail 'unexpected latest-release redirect' ;;
     esac
 fi
-printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || fail 'TSK_VERSION must be a stable release tag such as v1.2.3'
+printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || fail 'TSK_VERSION must be a public release tag such as v1.2.3'
 
 install_dir=${TSK_INSTALL_DIR:-${HOME:?HOME is required}/.local/bin}
 case "$install_dir" in /*) ;; *) fail 'TSK_INSTALL_DIR must be an absolute path' ;; esac
@@ -69,7 +69,7 @@ if [ -n "${TSK_UPDATE:-}" ] && [ -n "${TSK_CURRENT_VERSION:-}" ]; then
     if printf '%s\n' "$TSK_CURRENT_VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
         newest=$(printf '%s\n%s\n' "${TSK_CURRENT_VERSION#v}" "${version#v}" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
         if [ "$newest" = "${TSK_CURRENT_VERSION#v}" ] && [ "${version#v}" != "${TSK_CURRENT_VERSION#v}" ]; then
-            fail "latest published release is $version, older than the installed $TSK_CURRENT_VERSION; nothing changed"
+            fail "latest stable release is $version, older than the installed $TSK_CURRENT_VERSION; nothing changed"
         fi
     fi
 fi
