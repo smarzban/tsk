@@ -554,11 +554,22 @@ fn old_herdr_is_refused_before_any_write_with_an_actionable_message() {
         err,
         "herdr 0.6.8 found; tsk needs 0.9.0 or newer. Update Herdr, then run tsk setup herdr again"
     );
-    // A pre-release of the minimum is not the minimum.
-    assert!(require_min_herdr("herdr 0.9.0-beta.2")
-        .unwrap_err()
-        .to_string()
-        .starts_with("herdr 0.9.0-beta.2 found"));
+    // Herdr's supported Windows distribution is published from the 0.9 preview line.
+    assert!(require_min_herdr("herdr 0.9.0-preview").is_ok());
+    assert!(require_min_herdr("herdr 0.9.0-preview.2026-09-16-2c29fb29e302").is_ok());
+    // Other or malformed pre-releases of the minimum are not known to carry the required host API.
+    for version in [
+        "0.9.0-beta.2",
+        "0.9.0-preview.",
+        "0.9.0-preview..1",
+        "0.9.0-preview.bad_suffix",
+        "0.9.0-preview.01",
+    ] {
+        let err = require_min_herdr(&format!("herdr {version}"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with(&format!("herdr {version} found")), "{err}");
+    }
     // Only the version after the word `herdr` counts, never a stray semver in a banner.
     assert!(require_min_herdr("warning: helper 1.2.3\nherdr 0.6.8")
         .unwrap_err()

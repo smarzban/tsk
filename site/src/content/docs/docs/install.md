@@ -35,7 +35,7 @@ On every platform, if Herdr is already installed, an interactive installer asks 
 
 ## Add to Herdr
 
-[Install Herdr](https://herdr.dev/docs/install/) first. Setup requires Herdr 0.9 or newer: an older `herdr` on PATH is refused with `herdr X.Y.Z found; tsk needs 0.9.0 or newer` before anything is written, so update Herdr and run `tsk setup herdr` again.
+[Install Herdr](https://herdr.dev/docs/install/) first. Setup requires Herdr 0.9 or newer and accepts Herdr's supported `0.9.0-preview.*` Windows builds. An older `herdr` on PATH is refused with `herdr X.Y.Z found; tsk needs 0.9.0 or newer` before anything is written, so update Herdr and run `tsk setup herdr` again.
 
 ```sh
 tsk setup herdr

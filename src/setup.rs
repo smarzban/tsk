@@ -519,9 +519,9 @@ fn read_config(path: &Path) -> io::Result<Option<String>> {
 pub const MIN_HERDR_VERSION: (u64, u64, u64) = (0, 9, 0);
 
 /// `herdr --version` prints `herdr X.Y.Z` (Clap's default). Read the version that follows
-/// the word `herdr`, never a stray semver elsewhere in the output, and treat a pre-release
-/// of the minimum (`0.9.0-beta`) as below it: older hosts lack `herdr config check` and
-/// fail with a raw usage dump, so refuse them with a message that names the fix.
+/// the word `herdr`, never a stray semver elsewhere in the output. The supported Windows
+/// distribution currently identifies as `0.9.0-preview.*` and carries the required 0.9 host
+/// API; other pre-releases of the minimum remain below it because they may lack that API.
 fn require_min_herdr(version_output: &str) -> io::Result<()> {
     let unreadable = || {
         error(format!(
@@ -539,16 +539,31 @@ fn require_min_herdr(version_output: &str) -> io::Result<()> {
     // itself contain hyphens, so drop it before looking for a prerelease marker.
     let without_build = raw.split('+').next().unwrap_or(raw);
     let (core, prerelease) = match without_build.split_once('-') {
-        Some((core, _)) => (core, true),
-        None => (without_build, false),
+        Some((core, prerelease)) => (core, Some(prerelease)),
+        None => (without_build, None),
     };
     let mut parts = core.split('.').map(str::parse::<u64>);
     let found = match (parts.next(), parts.next(), parts.next(), parts.next()) {
         (Some(Ok(a)), Some(Ok(b)), Some(Ok(c)), None) => (a, b, c),
         _ => return Err(unreadable()),
     };
-    // A pre-release sorts below its release, so 0.9.0-preview is not yet 0.9.0.
-    let too_old = found < MIN_HERDR_VERSION || (prerelease && found == MIN_HERDR_VERSION);
+    let supported_preview = found == MIN_HERDR_VERSION
+        && prerelease.is_some_and(|value| {
+            value == "preview"
+                || value.strip_prefix("preview.").is_some_and(|suffix| {
+                    suffix.split('.').all(|identifier| {
+                        !identifier.is_empty()
+                            && identifier
+                                .bytes()
+                                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                            && !(identifier.len() > 1
+                                && identifier.bytes().all(|byte| byte.is_ascii_digit())
+                                && identifier.starts_with('0'))
+                    })
+                })
+        });
+    let too_old = found < MIN_HERDR_VERSION
+        || (prerelease.is_some() && found == MIN_HERDR_VERSION && !supported_preview);
     if too_old {
         let (a, b, c) = MIN_HERDR_VERSION;
         return Err(error(format!(
