@@ -9,6 +9,8 @@ the GitHub release notes verbatim.
 
 ## Unreleased
 
+## v0.11.4
+
 ### Changed
 
 - The Windows PowerShell installer now offers the same Herdr and agent-skill setup prompts and closing guidance as macOS/Linux, while custom and unattended installs remain non-executing.
