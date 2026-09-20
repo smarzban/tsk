@@ -309,6 +309,12 @@ pub enum BoardIntent {
     PrimaryVerb,
     /// `ctrl+g` — dispatch the cursor task to its assignee.
     Dispatch,
+    /// Palette-only explicit relaunch of an existing dispatch.
+    DispatchAgain,
+    /// Cleanup modal choices. y removes safely, n completes only, Esc cancels both.
+    ConfirmCleanup,
+    KeepCleanup,
+    CancelCleanup,
     /// `ctrl+b` — toggle blocked ↔ ready. Reducer lands in.
     ToggleBlock,
     /// `ctrl+r` — toggle review ↔ ready. Reducer lands in.
@@ -1245,6 +1251,8 @@ pub fn map_key(mode: BoardInputMode, key: KeyEvent) -> Option<BoardIntent> {
                 | BoardInputMode::EditAssignee
                 | BoardInputMode::FormDropdown
                 | BoardInputMode::LaunchCard
+                | BoardInputMode::CleanupConfirm
+                | BoardInputMode::CleanupDirtyConfirm
                 | BoardInputMode::ProjectPicker
                 | BoardInputMode::ListPicker
                 | BoardInputMode::Help
@@ -1261,6 +1269,8 @@ pub fn map_key(mode: BoardInputMode, key: KeyEvent) -> Option<BoardIntent> {
         BoardInputMode::Search => map_search(key),
         BoardInputMode::SaveRecovery => map_save_recovery(key),
         BoardInputMode::LaunchCard => map_launch_card(key),
+        BoardInputMode::CleanupConfirm => map_cleanup_confirm(key),
+        BoardInputMode::CleanupDirtyConfirm => map_cleanup_dirty_confirm(key),
         BoardInputMode::Palette => map_palette(key),
         BoardInputMode::Help => map_help(key),
         BoardInputMode::QuickAdd => map_quick_add_key(key),
@@ -1628,6 +1638,8 @@ pub fn map_edit_paste(mode: BoardInputMode, text: &str) -> Option<BoardIntent> {
         | BoardInputMode::EditAssignee
         | BoardInputMode::FormDropdown
         | BoardInputMode::LaunchCard
+        | BoardInputMode::CleanupConfirm
+        | BoardInputMode::CleanupDirtyConfirm
         | BoardInputMode::TaskPage
         | BoardInputMode::CapturePage => None,
         BoardInputMode::ListPicker => {
@@ -1750,6 +1762,10 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::CommandQueryBackspace
         | BoardIntent::PrimaryVerb
         | BoardIntent::Dispatch
+        | BoardIntent::DispatchAgain
+        | BoardIntent::ConfirmCleanup
+        | BoardIntent::KeepCleanup
+        | BoardIntent::CancelCleanup
         | BoardIntent::ToggleBlock
         | BoardIntent::ToggleReview
         | BoardIntent::HelpQueryInsert(_)
@@ -1901,6 +1917,35 @@ fn map_task_page(key: KeyEvent) -> Option<BoardIntent> {
 
 /// Launch card: `y` unarchives, `n`/`Esc` keep archived. No `Enter` default (gate F-1):
 /// the choice must be explicit.
+fn map_cleanup_dirty_confirm(key: KeyEvent) -> Option<BoardIntent> {
+    if key
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+    {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char('n') => Some(BoardIntent::KeepCleanup),
+        KeyCode::Esc => Some(BoardIntent::CancelCleanup),
+        _ => None,
+    }
+}
+
+fn map_cleanup_confirm(key: KeyEvent) -> Option<BoardIntent> {
+    if key
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+    {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char('y') => Some(BoardIntent::ConfirmCleanup),
+        KeyCode::Char('n') => Some(BoardIntent::KeepCleanup),
+        KeyCode::Esc => Some(BoardIntent::CancelCleanup),
+        _ => None,
+    }
+}
+
 fn map_launch_card(key: KeyEvent) -> Option<BoardIntent> {
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return Some(BoardIntent::Quit);

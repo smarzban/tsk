@@ -6,27 +6,35 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use std::path::{Path, PathBuf};
 
-use tsk_tui::cli::dispatch;
 use tsk_tui::cli::parser::TaskAddress;
 use tsk_tui::cli::run_with;
-use tsk_tui::dispatch::{CreatedWorktree, DispatchHost};
+use tsk_tui::cli::{clean, dispatch};
+use tsk_tui::dispatch::{CleanupInspection, CreatedWorktree, DispatchHost, WorktreeCleanup};
 use tsk_tui::domain::{DomainState, HumanStatus, ProvenanceOrigin, TaskScope};
 use tsk_tui::store::TaskStore;
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
-struct FakeHost;
+struct FakeHost {
+    inspection: Option<CleanupInspection>,
+    removed: usize,
+}
 
 impl DispatchHost for FakeHost {
     fn is_git_repo(&mut self, _project: &Path) -> Result<bool, String> {
         Ok(true)
     }
 
+    fn resolve_base(&mut self, _project: &Path) -> Result<String, String> {
+        Ok("main".into())
+    }
+
     fn create_worktree(
         &mut self,
         _project: &Path,
         branch: &str,
+        _base: Option<&str>,
         _label: &str,
     ) -> Result<CreatedWorktree, String> {
         Ok(CreatedWorktree {
@@ -35,6 +43,26 @@ impl DispatchHost for FakeHost {
             workspace_id: "workspace-1".into(),
             root_pane_id: "pane-1".into(),
         })
+    }
+
+    fn inspect_cleanup(
+        &mut self,
+        _project: &Path,
+        _dispatch: &tsk_tui::domain::Dispatch,
+        _in_herdr: bool,
+    ) -> Result<CleanupInspection, String> {
+        self.inspection
+            .clone()
+            .ok_or_else(|| "inspection missing".into())
+    }
+
+    fn remove_herdr_worktree(&mut self, _workspace_id: &str) -> Result<(), String> {
+        self.removed += 1;
+        Ok(())
+    }
+
+    fn delete_branch(&mut self, _project: &Path, _branch: &str) -> Result<(), String> {
+        Ok(())
     }
 
     fn root_pane(&mut self, _workspace_id: &str) -> Result<String, String> {
@@ -96,7 +124,7 @@ fn successful_cli_dispatch_persists_record_and_started_together() {
         false,
         Some(dir.clone()),
         true,
-        &mut FakeHost,
+        &mut FakeHost::default(),
     )
     .expect("dispatch");
     assert_eq!(result.number, 1);
@@ -106,6 +134,118 @@ fn successful_cli_dispatch_persists_record_and_started_together() {
     assert_eq!(
         task.dispatch.as_ref().expect("record").herdr_workspace_id,
         "workspace-1"
+    );
+    fs::remove_dir_all(dir).expect("cleanup");
+}
+
+#[test]
+fn clean_cli_help_and_success_report_each_removed_resource() {
+    let help = run_with(
+        ["tsk", "clean", "--help"],
+        Cursor::new(Vec::<u8>::new()),
+        true,
+    );
+    assert_eq!(help.code, 0, "{}", help.stderr);
+    assert!(help.stdout.contains("usage: tsk clean <task> [--json]"));
+    for code in [
+        "not-dispatched",
+        "already-cleaned",
+        "dirty-worktree",
+        "herdr-failed",
+        "store-error",
+    ] {
+        assert!(help.stdout.contains(code), "missing {code}");
+    }
+
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cli-clean-success-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&dir).expect("mkdir");
+    fs::write(
+        dir.join("agents.toml"),
+        "[agent.implementer]\ncommand = [\"runner\", \"{prompt}\"]\n",
+    )
+    .expect("profiles");
+    let store = TaskStore::new(&dir);
+    let mut state = DomainState::new();
+    state
+        .create_assigned(
+            "assigned",
+            None,
+            TaskScope::Project {
+                path: "/repos/app".into(),
+            },
+            ProvenanceOrigin::Manual,
+            None,
+            Some("implementer".into()),
+        )
+        .expect("task");
+    let mut launch = FakeHost::default();
+    store.save(&state).expect("save");
+    dispatch::run_with_host(
+        TaskAddress::Number(1),
+        false,
+        Some(dir.clone()),
+        true,
+        &mut launch,
+    )
+    .expect("dispatch");
+
+    let mut host = FakeHost {
+        inspection: Some(CleanupInspection {
+            worktree_exists: true,
+            dirty: false,
+            branch_merged: true,
+            workspace_exists: true,
+            target_matches: true,
+        }),
+        ..FakeHost::default()
+    };
+    let result = clean::run_with_host(TaskAddress::Number(1), Some(dir.clone()), true, &mut host)
+        .expect("clean");
+    assert_eq!(result.worktree, WorktreeCleanup::Removed);
+    assert_eq!(host.removed, 1);
+    assert!(
+        store.load().unwrap().tasks()[0]
+            .dispatch
+            .as_ref()
+            .unwrap()
+            .cleaned
+    );
+    fs::remove_dir_all(dir).expect("cleanup");
+}
+
+#[test]
+fn clean_cli_refusals_print_stable_codes() {
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cli-clean-refusal-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&dir).expect("mkdir");
+    let store = TaskStore::new(&dir);
+    let mut state = DomainState::new();
+    state
+        .create(
+            "plain",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("task");
+    store.save(&state).expect("save");
+    let output = run_with(
+        ["tsk", "clean", "T1", "--state-dir", dir.to_str().unwrap()],
+        Cursor::new(Vec::<u8>::new()),
+        true,
+    );
+    assert_eq!(output.code, 1);
+    assert_eq!(
+        output.stderr,
+        "tsk clean: not-dispatched: task has no dispatch to clean\n"
     );
     fs::remove_dir_all(dir).expect("cleanup");
 }

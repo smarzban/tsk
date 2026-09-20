@@ -11,7 +11,7 @@ Double-click a task or select it and press `Enter`. A double-click follows the t
 
 At 110 usable columns or wider, click a task or press `→` to open details beside the board, keeping board focus. Use `→` and `←` to move between [board and task views](/docs/board/#wide-stage-slider). From the board-focused split, `Esc` closes the details column, keeping any parked draft. Press `Enter` from the board for full screen; `Esc` or click **esc close** returns. In view mode, `ctrl+q` quits the whole board rather than closing the page; save or cancel unsaved edits first.
 
-Click the task's `T` number to copy it. The page shows its status, notes, steps, assignee, project, thread, and dates. After a dispatch it also shows the worktree, branch, and relative dispatch time. Its footer puts `@assignee` before `#thread`, then the project and created and updated dates. Long text wraps.
+Click the task's `T` number to copy it. The page shows its status, notes, steps, assignee, project, thread, and dates. After a dispatch it also shows the worktree, branch, relative dispatch time, and whether the worktree was removed. Its footer puts `@assignee` before `#thread`, then the project and created and updated dates. Long text wraps.
 
 ## Edit
 
@@ -21,7 +21,7 @@ The page opens in view mode.
 | --- | --- |
 | Edit title, or the selected step | `ctrl+e` |
 | Edit notes | `ctrl+e`, then `Tab` |
-| Dispatch to the assigned agent | `ctrl+g` |
+| Dispatch to the assigned agent; press twice to relaunch | `ctrl+g` |
 | Move through editable fields | `Tab` / `Shift+Tab`, after starting an edit |
 | Save the task edit | `Shift+Enter` |
 | Cancel the current field | `Esc` or `ctrl+c` |
@@ -65,7 +65,7 @@ If another writer deletes the task, saving refuses. If a save fails, use [retry 
 
 ## Status and steps
 
-In task view, status shortcuts act on the open task even when a step is selected. `ctrl+g` dispatches that task to its assigned agent. Multi-select and marks retained from the board are ignored and clear when an action runs. `ctrl+n` sets ready and `ctrl+o` sets open; `ctrl+s` starts an open or ready task. `Enter` toggles the selected step only.
+In task view, status shortcuts act on the open task even when a step is selected. `ctrl+g` dispatches that task to its assigned agent; on an existing dispatch, the first press asks and the second relaunches. `ctrl+d` offers safe worktree cleanup before completing a live dispatch. Multi-select and marks retained from the board are ignored and clear when an action runs. `ctrl+n` sets ready and `ctrl+o` sets open; `ctrl+s` starts an open or ready task. `Enter` toggles the selected step only.
 
 While editing a field, use its edit keys. Save or cancel to return to the task's status actions.
 

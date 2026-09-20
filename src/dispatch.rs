@@ -15,6 +15,95 @@ pub const NOT_IN_HERDR: &str = "dispatch works inside herdr for now";
 pub const NEEDS_GIT_PROJECT: &str = "dispatch needs a project in a git repo";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupInspection {
+    pub worktree_exists: bool,
+    pub dirty: bool,
+    pub branch_merged: bool,
+    pub workspace_exists: bool,
+    /// The recorded path is a non-root worktree registered to the project, and any Herdr
+    /// workspace selected by id names that same checkout.
+    pub target_matches: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorktreeCleanup {
+    Removed,
+    Missing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchCleanup {
+    Removed,
+    Kept,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupPreview {
+    pub number: u64,
+    pub title: String,
+    pub project: PathBuf,
+    pub record: Dispatch,
+    pub inspection: CleanupInspection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupResult {
+    pub number: u64,
+    pub title: String,
+    pub worktree_path: String,
+    pub branch_name: String,
+    pub workspace_id: String,
+    pub worktree: WorktreeCleanup,
+    pub branch: BranchCleanup,
+    pub workspace_removed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CleanupError {
+    UnknownTask,
+    NotDispatched,
+    AlreadyCleaned,
+    DirtyWorktree,
+    WorktreeMismatch,
+    Herdr(String),
+    Store(String),
+}
+
+impl CleanupError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::UnknownTask => "unknown-task",
+            Self::NotDispatched => "not-dispatched",
+            Self::AlreadyCleaned => "already-cleaned",
+            Self::DirtyWorktree => "dirty-worktree",
+            Self::WorktreeMismatch => "worktree-mismatch",
+            Self::Herdr(_) => "herdr-failed",
+            Self::Store(_) => "store-error",
+        }
+    }
+}
+
+impl std::fmt::Display for CleanupError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownTask => write!(formatter, "task is not on the board"),
+            Self::NotDispatched => write!(formatter, "task has no dispatch to clean"),
+            Self::AlreadyCleaned => write!(formatter, "dispatch is already cleaned"),
+            Self::DirtyWorktree => write!(formatter, "worktree has uncommitted changes"),
+            Self::WorktreeMismatch => {
+                write!(
+                    formatter,
+                    "recorded worktree does not match the project or workspace"
+                )
+            }
+            Self::Herdr(reason) | Self::Store(reason) => write!(formatter, "{reason}"),
+        }
+    }
+}
+
+impl std::error::Error for CleanupError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchResult {
     pub number: u64,
     pub title: String,
@@ -92,12 +181,33 @@ pub struct CreatedWorktree {
 /// Process seam for git and Herdr. Tests implement this without spawning either binary.
 pub trait DispatchHost {
     fn is_git_repo(&mut self, project: &Path) -> Result<bool, String>;
+    fn resolve_base(&mut self, _project: &Path) -> Result<String, String> {
+        Err("dispatch base resolution is not supported".into())
+    }
     fn create_worktree(
         &mut self,
         project: &Path,
         branch: &str,
+        base: Option<&str>,
         label: &str,
     ) -> Result<CreatedWorktree, String>;
+    fn inspect_cleanup(
+        &mut self,
+        _project: &Path,
+        _dispatch: &Dispatch,
+        _in_herdr: bool,
+    ) -> Result<CleanupInspection, String> {
+        Err("cleanup inspection is not supported".into())
+    }
+    fn remove_herdr_worktree(&mut self, _workspace_id: &str) -> Result<(), String> {
+        Err("Herdr worktree removal is not supported".into())
+    }
+    fn remove_git_worktree(&mut self, _project: &Path, _worktree: &Path) -> Result<(), String> {
+        Err("git worktree removal is not supported".into())
+    }
+    fn delete_branch(&mut self, _project: &Path, _branch: &str) -> Result<(), String> {
+        Err("git branch removal is not supported".into())
+    }
     fn root_pane(&mut self, workspace_id: &str) -> Result<String, String>;
     fn run_in_pane(&mut self, pane_id: &str, command: &str) -> Result<(), String>;
 }
@@ -118,35 +228,200 @@ impl DispatchHost for SystemDispatchHost {
         }
     }
 
+    fn resolve_base(&mut self, project: &Path) -> Result<String, String> {
+        let symbolic = Command::new("git")
+            .args(["-C"])
+            .arg(project)
+            .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+            .output()
+            .map_err(|error| format!("could not run git: {error}"))?;
+        if symbolic.status.success() {
+            return String::from_utf8(symbolic.stdout)
+                .map(|base| base.trim().to_string())
+                .map_err(|error| format!("git returned an invalid base: {error}"));
+        }
+        let detached = Command::new("git")
+            .args(["-C"])
+            .arg(project)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .map_err(|error| format!("could not run git: {error}"))?;
+        if !detached.status.success() {
+            return Err(command_failure("git rev-parse HEAD", &detached));
+        }
+        String::from_utf8(detached.stdout)
+            .map(|base| base.trim().to_string())
+            .map_err(|error| format!("git returned an invalid base: {error}"))
+    }
+
     fn create_worktree(
         &mut self,
         project: &Path,
         branch: &str,
+        base: Option<&str>,
         label: &str,
     ) -> Result<CreatedWorktree, String> {
-        let output = Command::new("herdr")
+        let mut command = Command::new("herdr");
+        command
             .args(["worktree", "create", "--cwd"])
             .arg(project)
-            .args(["--branch", branch, "--label", label])
+            .args(["--branch", branch]);
+        if let Some(base) = base {
+            command.args(["--base", base]);
+        }
+        let output = command
+            .args(["--label", label])
             .output()
             .map_err(|error| format!("could not run herdr: {error}"))?;
-        let value = herdr_json(output)?;
-        let result = value
-            .get("result")
-            .ok_or_else(|| "herdr returned no result".to_string())?;
-        let string = |pointer: &str| {
-            result
-                .pointer(pointer)
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .ok_or_else(|| format!("herdr response is missing {pointer}"))
+        created_worktree_from_value(herdr_json(output)?)
+    }
+
+    fn inspect_cleanup(
+        &mut self,
+        project: &Path,
+        dispatch: &Dispatch,
+        in_herdr: bool,
+    ) -> Result<CleanupInspection, String> {
+        let worktree = Path::new(&dispatch.worktree);
+        let project_path = canonical_cleanup_path(project)?;
+        let Ok(worktree_path) = canonical_cleanup_path(worktree) else {
+            return Ok(CleanupInspection {
+                worktree_exists: worktree.exists(),
+                dirty: false,
+                branch_merged: false,
+                workspace_exists: false,
+                target_matches: false,
+            });
         };
-        Ok(CreatedWorktree {
-            path: PathBuf::from(string("/worktree/path")?),
-            branch: string("/worktree/branch")?,
-            workspace_id: string("/workspace/workspace_id")?,
-            root_pane_id: string("/root_pane/pane_id")?,
+        // A worktree deleted by hand may already be pruned from git's list, so a missing
+        // directory converges to cleaned before the registration gate can refuse it. The
+        // project root itself is never a removal target, present or not.
+        if project_path == worktree_path {
+            return Ok(CleanupInspection {
+                worktree_exists: worktree.exists(),
+                dirty: false,
+                branch_merged: false,
+                workspace_exists: false,
+                target_matches: false,
+            });
+        }
+        if !worktree.exists() {
+            return Ok(CleanupInspection {
+                worktree_exists: false,
+                dirty: false,
+                branch_merged: false,
+                workspace_exists: false,
+                target_matches: true,
+            });
+        }
+        let registered = git_worktree_paths(project)?
+            .iter()
+            .any(|listed| listed == &worktree_path);
+        if !registered {
+            return Ok(CleanupInspection {
+                worktree_exists: true,
+                dirty: false,
+                branch_merged: false,
+                workspace_exists: false,
+                target_matches: false,
+            });
+        }
+        let status = Command::new("git")
+            .args(["-C"])
+            .arg(worktree)
+            .args(["status", "--porcelain", "--untracked-files=all"])
+            .output()
+            .map_err(|error| format!("could not run git: {error}"))?;
+        if !status.status.success() {
+            return Err(command_failure("git status", &status));
+        }
+        let branch_merged = if let Some(base) = dispatch.base.as_deref() {
+            let merged = Command::new("git")
+                .args(["-C"])
+                .arg(project)
+                .args(["merge-base", "--is-ancestor", &dispatch.branch, base])
+                .output()
+                .map_err(|error| format!("could not run git: {error}"))?;
+            match merged.status.code() {
+                Some(0) => true,
+                Some(1) => false,
+                _ => return Err(command_failure("git merge-base", &merged)),
+            }
+        } else {
+            false
+        };
+        let (workspace_exists, workspace_matches) = if in_herdr {
+            let listed = Command::new("herdr")
+                .args(["worktree", "list", "--cwd"])
+                .arg(project)
+                .output()
+                .map_err(|error| format!("could not run herdr: {error}"))?;
+            let value = herdr_json(listed)?;
+            let workspace = value
+                .pointer("/result/worktrees")
+                .and_then(Value::as_array)
+                .and_then(|worktrees| {
+                    worktrees.iter().find(|entry| {
+                        entry.get("open_workspace_id").and_then(Value::as_str)
+                            == Some(dispatch.herdr_workspace_id.as_str())
+                    })
+                });
+            match workspace {
+                Some(entry) => {
+                    let matches = herdr_checkout_path(entry)
+                        .and_then(|path| canonical_cleanup_path(Path::new(path)).ok())
+                        .is_some_and(|path| path == worktree_path);
+                    (true, matches)
+                }
+                None => (false, true),
+            }
+        } else {
+            (false, true)
+        };
+        Ok(CleanupInspection {
+            worktree_exists: true,
+            dirty: !status.stdout.is_empty(),
+            branch_merged,
+            workspace_exists,
+            target_matches: workspace_matches,
         })
+    }
+
+    fn remove_herdr_worktree(&mut self, workspace_id: &str) -> Result<(), String> {
+        let output = Command::new("herdr")
+            .args(["worktree", "remove", "--workspace", workspace_id])
+            .output()
+            .map_err(|error| format!("could not run herdr: {error}"))?;
+        herdr_json(output).map(|_| ())
+    }
+
+    fn remove_git_worktree(&mut self, project: &Path, worktree: &Path) -> Result<(), String> {
+        let output = Command::new("git")
+            .args(["-C"])
+            .arg(project)
+            .args(["worktree", "remove"])
+            .arg(worktree)
+            .output()
+            .map_err(|error| format!("could not run git: {error}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(command_failure("git worktree remove", &output))
+        }
+    }
+
+    fn delete_branch(&mut self, project: &Path, branch: &str) -> Result<(), String> {
+        let output = Command::new("git")
+            .args(["-C"])
+            .arg(project)
+            .args(["branch", "-d", branch])
+            .output()
+            .map_err(|error| format!("could not run git: {error}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(command_failure("git branch -d", &output))
+        }
     }
 
     fn root_pane(&mut self, workspace_id: &str) -> Result<String, String> {
@@ -172,6 +447,77 @@ impl DispatchHost for SystemDispatchHost {
     }
 }
 
+fn canonical_cleanup_path(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err("recorded worktree path is not absolute".into());
+    }
+    if path.exists() {
+        return path
+            .canonicalize()
+            .map_err(|error| format!("could not resolve {}: {error}", path.display()));
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "recorded worktree has no parent".to_string())?
+        .canonicalize()
+        .map_err(|error| format!("could not resolve {}: {error}", path.display()))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| "recorded worktree has no name".to_string())?;
+    Ok(parent.join(name))
+}
+
+fn git_worktree_paths(project: &Path) -> Result<Vec<PathBuf>, String> {
+    let listed = Command::new("git")
+        .args(["-C"])
+        .arg(project)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .map_err(|error| format!("could not run git: {error}"))?;
+    if !listed.status.success() {
+        return Err(command_failure("git worktree list", &listed));
+    }
+    String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(|path| canonical_cleanup_path(Path::new(path)))
+        .collect()
+}
+
+fn herdr_checkout_path(entry: &Value) -> Option<&str> {
+    ["path", "checkout_path", "source_checkout_path"]
+        .into_iter()
+        .find_map(|field| entry.get(field).and_then(Value::as_str))
+}
+
+fn created_worktree_from_value(value: Value) -> Result<CreatedWorktree, String> {
+    let result = value
+        .get("result")
+        .ok_or_else(|| "herdr returned no result".to_string())?;
+    let string = |pointer: &str| {
+        result
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| format!("herdr response is missing {pointer}"))
+    };
+    Ok(CreatedWorktree {
+        path: PathBuf::from(string("/worktree/path")?),
+        branch: string("/worktree/branch")?,
+        workspace_id: string("/workspace/workspace_id")?,
+        root_pane_id: string("/root_pane/pane_id")?,
+    })
+}
+
+fn command_failure(name: &str, output: &Output) -> String {
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if detail.is_empty() {
+        format!("{name} exited with {}", output.status)
+    } else {
+        detail
+    }
+}
+
 fn herdr_json(output: Output) -> Result<Value, String> {
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -186,6 +532,94 @@ fn herdr_json(output: Output) -> Result<Value, String> {
     }
     serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("herdr returned invalid JSON: {error}"))
+}
+
+/// Inspect a retained dispatch without mutating host or domain state.
+pub fn inspect_cleanup_with_host(
+    state: &DomainState,
+    id: Uuid,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<CleanupPreview, CleanupError> {
+    let task = state.get(id).cloned().ok_or(CleanupError::UnknownTask)?;
+    let number = task.number.ok_or(CleanupError::UnknownTask)?;
+    let record = task.dispatch.clone().ok_or(CleanupError::NotDispatched)?;
+    if record.cleaned {
+        return Err(CleanupError::AlreadyCleaned);
+    }
+    let project = match task.scope {
+        TaskScope::Project { path } => PathBuf::from(path),
+        TaskScope::Global => return Err(CleanupError::NotDispatched),
+    };
+    let mut inspection = host
+        .inspect_cleanup(&project, &record, in_herdr)
+        .map_err(CleanupError::Herdr)?;
+    if !inspection.target_matches {
+        return Err(CleanupError::WorktreeMismatch);
+    }
+    // Legacy v6 dispatch records have no creation base. They may still be cleaned, but the
+    // branch is always retained because no safe ancestry target is known.
+    if record.base.is_none() {
+        inspection.branch_merged = false;
+    }
+    Ok(CleanupPreview {
+        number,
+        title: task.title,
+        project,
+        record,
+        inspection,
+    })
+}
+
+/// Remove a dispatched worktree under the shared cleanup guardrails.
+///
+/// Domain state changes only after all requested host work succeeds. A missing worktree is a
+/// successful convergence case and retains its branch.
+pub fn clean_with_host(
+    state: &mut DomainState,
+    id: Uuid,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<CleanupResult, CleanupError> {
+    let preview = inspect_cleanup_with_host(state, id, in_herdr, host)?;
+    if preview.inspection.dirty {
+        return Err(CleanupError::DirtyWorktree);
+    }
+
+    let (worktree, branch, workspace_removed) = if preview.inspection.worktree_exists {
+        let workspace_removed = in_herdr && preview.inspection.workspace_exists;
+        if workspace_removed {
+            host.remove_herdr_worktree(&preview.record.herdr_workspace_id)
+                .map_err(CleanupError::Herdr)?;
+        } else {
+            host.remove_git_worktree(&preview.project, Path::new(&preview.record.worktree))
+                .map_err(CleanupError::Herdr)?;
+        }
+        let branch = if preview.inspection.branch_merged {
+            host.delete_branch(&preview.project, &preview.record.branch)
+                .map_err(CleanupError::Herdr)?;
+            BranchCleanup::Removed
+        } else {
+            BranchCleanup::Kept
+        };
+        (WorktreeCleanup::Removed, branch, workspace_removed)
+    } else {
+        (WorktreeCleanup::Missing, BranchCleanup::Kept, false)
+    };
+
+    state
+        .record_dispatch_cleaned(id)
+        .map_err(|error| CleanupError::Store(error.to_string()))?;
+    Ok(CleanupResult {
+        number: preview.number,
+        title: preview.title,
+        worktree_path: preview.record.worktree,
+        branch_name: preview.record.branch,
+        workspace_id: preview.record.herdr_workspace_id,
+        worktree,
+        branch,
+        workspace_removed,
+    })
 }
 
 /// Launch the cursor task. Domain state changes only after every host command succeeds.
@@ -229,28 +663,47 @@ pub fn run_with_host(
         .get(&assignee)
         .ok_or_else(|| DispatchError::UnknownAgent(assignee.clone()))?;
 
-    let (worktree, branch, workspace_id, pane_id) = if let Some(existing) = &task.dispatch {
+    let (worktree, branch, base, workspace_id, pane_id) = if let Some(existing) = &task.dispatch {
         if !again {
             return Err(DispatchError::AlreadyDispatched(existing.worktree.clone()));
         }
-        let pane = host
-            .root_pane(&existing.herdr_workspace_id)
-            .map_err(DispatchError::Herdr)?;
-        (
-            existing.worktree.clone(),
-            existing.branch.clone(),
-            existing.herdr_workspace_id.clone(),
-            pane,
-        )
+        if existing.cleaned {
+            let label = format!("T{number} {}", task.title);
+            // Herdr's create command deliberately handles both cases: it creates a missing
+            // branch from the recorded base, or checks out an existing retained branch.
+            let recreated = host
+                .create_worktree(project, &existing.branch, existing.base.as_deref(), &label)
+                .map_err(DispatchError::Herdr)?;
+            (
+                recreated.path.to_string_lossy().into_owned(),
+                recreated.branch,
+                existing.base.clone(),
+                recreated.workspace_id,
+                recreated.root_pane_id,
+            )
+        } else {
+            let pane = host
+                .root_pane(&existing.herdr_workspace_id)
+                .map_err(DispatchError::Herdr)?;
+            (
+                existing.worktree.clone(),
+                existing.branch.clone(),
+                existing.base.clone(),
+                existing.herdr_workspace_id.clone(),
+                pane,
+            )
+        }
     } else {
         let requested_branch = format!("tsk/t{number}-{}", slug(&task.title));
         let label = format!("T{number} {}", task.title);
+        let base = host.resolve_base(project).map_err(DispatchError::Herdr)?;
         let created = host
-            .create_worktree(project, &requested_branch, &label)
+            .create_worktree(project, &requested_branch, Some(&base), &label)
             .map_err(DispatchError::Herdr)?;
         (
             created.path.to_string_lossy().into_owned(),
             created.branch,
+            Some(base),
             created.workspace_id,
             created.root_pane_id,
         )
@@ -272,8 +725,10 @@ pub fn run_with_host(
         argv: rendered.argv,
         worktree,
         branch,
+        base,
         herdr_workspace_id: workspace_id,
         at: SystemTime::now(),
+        cleaned: false,
     };
     state
         .record_dispatch(id, record.clone())
@@ -351,6 +806,12 @@ mod tests {
         creates: usize,
         roots: usize,
         runs: Vec<(String, String)>,
+        created_bases: Vec<Option<String>>,
+        inspected_bases: Vec<Option<String>>,
+        cleanup: Option<CleanupInspection>,
+        removed_herdr: usize,
+        removed_git: usize,
+        deleted_branches: usize,
     }
 
     impl DispatchHost for FakeHost {
@@ -358,13 +819,19 @@ mod tests {
             Ok(self.git)
         }
 
+        fn resolve_base(&mut self, _: &Path) -> Result<String, String> {
+            Ok("main".into())
+        }
+
         fn create_worktree(
             &mut self,
             _: &Path,
             branch: &str,
+            base: Option<&str>,
             _: &str,
         ) -> Result<CreatedWorktree, String> {
             self.creates += 1;
+            self.created_bases.push(base.map(str::to_string));
             if let Some(error) = self.fail_create.clone() {
                 return Err(error);
             }
@@ -374,6 +841,33 @@ mod tests {
                 workspace_id: "w9".into(),
                 root_pane_id: "w9:p1".into(),
             })
+        }
+
+        fn inspect_cleanup(
+            &mut self,
+            _: &Path,
+            dispatch: &Dispatch,
+            _: bool,
+        ) -> Result<CleanupInspection, String> {
+            self.inspected_bases.push(dispatch.base.clone());
+            self.cleanup
+                .clone()
+                .ok_or_else(|| "cleanup inspection not configured".into())
+        }
+
+        fn remove_herdr_worktree(&mut self, _: &str) -> Result<(), String> {
+            self.removed_herdr += 1;
+            Ok(())
+        }
+
+        fn remove_git_worktree(&mut self, _: &Path, _: &Path) -> Result<(), String> {
+            self.removed_git += 1;
+            Ok(())
+        }
+
+        fn delete_branch(&mut self, _: &Path, _: &str) -> Result<(), String> {
+            self.deleted_branches += 1;
+            Ok(())
         }
 
         fn root_pane(&mut self, _: &str) -> Result<String, String> {
@@ -740,11 +1234,333 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_guardrails_cover_dirty_unmerged_merged_and_missing_worktrees() {
+        let (path, profiles) = profiles();
+        for (label, inspection, expected, herdr_removes, branch_deletes) in [
+            (
+                "dirty",
+                CleanupInspection {
+                    worktree_exists: true,
+                    dirty: true,
+                    branch_merged: false,
+                    workspace_exists: true,
+                    target_matches: true,
+                },
+                Err(CleanupError::DirtyWorktree),
+                0,
+                0,
+            ),
+            (
+                "unmerged",
+                CleanupInspection {
+                    worktree_exists: true,
+                    dirty: false,
+                    branch_merged: false,
+                    workspace_exists: true,
+                    target_matches: true,
+                },
+                Ok((WorktreeCleanup::Removed, BranchCleanup::Kept)),
+                1,
+                0,
+            ),
+            (
+                "merged",
+                CleanupInspection {
+                    worktree_exists: true,
+                    dirty: false,
+                    branch_merged: true,
+                    workspace_exists: true,
+                    target_matches: true,
+                },
+                Ok((WorktreeCleanup::Removed, BranchCleanup::Removed)),
+                1,
+                1,
+            ),
+            (
+                "missing",
+                CleanupInspection {
+                    worktree_exists: false,
+                    dirty: false,
+                    branch_merged: false,
+                    workspace_exists: false,
+                    target_matches: true,
+                },
+                Ok((WorktreeCleanup::Missing, BranchCleanup::Kept)),
+                0,
+                0,
+            ),
+        ] {
+            let (mut state, id) = task();
+            let mut launch = FakeHost {
+                git: true,
+                ..FakeHost::default()
+            };
+            run_with_host(&mut state, id, &profiles, false, true, &mut launch).expect("dispatch");
+            let before = state.clone();
+            let mut host = FakeHost {
+                cleanup: Some(inspection),
+                ..FakeHost::default()
+            };
+            let actual = clean_with_host(&mut state, id, true, &mut host)
+                .map(|result| (result.worktree, result.branch));
+            assert_eq!(actual, expected, "{label}");
+            assert_eq!(host.removed_herdr, herdr_removes, "{label}");
+            assert_eq!(host.deleted_branches, branch_deletes, "{label}");
+            if label == "dirty" {
+                assert_eq!(
+                    serde_json::to_value(&state).unwrap(),
+                    serde_json::to_value(&before).unwrap(),
+                    "dirty cleanup must mutate nothing"
+                );
+            } else {
+                let task = state.get(id).expect("task");
+                assert!(task.dispatch.as_ref().expect("dispatch").cleaned, "{label}");
+                assert_eq!(
+                    task.history.last().map(|event| event.kind),
+                    Some(TaskEventKind::Cleaned),
+                    "{label}"
+                );
+                assert_eq!(
+                    clean_with_host(&mut state, id, true, &mut host),
+                    Err(CleanupError::AlreadyCleaned),
+                    "{label} repeat"
+                );
+            }
+        }
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn cleanup_refuses_a_mismatched_removal_target_without_host_or_domain_mutation() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let mut launch = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        run_with_host(&mut state, id, &profiles, false, true, &mut launch).expect("dispatch");
+        let before = state.clone();
+        let mut host = FakeHost {
+            cleanup: Some(CleanupInspection {
+                worktree_exists: true,
+                dirty: false,
+                branch_merged: true,
+                workspace_exists: true,
+                target_matches: false,
+            }),
+            ..FakeHost::default()
+        };
+
+        assert_eq!(
+            clean_with_host(&mut state, id, true, &mut host),
+            Err(CleanupError::WorktreeMismatch)
+        );
+        assert_eq!(host.removed_herdr, 0);
+        assert_eq!(host.removed_git, 0);
+        assert_eq!(host.deleted_branches, 0);
+        assert_eq!(
+            serde_json::to_value(&state).unwrap(),
+            serde_json::to_value(&before).unwrap()
+        );
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn dispatch_records_and_reuses_the_creation_base_while_legacy_cleanup_keeps_the_branch() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let mut launch = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        let dispatched =
+            run_with_host(&mut state, id, &profiles, false, true, &mut launch).expect("dispatch");
+        assert_eq!(dispatched.record.base.as_deref(), Some("main"));
+        assert_eq!(launch.created_bases, vec![Some("main".into())]);
+
+        let (mut legacy, legacy_id) = task();
+        legacy
+            .record_dispatch(
+                legacy_id,
+                Dispatch {
+                    argv: vec!["agent".into()],
+                    worktree: "/tmp/worktree".into(),
+                    branch: "tsk/t1-legacy".into(),
+                    base: None,
+                    herdr_workspace_id: "w9".into(),
+                    at: SystemTime::now(),
+                    cleaned: false,
+                },
+            )
+            .expect("legacy dispatch");
+        let mut cleanup = FakeHost {
+            cleanup: Some(CleanupInspection {
+                worktree_exists: true,
+                dirty: false,
+                branch_merged: true,
+                workspace_exists: true,
+                target_matches: true,
+            }),
+            ..FakeHost::default()
+        };
+        let result = clean_with_host(&mut legacy, legacy_id, true, &mut cleanup).expect("clean");
+        assert_eq!(cleanup.inspected_bases, vec![None]);
+        assert_eq!(result.branch, BranchCleanup::Kept);
+        assert_eq!(cleanup.deleted_branches, 0);
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn cleaned_dispatch_again_recreates_removed_and_retained_branches() {
+        let (path, profiles) = profiles();
+        for branch_exists in [false, true] {
+            let (mut state, id) = task();
+            let mut launch = FakeHost {
+                git: true,
+                ..FakeHost::default()
+            };
+            run_with_host(&mut state, id, &profiles, false, true, &mut launch).expect("dispatch");
+            let mut clean = FakeHost {
+                cleanup: Some(CleanupInspection {
+                    worktree_exists: false,
+                    dirty: false,
+                    branch_merged: false,
+                    workspace_exists: false,
+                    target_matches: true,
+                }),
+                ..FakeHost::default()
+            };
+            clean_with_host(&mut state, id, true, &mut clean).expect("clean");
+
+            let mut again = FakeHost {
+                git: true,
+                ..FakeHost::default()
+            };
+            let result = run_with_host(&mut state, id, &profiles, true, true, &mut again)
+                .expect("recreate cleaned dispatch");
+            assert!(!result.record.cleaned);
+            assert_eq!(again.creates, 1, "existing branch: {branch_exists}");
+            assert_eq!(again.roots, 0);
+        }
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn cleaned_marker_is_optional_and_store_format_stays_v6() {
+        assert_eq!(crate::domain::STORE_FORMAT_VERSION, 6);
+        let record = Dispatch {
+            argv: vec!["agent".into()],
+            worktree: "/tmp/worktree".into(),
+            branch: "tsk/t1-task".into(),
+            base: None,
+            herdr_workspace_id: "w1".into(),
+            at: SystemTime::now(),
+            cleaned: false,
+        };
+        let value = serde_json::to_value(&record).unwrap();
+        assert!(value.get("base").is_none());
+        assert!(value.get("cleaned").is_none());
+        let mut cleaned = record;
+        cleaned.cleaned = true;
+        assert_eq!(serde_json::to_value(cleaned).unwrap()["cleaned"], true);
+    }
+
+    #[test]
+    fn cleanup_refusal_codes_are_stable() {
+        assert_eq!(CleanupError::NotDispatched.code(), "not-dispatched");
+        assert_eq!(CleanupError::AlreadyCleaned.code(), "already-cleaned");
+        assert_eq!(CleanupError::DirtyWorktree.code(), "dirty-worktree");
+        assert_eq!(CleanupError::WorktreeMismatch.code(), "worktree-mismatch");
+        assert_eq!(CleanupError::Herdr("failed".into()).code(), "herdr-failed");
+    }
+
+    #[test]
     fn slug_is_lowercase_bounded_and_trimmed() {
         assert_eq!(slug("  Hello, WORLD!! "), "hello-world");
         assert_eq!(slug("!!!"), "task");
         let value = slug(&"A".repeat(100));
         assert_eq!(value.len(), 40);
         assert!(value.bytes().all(|byte| byte.is_ascii_lowercase()));
+    }
+
+    #[test]
+    fn system_inspection_converges_a_pruned_missing_worktree_before_the_registration_gate() {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "tsk-dispatch-prune-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let project = root.join("repo");
+        std::fs::create_dir_all(&project).expect("mkdir");
+        let git = |dir: &Path, args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .expect("run git");
+            assert!(output.status.success(), "{args:?}: {output:?}");
+        };
+        git(&project, &["init", "-q"]);
+        git(
+            &project,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ],
+        );
+        let worktree = root.join("repo-t1");
+        git(
+            &project,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "tsk/t1-x",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        // Deleted by hand and pruned: git no longer lists it.
+        std::fs::remove_dir_all(&worktree).expect("remove worktree");
+        git(&project, &["worktree", "prune"]);
+
+        let record = Dispatch {
+            argv: vec!["agent".into()],
+            worktree: worktree.to_string_lossy().into_owned(),
+            branch: "tsk/t1-x".into(),
+            base: None,
+            herdr_workspace_id: "w9".into(),
+            at: SystemTime::now(),
+            cleaned: false,
+        };
+        let inspection = SystemDispatchHost
+            .inspect_cleanup(&project, &record, false)
+            .expect("inspect");
+        assert!(!inspection.worktree_exists);
+        assert!(
+            inspection.target_matches,
+            "a missing worktree converges, it is not a mismatch"
+        );
+
+        // The project root is never a removal target, whatever git lists.
+        let root_record = Dispatch {
+            worktree: project.to_string_lossy().into_owned(),
+            ..record
+        };
+        let inspection = SystemDispatchHost
+            .inspect_cleanup(&project, &root_record, false)
+            .expect("inspect root");
+        assert!(!inspection.target_matches);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

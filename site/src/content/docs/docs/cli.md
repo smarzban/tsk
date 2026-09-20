@@ -21,7 +21,7 @@ Install the skill with `tsk setup pi`, or use your [agent's setup target](#setup
 
 The CLI can mark a task done with `tsk status <task> done`. Agent lifecycle does not change task status automatically.
 
-Use `--json` on `add` or `list` for machine-readable output. Read the [exit contract](#exit-contract) before retrying a write.
+Use `--json` on `add`, `list`, or `clean` for machine-readable output. Read the [exit contract](#exit-contract) before retrying a write.
 
 ## Commands
 
@@ -34,6 +34,7 @@ Use `--json` on `add` or `list` for machine-readable output. Read the [exit cont
 | `tsk status` | Set task status |
 | `tsk edit` | Replace title or notes; assign or unassign |
 | `tsk dispatch` | Launch an assigned task in a Herdr worktree |
+| `tsk clean` | Safely remove a dispatched worktree |
 | `tsk steps` | Add, toggle, rename, or remove steps |
 | `tsk archive` / `tsk unarchive` | Hide or restore a task |
 | `tsk project archive` / `tsk project unarchive` | Hide or restore a project |
@@ -188,11 +189,12 @@ tsk status T12 open
 tsk status T12 ready
 tsk status T12 started
 tsk status T12 review
+tsk status T12 done --clean
 ```
 
 Accepts `open`, `ready`, `started` (or `start`), `blocked`, `review`, and `done`.
 
-Unlike keyboard toggles, this command sets the requested status directly. Repeating the same value is safe.
+Unlike keyboard toggles, this command sets the requested status directly. Repeating the same value is safe. `--clean` is valid only with `done`: tsk persists done first, then applies the same cleanup guardrails as `tsk clean`. A cleanup refusal exits 1 and leaves the task done.
 
 Output: `status T12 <status> <title>`. The output uses `started`, even when the input was `start`.
 
@@ -220,11 +222,22 @@ tsk dispatch T12 --again
 
 Dispatch requires Herdr, an assigned project task whose project is a Git repository, and a matching profile in `agents.toml`. It creates a branch and worktree, opens a Herdr workspace there, and runs the profile's rendered command in its root pane. Only after the launch succeeds, tsk saves the dispatch record and sets the task to `started` in the same write. The dispatch itself is not undoable.
 
-A task with an existing record refuses with `already-dispatched`. Use `--again` deliberately to focus the recorded Herdr workspace and rerun the rendered command in its root pane; it does not create another branch or worktree. Ordinary status changes retain the record.
+A task with an existing record refuses with `already-dispatched`. Use `--again` deliberately to reuse the recorded Herdr workspace and rerun the rendered command in its root pane. If the record was cleaned, `--again` recreates the worktree: it opens the retained unmerged branch or recreates a branch that cleanup removed. Ordinary status changes retain the record.
 
 Output: `dispatched T12 to @implementer in /path/to/worktree`.
 
 Refusals have stable codes: `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, and `herdr-failed`. Every refusal leaves task state unchanged. A storage failure after a successful launch exits 3; read the task before deciding whether to retry, because another launch could already be running.
+
+## clean
+
+```sh
+tsk clean T12
+tsk clean T12 --json
+```
+
+Cleanup never changes human status. It refuses a dirty worktree without touching anything. For a clean worktree it verifies that the recorded path is a non-root Git worktree for the project and that any matching Herdr workspace names the same checkout. It then closes that Herdr workspace when running inside Herdr (otherwise it uses Git directly), removes the recorded worktree, and removes the branch only when the branch is merged into its recorded dispatch base. An unmerged branch is kept. A legacy record with no base also keeps its branch. A missing registered worktree is successful: the dispatch record is marked cleaned without removing the retained branch.
+
+The task keeps its dispatch record and page history, marked `cleaned`. Human output names the worktree, branch, and workspace as removed or kept; `--json` returns the same outcomes. Refusal codes are `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, and `herdr-failed`. Store failures exit 3 with `store-error`; other refusals exit 1. There is no force option.
 
 ## steps
 
@@ -376,8 +389,9 @@ After an uncertain add, inspect `tsk list --all --json`. Also check `--done` and
 | Add | `empty-title`, `invalid-title`, `invalid-thread`, `invalid-item`, `unknown-project`, `unknown-agent`, `project-archived` |
 | Edit | `empty-title`, `invalid-title`, `unknown-task`, `soft-deleted-task`, `unknown-agent` |
 | Dispatch | `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, `herdr-failed` |
+| Clean | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `herdr-failed` |
 | Steps | `empty-step-text`, `invalid-step-text`, `unknown-task`, `soft-deleted-task`, `unknown-step`, `ambiguous-step` |
-| Status | `unknown-task`, `soft-deleted-task` |
+| Status | `unknown-task`, `soft-deleted-task`; with `--clean`, cleanup codes above |
 | Archive / unarchive | `unknown-task`, `soft-deleted-task` |
 
 A refusal prints as `tsk <command>: <code>: <message>` on stderr, for example `tsk status: unknown-task: T99 is not on the board`. Branch on the code; the message is for people and may change.

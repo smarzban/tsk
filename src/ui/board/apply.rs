@@ -154,6 +154,9 @@ pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> boo
                 | BoardIntent::LaunchUnarchive
                 | BoardIntent::PrimaryVerb
                 | BoardIntent::Dispatch
+                | BoardIntent::DispatchAgain
+                | BoardIntent::ConfirmCleanup
+                | BoardIntent::KeepCleanup
                 | BoardIntent::ToggleBlock
                 | BoardIntent::ToggleReview
                 | BoardIntent::ToggleStep
@@ -1741,8 +1744,16 @@ fn apply_board_intent(
             };
             domain.toggle_step(task_id, step_id)?;
         }
-        BoardIntent::Dispatch => {
+        BoardIntent::Dispatch | BoardIntent::DispatchAgain => {
             // Host work and its one durable save are owned by the application boundary.
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::ConfirmCleanup | BoardIntent::KeepCleanup => {
+            // Cleanup host work and completion persistence are owned by the app boundary.
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::CancelCleanup => {
+            model.close_popup();
             return Ok(IntentOutcome::None);
         }
         BoardIntent::PrimaryVerb => {

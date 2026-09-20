@@ -34,6 +34,8 @@ pub enum BoardPopup {
     SaveRecovery,
     /// Two-choice card raised at launch when the cwd default is an archived project.
     LaunchCard,
+    /// Cleanup confirmation for one cursor-pinned dispatch.
+    CleanupConfirm,
 }
 
 /// Labeled capture hit region.
@@ -911,7 +913,9 @@ pub fn map_board_mouse(
             }
             _ => None,
         },
-        BoardInputMode::SaveRecovery => None,
+        BoardInputMode::SaveRecovery
+        | BoardInputMode::CleanupConfirm
+        | BoardInputMode::CleanupDirtyConfirm => None,
         BoardInputMode::LaunchCard => match hit_at(hits, pos) {
             Some(QueueHitTarget::LaunchOption(0)) => Some(BoardIntent::LaunchUnarchive),
             Some(QueueHitTarget::LaunchOption(1)) => Some(BoardIntent::LaunchKeepArchived),

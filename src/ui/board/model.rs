@@ -92,6 +92,10 @@ pub enum BoardInputMode {
     /// The launch card owns input: a two-choice modal raised at most once per session
     /// when the invocation default resolved to an archived project.
     LaunchCard,
+    /// A cursor-pinned clean worktree is awaiting y/n/Esc cleanup choice.
+    CleanupConfirm,
+    /// A dirty worktree can only be kept and completed, or cancelled.
+    CleanupDirtyConfirm,
     /// The task page is open in view mode: the full-page surface shows the bound task and
     /// no field owns the cursor. Verbs act on the task; `e`/`n`/Tab enter field edits. A
     /// click does NOT: field regions are inert in this state, and only move focus once one
@@ -851,6 +855,10 @@ pub struct BoardModel {
     pub(super) suspended_delete_notice_count: Option<usize>,
     /// First ctrl+x arms this exact target set; a second press on the same set deletes it.
     pub(super) pending_delete: Option<BTreeSet<Uuid>>,
+    /// First ctrl+g on an existing dispatch arms one exact cursor task for relaunch.
+    pub(super) pending_dispatch_again: Option<Uuid>,
+    /// Cursor-pinned dispatch cleanup details while the confirmation modal owns input.
+    pub(super) cleanup_prompt: Option<CleanupPrompt>,
     /// Whether the armed delete originated from a non-empty marked set.
     pub(super) pending_delete_bulk: bool,
     /// Open project-picker or save-recovery presentation.
@@ -892,6 +900,17 @@ pub struct BoardModel {
     /// Whether the last app-boundary presentation was wide enough to paint a split frame.
     /// A parked preview keeps its session while input returns to the painted index.
     pub(super) frame_wide: Cell<bool>,
+}
+
+/// Session-only cleanup confirmation details, captured before the modal opens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupPrompt {
+    pub task_id: Uuid,
+    pub worktree: String,
+    pub branch: String,
+    pub dirty: bool,
+    pub branch_merged: bool,
+    pub workspace_exists: bool,
 }
 
 /// How an unresolved failed save ended.
@@ -958,6 +977,8 @@ impl BoardModel {
             suspended_delete_notice: None,
             suspended_delete_notice_count: None,
             pending_delete: None,
+            pending_dispatch_again: None,
+            cleanup_prompt: None,
             pending_delete_bulk: false,
             popup: BoardPopup::None,
             project_picker: None,
@@ -1001,9 +1022,45 @@ impl BoardModel {
 
     pub fn close_popup(&mut self) {
         if self.popup != BoardPopup::SaveRecovery {
+            let cleanup = self.popup == BoardPopup::CleanupConfirm;
             self.popup = BoardPopup::None;
             self.project_picker = None;
+            self.cleanup_prompt = None;
+            if cleanup {
+                self.clear_message();
+            }
         }
+    }
+
+    pub fn begin_cleanup_prompt(&mut self, prompt: CleanupPrompt) {
+        self.clear_marks();
+        self.close_help();
+        self.close_command_surface();
+        self.cleanup_prompt = Some(prompt);
+        self.popup = BoardPopup::CleanupConfirm;
+        self.clear_message();
+    }
+
+    pub fn cleanup_prompt(&self) -> Option<&CleanupPrompt> {
+        self.cleanup_prompt.as_ref()
+    }
+
+    pub fn arm_dispatch_again(&mut self, id: Uuid) {
+        self.pending_dispatch_again = Some(id);
+    }
+
+    pub fn take_dispatch_again(&mut self, id: Uuid) -> bool {
+        if self.pending_dispatch_again == Some(id) {
+            self.pending_dispatch_again = None;
+            true
+        } else {
+            self.pending_dispatch_again = None;
+            false
+        }
+    }
+
+    pub fn clear_dispatch_again(&mut self) {
+        self.pending_dispatch_again = None;
     }
 
     /// Present a failed board save without replacing its visible working state.
@@ -2517,6 +2574,11 @@ impl BoardModel {
         self.input_mode_local() == BoardInputMode::Normal && !self.projects_overview()
     }
 
+    /// Whether a status verb currently targets the marked set rather than the cursor.
+    pub fn bulk_verb_active(&self) -> bool {
+        self.task_list_owns_input() && self.mark_mode && !self.marked_ids.is_empty()
+    }
+
     /// Mark targets when the task list owns input, otherwise the cursor target.
     pub(super) fn verb_target_ids(&self) -> Vec<Uuid> {
         if self.task_list_owns_input() && self.mark_mode && !self.marked_ids.is_empty() {
@@ -2691,6 +2753,15 @@ impl BoardModel {
         match self.popup {
             BoardPopup::SaveRecovery => BoardInputMode::SaveRecovery,
             BoardPopup::LaunchCard => BoardInputMode::LaunchCard,
+            BoardPopup::CleanupConfirm
+                if self
+                    .cleanup_prompt
+                    .as_ref()
+                    .is_some_and(|prompt| prompt.dirty) =>
+            {
+                BoardInputMode::CleanupDirtyConfirm
+            }
+            BoardPopup::CleanupConfirm => BoardInputMode::CleanupConfirm,
             _ if self.project_picker.is_some() => BoardInputMode::ProjectPicker,
             _ if self.focused_surface() == FocusedSurface::Board
                 && self.input_mode == BoardInputMode::TaskPage =>

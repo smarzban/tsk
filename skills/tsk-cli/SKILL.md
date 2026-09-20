@@ -1,6 +1,6 @@
 ---
 name: tsk-cli
-description: Work the user's tsk task board from the command line. Use when asked to add, update, edit, start, block, finish, archive, or restore a task on the board (or "tsk", "the tsk board", "the desk"), to add or tick steps, to answer "what's on the board", "what's next", "what's on deck", "what needs me", or to refine a task ("refine T12", "let's discuss T12", "what's missing from T12", "improve / rewrite this task"). Always `tsk add|list|status|edit|steps|archive|dispatch|trash`, never the TUI.
+description: Work the user's tsk task board from the command line. Use when asked to add, update, edit, start, block, finish, archive, or restore a task on the board (or "tsk", "the tsk board", "the desk"), to add or tick steps, to answer "what's on the board", "what's next", "what's on deck", "what needs me", or to refine a task ("refine T12", "let's discuss T12", "what's missing from T12", "improve / rewrite this task"). Always `tsk add|list|status|edit|steps|archive|dispatch|clean|trash`, never the TUI.
 version: 1.4.0
 ---
 
@@ -83,7 +83,7 @@ New tasks start `open` in the inbox; `ready` means the user picked it.
 **Start work on a task.** `tsk list T12 --json` for notes and steps. `tsk status T12 start`.
 Tick steps as you go: `tsk steps T12 toggle <short_id>`.
 
-**Dispatch assigned work.** When the user asks you to launch an assigned task, read it first, then run `tsk dispatch T12`. A previous launch refuses with `already-dispatched`; use `--again` only when the user explicitly wants the recorded Herdr workspace reused. After an uncertain result, read the task before retrying because an agent may already be running.
+**Dispatch assigned work.** When the user asks you to launch an assigned task, read it first, then run `tsk dispatch T12`. A previous launch refuses with `already-dispatched`; use `--again` only when the user explicitly wants the recorded Herdr workspace reused. After an uncertain result, read the task before retrying because an agent may already be running. After review and merge, the human runs `tsk clean T12`; an agent never cleans the worktree it is running in.
 
 **Hand back.** `tsk status T12 review`, and say in one line what you did and what to look at.
 Blocked on the user: `tsk status T12 blocked` and ask the question.
