@@ -243,6 +243,31 @@ fn open_board_focuses_an_existing_board_using_native_exit_status() {
 }
 
 #[test]
+fn open_board_treats_the_plugin_binary_path_literally() {
+    let launcher = Launcher::new();
+    let literal_dir = launcher.root.join("bin[1]");
+    fs::create_dir_all(&literal_dir).expect("literal-path directory");
+    let literal_tsk = literal_dir.join("tsk.ps1");
+    fs::copy(&launcher.tsk_stub, &literal_tsk).expect("literal-path tsk stub");
+
+    let output = launcher
+        .command(&open_board_path(), "absent")
+        .env("TSK_BIN", &literal_tsk)
+        .env("HERDR_WORKSPACE_ID", "w0")
+        .env("HERDR_PANE_ID", "w0:p1")
+        .env("HERDR_TAB_ID", "w0:t1")
+        .output()
+        .expect("PowerShell launcher");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(launcher.calls().contains("plugin pane open"));
+}
+
+#[test]
 fn open_board_refuses_missing_host_context_without_calling_herdr() {
     let launcher = Launcher::new();
     let output = launcher

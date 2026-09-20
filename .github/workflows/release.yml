@@ -93,7 +93,8 @@ jobs:
           cargo build --release --locked --target "$TARGET"
           binary="target/${{ matrix.target }}/release/tsk${{ matrix.exe_suffix }}"
           "$binary" --help
-          TSK_TEST_BINARY="$PWD/$binary" python -m unittest discover -s tests/packaging
+          test_binary="$(python -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$binary")"
+          TSK_TEST_BINARY="$test_binary" python -m unittest discover -s tests/packaging
           if [ "$RUNNER_OS" = Windows ]; then powershell.exe -NoProfile -ExecutionPolicy Bypass -File site/public/install.ps1 -Help; fi
           python scripts/release.py package "$TAG" "$TARGET" "$binary" dist-release
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0

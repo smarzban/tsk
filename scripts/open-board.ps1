@@ -13,7 +13,7 @@ if (-not $workspaceId -or -not $targetPane -or -not $originTab) {
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $pluginBin = if ($env:TSK_BIN) { $env:TSK_BIN } else { Join-Path $scriptDir '..\target\release\tsk.exe' }
-if (-not (Test-Path $pluginBin)) {
+if (-not (Test-Path -LiteralPath $pluginBin -PathType Leaf)) {
     [Console]::Error.WriteLine("tsk: board launcher binary is unavailable: $pluginBin")
     exit 1
 }
