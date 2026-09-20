@@ -293,11 +293,10 @@ impl DispatchHost for SystemDispatchHost {
                 target_matches: false,
             });
         };
-        let registered = project_path != worktree_path
-            && git_worktree_paths(project)?
-                .iter()
-                .any(|listed| listed == &worktree_path);
-        if !registered {
+        // A worktree deleted by hand may already be pruned from git's list, so a missing
+        // directory converges to cleaned before the registration gate can refuse it. The
+        // project root itself is never a removal target, present or not.
+        if project_path == worktree_path {
             return Ok(CleanupInspection {
                 worktree_exists: worktree.exists(),
                 dirty: false,
@@ -313,6 +312,18 @@ impl DispatchHost for SystemDispatchHost {
                 branch_merged: false,
                 workspace_exists: false,
                 target_matches: true,
+            });
+        }
+        let registered = git_worktree_paths(project)?
+            .iter()
+            .any(|listed| listed == &worktree_path);
+        if !registered {
+            return Ok(CleanupInspection {
+                worktree_exists: true,
+                dirty: false,
+                branch_merged: false,
+                workspace_exists: false,
+                target_matches: false,
             });
         }
         let status = Command::new("git")
@@ -1470,5 +1481,86 @@ mod tests {
         let value = slug(&"A".repeat(100));
         assert_eq!(value.len(), 40);
         assert!(value.bytes().all(|byte| byte.is_ascii_lowercase()));
+    }
+
+    #[test]
+    fn system_inspection_converges_a_pruned_missing_worktree_before_the_registration_gate() {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "tsk-dispatch-prune-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let project = root.join("repo");
+        std::fs::create_dir_all(&project).expect("mkdir");
+        let git = |dir: &Path, args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .expect("run git");
+            assert!(output.status.success(), "{args:?}: {output:?}");
+        };
+        git(&project, &["init", "-q"]);
+        git(
+            &project,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ],
+        );
+        let worktree = root.join("repo-t1");
+        git(
+            &project,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "tsk/t1-x",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        // Deleted by hand and pruned: git no longer lists it.
+        std::fs::remove_dir_all(&worktree).expect("remove worktree");
+        git(&project, &["worktree", "prune"]);
+
+        let record = Dispatch {
+            argv: vec!["agent".into()],
+            worktree: worktree.to_string_lossy().into_owned(),
+            branch: "tsk/t1-x".into(),
+            base: None,
+            herdr_workspace_id: "w9".into(),
+            at: SystemTime::now(),
+            cleaned: false,
+        };
+        let inspection = SystemDispatchHost
+            .inspect_cleanup(&project, &record, false)
+            .expect("inspect");
+        assert!(!inspection.worktree_exists);
+        assert!(
+            inspection.target_matches,
+            "a missing worktree converges, it is not a mismatch"
+        );
+
+        // The project root is never a removal target, whatever git lists.
+        let root_record = Dispatch {
+            worktree: project.to_string_lossy().into_owned(),
+            ..record
+        };
+        let inspection = SystemDispatchHost
+            .inspect_cleanup(&project, &root_record, false)
+            .expect("inspect root");
+        assert!(!inspection.target_matches);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
