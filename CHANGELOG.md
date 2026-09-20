@@ -9,7 +9,7 @@ the GitHub release notes verbatim.
 
 ## Unreleased
 
-## v0.11.2
+## v0.11.3
 
 ### Added
 
