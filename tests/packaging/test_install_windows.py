@@ -342,7 +342,7 @@ Refresh-ExistingSetup '{quote(fake_tsk)}' | Out-Null
                 + "',[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read); "
                 + "[IO.File]::WriteAllText('"
                 + quote(holder_ready)
-                + "','ready'); Start-Sleep -Seconds 120"
+                + "','ready'); while ($true) { Start-Sleep -Seconds 1 }"
             )
             holder = subprocess.Popen(
                 ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", holder_script],
@@ -383,8 +383,13 @@ $env:TSK_UPDATE_PID = $PID
                 self.assertEqual(update.returncode, 0, update.stderr)
                 self.assertIn("Update staged", update.stdout)
                 error_log = destination / ".tsk-update-error.log"
-                for _ in range(50):
-                    if error_log.exists():
+                for _ in range(600):
+                    if (
+                        error_log.exists()
+                        and error_log.stat().st_size > 0
+                        and not list(destination.glob(".tsk-*.exe"))
+                        and not list(destination.glob(".tsk-update-*.ps1"))
+                    ):
                         break
                     time.sleep(0.1)
                 self.assertTrue(error_log.exists(), "detached replacement timeout was not reported")
