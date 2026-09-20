@@ -29,8 +29,12 @@ class WindowsInstallerTests(unittest.TestCase):
         self.assertIn("LOCALAPPDATA", self.source)
         self.assertRegex(self.source, r"(?i)Programs[\\/]tsk[\\/]bin")
         self.assertIn("x86_64-pc-windows-msvc", self.source)
+        self.assertIn("IsWow64Process2", self.source)
+        self.assertIn("EntryPointNotFoundException", self.source)
         self.assertIn("GetNativeSystemInfo", self.source)
         self.assertNotIn("PROCESSOR_ARCHITEW6432", self.source)
+        self.assertIn("0xaa64", self.source)
+        self.assertIn("0x8664", self.source)
         self.assertIn("Windows ARM64 is not supported", self.source)
         self.assertRegex(self.source, r"(?i)\[switch\]\s*\$NoPathUpdate")
         self.assertIn("-NoPathUpdate", self.source)
@@ -95,6 +99,36 @@ class WindowsInstallerTests(unittest.TestCase):
         self.assertIn(".tsk-update-error.log", self.source)
         self.assertIn("run tsk setup herdr", self.source)
         self.assertNotRegex(self.source, r"(?is)Refresh-ExistingSetup.+setup agents")
+
+    @unittest.skipUnless(os.name == "nt", "native Windows PowerShell smoke")
+    def test_rejects_arm64_reported_from_an_emulated_process(self):
+        installer = str(INSTALLER).replace("'", "''")
+        harness = f"""
+Add-Type -TypeDefinition @'
+public static class TskNativeInstall {{
+    public static ushort GetNativeMachine() {{ return 0xaa64; }}
+}}
+'@
+. '{installer}' -NoPathUpdate
+"""
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                harness,
+            ],
+            env=dict(os.environ, TSK_VERSION="v1.2.3"),
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Windows ARM64 is not supported", result.stderr)
+        self.assertNotIn("Downloading", result.stdout)
 
     @unittest.skipUnless(
         os.name == "nt" and platform.machine().lower() in {"arm64", "aarch64"},
@@ -178,6 +212,7 @@ class WindowsInstallerTests(unittest.TestCase):
 
             quote = lambda value: str(value).replace("'", "''")
             harness = f"""
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 function Invoke-TskDownload {{
     param([string] $Uri, [string] $Destination, [long] $MaxBytes)
     $source = Join-Path '{quote(assets)}' ([IO.Path]::GetFileName($Uri))
@@ -233,7 +268,7 @@ Refresh-ExistingSetup '{quote(fake_tsk)}' | Out-Null
             result = subprocess.run(
                 ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", harness],
                 env=environment,
-                text=True,
+                encoding="utf-8",
                 capture_output=True,
                 timeout=60,
             )

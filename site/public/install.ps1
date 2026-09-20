@@ -181,6 +181,13 @@ public static class TskNativeInstall {
     public static extern bool MoveFileEx(string existingName, string newName, int flags);
 
     [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWow64Process2(IntPtr process, out ushort processMachine, out ushort nativeMachine);
+
+    [DllImport("kernel32.dll")]
     private static extern void GetNativeSystemInfo(out SYSTEM_INFO systemInfo);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -189,10 +196,21 @@ public static class TskNativeInstall {
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UIntPtr wParam, string lParam, uint flags, uint timeout, out UIntPtr result);
 
-    public static ushort GetNativeProcessorArchitecture() {
-        SYSTEM_INFO info;
-        GetNativeSystemInfo(out info);
-        return info.processorArchitecture;
+    public static ushort GetNativeMachine() {
+        try {
+            ushort processMachine;
+            ushort nativeMachine;
+            if (!IsWow64Process2(GetCurrentProcess(), out processMachine, out nativeMachine)) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            return nativeMachine;
+        } catch (EntryPointNotFoundException) {
+            // ARM64 Windows first shipped with IsWow64Process2. This fallback keeps
+            // earlier x86-64 Windows 10 releases usable without weakening ARM refusal.
+            SYSTEM_INFO info;
+            GetNativeSystemInfo(out info);
+            return info.processorArchitecture == 9 ? (ushort)0x8664 : (ushort)0;
+        }
     }
 
     public static string GetSystemPowerShell() {
@@ -212,9 +230,9 @@ public static class TskNativeInstall {
     }
 }
 
-function Get-NativeProcessorArchitecture {
+function Get-NativeMachine {
     Add-NativeMoveType
-    return [TskNativeInstall]::GetNativeProcessorArchitecture()
+    return [TskNativeInstall]::GetNativeMachine()
 }
 
 function Get-SystemPowerShellPath {
@@ -430,11 +448,11 @@ function Main {
     if ($env:OS -ne 'Windows_NT' -or [Environment]::OSVersion.Version -lt [Version]'10.0' -or -not [Environment]::Is64BitOperatingSystem -or -not [Environment]::Is64BitProcess) {
         Fail 'Windows 10/11 x86-64 and a 64-bit PowerShell process are required'
     }
-    $nativeArchitecture = Get-NativeProcessorArchitecture
-    if ($nativeArchitecture -eq 12) {
+    $nativeMachine = Get-NativeMachine
+    if ($nativeMachine -eq 0xaa64) {
         Fail 'Windows ARM64 is not supported; an x86-64 (AMD64) host is required'
     }
-    if ($nativeArchitecture -ne 9) {
+    if ($nativeMachine -ne 0x8664) {
         Fail 'Windows 10/11 x86-64 (AMD64) is required'
     }
     if ($PSVersionTable.PSVersion -lt [Version]'5.1') {
