@@ -15,7 +15,7 @@ $MaxExpandedBytes = 250MB
 function Show-Help {
     @'
 Usage:
-  irm https://www.gettsk.sh/install.ps1 | iex
+  & { irm https://www.gettsk.sh/install.ps1 | iex }
   powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 [-NoPathUpdate] [-Help]
 
 Options:
@@ -30,7 +30,7 @@ Environment:
 
 if ($Help) {
     Show-Help
-    exit 0
+    return
 }
 
 function Fail([string] $Message) {
@@ -894,6 +894,5 @@ function Main {
 try {
     Main
 } catch {
-    [Console]::Error.WriteLine('tsk install: ' + $_.Exception.Message)
-    exit 1
+    throw ('tsk install: ' + $_.Exception.Message)
 }

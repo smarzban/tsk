@@ -16,7 +16,7 @@ the GitHub release notes verbatim.
 
 ### Fixed
 
-- Windows installation uses the canonical `www.gettsk.sh/install.ps1` endpoint, reports a successful binary install even if user PATH could not be updated, and gives manual PATH guidance.
+- Windows installation uses the canonical `www.gettsk.sh/install.ps1` endpoint through a scoped one-liner, reports a successful binary install even if user PATH could not be updated, and gives manual PATH guidance.
 - Windows plugin cleanup refuses unexpected files instead of recursively deleting them.
 
 ## v0.11.3

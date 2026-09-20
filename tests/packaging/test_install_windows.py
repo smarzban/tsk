@@ -111,11 +111,14 @@ class WindowsInstallerTests(unittest.TestCase):
 
     def test_help_names_public_knobs_and_latest_stable_without_internal_handoff(self):
         help_text = self.source.split("function Show-Help", 1)[1].split("if ($Help)", 1)[0]
-        self.assertIn("https://www.gettsk.sh/install.ps1", help_text)
+        self.assertIn("& { irm https://www.gettsk.sh/install.ps1 | iex }", help_text)
         self.assertIn("public release tag", help_text)
         self.assertIn("latest stable release", help_text)
         self.assertNotIn("TSK_UPDATE_PID", help_text)
         self.assertNotIn("TSK_UPDATE        ", help_text)
+        entrypoint = self.source.rsplit("try {\n    Main", 1)[1]
+        self.assertNotIn("exit 1", entrypoint)
+        self.assertIn("throw ('tsk install: '", entrypoint)
 
     def test_refuses_downgrades_and_reparse_paths(self):
         self.assertIn("TSK_CURRENT_VERSION", self.source)

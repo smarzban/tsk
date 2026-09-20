@@ -26,7 +26,7 @@ Reopen your terminal if prompted, or run the printed `export` command.
 Run the complete-response one-liner in Windows PowerShell 5.1 or PowerShell 7:
 
 ```powershell
-irm https://www.gettsk.sh/install.ps1 | iex
+& { irm https://www.gettsk.sh/install.ps1 | iex }
 ```
 
 The installer verifies the release ZIP against `SHA256SUMS`, installs `tsk.exe` under `%LOCALAPPDATA%\Programs\tsk\bin`, and adds that directory to your user PATH. Windows artifacts are checksum-verified but not code-signed. To use `-NoPathUpdate`, download the script first and run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -NoPathUpdate`.
