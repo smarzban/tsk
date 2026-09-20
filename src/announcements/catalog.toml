@@ -14,3 +14,8 @@ notes = "New captures start in an open inbox below ON DECK. Pick work with ctrl+
 id = 3
 title = "Search and multi-select tasks"
 notes = "Press / on any tab to filter what it shows: tasks by title, notes, steps, thread, or number; projects by name on the projects tab. Enter pins the filter so the usual keys work on the matches; Esc clears it.\n\nPress Shift+M to mark several tasks, with space, Shift+↑/↓, or a click, then run one status, archive, or delete on the whole set. One ctrl+u undoes a marked done or delete.\n\n!p name and tsk add -p name now refuse a name the board does not know instead of creating a stray project. Use a full path to add a new one.\n\nChangelog: https://github.com/smarzban/tsk/blob/main/CHANGELOG.md"
+
+[[announcement]]
+id = 4
+title = "tsk comes to Windows"
+notes = "tsk now runs natively on Windows 10 and 11, on ARM64 and x86-64. The PowerShell installer verifies the matching release ZIP, adds tsk to your user PATH, and supports locked-executable updates. Herdr integration is available as a preview.\n\nOn every platform, h and l now mirror the left and right arrows for closing and opening task details outside text fields.\n\nChangelog: https://github.com/smarzban/tsk/blob/main/CHANGELOG.md"

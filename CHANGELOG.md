@@ -9,6 +9,8 @@ the GitHub release notes verbatim.
 
 ## Unreleased
 
+## v0.11.0
+
 ### Added
 
 - First-class Windows 10/11 ARM64 and x86-64 support for the CLI and TUI, `%LOCALAPPDATA%\tsk` storage, `%APPDATA%\herdr\config.toml` integration with PowerShell launchers, agent setup under `%USERPROFILE%`, native release checks, and locked-executable-safe `tsk update`.
