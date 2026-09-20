@@ -9,6 +9,10 @@ the GitHub release notes verbatim.
 
 ## Unreleased
 
+### Added
+
+- `h` and `l` mirror the left and right arrows for closing and opening task details in non-text board and task views; text input keeps both letters.
+
 ### Changed
 
 - `walkthrough.json` and `TSK_CONFIG_DIR` are gone: the retired onboarding card is replaced by the seeded tour tasks, and an existing file is simply ignored.
