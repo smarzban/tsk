@@ -187,7 +187,7 @@ test("the saved theme survives a visit to the docs", async () => {
 
 test("docs paint keys as keycaps and leave flags as code", async () => {
   const { isKeyName } = await import("../src/plugins/rehype-kbd.mjs");
-  for (const key of ["ctrl+s", "Shift+Enter", "Enter", "Esc", "→", "j", "P", "+", ":", "?"]) {
+  for (const key of ["ctrl+s", "Shift+Enter", "Enter", "Esc", "→", "h", "j", "l", "P", "+", ":", "?"]) {
     assert.ok(isKeyName(key), `${key} is a key`);
   }
   for (const code of ["--json", "-", "tsk add", "~/.tsk", "T30", "T", "i", "n", "global", "ctrl+"]) {

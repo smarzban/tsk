@@ -1388,6 +1388,13 @@ fn stage_keys_fall_through_to_editor_semantics_while_editing() {
         wide_key(&model, KeyCode::Right),
         Some(BoardIntent::EditMoveRight)
     );
+    for character in ['h', 'l'] {
+        assert_eq!(
+            wide_key(&model, KeyCode::Char(character)),
+            Some(BoardIntent::EditInsert(character)),
+            "{character} remains text in a wide editor"
+        );
+    }
     assert_eq!(
         wide_key(&model, KeyCode::Esc),
         Some(BoardIntent::CancelEdit)
