@@ -40,7 +40,8 @@ For scriptable board work use `tsk add`, `tsk list`, `tsk status`, `tsk edit`,
 | Quick-add and `tsk capture` | `capture.md` |
 | Every key of every surface | `keys.md`, code in `src/ui/input.rs` |
 | CLI verbs, exit codes, error codes | `cli.md`, code in `src/cli/`, glossary in `CONTEXT.md` |
-| Storage, env vars, update check | `storage.md` |
+| Storage, env vars, update check, `agents.toml` profiles | `storage.md` |
+| Assignee, dispatch, cleanup (board) | `board.md`, `task-page.md`, code in `src/dispatch.rs` |
 | Install, Homebrew, `tsk setup herdr` | `install.md`, `packaging/README.md` |
 | Agent skill | `skills/tsk-cli/SKILL.md` (`tsk guide`, `/docs/agents/`) |
 | Exact rendered output | golden fixtures in `tests/fixtures/` (`tests/queue_board_render.rs`) |
@@ -56,6 +57,8 @@ same PR, never leave them apart.
 | `src/ui/` | chrome: `board/` (model · apply · commands · chrome · draw), `input`, `mouse`, `render`, `edit` (the one wrap engine), `markdown` |
 | `src/cli/` | headless verbs, `parser`, `router`, `presenter` |
 | `src/store.rs`, `src/domain/` | `tsk.json` format, migrations, trash |
+| `src/agents.rs` | `agents.toml` profile loader, prompt/argv rendering, starter seed |
+| `src/dispatch.rs` | dispatch and cleanup engine behind a `DispatchHost` seam (git and herdr calls), cleanup guardrails |
 | `src/setup.rs`, `src/setup/`, `src/setup_agent.rs` | `tsk setup herdr`, agent skill install |
 | `src/guides.rs`, `src/announcements.rs`, `src/delivery.rs` | seeded notice tasks |
 | `src/update.rs` | release check, `tsk update` |
@@ -130,6 +133,20 @@ read the pane, and fix anything that only fails live. If `HERDR_ENV` is unset, s
 live smoke was not run. Wide (110 columns or more) smoke needs a full-width Herdr tab, not
 a split pane; splitting the smoke pane right is the cheap way to drive it below 110 and
 back.
+
+## The `dispatch` integration branch
+
+Agent assignee and dispatch work lands on the `dispatch` branch, not `main`, until the feature is
+complete and released. `main` stays on store format v5 and releasable; `dispatch` carries v6
+(assignee and dispatch record). Feature branches (`t<task>-<slug>`) PR into `dispatch`; each gets
+the local green bar and a review-panel pass (no CI runs on PRs into `dispatch`, by choice). Keep
+`dispatch` current with `git merge main`, never rebase it once pushed. The feature ships as one
+PR `dispatch` -> `main` with the version bump and a v6 announcement.
+
+A binary built from `dispatch` migrates any store it opens to v6, and a `main` binary then
+refuses that store. Never point a `dispatch` build at a real store: use `TSK_STATE_DIR` with a
+throwaway dir, and never `cargo build --release` in a checkout that the daily `tsk` symlink or the
+Herdr plugin launches from while it is on `dispatch`.
 
 ## Docs ship with the feature
 
@@ -228,6 +245,27 @@ migration or design work they imply. What the behaviour *is* lives in the docs
 - `sync_from_domain` never moves the user's tab or selection for tasks merged from disk;
   the one exception is an otherwise-empty view surfacing the first arriving task. A
   pinned save pins the selection only when the current lens renders the saved task.
+
+### Assignee and dispatch
+
+- Assignee is a label naming an `agents.toml` profile; it never changes status or triggers
+  anything. Names normalize with the thread normalizer and exact-match a defined profile at the
+  boundary; a task keeps a name whose profile was removed and renders it as-is.
+- Profiles are argv templates plus an optional prompt. tsk substitutes `{number} {title} {notes}
+  {steps} {worktree} {branch}` and nothing else; the prompt is appended as the last argument;
+  the launch is `$SHELL -lc '<quoted argv>'`, one command line, never chained. tsk carries no
+  knowledge of any harness's flags. A malformed `agents.toml` never blocks the board or CLI work
+  that does not assign.
+- Dispatch is its own verb (ADR-0004 in `docs/specs/adr/`, local-only), never a side effect of
+  `started`: cursor-only, not undoable, sets `started` in the same save as the record. Outside
+  `HERDR_ENV=1` it refuses. The dispatch record stays on the task through every later status
+  change; `◉` is derived only from `record present && status == started`, never from agent or
+  pane state.
+- Cleanup never deletes uncommitted work or an unmerged branch, and only removes the recorded
+  worktree (registered with git, matching the herdr entry's path, never the project root). A
+  missing worktree converges to `cleaned`. Bulk done and CLI `status done` never prompt.
+- Every git and herdr call goes through the `DispatchHost` seam so tests use a fake host; changes
+  to the real host need a live herdr smoke against a throwaway repo under `/tmp`, never this one.
 
 ### Host integration
 
