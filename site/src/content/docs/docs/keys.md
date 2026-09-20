@@ -16,8 +16,8 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 | Mark current task, then move in multi-select | `Shift+↑` / `Shift+↓` |
 | Mark / unmark cursored task in multi-select | `Space` |
 | Open task full screen | `Enter` |
-| Peek / close peek below 110 columns | `→` / `←` |
-| Move through wide views | `→` / `←` |
+| Peek / close peek below 110 columns | `→` / `←` or `l` / `h` |
+| Move through wide views | `→` / `←` or `l` / `h` |
 | Add task | `+` |
 | Edit title | `ctrl+e` |
 | Start open or ready task | `ctrl+s` |
@@ -123,9 +123,9 @@ In Herdr quick capture, `Shift+Enter` saves and closes the popup. `Esc` closes a
 
 ## Wide stage slider
 
-At 110 usable columns or wider, arrows move through these views when you are not editing:
+At 110 usable columns or wider, the arrow keys or `h` / `l` move through these views when you are not editing:
 
-| View | `→` | `←` | `Esc` |
+| View | `→` / `l` | `←` / `h` | `Esc` |
 | --- | --- | --- | --- |
 | Board | Split | No change | Quit at root |
 | Split, board focused | Task with rail | Board | Board |
@@ -136,12 +136,14 @@ At 110 usable columns or wider, arrows move through these views when you are not
 
 On **Projects Overview** at 110+ columns, clicking a row or moving the index selection opens the Split preview automatically. The project slider is shorter:
 
-| Stage | `→` | `←` | `Esc` |
+| Stage | `→` / `l` | `←` / `h` | `Esc` |
 | --- | --- | --- | --- |
 | Full board | Split preview | No change | Quit at root |
 | Split, index focused | Rail | Full board | Full board |
 | Rail, right board focused | Narrow board keys | Return to index | Return to index |
 
-The right seat keeps its own project-board cursor, multi-select, marked set, and state. Its `→` / `←` are peek controls, and `Enter` opens a task page inside the column. `ctrl+d`, `d`, `g`, `+`, and the other board actions apply to the right seat while it is focused.
+The right seat keeps its own project-board cursor, multi-select, marked set, and state. Its `→` / `l` and `←` / `h` are peek controls, and `Enter` opens a task page inside the column. `ctrl+d`, `d`, `g`, `+`, and the other board actions apply to the right seat while it is focused.
+
+`h` and `l` are navigation aliases only while a board or task view owns input. Text editors, quick-add, search, filters, the palette, and Help continue to insert them as ordinary characters.
 
 [Board views and mouse behavior](/docs/board/#wide-stage-slider).

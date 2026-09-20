@@ -18,7 +18,7 @@ Click a task's `T` number to copy it, then paste it into your agent conversation
 
 ![A wide tsk board with the selected task's notes and steps open alongside it](docs/images/wide-task-page.png)
 
-In a wide pane, click a task or press `→` to open its details beside the board; `←` brings you back.
+In a wide pane, click a task or press `→` / `l` to open its details beside the board; `←` / `h` brings you back.
 Press `Enter` for a full-screen task and `Esc` to return. For a standalone board,
 run `tsk` in your terminal.
 
@@ -120,7 +120,7 @@ Prefer the keyboard? A few keys for everyday use:
 | `Shift+M` | Enter or leave multi-select |
 | `Shift+↑` / `Shift+↓` | In multi-select, mark the current task, then move |
 | `Space` or click | In multi-select, mark or unmark a task |
-| `→` / `←` | Peek at a task and close the peek in narrow panes; move between board and task views in wide panes |
+| `→` / `←` or `l` / `h` | Peek at a task and close the peek in narrow panes; move between board and task views in wide panes |
 | `+` | Add a task |
 | `Enter` | Open the selected task |
 | `ctrl+s` | Start an open or ready task |

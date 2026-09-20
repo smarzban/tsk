@@ -321,9 +321,9 @@ pub enum BoardIntent {
     StageRight,
     /// `←` at wide widths: move the stage slider one step towards the board (F → G → A → 0).
     StageLeft,
-    /// `→` — expand the selected row's inline peek (notes preview under the row).
+    /// `→` / `l` — expand the selected row's inline peek (notes preview under the row).
     PeekDetail,
-    /// `←` — collapse the inline peek when one is open; a no-op otherwise.
+    /// `←` / `h` — collapse the inline peek when one is open; a no-op otherwise.
     CollapseDetail,
     /// Task page view mode: scroll the notes body one wrapped row up.
     PageScrollUp,
@@ -361,7 +361,7 @@ pub enum BoardIntent {
 }
 
 /// Bottom chrome: compact key legend for primary board actions.
-pub const BOARD_HELP_LINE: &str = "↑↓/jk  ·  shift+M multi-select  ·  shift+↑↓/space mark  ·  ctrl+s start  ·  ctrl+n next  ·  enter open  ·  → peek  ·  ctrl+d done  ·  ctrl+o inbox  ·  ctrl+b block  ·  ctrl+r review  ·  + add  ·  ctrl+e title  ·  ctrl+x del  ·  ctrl+u undo  ·  ctrl+f archive  ·  d drawer  ·  g inbox / archived  ·  p projects  ·  / search  ·  : palette  ·  ? help  ·  ctrl+q quit";
+pub const BOARD_HELP_LINE: &str = "↑↓/jk  ·  shift+M multi-select  ·  shift+↑↓/space mark  ·  ctrl+s start  ·  ctrl+n next  ·  enter open  ·  h/l close/peek  ·  ctrl+d done  ·  ctrl+o inbox  ·  ctrl+b block  ·  ctrl+r review  ·  + add  ·  ctrl+e title  ·  ctrl+x del  ·  ctrl+u undo  ·  ctrl+f archive  ·  d drawer  ·  g inbox / archived  ·  p projects  ·  / search  ·  : palette  ·  ? help  ·  ctrl+q quit";
 /// Compact legend shown while the action sheet or command palette is open.
 pub const COMMAND_SURFACE_HELP_LINE: &str = "↑↓ select · type to filter · enter run · esc close";
 /// Compact legend shown while the help card is open.
@@ -456,15 +456,29 @@ const NORMAL_KEYMAP: &[NormalKeyEntry] = &[
     NormalKeyEntry {
         code: KeyCode::Right,
         intent: BoardIntent::PeekDetail,
-        help_chord: "→ / ←",
-        help_label: "peek",
+        help_chord: "←/h · →/l",
+        help_label: "close / peek",
+        modifier: NormalModifier::Bare,
+    },
+    NormalKeyEntry {
+        code: KeyCode::Char('l'),
+        intent: BoardIntent::PeekDetail,
+        help_chord: "←/h · →/l",
+        help_label: "close / peek",
         modifier: NormalModifier::Bare,
     },
     NormalKeyEntry {
         code: KeyCode::Left,
         intent: BoardIntent::CollapseDetail,
-        help_chord: "→ / ←",
-        help_label: "peek",
+        help_chord: "←/h · →/l",
+        help_label: "close / peek",
+        modifier: NormalModifier::Bare,
+    },
+    NormalKeyEntry {
+        code: KeyCode::Char('h'),
+        intent: BoardIntent::CollapseDetail,
+        help_chord: "←/h · →/l",
+        help_label: "close / peek",
         modifier: NormalModifier::Bare,
     },
     NormalKeyEntry {
@@ -868,7 +882,7 @@ fn help_bindings() -> Vec<HelpBinding> {
         ),
         help_binding(
             HelpGroup::Navigation,
-            "→ / ←",
+            "←/h · →/l",
             "wide stage (task page)",
             "move view slider",
         ),
@@ -1304,7 +1318,8 @@ pub enum ResponsiveKeyRoute {
 
 /// Route the stage-slider keys of the wide layout.
 ///
-/// Only bare `→` / `←` in the Normal and TaskPage view modes are stage keys, and only while
+/// Only bare `→` / `l` and `←` / `h` in the Normal and TaskPage view modes are stage keys,
+/// and only while
 /// the frame is wide. The mode check does the scoping: `Normal` slides the board-owned stages
 /// and `TaskPage` the task-owned ones, so every field editor (its own mode, never these two)
 /// keeps its existing arrow semantics without being named here. A task edit session parked in
@@ -1332,11 +1347,14 @@ pub fn route_responsive_key(
         return ResponsiveKeyRoute::Surface;
     }
     match (key.code, stage) {
-        (KeyCode::Right, WideStage::FullTask) | (KeyCode::Left, WideStage::FullBoard) => {
-            ResponsiveKeyRoute::Inert
+        (KeyCode::Right | KeyCode::Char('l'), WideStage::FullTask)
+        | (KeyCode::Left | KeyCode::Char('h'), WideStage::FullBoard) => ResponsiveKeyRoute::Inert,
+        (KeyCode::Right | KeyCode::Char('l'), _) => {
+            ResponsiveKeyRoute::Intent(BoardIntent::StageRight)
         }
-        (KeyCode::Right, _) => ResponsiveKeyRoute::Intent(BoardIntent::StageRight),
-        (KeyCode::Left, _) => ResponsiveKeyRoute::Intent(BoardIntent::StageLeft),
+        (KeyCode::Left | KeyCode::Char('h'), _) => {
+            ResponsiveKeyRoute::Intent(BoardIntent::StageLeft)
+        }
         _ => ResponsiveKeyRoute::Surface,
     }
 }
