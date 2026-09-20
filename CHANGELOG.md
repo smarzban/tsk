@@ -9,6 +9,8 @@ the GitHub release notes verbatim.
 
 ## Unreleased
 
+## v0.11.5
+
 ### Fixed
 
 - Herdr setup on Windows accepts the supported `0.9.0-preview.*` host builds instead of rejecting them as older than 0.9.0.
