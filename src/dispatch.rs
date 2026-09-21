@@ -467,6 +467,10 @@ fn canonical_cleanup_path(path: &Path) -> Result<PathBuf, String> {
     Ok(parent.join(name))
 }
 
+/// Canonical paths of every worktree git lists for the project. Prunable entries whose
+/// directories are already gone (a leftover from another tool) can neither canonicalize
+/// nor be the recorded target, so they are skipped instead of failing the whole listing:
+/// one stale entry must not disable cleanup offers for unrelated tasks.
 fn git_worktree_paths(project: &Path) -> Result<Vec<PathBuf>, String> {
     let listed = Command::new("git")
         .args(["-C"])
@@ -477,11 +481,11 @@ fn git_worktree_paths(project: &Path) -> Result<Vec<PathBuf>, String> {
     if !listed.status.success() {
         return Err(command_failure("git worktree list", &listed));
     }
-    String::from_utf8_lossy(&listed.stdout)
+    Ok(String::from_utf8_lossy(&listed.stdout)
         .lines()
         .filter_map(|line| line.strip_prefix("worktree "))
-        .map(|path| canonical_cleanup_path(Path::new(path)))
-        .collect()
+        .filter_map(|path| canonical_cleanup_path(Path::new(path)).ok())
+        .collect())
 }
 
 fn herdr_checkout_path(entry: &Value) -> Option<&str> {
@@ -520,7 +524,8 @@ fn command_failure(name: &str, output: &Output) -> String {
 
 fn herdr_json(output: Output) -> Result<Value, String> {
     if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = herdr_error_detail(&output.stderr)
+            .unwrap_or_else(|| String::from_utf8_lossy(&output.stderr).trim().to_string());
         return Err(if detail.is_empty() {
             format!("herdr exited with {}", output.status)
         } else {
@@ -532,6 +537,26 @@ fn herdr_json(output: Output) -> Result<Value, String> {
     }
     serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("herdr returned invalid JSON: {error}"))
+}
+
+/// Herdr prints failures as a JSON error envelope (`{"error":{"code","message"}}`).
+/// Surface its message instead of the raw document so status lines stay readable;
+/// plain-text or unparseable stderr passes through verbatim.
+fn herdr_error_detail(stderr: &[u8]) -> Option<String> {
+    let value: Value = serde_json::from_slice(stderr).ok()?;
+    let error = value.get("error")?;
+    if let Some(message) = error
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+    {
+        return Some(format!("herdr: {message}"));
+    }
+    error
+        .get("code")
+        .and_then(Value::as_str)
+        .map(|code| format!("herdr: {code}"))
 }
 
 /// Inspect a retained dispatch without mutating host or domain state.
@@ -997,6 +1022,65 @@ mod tests {
     }
 
     #[test]
+    fn git_worktree_listing_survives_prunable_entries_whose_directories_are_gone() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("tsk-dispatch-prunable-{nanos}-{seq}"));
+        let repo = root.join("repo");
+        fs::create_dir_all(&repo).expect("repo dir");
+        struct Guard(PathBuf);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _guard = Guard(root.clone());
+
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .args(["-C"])
+                .arg(&repo)
+                .args(args)
+                .output()
+                .expect("run git")
+        };
+        assert!(git(&["init", "-q"]).status.success());
+        fs::write(repo.join("README"), "init\n").expect("write readme");
+        assert!(git(&["add", "."]).status.success());
+        assert!(git(&[
+            "-c",
+            "user.email=tsk@example.com",
+            "-c",
+            "user.name=tsk",
+            "commit",
+            "-qm",
+            "init",
+        ])
+        .status
+        .success());
+        let stale = root.join("stale").join("wt");
+        assert!(
+            git(&["worktree", "add", "--detach", stale.to_str().expect("utf8")])
+                .status
+                .success()
+        );
+        // Delete the worktree's whole parent tree without pruning it: git keeps listing
+        // the entry as prunable with no resolvable path or parent, and that must not fail
+        // the listing for every other worktree.
+        fs::remove_dir_all(root.join("stale")).expect("remove stale tree");
+
+        let listed = git_worktree_paths(&repo).expect("worktree paths");
+        let canonical_repo = repo.canonicalize().expect("canonical repo");
+        assert!(
+            listed.contains(&canonical_repo),
+            "listing must keep resolvable worktrees: {listed:?}"
+        );
+    }
+
+    #[test]
     fn successful_herdr_command_may_have_empty_stdout() {
         let output = Output {
             status: std::process::ExitStatus::from_raw(0),
@@ -1004,6 +1088,52 @@ mod tests {
             stderr: Vec::new(),
         };
         assert_eq!(herdr_json(output).expect("empty success"), Value::Null);
+    }
+
+    #[test]
+    fn herdr_error_envelope_surfaces_its_message() {
+        let output = Output {
+            status: std::process::ExitStatus::from_raw(1),
+            stdout: Vec::new(),
+            stderr: br#"{"error":{"code":"linked_worktree_source","message":"New and open worktree actions start from the repo parent workspace."},"id":"cli:worktree:create"}"#.to_vec(),
+        };
+        assert_eq!(
+            herdr_json(output).unwrap_err(),
+            "herdr: New and open worktree actions start from the repo parent workspace."
+        );
+    }
+
+    #[test]
+    fn herdr_error_envelope_without_message_falls_back_to_code() {
+        let output = Output {
+            status: std::process::ExitStatus::from_raw(1),
+            stdout: Vec::new(),
+            stderr: br#"{"error":{"code":"workspace_gone"},"id":"cli:worktree:remove"}"#.to_vec(),
+        };
+        assert_eq!(herdr_json(output).unwrap_err(), "herdr: workspace_gone");
+    }
+
+    #[test]
+    fn plain_text_herdr_failure_stays_verbatim() {
+        let output = Output {
+            status: std::process::ExitStatus::from_raw(1),
+            stdout: Vec::new(),
+            stderr: b"herdr: socket not found\n".to_vec(),
+        };
+        assert_eq!(herdr_json(output).unwrap_err(), "herdr: socket not found");
+    }
+
+    #[test]
+    fn herdr_failure_without_detail_reports_exit_status() {
+        let output = Output {
+            status: std::process::ExitStatus::from_raw(0x100),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        assert_eq!(
+            herdr_json(output).unwrap_err(),
+            "herdr exited with exit status: 1"
+        );
     }
 
     #[test]

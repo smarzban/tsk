@@ -31,6 +31,8 @@ the GitHub release notes verbatim.
 
 ### Fixed
 
+- Completing a dispatched task from the board always offers worktree cleanup again: a stale prunable worktree left behind by another tool no longer silences the offer and completes the task without a prompt.
+- Dispatch and cleanup failures report Herdr's error message in plain language instead of pasting its raw JSON error document onto the status line.
 - Dispatch cleanup is bound to the recorded non-root Git worktree and matching Herdr workspace, checks branch ancestry against the dispatch base instead of the current checkout, and keeps legacy branches whose base is unknown.
 - Board completion now converges an already-missing dispatched worktree to cleaned in the same save, while already-done or archived tasks and archived project views bypass the cleanup prompt.
 - A malformed `agents.toml` no longer blocks the board or CLI add/edit operations that do not assign a task; assignment reports the configuration error without saving.
