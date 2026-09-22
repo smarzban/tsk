@@ -1,5 +1,9 @@
 # tsk
 
+[![CI](https://github.com/smarzban/tsk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/smarzban/tsk/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platforms: Linux • macOS • Windows](https://img.shields.io/badge/platforms-Linux%20%E2%80%A2%20macOS%20%E2%80%A2%20Windows-blue.svg)](https://gettsk.sh/docs/install/)
+
 A terminal task board for you and your agents: one shared queue, a TUI for you, a CLI for them.
 
 Keep the next task, the work in progress, and the things waiting on you in view.
