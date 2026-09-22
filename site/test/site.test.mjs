@@ -259,7 +259,7 @@ test("hero has the install one-liner and a jump to the demo", async () => {
   assert.match(page, /curl -fsSL https:\/\/gettsk.sh\/install.sh \| sh/);
   assert.match(page, /href="#demo">Try the board/);
   assert.match(page, /href="\/docs\/install\/">install guide →/);
-  assert.match(page, /macOS &amp; Linux · MIT/);
+  assert.match(page, /macOS · Linux · Windows · MIT/);
   const meta = page.match(/class="hero-install-meta">([\s\S]*?)<\/p>/)[1];
   assert.ok(meta.indexOf("Try the board") < meta.indexOf("install guide"));
 });
