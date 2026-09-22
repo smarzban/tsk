@@ -18,7 +18,7 @@ the GitHub release notes verbatim.
 
 ### Changed
 
-- `tsk update` is safer: it downloads the installer completely before running it, always follows the latest stable release, refuses to downgrade, and says why a Herdr or skill refresh failed.
+- `tsk update` it downloads the installer completely before running it, always follows the latest stable release, refuses to downgrade, and says why a Herdr or skill refresh failed.
 
 ## v0.10.1
 
