@@ -36,6 +36,7 @@ pub enum CaptureField {
     Notes,
     Thread,
     Scope,
+    Assignee,
 }
 
 /// Visible capture surface title.
@@ -294,7 +295,7 @@ impl CaptureModel {
             CaptureField::Title => Some(&mut self.title),
             CaptureField::Notes => Some(&mut self.notes),
             CaptureField::Thread => Some(&mut self.thread),
-            CaptureField::Scope => None,
+            CaptureField::Scope | CaptureField::Assignee => None,
         }
     }
 
@@ -305,6 +306,7 @@ impl CaptureModel {
             CaptureField::Notes => CaptureField::Thread,
             CaptureField::Thread => CaptureField::Scope,
             CaptureField::Scope => CaptureField::Title,
+            CaptureField::Assignee => CaptureField::Title,
         };
     }
 
@@ -315,6 +317,7 @@ impl CaptureModel {
             CaptureField::Notes => CaptureField::Title,
             CaptureField::Thread => CaptureField::Notes,
             CaptureField::Scope => CaptureField::Thread,
+            CaptureField::Assignee => CaptureField::Scope,
         };
     }
 
@@ -487,6 +490,7 @@ pub fn apply_capture_intent(
                         model.message = None;
                     }
                 }
+                CaptureField::Assignee => {}
                 CaptureField::Title | CaptureField::Notes | CaptureField::Thread => {
                     edit_draft(model, |draft| draft.insert_char(c));
                 }
@@ -501,6 +505,7 @@ pub fn apply_capture_intent(
                         model.message = None;
                     }
                 }
+                CaptureField::Assignee => {}
                 CaptureField::Title | CaptureField::Notes | CaptureField::Thread => {
                     edit_draft(model, EditBuffer::backspace);
                 }
@@ -519,6 +524,7 @@ pub fn apply_capture_intent(
                         model.message = None;
                     }
                 }
+                CaptureField::Assignee => {}
                 CaptureField::Title | CaptureField::Thread => {
                     edit_draft(model, |draft| {
                         draft.insert_text(&flatten_line_breaks(&text))

@@ -3,18 +3,37 @@ title: Storage
 description: Task data, backups, deleted tasks, and update checks.
 ---
 
-The board, CLI, and Herdr plugin share one store. The current store format is v5.
+The board, CLI, and Herdr plugin share one store. The current store format is v6.
 
 ## Location
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `TSK_STATE_DIR` | Platform default | Task data, backups, trash, and release-check cache. The default is `~/.tsk` on macOS/Linux, `%LOCALAPPDATA%\tsk` on Windows, or `%USERPROFILE%\.tsk` when `LOCALAPPDATA` is unavailable. Without a usable platform home, tsk refuses to run rather than pick a directory |
+| `TSK_STATE_DIR` | Platform default | Task data, agent profiles, backups, trash, and release-check cache. The default is `~/.tsk` on macOS/Linux, `%LOCALAPPDATA%\tsk` on Windows, or `%USERPROFILE%\.tsk` when `LOCALAPPDATA` is unavailable. Without a usable platform home, tsk refuses to run rather than pick a directory |
 | `--state-dir <dir>` | State directory | Override storage for a data command |
 
 Use a local disk. NFS and synced folders such as Dropbox or iCloud Drive are unsupported. Directory roots must be real directories, not symlinks or Windows reparse points such as junctions.
 
 Herdr's plugin-specific state/config directories do not override these locations. Removing tsk leaves its task data intact.
+
+## Agent profiles
+
+Agent profiles are read from `agents.toml` in the state directory, beside `tsk.json`. The first full board open creates a starter file when it is missing, with commented examples that define no profiles. Quick capture, CLI commands, and setup do not create it, and tsk never replaces an existing file, even an empty one. Each profile name must already be lowercase and use the same shape as a thread name: start with a letter or number, then use only letters, numbers, hyphens, and dots, up to 32 characters. Quote a name that contains dots, for example `[agent."review.strict"]`.
+
+```toml
+[agent.implementer]
+command = ["pi"]
+prompt = "Work on T{number}: {title}\n\n{notes}\n\n{steps}"
+
+[agent.implementer.env]
+PI_PROVIDER = "anthropic"
+```
+
+`command` is a required, non-empty argv template. `prompt` is optional; without it, tsk supplies a prompt that points the agent to `tsk guide` and the task, then asks it to set the task to review or blocked. The rendered prompt is always appended to the command as its last argument. `env` is an optional table of string values passed to the launched command unchanged.
+
+A malformed profile file does not block the board or CLI work that does not assign a task. The board opens without profiles and shows the error on its status row. `tsk add` and `tsk edit` read the file only when an assignee is supplied; a profile-file error then exits 2 without saving.
+
+The command and prompt templates support `{number}`, `{title}`, `{notes}`, `{steps}`, `{worktree}`, and `{branch}`. tsk replaces only these placeholders. It quotes every argument and renders one command line as `$SHELL -lc '…'`; it never chains commands. Profiles are read-only in tsk, edit the file to change them.
 
 ## Backups
 
@@ -22,10 +41,11 @@ Herdr's plugin-specific state/config directories do not override these locations
 | --- | --- |
 | `tsk.json` | Current tasks and archived-project records |
 | `tsk.json.1` | Previous valid task document |
-| `tsk.json.v<N>` | Backup made when migrating an older store format, such as `tsk.json.v4` for the v4 → v5 migration |
+| `tsk.json.v<N>` | Backup made when migrating an older store format, such as `tsk.json.v5` for the v5 → v6 migration |
+| `agents.toml` | Agent launch profiles, seeded with commented examples on the first full board open |
 | `delivery.json` | Which starter tasks this install has received or dismissed, and the newest release note it has seen |
 
-An older binary refuses a newer or unversioned store instead of rewriting it. Use a compatible tsk version to open it. On first save, v4 stores migrate to v5 so one undo entry can cover a marked completion or deletion; the original document is saved as `tsk.json.v4`. Earlier stores still run through each migration in order, including the v3 to v4 move from ready to open.
+An older binary refuses a newer or unversioned store instead of rewriting it. Use a compatible tsk version to open it. On first save, v5 stores migrate to v6 to add optional task assignees and dispatch records; the original document is saved as `tsk.json.v5`. A dispatch record can include the branch or commit used as its cleanup base; older v6 records omit it and cleanup keeps their branch. Earlier stores still run through each migration in order, including v5 batch undo and the v3 to v4 move from ready to open.
 
 Archived tasks stay in the task document with their existing status. [Archive and restore](/docs/board/#archive).
 

@@ -36,6 +36,7 @@ fn normal_mode_keymap_equals_the_readme_and_queue_board_v1_set() {
         (KeyCode::Char('h'), BoardIntent::CollapseDetail, false),
         (KeyCode::Esc, BoardIntent::CloseLayer, false),
         (KeyCode::Char('s'), BoardIntent::PrimaryVerb, true),
+        (KeyCode::Char('g'), BoardIntent::Dispatch, true),
         (KeyCode::Char('d'), BoardIntent::Complete, true),
         (
             KeyCode::Char('n'),
@@ -89,8 +90,8 @@ fn normal_mode_keymap_equals_the_readme_and_queue_board_v1_set() {
         if needs_ctrl {
             assert_eq!(ctrl(key), Some(intent), "ctrl+{key:?}");
             // A bare mutating letter is dead unless the same letter carries a bare route
-            // of its own (`d` opens the done drawer).
-            if key != KeyCode::Char('d') {
+            // of its own (`d` opens the done drawer, `g` folds groups).
+            if !matches!(key, KeyCode::Char('d' | 'g')) {
                 assert_eq!(normal(key), None, "bare mutating key {key:?} must be dead");
             }
         } else {
@@ -135,8 +136,8 @@ fn normal_mode_keymap_equals_the_readme_and_queue_board_v1_set() {
     }
     assert_eq!(
         ctrl(KeyCode::Char('g')),
-        None,
-        "ctrl+g retired in favour of bare g"
+        Some(BoardIntent::Dispatch),
+        "ctrl+g dispatch remains distinct from bare g group folding"
     );
 }
 

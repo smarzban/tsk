@@ -383,8 +383,10 @@ fn task_form_unifies_palette_field_routes_scope_dropdown_and_atomic_save() {
         false,
         KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
     )
-    .expect("Tab moves to Thread");
-    apply_intent(&mut domain, &mut model, tab, None).expect("focus Thread");
+    .expect("Tab moves to Assignee");
+    apply_intent(&mut domain, &mut model, tab, None).expect("focus Assignee");
+    assert_eq!(model.form_focus(), Some(CaptureField::Assignee));
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus Thread");
     assert_eq!(model.form_focus(), Some(CaptureField::Thread));
     let tab = map_board_form_key(
         CaptureField::Thread,
@@ -413,11 +415,14 @@ fn task_form_unifies_palette_field_routes_scope_dropdown_and_atomic_save() {
         KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
     )
     .expect("Scope Enter opens its dropdown");
-    assert_eq!(open_dropdown, BoardIntent::OpenFormScopeDropdown);
+    assert_eq!(
+        open_dropdown,
+        BoardIntent::OpenFormDropdown(CaptureField::Scope)
+    );
     apply_intent(&mut domain, &mut model, open_dropdown, None).expect("open dropdown");
-    assert_eq!(model.input_mode(), BoardInputMode::FormScopeDropdown);
+    assert_eq!(model.input_mode(), BoardInputMode::FormDropdown);
     let draft_before_dropdown = model.form_scope().cloned();
-    apply_intent(&mut domain, &mut model, BoardIntent::FormScopeNext, None)
+    apply_intent(&mut domain, &mut model, BoardIntent::FormDropdownNext, None)
         .expect("move dropdown selection");
     assert_eq!(
         model.form_scope(),
@@ -427,17 +432,17 @@ fn task_form_unifies_palette_field_routes_scope_dropdown_and_atomic_save() {
     apply_intent(
         &mut domain,
         &mut model,
-        BoardIntent::CancelFormScopeDropdown,
+        BoardIntent::CancelFormDropdown,
         None,
     )
     .expect("Esc returns to parent form");
     assert_eq!(model.form_focus(), Some(CaptureField::Scope));
-    assert_ne!(model.input_mode(), BoardInputMode::FormScopeDropdown);
+    assert_ne!(model.input_mode(), BoardInputMode::FormDropdown);
 
     apply_intent(
         &mut domain,
         &mut model,
-        BoardIntent::OpenFormScopeDropdown,
+        BoardIntent::OpenFormDropdown(CaptureField::Scope),
         None,
     )
     .expect("open dropdown again");
@@ -445,14 +450,14 @@ fn task_form_unifies_palette_field_routes_scope_dropdown_and_atomic_save() {
         if model.form_scope_dropdown_choice() == Some(&TaskScope::Global) {
             break;
         }
-        apply_intent(&mut domain, &mut model, BoardIntent::FormScopeNext, None)
+        apply_intent(&mut domain, &mut model, BoardIntent::FormDropdownNext, None)
             .expect("move toward Global");
     }
     assert_eq!(model.form_scope_dropdown_choice(), Some(&TaskScope::Global));
     apply_intent(
         &mut domain,
         &mut model,
-        BoardIntent::ConfirmFormScopeDropdown,
+        BoardIntent::ConfirmFormDropdown,
         None,
     )
     .expect("apply dropdown scope");
@@ -574,11 +579,11 @@ fn task_page_scope_dropdown_sits_above_the_footer_with_short_names() {
     apply_intent(
         &mut domain,
         &mut model,
-        BoardIntent::OpenFormScopeDropdown,
+        BoardIntent::OpenFormDropdown(CaptureField::Scope),
         None,
     )
     .expect("open scope dropdown");
-    assert_eq!(model.input_mode(), BoardInputMode::FormScopeDropdown);
+    assert_eq!(model.input_mode(), BoardInputMode::FormDropdown);
 
     let (width, height) = (80u16, 24u16);
     let backend = TestBackend::new(width, height);
@@ -685,7 +690,11 @@ fn task_page_form_tab_cycle_wraps_through_title() {
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
         .expect("second step to add");
     assert!(rendered_board(&model, 80, 24).contains("▸ + step"));
-    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("add to Thread");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("add to Assignee");
+    assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("Assignee to Thread");
     assert_eq!(model.input_mode(), BoardInputMode::SelectThread);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
         .expect("Thread to Scope");
@@ -700,8 +709,11 @@ fn task_page_form_tab_cycle_wraps_through_title() {
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
         .expect("Scope reverses to Thread");
     assert_eq!(model.input_mode(), BoardInputMode::SelectThread);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
+        .expect("Thread reverses to Assignee");
+    assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
     for (expected, label) in [
-        ("▸ + step", "Thread reverses to add"),
+        ("▸ + step", "Assignee reverses to add"),
         ("second", "add reverses to second"),
         ("first", "second reverses to first"),
     ] {
@@ -732,6 +744,8 @@ fn scope_and_thread_are_selected_controls_with_enter_activation() {
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("open form");
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("Notes");
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("add target");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("Assignee");
+    assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("Thread");
     assert_eq!(model.input_mode(), BoardInputMode::SelectThread);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("Scope");
@@ -765,24 +779,24 @@ fn scope_and_thread_are_selected_controls_with_enter_activation() {
     let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(
         map_key(BoardInputMode::EditScope, enter),
-        Some(BoardIntent::OpenFormScopeDropdown)
+        Some(BoardIntent::OpenFormDropdown(CaptureField::Scope))
     );
     apply_intent(
         &mut domain,
         &mut model,
-        BoardIntent::OpenFormScopeDropdown,
+        BoardIntent::OpenFormDropdown(CaptureField::Scope),
         None,
     )
     .expect("open Scope dropdown");
-    assert_eq!(model.input_mode(), BoardInputMode::FormScopeDropdown);
+    assert_eq!(model.input_mode(), BoardInputMode::FormDropdown);
     assert_eq!(
-        map_key(BoardInputMode::FormScopeDropdown, enter),
-        Some(BoardIntent::ConfirmFormScopeDropdown)
+        map_key(BoardInputMode::FormDropdown, enter),
+        Some(BoardIntent::ConfirmFormDropdown)
     );
     apply_intent(
         &mut domain,
         &mut model,
-        BoardIntent::ConfirmFormScopeDropdown,
+        BoardIntent::ConfirmFormDropdown,
         None,
     )
     .expect("choose Scope option");
@@ -893,7 +907,7 @@ fn page_edit_sets_thread_and_clearing_unthreads() {
         .expect("create");
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("open form");
-    for _ in 0..3 {
+    for _ in 0..4 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
             .expect("focus next");
     }
@@ -924,7 +938,7 @@ fn page_edit_sets_thread_and_clearing_unthreads() {
     );
 
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("reopen form");
-    for _ in 0..3 {
+    for _ in 0..4 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
             .expect("focus thread");
     }
@@ -957,7 +971,7 @@ fn page_thread_field_refuses_invalid_name_without_persisting() {
         .expect("create");
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("open");
-    for _ in 0..3 {
+    for _ in 0..4 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus");
     }
     apply_intent(
@@ -998,7 +1012,7 @@ fn page_thread_field_accepts_version_dots() {
         .expect("create");
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("open");
-    for _ in 0..3 {
+    for _ in 0..4 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus");
     }
     apply_intent(
@@ -1208,7 +1222,7 @@ fn thread_refusal_paints_inline_and_clears_without_status_leak() {
         .expect("create");
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("open");
-    for _ in 0..3 {
+    for _ in 0..4 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus");
     }
     apply_intent(
@@ -1421,7 +1435,7 @@ fn page_footer_thread_edit_operable_at_40x10() {
         .expect("create");
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("open");
-    for _ in 0..3 {
+    for _ in 0..4 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus");
     }
     apply_intent(
@@ -1473,6 +1487,8 @@ fn thread_paste_flattens_line_breaks_like_title() {
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("open form");
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("Notes");
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("add target");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("select Assignee");
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("select Thread");
     assert_eq!(model.input_mode(), BoardInputMode::SelectThread);
     apply_intent(

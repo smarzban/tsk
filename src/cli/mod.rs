@@ -7,6 +7,8 @@ use serde_json::Value;
 
 pub mod add;
 pub mod archive;
+pub mod clean;
+pub mod dispatch;
 pub mod edit;
 pub mod guide;
 pub mod list;
@@ -67,6 +69,8 @@ where
         Some("steps") => run_steps(args),
         Some("list") => run_list(args, terminal_width),
         Some("status") => run_status(args),
+        Some("dispatch") => run_dispatch(args),
+        Some("clean") => run_clean(args),
         Some("edit") => run_edit(args),
         Some("trash") => run_trash(args),
         Some("project") => run_project(args),
@@ -79,7 +83,7 @@ where
             run_archive(args, verb, archive)
         }
         _ => presenter::usage(
-            "expected add, steps, list, status, edit, trash, archive, unarchive, or project command",
+            "expected add, steps, list, status, dispatch, clean, edit, trash, archive, unarchive, or project command",
         ),
     }
 }
@@ -96,6 +100,8 @@ fn run_help(args: Vec<String>) -> CliOutput {
             "steps" => presenter::steps_help(),
             "list" => presenter::list_help(None),
             "status" => presenter::status_help(),
+            "dispatch" => presenter::dispatch_help(),
+            "clean" => presenter::clean_help(),
             "edit" => presenter::edit_help(),
             "trash" => presenter::trash_help(),
             "archive" => presenter::archive_help("archive"),
@@ -127,6 +133,40 @@ fn run_steps(args: Vec<String>) -> CliOutput {
     }
 }
 
+fn run_dispatch(args: Vec<String>) -> CliOutput {
+    let input = match parser::parse_flag_dispatch(&args) {
+        Ok(input) => input,
+        Err(reason) => return presenter::dispatch_usage(&reason),
+    };
+    if input.help {
+        return presenter::dispatch_help();
+    }
+    let Some(task) = input.task else {
+        return presenter::dispatch_usage("task number is required");
+    };
+    match dispatch::run(task, input.again, input.state_dir) {
+        Ok(result) => presenter::dispatched(result),
+        Err(error) => presenter::dispatch_rejected(error, task),
+    }
+}
+
+fn run_clean(args: Vec<String>) -> CliOutput {
+    let input = match parser::parse_flag_clean(&args) {
+        Ok(input) => input,
+        Err(reason) => return presenter::clean_usage(&reason),
+    };
+    if input.help {
+        return presenter::clean_help();
+    }
+    let Some(task) = input.task else {
+        return presenter::clean_usage("task number is required");
+    };
+    match clean::run(task, input.state_dir) {
+        Ok(result) => presenter::cleaned(result, input.json),
+        Err(error) => presenter::clean_rejected(error, task),
+    }
+}
+
 fn run_status(args: Vec<String>) -> CliOutput {
     let input = match parser::parse_flag_status(&args) {
         Ok(input) => input,
@@ -142,8 +182,24 @@ fn run_status(args: Vec<String>) -> CliOutput {
             "status is required"
         });
     };
+    let state_dir = input.state_dir.clone();
     match status::run(task, status, input.state_dir) {
-        Ok(result) => presenter::status(result),
+        Ok(result) => {
+            let mut output = presenter::status(result);
+            if input.clean {
+                match clean::run(task, state_dir) {
+                    Ok(result) => output
+                        .stdout
+                        .push_str(&presenter::cleaned(result, false).stdout),
+                    Err(error) => {
+                        let refused = presenter::clean_rejected(error, task);
+                        output.stderr = refused.stderr.replacen("tsk clean:", "tsk status:", 1);
+                        output.code = refused.code;
+                    }
+                }
+            }
+            output
+        }
         Err(error) => presenter::status_rejected(error, task),
     }
 }
@@ -159,14 +215,21 @@ fn run_edit(args: Vec<String>) -> CliOutput {
     let Some(task) = input.task else {
         return presenter::edit_usage("task number is required");
     };
-    if input.title.is_none() && input.notes.is_none() {
-        return presenter::edit_usage("title or notes is required");
+    if input.title.is_none() && input.notes.is_none() && input.assignee.is_none() && !input.unassign
+    {
+        return presenter::edit_usage("title, notes, assignee, or --unassign is required");
     }
+    let assignee = if input.unassign {
+        Some(None)
+    } else {
+        input.assignee.map(Some)
+    };
     match edit::run(
         task,
         edit::EditFields {
             title: input.title,
             notes: input.notes,
+            assignee,
         },
         input.state_dir,
     ) {

@@ -25,6 +25,8 @@ pub struct ListInput {
     pub ready: bool,
     /// Normalized at the argv boundary so filtering only compares valid names.
     pub thread: Option<String>,
+    /// Exact normalized assignee filter. Removed profiles remain listable.
+    pub assignee: Option<String>,
     /// One task addressed by UUID or human number: single-task listing with full detail.
     pub task: Option<TaskAddress>,
     pub state_dir: Option<PathBuf>,
@@ -57,6 +59,7 @@ pub(crate) struct ListRow {
     pub(crate) status: HumanStatus,
     pub(crate) project: Option<String>,
     pub(crate) thread: Option<String>,
+    pub(crate) assignee: Option<String>,
     /// `archived` / `project archived` mark, set only in the archived view.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) archived: Option<&'static str>,
@@ -96,6 +99,7 @@ pub fn parse(args: &[String]) -> Result<ListInput, String> {
         open: false,
         ready: false,
         thread: None,
+        assignee: None,
         task: None,
         state_dir: None,
         help: false,
@@ -117,6 +121,12 @@ pub fn parse(args: &[String]) -> Result<ListInput, String> {
                 )?);
                 index += 1;
             }
+            flag if flag.starts_with("--assignee=") => {
+                input.assignee = Some(normalize_thread(&flag["--assignee=".len()..]).map_err(
+                    |error| format!("invalid agent name · {}", thread_refusal_message(error)),
+                )?);
+                index += 1;
+            }
             "--json" => {
                 input.json = true;
                 index += 1;
@@ -128,6 +138,12 @@ pub fn parse(args: &[String]) -> Result<ListInput, String> {
             "--thread" => {
                 input.thread = Some(normalize_thread(&value(flag)?).map_err(|error| {
                     format!("invalid thread name · {}", thread_refusal_message(error))
+                })?);
+                index += 2;
+            }
+            "--assignee" => {
+                input.assignee = Some(normalize_thread(&value(flag)?).map_err(|error| {
+                    format!("invalid agent name · {}", thread_refusal_message(error))
                 })?);
                 index += 2;
             }
@@ -183,10 +199,15 @@ pub fn parse(args: &[String]) -> Result<ListInput, String> {
     }
 
     if input.task.is_some()
-        && (input.all || input.global || input.project.is_some() || input.thread.is_some())
+        && (input.all
+            || input.global
+            || input.project.is_some()
+            || input.thread.is_some()
+            || input.assignee.is_some())
     {
         return Err(
-            "task operand cannot be used with --project, --desk, --all, or --thread".into(),
+            "task operand cannot be used with --project, --desk, --all, --thread, or --assignee"
+                .into(),
         );
     }
     if input.task.is_some() && (input.done || input.deleted) {
@@ -268,7 +289,14 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
         ListView::Open
     };
     if view == ListView::Deleted {
-        return deleted_rows(&store, &domain, &scope, input.thread.as_deref(), input.all);
+        return deleted_rows(
+            &store,
+            &domain,
+            &scope,
+            input.thread.as_deref(),
+            input.assignee.as_deref(),
+            input.all,
+        );
     }
     let mut rows = domain
         .tasks()
@@ -280,6 +308,12 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
                 .thread
                 .as_deref()
                 .is_none_or(|thread| task.thread.as_deref() == Some(thread))
+        })
+        .filter(|task| {
+            input
+                .assignee
+                .as_deref()
+                .is_none_or(|assignee| task.assignee.as_deref() == Some(assignee))
         })
         .filter(|task| match view {
             ListView::Open => {
@@ -337,6 +371,7 @@ fn deleted_rows(
     domain: &crate::domain::DomainState,
     scope: &Option<TaskScope>,
     thread: Option<&str>,
+    assignee: Option<&str>,
     include_scope: bool,
 ) -> Result<ListResult, ListError> {
     let trash = store
@@ -346,6 +381,7 @@ fn deleted_rows(
         !task.is_notice()
             && scope.as_ref().is_none_or(|scope| task.scope == *scope)
             && thread.is_none_or(|thread| task.thread.as_deref() == Some(thread))
+            && assignee.is_none_or(|assignee| task.assignee.as_deref() == Some(assignee))
     };
     let mut dated: Vec<(std::time::SystemTime, ListRow)> = domain
         .tasks()
@@ -389,6 +425,7 @@ fn row_for(task: &crate::domain::Task) -> ListRow {
             TaskScope::Project { path } => Some(path.clone()),
         },
         thread: task.thread.clone(),
+        assignee: task.assignee.clone(),
         archived: None,
     }
 }

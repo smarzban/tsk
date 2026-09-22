@@ -273,7 +273,7 @@ for (const width of [40, 78, 109])
     await open(page, width);
     await page.keyboard.press("ArrowRight");
     await expect(page.locator(".tsk-attribution")).toHaveText(
-      "    └─ tsk-parity",
+      "    └─ #release · tsk-parity",
     );
     await capture(page, info, "project-peek");
     await page.keyboard.press("Escape");
@@ -283,12 +283,14 @@ for (const width of [40, 78, 109])
     await page.keyboard.press("ArrowDown");
     await page.keyboard.press("ArrowRight");
     await expect(page.locator(".tsk-attribution")).toHaveText(
-      "    └─ #release",
+      "    └─ #release · tsk-parity",
     );
     await capture(page, info, "thread-peek");
     await page.keyboard.press("ArrowDown");
     await page.keyboard.press("ArrowRight");
-    await expect(page.locator(".tsk-attribution")).toHaveCount(0);
+    await expect(page.locator(".tsk-attribution")).toHaveText(
+      "    └─ tsk-parity",
+    );
     await expect(page.locator(".tsk-peek")).toContainText(["no notes yet"]);
     await capture(page, info, "unlabeled-peek");
   });

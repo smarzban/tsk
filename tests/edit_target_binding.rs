@@ -31,6 +31,7 @@ use tsk_tui::domain::{DomainError, DomainState, ProvenanceOrigin, TaskScope};
 use tsk_tui::save_recovery::SaveRecovery;
 use tsk_tui::store::TaskStore;
 use tsk_tui::ui::board::{apply_intent, BoardInputMode, BoardModel, IntentOutcome};
+use tsk_tui::ui::capture::CaptureField;
 use tsk_tui::ui::input::{map_key, BoardIntent};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1057,11 +1058,11 @@ fn background_sync_cannot_redirect_a_bound_task_form_while_its_scope_dropdown_is
     apply_intent(
         &mut domain,
         &mut model,
-        BoardIntent::OpenFormScopeDropdown,
+        BoardIntent::OpenFormDropdown(CaptureField::Scope),
         None,
     )
     .expect("open scope dropdown");
-    assert_eq!(model.input_mode(), BoardInputMode::FormScopeDropdown);
+    assert_eq!(model.input_mode(), BoardInputMode::FormDropdown);
     assert_eq!(model.edit_target(), Some(alpha));
 
     // The same refresh shape the idle loop uses: Bravo moves ahead in queue order.
@@ -1070,19 +1071,19 @@ fn background_sync_cannot_redirect_a_bound_task_form_while_its_scope_dropdown_is
         .expect("move Bravo");
     model.sync_from_domain(&domain);
     assert_eq!(model.edit_target(), Some(alpha));
-    assert_eq!(model.input_mode(), BoardInputMode::FormScopeDropdown);
+    assert_eq!(model.input_mode(), BoardInputMode::FormDropdown);
 
     for _ in 0..model.form_scope_options().len() {
         if model.form_scope_dropdown_choice() == Some(&TaskScope::Global) {
             break;
         }
-        apply_intent(&mut domain, &mut model, BoardIntent::FormScopeNext, None)
+        apply_intent(&mut domain, &mut model, BoardIntent::FormDropdownNext, None)
             .expect("move scope selection");
     }
     apply_intent(
         &mut domain,
         &mut model,
-        BoardIntent::ConfirmFormScopeDropdown,
+        BoardIntent::ConfirmFormDropdown,
         None,
     )
     .expect("apply scope selection");

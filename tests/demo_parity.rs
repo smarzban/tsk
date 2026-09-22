@@ -144,7 +144,7 @@ fn fixture_flow(export: bool) {
         );
         let peek = capture(&model, width, "project-peek-or-split");
         if width < 110 {
-            assert!(peek.contains("└─ tsk-parity"));
+            assert!(peek.contains("└─ #release · tsk-parity"));
         }
         key(
             &mut state,
@@ -262,7 +262,7 @@ fn fixture_flow(export: bool) {
                 KeyModifiers::NONE,
                 width,
             );
-            assert!(!capture(&model, width, "unlabeled-peek").contains("└─"));
+            assert!(capture(&model, width, "unlabeled-peek").contains("└─ tsk-parity"));
         }
     }
 }

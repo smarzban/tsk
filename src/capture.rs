@@ -74,6 +74,26 @@ pub fn capture_save(
     Ok(id)
 }
 
+/// Board quick-add variant carrying a validated optional assignee.
+#[allow(clippy::too_many_arguments)]
+pub fn capture_save_assigned(
+    state: &mut DomainState,
+    store: Option<&TaskStore>,
+    snapshot: &InvocationSnapshot,
+    title: impl AsRef<str>,
+    notes: Option<String>,
+    scope_override: Option<TaskScope>,
+    thread: Option<String>,
+    assignee: Option<String>,
+) -> Result<TaskId, CaptureError> {
+    let scope = scope_override.unwrap_or_else(|| snapshot.default_scope.clone());
+    let id = state.create_assigned(title, notes, scope, snapshot.provenance, thread, assignee)?;
+    if let Some(store) = store {
+        store.reload_merge_save(state)?;
+    }
+    Ok(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

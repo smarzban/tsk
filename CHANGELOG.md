@@ -9,6 +9,25 @@ the GitHub release notes verbatim.
 
 ## Unreleased
 
+### Breaking
+
+- Store format 6 adds optional task assignees and dispatch records. Rolling back refuses the file; restore `tsk.json.v5`.
+
+### Added
+
+- Tasks can be assigned to exact configured agent profiles from quick-add (`!a`), the task page, an anchored Assignee picker, the palette (including marked sets), or CLI add/edit flags. The board peek footer names assignee, thread, then project; CLI output shows assignees, and `tsk list --assignee` filters them.
+- Agent launch profiles can be defined in `<state dir>/agents.toml` with a command template, an always-appended default or custom prompt, and environment values; the first full board open seeds a commented starter file when none exists.
+- Dispatch an assigned project task with `ctrl+g`, the palette, or `tsk dispatch T<n>`. tsk creates a Git worktree and Herdr workspace, launches the agent there, then records the dispatch and starts the task in one save. A second `ctrl+g`, **dispatch again**, or `--again` relaunches; a cleaned record recreates its worktree. Completing from the board can safely clean the worktree first, while `tsk clean T<n> [--json]` and `tsk status T<n> done --clean` provide the same cleanup for scripts. Cleanup refuses dirty worktrees, keeps unmerged branches, removes merged branches, retains a cleaned dispatch record, and only live started dispatches show `◉`.
+
+### Fixed
+
+- Completing a dispatched task from the board always offers worktree cleanup again: a stale prunable worktree left behind by another tool no longer silences the offer and completes the task without a prompt.
+- Dispatch and cleanup failures report Herdr's error message in plain language instead of pasting its raw JSON error document onto the status line.
+- Dispatch cleanup is bound to the recorded non-root Git worktree and matching Herdr workspace, checks branch ancestry against the dispatch base instead of the current checkout, and keeps legacy branches whose base is unknown.
+- Board completion now converges an already-missing dispatched worktree to cleaned in the same save, while already-done or archived tasks and archived project views bypass the cleanup prompt.
+- A malformed `agents.toml` no longer blocks the board or CLI add/edit operations that do not assign a task; assignment reports the configuration error without saving.
+- Assignee choices remain available after task-page selection changes and in the wide projects preview; mouse picking follows the same marked-set route as the keyboard, and stale marked targets cannot affect a later task.
+
 ## v0.11.6
 
 ### Added

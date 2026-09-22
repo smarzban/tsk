@@ -1,5 +1,6 @@
 //! tsk library root.
 
+pub mod agents;
 pub mod announcements;
 pub mod app;
 pub mod board_pane;
@@ -7,6 +8,7 @@ pub mod capture;
 pub mod cli;
 pub mod context;
 pub mod delivery;
+pub mod dispatch;
 pub mod domain;
 pub(crate) mod fsperm;
 pub mod guides;

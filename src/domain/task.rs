@@ -53,6 +53,26 @@ pub struct Notice {
     pub number: Option<u64>,
 }
 
+/// One durable record of an agent launch for a task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Dispatch {
+    /// Fully rendered profile argv, retained for inspection after launch.
+    pub argv: Vec<String>,
+    pub worktree: String,
+    pub branch: String,
+    /// Branch or commit the dispatch branch was created from. Older v6 records omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    pub herdr_workspace_id: String,
+    #[serde(with = "super::time_serde")]
+    pub at: SystemTime,
+    /// The recorded worktree has been removed or was already missing. The record stays
+    /// available for inspection and a deliberate relaunch.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cleaned: bool,
+}
+
 /// One unit of intended work.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -75,6 +95,12 @@ pub struct Task {
     /// Optional normalized thread name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread: Option<String>,
+    /// Optional normalized agent profile name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<String>,
+    /// Last successful dispatch. Status changes never alter this record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch: Option<Dispatch>,
     pub status: HumanStatus,
     pub scope: TaskScope,
     pub provenance: ProvenanceOrigin,
@@ -143,7 +169,7 @@ fn record_mutation_at(task: &mut Task, kind: TaskEventKind, at: SystemTime) {
 }
 
 /// Document version written by this binary.
-pub const STORE_FORMAT_VERSION: u32 = 5;
+pub const STORE_FORMAT_VERSION: u32 = 6;
 
 fn default_next_notice_number() -> u64 {
     1
@@ -387,6 +413,8 @@ impl DomainState {
             title: title.to_string(),
             notes,
             thread,
+            assignee: None,
+            dispatch: None,
             status: HumanStatus::Open,
             scope,
             provenance,
@@ -400,6 +428,21 @@ impl DomainState {
             created_at: now,
             updated_at: now,
         });
+        Ok(id)
+    }
+
+    /// Create with an optional validated assignee in the same creation mutation.
+    pub fn create_assigned(
+        &mut self,
+        title: impl AsRef<str>,
+        notes: Option<String>,
+        scope: TaskScope,
+        provenance: ProvenanceOrigin,
+        thread: Option<String>,
+        assignee: Option<String>,
+    ) -> Result<Uuid, DomainError> {
+        let id = self.create(title, notes, scope, provenance, thread)?;
+        self.task_mut(id)?.assignee = assignee;
         Ok(id)
     }
 
@@ -448,6 +491,19 @@ impl DomainState {
             id,
             expected_revision,
         });
+        Ok(())
+    }
+
+    /// Complete after cleanup mutated the same task in this unsaved transaction.
+    ///
+    /// The cleanup revision must keep its original durable merge base across the completion,
+    /// while the completion alone remains the undoable part.
+    pub fn complete_after_cleanup(&mut self, id: Uuid) -> Result<(), DomainError> {
+        let cleanup_merge_base = self.task_mut(id)?.merge_base_revision;
+        self.complete(id)?;
+        if cleanup_merge_base.is_some() {
+            self.task_mut(id)?.merge_base_revision = cleanup_merge_base;
+        }
         Ok(())
     }
 
@@ -565,6 +621,78 @@ impl DomainState {
         Ok(true)
     }
 
+    /// Assign one task and make the change undoable.
+    pub fn assign(&mut self, id: Uuid, assignee: Option<String>) -> Result<bool, DomainError> {
+        self.assign_batch(&[id], assignee)
+    }
+
+    /// Assign an ordered set as one atomic, undoable action.
+    pub fn assign_batch(
+        &mut self,
+        ids: &[Uuid],
+        assignee: Option<String>,
+    ) -> Result<bool, DomainError> {
+        let ids = self.prevalidate_batch_ids(ids)?;
+        let changed = ids
+            .into_iter()
+            .filter(|id| self.get(*id).is_some_and(|task| task.assignee != assignee))
+            .collect::<Vec<_>>();
+        if changed.is_empty() {
+            return Ok(false);
+        }
+        let at = SystemTime::now();
+        let mut entries = Vec::with_capacity(changed.len());
+        for id in changed {
+            let task = self.task_mut(id)?;
+            let previous = task.assignee.clone();
+            task.assignee = assignee.clone();
+            record_mutation_at(task, TaskEventKind::Assigned, at);
+            entries.push(UndoEntry::Assign {
+                id,
+                previous,
+                expected_revision: task.revision,
+            });
+        }
+        self.undo_stack.push(if entries.len() == 1 {
+            entries.pop().expect("one assignment undo")
+        } else {
+            UndoEntry::Batch { entries }
+        });
+        Ok(true)
+    }
+
+    pub(crate) fn restore_assignee(
+        &mut self,
+        id: Uuid,
+        assignee: Option<String>,
+    ) -> Result<(), DomainError> {
+        let task = self.task_mut(id)?;
+        task.assignee = assignee;
+        record_mutation(task, TaskEventKind::Assigned);
+        Ok(())
+    }
+
+    /// Record one successful launch and set human status to started as one mutation.
+    /// Dispatch is external and deliberately creates no undo entry.
+    pub fn record_dispatch(&mut self, id: Uuid, mut dispatch: Dispatch) -> Result<(), DomainError> {
+        let task = self.task_mut(id)?;
+        task.status = HumanStatus::Started;
+        dispatch.cleaned = false;
+        let at = dispatch.at;
+        task.dispatch = Some(dispatch);
+        record_mutation_at(task, TaskEventKind::Dispatched, at);
+        Ok(())
+    }
+
+    /// Mark the retained dispatch record cleaned without changing human status.
+    pub fn record_dispatch_cleaned(&mut self, id: Uuid) -> Result<(), DomainError> {
+        let task = self.task_mut(id)?;
+        let dispatch = task.dispatch.as_mut().ok_or(DomainError::UnknownId(id))?;
+        dispatch.cleaned = true;
+        record_mutation(task, TaskEventKind::Cleaned);
+        Ok(())
+    }
+
     /// Edit title, notes, scope, and thread together. Title uses the same non-empty trim rule as create.
     pub fn edit(
         &mut self,
@@ -587,6 +715,30 @@ impl DomainState {
         Ok(())
     }
 
+    /// Edit ordinary fields plus assignee without creating an assignment undo entry.
+    pub fn edit_with_assignee(
+        &mut self,
+        id: Uuid,
+        title: impl AsRef<str>,
+        notes: Option<String>,
+        scope: TaskScope,
+        thread: Option<String>,
+        assignee: Option<String>,
+    ) -> Result<(), DomainError> {
+        let changed_assignee = self.get(id).is_some_and(|task| task.assignee != assignee);
+        self.edit(id, title, notes, scope, thread)?;
+        let task = self.task_mut(id)?;
+        task.assignee = assignee;
+        if changed_assignee {
+            let at = task.updated_at;
+            task.history.push(TaskEvent {
+                kind: TaskEventKind::Assigned,
+                at,
+            });
+        }
+        Ok(())
+    }
+
     /// Atomically apply task fields, staged step renames, and staged step removals.
     ///
     /// All input is validated before the task changes. The session takes one revision based on
@@ -601,6 +753,7 @@ impl DomainState {
         notes: Option<String>,
         scope: TaskScope,
         thread: Option<String>,
+        assignee: Option<String>,
         step_renames: &[(Uuid, String)],
         step_removals: &[Uuid],
         step_adds: &[String],
@@ -644,8 +797,10 @@ impl DomainState {
 
         task.title = title.to_string();
         task.notes = notes;
+        let changed_assignee = task.assignee != assignee;
         task.scope = scope;
         task.thread = thread;
+        task.assignee = assignee;
         task.steps.retain(|step| !removals.contains(&step.id));
         for (step_id, text) in &actual_renames {
             if let Some(step) = task.steps.iter_mut().find(|step| step.id == *step_id) {
@@ -664,6 +819,12 @@ impl DomainState {
         task.steps.extend(added);
         record_mutation(task, TaskEventKind::Edited);
         let at = task.updated_at;
+        if changed_assignee {
+            task.history.push(TaskEvent {
+                kind: TaskEventKind::Assigned,
+                at,
+            });
+        }
         task.history
             .extend(actual_renames.iter().map(|_| TaskEvent {
                 kind: TaskEventKind::StepRenamed,
@@ -997,6 +1158,7 @@ impl DomainState {
                             UndoEntry::Complete { .. } => {
                                 task.last_event_at(TaskEventKind::Completed)
                             }
+                            UndoEntry::Assign { .. } => task.last_event_at(TaskEventKind::Assigned),
                             UndoEntry::Batch { .. } => unreachable!("batches are flattened"),
                         }
                     })
@@ -1550,6 +1712,7 @@ mod tests {
                 Some("edited notes".into()),
                 TaskScope::Global,
                 None,
+                None,
                 &[
                     (first, "first revised".into()),
                     (second, "second revised".into()),
@@ -1594,6 +1757,7 @@ mod tests {
                 "Sample task",
                 None,
                 TaskScope::Global,
+                None,
                 None,
                 &[
                     (unchanged, " unchanged ".into()),

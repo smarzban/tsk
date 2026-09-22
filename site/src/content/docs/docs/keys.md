@@ -21,9 +21,10 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 | Add task | `+` |
 | Edit title | `ctrl+e` |
 | Start open or ready task | `ctrl+s` |
+| Dispatch assigned task; press twice to relaunch an existing dispatch | `ctrl+g` |
 | Set ready, the picked queue | `ctrl+n` |
 | Set open, the inbox | `ctrl+o` |
-| Mark done | `ctrl+d` |
+| Mark done; confirm cleanup for a live dispatched worktree | `ctrl+d` |
 | Toggle blocked / ready | `ctrl+b` |
 | Toggle review / ready | `ctrl+r` |
 | Delete, with a second press to confirm | `ctrl+x` or `ctrl+Delete` |
@@ -48,7 +49,7 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 
 `Shift+M` enters or leaves multi-select while the board owns input. While it is active, `Space`, shifted arrows, and a plain task click change marks instead of opening a task. Removing the last mark leaves the mode active. `Shift+M` again from the board, `Esc`, a task action, or a lens change leaves it and clears the set. Text entry keeps `Shift+M` as a capital `M`; `Esc` leaves multi-select before cancelling that surface.
 
-When tasks are marked, the status, delete, and archive shortcuts act on that set; without marks they act on the cursor. `Enter` and `ctrl+e` remain cursor-only. `ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Bulk block and review toggles send every target to blocked or review unless all targets already have that status, in which case they all return to ready. `ctrl+n` and `ctrl+o` can send done tasks directly to ready or open. One `ctrl+u` reverses an entire marked completion or deletion.
+When tasks are marked, the status, delete, and archive shortcuts act on that set; without marks they act on the cursor. `Enter`, `ctrl+e`, and `ctrl+g` remain cursor-only. Dispatch clears the marks and launches only the cursored task. On an existing dispatch, the first `ctrl+g` asks and the second relaunches. `ctrl+d` offers cleanup only for an unmarked cursor task with a live worktree; `y` cleans and completes, `n` completes without cleanup, and `Esc` cancels. A dirty worktree has no `y` choice. `ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Bulk block and review toggles send every target to blocked or review unless all targets already have that status, in which case they all return to ready. `ctrl+n` and `ctrl+o` can send done tasks directly to ready or open. One `ctrl+u` reverses an entire marked completion or deletion.
 
 ## Task page
 
@@ -62,6 +63,7 @@ These keys apply in **view mode**:
 | Add step | `ctrl+a` |
 | Edit title or selected step | `ctrl+e` |
 | Change task status | Board status shortcuts above |
+| Dispatch assigned task | `ctrl+g` |
 | Mark/remove selected step; otherwise confirm/delete task | `ctrl+x` |
 | All shortcuts | `?` |
 | Close task | `Esc` |
@@ -82,8 +84,8 @@ Click a step to select it. Click **+ step** to add. Field clicks become editable
 | Save new step and open next empty row | `Enter` in new step |
 | Retain existing-step rename in session | `Enter` in existing step |
 | Stage selected-step removal | `ctrl+x` in task edit |
-| Open Scope picker / confirm selection | `Enter` |
-| Cycle Scope | `Space` or `←` / `→` |
+| Open Scope or Assignee picker / confirm selection | `Enter` |
+| Cycle Scope or Assignee without opening | `Space` or `←` / `→` |
 | Open / close selected Thread editor | `Enter` |
 | Line start / end | `Home` / `End` |
 | Word left / right | `ctrl+←` / `ctrl+→` |
@@ -92,7 +94,7 @@ Click a step to select it. Click **+ step** to add. Field clicks become editable
 
 `ctrl+e` moves to line end in text editors. `ctrl+a` moves to line start in quick-add; on the task page it adds a step instead. Paste preserves line breaks in Notes and converts them to spaces in single-line fields.
 
-Editing keys take precedence over view-mode status shortcuts. In the step editor, `ctrl+d` and `ctrl+o` still address the task; `ctrl+x` removes the step being edited, staged until the task edit is saved; `ctrl+a` adds another step. Notes are reached with `ctrl+e`, then `Tab`. `Alt+Enter` does not save the task edit.
+The editing ring is Title → Notes → steps → **+ step** → Assignee → Thread → Scope → Title; `Shift+Tab` reverses it. Editing keys take precedence over view-mode status shortcuts. In the step editor, `ctrl+d` and `ctrl+o` still address the task; `ctrl+x` removes the step being edited, staged until the task edit is saved; `ctrl+a` adds another step. Notes are reached with `ctrl+e`, then `Tab`. `Alt+Enter` does not save the task edit.
 
 ## Quick-add
 
@@ -114,9 +116,10 @@ In Herdr quick capture, `Shift+Enter` saves and closes the popup. `Esc` closes a
 | Archived project view | `ctrl+u` restores; `Esc`, `p`, or `1`–`3` leaves |
 | Thread/view selector | Type or paste to filter; arrows or `Tab` select; `Enter` chooses; `Esc` closes |
 | Board search | Type or paste; `Backspace` edits; `Enter` pins; `Esc` clears and closes |
-| Palette | Type to filter; arrows or `Tab` select; `Enter` runs; `Esc` closes |
+| Palette | Type to filter; arrows or `Tab` select; `Enter` runs; `Esc` closes. **set assignee** offers exact agent profiles and **none**; tasks offer **dispatch to @name** or **dispatch again** |
 | Help | Type or paste to filter by key or action; arrows, page keys, or wheel scroll; `Esc` clears the search, then closes |
 | Archived-project launch prompt | `y` restores; `n` or `Esc` keeps archived; `?` opens Help |
+| Dispatch cleanup prompt | `y` cleans and completes; `n` completes only; `Esc` cancels. Dirty worktrees omit `y` |
 | Failed save | `r` or `Enter` retries; `c` or `Esc` cancels |
 
 `j` and `k` are text in board search, thread/view filters, and Help search, not navigation. `?` and `/` are text in every input field, including Help search.

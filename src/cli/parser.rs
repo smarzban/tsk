@@ -49,6 +49,118 @@ pub fn parse_task_address(value: &str) -> Result<TaskAddress, String> {
         .map_err(|_| format!("invalid task id {value}"))
 }
 
+/// Parsed `dispatch` input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlagDispatch {
+    pub task: Option<TaskAddress>,
+    pub again: bool,
+    pub state_dir: Option<PathBuf>,
+    pub help: bool,
+}
+
+pub fn parse_flag_dispatch(args: &[String]) -> Result<FlagDispatch, String> {
+    if args.get(1).map(String::as_str) != Some("dispatch") {
+        return Err("expected dispatch command".into());
+    }
+    let mut parsed = FlagDispatch {
+        task: None,
+        again: false,
+        state_dir: None,
+        help: false,
+    };
+    let mut index = 2;
+    while let Some(flag) = args.get(index).map(String::as_str) {
+        let value = |name: &str| match args.get(index + 1) {
+            Some(value) if !value.starts_with('-') => Ok(value.clone()),
+            _ => Err(format!("missing value for {name}")),
+        };
+        match flag {
+            "--again" => {
+                parsed.again = true;
+                index += 1;
+            }
+            "--help" => {
+                parsed.help = true;
+                index += 1;
+            }
+            flag if flag.starts_with("--state-dir=") => {
+                parsed.state_dir = Some(PathBuf::from(&flag["--state-dir=".len()..]));
+                index += 1;
+            }
+            "--state-dir" => {
+                parsed.state_dir = Some(PathBuf::from(value(flag)?));
+                index += 2;
+            }
+            flag if flag.starts_with('-') => {
+                return Err(format!("unknown dispatch argument {flag}"))
+            }
+            value => {
+                if parsed.task.is_some() {
+                    return Err(format!("unexpected dispatch argument {value}"));
+                }
+                parsed.task = Some(parse_task_address(value)?);
+                index += 1;
+            }
+        }
+    }
+    Ok(parsed)
+}
+
+/// Parsed `clean` input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlagClean {
+    pub task: Option<TaskAddress>,
+    pub json: bool,
+    pub state_dir: Option<PathBuf>,
+    pub help: bool,
+}
+
+pub fn parse_flag_clean(args: &[String]) -> Result<FlagClean, String> {
+    if args.get(1).map(String::as_str) != Some("clean") {
+        return Err("expected clean command".into());
+    }
+    let mut parsed = FlagClean {
+        task: None,
+        json: false,
+        state_dir: None,
+        help: false,
+    };
+    let mut index = 2;
+    while let Some(flag) = args.get(index).map(String::as_str) {
+        let value = |name: &str| match args.get(index + 1) {
+            Some(value) if !value.starts_with('-') => Ok(value.clone()),
+            _ => Err(format!("missing value for {name}")),
+        };
+        match flag {
+            "--json" => {
+                parsed.json = true;
+                index += 1;
+            }
+            "--help" => {
+                parsed.help = true;
+                index += 1;
+            }
+            flag if flag.starts_with("--state-dir=") => {
+                parsed.state_dir = Some(PathBuf::from(&flag["--state-dir=".len()..]));
+                index += 1;
+            }
+            "--state-dir" => {
+                parsed.state_dir = Some(PathBuf::from(value(flag)?));
+                index += 2;
+            }
+            flag if flag.starts_with('-') => return Err(format!("unknown clean argument {flag}")),
+            operand => {
+                if parsed.task.is_some() {
+                    return Err(format!("unexpected clean argument {operand}"));
+                }
+                parsed.task = Some(parse_task_address(operand)?);
+                index += 1;
+            }
+        }
+    }
+    Ok(parsed)
+}
+
 /// Parsed `trash` input. Positionals are the action (`restore`) and the task address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlagTrash {
@@ -270,6 +382,7 @@ pub fn parse_flag_trash(args: &[String]) -> Result<FlagTrash, String> {
 pub struct FlagStatus {
     pub task: Option<TaskAddress>,
     pub status: Option<HumanStatus>,
+    pub clean: bool,
     pub state_dir: Option<PathBuf>,
     pub help: bool,
 }
@@ -283,6 +396,7 @@ pub fn parse_flag_status(args: &[String]) -> Result<FlagStatus, String> {
     let mut parsed = FlagStatus {
         task: None,
         status: None,
+        clean: false,
         state_dir: None,
         help: false,
     };
@@ -294,6 +408,10 @@ pub fn parse_flag_status(args: &[String]) -> Result<FlagStatus, String> {
             _ => Err(format!("missing value for {name}")),
         };
         match flag {
+            "--clean" => {
+                parsed.clean = true;
+                index += 1;
+            }
             "--help" => {
                 parsed.help = true;
                 index += 1;
@@ -331,6 +449,9 @@ pub fn parse_flag_status(args: &[String]) -> Result<FlagStatus, String> {
         }
         _ => unreachable!("positionals are capped at two"),
     }
+    if parsed.clean && parsed.status.is_some() && parsed.status != Some(HumanStatus::Done) {
+        return Err("--clean requires done status".into());
+    }
     Ok(parsed)
 }
 
@@ -352,6 +473,8 @@ pub struct FlagEdit {
     pub task: Option<TaskAddress>,
     pub title: Option<String>,
     pub notes: Option<String>,
+    pub assignee: Option<String>,
+    pub unassign: bool,
     pub state_dir: Option<PathBuf>,
     pub help: bool,
 }
@@ -366,6 +489,8 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
         task: None,
         title: None,
         notes: None,
+        assignee: None,
+        unassign: false,
         state_dir: None,
         help: false,
     };
@@ -392,6 +517,22 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
                 parsed.notes = Some(value(flag)?);
                 index += 2;
             }
+            flag if flag.starts_with("--assignee=") => {
+                parsed.assignee = Some(normalize_thread(&flag["--assignee=".len()..]).map_err(
+                    |error| format!("invalid agent name · {}", thread_refusal_message(error)),
+                )?);
+                index += 1;
+            }
+            "--assignee" => {
+                parsed.assignee = Some(normalize_thread(&value(flag)?).map_err(|error| {
+                    format!("invalid agent name · {}", thread_refusal_message(error))
+                })?);
+                index += 2;
+            }
+            "--unassign" => {
+                parsed.unassign = true;
+                index += 1;
+            }
             "--help" => {
                 parsed.help = true;
                 index += 1;
@@ -413,6 +554,9 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
                 index += 1;
             }
         }
+    }
+    if parsed.unassign && parsed.assignee.is_some() {
+        return Err("--unassign cannot be used with --assignee".into());
     }
     Ok(parsed)
 }
@@ -491,6 +635,7 @@ mod tests {
             FlagStatus {
                 task: Some(TaskAddress::Number(4)),
                 status: Some(HumanStatus::Blocked),
+                clean: false,
                 state_dir: Some(std::path::PathBuf::from("/tmp/dir")),
                 help: false,
             }
@@ -533,6 +678,8 @@ mod tests {
                 task: Some(TaskAddress::Number(12)),
                 title: Some("-fix parser".into()),
                 notes: Some("-5 degrees".into()),
+                assignee: None,
+                unassign: false,
                 state_dir: None,
                 help: false,
             }
@@ -601,6 +748,9 @@ pub struct FlagAdd {
     pub project: Option<String>,
     /// Normalized at the argv boundary so add only receives valid thread names.
     pub thread: Option<String>,
+    /// Normalized agent name, exact profile validation happens at execution.
+    pub assignee: Option<String>,
+    pub unassign: bool,
     pub global: bool,
     pub json: bool,
     pub state_dir: Option<PathBuf>,
@@ -620,6 +770,8 @@ pub fn parse_flag_add(args: &[String]) -> Result<FlagAdd, String> {
         notes: None,
         project: None,
         thread: None,
+        assignee: None,
+        unassign: false,
         global: false,
         json: false,
         state_dir: None,
@@ -682,6 +834,25 @@ pub fn parse_flag_add(args: &[String]) -> Result<FlagAdd, String> {
                 parsed.has_item_flags = true;
                 index += 2;
             }
+            flag if flag.starts_with("--assignee=") => {
+                parsed.assignee = Some(normalize_thread(&flag["--assignee=".len()..]).map_err(
+                    |error| format!("invalid agent name · {}", thread_refusal_message(error)),
+                )?);
+                parsed.has_item_flags = true;
+                index += 1;
+            }
+            "--assignee" => {
+                parsed.assignee = Some(normalize_thread(&value(flag)?).map_err(|error| {
+                    format!("invalid agent name · {}", thread_refusal_message(error))
+                })?);
+                parsed.has_item_flags = true;
+                index += 2;
+            }
+            "--unassign" => {
+                parsed.unassign = true;
+                parsed.has_item_flags = true;
+                index += 1;
+            }
             "--desk" => {
                 parsed.global = true;
                 parsed.has_item_flags = true;
@@ -717,6 +888,9 @@ pub fn parse_flag_add(args: &[String]) -> Result<FlagAdd, String> {
 
     if parsed.global && parsed.project.is_some() {
         return Err("--desk cannot be used with --project".into());
+    }
+    if parsed.unassign && parsed.assignee.is_some() {
+        return Err("--unassign cannot be used with --assignee".into());
     }
     if parsed.has_item_flags && parsed.file.is_some() {
         return Err("item flags cannot be used with --file".into());
