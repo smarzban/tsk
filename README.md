@@ -54,16 +54,9 @@ Windows 10/11 on ARM64 or x86-64, from PowerShell or any other terminal:
 powershell -c "irm https://www.gettsk.sh/install.ps1 | iex"
 ```
 
-The Windows installer detects the native machine architecture, verifies the matching release ZIP, installs under `%LOCALAPPDATA%`, and adds tsk to user PATH. Download `install.ps1` first and pass `-NoPathUpdate` if you do not want the user PATH changed. Signing and package-manager submissions are not included yet.
-
-On macOS and Linux, the installer sets up PATH for Bash and Zsh. If prompted, reopen your terminal
-or run the printed `export` command before continuing. On every platform, when Herdr is already
-installed an interactive install may also ask to run `tsk setup herdr`.
-When agent skill roots are detected, it asks once to install or update the tsk
-skill. The install wrap-up then points at the board (`prefix+t` after a
-successful Herdr setup, or `tsk setup herdr` / `tsk setup` when those asks are
-skipped). Noninteractive installs and Homebrew print the relevant setup commands
-without asking.
+The installers add tsk to your PATH and, when Herdr or coding agents are detected,
+offer to set them up. If prompted, reopen your terminal. Options, upgrades, and
+uninstall are in the [install guide](https://gettsk.sh/docs/install/).
 
 ### Add to Herdr
 
