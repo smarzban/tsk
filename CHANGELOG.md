@@ -13,7 +13,7 @@ the GitHub release notes verbatim.
 
 ### Added
 
-- Windows 10/11 support on ARM64 and x86-64: native release builds, a PowerShell installer (`powershell -c "irm https://www.gettsk.sh/install.ps1 | iex"`), and Herdr integration as a preview.
+- Windows 10/11 support on ARM64 and x86-64: native release builds, a PowerShell installer (`irm https://www.gettsk.sh/install.ps1 | iex`), and Herdr integration as a preview.
 - `h` and `l` mirror the left and right arrows for closing and opening task details in non-text board and task views. Thanks @pisceskkk.
 
 ### Changed
