@@ -9,46 +9,16 @@ the GitHub release notes verbatim.
 
 ## Unreleased
 
-## v0.11.5
-
-### Fixed
-
-- Herdr setup on Windows accepts the supported `0.9.0-preview.*` host builds instead of rejecting them as older than 0.9.0.
-
-## v0.11.4
-
-### Changed
-
-- The Windows PowerShell installer now offers the same Herdr and agent-skill setup prompts and closing guidance as macOS/Linux, while custom and unattended installs remain non-executing.
-- Windows `tsk update` keeps console input available for setup prompts without writing the downloaded installer to a replaceable temporary script.
-
-### Fixed
-
-- Windows installation uses the canonical `www.gettsk.sh/install.ps1` endpoint through a scoped one-liner, reports a successful binary install even if user PATH could not be updated, and gives manual PATH guidance.
-- Windows plugin cleanup refuses unexpected files instead of recursively deleting them.
-
-## v0.11.3
+## v0.11.6
 
 ### Added
 
-- First-class Windows 10/11 ARM64 and x86-64 support for the CLI and TUI, `%LOCALAPPDATA%\tsk` storage, `%APPDATA%\herdr\config.toml` integration with PowerShell launchers, agent setup under `%USERPROFILE%`, native release checks, and locked-executable-safe `tsk update`.
-- Windows releases include checksum-covered native ARM64 and x86-64 MSVC ZIPs and a complete-download PowerShell 5.1/7 installer that selects the native architecture and adds tsk to user PATH. Pass `-NoPathUpdate` to leave user PATH unchanged. Signing and package-manager submissions remain out of scope.
-- `h` and `l` mirror the left and right arrows for closing and opening task details in non-text board and task views; text input keeps both letters.
+- Windows 10/11 support on ARM64 and x86-64: native release builds, a PowerShell installer (`powershell -c "irm https://www.gettsk.sh/install.ps1 | iex"`), and Herdr integration as a preview.
+- `h` and `l` mirror the left and right arrows for closing and opening task details in non-text board and task views. Thanks @pisceskkk.
 
 ### Changed
 
-- `walkthrough.json` and `TSK_CONFIG_DIR` are gone: the retired onboarding card is replaced by the seeded tour tasks, and an existing file is simply ignored.
-- The `tsk.json.1` last-good backup is replaced by rename, so it is never missing mid-save; stale temp files from the release check and notice delivery are swept with the rest.
-- `tsk update` downloads the installer completely before running it, ignores a `TSK_VERSION` set in your shell, refuses to replace a newer copy with an older release, and prints the reason when a Herdr or skill refresh fails.
-- The board's release check uses the same HTTPS-only curl as `tsk update` on macOS/Linux, including `TSK_UPDATE_CURL`; Windows uses native HTTPS and the system trust store.
-- Agent skill installs replace `SKILL.md` atomically, so an interrupted `tsk setup` leaves the previous skill intact. The embedded skill now detects tsk with the shell-neutral `tsk --version`.
-- With neither `HOME` nor `TSK_STATE_DIR` set, tsk refuses to run instead of creating a board in the working directory.
-- The plugin manifest declares `min_herdr_version = "0.9.0"`, matching what setup and the launchers already require.
-
-### Fixed
-
-- The Windows installer bounds downloads and ZIP expansion, detects the native machine architecture, preserves expandable user PATH values, and completes locked updates started from PowerShell 7 with stock Windows PowerShell.
-- Docs: the palette table no longer lists a `Set done` action (use `ctrl+d`); the step editor's task shortcuts are `ctrl+d` and `ctrl+o` (`ctrl+x` removes the step); `ctrl+r` works from any non-done status; a trashed task is found with `tsk list --deleted`, not a task address.
+- `tsk update` is safer: it downloads the installer completely before running it, always follows the latest stable release, refuses to downgrade, and says why a Herdr or skill refresh failed.
 
 ## v0.10.1
 
