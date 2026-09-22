@@ -28,8 +28,7 @@ $MaxExpandedBytes = 250MB
 function Show-Help {
     @'
 Usage:
-  powershell -c "irm https://www.gettsk.sh/install.ps1 | iex"
-  irm https://www.gettsk.sh/install.ps1 | iex    (from an open PowerShell prompt)
+  irm https://www.gettsk.sh/install.ps1 | iex    (in a PowerShell window)
   powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 [-NoPathUpdate] [-Help]
 
 Options:

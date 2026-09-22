@@ -48,10 +48,10 @@ Or install with Homebrew:
 brew install smarzban/tap/tsk
 ```
 
-Windows 10/11 on ARM64 or x86-64, from PowerShell or any other terminal:
+Windows 10/11 on ARM64 or x86-64, in a PowerShell window:
 
 ```powershell
-powershell -c "irm https://www.gettsk.sh/install.ps1 | iex"
+irm https://www.gettsk.sh/install.ps1 | iex
 ```
 
 The installers add tsk to your PATH and, when Herdr or coding agents are detected,
