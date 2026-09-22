@@ -31,8 +31,6 @@ irm https://www.gettsk.sh/install.ps1 | iex
 
 The installer verifies the release ZIP against `SHA256SUMS`, installs `tsk.exe` under `%LOCALAPPDATA%\Programs\tsk\bin`, and adds that directory to your user PATH. Windows artifacts are checksum-verified but not code-signed. To use `-NoPathUpdate`, download the script first and run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -NoPathUpdate`.
 
-Run the one-liner directly rather than wrapping it in `powershell -c "..."`: Microsoft Defender can flag that command-line shape (`Trojan:Win32/Commando.A!ml`) and block it, which PowerShell reports as a misleading `Missing closing '}'` parse error.
-
 On every platform, if Herdr is already installed, an interactive installer asks whether to run `tsk setup herdr`. When global agent skill roots are detected, it also asks once whether to install or update the tsk skill for those agents. The installer closes with one `Done.` line: `Done. Run tsk in a project directory to open the board`, plus `, or press prefix+t in Herdr` after an accepted Herdr setup, and one row per step that did not run: `Herdr plugin:  tsk setup herdr` when Herdr setup was declined, skipped under CI or no TTY, or failed, and `Agent skills:  tsk setup` when the skill ask was declined or skipped. With `TSK_INSTALL_DIR` set, the installer skips both asks and prints `Custom install directory: setup was not run. When you are ready:` with the full binary path in both rows. Homebrew stays noninteractive and prints the `tsk setup herdr` and `tsk setup agents` commands as a caveat.
 
 ## Add to Herdr
