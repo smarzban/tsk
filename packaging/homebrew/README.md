@@ -27,7 +27,7 @@ The formula installs versioned, checksummed GitHub release binaries, not builds
 from main. Homebrew installs are noninteractive, so they do not offer the curl
 installer's Herdr setup prompt; the formula caveat tells you to run
 `tsk setup herdr` to register that same binary and bundled plugin assets with
-Herdr 0.9+, adding prefix+t / prefix+a with conflict confirmation, and
+Herdr 0.9+ (including its supported `0.9.0-preview.*` Windows builds), adding prefix+t / prefix+a with conflict confirmation, and
 `tsk setup agents` to install the tsk skill for your coding agents.
 Homebrew installation itself does not relink plugins or remove task data.
 

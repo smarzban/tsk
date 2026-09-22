@@ -4,6 +4,9 @@
 #
 # id 1 ("Guides and release notes on your desk") was retired before it shipped, so the
 # starter tour is the only thing a 0.7.x upgrader sees. The next entry is id 2.
+#
+# id 4 ("tsk comes to Windows") shipped only in the v0.11.3 to v0.11.5 pre-releases and was
+# retired before a stable release. Preview users may hold watermark 4, so the next entry is id 5.
 
 [[announcement]]
 id = 2

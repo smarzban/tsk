@@ -1,7 +1,7 @@
 ---
 name: tsk-cli
 description: Work the user's tsk task board from the command line. Use when asked to add, update, edit, start, block, finish, archive, or restore a task on the board (or "tsk", "the tsk board", "the desk"), to add or tick steps, to answer "what's on the board", "what's next", "what's on deck", "what needs me", or to refine a task ("refine T12", "let's discuss T12", "what's missing from T12", "improve / rewrite this task"). Always `tsk add|list|status|edit|steps|archive|trash`, never the TUI.
-version: 1.3.0
+version: 1.4.0
 ---
 
 # tsk: the user's task board
@@ -17,8 +17,8 @@ you: how to behave on someone else's board.
 
 ## If tsk is not installed
 
-Run `command -v tsk`. If it is missing, give the user https://gettsk.sh/docs/install.md and
-stop. Never run `install.sh`, `brew`, or `cargo build` unless they asked.
+Run `tsk --version`. If the command is unavailable, give the user https://gettsk.sh/docs/install.md
+and stop. Never run an installer, package manager, or source build unless they asked.
 
 ## Board language
 

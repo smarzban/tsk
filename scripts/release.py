@@ -2,7 +2,7 @@
 """Prepare release artifacts and a tap formula locally. Never publishes anything.
 
 Requires Python 3.11+. Usage: check-version TAG | package TAG TARGET BINARY OUT |
-assemble TAG OUT. Assemble requires all four archives, so partial builds cannot ship.
+assemble TAG OUT. Assemble requires all six archives, so partial builds cannot ship.
 """
 import argparse
 import hashlib
@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import tarfile
 import tomllib
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = "https://github.com/smarzban/tsk"
@@ -20,6 +21,11 @@ TARGETS = (
     "aarch64-unknown-linux-musl",
     "x86_64-unknown-linux-musl",
 )
+WINDOWS_TARGETS = (
+    "aarch64-pc-windows-msvc",
+    "x86_64-pc-windows-msvc",
+)
+RELEASE_TARGETS = TARGETS + WINDOWS_TARGETS
 
 
 def version(tag):
@@ -60,38 +66,52 @@ def check_version(tag, root=ROOT):
 
 def package(tag, target, binary, out):
     version(tag)
-    if target not in TARGETS:
+    if target not in RELEASE_TARGETS:
         raise ValueError(f"unsupported target: {target}")
     binary, out = Path(binary), Path(out)
-    if not binary.is_file() or not os.access(binary, os.X_OK) or not binary.stat().st_size:
+    if not binary.is_file() or not binary.stat().st_size:
+        raise ValueError("binary must be a nonempty executable file")
+    if target not in WINDOWS_TARGETS and not os.access(binary, os.X_OK):
         raise ValueError("binary must be a nonempty executable file")
     out.mkdir(parents=True, exist_ok=True)
-    archive = out / f"tsk-{tag}-{target}.tar.gz"
+    suffix = ".zip" if target in WINDOWS_TARGETS else ".tar.gz"
+    archive = out / f"tsk-{tag}-{target}{suffix}"
     if archive.exists():
         raise ValueError(f"refusing to replace {archive}")
-    with tarfile.open(archive, "x:gz") as bundle:
-        for path, name in [(binary, "tsk"), (ROOT / "LICENSE", "LICENSE"), (ROOT / "README.md", "README.md")]:
-            info = bundle.gettarinfo(str(path), arcname=name)
-            info.uid = info.gid = 0
-            info.uname = info.gname = ""
-            info.mode = 0o755 if name == "tsk" else 0o644
-            with path.open("rb") as data:
-                bundle.addfile(info, data)
+    members = [(binary, "tsk.exe" if target in WINDOWS_TARGETS else "tsk"), (ROOT / "LICENSE", "LICENSE"), (ROOT / "README.md", "README.md")]
+    if target in WINDOWS_TARGETS:
+        with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED) as bundle:
+            for path, name in members:
+                info = zipfile.ZipInfo(name)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = (0o755 if name == "tsk.exe" else 0o644) << 16
+                bundle.writestr(info, path.read_bytes())
+    else:
+        with tarfile.open(archive, "x:gz") as bundle:
+            for path, name in members:
+                info = bundle.gettarinfo(str(path), arcname=name)
+                info.uid = info.gid = 0
+                info.uname = info.gname = ""
+                info.mode = 0o755 if name == "tsk" else 0o644
+                with path.open("rb") as data:
+                    bundle.addfile(info, data)
     return archive
 
 
 def assemble(tag, out):
     version(tag)  # validates the tag shape; the formula carries the version in its URLs
     out = Path(out)
-    archives = [out / f"tsk-{tag}-{target}.tar.gz" for target in TARGETS]
+    unix_archives = [out / f"tsk-{tag}-{target}.tar.gz" for target in TARGETS]
+    windows_archives = [out / f"tsk-{tag}-{target}.zip" for target in WINDOWS_TARGETS]
+    archives = unix_archives + windows_archives
     if any(not path.is_file() for path in archives):
-        raise ValueError("all four platform archives are required")
-    outputs = [out / name for name in ("install.sh", "SHA256SUMS", "tsk.rb")]
+        raise ValueError("all six platform archives are required")
+    outputs = [out / name for name in ("install.sh", "install.ps1", "SHA256SUMS", "tsk.rb")]
     for path in outputs:
         if os.path.lexists(path):
             raise ValueError(f"refusing to replace {path}")
     digests = {}
-    for target, archive in zip(TARGETS, archives):
+    for target, archive in zip(TARGETS, unix_archives):
         with tarfile.open(archive) as bundle:
             members = bundle.getmembers()
             if [m.name for m in members] != ["tsk", "LICENSE", "README.md"] or any(not m.isfile() for m in members):
@@ -99,10 +119,17 @@ def assemble(tag, out):
             if not members[0].size or members[0].mode != 0o755:
                 raise ValueError(f"invalid executable in {archive}")
         digests[target] = hashlib.sha256(archive.read_bytes()).hexdigest()
-    installer = (ROOT / "site/public/install.sh").read_bytes()
-    installer_digest = hashlib.sha256(installer).hexdigest()
-    sums = [f"{digests[target]}  {archive.name}\n" for target, archive in zip(TARGETS, archives)]
-    sums.append(f"{installer_digest}  install.sh\n")
+    for target, archive in zip(WINDOWS_TARGETS, windows_archives):
+        with zipfile.ZipFile(archive) as bundle:
+            members = bundle.infolist()
+            if [member.filename for member in members] != ["tsk.exe", "LICENSE", "README.md"] or any(member.is_dir() for member in members):
+                raise ValueError(f"unexpected archive contents: {archive}")
+            if not members[0].file_size:
+                raise ValueError(f"invalid executable in {archive}")
+        digests[target] = hashlib.sha256(archive.read_bytes()).hexdigest()
+    installers = {name: (ROOT / "site/public" / name).read_bytes() for name in ("install.sh", "install.ps1")}
+    sums = [f"{digests[target]}  {archive.name}\n" for target, archive in zip(RELEASE_TARGETS, archives)]
+    sums.extend(f"{hashlib.sha256(content).hexdigest()}  {name}\n" for name, content in installers.items())
     lines = [
         "# Generated by herdr-tsk scripts/release.py. Commit to homebrew-tap/Formula/tsk.rb.",
         "class Tsk < Formula",
@@ -132,7 +159,7 @@ def assemble(tag, out):
         '    assert_match "Homebrew smoke", shell_output("#{bin}/tsk list --desk")',
         "  end", "end", "",
     ])
-    for path, content in zip(outputs, [installer, "".join(sums).encode("utf-8"), "\n".join(lines).encode("utf-8")]):
+    for path, content in zip(outputs, [installers["install.sh"], installers["install.ps1"], "".join(sums).encode("utf-8"), "\n".join(lines).encode("utf-8")]):
         # Exclusive creation also refuses a file/link introduced after the preflight.
         with path.open("xb") as destination:
             destination.write(content)
@@ -157,7 +184,7 @@ def main():
             package(args.tag, args.target, args.binary, args.out)
         else:
             assemble(args.tag, args.out)
-    except (ValueError, OSError, tarfile.TarError) as error:
+    except (ValueError, OSError, tarfile.TarError, zipfile.BadZipFile, zipfile.LargeZipFile) as error:
         parser.exit(1, f"release: {error}\n")
 
 

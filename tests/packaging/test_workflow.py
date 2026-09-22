@@ -52,12 +52,32 @@ class WorkflowTests(unittest.TestCase):
         triggers = installer.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
         self.assertEqual(re.findall(r"^  ([a-z_]+):", triggers, re.M), ["push", "pull_request"])
         self.assertEqual(triggers.count("branches: [main]"), 2)
-        for path in ["site/public/install.sh", "scripts/release.py", "tests/packaging/**"]:
+        for path in ["site/public/install.sh", "site/public/install.ps1", "scripts/release.py", "tests/packaging/**"]:
             self.assertEqual(triggers.count(f'- "{path}"'), 2, path)
         self.assertIn("shellcheck site/public/install.sh", installer)
+        self.assertRegex(installer, r"os:\s*\[windows-2025, windows-11-arm\]")
+        self.assertIn("runs-on: ${{ matrix.os }}", installer)
+        self.assertIn("powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File site/public/install.ps1 -Help", installer)
+        self.assertIn("windows-11-arm", ci)
+        self.assertIn("if: runner.os != 'Windows'", ci)
+        self.assertIn("if: runner.os == 'Windows'", ci)
         self.assertIn("TSK_TEST_BINARY: ${{ github.workspace }}/target/release/tsk", ci)
         self.assertLess(ci.index("name: Verify"), ci.index("name: Packaging contract tests"))
 
+    def test_release_builds_and_packages_windows_natively(self):
+        source = WORKFLOW.read_text()
+        self.assertRegex(source, r"- os: windows-2025\n\s+target: x86_64-pc-windows-msvc")
+        self.assertRegex(source, r"- os: windows-11-arm\n\s+target: aarch64-pc-windows-msvc")
+        self.assertIn('target/${{ matrix.target }}/release/tsk${{ matrix.exe_suffix }}', source)
+        self.assertIn("os.path.abspath(sys.argv[1])", source)
+        self.assertIn('TSK_TEST_BINARY="$test_binary"', source)
+        self.assertNotIn('TSK_TEST_BINARY="$PWD/$binary"', source)
+        self.assertIn("dist-release/*", source)
+        self.assertIn("cargo test --locked --target", source)
+        self.assertIn("powershell.exe -NoProfile -ExecutionPolicy Bypass -File site/public/install.ps1 -Help", source)
+        self.assertRegex(source, r"python(?:3)? -m unittest discover -s tests/packaging")
+
+    @unittest.skipIf(os.name == "nt", "draft shell handoff runs on Unix CI")
     def test_release_handoff_creates_only_a_draft_for_an_existing_tag(self):
         source = WORKFLOW.read_text()
         commands = re.findall(r"^        run: (gh release create[^\n]+)$", source, re.M)
@@ -80,11 +100,11 @@ class WorkflowTests(unittest.TestCase):
             mock.chmod(0o755)
             assets = root / "dist-release"
             assets.mkdir()
-            names = ["tsk-v1.2.3-aarch64-apple-darwin.tar.gz", "SHA256SUMS", "tsk.rb", "install.sh"]
+            names = ["tsk-v1.2.3-aarch64-apple-darwin.tar.gz", "tsk-v1.2.3-aarch64-pc-windows-msvc.zip", "tsk-v1.2.3-x86_64-pc-windows-msvc.zip", "SHA256SUMS", "tsk.rb", "install.sh", "install.ps1"]
             for name in names:
                 (assets / name).write_text("fixture")
             capture = root / "args.json"
-            environment = dict(os.environ, PATH=f"{commands_dir}:{os.environ['PATH']}", TAG="v1.2.3", GH_CAPTURE=str(capture))
+            environment = dict(os.environ, PATH=f"{commands_dir}{os.pathsep}{os.environ['PATH']}", TAG="v1.2.3", GH_CAPTURE=str(capture))
             for key in ["GH_TOKEN", "GITHUB_TOKEN"]:
                 environment.pop(key, None)
             subprocess.run(["bash", "-eu", "-c", commands[0]], cwd=root, env=environment, check=True, capture_output=True)

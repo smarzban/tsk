@@ -172,6 +172,24 @@ fn old_herdr_is_refused_before_config_check_with_a_readable_message() {
     assert!(!h.root.join("checked").exists());
 }
 #[test]
+fn supported_windows_preview_reaches_config_check_and_plugin_link() {
+    let h = host();
+    let output = h
+        .command()
+        .env("HERDR_VERSION", "0.9.0-preview.2026-09-16-2c29fb29e302")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let calls = h.calls();
+    assert!(calls.contains("config check"), "{calls}");
+    assert!(calls.contains("plugin link"), "{calls}");
+}
+
+#[test]
 fn herdr_stderr_in_a_setup_failure_keeps_its_line_breaks() {
     let h = host();
     let output = h.run("invalid");

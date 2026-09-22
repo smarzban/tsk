@@ -53,3 +53,19 @@ jobs:
             cat deploy.log
             exit "$status"
           fi
+
+  windows-installer-route:
+    name: Windows PowerShell installer route
+    needs: deploy
+    runs-on: windows-2025
+    timeout-minutes: 5
+    steps:
+      - name: Fetch the documented URL with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $url = 'https://www.gettsk.sh/install.ps1'
+          $response = Invoke-WebRequest -UseBasicParsing $url
+          if ($response.StatusCode -ne 200) { throw "expected HTTP 200, got $($response.StatusCode)" }
+          if ($response.BaseResponse.ResponseUri.AbsoluteUri -ne $url) { throw "installer URL redirected to $($response.BaseResponse.ResponseUri)" }
+          if ($response.Headers['Content-Type'] -notlike 'text/plain*') { throw "unexpected Content-Type: $($response.Headers['Content-Type'])" }
+          if ($response.Content -notmatch '^# Install a published tsk release' -or $response.Content -notmatch 'function Main') { throw 'response is not the PowerShell installer' }

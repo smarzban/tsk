@@ -44,11 +44,11 @@ fn min_herdr_version_matches_what_setup_requires() {
 }
 
 #[test]
-fn platforms_include_linux_and_macos() {
+fn platforms_include_linux_macos_and_windows() {
     let text = read_manifest();
     assert!(
-        text.contains(r#"platforms = ["linux", "macos"]"#),
-        "top-level platforms must include linux and macos"
+        text.contains(r#"platforms = ["linux", "macos", "windows"]"#),
+        "top-level platforms must include linux, macos, and windows"
     );
 }
 
@@ -128,9 +128,20 @@ fn no_host_park_or_resume_action() {
         rest = &rest[end..];
     }
     assert_eq!(
-        action_ids,
-        vec!["open-board".to_string(), "quick-capture".to_string()],
-        "host actions must stay open-board and quick-capture; got {action_ids:?}"
+        action_ids
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        [
+            "open-board".to_string(),
+            "open-board-windows".to_string(),
+            "quick-capture".to_string(),
+            "quick-capture-windows".to_string(),
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>(),
+        "host actions must stay open-board, open-board-windows, quick-capture, and \
+         quick-capture-windows; got {action_ids:?}"
     );
     for forbidden in [
         "park",

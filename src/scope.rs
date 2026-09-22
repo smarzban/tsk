@@ -12,17 +12,17 @@ use crate::domain::{DomainState, TaskScope};
 /// Comparison only: stored scope identity is never rewritten through this. When both
 /// sides exist on disk they are compared canonically, so the same repository reached
 /// as `/tmp/repo` and `/private/tmp/repo` (macOS) still matches. A missing or
-/// nonexistent side falls back to lexical equality, so a stored path whose directory
-/// has not been created yet behaves exactly as before.
+/// nonexistent side falls back to platform lexical equality (case-insensitive on Windows),
+/// so a stored path whose directory has not been created yet stays addressable.
 pub fn paths_equivalent(a: &str, b: &str) -> bool {
-    if trim(a) == trim(b) {
+    if lexical_path_eq(trim(a), trim(b)) {
         return true;
     }
     match (
         std::fs::canonicalize(Path::new(a)),
         std::fs::canonicalize(Path::new(b)),
     ) {
-        (Ok(ca), Ok(cb)) => ca == cb,
+        (Ok(ca), Ok(cb)) => lexical_path_eq(&ca.to_string_lossy(), &cb.to_string_lossy()),
         _ => false,
     }
 }
@@ -42,10 +42,13 @@ pub(crate) struct PathIdentityCache {
 
 impl PathIdentityCache {
     pub(crate) fn equivalent(&self, a: &str, b: &str) -> bool {
-        if trim(a) == trim(b) {
+        if lexical_path_eq(trim(a), trim(b)) {
             return true;
         }
-        self.canonical_path(a) == self.canonical_path(b) && self.canonical_path(a).is_some()
+        match (self.canonical_path(a), self.canonical_path(b)) {
+            (Some(a), Some(b)) => lexical_path_eq(&a.to_string_lossy(), &b.to_string_lossy()),
+            _ => false,
+        }
     }
 
     fn canonical_path(&self, path: &str) -> Option<PathBuf> {
@@ -63,13 +66,51 @@ impl PathIdentityCache {
     }
 }
 
+#[cfg(not(windows))]
+fn lexical_path_eq(a: &str, b: &str) -> bool {
+    a == b
+}
+
+#[cfg(windows)]
+fn lexical_path_eq(a: &str, b: &str) -> bool {
+    use windows_sys::Win32::Globalization::{CompareStringOrdinal, CSTR_EQUAL};
+
+    let a = a.encode_utf16().collect::<Vec<_>>();
+    let b = b.encode_utf16().collect::<Vec<_>>();
+    let (Ok(a_len), Ok(b_len)) = (i32::try_from(a.len()), i32::try_from(b.len())) else {
+        return false;
+    };
+    // SAFETY: the UTF-16 buffers remain valid for the call and their explicit lengths keep the
+    // API from reading beyond them. CompareStringOrdinal retains no pointers.
+    unsafe { CompareStringOrdinal(a.as_ptr(), a_len, b.as_ptr(), b_len, 1) == CSTR_EQUAL }
+}
+
+fn is_path_separator(character: char) -> bool {
+    character == '/' || (cfg!(windows) && character == '\\')
+}
+
+fn has_path_separator(path: &str) -> bool {
+    path.chars().any(is_path_separator)
+}
+
 fn trim(path: &str) -> &str {
-    let trimmed = path.trim_end_matches('/');
-    if trimmed.is_empty() && path.starts_with('/') {
-        "/"
-    } else {
-        trimmed
+    let trimmed = path.trim_end_matches(is_path_separator);
+    if trimmed.is_empty() && path.chars().next().is_some_and(is_path_separator) {
+        return &path[..1];
     }
+    // Keep a Windows drive root absolute. Trimming `C:\\` to `C:` changes it into a
+    // drive-relative path with different semantics.
+    #[cfg(windows)]
+    if trimmed.len() == 2
+        && trimmed.as_bytes()[1] == b':'
+        && path
+            .as_bytes()
+            .get(2)
+            .is_some_and(|byte| matches!(byte, b'/' | b'\\'))
+    {
+        return path;
+    }
+    trimmed
 }
 
 #[cfg(all(test, unix))]
@@ -352,7 +393,7 @@ pub fn resolve_project_path(
     snapshot: Option<&InvocationSnapshot>,
 ) -> Result<String, ProjectResolveError> {
     let candidates = project_candidates(domain, snapshot);
-    if token.contains('/') || token == "~" {
+    if has_path_separator(token) || token == "~" {
         let expanded = expand_home(token);
         let path = Path::new(&expanded);
         if !path.is_absolute() || !path.is_dir() {
@@ -378,7 +419,7 @@ pub(crate) fn resolve_permissive_project_path(
     domain: &DomainState,
     snapshot: Option<&InvocationSnapshot>,
 ) -> String {
-    if token.contains('/') {
+    if has_path_separator(token) {
         return token.to_string();
     }
     let mut candidates = stored_project_paths(domain);
@@ -472,14 +513,16 @@ fn stored_project_paths(domain: &DomainState) -> BTreeSet<String> {
 }
 
 fn basename_matches(path: &str, token: &str) -> bool {
-    path.trim_end_matches('/')
-        .rsplit('/')
+    path.trim_end_matches(is_path_separator)
+        .rsplit(is_path_separator)
         .find(|component| !component.is_empty())
         .is_some_and(|basename| basename.eq_ignore_ascii_case(token))
 }
 
 fn expand_home(token: &str) -> String {
-    let home = std::env::var_os("HOME");
+    let home = std::env::var_os("HOME").filter(|value| !value.is_empty());
+    #[cfg(windows)]
+    let home = home.or_else(|| std::env::var_os("USERPROFILE").filter(|value| !value.is_empty()));
     expand_home_from(token, home.as_deref())
 }
 
@@ -489,6 +532,8 @@ fn expand_home_from(token: &str, home: Option<&std::ffi::OsStr>) -> String {
     } else {
         token.strip_prefix("~/")
     };
+    #[cfg(windows)]
+    let remainder = remainder.or_else(|| token.strip_prefix("~\\"));
     let Some(remainder) = remainder else {
         return token.to_string();
     };
@@ -496,9 +541,62 @@ fn expand_home_from(token: &str, home: Option<&std::ffi::OsStr>) -> String {
         return token.to_string();
     };
     let mut expanded = PathBuf::from(home);
-    let remainder = remainder.trim_start_matches('/');
+    let remainder = remainder.trim_start_matches(is_path_separator);
     if !remainder.is_empty() {
         expanded.push(remainder);
     }
     expanded.to_string_lossy().into_owned()
+}
+
+#[cfg(test)]
+mod portable_path_tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_home_tokens_expand_with_either_separator() {
+        let home = std::ffi::OsStr::new(r"C:\Users\example");
+        assert_eq!(
+            expand_home_from(r"~\code\app", Some(home)),
+            PathBuf::from(home).join(r"code\app").to_string_lossy()
+        );
+        assert_eq!(
+            expand_home_from("~/code/app", Some(home)),
+            PathBuf::from(home).join("code/app").to_string_lossy()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_drive_root_is_not_changed_to_a_drive_relative_path() {
+        assert_eq!(trim(r"C:\"), r"C:\");
+        assert!(basename_matches(r"C:\work\tsk\", "tsk"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn missing_windows_paths_compare_case_insensitively() {
+        assert!(paths_equivalent(
+            r"C:\Missing\RéPo\App",
+            r"c:\missing\répo\app"
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn permissive_resolution_keeps_a_windows_path_literal() {
+        let domain = DomainState::new();
+        assert_eq!(
+            resolve_permissive_project_path(r"C:\work\tsk", &domain, None),
+            r"C:\work\tsk"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backslash_remains_a_literal_unix_filename_character() {
+        assert_eq!(trim(r"/tmp/foo\"), r"/tmp/foo\");
+        assert!(basename_matches(r"/tmp/foo\bar", r"foo\bar"));
+        assert!(!has_path_separator(r"foo\bar"));
+    }
 }

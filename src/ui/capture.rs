@@ -2554,6 +2554,7 @@ mod tests {
         assert!(render_plain(&model, 80, 16).contains("hyphens"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn capture_scope_never_offers_an_archived_this_project() {
         // The archived record names the project through a symlink while the invocation

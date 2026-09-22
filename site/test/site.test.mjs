@@ -329,7 +329,10 @@ test("landing agents section points at markdown twins", async () => {
 test("quickstarts use the installer, Herdr setup, and task capture", async () => {
   for (const file of ["../../README.md", "../src/content/docs/docs/install.md", "../src/pages/index.astro"]) {
     const text = await read(file);
-    assert.ok(text.includes("curl -fsSL https://gettsk.sh/install.sh | sh"), file);
+    const commands = text.replaceAll("&amp;", "&").replaceAll("&#123;", "{").replaceAll("&#125;", "}");
+    assert.ok(commands.includes("curl -fsSL https://gettsk.sh/install.sh | sh"), file);
+    assert.ok(commands.includes('powershell -c "irm https://www.gettsk.sh/install.ps1 | iex"'), file);
+    assert.ok(!text.includes("https://gettsk.sh/install.ps1"), file);
     for (const command of ["brew install smarzban/tap/tsk", "tsk setup herdr", "herdr server reload-config", 'tsk add -t "your task title"', "prefix+t", "prefix+a"]) {
       assert.ok(text.includes(command), `${file}: ${command}`);
     }

@@ -1,5 +1,9 @@
 # tsk
 
+[![CI](https://github.com/smarzban/tsk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/smarzban/tsk/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platforms: Linux • macOS • Windows](https://img.shields.io/badge/platforms-Linux%20%E2%80%A2%20macOS%20%E2%80%A2%20Windows-blue.svg)](https://gettsk.sh/docs/install/)
+
 A terminal task board for you and your agents: one shared queue, a TUI for you, a CLI for them.
 
 Keep the next task, the work in progress, and the things waiting on you in view.
@@ -32,6 +36,8 @@ in Herdr worktrees.
 
 ### Install
 
+macOS and Linux (ARM64 or x86-64):
+
 ```sh
 curl -fsSL https://gettsk.sh/install.sh | sh
 ```
@@ -42,13 +48,21 @@ Or install with Homebrew:
 brew install smarzban/tap/tsk
 ```
 
-The installer sets up PATH for Bash and Zsh. If prompted, reopen your terminal
-or run the printed `export` command before continuing. When Herdr is already
-installed, an interactive curl install may also ask to run `tsk setup herdr`.
+Windows 10/11 on ARM64 or x86-64, from PowerShell or any other terminal:
+
+```powershell
+powershell -c "irm https://www.gettsk.sh/install.ps1 | iex"
+```
+
+The Windows installer detects the native machine architecture, verifies the matching release ZIP, installs under `%LOCALAPPDATA%`, and adds tsk to user PATH. Download `install.ps1` first and pass `-NoPathUpdate` if you do not want the user PATH changed. Signing and package-manager submissions are not included yet.
+
+On macOS and Linux, the installer sets up PATH for Bash and Zsh. If prompted, reopen your terminal
+or run the printed `export` command before continuing. On every platform, when Herdr is already
+installed an interactive install may also ask to run `tsk setup herdr`.
 When agent skill roots are detected, it asks once to install or update the tsk
 skill. The install wrap-up then points at the board (`prefix+t` after a
 successful Herdr setup, or `tsk setup herdr` / `tsk setup` when those asks are
-skipped). Noninteractive installs and Homebrew print the Herdr setup command
+skipped). Noninteractive installs and Homebrew print the relevant setup commands
 without asking.
 
 ### Add to Herdr

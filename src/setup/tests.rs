@@ -22,6 +22,124 @@ impl Drop for Temp {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
+#[cfg(windows)]
+fn junction(link: &Path, target: &Path) {
+    let output = Command::new("cmd.exe")
+        .args(["/D", "/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .expect("run mklink");
+    assert!(
+        output.status.success(),
+        "mklink failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_setup_rejects_a_junction_ancestor_before_creating_directories() {
+    let temp = Temp::new();
+    let target = temp.0.join("outside");
+    let link = temp.0.join("redirect");
+    fs::create_dir(&target).unwrap();
+    junction(&link, &target);
+
+    let result = Dir::open(&link.join("herdr"), true);
+
+    assert!(result.is_err(), "a junction ancestor must be refused");
+    assert!(!target.join("herdr").exists());
+    fs::remove_dir(&link).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_generated_assets_are_filtered_and_pin_the_installed_binary() {
+    let binary = Path::new(r"C:\Program Files\O'Brien\tsk.exe");
+    let assets = managed_assets(binary, "9.8.7").unwrap();
+    let manifest = assets
+        .iter()
+        .find(|(name, _)| *name == "herdr-plugin.toml")
+        .unwrap()
+        .1
+        .parse::<DocumentMut>()
+        .unwrap();
+    let actions = manifest["actions"].as_array_of_tables().unwrap();
+    assert_eq!(actions.len(), 2);
+    assert_eq!(
+        actions.get(0).unwrap()["id"].as_str(),
+        Some("open-board-windows")
+    );
+    assert_eq!(
+        actions.get(1).unwrap()["id"].as_str(),
+        Some("quick-capture-windows")
+    );
+    assert!(actions.iter().all(|action| {
+        action["platforms"].as_array().is_some_and(|platforms| {
+            platforms.len() == 1
+                && platforms.get(0).and_then(|entry| entry.as_str()) == Some("windows")
+        })
+    }));
+    let pane = manifest["panes"]
+        .as_array_of_tables()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(
+        pane["command"]
+            .as_array()
+            .unwrap()
+            .get(0)
+            .and_then(|entry| entry.as_str()),
+        binary.to_str()
+    );
+
+    let board = &assets
+        .iter()
+        .find(|(name, _)| *name == "scripts/open-board.ps1")
+        .unwrap()
+        .1;
+    assert!(board.contains(r"$pluginBin = 'C:\Program Files\O''Brien\tsk.exe'"));
+    assert!(!board.contains("$env:TSK_BIN"));
+    assert!(!board.contains(r"target\release\tsk.exe"));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_bare_tsk_path_lookup_resolves_the_exe_suffix() {
+    let temp = Temp::new();
+    let executable = temp.0.join("tsk.exe");
+    fs::write(&executable, b"fixture").unwrap();
+
+    assert_eq!(
+        resolve_installed_binary(Path::new("tsk"), temp.0.as_os_str(), &executable).unwrap(),
+        executable
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_setup_rejects_a_reparse_point_file_before_reading_it() {
+    use std::os::windows::fs::symlink_file;
+
+    let temp = Temp::new();
+    let outside = temp.0.join("outside.toml");
+    let linked = temp.0.join("config.toml");
+    fs::write(&outside, "outside").unwrap();
+    if let Err(error) = symlink_file(&outside, &linked) {
+        if error.kind() == io::ErrorKind::PermissionDenied {
+            eprintln!("symlink privilege unavailable; reparse-file assertion skipped");
+            return;
+        }
+        panic!("create file symlink: {error}");
+    }
+    let dir = Dir::open(&temp.0, false).unwrap();
+    assert!(dir.read(Path::new("config.toml")).is_err());
+    assert!(dir.exists(Path::new("config.toml")).is_err());
+    assert_eq!(fs::read_to_string(outside).unwrap(), "outside");
+}
+
 #[test]
 fn real_confirmation_parser_accepts_only_yes_and_rejects_eof() {
     for (answer, expected) in [
@@ -203,6 +321,7 @@ fn unsuccessful_upgrade_keeps_previous_registration_and_assets() {
     assert_eq!(*old.borrow(), Some(a.root));
     assert_eq!(fs::read(&config).unwrap(), before);
 }
+#[cfg(unix)]
 #[test]
 fn descriptor_writes_and_cleanup_stay_pinned_after_parent_swap() {
     use std::os::unix::fs::symlink;
@@ -270,7 +389,10 @@ fn cleanup_preserves_modified_or_incomplete_managed_roots() {
             &mut host,
         )
         .unwrap();
+        #[cfg(unix)]
         let file = a.root.join("scripts/open-capture.sh");
+        #[cfg(windows)]
+        let file = a.root.join("scripts/open-capture.ps1");
         if missing {
             fs::remove_file(&file).unwrap();
         } else {
@@ -294,11 +416,36 @@ fn cleanup_preserves_modified_or_incomplete_managed_roots() {
         }));
         assert!(error.contains(a.root.to_str().unwrap()));
         assert!(a.root.join("herdr-plugin.toml").exists());
+        #[cfg(unix)]
         assert!(a.root.join("scripts/open-board.sh").exists());
+        #[cfg(windows)]
+        assert!(a.root.join("scripts/open-board.ps1").exists());
         if !missing {
             assert_eq!(fs::read_to_string(file).unwrap(), "user edit");
         }
     }
+}
+
+#[test]
+fn cleanup_never_removes_an_unexpected_file_from_a_stale_managed_root() {
+    let temp = Temp::new();
+    let base = Dir::open(&temp.0.join("tsk-plugins"), true).unwrap();
+    let binary = temp.0.join("bin/tsk");
+    let assets = managed_assets(&binary, "0.5.0").unwrap();
+    let stale_name = asset_root_name(&assets);
+    let stale = base.child(Path::new(&stale_name), true).unwrap();
+    let scripts = stale.child(Path::new("scripts"), true).unwrap();
+    for (name, text) in assets {
+        fs::write(stale.path.join(name), text).unwrap();
+    }
+    let unexpected = scripts.path.join("keep-me.txt");
+    fs::write(&unexpected, "not owned by tsk").unwrap();
+    let current = base.child(Path::new("current"), true).unwrap();
+
+    cleanup_old(&base, &current, &stale.path)
+        .expect_err("unexpected file must prevent complete cleanup");
+
+    assert_eq!(fs::read_to_string(unexpected).unwrap(), "not owned by tsk");
 }
 
 #[test]
@@ -407,11 +554,22 @@ fn old_herdr_is_refused_before_any_write_with_an_actionable_message() {
         err,
         "herdr 0.6.8 found; tsk needs 0.9.0 or newer. Update Herdr, then run tsk setup herdr again"
     );
-    // A pre-release of the minimum is not the minimum.
-    assert!(require_min_herdr("herdr 0.9.0-beta.2")
-        .unwrap_err()
-        .to_string()
-        .starts_with("herdr 0.9.0-beta.2 found"));
+    // Herdr's supported Windows distribution is published from the 0.9 preview line.
+    assert!(require_min_herdr("herdr 0.9.0-preview").is_ok());
+    assert!(require_min_herdr("herdr 0.9.0-preview.2026-09-16-2c29fb29e302").is_ok());
+    // Other or malformed pre-releases of the minimum are not known to carry the required host API.
+    for version in [
+        "0.9.0-beta.2",
+        "0.9.0-preview.",
+        "0.9.0-preview..1",
+        "0.9.0-preview.bad_suffix",
+        "0.9.0-preview.01",
+    ] {
+        let err = require_min_herdr(&format!("herdr {version}"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with(&format!("herdr {version} found")), "{err}");
+    }
     // Only the version after the word `herdr` counts, never a stray semver in a banner.
     assert!(require_min_herdr("warning: helper 1.2.3\nherdr 0.6.8")
         .unwrap_err()
