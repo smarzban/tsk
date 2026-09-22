@@ -191,7 +191,9 @@ migration or design work they imply. What the behaviour *is* lives in the docs
   the CLI, or the installer, and dedupe by catalog id so a lost `delivery.json`
   converges. `src/announcements/catalog.toml` ids are positive and increasing in file
   order and the changelog link lives in `notes`, never `title`; the parser refuses
-  otherwise. Append one entry per release worth a board notice.
+  otherwise. Append one entry per release worth a board notice. An id that shipped in any
+  release, pre-releases included, is used forever: removing its entry leaves a comment in the
+  catalog header and the next entry takes a higher id.
 
 ### UI
 
@@ -251,6 +253,24 @@ migration or design work they imply. What the behaviour *is* lives in the docs
   another key; a binding on the default key still goes through conflict repair. `tsk update`
   refreshes a bound plugin noninteractively and relies on both.
 
+### Windows installer
+
+- Users run `site/public/install.ps1` as `irm … | iex` inside their own session, so it has
+  no top-level `param()` (it would overwrite the caller's `$Help`/`$NoPathUpdate`) and runs its
+  whole body in its own scope via `$__tskInstallerBody`; state lives in `$TskInstallerState`,
+  never `$script:`. Only a file run (the block's `.File` is set) forwards `$args` or
+  dot-sources: under `iex`, `$args` belong to the enclosing command. Tests dot-source the file
+  and override hooks guarded by `Test-Path Function:\…`; keep those guards.
+- Document only the in-session `irm https://www.gettsk.sh/install.ps1 | iex`. Microsoft
+  Defender flags the `powershell -c "irm … | iex"` command-line shape
+  (`Trojan:Win32/Commando.A!ml`) and PowerShell reports the block as a misleading
+  `Missing closing '}'` parse error; a site test refuses that form in the docs. Use the `www`
+  host (the apex 308-redirects); `site/vercel.json` serves `/install.ps1` as `text/plain`, and
+  the post-deploy Vercel job checks it with Windows PowerShell 5.1.
+- Windows smokes can run natively when a Windows host is available to the agent; otherwise
+  they are owner steps. A custom `TSK_INSTALL_DIR` still edits the user PATH, so a smoke
+  defines `Update-InstallerPath` first or cleans PATH afterwards.
+
 ## Cutting a release
 
 Full detail and user contracts: `packaging/README.md`. Short form:
@@ -258,8 +278,9 @@ Full detail and user contracts: `packaging/README.md`. Short form:
 **Version bump (one PR).** Update `Cargo.toml`, `Cargo.lock`, `herdr-plugin.toml`, and
 `site/src/version.mjs` together; rename `CHANGELOG.md` Unreleased to `## vX.Y.Z` and open
 a fresh empty Unreleased above it; append a `[[announcement]]` if the release deserves a
-board notice. `scripts/release.py
-check-version vX.Y.Z` must pass. Merge, then push the stable tag `vX.Y.Z` with owner
+board notice. Versions that only ever shipped as pre-releases get no CHANGELOG section of their
+own: fold them into the next stable version's section, a few short user-facing lines.
+`scripts/release.py check-version vX.Y.Z` must pass. Merge, then push the stable tag `vX.Y.Z` with owner
 approval. Tags are `v[0-9]+.[0-9]+.[0-9]+` only: the workflow, `release.py`, and
 both installers refuse anything else, so there are no `-rc` tags.
 
@@ -274,7 +295,9 @@ tag or an existing release; it never publishes or updates the tap. The draft is 
 `releases/latest`, so the default installer path and the board's update nudge stay on the
 previous stable while the assets are public. It is listed on `/releases` with a
 `Pre-release` badge and notifies release watchers; only a draft is fully hidden, and a
-draft cannot serve the curl one-liner. Exercise the real user flow with isolated state:
+draft cannot serve the curl one-liner. While it is a pre-release, its notes carry a short
+"Testing this pre-release" block with the pinned `TSK_VERSION` commands; remove it at
+promotion. Exercise the real user flow with isolated state:
 
 ```
 TSK_VERSION=vX.Y.Z TSK_INSTALL_DIR=/tmp/tsk-rc/bin sh -c "$(curl -fsSL https://gettsk.sh/install.sh)"
@@ -286,8 +309,8 @@ The site serves both installers from `main`; if one changed in this release fetc
 installer from `releases/download/vX.Y.Z/` instead. Smoke `tsk setup herdr` under isolated
 roots. Rehearse the update path too, against a throwaway `HOME` holding an outdated skill
 and a Herdr config on a custom key:
-`env HOME=/tmp/x/home XDG_CONFIG_HOME=/tmp/x/home/.config HERDR_SOCKET_PATH=/tmp/x/none.sock TSK_VERSION=vX.Y.Z TSK_UPDATE=1 TSK_CURRENT_VERSION=vPREV TSK_INSTALL_DIR=/tmp/x/bin sh /tmp/x/install.sh`. A failed rehearsal burns the tag: fix forward with the next patch version and leave
-(or, with approval, delete) the bad pre-release.
+`env HOME=/tmp/x/home XDG_CONFIG_HOME=/tmp/x/home/.config HERDR_SOCKET_PATH=/tmp/x/none.sock TSK_VERSION=vX.Y.Z TSK_UPDATE=1 TSK_CURRENT_VERSION=vPREV TSK_INSTALL_DIR=/tmp/x/bin sh /tmp/x/install.sh`. A failed rehearsal burns the tag: fix forward with the next patch version and leave the bad
+pre-release in place. A published version is never deleted, moved, or reused.
 
 Rehearsal traps, learned the hard way:
 
@@ -301,10 +324,9 @@ Rehearsal traps, learned the hard way:
 - `brew install --formula tsk.rb` on a machine with the tap's `tsk` installed replaces the
   daily copy (same formula name) and removes the old keg. Use a throwaway machine or
   `brew unlink` first and expect to `brew reinstall smarzban/tap/tsk` afterwards.
-- Public installer flows plus Linux, Intel, and both Windows architecture smokes are owner
-  steps. An agent sandbox cannot execute a downloaded script, and the checked-in rehearsal
-  can only run the macOS ARM archive binary directly; the agent verifies checksums, the archive binary, the upgrade
-  path and setup, and says which of these it did not run.
+- Public installer flows plus Linux, Intel, and Windows smokes are owner steps unless the
+  agent has a host for them (see Windows installer above). The agent verifies checksums, the
+  archive binaries, the upgrade path and setup, and says which of these it did not run.
 
 **Official release.** Replace the draft's skeleton and checklist with the version's
 `CHANGELOG.md` section verbatim (keep the one-line Install section), then promote the tested
