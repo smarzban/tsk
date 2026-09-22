@@ -1,13 +1,26 @@
 # Install a published tsk release on Windows 10/11 ARM64 or x64.
 # Compatible with Windows PowerShell 5.1. No task data is changed.
-[CmdletBinding()]
-param(
-    [switch] $Help,
-    [switch] $NoPathUpdate
-)
+# `irm ... | iex` evaluates this text in the caller's scope, so there is deliberately no
+# top-level param() block: it would overwrite a caller's $Help or $NoPathUpdate. The body runs
+# in its own scope so strict mode, preferences, functions, and state never leak into the
+# user's session; options are parsed from its argument list. Dot-sourcing (used by tests)
+# keeps the functions in the caller's scope. The body is not indented because the
+# here-strings below must close at column 0.
+$__tskInstallerBody = {
+param([object[]] $InstallerArguments)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
+$Help = $false
+$NoPathUpdate = $false
+foreach ($argument in @($InstallerArguments)) {
+    switch -Regex ([string]$argument) {
+        '^-(?i:help|h|\?)$' { $Help = $true }
+        '^-(?i:nopathupdate)$' { $NoPathUpdate = $true }
+        default { throw "tsk install: unknown option '$argument' (run with -Help)" }
+    }
+}
+$TskInstallerState = @{ LastMoveError = 0; HerdrWrap = ''; SkillsWrap = '' }
 $MaxArchiveBytes = 100MB
 $MaxChecksumBytes = 1MB
 $MaxExpandedBytes = 250MB
@@ -15,7 +28,8 @@ $MaxExpandedBytes = 250MB
 function Show-Help {
     @'
 Usage:
-  & { irm https://www.gettsk.sh/install.ps1 | iex }
+  powershell -c "irm https://www.gettsk.sh/install.ps1 | iex"
+  irm https://www.gettsk.sh/install.ps1 | iex    (from an open PowerShell prompt)
   powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 [-NoPathUpdate] [-Help]
 
 Options:
@@ -251,11 +265,11 @@ function Move-Atomic([string] $Source, [string] $Destination) {
     $MOVEFILE_WRITE_THROUGH = 0x8
     for ($attempt = 0; $attempt -lt 20; $attempt++) {
         if ([TskNativeInstall]::MoveFileEx($Source, $Destination, ($MOVEFILE_REPLACE_EXISTING -bor $MOVEFILE_WRITE_THROUGH))) {
-            $script:LastMoveError = 0
+            $TskInstallerState.LastMoveError = 0
             return $true
         }
-        $script:LastMoveError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-        if (($script:LastMoveError -ne 5 -and $script:LastMoveError -ne 32) -or $attempt -eq 19) {
+        $TskInstallerState.LastMoveError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        if (($TskInstallerState.LastMoveError -ne 5 -and $TskInstallerState.LastMoveError -ne 32) -or $attempt -eq 19) {
             return $false
         }
         Start-Sleep -Milliseconds 100
@@ -393,10 +407,10 @@ function Write-SetupFailure([string] $Command, [object[]] $Output) {
 }
 
 function Invoke-HerdrPostInstall([string] $Executable, [bool] $PostInstallSetup, [bool] $UpdateMode) {
-    $script:HerdrWrap = 'board'
+    $TskInstallerState.HerdrWrap = 'board'
     if ($null -eq (Get-Command herdr -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1)) { return }
     if (-not $PostInstallSetup) {
-        $script:HerdrWrap = 'board_setup'
+        $TskInstallerState.HerdrWrap = 'board_setup'
         return
     }
 
@@ -410,19 +424,19 @@ function Invoke-HerdrPostInstall([string] $Executable, [bool] $PostInstallSetup,
                 return
             }
             Write-SetupFailure 'tsk setup herdr' $setupOutput
-            $script:HerdrWrap = 'board_setup'
+            $TskInstallerState.HerdrWrap = 'board_setup'
             return
         }
     }
 
     if (-not (Test-InstallerInteractive)) {
-        $script:HerdrWrap = 'board_setup'
+        $TskInstallerState.HerdrWrap = 'board_setup'
         return
     }
     [Console]::Error.WriteLine('')
     $answer = Read-InstallerAnswer 'Herdr detected. Set up the Herdr plugin now? [y/N] '
     if ($answer -notmatch '^(?i:y|yes)$') {
-        $script:HerdrWrap = 'board_setup'
+        $TskInstallerState.HerdrWrap = 'board_setup'
         return
     }
 
@@ -432,14 +446,14 @@ function Invoke-HerdrPostInstall([string] $Executable, [bool] $PostInstallSetup,
     & $Executable setup herdr
     if ($LASTEXITCODE -ne 0) {
         Write-SetupFailure 'tsk setup herdr' @()
-        $script:HerdrWrap = 'board_setup'
+        $TskInstallerState.HerdrWrap = 'board_setup'
     } else {
-        $script:HerdrWrap = 'board_prefix'
+        $TskInstallerState.HerdrWrap = 'board_prefix'
     }
 }
 
 function Prepare-DeferredHerdrSetup([string] $Executable) {
-    $script:HerdrWrap = 'board'
+    $TskInstallerState.HerdrWrap = 'board'
     if ($null -eq (Get-Command herdr -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1)) { return $false }
 
     $bound = @(& $Executable setup herdr --check 2>$null)
@@ -449,17 +463,17 @@ function Prepare-DeferredHerdrSetup([string] $Executable) {
         return $true
     }
     if (-not (Test-InstallerInteractive)) {
-        $script:HerdrWrap = 'board_setup'
+        $TskInstallerState.HerdrWrap = 'board_setup'
         return $false
     }
     [Console]::Error.WriteLine('')
     $answer = Read-InstallerAnswer 'Herdr detected. Set up the Herdr plugin now? [y/N] '
     if ($answer -notmatch '^(?i:y|yes)$') {
-        $script:HerdrWrap = 'board_setup'
+        $TskInstallerState.HerdrWrap = 'board_setup'
         return $false
     }
     # Do not promise prefix+t until the detached helper has actually completed setup.
-    $script:HerdrWrap = 'board'
+    $TskInstallerState.HerdrWrap = 'board'
     [Console]::Out.WriteLine('')
     [Console]::Out.WriteLine('Herdr setup selected; it will finish after tsk exits.')
     return $true
@@ -472,7 +486,7 @@ function Get-SkillStateRows([string] $Executable) {
 }
 
 function Invoke-AgentSkillPostInstall([string] $Executable, [bool] $PostInstallSetup, [bool] $UpdateMode) {
-    $script:SkillsWrap = ''
+    $TskInstallerState.SkillsWrap = ''
     if (-not $PostInstallSetup) { return }
 
     $detectedIds = @()
@@ -509,7 +523,7 @@ function Invoke-AgentSkillPostInstall([string] $Executable, [bool] $PostInstallS
                 $answer = Read-InstallerAnswer (('tsk skill installed for {0}; update to v{1}? [Y/n] ' -f ($outdatedLabels -join ', '), $embedded))
             }
             if ($answer -match '^(?i:n|no)$') {
-                $script:SkillsWrap = 'nudge'
+                $TskInstallerState.SkillsWrap = 'nudge'
                 return
             }
             $updated = @()
@@ -519,7 +533,7 @@ function Invoke-AgentSkillPostInstall([string] $Executable, [bool] $PostInstallS
                     $updated += $id
                 } else {
                     Write-SetupFailure "tsk setup $id" $setupOutput
-                    $script:SkillsWrap = 'nudge'
+                    $TskInstallerState.SkillsWrap = 'nudge'
                 }
             }
             if ($updated.Count -gt 0) {
@@ -542,14 +556,14 @@ function Invoke-AgentSkillPostInstall([string] $Executable, [bool] $PostInstallS
     }
     if ($detectedIds.Count -eq 0) { return }
     if (-not (Test-InstallerInteractive)) {
-        $script:SkillsWrap = 'nudge'
+        $TskInstallerState.SkillsWrap = 'nudge'
         return
     }
 
     [Console]::Error.WriteLine('')
     $answer = Read-InstallerAnswer (('Agents detected: {0}. Install the tsk skill for them? [y/N] ' -f ($detectedIds -join ', ')))
     if ($answer -notmatch '^(?i:y|yes)$') {
-        $script:SkillsWrap = 'nudge'
+        $TskInstallerState.SkillsWrap = 'nudge'
         return
     }
     Write-Output ''
@@ -558,12 +572,12 @@ function Invoke-AgentSkillPostInstall([string] $Executable, [bool] $PostInstallS
     & $Executable setup agents --yes
     if ($LASTEXITCODE -ne 0) {
         Write-SetupFailure 'tsk setup agents --yes' @()
-        $script:SkillsWrap = 'nudge'
+        $TskInstallerState.SkillsWrap = 'nudge'
     }
 }
 
 function Prepare-DeferredAgentSkills([string] $Executable) {
-    $script:SkillsWrap = ''
+    $TskInstallerState.SkillsWrap = ''
     $states = @(Get-SkillStateRows $Executable)
     $embedded = $null
     $outdated = @()
@@ -596,7 +610,7 @@ function Prepare-DeferredAgentSkills([string] $Executable) {
             $answer = Read-InstallerAnswer (('tsk skill installed for {0}; update to v{1}? [Y/n] ' -f ($outdatedLabels -join ', '), $embedded))
         }
         if ($answer -match '^(?i:n|no)$') {
-            $script:SkillsWrap = 'nudge'
+            $TskInstallerState.SkillsWrap = 'nudge'
             return '-'
         }
         [Console]::Out.WriteLine('')
@@ -616,14 +630,14 @@ function Prepare-DeferredAgentSkills([string] $Executable) {
     }
     if ($detectedIds.Count -eq 0) { return '-' }
     if (-not (Test-InstallerInteractive)) {
-        $script:SkillsWrap = 'nudge'
+        $TskInstallerState.SkillsWrap = 'nudge'
         return '-'
     }
 
     [Console]::Error.WriteLine('')
     $answer = Read-InstallerAnswer (('Agents detected: {0}. Install the tsk skill for them? [y/N] ' -f ($detectedIds -join ', ')))
     if ($answer -notmatch '^(?i:y|yes)$') {
-        $script:SkillsWrap = 'nudge'
+        $TskInstallerState.SkillsWrap = 'nudge'
         return '-'
     }
     [Console]::Out.WriteLine('')
@@ -633,7 +647,7 @@ function Prepare-DeferredAgentSkills([string] $Executable) {
 
 function Write-InstallClosing([string] $Executable, [bool] $PostInstallSetup) {
     Write-Output ''
-    if ($script:HerdrWrap -eq 'board_prefix') {
+    if ($TskInstallerState.HerdrWrap -eq 'board_prefix') {
         Write-Output 'Done. Run tsk in a project directory to open the board, or press prefix+t in Herdr.'
     } else {
         Write-Output 'Done. Run tsk in a project directory to open the board.'
@@ -642,12 +656,12 @@ function Write-InstallClosing([string] $Executable, [bool] $PostInstallSetup) {
     $herdrRow = $null
     $agentRow = $null
     if ($PostInstallSetup) {
-        if ($script:HerdrWrap -eq 'board_setup') { $herdrRow = '    Herdr plugin:  tsk setup herdr' }
-        if ($script:SkillsWrap -eq 'nudge') { $agentRow = '    Agent skills:  tsk setup' }
+        if ($TskInstallerState.HerdrWrap -eq 'board_setup') { $herdrRow = '    Herdr plugin:  tsk setup herdr' }
+        if ($TskInstallerState.SkillsWrap -eq 'nudge') { $agentRow = '    Agent skills:  tsk setup' }
     } else {
         Write-Output ''
         Write-Output 'Custom install directory: setup was not run. When you are ready:'
-        if ($script:HerdrWrap -eq 'board_setup') { $herdrRow = "    Herdr plugin:  $Executable setup herdr" }
+        if ($TskInstallerState.HerdrWrap -eq 'board_setup') { $herdrRow = "    Herdr plugin:  $Executable setup herdr" }
         $agentRow = "    Agent skills:  $Executable setup"
     }
     if ($herdrRow -or $agentRow) {
@@ -848,7 +862,7 @@ function Main {
             $isUpdate = -not [String]::IsNullOrEmpty($env:TSK_UPDATE)
             $updatePid = 0
             $validPid = [int]::TryParse($env:TSK_UPDATE_PID, [ref]$updatePid) -and $updatePid -gt 0
-            if ($isUpdate -and $validPid -and ($script:LastMoveError -eq 5 -or $script:LastMoveError -eq 32)) {
+            if ($isUpdate -and $validPid -and ($TskInstallerState.LastMoveError -eq 5 -or $TskInstallerState.LastMoveError -eq 32)) {
                 $otherCopies = @(Find-OtherRunningCopies -Destination $destination -UpdatePid $updatePid)
                 if ($otherCopies.Count -gt 0) {
                     Fail ('close every other running tsk board and retry; active process ids: ' + ($otherCopies -join ', '))
@@ -861,7 +875,7 @@ function Main {
                 Write-Output "If deferred setup fails, details are written to $(Join-Path $installDir '.tsk-update-error.log')."
                 Write-InstallClosing $destination $true
             } else {
-                Fail "could not replace $destination (Windows error $script:LastMoveError); existing installation unchanged"
+                Fail "could not replace $destination (Windows error $($TskInstallerState.LastMoveError)); existing installation unchanged"
             }
         } else {
             $staged = $null
@@ -895,4 +909,18 @@ try {
     Main
 } catch {
     throw ('tsk install: ' + $_.Exception.Message)
+}
+}
+
+# A script block defined in a file knows that file; one built by `iex` or ScriptBlock::Create
+# does not. Only a file run owns $args (under iex they belong to the enclosing command), and
+# only a dot-sourced file keeps the installer's functions.
+if ($__tskInstallerBody.File -and $MyInvocation.InvocationName -eq '.') {
+    . $__tskInstallerBody @($args)
+} else {
+    try {
+        & $__tskInstallerBody @(if ($__tskInstallerBody.File) { $args })
+    } finally {
+        Remove-Variable -Name __tskInstallerBody -ErrorAction SilentlyContinue
+    }
 }

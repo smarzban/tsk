@@ -12,7 +12,7 @@
 
 macOS/Linux: `curl -fsSL https://gettsk.sh/install.sh | sh` or `brew install smarzban/tap/tsk`.
 
-Windows 10/11 ARM64 or x64: `& { irm https://www.gettsk.sh/install.ps1 | iex }` in Windows PowerShell 5.1 or PowerShell 7.
+Windows 10/11 ARM64 or x64: `powershell -c "irm https://www.gettsk.sh/install.ps1 | iex"` from any terminal (Windows PowerShell 5.1 or PowerShell 7).
 
 Details, upgrades and uninstall: https://gettsk.sh/docs/install/
 

@@ -48,10 +48,10 @@ Or install with Homebrew:
 brew install smarzban/tap/tsk
 ```
 
-Windows 10/11 on ARM64 or x86-64, from Windows PowerShell 5.1 or PowerShell 7:
+Windows 10/11 on ARM64 or x86-64, from PowerShell or any other terminal:
 
 ```powershell
-& { irm https://www.gettsk.sh/install.ps1 | iex }
+powershell -c "irm https://www.gettsk.sh/install.ps1 | iex"
 ```
 
 The Windows installer detects the native machine architecture, verifies the matching release ZIP, installs under `%LOCALAPPDATA%`, and adds tsk to user PATH. Download `install.ps1` first and pass `-NoPathUpdate` if you do not want the user PATH changed. Signing and package-manager submissions are not included yet.

@@ -40,7 +40,7 @@ class WindowsInstallerTests(unittest.TestCase):
         cls.source = INSTALLER.read_text(encoding="utf-8")
 
     def test_exposes_help_and_environment_configuration(self):
-        self.assertRegex(self.source, r"(?i)\[switch\]\s*\$Help")
+        self.assertIn("unknown option", self.source)
         self.assertIn("TSK_INSTALL_DIR", self.source)
         self.assertIn("TSK_VERSION", self.source)
         self.assertIn("TSK_UPDATE", self.source)
@@ -60,7 +60,8 @@ class WindowsInstallerTests(unittest.TestCase):
         self.assertNotIn("Windows ARM64 is not supported", self.source)
         self.assertRegex(self.source, r"(?is)0xaa64.+aarch64-pc-windows-msvc")
         self.assertRegex(self.source, r"(?is)0x8664.+x86_64-pc-windows-msvc")
-        self.assertRegex(self.source, r"(?i)\[switch\]\s*\$NoPathUpdate")
+        self.assertIn("'^-(?i:nopathupdate)$'", self.source)
+        self.assertIn("'^-(?i:help|h|\\?)$'", self.source)
         self.assertIn("-NoPathUpdate", self.source)
 
     def test_download_is_bounded_pinned_and_checksum_verified_before_extract(self):
@@ -111,7 +112,7 @@ class WindowsInstallerTests(unittest.TestCase):
 
     def test_help_names_public_knobs_and_latest_stable_without_internal_handoff(self):
         help_text = self.source.split("function Show-Help", 1)[1].split("if ($Help)", 1)[0]
-        self.assertIn("& { irm https://www.gettsk.sh/install.ps1 | iex }", help_text)
+        self.assertIn('powershell -c "irm https://www.gettsk.sh/install.ps1 | iex"', help_text)
         self.assertIn("public release tag", help_text)
         self.assertIn("latest stable release", help_text)
         self.assertNotIn("TSK_UPDATE_PID", help_text)
@@ -119,6 +120,72 @@ class WindowsInstallerTests(unittest.TestCase):
         entrypoint = self.source.rsplit("try {\n    Main", 1)[1]
         self.assertNotIn("exit 1", entrypoint)
         self.assertIn("throw ('tsk install: '", entrypoint)
+
+    def test_body_runs_in_its_own_scope_unless_dot_sourced(self):
+        self.assertNotIn("$script:", self.source)
+        preamble, body = self.source.split("$__tskInstallerBody = {", 1)
+        self.assertNotIn("StrictMode", preamble)
+        self.assertNotIn("ErrorActionPreference", preamble)
+        # A top-level param() block would overwrite the caller's $Help and $NoPathUpdate under iex.
+        self.assertNotRegex(preamble, r"(?im)^\s*param\s*\(")
+        self.assertIn("Set-StrictMode -Version 2.0", body)
+        self.assertRegex(
+            self.source,
+            r"(?s)if \(\$__tskInstallerBody\.File -and \$MyInvocation\.InvocationName -eq '\.'\) \{\s*\. \$__tskInstallerBody.+\} else \{\s*try \{\s*& \$__tskInstallerBody @\(if \(\$__tskInstallerBody\.File\) \{ \$args \}\)",
+        )
+
+    @unittest.skipUnless(os.name == "nt", "native Windows PowerShell smoke")
+    def test_invoke_expression_leaves_the_caller_session_untouched(self):
+        help_source = self.source.replace("$Help = $false", "$Help = $true", 1)
+        failure_source = self.source.replace(
+            "try {\n    Main\n}", "try {\n    throw 'scope-smoke'\n}", 1
+        )
+        self.assertNotEqual(help_source, self.source)
+        self.assertNotEqual(failure_source, self.source)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "help.ps1").write_text(help_source, encoding="utf-8")
+            (root / "failure.ps1").write_text(failure_source, encoding="utf-8")
+            quote = lambda value: str(value).replace("'", "''")
+            harness = f"""
+$ErrorActionPreference = 'Continue'
+$Help = 'caller help sentinel'
+$NoPathUpdate = 'caller path sentinel'
+$helpText = [IO.File]::ReadAllText('{quote(root / "help.ps1")}')
+$failureText = [IO.File]::ReadAllText('{quote(root / "failure.ps1")}')
+$output = @($helpText | Invoke-Expression)
+if (-not ($output -join "`n").Contains('irm https://www.gettsk.sh/install.ps1 | iex')) {{ throw 'help did not run' }}
+$helpText | Invoke-Expression | Out-Null
+# Under iex, $args belongs to the enclosing command, never to the installer.
+function Invoke-InstallerFromWrapper {{ $helpText | Invoke-Expression }}
+$wrapped = @(Invoke-InstallerFromWrapper -NoPathUpdate unrelated-argument)
+if (-not ($wrapped -join "`n").Contains('Usage:')) {{ throw 'enclosing arguments reached the installer' }}
+foreach ($name in 'Main', 'Show-Help', 'Fail', 'Invoke-TskDownload') {{
+    if (Test-Path "Function:\\$name") {{ throw "function leaked: $name" }}
+}}
+if ($Help -ne 'caller help sentinel' -or $NoPathUpdate -ne 'caller path sentinel') {{ throw 'caller variables were overwritten' }}
+foreach ($name in '__tskInstallerBody', 'TskInstallerState', 'MaxArchiveBytes', 'InstallerArguments') {{
+    if (Get-Variable -Name $name -Scope Global -ErrorAction SilentlyContinue) {{ throw "variable leaked: $name" }}
+}}
+if ($ErrorActionPreference -ne 'Continue') {{ throw 'ErrorActionPreference leaked' }}
+$null = $undefinedAfterInstallerRun
+$failed = $false
+try {{ $failureText | Invoke-Expression }} catch {{
+    if ($_.Exception.Message -ne 'tsk install: scope-smoke') {{ throw }}
+    $failed = $true
+}}
+if (-not $failed) {{ throw 'installer failure did not reach the caller' }}
+'caller-session-clean'
+"""
+            result = subprocess.run(
+                ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", harness],
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                timeout=60,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("caller-session-clean", result.stdout)
 
     def test_refuses_downgrades_and_reparse_paths(self):
         self.assertIn("TSK_CURRENT_VERSION", self.source)

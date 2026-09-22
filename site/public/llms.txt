@@ -2,7 +2,7 @@
 
 > tsk is a terminal task board for you and your agents: one shared queue, a TUI for you, a CLI for them.
 
-On macOS/Linux, install with `curl -fsSL https://gettsk.sh/install.sh | sh` or `brew install smarzban/tap/tsk`. On Windows 10/11 ARM64 or x86-64, run `& { irm https://www.gettsk.sh/install.ps1 | iex }` with Windows PowerShell 5.1 or PowerShell 7; it selects the native architecture. Download the script first to use `-NoPathUpdate`, which leaves user PATH unchanged. Windows package-manager submissions and signing are not included yet.
+On macOS/Linux, install with `curl -fsSL https://gettsk.sh/install.sh | sh` or `brew install smarzban/tap/tsk`. On Windows 10/11 ARM64 or x86-64, run `powershell -c "irm https://www.gettsk.sh/install.ps1 | iex"` from any terminal (Windows PowerShell 5.1 or PowerShell 7); it selects the native architecture. Download the script first to use `-NoPathUpdate`, which leaves user PATH unchanged. Windows package-manager submissions and signing are not included yet.
 If Herdr is on PATH, the installer asks to run `tsk setup herdr` on an interactive terminal; when agent skill roots are detected it also asks once to install the tsk skill. The install ends with a single `Done.` line pointing at the board (plus the Herdr board shortcut after an accepted Herdr setup) and one row per skipped ask (`tsk setup herdr`, `tsk setup`); a custom `TSK_INSTALL_DIR` skips the asks and says so. Homebrew prints the Herdr setup command as a caveat.
 Herdr's board shortcut opens or focuses one board per workspace across its tabs, preserving its view and edits. Other workspaces stay untouched; boards share the same task store.
 Details: https://gettsk.sh/docs/install.md
