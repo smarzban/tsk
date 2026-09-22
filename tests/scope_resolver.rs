@@ -59,7 +59,13 @@ fn invocation_directory_candidate_participates_in_basename_resolution() {
         .file_name()
         .expect("manifest directory basename")
         .to_string_lossy();
-    let stored = format!("/repos/{basename}");
+    // Use the same separator as the invocation path so the stored and invocation
+    // paths are distinguishable (different parents) but not ambiguous on Windows.
+    let parent = invocation
+        .parent()
+        .expect("manifest parent")
+        .to_string_lossy();
+    let stored = format!("{parent}/repos/{basename}");
     let mut domain = DomainState::new();
     create_project(&mut domain, &stored);
     let snapshot = InvocationSnapshot {

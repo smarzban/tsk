@@ -42,7 +42,7 @@ At **110 usable columns** or wider, Overview can preview the cursored project be
 | Split | Index and a dim project preview; the index keeps focus |
 | Rail | Narrow index and a live project board; the right column owns input |
 
-The right preview names the selected project in its top row, in the space used by navigation tabs on the index. Clicking or moving the index selection opens Split automatically; press `→` to move from Split to Rail, and `←` to walk back. The project tab never opens a full-screen task stage. `Enter` on an index row still opens that project in tab 2, and choosing a thread with `v` drops back to the full-width index. The right column has its own selection, drawer, filters, task page, quick-add, and status actions; `Esc` from its board returns focus to the index.
+The right preview names the selected project in its top row, in the space used by navigation tabs on the index. Clicking or moving the index selection opens Split automatically; press `→` or `l` to move from Split to Rail, and `←` or `h` to walk back. The project tab never opens a full-screen task stage. `Enter` on an index row still opens that project in tab 2, and choosing a thread with `v` drops back to the full-width index. The right column has its own selection, drawer, filters, task page, quick-add, and status actions; `Esc` from its board returns focus to the index.
 
 ## Search
 
@@ -126,11 +126,11 @@ Your first board open seeds four desk tasks with `N` ids (not `T`). They teach t
 | Wheel or drag a scrollbar | Scroll |
 | Drag across text | Select and copy on release |
 
-Open peeks show notes, followed by one metadata footer ordered `@assignee · #thread · project`, omitting unset parts. Below 110 columns, `→` opens a peek and `←` closes it. Peeks show up to five wrapped note lines; the [task page](/docs/task-page/) shows the rest.
+Open peeks show notes, followed by one metadata footer ordered `@assignee · #thread · project`, omitting unset parts. Below 110 columns, `→` or `l` opens a peek and `←` or `h` closes it. Peeks show up to five wrapped note lines; the [task page](/docs/task-page/) shows the rest.
 
 ## Wide stage slider
 
-At **110 usable columns** or wider, use `→` and `←` to move through a four-stage slider:
+At **110 usable columns** or wider, use `→` / `l` and `←` / `h` to move through a four-stage slider:
 
 | View | What you see |
 | --- | --- |

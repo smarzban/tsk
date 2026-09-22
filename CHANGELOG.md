@@ -19,16 +19,6 @@ the GitHub release notes verbatim.
 - Agent launch profiles can be defined in `<state dir>/agents.toml` with a command template, an always-appended default or custom prompt, and environment values; the first full board open seeds a commented starter file when none exists.
 - Dispatch an assigned project task with `ctrl+g`, the palette, or `tsk dispatch T<n>`. tsk creates a Git worktree and Herdr workspace, launches the agent there, then records the dispatch and starts the task in one save. A second `ctrl+g`, **dispatch again**, or `--again` relaunches; a cleaned record recreates its worktree. Completing from the board can safely clean the worktree first, while `tsk clean T<n> [--json]` and `tsk status T<n> done --clean` provide the same cleanup for scripts. Cleanup refuses dirty worktrees, keeps unmerged branches, removes merged branches, retains a cleaned dispatch record, and only live started dispatches show `◉`.
 
-### Changed
-
-- `walkthrough.json` and `TSK_CONFIG_DIR` are gone: the retired onboarding card is replaced by the seeded tour tasks, and an existing file is simply ignored.
-- The `tsk.json.1` last-good backup is replaced by rename, so it is never missing mid-save; stale temp files from the release check and notice delivery are swept with the rest.
-- `tsk update` downloads the installer completely before running it, ignores a `TSK_VERSION` set in your shell, refuses to replace a newer copy with an older release, and prints the reason when a Herdr or skill refresh fails.
-- The board's release check uses the same HTTPS-only curl as `tsk update`, including `TSK_UPDATE_CURL`.
-- Agent skill installs replace `SKILL.md` atomically, so an interrupted `tsk setup` leaves the previous skill intact.
-- With neither `HOME` nor `TSK_STATE_DIR` set, tsk refuses to run instead of creating a board in the working directory.
-- The plugin manifest declares `min_herdr_version = "0.9.0"`, matching what setup and the launchers already require.
-
 ### Fixed
 
 - Completing a dispatched task from the board always offers worktree cleanup again: a stale prunable worktree left behind by another tool no longer silences the offer and completes the task without a prompt.
@@ -37,7 +27,17 @@ the GitHub release notes verbatim.
 - Board completion now converges an already-missing dispatched worktree to cleaned in the same save, while already-done or archived tasks and archived project views bypass the cleanup prompt.
 - A malformed `agents.toml` no longer blocks the board or CLI add/edit operations that do not assign a task; assignment reports the configuration error without saving.
 - Assignee choices remain available after task-page selection changes and in the wide projects preview; mouse picking follows the same marked-set route as the keyboard, and stale marked targets cannot affect a later task.
-- Docs: the palette table no longer lists a `Set done` action (use `ctrl+d`); the step editor's task shortcuts are `ctrl+d` and `ctrl+o` (`ctrl+x` removes the step); `ctrl+r` works from any non-done status; a trashed task is found with `tsk list --deleted`, not a task address.
+
+## v0.11.6
+
+### Added
+
+- Windows 10/11 support on ARM64 and x86-64: native release builds, a PowerShell installer (`powershell -c "irm https://www.gettsk.sh/install.ps1 | iex"`), and Herdr integration as a preview.
+- `h` and `l` mirror the left and right arrows for closing and opening task details in non-text board and task views. Thanks @pisceskkk.
+
+### Changed
+
+- `tsk update` downloads the installer completely before running it, always follows the latest stable release, refuses to downgrade, and says why a Herdr or skill refresh failed.
 
 ## v0.10.1
 

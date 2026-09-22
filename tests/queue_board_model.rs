@@ -61,6 +61,12 @@ fn project(path: &str) -> TaskScope {
     }
 }
 
+fn domain_with_tasks(tasks: Vec<Task>) -> DomainState {
+    let mut document = serde_json::to_value(DomainState::new()).expect("serialize empty domain");
+    document["tasks"] = serde_json::to_value(tasks).expect("serialize tasks");
+    serde_json::from_value(document).expect("domain with fixture tasks")
+}
+
 fn threaded_task(
     id: u128,
     title: &str,
@@ -854,28 +860,19 @@ fn projects_index_rows_carry_open_work_counts() {
 
 #[test]
 fn selection_stays_on_task_id_across_motion_reorder() {
-    let mut domain = DomainState::new();
-    let alpha = domain
-        .create(
-            "alpha",
-            None,
-            project(THIS_REPO),
-            ProvenanceOrigin::Manual,
-            Some("alpha".into()),
-        )
-        .unwrap();
-    let beta = domain
-        .create(
-            "beta",
-            None,
-            project(THIS_REPO),
-            ProvenanceOrigin::Manual,
-            Some("beta".into()),
-        )
-        .unwrap();
-    // Beta was started last, so it leads IN MOTION (newest status change first).
-    domain.set_status(alpha, HumanStatus::Started).unwrap();
-    domain.set_status(beta, HumanStatus::Started).unwrap();
+    let mut alpha_task = task(1, "alpha", HumanStatus::Started, project(THIS_REPO), 10);
+    alpha_task.history.push(TaskEvent {
+        kind: TaskEventKind::StatusSet,
+        at: epoch_plus(100),
+    });
+    let alpha = alpha_task.id;
+    let mut beta_task = task(2, "beta", HumanStatus::Started, project(THIS_REPO), 20);
+    beta_task.history.push(TaskEvent {
+        kind: TaskEventKind::StatusSet,
+        at: epoch_plus(200),
+    });
+    let beta = beta_task.id;
+    let mut domain = domain_with_tasks(vec![alpha_task.clone(), beta_task.clone()]);
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
 
     let before = model.queue_view();
@@ -899,9 +896,13 @@ fn selection_stays_on_task_id_across_motion_reorder() {
 
     // A fresh status change on alpha moves it above beta; selection stays pinned
     // to beta's id, not to beta's row position.
-    domain.set_status(alpha, HumanStatus::Blocked).unwrap();
-    domain.set_status(alpha, HumanStatus::Started).unwrap();
-    model.sync_from_domain(&domain);
+    alpha_task.history.push(TaskEvent {
+        kind: TaskEventKind::StatusSet,
+        at: epoch_plus(300),
+    });
+    alpha_task.updated_at = epoch_plus(300);
+    let reordered = domain_with_tasks(vec![alpha_task, beta_task]);
+    model.sync_from_domain(&reordered);
 
     let after = model.queue_view();
     assert_eq!(

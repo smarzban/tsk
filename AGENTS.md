@@ -62,9 +62,9 @@ same PR, never leave them apart.
 | `src/setup.rs`, `src/setup/`, `src/setup_agent.rs` | `tsk setup herdr`, agent skill install |
 | `src/guides.rs`, `src/announcements.rs`, `src/delivery.rs` | seeded notice tasks |
 | `src/update.rs` | release check, `tsk update` |
-| `scripts/open-board.sh`, `scripts/open-capture.sh` | herdr launchers (embedded via `src/setup.rs`) |
+| `scripts/open-board.sh`, `scripts/open-capture.sh`, `scripts/*.ps1` | Herdr launchers (embedded via `src/setup.rs`) |
 | `scripts/release.py`, `.github/workflows/release.yml`, `packaging/` | native packaging |
-| `site/` | landing page + Starlight docs (Astro), `site/public/install.sh`, `llms.txt`, `board-demo.js` |
+| `site/` | landing page + Starlight docs (Astro), shell and PowerShell installers, `llms.txt`, `board-demo.js` |
 | `tests/` | integration tests, golden fixtures, `tests/packaging/` (Python) |
 
 ## Build, test, verify
@@ -113,8 +113,9 @@ same PR, never leave them apart.
   `site/vercel.json` with Vercel's own route parser; never edit that file without it, a
   bad pattern fails every production deploy silently.
 - CI runs on pushes to `main` and PRs targeting `main`. Site-only changes skip the Rust
-  matrix; installer-only changes run the `Installer` workflow (packaging tests and ShellCheck)
-  on the PR and again on the push, since gettsk.sh serves `install.sh` straight from `main`.
+  matrix; installer-only changes run the `Installer` workflow (packaging tests, ShellCheck,
+  and native x86-64 and ARM64 Windows PowerShell smokes) on the PR and again on the push,
+  since gettsk.sh serves both installers straight from `main`.
   Vercel production deploys only on pushes to `main`.
 
 ### Isolated state
@@ -281,8 +282,8 @@ migration or design work they imply. What the behaviour *is* lives in the docs
 - Pane label matching is exact against `board_pane::BOARD_PANE_LABEL`; the manifest pane
   title must equal it.
 - `tsk setup --skill-states` and `tsk setup herdr --check` are installer probes: the site
-  serves the newest `install.sh` to every `tsk update`, and its `TSK_UPDATE` path parses
-  them with `awk -F'\t'`. Keep their output shape stable, and keep the installer's fallback
+  serves the newest platform installer to every `tsk update`, and each update path parses
+  these stable probes. Keep their output shape stable, and keep the installers' fallback
   for a binary that lacks them (empty probe output means "old binary", never "no agents").
 - `tsk setup herdr` never adds the default chord for a plugin command the user bound on
   another key; a binding on the default key still goes through conflict repair. `tsk update`
@@ -298,11 +299,11 @@ a fresh empty Unreleased above it; append a `[[announcement]]` if the release de
 board notice. `scripts/release.py
 check-version vX.Y.Z` must pass. Merge, then push the stable tag `vX.Y.Z` with owner
 approval. Tags are `v[0-9]+.[0-9]+.[0-9]+` only: the workflow, `release.py`, and
-`install.sh` all refuse anything else, so there are no `-rc` tags.
+both installers refuse anything else, so there are no `-rc` tags.
 
 **Build (owner-run).** Dispatch `Prepare release` with the existing tag. It pins the tag
-to one commit, tests and builds four targets from it, and creates a **draft** with the
-archives, `SHA256SUMS`, `install.sh`, and a version-pinned `tsk.rb`. It refuses a moved
+to one commit, tests and builds six targets from it, and creates a **draft** with the
+archives, `SHA256SUMS`, both installers, and a version-pinned `tsk.rb`. It refuses a moved
 tag or an existing release; it never publishes or updates the tap. The draft is named with
 `--title "$TAG"`: an unnamed GitHub release displays the tagged commit's subject instead.
 
@@ -319,8 +320,8 @@ TSK_STATE_DIR=/tmp/tsk-rc/state /tmp/tsk-rc/bin/tsk
 gh release download vX.Y.Z -p tsk.rb -D /tmp/tsk-rc && HOMEBREW_DEVELOPER=1 brew install --formula /tmp/tsk-rc/tsk.rb
 ```
 
-The site serves `install.sh` from `main`; if the installer changed in this release fetch
-`releases/download/vX.Y.Z/install.sh` instead. Smoke `tsk setup herdr` under isolated
+The site serves both installers from `main`; if one changed in this release fetch that
+installer from `releases/download/vX.Y.Z/` instead. Smoke `tsk setup herdr` under isolated
 roots. Rehearse the update path too, against a throwaway `HOME` holding an outdated skill
 and a Herdr config on a custom key:
 `env HOME=/tmp/x/home XDG_CONFIG_HOME=/tmp/x/home/.config HERDR_SOCKET_PATH=/tmp/x/none.sock TSK_VERSION=vX.Y.Z TSK_UPDATE=1 TSK_CURRENT_VERSION=vPREV TSK_INSTALL_DIR=/tmp/x/bin sh /tmp/x/install.sh`. A failed rehearsal burns the tag: fix forward with the next patch version and leave
@@ -338,9 +339,9 @@ Rehearsal traps, learned the hard way:
 - `brew install --formula tsk.rb` on a machine with the tap's `tsk` installed replaces the
   daily copy (same formula name) and removes the old keg. Use a throwaway machine or
   `brew unlink` first and expect to `brew reinstall smarzban/tap/tsk` afterwards.
-- The installer one-liner, Linux and Intel smoke are owner steps. An agent sandbox cannot
-  execute a downloaded script, and the checked-in rehearsal can only run the macOS ARM
-  archive binary directly; the agent verifies checksums, the archive binary, the upgrade
+- Public installer flows plus Linux, Intel, and both Windows architecture smokes are owner
+  steps. An agent sandbox cannot execute a downloaded script, and the checked-in rehearsal
+  can only run the macOS ARM archive binary directly; the agent verifies checksums, the archive binary, the upgrade
   path and setup, and says which of these it did not run.
 
 **Official release.** Replace the draft's skeleton and checklist with the version's

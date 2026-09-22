@@ -30,6 +30,29 @@ impl Drop for TempDirGuard {
     }
 }
 
+fn platform_nanos(nanos: u32) -> u32 {
+    #[cfg(windows)]
+    {
+        nanos / 100 * 100
+    }
+    #[cfg(not(windows))]
+    nanos
+}
+
+fn platform_v6_fixture() -> Vec<u8> {
+    #[cfg(not(windows))]
+    return include_bytes!("fixtures/current_store_v6.json").to_vec();
+    #[cfg(windows)]
+    {
+        // Round-trip through the persisted type, not Value's sorted map. SystemTime applies
+        // Windows' 100 ns precision while DomainState preserves the canonical field order.
+        let state: DomainState =
+            serde_json::from_str(include_str!("fixtures/current_store_v6.json"))
+                .expect("v6 fixture");
+        serde_json::to_vec_pretty(&state).expect("encode platform fixture")
+    }
+}
+
 fn current_store_fixture() -> serde_json::Value {
     serde_json::from_str(include_str!("fixtures/current_store_v1.json"))
         .expect("current store fixture is valid JSON")
@@ -104,13 +127,13 @@ fn literal_current_v1_fixture_pins_the_complete_store_wire_shape() {
         task.created_at
             .duration_since(UNIX_EPOCH)
             .expect("created after epoch"),
-        std::time::Duration::new(1_700_000_000, 123_456_789)
+        std::time::Duration::new(1_700_000_000, platform_nanos(123_456_789))
     );
     assert_eq!(
         task.updated_at
             .duration_since(UNIX_EPOCH)
             .expect("updated after epoch"),
-        std::time::Duration::new(1_700_000_100, 987_654_321)
+        std::time::Duration::new(1_700_000_100, platform_nanos(987_654_321))
     );
 
     state.undo().expect("fixture undo entry is current");
@@ -180,8 +203,8 @@ fn v2_document_loads_with_notice_counter_one_and_first_save_leaves_tsk_json_v2_b
     );
     assert_eq!(
         fs::read(dir.join("tsk.json")).expect("read migrated live document"),
-        include_bytes!("fixtures/current_store_v6.json").as_slice(),
-        "a migrated v2 document saves as the canonical v6 wire"
+        platform_v6_fixture().as_slice(),
+        "a migrated v2 document saves as the canonical platform v6 wire"
     );
 }
 
@@ -257,8 +280,8 @@ fn v3_document_loads_through_the_chain_and_first_save_leaves_tsk_json_v3_beside_
     );
     assert_eq!(
         fs::read(dir.join("tsk.json")).expect("read migrated live document"),
-        include_bytes!("fixtures/current_store_v6.json").as_slice(),
-        "a migrated v3 document saves as the canonical v6 wire"
+        platform_v6_fixture().as_slice(),
+        "a migrated v3 document saves as the canonical platform v6 wire"
     );
 }
 
@@ -286,8 +309,8 @@ fn v4_document_migrates_to_v5_and_keeps_its_original_backup() {
     );
     assert_eq!(
         fs::read(dir.join("tsk.json")).expect("read migrated live document"),
-        include_bytes!("fixtures/current_store_v6.json").as_slice(),
-        "a migrated v4 document saves as the canonical v6 wire"
+        platform_v6_fixture().as_slice(),
+        "a migrated v4 document saves as the canonical platform v6 wire"
     );
 }
 
@@ -311,8 +334,8 @@ fn literal_v5_fixture_migrates_to_canonical_v6() {
     store.save(&loaded).expect("save loaded state");
     assert_eq!(
         fs::read(dir.join("tsk.json")).expect("read resaved live document"),
-        include_bytes!("fixtures/current_store_v6.json").as_slice(),
-        "a v5 state must serialize as canonical v6"
+        platform_v6_fixture().as_slice(),
+        "a v5 state must serialize as canonical platform v6"
     );
 }
 

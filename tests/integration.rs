@@ -18,6 +18,7 @@ mod e2e_persist;
 mod edit_target_binding;
 mod f6_save_recovery;
 mod host_scripts;
+mod host_scripts_windows;
 mod manifest;
 mod queue_board_edit;
 mod queue_board_model;

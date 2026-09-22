@@ -32,7 +32,26 @@ fn run_before_lock_open_hook() {}
 /// stripping any group/other access from one that already exists. Stricter
 /// existing modes are kept.
 pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
-    fs::create_dir_all(path)?;
+    #[cfg(windows)]
+    reject_reparse_ancestors(path)?;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if is_reparse_or_symlink(&metadata) || !metadata.is_dir() => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "state directory must be a real directory, not a symlink",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => fs::create_dir_all(path)?,
+        Err(error) => return Err(error),
+    }
+    let metadata = fs::symlink_metadata(path)?;
+    if is_reparse_or_symlink(&metadata) || !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "state directory must be a real directory, not a symlink",
+        ));
+    }
     #[cfg(unix)]
     tighten_private_dir(path)?;
     Ok(())
@@ -66,6 +85,88 @@ fn tighten_private_dir(path: &Path) -> io::Result<()> {
     directory.set_permissions(fs::Permissions::from_mode(mode & 0o700))
 }
 
+/// Reject any existing Windows path component that can redirect later filesystem operations.
+#[cfg(windows)]
+pub(crate) fn reject_reparse_ancestors(path: &Path) -> io::Result<()> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    for ancestor in absolute.ancestors() {
+        match fs::symlink_metadata(ancestor) {
+            Ok(metadata) if is_reparse_or_symlink(&metadata) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "path contains a reparse-point ancestor: {}",
+                        ancestor.display()
+                    ),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // FILE_ATTRIBUTE_REPARSE_POINT also covers junctions, which are not reported by
+        // FileType::is_symlink but must not redirect state or setup writes.
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+/// Atomically publish `from` at `to`. Windows requests write-through replacement so a
+/// successful save includes the directory-entry update, matching the durability boundary Unix
+/// gets from the following directory sync.
+pub(crate) fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        };
+
+        let from = from
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let to = to
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        // SAFETY: both buffers are stable, NUL-terminated UTF-16 strings for the duration of
+        // the call. MoveFileExW does not retain either pointer.
+        if unsafe {
+            MoveFileExW(
+                from.as_ptr(),
+                to.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    fs::rename(from, to)
+}
+
 /// Create a file holding owner-only content (`0600` on Unix when created),
 /// truncating an existing one. Temp files and their renamed targets go through
 /// here so a document is never briefly world-readable.
@@ -87,7 +188,9 @@ pub fn open_lock_file(path: &Path) -> io::Result<File> {
     // through the existing-file path, which never creates through a newly planted link.
     for _ in 0..3 {
         let before = match fs::symlink_metadata(path) {
-            Ok(metadata) if metadata.file_type().is_file() => Some(metadata),
+            Ok(metadata) if metadata.file_type().is_file() && !is_reparse_or_symlink(&metadata) => {
+                Some(metadata)
+            }
             Ok(_) => return invalid_lock_path(),
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => return Err(error),
@@ -109,7 +212,9 @@ pub fn open_lock_file(path: &Path) -> io::Result<File> {
         };
         let opened = file.metadata()?;
         let current = match fs::symlink_metadata(path) {
-            Ok(metadata) if metadata.file_type().is_file() => metadata,
+            Ok(metadata) if metadata.file_type().is_file() && !is_reparse_or_symlink(&metadata) => {
+                metadata
+            }
             Ok(_) => return invalid_lock_path(),
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error),
@@ -309,5 +414,67 @@ mod tests {
             0o500,
             "rejecting the symlink must not grant permissions on its target"
         );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn junction(link: &Path, target: &Path) {
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .expect("run mklink");
+        assert!(
+            output.status.success(),
+            "mklink failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn ensure_private_dir_rejects_a_junction_ancestor_without_creating_through_it() {
+        let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("tsk-fsperm-junction-{}-{seq}", std::process::id()));
+        fs::create_dir_all(&root).expect("root");
+        let target = root.join("target");
+        let link = root.join("redirect");
+        fs::create_dir(&target).expect("target");
+        junction(&link, &target);
+        assert!(
+            is_reparse_or_symlink(&fs::symlink_metadata(&link).expect("junction metadata")),
+            "a native junction must carry the reparse-point attribute"
+        );
+
+        ensure_private_dir(&link.join("state")).expect_err("junction ancestor must be refused");
+
+        assert!(!target.join("state").exists());
+        fs::remove_dir(&link).expect("remove junction");
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn replace_file_atomically_replaces_an_existing_destination() {
+        let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("tsk-fsperm-replace-{}-{seq}", std::process::id()));
+        fs::create_dir_all(&root).expect("root");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::write(&source, "new").expect("source");
+        fs::write(&destination, "old").expect("destination");
+
+        replace_file(&source, &destination).expect("replace");
+
+        assert_eq!(fs::read_to_string(&destination).expect("published"), "new");
+        assert!(!source.exists());
+        let _ = fs::remove_dir_all(root);
     }
 }

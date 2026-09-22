@@ -37,7 +37,7 @@ const BOARD_PINS = [
   {
     n: 4,
     title: 'Peek.',
-    body: 'Below 110 columns, <kbd>→</kbd> or a click shows up to five wrapped note lines under the task. Wide, a click or <kbd>→</kbd> opens the task page beside the board instead. <kbd>Enter</kbd> opens the full page either way.',
+    body: 'Below 110 columns, <kbd>→</kbd>, <kbd>l</kbd>, or a click shows up to five wrapped note lines under the task. Wide, those keys or a click open the task page beside the board instead. <kbd>←</kbd> or <kbd>h</kbd> closes it; <kbd>Enter</kbd> opens the full page.',
   },
   {
     n: 5,
@@ -54,7 +54,7 @@ const softwareApplication = {
   '@type': 'SoftwareApplication',
   name: 'tsk',
   applicationCategory: 'DeveloperApplication',
-  operatingSystem: 'macOS, Linux',
+  operatingSystem: 'macOS, Linux, Windows 10, Windows 11',
   license: 'https://opensource.org/licenses/MIT',
   codeRepository: REPO,
   softwareVersion: VERSION,
@@ -216,7 +216,7 @@ const softwareApplication = {
               </div>
               <p class="hero-install-meta">
                 macOS &amp; Linux · MIT · <a href="#demo">Try the board ↓</a>
-                · <a href="/docs/install/">install guide →</a>
+                · <a href="/docs/install/">install guide →</a> · Windows 10/11 PowerShell
               </p>
             </div>
           </div>
@@ -365,7 +365,7 @@ const softwareApplication = {
               </div>
               <span class="pane-cols" data-cols aria-live="polite"></span>
               <span class="pane-hint">
-                drag the divider · <kbd>j</kbd><kbd>k</kbd> move · <kbd>→</kbd> peek or slide ·
+                drag the divider · <kbd>j</kbd><kbd>k</kbd> move · <kbd>h</kbd><kbd>l</kbd> close or open ·
                 <kbd>+</kbd> capture · <kbd>?</kbd> help
               </span>
             </div>
@@ -394,10 +394,10 @@ const softwareApplication = {
           </div>
           <p class="stage-note">
             Two real layouts. Beside an agent, tsk is the 78-column board herdr opens by default,
-            and <kbd>→</kbd> peeks. Give it the whole terminal, or drag the divider past 110
-            columns, and the same board becomes the four-stage slider: <kbd>→</kbd> slides the
+            and <kbd>→</kbd> or <kbd>l</kbd> peeks. Give it the whole terminal, or drag the divider past 110
+            columns, and the same board becomes the four-stage slider: <kbd>→</kbd> or <kbd>l</kbd> slides the
             task page in. On the Projects tab, moving to a project opens its preview at Split,
-            and <kbd>→</kbd> makes that project board live at Rail. The demo takes bare
+            and <kbd>→</kbd> or <kbd>l</kbd> makes that project board live at Rail. The demo takes bare
             <kbd>s</kbd> <kbd>n</kbd> <kbd>o</kbd> <kbd>d</kbd> <kbd>b</kbd>
             because browsers keep the control chords. In the app, every mutating verb needs
             <kbd>Ctrl</kbd>. <kbd>Esc</kbd> closes either split after its editors and overlays.
@@ -451,8 +451,8 @@ const softwareApplication = {
               </li>
             </ol>
             <p class="stages-keys">
-              <span><kbd>→</kbd> one stage right</span>
-              <span><kbd>←</kbd> one stage left</span>
+              <span><kbd>→</kbd> / <kbd>l</kbd> one stage right</span>
+              <span><kbd>←</kbd> / <kbd>h</kbd> one stage left</span>
               <span><kbd>Enter</kbd> jump to the page and remember where you were</span>
               <span><kbd>Esc</kbd> go back there</span>
             </p>
@@ -611,8 +611,8 @@ const softwareApplication = {
             <span class="index">05 <span class="index-label">install</span></span>
             <h2 id="install-heading">Install it. Open the board.</h2>
             <p class="band-lede">
-              One binary, standalone or in Herdr. State lives in <code>~/.tsk</code> whether you run it
-              bare or inside herdr.
+              One binary, standalone or in Herdr. State lives in <code>~/.tsk</code> on macOS/Linux or
+              <code>%LOCALAPPDATA%\tsk</code> on Windows, whether you run it bare or inside Herdr.
             </p>
           </header>
 
@@ -632,9 +632,14 @@ const softwareApplication = {
                 <pre class="shell" data-copy-source><span class="prompt">$</span> brew install smarzban/tap/tsk</pre>
                 <button type="button" class="copy" data-copy aria-label="Copy Homebrew command">copy</button>
               </div>
+              <p class="install-note">Windows 10/11 ARM64 or x86-64:</p>
+              <div class="shell-wrap">
+                <pre class="shell" data-copy-source><span class="prompt">PS&gt;</span> powershell -c "irm https://www.gettsk.sh/install.ps1 | iex"</pre>
+                <button type="button" class="copy" data-copy aria-label="Copy Windows install command">copy</button>
+              </div>
               <p class="install-note">
-                If prompted, reopen your terminal or run the installer's printed <code>export</code> command.
-                When Herdr is already installed, an interactive curl install may ask to run <code>tsk setup herdr</code>;
+                If prompted on macOS or Linux, reopen your terminal or run the installer's printed <code>export</code> command.
+                When Herdr is already installed, an interactive install may ask to run <code>tsk setup herdr</code>;
                 when agent skill roots are detected it also asks once to install the tsk skill.
                 The wrap-up then points at the board (<code>prefix+t</code> after Herdr setup, or <code>tsk setup herdr</code> / <code>tsk setup</code> when those asks are skipped).
                 Open the board with <code>tsk</code>. Add a task with <code>tsk add -t "your task title"</code>.
@@ -655,9 +660,9 @@ const softwareApplication = {
             </div>
 
             <ul class="reqs" aria-label="Requirements">
-              <li><span class="dim">install</span> script or Homebrew</li>
-              <li><span class="dim">on</span> Linux · macOS</li>
-              <li><span class="dim">plugin mode</span> herdr 0.9+</li>
+              <li><span class="dim">install</span> shell, PowerShell, or Homebrew</li>
+              <li><span class="dim">on</span> Linux · macOS · Windows 10/11 ARM64 or x64</li>
+              <li><span class="dim">plugin mode</span> herdr 0.9+ or its supported Windows preview</li>
               <li><a href="/docs/install/">Full install guide →</a></li>
             </ul>
           </div>

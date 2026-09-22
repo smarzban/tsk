@@ -3,16 +3,16 @@ title: Storage
 description: Task data, backups, deleted tasks, and update checks.
 ---
 
-The board, CLI, and Herdr plugin share `~/.tsk/tsk.json`. The current store format is v6.
+The board, CLI, and Herdr plugin share one store. The current store format is v6.
 
 ## Location
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `TSK_STATE_DIR` | `~/.tsk` | Task data, agent profiles, backups, trash, and release-check cache. With neither this nor `HOME` set, tsk refuses to run rather than pick a directory |
+| `TSK_STATE_DIR` | Platform default | Task data, agent profiles, backups, trash, and release-check cache. The default is `~/.tsk` on macOS/Linux, `%LOCALAPPDATA%\tsk` on Windows, or `%USERPROFILE%\.tsk` when `LOCALAPPDATA` is unavailable. Without a usable platform home, tsk refuses to run rather than pick a directory |
 | `--state-dir <dir>` | State directory | Override storage for a data command |
 
-Use a local disk. NFS and synced folders such as Dropbox or iCloud Drive are unsupported. Directory roots must be real directories, not symlinks.
+Use a local disk. NFS and synced folders such as Dropbox or iCloud Drive are unsupported. Directory roots must be real directories, not symlinks or Windows reparse points such as junctions.
 
 Herdr's plugin-specific state/config directories do not override these locations. Removing tsk leaves its task data intact.
 
@@ -73,7 +73,7 @@ On launch, tsk checks for a newer release if its cached check is older than 24 h
 | Setting or file | Purpose |
 | --- | --- |
 | `TSK_NO_UPDATE_CHECK` | Set to disable the check and notice |
-| `TSK_UPDATE_CURL=/absolute/path/to/curl` | Use a nonstandard, explicit curl path for the check and for `tsk update` (default `/usr/bin/curl`) |
+| `TSK_UPDATE_CURL=/absolute/path/to/curl` | macOS/Linux only: use a nonstandard, explicit curl path for the check and for `tsk update` (default `/usr/bin/curl`). Windows uses the binary's native HTTPS client |
 | `update.json` | Cached release check in the state directory |
 
 The check requests the latest release tag from GitHub over HTTPS only. It does not upload task data. Failures are silent.

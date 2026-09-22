@@ -9,7 +9,7 @@ Read notes and steps, then edit the task when you need to change it.
 
 Double-click a task or select it and press `Enter`. A double-click follows the task you first clicked, even when the first click resizes the columns.
 
-At 110 usable columns or wider, click a task or press `→` to open details beside the board, keeping board focus. Use `→` and `←` to move between [board and task views](/docs/board/#wide-stage-slider). From the board-focused split, `Esc` closes the details column, keeping any parked draft. Press `Enter` from the board for full screen; `Esc` or click **esc close** returns. In view mode, `ctrl+q` quits the whole board rather than closing the page; save or cancel unsaved edits first.
+At 110 usable columns or wider, click a task or press `→` / `l` to open details beside the board, keeping board focus. Use `→` / `l` and `←` / `h` to move between [board and task views](/docs/board/#wide-stage-slider). From the board-focused split, `Esc` closes the details column, keeping any parked draft. Press `Enter` from the board for full screen; `Esc` or click **esc close** returns. In view mode, `ctrl+q` quits the whole board rather than closing the page; save or cancel unsaved edits first.
 
 Click the task's `T` number to copy it. The page shows its status, notes, steps, assignee, project, thread, and dates. After a dispatch it also shows the worktree, branch, relative dispatch time, and whether the worktree was removed. Its footer puts `@assignee` before `#thread`, then the project and created and updated dates. Long text wraps.
 

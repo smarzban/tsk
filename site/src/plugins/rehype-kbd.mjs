@@ -10,7 +10,7 @@ const NAMED = new Set([
 const CHORD = /^(ctrl|shift|alt|cmd|meta)(\+(ctrl|shift|alt|cmd|meta))*\+([A-Za-z0-9]|Enter|Esc|Tab|Delete|↑|↓|←|→)$/i;
 // Single characters the board, task page, capture, and recovery bind. Anything else
 // in one-character code (`T`, `i`, `-`) is an identifier, not a key.
-const SINGLE = new Set(['j', 'k', 'z', 'P', 'g', 'q', 'r', 'c', 's', 'p', 'e', 'u', '+', ':', '?', '1', '2', '3']);
+const SINGLE = new Set(['h', 'j', 'k', 'l', 'z', 'P', 'g', 'q', 'r', 'c', 's', 'p', 'e', 'u', '+', ':', '?', '1', '2', '3']);
 
 export function isKeyName(text) {
   return NAMED.has(text) || CHORD.test(text) || SINGLE.has(text);

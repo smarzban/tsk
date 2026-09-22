@@ -31,7 +31,9 @@ fn normal_mode_keymap_equals_the_readme_and_queue_board_v1_set() {
         (KeyCode::Char(' '), BoardIntent::MarkToggle, false),
         (KeyCode::Enter, BoardIntent::OpenTaskPage, false),
         (KeyCode::Right, BoardIntent::PeekDetail, false),
+        (KeyCode::Char('l'), BoardIntent::PeekDetail, false),
         (KeyCode::Left, BoardIntent::CollapseDetail, false),
+        (KeyCode::Char('h'), BoardIntent::CollapseDetail, false),
         (KeyCode::Esc, BoardIntent::CloseLayer, false),
         (KeyCode::Char('s'), BoardIntent::PrimaryVerb, true),
         (KeyCode::Char('g'), BoardIntent::Dispatch, true),
@@ -125,7 +127,7 @@ fn normal_mode_keymap_equals_the_readme_and_queue_board_v1_set() {
     );
     assert_eq!(ctrl(KeyCode::Char('d')), Some(BoardIntent::Complete));
 
-    for retired in ['a', 'l', 'c', 'i', 'z', 'P', '1', '2', '3', '[', ']'] {
+    for retired in ['a', 'c', 'i', 'z', 'P', '1', '2', '3', '[', ']'] {
         assert_eq!(
             normal(KeyCode::Char(retired)),
             None,
@@ -216,5 +218,63 @@ fn help_card_lines_fit_the_modal_body_at_every_size() {
             width <= 58,
             "help line is {width} cells, over the 58-cell card body: {line:?}"
         );
+    }
+}
+
+#[test]
+fn vim_horizontal_keys_are_navigation_only_outside_text_entry() {
+    assert_eq!(
+        normal(KeyCode::Char('h')),
+        Some(BoardIntent::CollapseDetail)
+    );
+    assert_eq!(normal(KeyCode::Char('l')), Some(BoardIntent::PeekDetail));
+
+    for character in ['h', 'l'] {
+        for mode in [
+            BoardInputMode::EditTitle,
+            BoardInputMode::EditNotes,
+            BoardInputMode::EditThread,
+            BoardInputMode::EditStep,
+        ] {
+            assert_eq!(
+                map_key(
+                    mode,
+                    KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)
+                ),
+                Some(BoardIntent::EditInsert(character)),
+                "{character} remains text while editing {mode:?}"
+            );
+        }
+        for (mode, expected) in [
+            (
+                BoardInputMode::QuickAdd,
+                BoardIntent::QuickAddInsert(character),
+            ),
+            (
+                BoardInputMode::ListPicker,
+                BoardIntent::ListPickerQueryInsert(character),
+            ),
+            (
+                BoardInputMode::Search,
+                BoardIntent::SearchQueryInsert(character),
+            ),
+            (
+                BoardInputMode::Palette,
+                BoardIntent::CommandQueryInsert(character),
+            ),
+            (
+                BoardInputMode::Help,
+                BoardIntent::HelpQueryInsert(character),
+            ),
+        ] {
+            assert_eq!(
+                map_key(
+                    mode,
+                    KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)
+                ),
+                Some(expected),
+                "{character} remains query text in {mode:?}"
+            );
+        }
     }
 }

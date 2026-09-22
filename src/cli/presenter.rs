@@ -132,7 +132,7 @@ pub fn top_level_help() -> String {
         "  trash      restore a trashed task\n\n",
         "Setup\n",
         "  setup    register herdr, or install the agent skill\n",
-        "  update   install the latest published release\n",
+        "  update   install the latest stable release\n",
         "  guide    print the agent workflow skill\n\n",
         "Statuses\n",
         "  open     captured, not yet picked (inbox)\n",
@@ -797,7 +797,7 @@ impl ScopeLabel {
 }
 
 fn path_segments(path: &str) -> Vec<String> {
-    path.split('/')
+    path.split(|character| character == '/' || (cfg!(windows) && character == '\\'))
         .filter(|segment| !segment.is_empty())
         .map(str::to_owned)
         .collect()
@@ -1514,12 +1514,12 @@ pub fn setup_help() -> CliOutput {
 pub fn update_help() -> CliOutput {
     help(HelpDoc {
         usage: vec!["tsk update".into()],
-        purpose: "Install the latest published release for an installer-managed copy.".into(),
+        purpose: "Install the latest stable release for an installer-managed copy.".into(),
         groups: Vec::new(),
         examples: vec!["tsk update".into()],
         refusals: vec!["the update could not be installed".into()],
         exit: exit_line(
-            "latest release installed, or Homebrew guidance printed",
+            "latest stable release installed or staged, or Homebrew guidance printed",
             Some("update failed"),
             false,
         ),
@@ -1761,6 +1761,19 @@ pub fn setup(result: crate::setup::SetupResult) -> CliOutput {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[cfg(windows)]
+    #[test]
+    fn path_labels_split_windows_and_unix_separators() {
+        assert_eq!(path_segments(r"C:\work\tsk"), ["C:", "work", "tsk"]);
+        assert_eq!(path_segments("/work/tsk"), ["work", "tsk"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_labels_keep_a_literal_unix_backslash() {
+        assert_eq!(path_segments(r"/work/tsk\name"), ["work", r"tsk\name"]);
+    }
 
     #[test]
     fn help_doc_wraps_hangs_aligns_per_group_and_omits_empty_sections() {

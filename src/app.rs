@@ -3656,13 +3656,13 @@ mod tests {
     }
 
     #[test]
-    fn projects_preview_nested_arrows_keep_the_narrow_peek_keymap() {
+    fn projects_preview_h_and_l_keep_the_narrow_peek_keymap() {
         let (mut domain, mut model, _) = projects_preview_fixture();
         let area = Rect::new(0, 0, 110, 30);
         let peek = preview_key_intent(
             &mut model,
             area,
-            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
         );
         assert_eq!(peek, BoardIntent::PeekDetail);
         apply_intent(&mut domain, model.input_target_mut(), peek, None).expect("peek nested task");
@@ -3674,7 +3674,7 @@ mod tests {
         let collapse = preview_key_intent(
             &mut model,
             area,
-            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
         );
         assert_eq!(collapse, BoardIntent::CollapseDetail);
         apply_intent(&mut domain, model.input_target_mut(), collapse, None)
@@ -4079,10 +4079,15 @@ mod tests {
             Some(BoardIntent::StageRight)
         );
         assert_eq!(
+            route(&mut model, wide, KeyCode::Char('l')),
+            Some(BoardIntent::StageRight)
+        );
+        assert_eq!(
             route(&mut model, wide, KeyCode::Enter),
             Some(BoardIntent::OpenTaskPage)
         );
         assert_eq!(route(&mut model, wide, KeyCode::Left), None);
+        assert_eq!(route(&mut model, wide, KeyCode::Char('h')), None);
         // Below the threshold the narrow routes are untouched.
         assert_eq!(
             route(&mut model, single, KeyCode::Enter),
@@ -4093,7 +4098,15 @@ mod tests {
             Some(BoardIntent::PeekDetail)
         );
         assert_eq!(
+            route(&mut model, single, KeyCode::Char('l')),
+            Some(BoardIntent::PeekDetail)
+        );
+        assert_eq!(
             route(&mut model, single, KeyCode::Left),
+            Some(BoardIntent::CollapseDetail)
+        );
+        assert_eq!(
+            route(&mut model, single, KeyCode::Char('h')),
             Some(BoardIntent::CollapseDetail)
         );
 
@@ -4106,7 +4119,15 @@ mod tests {
             Some(BoardIntent::StageLeft)
         );
         assert_eq!(
+            route(&mut model, wide, KeyCode::Char('h')),
+            Some(BoardIntent::StageLeft)
+        );
+        assert_eq!(
             route(&mut model, wide, KeyCode::Right),
+            Some(BoardIntent::StageRight)
+        );
+        assert_eq!(
+            route(&mut model, wide, KeyCode::Char('l')),
             Some(BoardIntent::StageRight)
         );
         assert_eq!(
@@ -4124,6 +4145,8 @@ mod tests {
         );
         // Narrow task page: ← stays inert, Esc closes, exactly as before the slider.
         assert_eq!(route(&mut model, single, KeyCode::Left), None);
+        assert_eq!(route(&mut model, single, KeyCode::Char('h')), None);
+        assert_eq!(route(&mut model, single, KeyCode::Char('l')), None);
         assert_eq!(
             route(&mut model, single, KeyCode::Esc),
             Some(BoardIntent::CloseLayer)
@@ -4133,8 +4156,13 @@ mod tests {
         stage_right(&mut domain, &mut model, 1);
         assert_eq!(model.wide_stage(), crate::ui::tier::WideStage::FullTask);
         assert_eq!(route(&mut model, wide, KeyCode::Right), None);
+        assert_eq!(route(&mut model, wide, KeyCode::Char('l')), None);
         assert_eq!(
             route(&mut model, wide, KeyCode::Left),
+            Some(BoardIntent::StageLeft)
+        );
+        assert_eq!(
+            route(&mut model, wide, KeyCode::Char('h')),
             Some(BoardIntent::StageLeft)
         );
     }

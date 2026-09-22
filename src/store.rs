@@ -230,7 +230,7 @@ impl AtomicFilesystem for StdFilesystem {
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
-        fs::rename(from, to)
+        fsperm::replace_file(from, to)
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -251,10 +251,8 @@ impl AtomicFilesystem for StdFilesystem {
 
 /// Identity of the live document on disk, cheap to stat.
 ///
-/// Every save renames a fresh temp file over the live one, so the inode changes on
-/// every replace: two saves inside one mtime tick with equal length are still
-/// distinguishable. On non-Unix platforms the inode is not claimed, so only the
-/// mtime and length are carried.
+/// Every save renames a fresh temp file over the live one, so its filesystem identity changes
+/// on every replace: two saves inside one mtime tick with equal length stay distinguishable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg(unix)]
 pub struct StoreSignature {
@@ -264,9 +262,20 @@ pub struct StoreSignature {
     pub len: u64,
 }
 
-/// Identity of the live document on disk, cheap to stat.
+/// Windows exposes a volume serial and file index, the filesystem identity corresponding to
+/// Unix's device and inode pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub struct StoreSignature {
+    pub volume: Option<u32>,
+    pub file_index: Option<u64>,
+    pub modified: SystemTime,
+    pub len: u64,
+}
+
+/// Conservative fallback for platforms outside the supported Unix and Windows set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(not(any(unix, windows)))]
 pub struct StoreSignature {
     pub modified: SystemTime,
     pub len: u64,
@@ -296,21 +305,49 @@ impl TaskStore {
     /// The live document's change signature. `None` when the file does not exist
     /// yet (a fresh, never-saved store) or its metadata could not be read.
     pub fn state_signature(&self) -> Option<StoreSignature> {
-        let metadata = fs::metadata(self.state_file()).ok()?;
-        let modified = metadata.modified().ok()?;
-        let len = metadata.len();
-        #[cfg(unix)]
+        #[cfg(windows)]
         {
-            use std::os::unix::fs::MetadataExt;
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::{
+                GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+            };
+
+            let file = fs::File::open(self.state_file()).ok()?;
+            let metadata = file.metadata().ok()?;
+            // SAFETY: zero is a valid initial state for this output-only C structure.
+            let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+            // SAFETY: the handle remains open for the call and `info` points to writable,
+            // correctly sized storage.
+            let read =
+                unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), &mut info) };
+            if read == 0 {
+                return None;
+            }
             Some(StoreSignature {
-                dev: metadata.dev(),
-                ino: metadata.ino(),
-                modified,
-                len,
+                volume: Some(info.dwVolumeSerialNumber),
+                file_index: Some(
+                    (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+                ),
+                modified: metadata.modified().ok()?,
+                len: metadata.len(),
             })
         }
-        #[cfg(not(unix))]
+        #[cfg(not(windows))]
         {
+            let metadata = fs::metadata(self.state_file()).ok()?;
+            let modified = metadata.modified().ok()?;
+            let len = metadata.len();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                Some(StoreSignature {
+                    dev: metadata.dev(),
+                    ino: metadata.ino(),
+                    modified,
+                    len,
+                })
+            }
+            #[cfg(not(any(unix, windows)))]
             Some(StoreSignature { modified, len })
         }
     }
@@ -873,10 +910,25 @@ pub fn require_home_or_override(args: &[String]) -> Result<(), String> {
     let explicit = args
         .iter()
         .any(|arg| arg == "--state-dir" || arg.starts_with("--state-dir="));
-    if set("TSK_STATE_DIR") || set("HOME") || explicit {
+    if set("TSK_STATE_DIR") || explicit {
         return Ok(());
     }
-    Err("HOME is not set; set HOME or TSK_STATE_DIR to say where the board lives".to_string())
+    #[cfg(unix)]
+    if set("HOME") {
+        return Ok(());
+    }
+    #[cfg(windows)]
+    if set("LOCALAPPDATA") || set("USERPROFILE") {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    return Err(
+        "HOME is not set; set HOME or TSK_STATE_DIR to say where the board lives".to_string(),
+    );
+    #[cfg(windows)]
+    return Err("LOCALAPPDATA and USERPROFILE are not set; set one of them or TSK_STATE_DIR to say where the board lives".to_string());
+    #[allow(unreachable_code)]
+    Err("set TSK_STATE_DIR to say where the board lives".to_string())
 }
 
 /// State dir from `TSK_STATE_DIR`, else `~/.tsk`.
@@ -893,9 +945,25 @@ pub fn default_state_dir() -> PathBuf {
             return PathBuf::from(dir);
         }
     }
-    if let Some(home) = env::var_os("HOME") {
-        if !home.is_empty() {
-            return PathBuf::from(home).join(".tsk");
+    #[cfg(unix)]
+    {
+        if let Some(home) = env::var_os("HOME") {
+            if !home.is_empty() {
+                return PathBuf::from(home).join(".tsk");
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Some(local) = env::var_os("LOCALAPPDATA") {
+            if !local.is_empty() {
+                return PathBuf::from(local).join("tsk");
+            }
+        }
+        if let Some(userprofile) = env::var_os("USERPROFILE") {
+            if !userprofile.is_empty() {
+                return PathBuf::from(userprofile).join(".tsk");
+            }
         }
     }
     // Last resort: relative per-process dir (still not shared /tmp/tsk-state).
@@ -947,7 +1015,7 @@ fn retain_version_backup(live: &Path, version: u32) -> Result<(), StoreError> {
 /// is no instant at which `tsk.json.1` is missing: a crash leaves either the old backup
 /// or the new one, never neither.
 fn retain_last_good(live: &Path) -> Result<(), StoreError> {
-    retain_last_good_with(live, |from, to| fs::rename(from, to))
+    retain_last_good_with(live, fsperm::replace_file)
 }
 
 /// [`retain_last_good`] with the final rename injectable, so a test can fail it and check
@@ -1801,8 +1869,11 @@ mod tests {
             let fresh = dir.join(format!("{prefix}2.2"));
             fs::write(&stale, b"stale").expect("seed stale");
             fs::write(&fresh, b"in flight").expect("seed fresh");
-            fs::File::open(&stale)
-                .expect("open stale")
+            // Windows needs a handle with write attributes to call SetFileTime.
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&stale)
+                .expect("open stale for metadata write")
                 .set_modified(two_minutes_ago)
                 .expect("age the stale temp");
             seeded.push((prefix, stale, fresh));
@@ -2066,7 +2137,7 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn signature_distinguishes_same_mtime_same_length_replaces() {
         let dir = temp_dir("signature-inode");
@@ -2095,9 +2166,16 @@ mod tests {
             "identical documents, identical length"
         );
         assert_eq!(first.modified, second.modified, "mtime forced equal");
+        #[cfg(unix)]
         assert_ne!(
             first.ino, second.ino,
             "rename replace allocates a new inode"
+        );
+        #[cfg(windows)]
+        assert_ne!(
+            (first.volume, first.file_index),
+            (second.volume, second.file_index),
+            "rename replace allocates a new Windows file identity"
         );
         assert_ne!(
             first, second,

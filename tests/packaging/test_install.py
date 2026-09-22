@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = ROOT / "site/public/install.sh"
 
 
+@unittest.skipIf(os.name == "nt", "Unix installer tests run on Unix CI")
 class InstallerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -186,6 +187,7 @@ echo installed-fixture
                 os.close(slave)
             os.close(master)
 
+    @unittest.skipIf(os.name == "nt", "Unix installer smoke")
     @unittest.skipUnless(os.environ.get("TSK_TEST_BINARY"), "set TSK_TEST_BINARY to smoke a built executable")
     def test_installed_real_binary_runs_isolated_cli(self):
         system, arch = platform.system(), platform.machine()
@@ -297,7 +299,7 @@ echo installed-fixture
         activated = subprocess.run(["sh", "-c", '. "$HOME/.zshrc"; tsk'], env=environment, text=True, capture_output=True, check=True)
         self.assertEqual(activated.stdout.strip(), "installed-fixture")
 
-    @unittest.skipIf(os.geteuid() == 0, "root bypasses write permissions")
+    @unittest.skipIf(getattr(os, "geteuid", lambda: -1)() == 0, "root bypasses write permissions")
     def test_unwritable_startup_file_keeps_binary_and_reports_manual_setup(self):
         self.archive()
         home = Path(self.env["HOME"])
@@ -663,7 +665,7 @@ echo installed-fixture
             result = self.run_update(TSK_CURRENT_VERSION=current)
             self.assertEqual(result.returncode, 1, (current, result.stdout))
             self.assertIn(f"Current version {current}", result.stdout)
-            self.assertIn(f"latest published release is v1.2.3, older than the installed {current}; nothing changed", result.stderr)
+            self.assertIn(f"latest stable release is v1.2.3, older than the installed {current}; nothing changed", result.stderr)
             self.assertFalse((self.root / "managed-bin/tsk").exists())
         self.assertEqual(self.setup_calls(), [])
 

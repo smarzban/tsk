@@ -2101,7 +2101,7 @@ import { parseCapture } from "./capture.js";
       ],
       ["navigation", "space", "toggle mark (multi-select)", "select multiple"],
       ["navigation", "enter", "open task", "detail"],
-      ["navigation", "→ / ←", "peek or slide", "wide view"],
+      ["navigation", "←/h · →/l", "close or peek / slide", "wide view"],
       ["task actions", "s", "start", "status open or ready"],
       ["task actions", "d", "done", "status finish complete"],
       ["task actions", "b", "block", "status"],
@@ -3058,7 +3058,7 @@ import { parseCapture } from "./capture.js";
       render();
       return true;
     }
-    if (bare && e.key === "ArrowLeft") {
+    if (bare && ["ArrowLeft", "h"].includes(e.key)) {
       e.preventDefault();
       // Like the native parked task form, leaving the page keeps an unfinished preview
       // draft available when the right seat is focused again.
@@ -3144,13 +3144,13 @@ import { parseCapture } from "./capture.js";
       render();
       return true;
     }
-    if (bare && e.key === "ArrowRight") {
+    if (bare && ["ArrowRight", "l"].includes(e.key)) {
       e.preventDefault();
       preview.peekId = preview.selectedId;
       render();
       return true;
     }
-    if (bare && e.key === "ArrowLeft") {
+    if (bare && ["ArrowLeft", "h"].includes(e.key)) {
       e.preventDefault();
       if (preview.peekId) preview.peekId = null;
       else state.stage = "split";
@@ -3797,7 +3797,7 @@ import { parseCapture } from "./capture.js";
       render();
       return;
     }
-    if (e.key === "ArrowRight") {
+    if (!alt && ["ArrowRight", "l"].includes(e.key)) {
       e.preventDefault();
       if (wide) {
         stageRight();
@@ -3808,7 +3808,7 @@ import { parseCapture } from "./capture.js";
       render();
       return;
     }
-    if (e.key === "ArrowLeft") {
+    if (!alt && ["ArrowLeft", "h"].includes(e.key)) {
       e.preventDefault();
       if (wide) stageLeft();
       else state.peekId = null;

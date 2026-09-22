@@ -166,7 +166,12 @@ impl fmt::Display for Error {
             Self::Usage(reason) => write!(f, "{reason}"),
             Self::Exists(_) => write!(f, "skill-exists"),
             Self::Symlink(path) => write!(f, "refusing symlink: {}", path.display()),
-            Self::Home => write!(f, "HOME is not set"),
+            Self::Home => {
+                #[cfg(windows)]
+                return write!(f, "HOME and USERPROFILE are not set");
+                #[cfg(not(windows))]
+                write!(f, "HOME is not set")
+            }
             Self::Io(detail) => write!(f, "{detail}"),
             Self::InvalidOmpProfile(profile) => write!(
                 f,
@@ -629,10 +634,22 @@ pub fn run_interactive_batch(
 }
 
 pub fn list_text() -> String {
-    let home = env::var("HOME").ok().filter(|value| !value.is_empty());
+    let home = home_dir().ok();
     let display = |suffix: &str| match &home {
-        Some(home) => format!("{home}/{suffix}/tsk-cli/SKILL.md"),
-        None => format!("$HOME/{suffix}/tsk-cli/SKILL.md"),
+        Some(home) => {
+            let mut path = home.clone();
+            for component in suffix.split('/').chain(["tsk-cli", "SKILL.md"]) {
+                path.push(component);
+            }
+            path.display().to_string()
+        }
+        None => {
+            #[cfg(windows)]
+            let root = "%USERPROFILE%";
+            #[cfg(not(windows))]
+            let root = "$HOME";
+            format!("{root}/{suffix}/tsk-cli/SKILL.md")
+        }
     };
     format!(
         "{USAGE}\n\n\
@@ -742,7 +759,26 @@ fn path_contains(name: &str, predicate: impl Fn(&Path) -> bool) -> bool {
     let Some(path) = env::var_os("PATH") else {
         return false;
     };
-    env::split_paths(&path).any(|dir| predicate(&dir.join(name)))
+    for directory in env::split_paths(&path) {
+        if predicate(&directory.join(name)) {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            let extensions = env::var_os("PATHEXT").unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
+            for extension in extensions.to_string_lossy().split(';') {
+                let extension = extension.trim();
+                if extension.is_empty() {
+                    continue;
+                }
+                let extension = extension.strip_prefix('.').unwrap_or(extension);
+                if predicate(&directory.join(name).with_extension(extension)) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn executable_file(meta: &fs::Metadata) -> bool {
@@ -781,7 +817,7 @@ fn skill_status(root: &Path, dest: &Path) -> Result<SkillStatusDetail, Error> {
 
 fn is_symlink(path: &Path) -> Result<bool, Error> {
     match fs::symlink_metadata(path) {
-        Ok(meta) => Ok(meta.file_type().is_symlink()),
+        Ok(meta) => Ok(crate::fsperm::is_reparse_or_symlink(&meta)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(io_error(error)),
     }
@@ -811,10 +847,25 @@ fn path_present(path: &Path) -> Result<bool, Error> {
 }
 
 fn home_dir() -> Result<PathBuf, Error> {
-    env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .ok_or(Error::Home)
+    #[cfg(unix)]
+    {
+        if let Some(home) = env::var_os("HOME").filter(|value| !value.is_empty()) {
+            return Ok(PathBuf::from(home));
+        }
+    }
+    #[cfg(windows)]
+    {
+        // Agent skill paths (.claude/skills, .pi/agent/skills, etc.) live in the user's
+        // home directory. HOME is checked first (tests and Unix-derived tools set it);
+        // USERPROFILE is the Windows home, not LOCALAPPDATA (app data).
+        if let Some(home) = env::var_os("HOME").filter(|value| !value.is_empty()) {
+            return Ok(PathBuf::from(home));
+        }
+        if let Some(userprofile) = env::var_os("USERPROFILE").filter(|value| !value.is_empty()) {
+            return Ok(PathBuf::from(userprofile));
+        }
+    }
+    Err(Error::Home)
 }
 
 /// Resolve OMP's active user agent directory. Named profiles are rooted under
@@ -982,7 +1033,7 @@ fn write_replace(folder: &Path, dest: &Path, contents: &str) -> Result<(), Error
     let result = (|| {
         io::Write::write_all(&mut file, contents.as_bytes()).map_err(io_error)?;
         file.sync_all().map_err(io_error)?;
-        fs::rename(&staged, dest).map_err(io_error)
+        crate::fsperm::replace_file(&staged, dest).map_err(io_error)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&staged);
@@ -992,7 +1043,9 @@ fn write_replace(folder: &Path, dest: &Path, contents: &str) -> Result<(), Error
 
 fn refuse_symlink(path: &Path) -> Result<(), Error> {
     match fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() => Err(Error::Symlink(path.to_path_buf())),
+        Ok(meta) if crate::fsperm::is_reparse_or_symlink(&meta) => {
+            Err(Error::Symlink(path.to_path_buf()))
+        }
         Ok(_) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(io_error(error)),
@@ -1058,15 +1111,15 @@ mod tests {
     #[test]
     fn embedded_skill_declares_semver() {
         let version = embedded_skill_version();
-        assert_eq!(version, "1.4.0");
-        assert_eq!(frontmatter_version(SKILL_MD).as_deref(), Some("1.4.0"));
+        assert_eq!(version, "1.5.0");
+        assert_eq!(frontmatter_version(SKILL_MD).as_deref(), Some("1.5.0"));
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         for byte in SKILL_MD.bytes() {
             hash ^= u64::from(byte);
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
         assert_eq!(
-            hash, 0x9a56_714b_82b3_83de,
+            hash, 0xab1d_39f0_292a_c5bd,
             "skills/tsk-cli/SKILL.md changed: refresh this hash pin, and bump `version:` only if this is the first skill edit since the last release"
         );
     }
@@ -1104,6 +1157,31 @@ mod tests {
         assert_eq!(frontmatter_version(md), None);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_path_detection_honors_pathext() {
+        let _lock = env_lock();
+        let root =
+            std::env::temp_dir().join(format!("tsk-setup-agent-pathext-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("bin");
+        fs::write(root.join("claude.cmd"), "@exit /b 0\r\n").expect("command");
+        let previous_path = std::env::var_os("PATH");
+        let previous_pathext = std::env::var_os("PATHEXT");
+        std::env::set_var("PATH", &root);
+        std::env::set_var("PATHEXT", ".EXE;.CMD");
+        assert!(cli_on_path("claude"));
+        match previous_path {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
+        match previous_pathext {
+            Some(value) => std::env::set_var("PATHEXT", value),
+            None => std::env::remove_var("PATHEXT"),
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn interactive_batch_yes_installs_detected_agent() {
         let _lock = env_lock();
@@ -1114,8 +1192,10 @@ mod tests {
         fs::create_dir_all(root.join("home/.cursor")).expect("cursor");
         fs::create_dir_all(root.join("empty-bin")).expect("bin");
         let previous_home = std::env::var_os("HOME");
+        let previous_userprofile = std::env::var_os("USERPROFILE");
         let previous_path = std::env::var_os("PATH");
         std::env::set_var("HOME", root.join("home"));
+        std::env::set_var("USERPROFILE", root.join("home"));
         std::env::set_var("PATH", root.join("empty-bin"));
         let mut reader = Cursor::new(b"y\n".to_vec());
         let mut writer = Vec::new();
@@ -1123,6 +1203,10 @@ mod tests {
         match previous_home {
             Some(value) => std::env::set_var("HOME", value),
             None => std::env::remove_var("HOME"),
+        }
+        match previous_userprofile {
+            Some(value) => std::env::set_var("USERPROFILE", value),
+            None => std::env::remove_var("USERPROFILE"),
         }
         match previous_path {
             Some(value) => std::env::set_var("PATH", value),
@@ -1152,8 +1236,10 @@ mod tests {
         fs::create_dir_all(root.join("home/.cursor")).expect("cursor");
         fs::create_dir_all(root.join("empty-bin")).expect("bin");
         let previous_home = std::env::var_os("HOME");
+        let previous_userprofile = std::env::var_os("USERPROFILE");
         let previous_path = std::env::var_os("PATH");
         std::env::set_var("HOME", root.join("home"));
+        std::env::set_var("USERPROFILE", root.join("home"));
         std::env::set_var("PATH", root.join("empty-bin"));
         let mut reader = Cursor::new(b"n\n".to_vec());
         let mut writer = Vec::new();
@@ -1161,6 +1247,10 @@ mod tests {
         match previous_home {
             Some(value) => std::env::set_var("HOME", value),
             None => std::env::remove_var("HOME"),
+        }
+        match previous_userprofile {
+            Some(value) => std::env::set_var("USERPROFILE", value),
+            None => std::env::remove_var("USERPROFILE"),
         }
         match previous_path {
             Some(value) => std::env::set_var("PATH", value),

@@ -812,7 +812,6 @@ pub fn slug(title: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::os::unix::process::ExitStatusExt;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use crate::domain::{ProvenanceOrigin, TaskEventKind, UndoEntry};
@@ -822,6 +821,20 @@ mod tests {
     use super::*;
 
     static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// A process exit status carrying `code`, built the way each platform encodes it.
+    fn exit_code(code: u8) -> std::process::ExitStatus {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            std::process::ExitStatus::from_raw(i32::from(code) << 8)
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::ExitStatusExt;
+            std::process::ExitStatus::from_raw(u32::from(code))
+        }
+    }
 
     #[derive(Default)]
     struct FakeHost {
@@ -1083,7 +1096,7 @@ mod tests {
     #[test]
     fn successful_herdr_command_may_have_empty_stdout() {
         let output = Output {
-            status: std::process::ExitStatus::from_raw(0),
+            status: exit_code(0),
             stdout: Vec::new(),
             stderr: Vec::new(),
         };
@@ -1093,7 +1106,7 @@ mod tests {
     #[test]
     fn herdr_error_envelope_surfaces_its_message() {
         let output = Output {
-            status: std::process::ExitStatus::from_raw(1),
+            status: exit_code(1),
             stdout: Vec::new(),
             stderr: br#"{"error":{"code":"linked_worktree_source","message":"New and open worktree actions start from the repo parent workspace."},"id":"cli:worktree:create"}"#.to_vec(),
         };
@@ -1106,7 +1119,7 @@ mod tests {
     #[test]
     fn herdr_error_envelope_without_message_falls_back_to_code() {
         let output = Output {
-            status: std::process::ExitStatus::from_raw(1),
+            status: exit_code(1),
             stdout: Vec::new(),
             stderr: br#"{"error":{"code":"workspace_gone"},"id":"cli:worktree:remove"}"#.to_vec(),
         };
@@ -1116,7 +1129,7 @@ mod tests {
     #[test]
     fn plain_text_herdr_failure_stays_verbatim() {
         let output = Output {
-            status: std::process::ExitStatus::from_raw(1),
+            status: exit_code(1),
             stdout: Vec::new(),
             stderr: b"herdr: socket not found\n".to_vec(),
         };
@@ -1126,14 +1139,21 @@ mod tests {
     #[test]
     fn herdr_failure_without_detail_reports_exit_status() {
         let output = Output {
-            status: std::process::ExitStatus::from_raw(0x100),
+            status: exit_code(1),
             stdout: Vec::new(),
             stderr: Vec::new(),
         };
         assert_eq!(
             herdr_json(output).unwrap_err(),
-            "herdr exited with exit status: 1"
+            format!("herdr exited with {}", exit_code(1))
         );
+        assert!(herdr_json(Output {
+            status: exit_code(1),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        })
+        .unwrap_err()
+        .ends_with(": 1"));
     }
 
     #[test]

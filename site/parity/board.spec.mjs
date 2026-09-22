@@ -310,6 +310,42 @@ test("110-column boundary and rail mouse return", async ({ page }, info) => {
   await expect(row(page, 13)).toHaveClass(/is-sel/);
 });
 
+test("h and l mirror task-detail navigation in every demo board", async ({
+  page,
+}) => {
+  await open(page, 109);
+  await page.keyboard.press("l");
+  await expect(page.locator(".tsk-peek")).toBeVisible();
+  await page.keyboard.press("h");
+  await expect(page.locator(".tsk-peek")).toHaveCount(0);
+
+  await open(page, 110);
+  await page.keyboard.press("l");
+  await expect(page.locator(".tsk-wide-split.is-split")).toBeVisible();
+  await page.keyboard.press("l");
+  await expect(page.locator(".tsk-wide-split.is-rail")).toBeVisible();
+  await page.keyboard.press("h");
+  await expect(page.locator(".tsk-wide-split.is-split")).toBeVisible();
+  await page.keyboard.press("h");
+  await expect(page.locator(".tsk-wide-split")).toHaveCount(0);
+
+  await page.keyboard.press("3");
+  await page.keyboard.press("ArrowDown");
+  await expect(page.locator(".tsk-wide-split.is-split")).toBeVisible();
+  await page.keyboard.press("l");
+  await expect(page.locator(".tsk-project-preview.is-live")).toBeVisible();
+  await page.keyboard.press("l");
+  await expect(page.locator(".tsk-peek")).toBeVisible();
+  await page.keyboard.press("h");
+  await expect(page.locator(".tsk-peek")).toHaveCount(0);
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".tsk-task-column")).toBeVisible();
+  await page.keyboard.press("h");
+  await expect(page.locator(".tsk-project-preview.is-live")).toBeVisible();
+  await page.keyboard.press("h");
+  await expect(page.locator(".tsk-wide-split.is-split")).toBeVisible();
+});
+
 for (const width of [110, 130]) {
   test(`row double-click survives reflow at ${width} columns`, async ({
     page,

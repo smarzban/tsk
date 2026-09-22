@@ -1,6 +1,6 @@
 [package]
 name = "tsk-tui"
-version = "0.10.1"
+version = "0.11.6"
 edition = "2021"
 description = "tsk: a task board for your terminal"
 license = "MIT"
@@ -63,3 +63,13 @@ uuid = { version = "1.24", features = ["v4", "serde"] }
 # Cargo.lock pins the resolved version; a caret range here keeps another crate's newer
 # libc requirement resolvable instead of failing the build.
 libc = "0.2.189"
+
+[target.'cfg(windows)'.dependencies]
+# Windows has no guaranteed system curl path. Use a native HTTPS client for the release
+# check and to fetch the signed-by-checksum PowerShell installer. The updater gzip-encodes
+# that verified script into the child environment so PowerShell keeps its console stdin for
+# the same setup prompts as the Unix installer without using a replaceable temp script.
+base64 = "0.22.1"
+flate2 = "1.1.10"
+ureq = { version = "3.2", default-features = false, features = ["native-tls", "gzip", "win-system-proxy"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem", "Win32_System_SystemInformation"] }

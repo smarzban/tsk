@@ -115,7 +115,7 @@ pub fn write_cache(dir: &Path, cache: &UpdateCache) -> io::Result<()> {
         temp_file.write_all(data.as_bytes())?;
         temp_file.sync_all()?;
         drop(temp_file);
-        fs::rename(&tmp, &document)?;
+        crate::fsperm::replace_file(&tmp, &document)?;
         Ok(())
     })();
     if write_result.is_err() {
@@ -180,13 +180,27 @@ fn spawn_fetch(dir: PathBuf) {
     });
 }
 
+#[cfg(unix)]
 fn fetch_latest() -> Option<String> {
     let curl = crate::cli::update::curl_path().ok()?;
     fetch_latest_with(&curl)
 }
 
-/// The release check's one network call, with the curl binary injected so a test can
-/// stand one in: same hardened policy as `tsk update`, 15 s budget.
+#[cfg(windows)]
+fn fetch_latest() -> Option<String> {
+    let bytes = crate::cli::update::download_https(RELEASES_URL, 64 * 1024, 15).ok()?;
+    parse_latest_release(&bytes)
+}
+
+fn parse_latest_release(bytes: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let tag = value.get("tag_name")?.as_str()?.trim();
+    (!tag.is_empty()).then(|| tag.to_string())
+}
+
+/// The Unix release check's one network call, with curl injected so a test can stand one
+/// in: same hardened policy as `tsk update`, 15 s budget.
+#[cfg(unix)]
 pub fn fetch_latest_with(curl: &Path) -> Option<String> {
     let output = crate::cli::update::hardened_curl(curl, 15)
         .arg(RELEASES_URL)
@@ -195,12 +209,7 @@ pub fn fetch_latest_with(curl: &Path) -> Option<String> {
     if !output.status.success() {
         return None;
     }
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    let tag = value.get("tag_name")?.as_str()?.trim();
-    if tag.is_empty() {
-        return None;
-    }
-    Some(tag.to_string())
+    parse_latest_release(&output.stdout)
 }
 
 fn unique_tmp_path(dir: &Path) -> PathBuf {
@@ -250,6 +259,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn release_check_uses_the_shared_hardened_curl_policy() {
         let dir = std::env::temp_dir().join(format!(

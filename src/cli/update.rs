@@ -1,21 +1,34 @@
 //! Installer-aware binary upgrades.
 
-use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
+#[cfg(any(unix, windows))]
+use std::process::Command;
+#[cfg(unix)]
+use std::process::Stdio;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(unix)]
+use std::{fs, io};
 
-const INSTALLER_URL: &str = "https://gettsk.sh/install.sh";
-const CURL_PATH: &str = "/usr/bin/curl";
+#[cfg(unix)]
 const CURL_ENV: &str = "TSK_UPDATE_CURL";
+#[cfg(unix)]
+const CURL_PATH: &str = "/usr/bin/curl";
+#[cfg(unix)]
+const INSTALLER_URL: &str = "https://gettsk.sh/install.sh";
+#[cfg(windows)]
+const INSTALLER_URL: &str = "https://www.gettsk.sh/install.ps1";
+#[cfg(unix)]
 const SH_PATH: &str = "/bin/sh";
-/// The installer's own pin. `tsk update` always follows the latest published release; an
+/// The installer's own pin. `tsk update` always follows the latest stable release; an
 /// inherited export must not pin or downgrade it.
 const INSTALLER_VERSION_ENV: &str = "TSK_VERSION";
 
-/// One curl policy for every fetch the binary makes: HTTPS only (also across redirects),
-/// TLS 1.2 or newer, fail on HTTP errors, quiet, follow redirects, bounded wall time.
+/// One curl policy for every Unix fetch the binary makes: HTTPS only (also across
+/// redirects), TLS 1.2 or newer, fail on HTTP errors, quiet, follow redirects, bounded time.
+#[cfg(unix)]
 pub fn hardened_curl(curl: &Path, max_time_secs: u32) -> Command {
     let mut command = Command::new(curl);
     command.args([
@@ -31,8 +44,9 @@ pub fn hardened_curl(curl: &Path, max_time_secs: u32) -> Command {
     command
 }
 
-/// The curl the release check and `tsk update` share: `TSK_UPDATE_CURL` when set, else the
-/// system binary. Never a bare `curl` looked up on `PATH`.
+/// The curl the Unix release check and `tsk update` share: `TSK_UPDATE_CURL` when set,
+/// else the system binary. Never a bare `curl` looked up on `PATH`.
+#[cfg(unix)]
 pub fn curl_path() -> Result<PathBuf, String> {
     configured_curl_path(std::env::var_os(CURL_ENV).map(PathBuf::from))
 }
@@ -45,6 +59,7 @@ pub enum UpdateOutcome {
 
 /// Update the running installation. Homebrew owns its formula upgrades; all other
 /// installations use the same published-release installer shown in the docs.
+#[cfg(unix)]
 pub fn run() -> Result<UpdateOutcome, String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("could not locate the running tsk executable: {error}"))?;
@@ -57,6 +72,94 @@ pub fn run() -> Result<UpdateOutcome, String> {
     )
 }
 
+/// Update a Windows installer-managed copy through the checksum-verifying PowerShell
+/// installer. The installer stages `tsk.exe` and starts a detached helper that waits for this
+/// process to exit before replacing the running executable.
+#[cfg(windows)]
+pub fn run() -> Result<UpdateOutcome, String> {
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("could not locate the running tsk executable: {error}"))?;
+    let install_dir = executable
+        .parent()
+        .ok_or_else(|| "the running tsk executable has no installation directory".to_string())?;
+    let script = download_https(INSTALLER_URL, 1024 * 1024, 120)?;
+    let powershell = windows_powershell_path()?;
+    let mut command = windows_installer_command(&powershell);
+    run_windows_installer(&mut command, &script, install_dir, std::process::id())?;
+    Ok(UpdateOutcome::Installed)
+}
+
+#[cfg(windows)]
+fn windows_installer_command(powershell: &std::path::Path) -> Command {
+    let mut command = Command::new(powershell);
+    command.args([
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$encoded=$env:TSK_INSTALLER_GZIP_BASE64; if (-not $encoded) { throw 'invalid installer payload' }; [byte[]]$bytes=[Convert]::FromBase64String($encoded); $memory=New-Object IO.MemoryStream(,$bytes); $gzip=New-Object IO.Compression.GZipStream($memory,[IO.Compression.CompressionMode]::Decompress); $reader=New-Object IO.StreamReader($gzip); try { $source=$reader.ReadToEnd() } finally { $reader.Dispose(); $gzip.Dispose(); $memory.Dispose() }; Remove-Item Env:TSK_INSTALLER_GZIP_BASE64; & ([ScriptBlock]::Create($source))",
+    ]);
+    command
+}
+
+#[cfg(windows)]
+fn run_windows_installer(
+    command: &mut Command,
+    script: &[u8],
+    install_dir: &std::path::Path,
+    update_pid: u32,
+) -> Result<(), String> {
+    let payload = encode_installer_payload(script)?;
+    let mut child = command
+        .env("TSK_INSTALLER_GZIP_BASE64", payload)
+        .env("TSK_INSTALL_DIR", install_dir)
+        .env("TSK_UPDATE", "1")
+        .env("TSK_UPDATE_PID", update_pid.to_string())
+        .env(
+            "TSK_CURRENT_VERSION",
+            concat!("v", env!("CARGO_PKG_VERSION")),
+        )
+        .env_remove(INSTALLER_VERSION_ENV)
+        .spawn()
+        .map_err(|error| format!("could not start the Windows installer: {error}"))?;
+    let status = child
+        .wait()
+        .map_err(|error| format!("could not wait for Windows PowerShell: {error}"))?;
+    if !status.success() {
+        return Err(format!(
+            "Windows installer failed (exit {})",
+            status
+                .code()
+                .map_or_else(|| "terminated".to_string(), |code| code.to_string())
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn encode_installer_payload(script: &[u8]) -> Result<String, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use flate2::{write::GzEncoder, Compression};
+    use std::io::Write as _;
+
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
+    encoder
+        .write_all(script)
+        .map_err(|error| format!("could not compress the Windows installer: {error}"))?;
+    let compressed = encoder
+        .finish()
+        .map_err(|error| format!("could not finish compressing the Windows installer: {error}"))?;
+    let payload = STANDARD.encode(compressed);
+    // Windows limits a process environment block to 32,767 characters. Leave room for
+    // the inherited environment and fail closed rather than falling back to a temp script.
+    if payload.len() > 24_000 {
+        return Err("compressed Windows installer is too large for an in-memory handoff".into());
+    }
+    Ok(payload)
+}
+
+#[cfg(unix)]
 fn configured_curl_path(configured: Option<PathBuf>) -> Result<PathBuf, String> {
     match configured {
         Some(path) if path.is_absolute() => Ok(path),
@@ -65,6 +168,7 @@ fn configured_curl_path(configured: Option<PathBuf>) -> Result<PathBuf, String> 
     }
 }
 
+#[cfg(unix)]
 fn run_for(
     executable: &Path,
     curl: &Path,
@@ -82,6 +186,7 @@ fn run_for(
     Ok(UpdateOutcome::Installed)
 }
 
+#[cfg(unix)]
 fn is_homebrew_install(executable: &Path) -> bool {
     let executable = normalized(executable);
     executable.ancestors().any(|path| {
@@ -100,13 +205,14 @@ fn is_homebrew_install(executable: &Path) -> bool {
 /// The shell receives an open descriptor on its stdin, not a path: after curl exits nothing
 /// reopens the script by name, so whoever controls `TMPDIR` cannot swap it in between.
 /// `install.sh` already reads its prompts from `/dev/tty` when stdin is not a terminal.
+#[cfg(unix)]
 fn run_installer(
     install_dir: &Path,
     curl: &Path,
     shell: &Path,
     scratch: &Path,
 ) -> Result<(), String> {
-    let script = InstallerFile::create(scratch)?;
+    let script = InstallerFile::create(scratch, "install.sh")?;
     let download = hardened_curl(curl, 120)
         .arg("-o")
         .arg(&script.path)
@@ -147,20 +253,82 @@ fn run_installer(
     Ok(())
 }
 
-/// A private scratch directory (`0700`, created with the atomic `mkdir` that fails when the
-/// name exists) holding the downloaded installer, removed on drop, success or failure.
+#[cfg(windows)]
+fn windows_powershell_path() -> Result<PathBuf, String> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+
+    let mut buffer = vec![0_u16; 32_768];
+    // SAFETY: buffer is writable for the supplied length. GetSystemDirectoryW writes at most
+    // that many UTF-16 code units and does not retain the pointer.
+    let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
+    if length == 0 {
+        return Err(format!(
+            "could not locate the Windows system directory: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if length as usize >= buffer.len() {
+        return Err("the Windows system directory path is too long".to_string());
+    }
+    buffer.truncate(length as usize);
+    let path =
+        PathBuf::from(OsString::from_wide(&buffer)).join("WindowsPowerShell/v1.0/powershell.exe");
+    if path.is_absolute() && path.is_file() {
+        Ok(path)
+    } else {
+        Err(format!(
+            "Windows PowerShell was not found at {}",
+            path.display()
+        ))
+    }
+}
+
+/// Download one small HTTPS resource with bounded redirects, time, and body size.
+#[cfg(windows)]
+pub(crate) fn download_https(url: &str, limit: u64, timeout_secs: u64) -> Result<Vec<u8>, String> {
+    use std::time::Duration;
+
+    let config = ureq::Agent::config_builder()
+        .https_only(true)
+        .max_redirects(5)
+        .timeout_global(Some(Duration::from_secs(timeout_secs)))
+        .user_agent(concat!("tsk/", env!("CARGO_PKG_VERSION")))
+        .build();
+    let agent = ureq::Agent::new_with_config(config);
+    let mut response = agent
+        .get(url)
+        .call()
+        .map_err(|error| format!("could not download {url}: {error}"))?;
+    let body = response
+        .body_mut()
+        .with_config()
+        .limit(limit)
+        .read_to_vec()
+        .map_err(|error| format!("could not read {url}: {error}"))?;
+    if body.is_empty() {
+        return Err(format!("downloaded file from {url} is empty"));
+    }
+    Ok(body)
+}
+
+/// A private scratch directory (`0700` on Unix, created with the atomic `mkdir` that fails
+/// when the name exists) holding the downloaded installer, removed on drop, success or failure.
 ///
 /// curl and the shell both open the script by name, so the file alone would leave a window
 /// between curl's close and the shell's open in which another party writing to the same
 /// temp dir could swap it. Only the owner can create or replace entries in this directory,
 /// which closes that window regardless of what `TMPDIR` points at.
+#[cfg(unix)]
 struct InstallerFile {
     dir: PathBuf,
     path: PathBuf,
 }
 
+#[cfg(unix)]
 impl InstallerFile {
-    fn create(scratch: &Path) -> Result<Self, String> {
+    fn create(scratch: &Path, filename: &str) -> Result<Self, String> {
         static SEQ: AtomicU64 = AtomicU64::new(0);
         for _ in 0..64 {
             let dir = scratch.join(format!(
@@ -169,7 +337,6 @@ impl InstallerFile {
                 SEQ.fetch_add(1, Ordering::Relaxed)
             ));
             let mut builder = fs::DirBuilder::new();
-            #[cfg(unix)]
             {
                 use std::os::unix::fs::DirBuilderExt;
                 builder.mode(0o700);
@@ -177,7 +344,7 @@ impl InstallerFile {
             match builder.create(&dir) {
                 Ok(()) => {
                     return Ok(Self {
-                        path: dir.join("install.sh"),
+                        path: dir.join(filename),
                         dir,
                     })
                 }
@@ -197,6 +364,7 @@ impl InstallerFile {
     }
 }
 
+#[cfg(unix)]
 impl InstallerFile {
     /// Open the script curl wrote, without following a symlink, and check it is a regular,
     /// non-empty file owned by this user before it is handed to the shell.
@@ -234,30 +402,45 @@ impl InstallerFile {
     }
 }
 
+#[cfg(unix)]
 impl Drop for InstallerFile {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
 
+#[cfg(unix)]
 fn exit_label(code: Option<i32>) -> String {
     code.map_or_else(|| "signal".to_string(), |code| code.to_string())
 }
 
+#[cfg(unix)]
 fn normalized(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(any(unix, windows))]
     use std::fs;
+    #[cfg(windows)]
+    use std::io::Read;
+    #[cfg(unix)]
     use std::path::{Path, PathBuf};
+    #[cfg(windows)]
+    use std::process::Command;
+    #[cfg(any(unix, windows))]
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    #[cfg(unix)]
     use super::{configured_curl_path, is_homebrew_install, run_for, UpdateOutcome};
+    #[cfg(windows)]
+    use super::{run_windows_installer, windows_installer_command, windows_powershell_path};
 
+    #[cfg(any(unix, windows))]
     static SEQ: AtomicU64 = AtomicU64::new(0);
 
+    #[cfg(unix)]
     fn temp_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "tsk-update-{label}-{}-{}",
@@ -268,6 +451,7 @@ mod tests {
         dir
     }
 
+    #[cfg(unix)]
     fn command(dir: &Path, name: &str, source: &str) -> PathBuf {
         let path = dir.join(name);
         fs::write(&path, source).expect("write test command");
@@ -280,6 +464,123 @@ mod tests {
         path
     }
 
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "helper process for windows_installer_handoff_keeps_console_stdin_and_sets_update_environment"]
+    fn windows_installer_capture_child() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let encoded = std::env::var("TSK_INSTALLER_GZIP_BASE64").expect("installer payload");
+        let compressed = STANDARD.decode(encoded).expect("base64 payload");
+        let mut decoder = flate2::read::GzDecoder::new(compressed.as_slice());
+        let mut script = Vec::new();
+        decoder
+            .read_to_end(&mut script)
+            .expect("decompress installer payload");
+        fs::write(
+            std::env::var_os("FAKE_SCRIPT").expect("FAKE_SCRIPT"),
+            script,
+        )
+        .expect("write captured script");
+        let version = std::env::var("TSK_VERSION").unwrap_or_else(|_| "unset".to_string());
+        fs::write(
+            std::env::var_os("FAKE_ENV").expect("FAKE_ENV"),
+            format!(
+                "{}|{}|{}|{}|{}",
+                std::env::var("TSK_INSTALL_DIR").expect("TSK_INSTALL_DIR"),
+                std::env::var("TSK_UPDATE").expect("TSK_UPDATE"),
+                std::env::var("TSK_UPDATE_PID").expect("TSK_UPDATE_PID"),
+                std::env::var("TSK_CURRENT_VERSION").expect("TSK_CURRENT_VERSION"),
+                version
+            ),
+        )
+        .expect("write captured environment");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_installer_handoff_keeps_console_stdin_and_sets_update_environment() {
+        let dir = std::env::temp_dir().join(format!(
+            "tsk-update-windows-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).expect("temporary directory");
+        let fake = dir.join("fake-installer.cmd");
+        let script_copy = dir.join("script.bin");
+        let env_log = dir.join("environment.txt");
+        let current_test = std::env::current_exe().expect("current test executable");
+        fs::write(
+            &fake,
+            format!(
+                "@echo off\r\n\"{}\" --ignored --exact cli::update::tests::windows_installer_capture_child --nocapture\r\nexit /b %ERRORLEVEL%\r\n",
+                current_test.display()
+            ),
+        )
+        .expect("fake command");
+        let install_dir = dir.join("installed bin");
+        let script = b"first line\r\nsecond line\r\n";
+        let mut command = Command::new(&fake);
+        command
+            .env("FAKE_SCRIPT", &script_copy)
+            .env("FAKE_ENV", &env_log)
+            .env("TSK_VERSION", "v0.0.1");
+
+        run_windows_installer(&mut command, script, &install_dir, 4242).expect("handoff");
+
+        assert_eq!(fs::read(&script_copy).expect("script bytes"), script);
+        assert_eq!(
+            fs::read_to_string(&env_log)
+                .expect("environment")
+                .trim_end(),
+            format!(
+                "{}|1|4242|v{}|unset",
+                install_dir.display(),
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_powershell_handoff_runs_the_payload_and_leaves_stdin_for_prompts() {
+        let dir = std::env::temp_dir().join(format!(
+            "tsk-update-powershell-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).expect("temporary directory");
+        let input = dir.join("input.txt");
+        let output = dir.join("output.txt");
+        fs::write(&input, b"yes\r\n").expect("prompt input");
+        let powershell = windows_powershell_path().expect("stock Windows PowerShell");
+        let mut command = windows_installer_command(&powershell);
+        command
+            .stdin(std::process::Stdio::from(
+                fs::File::open(&input).expect("open prompt input"),
+            ))
+            .env("FAKE_SCRIPT", &output);
+        let script = br#"if (Test-Path Env:TSK_INSTALLER_GZIP_BASE64) { throw 'payload leaked' }; [IO.File]::WriteAllText($env:FAKE_SCRIPT, [Console]::In.ReadLine())"#;
+
+        run_windows_installer(&mut command, script, &dir.join("installed bin"), 4242)
+            .expect("PowerShell handoff");
+
+        assert_eq!(fs::read_to_string(&output).expect("payload output"), "yes");
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_updater_uses_the_absolute_system_powershell() {
+        let path = windows_powershell_path().expect("stock Windows PowerShell");
+        assert!(path.is_absolute());
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("powershell.exe")
+        );
+    }
+
+    #[cfg(unix)]
     #[test]
     fn homebrew_install_is_identified_without_brew_on_path() {
         assert!(is_homebrew_install(Path::new(
@@ -293,6 +594,7 @@ mod tests {
         )));
     }
 
+    #[cfg(unix)]
     #[test]
     fn nonstandard_curl_path_must_be_explicit_and_absolute() {
         assert_eq!(
@@ -307,6 +609,7 @@ mod tests {
 
     /// A curl stand-in that records its argv, then writes `payload` to the `-o` target
     /// and exits with `exit`.
+    #[cfg(unix)]
     fn fake_curl(dir: &Path, payload: &str, exit: u8) -> (PathBuf, PathBuf) {
         let argv = dir.join("curl-argv");
         let curl = command(
@@ -323,6 +626,7 @@ mod tests {
 
     /// A shell stand-in that records the script it receives on stdin (a path argument is
     /// a failure: the handoff must be by descriptor) and the environment.
+    #[cfg(unix)]
     fn fake_sh(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
         let script_copy = dir.join("installer-input");
         let env_log = dir.join("installer-env");
@@ -338,6 +642,7 @@ mod tests {
         (shell, script_copy, env_log)
     }
 
+    #[cfg(unix)]
     fn installer_files(dir: &Path) -> Vec<PathBuf> {
         fs::read_dir(dir)
             .expect("scratch dir")
@@ -351,6 +656,7 @@ mod tests {
             .collect()
     }
 
+    #[cfg(unix)]
     #[test]
     fn installer_is_downloaded_whole_then_run_with_pinned_tools_and_a_clean_environment() {
         let dir = temp_dir("installer");
@@ -424,6 +730,7 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_failed_or_empty_download_never_reaches_the_shell() {
         let dir = temp_dir("installer-truncated");
@@ -450,6 +757,7 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_script_swapped_for_a_symlink_after_download_is_refused() {
         let dir = temp_dir("installer-swapped");
@@ -479,6 +787,7 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_missing_curl_names_the_override() {
         let dir = temp_dir("installer-nocurl");
