@@ -393,6 +393,7 @@ fn shell_quote(value: &str) -> String {
 mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
+    #[cfg(unix)]
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -626,6 +627,8 @@ command = ["pi"]
         assert!(!rendered.argv.last().expect("prompt").contains("tsk guide"));
     }
 
+    // The rendered line is POSIX shell; Windows refuses dispatch before rendering.
+    #[cfg(unix)]
     #[test]
     fn rendering_shell_quotes_a_prompt_containing_a_single_quote() {
         let profile = AgentProfile {

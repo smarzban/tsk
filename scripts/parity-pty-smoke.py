@@ -102,7 +102,7 @@ for width in (40, 78, 109, 110):
             assert 'ON DECK' in '\n'.join(screen.display)
             key(b'\x1b[C', 'peek-or-split')
             if width < 110:
-                assert '└─ tsk-parity' in '\n'.join(screen.display)
+                assert '└─ #release · tsk-parity' in '\n'.join(screen.display)
             key(b'\x1b[D', 'closed')
             key(b'\x1b[B', 'selected')
             key(b'\x13', 'started')

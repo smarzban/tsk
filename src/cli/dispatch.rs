@@ -12,6 +12,7 @@ pub fn run(
     again: bool,
     state_dir: Option<PathBuf>,
 ) -> Result<DispatchResult, DispatchError> {
+    dispatch::ensure_platform_supported()?;
     let mut host = SystemDispatchHost;
     run_with_host(
         target,

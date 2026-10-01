@@ -250,6 +250,7 @@ fn clean_cli_refusals_print_stable_codes() {
     fs::remove_dir_all(dir).expect("cleanup");
 }
 
+#[cfg(unix)]
 #[test]
 fn dispatch_refusals_print_stable_codes_and_persist_nothing() {
     let dir = std::env::temp_dir().join(format!(
@@ -305,5 +306,50 @@ fn dispatch_refusals_print_stable_codes_and_persist_nothing() {
     );
     assert_eq!(unknown.code, 1);
     assert!(unknown.stderr.starts_with("tsk dispatch: unknown-task:"));
+    fs::remove_dir_all(dir).expect("cleanup");
+}
+
+#[cfg(windows)]
+#[test]
+fn dispatch_refuses_on_windows_and_persists_nothing() {
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cli-dispatch-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&dir).expect("mkdir");
+    let store = TaskStore::new(&dir);
+    let mut state = DomainState::new();
+    state
+        .create(
+            "assigned",
+            None,
+            TaskScope::Project {
+                path: "/repos/app".into(),
+            },
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("task");
+    store.save(&state).expect("save");
+    let before = fs::read(dir.join("tsk.json")).expect("state bytes");
+
+    let output = run_with(
+        [
+            "tsk",
+            "dispatch",
+            "T1",
+            "--state-dir",
+            dir.to_str().expect("utf-8 path"),
+        ],
+        Cursor::new(Vec::<u8>::new()),
+        true,
+    );
+    assert_eq!(output.code, 1);
+    assert_eq!(
+        output.stderr,
+        "tsk dispatch: unsupported-platform: dispatch needs herdr on macOS or Linux\n"
+    );
+    assert_eq!(fs::read(dir.join("tsk.json")).expect("after"), before);
     fs::remove_dir_all(dir).expect("cleanup");
 }

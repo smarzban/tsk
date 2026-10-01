@@ -13,6 +13,7 @@ use crate::domain::{Dispatch, DomainState, HumanStatus, Task, TaskScope};
 pub const NO_ASSIGNEE: &str = "no agent assigned, use !a name";
 pub const NOT_IN_HERDR: &str = "dispatch works inside herdr for now";
 pub const NEEDS_GIT_PROJECT: &str = "dispatch needs a project in a git repo";
+pub const UNSUPPORTED_PLATFORM: &str = "dispatch needs herdr on macOS or Linux";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CleanupInspection {
@@ -116,6 +117,7 @@ pub enum DispatchError {
     UnknownTask,
     NoAssignee,
     NotInHerdr,
+    UnsupportedPlatform,
     NeedsGitProject,
     DoneTask,
     ArchivedTask,
@@ -133,6 +135,7 @@ impl DispatchError {
             Self::UnknownTask => "unknown-task",
             Self::NoAssignee => "no-assignee",
             Self::NotInHerdr => "not-in-herdr",
+            Self::UnsupportedPlatform => "unsupported-platform",
             Self::NeedsGitProject => "needs-git-project",
             Self::DoneTask => "done-task",
             Self::ArchivedTask => "archived-task",
@@ -152,6 +155,7 @@ impl std::fmt::Display for DispatchError {
             Self::UnknownTask => write!(formatter, "task is not on the board"),
             Self::NoAssignee => write!(formatter, "{NO_ASSIGNEE}"),
             Self::NotInHerdr => write!(formatter, "{NOT_IN_HERDR}"),
+            Self::UnsupportedPlatform => write!(formatter, "{UNSUPPORTED_PLATFORM}"),
             Self::NeedsGitProject => write!(formatter, "{NEEDS_GIT_PROJECT}"),
             Self::DoneTask => write!(formatter, "completed tasks cannot be dispatched"),
             Self::ArchivedTask => write!(formatter, "archived tasks cannot be dispatched"),
@@ -766,6 +770,16 @@ pub fn run_with_host(
     })
 }
 
+/// Refuse dispatch where the rendered launch, a POSIX `$SHELL -lc` line, cannot run. Checked at
+/// the board and CLI boundaries, before any worktree or workspace is created.
+pub fn ensure_platform_supported() -> Result<(), DispatchError> {
+    if cfg!(windows) {
+        Err(DispatchError::UnsupportedPlatform)
+    } else {
+        Ok(())
+    }
+}
+
 pub fn running_inside_herdr() -> bool {
     std::env::var("HERDR_ENV").as_deref() == Ok("1")
 }
@@ -1157,12 +1171,27 @@ mod tests {
     }
 
     #[test]
+    fn platform_gate_refuses_only_windows() {
+        let gate = ensure_platform_supported();
+        if cfg!(windows) {
+            assert_eq!(gate, Err(DispatchError::UnsupportedPlatform));
+            assert_eq!(
+                gate.unwrap_err().to_string(),
+                "dispatch needs herdr on macOS or Linux"
+            );
+        } else {
+            assert_eq!(gate, Ok(()));
+        }
+    }
+
+    #[test]
     fn refusal_codes_are_stable() {
         let cases = [
             (DispatchError::UnknownTask, "unknown-task"),
             (DispatchError::SoftDeletedTask, "soft-deleted-task"),
             (DispatchError::NoAssignee, "no-assignee"),
             (DispatchError::NotInHerdr, "not-in-herdr"),
+            (DispatchError::UnsupportedPlatform, "unsupported-platform"),
             (DispatchError::NeedsGitProject, "needs-git-project"),
             (DispatchError::DoneTask, "done-task"),
             (DispatchError::ArchivedTask, "archived-task"),
