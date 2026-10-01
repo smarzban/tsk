@@ -220,13 +220,13 @@ tsk dispatch T12
 tsk dispatch T12 --again
 ```
 
-Dispatch requires Herdr, an assigned project task whose project is a Git repository, and a matching profile in `agents.toml`. It creates a branch and worktree, opens a Herdr workspace there, and runs the profile's rendered command in its root pane. Only after the launch succeeds, tsk saves the dispatch record and sets the task to `started` in the same write. The dispatch itself is not undoable.
+Dispatch requires Herdr, an assigned project task whose project is a Git repository, and a matching profile in `agents.toml`. It runs on macOS and Linux only; on Windows it refuses with `unsupported-platform`. It creates a branch and worktree, opens a Herdr workspace there, and runs the profile's rendered command in its root pane. Only after the launch succeeds, tsk saves the dispatch record and sets the task to `started` in the same write. The dispatch itself is not undoable.
 
 A task with an existing record refuses with `already-dispatched`. Use `--again` deliberately to reuse the recorded Herdr workspace and rerun the rendered command in its root pane. If the record was cleaned, `--again` recreates the worktree: it opens the retained unmerged branch or recreates a branch that cleanup removed. Ordinary status changes retain the record.
 
 Output: `dispatched T12 to @implementer in /path/to/worktree`.
 
-Refusals have stable codes: `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, and `herdr-failed`. Every refusal leaves task state unchanged. A storage failure after a successful launch exits 3; read the task before deciding whether to retry, because another launch could already be running.
+Refusals have stable codes: `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `unsupported-platform`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, and `herdr-failed`. Every refusal leaves task state unchanged. A storage failure after a successful launch exits 3; read the task before deciding whether to retry, because another launch could already be running.
 
 ## clean
 
@@ -388,7 +388,7 @@ After an uncertain add, inspect `tsk list --all --json`. Also check `--done` and
 | --- | --- |
 | Add | `empty-title`, `invalid-title`, `invalid-thread`, `invalid-item`, `unknown-project`, `unknown-agent`, `project-archived` |
 | Edit | `empty-title`, `invalid-title`, `unknown-task`, `soft-deleted-task`, `unknown-agent` |
-| Dispatch | `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, `herdr-failed` |
+| Dispatch | `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `unsupported-platform`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, `herdr-failed` |
 | Clean | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `herdr-failed` |
 | Steps | `empty-step-text`, `invalid-step-text`, `unknown-task`, `soft-deleted-task`, `unknown-step`, `ambiguous-step` |
 | Status | `unknown-task`, `soft-deleted-task`; with `--clean`, cleanup codes above |

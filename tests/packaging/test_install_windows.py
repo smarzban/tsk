@@ -112,7 +112,8 @@ class WindowsInstallerTests(unittest.TestCase):
 
     def test_help_names_public_knobs_and_latest_stable_without_internal_handoff(self):
         help_text = self.source.split("function Show-Help", 1)[1].split("if ($Help)", 1)[0]
-        self.assertIn('powershell -c "irm https://www.gettsk.sh/install.ps1 | iex"', help_text)
+        self.assertIn('irm https://www.gettsk.sh/install.ps1 | iex    (in a PowerShell window)', help_text)
+        self.assertNotIn('powershell -c', help_text)
         self.assertIn("public release tag", help_text)
         self.assertIn("latest stable release", help_text)
         self.assertNotIn("TSK_UPDATE_PID", help_text)

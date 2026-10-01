@@ -944,6 +944,7 @@ pub fn dispatch_help() -> CliOutput {
             "soft-deleted-task".into(),
             "no-assignee".into(),
             "not-in-herdr".into(),
+            "unsupported-platform".into(),
             "needs-git-project".into(),
             "done-task".into(),
             "archived-task".into(),

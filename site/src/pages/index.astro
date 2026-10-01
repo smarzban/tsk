@@ -215,8 +215,8 @@ const softwareApplication = {
                 <button type="button" class="copy" data-copy aria-label="Copy install command">copy</button>
               </div>
               <p class="hero-install-meta">
-                macOS &amp; Linux · MIT · <a href="#demo">Try the board ↓</a>
-                · <a href="/docs/install/">install guide →</a> · Windows 10/11 PowerShell
+                macOS · Linux · Windows · MIT · <a href="#demo">Try the board ↓</a>
+                · <a href="/docs/install/">install guide →</a>
               </p>
             </div>
           </div>
@@ -375,7 +375,7 @@ const softwareApplication = {
                 <div class="agent-body">
                   <p class="agent-line you">webhook retries are applying the same event twice. investigate and add a task.</p>
                   <p class="agent-line say">The handler applies side effects before recording the event ID. Concurrent retries can both get through.</p>
-                  <div class="agent-tool"><span class="tool-name">Bash</span><span class="tool-arg">tsk add -t "Make webhook delivery idempotent" -p launchpad --thread api --json</span><span class="tool-out" data-cli-add-output>&#123;"outcome":"created","id":"00000000-0000-4000-8000-000000000013","number":13,"title":"Make webhook delivery idempotent","project":"/home/agent/work/launchpad"&#125;</span></div>
+                  <div class="agent-tool"><span class="tool-name">Bash</span><span class="tool-arg">tsk add -t "Make webhook delivery idempotent" -p launchpad --thread api --json</span><span class="tool-out" data-cli-add-output>&#123;"outcome":"created","id":"00000000-0000-4000-8000-000000000013","number":13,"title":"Make webhook delivery idempotent","project":"/home/agent/work/launchpad","assignee":null&#125;</span></div>
                   <div class="agent-tool"><span class="tool-name">Bash</span><span class="tool-arg">tsk steps T13 add "Reproduce duplicate delivery"</span><span class="tool-out" data-cli-step-output>added 3f Reproduce duplicate delivery</span></div>
                   <p class="agent-line say">T13 is open with a checklist to reproduce duplicate delivery, persist processed event IDs, and test concurrent retries. Pick it when you are ready to work.</p>
                 </div>
@@ -634,7 +634,7 @@ const softwareApplication = {
               </div>
               <p class="install-note">Windows 10/11 ARM64 or x86-64:</p>
               <div class="shell-wrap">
-                <pre class="shell" data-copy-source><span class="prompt">PS&gt;</span> powershell -c "irm https://www.gettsk.sh/install.ps1 | iex"</pre>
+                <pre class="shell" data-copy-source><span class="prompt">PS&gt;</span> irm https://www.gettsk.sh/install.ps1 | iex</pre>
                 <button type="button" class="copy" data-copy aria-label="Copy Windows install command">copy</button>
               </div>
               <p class="install-note">
@@ -660,8 +660,6 @@ const softwareApplication = {
             </div>
 
             <ul class="reqs" aria-label="Requirements">
-              <li><span class="dim">install</span> shell, PowerShell, or Homebrew</li>
-              <li><span class="dim">on</span> Linux · macOS · Windows 10/11 ARM64 or x64</li>
               <li><span class="dim">plugin mode</span> herdr 0.9+ or its supported Windows preview</li>
               <li><a href="/docs/install/">Full install guide →</a></li>
             </ul>

@@ -2175,6 +2175,11 @@ fn handle_board_intent(
     if matches!(intent, BoardIntent::Dispatch | BoardIntent::DispatchAgain)
         && !save_recovery.is_pending()
     {
+        if let Err(error) = dispatch::ensure_platform_supported() {
+            model.clear_marks();
+            model.set_message(error.to_string());
+            return Ok(false);
+        }
         let profiles = match AgentProfiles::load(store.path()) {
             Ok(profiles) => profiles,
             Err(error) => {

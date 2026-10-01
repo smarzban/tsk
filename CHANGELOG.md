@@ -17,7 +17,7 @@ the GitHub release notes verbatim.
 
 - Tasks can be assigned to exact configured agent profiles from quick-add (`!a`), the task page, an anchored Assignee picker, the palette (including marked sets), or CLI add/edit flags. The board peek footer names assignee, thread, then project; CLI output shows assignees, and `tsk list --assignee` filters them.
 - Agent launch profiles can be defined in `<state dir>/agents.toml` with a command template, an always-appended default or custom prompt, and environment values; the first full board open seeds a commented starter file when none exists.
-- Dispatch an assigned project task with `ctrl+g`, the palette, or `tsk dispatch T<n>`. tsk creates a Git worktree and Herdr workspace, launches the agent there, then records the dispatch and starts the task in one save. A second `ctrl+g`, **dispatch again**, or `--again` relaunches; a cleaned record recreates its worktree. Completing from the board can safely clean the worktree first, while `tsk clean T<n> [--json]` and `tsk status T<n> done --clean` provide the same cleanup for scripts. Cleanup refuses dirty worktrees, keeps unmerged branches, removes merged branches, retains a cleaned dispatch record, and only live started dispatches show `◉`.
+- Dispatch an assigned project task with `ctrl+g`, the palette, or `tsk dispatch T<n>`. tsk creates a Git worktree and Herdr workspace, launches the agent there, then records the dispatch and starts the task in one save. Dispatch runs on macOS and Linux only; Windows refuses it with `unsupported-platform`. A second `ctrl+g`, **dispatch again**, or `--again` relaunches; a cleaned record recreates its worktree. Completing from the board can safely clean the worktree first, while `tsk clean T<n> [--json]` and `tsk status T<n> done --clean` provide the same cleanup for scripts. Cleanup refuses dirty worktrees, keeps unmerged branches, removes merged branches, retains a cleaned dispatch record, and only live started dispatches show `◉`.
 
 ### Fixed
 
@@ -32,7 +32,7 @@ the GitHub release notes verbatim.
 
 ### Added
 
-- Windows 10/11 support on ARM64 and x86-64: native release builds, a PowerShell installer (`powershell -c "irm https://www.gettsk.sh/install.ps1 | iex"`), and Herdr integration as a preview.
+- Windows 10/11 support on ARM64 and x86-64: native release builds, a PowerShell installer (`irm https://www.gettsk.sh/install.ps1 | iex`), and Herdr integration as a preview.
 - `h` and `l` mirror the left and right arrows for closing and opening task details in non-text board and task views. Thanks @pisceskkk.
 
 ### Changed
