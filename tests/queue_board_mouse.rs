@@ -490,9 +490,9 @@ fn task_form_mouse_fields_dropdown_and_verbs_match_keyboard_while_scrolled() {
         .find(|hit| hit.target == QueueHitTarget::FormScope)
         .expect("task-form scope hit");
     let open = click(scope_hit, &model, &hits).expect("scope click intent");
-    assert_eq!(open, BoardIntent::OpenFormScopeDropdown);
+    assert_eq!(open, BoardIntent::OpenFormDropdown(CaptureField::Scope));
     apply_intent(&mut domain, &mut model, open, None).expect("open form dropdown");
-    assert_eq!(model.input_mode(), BoardInputMode::FormScopeDropdown);
+    assert_eq!(model.input_mode(), BoardInputMode::FormDropdown);
     assert_eq!(
         map_board_mouse(&model, &board_hit_map(STANDARD, &model), left_click(0, 0)),
         None,
@@ -529,10 +529,10 @@ fn task_form_mouse_fields_dropdown_and_verbs_match_keyboard_while_scrolled() {
     let option = hits
         .regions
         .iter()
-        .find(|hit| hit.target == QueueHitTarget::FormScopeOption(global_index))
+        .find(|hit| hit.target == QueueHitTarget::FormDropdownOption(global_index))
         .expect("Global dropdown option is painted above the scrolled task list");
     let choose = click(option, &model, &hits).expect("dropdown option click");
-    assert_eq!(choose, BoardIntent::SelectFormScopeOption(global_index));
+    assert_eq!(choose, BoardIntent::SelectFormDropdownOption(global_index));
     apply_intent(&mut domain, &mut model, choose, None).expect("choose form scope");
     assert_eq!(model.form_scope(), keyboard_model.form_scope());
     assert_eq!(model.input_mode(), BoardInputMode::EditScope);
@@ -545,7 +545,7 @@ fn task_form_mouse_fields_dropdown_and_verbs_match_keyboard_while_scrolled() {
     apply_intent(
         &mut domain,
         &mut model,
-        BoardIntent::OpenFormScopeDropdown,
+        BoardIntent::OpenFormDropdown(CaptureField::Scope),
         None,
     )
     .expect("reopen dropdown");
@@ -628,6 +628,30 @@ fn assert_verb_parity(title: &str, status: HumanStatus, chord: &str, key: KeyCod
         model_mouse.input_mode(),
         "chord {chord:?}: input mode diverged between the two routes"
     );
+}
+
+#[test]
+fn dispatch_chip_clicks_route_to_dispatch_on_board_and_task_page() {
+    let (mut domain, mut model, id) = board_with_task("send it", HumanStatus::Ready);
+    domain
+        .assign(id, Some("implementer".into()))
+        .expect("assign task");
+    model.sync_from_domain(&domain);
+
+    for mode in [BoardInputMode::Normal, BoardInputMode::TaskPage] {
+        if mode == BoardInputMode::TaskPage {
+            apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None)
+                .expect("open task page");
+        }
+        assert_eq!(model.input_mode(), mode);
+        let hits = board_hit_map(STANDARD, &model);
+        let dispatch = verb_hit_for_chord(&model, &hits, "g");
+        assert_eq!(
+            click(dispatch, &model, &hits),
+            Some(BoardIntent::Dispatch),
+            "dispatch chip must match ctrl+g in {mode:?}"
+        );
+    }
 }
 
 #[test]
@@ -805,7 +829,7 @@ fn click_and_wheel_match_keyboard_effects_for_each_control() {
 /// this rewrite (its `CaptureLayout`/`map_capture_mouse` route is separate from the board's
 /// hit-map, per the task's implementation boundary).
 #[test]
-fn footer_thread_precedes_scope_and_each_control_focuses_its_field() {
+fn footer_assignee_then_thread_then_scope_each_focuses_its_field() {
     let scope_path = "/repos/foo · thread";
     let mut domain = DomainState::new();
     domain
@@ -827,6 +851,11 @@ fn footer_thread_precedes_scope_and_each_control_focuses_its_field() {
         .iter()
         .find(|hit| hit.target == QueueHitTarget::FormScope)
         .expect("scope hit");
+    let assignee_hit = hits
+        .regions
+        .iter()
+        .find(|hit| hit.target == QueueHitTarget::FormAssignee)
+        .expect("empty assignee target");
     let thread_hit = hits
         .regions
         .iter()
@@ -838,12 +867,17 @@ fn footer_thread_precedes_scope_and_each_control_focuses_its_field() {
         "the entire project basename remains the scope target, excluding number chrome"
     );
     assert_eq!(
-        thread_hit.area.x, 2,
-        "the leading thread target starts at the footer inset"
+        assignee_hit.area.x, 2,
+        "the leading assignee target starts at the footer inset"
+    );
+    assert_eq!(
+        thread_hit.area.x,
+        2 + assignee_hit.area.width + 3,
+        "thread follows assignee and its separator"
     );
     assert_eq!(
         scope_hit.area.x,
-        2 + thread_hit.area.width + 3,
+        thread_hit.area.x + thread_hit.area.width + 3,
         "scope follows the thread and its separator"
     );
     assert_eq!(
@@ -851,15 +885,57 @@ fn footer_thread_precedes_scope_and_each_control_focuses_its_field() {
         "the entire project basename remains the scope target"
     );
 
+    let assignee = click(assignee_hit, &model, &hits).expect("assignee click intent");
+    assert_eq!(
+        assignee,
+        BoardIntent::OpenFormDropdown(CaptureField::Assignee)
+    );
+    apply_intent(&mut domain, &mut model, assignee, None).expect("open assignee dropdown");
+    assert_eq!(model.form_focus(), Some(CaptureField::Assignee));
+    assert_eq!(model.input_mode(), BoardInputMode::FormDropdown);
+
+    let assignee_hits = board_hit_map(STANDARD, &model);
+    let assignee_option = assignee_hits
+        .regions
+        .iter()
+        .find(|hit| hit.target == QueueHitTarget::FormDropdownOption(0))
+        .expect("none option");
+    assert_eq!(
+        assignee_option.area.x, assignee_hit.area.x,
+        "assignee dropdown must anchor at the painted assignee field"
+    );
+    assert_eq!(
+        click(assignee_option, &model, &assignee_hits),
+        Some(BoardIntent::SelectFormDropdownOption(0)),
+        "clicking a dropdown entry picks that assignee"
+    );
+
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::CancelFormDropdown,
+        None,
+    )
+    .expect("close assignee dropdown");
     let thread = click(thread_hit, &model, &hits).expect("thread click intent");
     assert_eq!(thread, BoardIntent::FocusFormField(CaptureField::Thread));
     apply_intent(&mut domain, &mut model, thread, None).expect("focus thread");
     assert_eq!(model.form_focus(), Some(CaptureField::Thread));
 
     let scope = click(scope_hit, &model, &hits).expect("scope click intent");
-    assert_eq!(scope, BoardIntent::OpenFormScopeDropdown);
+    assert_eq!(scope, BoardIntent::OpenFormDropdown(CaptureField::Scope));
     apply_intent(&mut domain, &mut model, scope, None).expect("focus scope");
     assert_eq!(model.form_focus(), Some(CaptureField::Scope));
+    let scope_hits = board_hit_map(STANDARD, &model);
+    let scope_option = scope_hits
+        .regions
+        .iter()
+        .find(|hit| hit.target == QueueHitTarget::FormDropdownOption(0))
+        .expect("scope option");
+    assert_eq!(
+        scope_option.area.x, scope_hit.area.x,
+        "scope dropdown must anchor at the painted scope field"
+    );
 }
 
 #[test]
@@ -1342,7 +1418,7 @@ fn the_modal_cards_close_control_and_chrome_behave_the_same_on_palette_help_and_
 }
 
 /// R-2: the standard-tier command surface windows to 6
-/// rows at 80x24 while 13 commands exist, and the painted `▲▼` marker is inert
+/// rows at 80x24 while 14 commands exist, and the painted `▲▼` marker is inert
 /// `CommandChrome`, so a mouse-only user could not reach the 7 commands outside the
 /// initial window (`quit`, the last one, among them). The wheel now moves the command
 /// selection the same `CommandNext`/`CommandPrev` the keyboard's `j`/`k` dispatch, which
@@ -1364,7 +1440,7 @@ fn wheel_scrolls_the_open_command_surface_so_every_command_becomes_reachable() {
     let commands = model.visible_commands();
     assert_eq!(
         commands.len(),
-        13,
+        14,
         "this ready fixture must expose every palette command a ready selection has: {commands:?}"
     );
     let last = commands.len() - 1;
@@ -1827,7 +1903,7 @@ fn page_field_clicks_activate_after_task_editing_starts() {
         .expect("the active page footer paints a scope hit");
     assert_eq!(
         click(active_scope_hit, &model, &hits),
-        Some(BoardIntent::OpenFormScopeDropdown),
+        Some(BoardIntent::OpenFormDropdown(CaptureField::Scope)),
         "an active task session lets Scope clicks edit"
     );
     let thread_hit = hits
@@ -3445,6 +3521,6 @@ fn peek_attribution_is_copyable_but_not_a_task_click_target() {
     assert!(hits
         .copyable
         .iter()
-        .any(|area| area.y == y && area.x == 7 && area.width == 8));
+        .any(|area| area.y == y && area.x == 7 && area.width == 14));
     assert_eq!(map_board_mouse(&model, &hits, left_click(8, y)), None);
 }

@@ -129,25 +129,40 @@ fn stale_undo_message(id: Uuid) -> String {
 /// intent is applied, and [`apply_intent`] uses it to time the delete recovery notice
 ///. Both read this list rather than keeping one of their own, so the pinned
 /// definition and the classification cannot drift apart.
-pub fn board_intent_may_persist(intent: &BoardIntent) -> bool {
-    matches!(
+pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> bool {
+    let dropdown_assignment = matches!(
         intent,
-        BoardIntent::ConfirmEdit
-            | BoardIntent::ConfirmEditNext
-            | BoardIntent::SetStatus(_)
-            | BoardIntent::Complete
-            | BoardIntent::Reopen
-            | BoardIntent::SoftDelete
-            | BoardIntent::Undo
-            | BoardIntent::File
-            | BoardIntent::LaunchUnarchive
-            | BoardIntent::PrimaryVerb
-            | BoardIntent::ToggleBlock
-            | BoardIntent::ToggleReview
-            | BoardIntent::ToggleStep
-            | BoardIntent::QuickAddSave
-            | BoardIntent::QuickAddSaveNext
-    )
+        BoardIntent::ConfirmFormDropdown | BoardIntent::SelectFormDropdownOption(_)
+    ) && model.input_mode == BoardInputMode::FormDropdown
+        && model
+            .form
+            .as_ref()
+            .is_some_and(|form| form.focus == CaptureField::Assignee)
+        && model.pending_assignee_targets.is_some();
+    dropdown_assignment
+        || matches!(
+            intent,
+            BoardIntent::ConfirmEdit
+                | BoardIntent::ConfirmEditNext
+                | BoardIntent::ConfirmFormAssignee
+                | BoardIntent::SetStatus(_)
+                | BoardIntent::Complete
+                | BoardIntent::Reopen
+                | BoardIntent::SoftDelete
+                | BoardIntent::Undo
+                | BoardIntent::File
+                | BoardIntent::LaunchUnarchive
+                | BoardIntent::PrimaryVerb
+                | BoardIntent::Dispatch
+                | BoardIntent::DispatchAgain
+                | BoardIntent::ConfirmCleanup
+                | BoardIntent::KeepCleanup
+                | BoardIntent::ToggleBlock
+                | BoardIntent::ToggleReview
+                | BoardIntent::ToggleStep
+                | BoardIntent::QuickAddSave
+                | BoardIntent::QuickAddSaveNext
+        )
 }
 
 /// The chrome row's lifetime rule, in one place.
@@ -187,7 +202,7 @@ pub fn board_intent_may_persist(intent: &BoardIntent) -> bool {
 /// When both channels are set the row carries **both**, notice first, message second, legend
 /// last (see [`fit_chrome_row`]). Nothing on this row wins by taking another thing off it.
 fn apply_chrome_row_lifetime(model: &mut BoardModel, intent: &BoardIntent) {
-    if board_intent_may_persist(intent) {
+    if board_intent_may_persist(model, intent) {
         model.clear_delete_notice();
         model.clear_message();
     }
@@ -199,11 +214,11 @@ fn apply_chrome_row_lifetime(model: &mut BoardModel, intent: &BoardIntent) {
 /// [`IntentOutcome::Persist`]. The capture snapshot is retained by the form.
 /// Intents the read-only archived focus refuses (AC-42): everything that would mutate a
 /// task or open a capture/edit surface. `Undo` is excluded: it is the unarchive route.
-fn read_only_focus_refuses(intent: &BoardIntent) -> bool {
+fn read_only_focus_refuses(model: &BoardModel, intent: &BoardIntent) -> bool {
     if matches!(intent, BoardIntent::Undo) {
         return false;
     }
-    if board_intent_may_persist(intent) {
+    if board_intent_may_persist(model, intent) {
         return true;
     }
     matches!(
@@ -213,6 +228,7 @@ fn read_only_focus_refuses(intent: &BoardIntent) -> bool {
             | BoardIntent::BeginEditTitle
             | BoardIntent::BeginEditNotes
             | BoardIntent::BeginEditScope
+            | BoardIntent::BeginEditAssignee
             | BoardIntent::BeginAddStep
             | BoardIntent::ToggleThreadEditing
             | BoardIntent::FormCycleScope
@@ -296,7 +312,7 @@ pub fn apply_intent(
         && model.popup() == BoardPopup::None
         && model.project_picker.is_none()
         && model.surface == CommandSurface::None
-        && read_only_focus_refuses(&intent)
+        && read_only_focus_refuses(model, &intent)
     {
         if let Some(refusal) = model.archived_focus_refusal() {
             model.set_message(refusal);
@@ -307,7 +323,7 @@ pub fn apply_intent(
         model.delete_notice().map(str::to_string),
         model.delete_notice_count,
     );
-    let mutating = board_intent_may_persist(&intent);
+    let mutating = board_intent_may_persist(model, &intent);
     let result = apply_board_intent(domain, model, intent, snapshot);
     // A command confirmation carries no lifetime of its own: it recurses with the command it
     // resolved to, and that intent is classified on the way through, so it is the recursion
@@ -356,7 +372,8 @@ fn apply_board_intent(
                 | BoardInputMode::EditTitle
                 | BoardInputMode::EditNotes
                 | BoardInputMode::EditScope
-                | BoardInputMode::FormScopeDropdown
+                | BoardInputMode::EditAssignee
+                | BoardInputMode::FormDropdown
         )
     {
         if let Some(bound) = model
@@ -555,6 +572,7 @@ fn apply_board_intent(
                 quick_add.title.value(),
                 domain,
                 quick_add.snapshot.as_ref().as_ref(),
+                &model.agent_names,
             ) {
                 Ok(lifted) => lifted,
                 Err(message) => {
@@ -574,6 +592,8 @@ fn apply_board_intent(
             form.scope = scope;
             form.thread =
                 crate::ui::edit::seeded_draft(lifted.thread.as_deref().unwrap_or_default());
+            form.assignee = lifted.assignee;
+            form.set_agent_names(&model.agent_names);
             form.focus = CaptureField::Notes;
             form.select_current_scope();
             model.form = Some(form);
@@ -615,7 +635,7 @@ fn apply_board_intent(
                         .as_ref()
                         .is_some_and(|form| form.steps.add_selected)
                     {
-                        model.focus_form_field(CaptureField::Thread);
+                        model.focus_form_field(CaptureField::Assignee);
                     } else if !move_capture_step_with_tab(model, true) {
                         select_add_step(model);
                     }
@@ -625,7 +645,7 @@ fn apply_board_intent(
                         .as_ref()
                         .is_some_and(|form| form.steps.add_selected)
                     {
-                        model.focus_form_field(CaptureField::Thread);
+                        model.focus_form_field(CaptureField::Assignee);
                     } else if !move_step_within_edit_group(model, true) {
                         select_add_step(model);
                     }
@@ -642,14 +662,17 @@ fn apply_board_intent(
                 && model.form.as_ref().is_some_and(|form| form.is_task())
             {
                 model.focus_form_field(CaptureField::Title);
+            } else if model.input_mode == BoardInputMode::EditAssignee
+                && model.form.as_ref().is_some_and(|form| form.is_task())
+            {
+                model.focus_form_field(CaptureField::Thread);
             } else if matches!(
                 model.input_mode,
                 BoardInputMode::SelectThread | BoardInputMode::EditThread
             ) && model.form.as_ref().is_some_and(|form| form.is_task())
             {
                 model.focus_form_field(CaptureField::Scope);
-            } else if model.form.is_some() && model.input_mode != BoardInputMode::FormScopeDropdown
-            {
+            } else if model.form.is_some() && model.input_mode != BoardInputMode::FormDropdown {
                 model.move_form_focus(true);
             }
             return Ok(IntentOutcome::None);
@@ -703,13 +726,14 @@ fn apply_board_intent(
                 BoardInputMode::SelectThread | BoardInputMode::EditThread
             ) && model.form.is_some()
             {
-                select_add_step(model);
+                model.focus_form_field(CaptureField::Assignee);
             } else if model.input_mode == BoardInputMode::EditScope
                 && model.form.as_ref().is_some_and(|form| form.is_task())
             {
                 model.focus_form_field(CaptureField::Thread);
-            } else if model.form.is_some() && model.input_mode != BoardInputMode::FormScopeDropdown
-            {
+            } else if model.input_mode == BoardInputMode::EditAssignee && model.form.is_some() {
+                select_add_step(model);
+            } else if model.form.is_some() && model.input_mode != BoardInputMode::FormDropdown {
                 model.move_form_focus(false);
             }
             return Ok(IntentOutcome::None);
@@ -744,43 +768,88 @@ fn apply_board_intent(
             model.toggle_thread_editing();
             return Ok(IntentOutcome::None);
         }
+        BoardIntent::FormAssigneeNext | BoardIntent::FormAssigneePrev => {
+            model.cycle_form_assignee(matches!(intent, BoardIntent::FormAssigneeNext));
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::ConfirmFormAssignee => {
+            if let Some(targets) = model.pending_assignee_targets.take() {
+                let assignee = model.form.as_ref().and_then(|form| form.assignee.clone());
+                let changed = domain.assign_batch(&targets, assignee)?;
+                model.clear_marks();
+                model.form = None;
+                model.input_mode = BoardInputMode::Normal;
+                return Ok(if changed {
+                    IntentOutcome::Persist
+                } else {
+                    IntentOutcome::None
+                });
+            }
+            model.move_form_focus(true);
+            return Ok(IntentOutcome::None);
+        }
         BoardIntent::FormCycleScope => {
             if model
                 .form
                 .as_ref()
                 .is_some_and(|form| form.focus == CaptureField::Scope)
-                && model.input_mode != BoardInputMode::FormScopeDropdown
+                && model.input_mode != BoardInputMode::FormDropdown
             {
                 model.cycle_form_scope();
             }
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::OpenFormScopeDropdown => {
-            model.open_form_scope_dropdown();
+        BoardIntent::OpenFormDropdown(field) => {
+            model.open_form_dropdown(field);
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::FormScopeNext => {
-            model.move_form_scope_dropdown(true);
+        BoardIntent::FormDropdownNext => {
+            model.move_form_dropdown(true);
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::FormScopePrev => {
-            model.move_form_scope_dropdown(false);
+        BoardIntent::FormDropdownPrev => {
+            model.move_form_dropdown(false);
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::ConfirmFormScopeDropdown => {
-            if model.input_mode == BoardInputMode::FormScopeDropdown {
-                model.close_form_scope_dropdown(true);
+        BoardIntent::ConfirmFormDropdown => {
+            let field = model.form.as_ref().map(|form| form.focus);
+            if model.input_mode == BoardInputMode::FormDropdown
+                && model.close_form_dropdown(true)
+                && field == Some(CaptureField::Assignee)
+            {
+                if let Some(targets) = model.pending_assignee_targets.as_ref() {
+                    let assignee = model.form.as_ref().and_then(|form| form.assignee.clone());
+                    let changed = domain.assign_batch(targets, assignee)?;
+                    model.clear_marks();
+                    if changed {
+                        return Ok(IntentOutcome::Persist);
+                    }
+                    model.finish_pending_assignee_assignment();
+                    return Ok(IntentOutcome::None);
+                }
             }
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::CancelFormScopeDropdown => {
-            if model.input_mode == BoardInputMode::FormScopeDropdown {
-                model.close_form_scope_dropdown(false);
+        BoardIntent::CancelFormDropdown => {
+            if model.input_mode == BoardInputMode::FormDropdown {
+                model.close_form_dropdown(false);
             }
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::SelectFormScopeOption(index) => {
-            model.select_form_scope_option(index);
+        BoardIntent::SelectFormDropdownOption(index) => {
+            let field = model.form.as_ref().map(|form| form.focus);
+            if model.select_form_dropdown_option(index) && field == Some(CaptureField::Assignee) {
+                if let Some(targets) = model.pending_assignee_targets.as_ref() {
+                    let assignee = model.form.as_ref().and_then(|form| form.assignee.clone());
+                    let changed = domain.assign_batch(targets, assignee)?;
+                    model.clear_marks();
+                    if changed {
+                        return Ok(IntentOutcome::Persist);
+                    }
+                    model.finish_pending_assignee_assignment();
+                    return Ok(IntentOutcome::None);
+                }
+            }
             return Ok(IntentOutcome::None);
         }
 
@@ -917,9 +986,16 @@ fn apply_board_intent(
             }
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::BeginEditTitle | BoardIntent::BeginEditNotes | BoardIntent::BeginEditScope => {
+        BoardIntent::BeginEditTitle
+        | BoardIntent::BeginEditNotes
+        | BoardIntent::BeginEditScope
+        | BoardIntent::BeginEditAssignee => {
             model.close_popup();
-            model.clear_marks();
+            let assignee_targets =
+                (intent == BoardIntent::BeginEditAssignee).then(|| model.verb_target_ids());
+            if intent != BoardIntent::BeginEditAssignee {
+                model.clear_marks();
+            }
             // Ctrl+E on an already-open inline row keeps that row focused. Field traversal is
             // explicit through Tab or clicks, so this never discards or redirects its draft.
             if intent == BoardIntent::BeginEditTitle && model.input_mode == BoardInputMode::EditStep
@@ -930,6 +1006,7 @@ fn apply_board_intent(
                 BoardIntent::BeginEditTitle => CaptureField::Title,
                 BoardIntent::BeginEditNotes => CaptureField::Notes,
                 BoardIntent::BeginEditScope => CaptureField::Scope,
+                BoardIntent::BeginEditAssignee => CaptureField::Assignee,
                 _ => unreachable!("matched task-form entry intent"),
             };
             // Ctrl+E on a selected step begins the whole task edit session and opens that
@@ -955,6 +1032,7 @@ fn apply_board_intent(
             // transfer input ownership before the editor can accept a key.
             if model.form.as_ref().is_some_and(BoardForm::is_task) {
                 enter_task_stage(model);
+                model.pending_assignee_targets = assignee_targets;
                 model.focus_form_field(focus);
                 return Ok(IntentOutcome::None);
             }
@@ -969,10 +1047,12 @@ fn apply_board_intent(
                         &model.tasks,
                         focus,
                         &model.archived_projects,
+                        &model.agent_names,
                     );
                     // A direct board edit is a real edit session too, so its confirmed task
                     // page keeps step interaction available after the field saves.
                     form.editing = true;
+                    model.pending_assignee_targets = assignee_targets;
                     model.input_mode = form.parent_mode();
                     model.form = Some(form);
                     enter_task_stage(model);
@@ -1098,6 +1178,7 @@ fn apply_board_intent(
                     | BoardInputMode::EditNotes
                     | BoardInputMode::EditThread
                     | BoardInputMode::EditScope
+                    | BoardInputMode::EditAssignee
             ) && model.form.as_ref().is_some_and(BoardForm::is_task)
             {
                 let field = model
@@ -1114,6 +1195,7 @@ fn apply_board_intent(
                 if let (Some(form), Some(task)) = (model.form.as_mut(), saved) {
                     form.reset_field_to_saved(field, &task);
                 }
+                model.pending_assignee_targets = None;
                 model.input_mode = BoardInputMode::TaskPage;
                 model.clear_message();
                 return Ok(IntentOutcome::None);
@@ -1128,6 +1210,7 @@ fn apply_board_intent(
             }
             // All other complete forms discard as before. Dropdown Esc has its own intent.
             if model.form.take().is_some() {
+                model.pending_assignee_targets = None;
                 model.input_mode = if model.quick_add.is_some() {
                     BoardInputMode::QuickAdd
                 } else {
@@ -1138,6 +1221,7 @@ fn apply_board_intent(
             return Ok(IntentOutcome::None);
         }
         BoardIntent::ConfirmEditNext => {
+            model.pending_assignee_targets = None;
             // Shift+Enter on an existing step, or on a typed new step, commits the complete
             // task edit session. Keep the active row allocated until persistence confirms.
             if model.input_mode == BoardInputMode::EditStep {
@@ -1151,6 +1235,7 @@ fn apply_board_intent(
             return apply_intent(domain, model, BoardIntent::ConfirmEdit, snapshot);
         }
         BoardIntent::ConfirmEdit => {
+            model.pending_assignee_targets = None;
             if model.input_mode == BoardInputMode::EditStep {
                 // Plain Enter parks an existing-step rename. New-step adds save and open the
                 // next empty row, including an empty draft which stays on the line as a refusal.
@@ -1183,8 +1268,9 @@ fn apply_board_intent(
                         return Ok(IntentOutcome::None);
                     }
                 };
+                let assignee = form.assignee.clone();
                 let pending_adds = form.steps.pending_adds.clone();
-                return match crate::capture::capture_save(
+                return match crate::capture::capture_save_assigned(
                     domain,
                     None,
                     &snap,
@@ -1192,6 +1278,7 @@ fn apply_board_intent(
                     notes,
                     scope_override,
                     thread,
+                    assignee,
                 ) {
                     Ok(id) => {
                         for text in &pending_adds {
@@ -1656,6 +1743,18 @@ fn apply_board_intent(
                 return Ok(IntentOutcome::None);
             };
             domain.toggle_step(task_id, step_id)?;
+        }
+        BoardIntent::Dispatch | BoardIntent::DispatchAgain => {
+            // Host work and its one durable save are owned by the application boundary.
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::ConfirmCleanup | BoardIntent::KeepCleanup => {
+            // Cleanup host work and completion persistence are owned by the app boundary.
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::CancelCleanup => {
+            model.close_popup();
+            return Ok(IntentOutcome::None);
         }
         BoardIntent::PrimaryVerb => {
             model.close_popup();
@@ -2174,8 +2273,8 @@ fn apply_board_intent(
                 }
                 return Ok(IntentOutcome::None);
             }
-            if model.input_mode == BoardInputMode::FormScopeDropdown {
-                model.close_form_scope_dropdown(false);
+            if model.input_mode == BoardInputMode::FormDropdown {
+                model.close_form_dropdown(false);
                 return Ok(IntentOutcome::None);
             }
             // Split's task session is parked, not the active editor. Collapsing the
@@ -2197,6 +2296,7 @@ fn apply_board_intent(
                         &model.tasks,
                         CaptureField::Title,
                         &model.archived_projects,
+                        &model.agent_names,
                     );
                     model.input_mode = BoardInputMode::TaskPage;
                     model.clear_message();
@@ -2535,7 +2635,7 @@ fn apply_board_intent(
 /// Every editing intent is inert in every other mode, exactly as the insert and backspace
 /// intents already were before the cursor arrived.
 fn edit_draft(model: &mut BoardModel, operation: impl FnOnce(&mut EditBuffer)) {
-    if model.input_mode == BoardInputMode::FormScopeDropdown {
+    if model.input_mode == BoardInputMode::FormDropdown {
         return;
     }
     // The steps step editor owns the keyboard in its mode: its draft is the page
@@ -2564,7 +2664,7 @@ fn edit_draft(model: &mut BoardModel, operation: impl FnOnce(&mut EditBuffer)) {
             form.thread_refusal = None;
             operation(&mut form.thread);
         }
-        CaptureField::Scope => {}
+        CaptureField::Scope | CaptureField::Assignee => {}
     }
 }
 
@@ -2753,6 +2853,7 @@ fn open_task_page_on(domain: &DomainState, model: &mut BoardModel, id: Uuid) {
         &model.tasks,
         CaptureField::Title,
         &model.archived_projects,
+        &model.agent_names,
     );
     model.form = Some(form);
     model.input_mode = BoardInputMode::TaskPage;
@@ -2778,6 +2879,7 @@ fn refresh_quick_add_scope(model: &mut BoardModel, domain: &DomainState) {
         quick_add.title.value(),
         domain,
         quick_add.snapshot.as_ref().as_ref(),
+        &model.agent_names,
     );
     let Ok(lifted) = lifted else {
         return;
@@ -2804,6 +2906,7 @@ fn quick_add_save(
         quick_add.title.value(),
         domain,
         quick_add.snapshot.as_ref().as_ref(),
+        &model.agent_names,
     ) {
         Ok(lifted) => lifted,
         Err(message) => {
@@ -2812,7 +2915,7 @@ fn quick_add_save(
         }
     };
     let scope = lifted.scope.unwrap_or_else(|| quick_add.scope.clone());
-    match crate::capture::capture_save(
+    match crate::capture::capture_save_assigned(
         domain,
         None,
         &snapshot,
@@ -2820,6 +2923,7 @@ fn quick_add_save(
         None,
         Some(scope.clone()),
         lifted.thread,
+        lifted.assignee,
     ) {
         Ok(id) => {
             // Do not discard the draft until the app save boundary confirms persistence. A
@@ -2847,6 +2951,7 @@ struct QuickAddTokens {
     title: String,
     scope: Option<TaskScope>,
     thread: Option<String>,
+    assignee: Option<String>,
 }
 
 /// Lift whitespace-delimited `!p` and `!t` directives in either order.
@@ -2857,11 +2962,13 @@ fn lift_quick_add_tokens(
     value: &str,
     domain: &DomainState,
     snapshot: Option<&InvocationSnapshot>,
+    agent_names: &[String],
 ) -> Result<QuickAddTokens, String> {
     let words: Vec<&str> = value.split_whitespace().collect();
     let mut title = Vec::new();
     let mut scope = None;
     let mut thread = None;
+    let mut assignee = None;
     let mut index = 0;
 
     while let Some(word) = words.get(index) {
@@ -2892,6 +2999,23 @@ fn lift_quick_add_tokens(
                 };
                 index += usize::from(argument.is_some()) + 1;
             }
+            "!a" => {
+                let argument = quick_add_token_argument(&words, index);
+                assignee = match argument {
+                    Some(name) => {
+                        let normalized = normalize_thread(name).map_err(|error| {
+                            thread_refusal_message(error).replacen("thread", "agent name", 1)
+                        })?;
+                        if agent_names.iter().any(|name| name == &normalized) {
+                            Some(normalized)
+                        } else {
+                            return Err(format!("unknown agent {normalized}"));
+                        }
+                    }
+                    None => None,
+                };
+                index += usize::from(argument.is_some()) + 1;
+            }
             _ => {
                 title.push(*word);
                 index += 1;
@@ -2903,6 +3027,7 @@ fn lift_quick_add_tokens(
         title: title.join(" "),
         scope,
         thread,
+        assignee,
     })
 }
 
@@ -2912,7 +3037,7 @@ fn quick_add_token_argument<'a>(words: &'a [&str], index: usize) -> Option<&'a s
     words
         .get(index + 1)
         .copied()
-        .filter(|word| *word != "!p" && *word != "!t" && !word.starts_with('#'))
+        .filter(|word| *word != "!p" && *word != "!t" && *word != "!a" && !word.starts_with('#'))
 }
 
 fn normalize_optional_thread(value: &str) -> Result<Option<String>, ThreadError> {
@@ -2938,6 +3063,7 @@ fn confirm_edit(
     let title = form.title.value().trim().to_string();
     let notes = (!form.notes.value().trim().is_empty()).then(|| form.notes.value().to_string());
     let scope = form.scope.clone();
+    let assignee = form.assignee.clone();
     let thread = match normalize_optional_thread(form.thread.value()) {
         Ok(thread) => thread,
         Err(error) => {
@@ -2987,6 +3113,7 @@ fn confirm_edit(
         notes.clone(),
         scope.clone(),
         thread.clone(),
+        assignee.clone(),
         &step_rename_list,
         &step_removals.iter().copied().collect::<Vec<_>>(),
         &extra_steps,
@@ -3000,6 +3127,7 @@ fn confirm_edit(
         notes,
         scope,
         thread,
+        assignee,
         step_renames,
         step_removals,
         selected_step,

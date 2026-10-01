@@ -17,3 +17,8 @@ notes = "New captures start in an open inbox below ON DECK. Pick work with ctrl+
 id = 3
 title = "Search and multi-select tasks"
 notes = "Press / on any tab to filter what it shows: tasks by title, notes, steps, thread, or number; projects by name on the projects tab. Enter pins the filter so the usual keys work on the matches; Esc clears it.\n\nPress Shift+M to mark several tasks, with space, Shift+↑/↓, or a click, then run one status, archive, or delete on the whole set. One ctrl+u undoes a marked done or delete.\n\n!p name and tsk add -p name now refuse a name the board does not know instead of creating a stray project. Use a full path to add a new one.\n\nChangelog: https://github.com/smarzban/tsk/blob/main/CHANGELOG.md"
+
+[[announcement]]
+id = 4
+title = "Assign and dispatch work to agents"
+notes = "Define agent profiles in agents.toml, then assign a task with !a name, task-page Assignee, the palette, or tsk add/edit --assignee. Assigned rows show @name.\n\nOn an assigned project task, press ctrl+g or choose dispatch to @name. tsk creates a Git worktree and Herdr workspace, launches the agent there, then records the dispatch and starts the task. From the CLI use tsk dispatch T<n>; --again deliberately reuses the recorded workspace.\n\nChangelog: https://github.com/smarzban/tsk/blob/main/CHANGELOG.md"

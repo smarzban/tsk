@@ -38,6 +38,8 @@ fn task(id: u128, title: &str, status: HumanStatus, scope: TaskScope, updated_se
         title: title.into(),
         notes: None,
         thread: None,
+        assignee: None,
+        dispatch: None,
         status,
         scope,
         provenance: ProvenanceOrigin::Manual,

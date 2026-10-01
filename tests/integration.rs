@@ -4,6 +4,7 @@
 mod archive_launch_card;
 mod cli_archive;
 mod cli_discovery;
+mod cli_dispatch;
 mod cli_edit;
 mod cli_guide;
 mod cli_help;

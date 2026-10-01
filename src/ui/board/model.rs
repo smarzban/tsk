@@ -82,14 +82,20 @@ pub enum BoardInputMode {
     SelectThread,
     /// The task page footer's optional thread name owns its text cursor.
     EditThread,
-    /// The scope row of an open task form owns focus. The renderer adaptation remains
-    /// deliberately thin until, but its keyboard state is a first-class form field.
+    /// The scope row of an open task form owns focus.
     EditScope,
-    /// A task/capture form's transient scope chooser. It returns to its parent form on Esc.
-    FormScopeDropdown,
+    /// The assignee field cycles defined agent profiles plus unassigned.
+    EditAssignee,
+    /// A task/capture form footer chooser. The retained form focus identifies Scope or
+    /// Assignee, and Esc returns to that parent field without applying the highlight.
+    FormDropdown,
     /// The launch card owns input: a two-choice modal raised at most once per session
     /// when the invocation default resolved to an archived project.
     LaunchCard,
+    /// A cursor-pinned clean worktree is awaiting y/n/Esc cleanup choice.
+    CleanupConfirm,
+    /// A dirty worktree can only be kept and completed, or cancelled.
+    CleanupDirtyConfirm,
     /// The task page is open in view mode: the full-page surface shows the bound task and
     /// no field owns the cursor. Verbs act on the task; `e`/`n`/Tab enter field edits. A
     /// click does NOT: field regions are inert in this state, and only move focus once one
@@ -297,6 +303,7 @@ pub(super) struct TaskEditSave {
     pub(super) notes: Option<String>,
     pub(super) scope: TaskScope,
     pub(super) thread: Option<String>,
+    pub(super) assignee: Option<String>,
     /// Existing-step names staged alongside the ordinary task fields. They reach the
     /// domain only when the task session is confirmed with Shift+Enter.
     pub(super) step_renames: BTreeMap<Uuid, String>,
@@ -316,6 +323,10 @@ pub(super) struct BoardForm {
     pub(super) thread: EditBuffer,
     /// Field-local validation feedback, painted by the footer input rather than status chrome.
     pub(super) thread_refusal: Option<String>,
+    /// Optional assignee draft and the defined choices available this session.
+    pub(super) assignee: Option<String>,
+    pub(super) assignee_options: Vec<Option<String>>,
+    pub(super) assignee_selected: usize,
     /// A task page starts view-only. Entering any field makes its steps selectable and editable
     /// for the rest of that page session; closing the page drops the state with the form.
     pub(super) editing: bool,
@@ -357,6 +368,7 @@ impl BoardForm {
         tasks: &[Task],
         focus: CaptureField,
         archived: &BTreeSet<String>,
+        agent_names: &[String],
     ) -> Self {
         let mut form = Self::new(
             &task.title,
@@ -369,6 +381,8 @@ impl BoardForm {
             archived,
         );
         form.thread = seeded_draft(task.thread.as_deref().unwrap_or_default());
+        form.assignee = task.assignee.clone();
+        form.set_agent_names(agent_names);
         form.task_snapshot = Some(Box::new(task.clone()));
         form
     }
@@ -422,6 +436,9 @@ impl BoardForm {
             scope,
             thread: seeded_draft(""),
             thread_refusal: None,
+            assignee: None,
+            assignee_options: vec![None],
+            assignee_selected: 0,
             editing: false,
             focus,
             scope_options,
@@ -464,6 +481,7 @@ impl BoardForm {
             CaptureField::Thread if self.is_task() => BoardInputMode::SelectThread,
             CaptureField::Thread => BoardInputMode::EditThread,
             CaptureField::Scope => BoardInputMode::EditScope,
+            CaptureField::Assignee => BoardInputMode::EditAssignee,
         }
     }
 
@@ -482,6 +500,10 @@ impl BoardForm {
                 self.scope = task.scope.clone();
                 self.select_current_scope();
             }
+            CaptureField::Assignee => {
+                self.assignee = task.assignee.clone();
+                self.select_current_assignee();
+            }
         }
         if let Some(snapshot) = self.task_snapshot.as_mut() {
             match field {
@@ -489,6 +511,7 @@ impl BoardForm {
                 CaptureField::Notes => snapshot.notes = task.notes.clone(),
                 CaptureField::Thread => snapshot.thread = task.thread.clone(),
                 CaptureField::Scope => snapshot.scope = task.scope.clone(),
+                CaptureField::Assignee => snapshot.assignee = task.assignee.clone(),
             }
         }
     }
@@ -496,7 +519,8 @@ impl BoardForm {
     pub(super) fn focus_next(&mut self) {
         self.focus = match self.focus {
             CaptureField::Title => CaptureField::Notes,
-            CaptureField::Notes => CaptureField::Thread,
+            CaptureField::Notes => CaptureField::Assignee,
+            CaptureField::Assignee => CaptureField::Thread,
             CaptureField::Thread => CaptureField::Scope,
             CaptureField::Scope => CaptureField::Title,
         };
@@ -506,9 +530,58 @@ impl BoardForm {
         self.focus = match self.focus {
             CaptureField::Title => CaptureField::Scope,
             CaptureField::Notes => CaptureField::Title,
-            CaptureField::Thread => CaptureField::Notes,
+            CaptureField::Assignee => CaptureField::Notes,
+            CaptureField::Thread => CaptureField::Assignee,
             CaptureField::Scope => CaptureField::Thread,
         };
+    }
+
+    pub(super) fn set_agent_names(&mut self, names: &[String]) {
+        self.assignee_options = std::iter::once(None)
+            .chain(names.iter().cloned().map(Some))
+            .collect();
+        self.select_current_assignee();
+    }
+
+    pub(super) fn cycle_assignee(&mut self, forward: bool) {
+        if self.assignee_options.is_empty() {
+            return;
+        }
+        self.assignee_selected = if forward {
+            (self.assignee_selected + 1) % self.assignee_options.len()
+        } else {
+            self.assignee_selected
+                .checked_sub(1)
+                .unwrap_or(self.assignee_options.len() - 1)
+        };
+        self.assignee = self.assignee_options[self.assignee_selected].clone();
+    }
+
+    fn select_current_assignee(&mut self) {
+        self.assignee_selected = self
+            .assignee_options
+            .iter()
+            .position(|option| option == &self.assignee)
+            .unwrap_or(0);
+    }
+
+    fn move_assignee_selection(&mut self, forward: bool) {
+        if self.assignee_options.is_empty() {
+            return;
+        }
+        self.assignee_selected = if forward {
+            (self.assignee_selected + 1) % self.assignee_options.len()
+        } else {
+            self.assignee_selected
+                .checked_sub(1)
+                .unwrap_or(self.assignee_options.len() - 1)
+        };
+    }
+
+    fn apply_assignee_selection(&mut self) {
+        if let Some(assignee) = self.assignee_options.get(self.assignee_selected) {
+            self.assignee = assignee.clone();
+        }
     }
 
     pub(super) fn cycle_scope(&mut self) {
@@ -677,6 +750,8 @@ pub struct BoardModel {
     /// Scope paths of archived projects, carried from domain state so the lens
     /// query can filter hidden tasks without re-deriving from records.
     pub(super) archived_projects: BTreeSet<String>,
+    /// Defined profile names loaded once for this session.
+    pub(super) agent_names: Vec<String>,
     pub(super) this_repo: Option<PathBuf>,
     /// Session board location (active surface). Not durable.
     pub(super) board_location: BoardLocation,
@@ -753,6 +828,8 @@ pub struct BoardModel {
     pub(super) quick_add_save: Option<QuickAddSave>,
     /// A task-form edit waiting for the app save boundary to confirm persistence.
     pub(super) task_edit_save: Option<TaskEditSave>,
+    /// Palette assignee targets, retained until Enter applies them as one batch.
+    pub(super) pending_assignee_targets: Option<Vec<Uuid>>,
     /// The app save boundary holds task-form release across its inner reducer sync.
     pub(super) hold_task_edit_save: bool,
     /// Last board action feedback or empty-selection chrome message.
@@ -778,6 +855,10 @@ pub struct BoardModel {
     pub(super) suspended_delete_notice_count: Option<usize>,
     /// First ctrl+x arms this exact target set; a second press on the same set deletes it.
     pub(super) pending_delete: Option<BTreeSet<Uuid>>,
+    /// First ctrl+g on an existing dispatch arms one exact cursor task for relaunch.
+    pub(super) pending_dispatch_again: Option<Uuid>,
+    /// Cursor-pinned dispatch cleanup details while the confirmation modal owns input.
+    pub(super) cleanup_prompt: Option<CleanupPrompt>,
     /// Whether the armed delete originated from a non-empty marked set.
     pub(super) pending_delete_bulk: bool,
     /// Open project-picker or save-recovery presentation.
@@ -821,6 +902,17 @@ pub struct BoardModel {
     pub(super) frame_wide: Cell<bool>,
 }
 
+/// Session-only cleanup confirmation details, captured before the modal opens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupPrompt {
+    pub task_id: Uuid,
+    pub worktree: String,
+    pub branch: String,
+    pub dirty: bool,
+    pub branch_merged: bool,
+    pub workspace_exists: bool,
+}
+
 /// How an unresolved failed save ended.
 ///
 /// The two outcomes differ in exactly one way the chrome row cares about: Retry makes the
@@ -840,6 +932,7 @@ impl BoardModel {
         let mut model = Self {
             tasks,
             archived_projects: BTreeSet::new(),
+            agent_names: Vec::new(),
             this_repo: this_repo.clone(),
             board_location: BoardLocation::Desk,
             selected_project: this_repo,
@@ -875,6 +968,7 @@ impl BoardModel {
             saved_task: None,
             quick_add_save: None,
             task_edit_save: None,
+            pending_assignee_targets: None,
             hold_task_edit_save: false,
             message: None,
             update_notice: None,
@@ -883,6 +977,8 @@ impl BoardModel {
             suspended_delete_notice: None,
             suspended_delete_notice_count: None,
             pending_delete: None,
+            pending_dispatch_again: None,
+            cleanup_prompt: None,
             pending_delete_bulk: false,
             popup: BoardPopup::None,
             project_picker: None,
@@ -926,9 +1022,45 @@ impl BoardModel {
 
     pub fn close_popup(&mut self) {
         if self.popup != BoardPopup::SaveRecovery {
+            let cleanup = self.popup == BoardPopup::CleanupConfirm;
             self.popup = BoardPopup::None;
             self.project_picker = None;
+            self.cleanup_prompt = None;
+            if cleanup {
+                self.clear_message();
+            }
         }
+    }
+
+    pub fn begin_cleanup_prompt(&mut self, prompt: CleanupPrompt) {
+        self.clear_marks();
+        self.close_help();
+        self.close_command_surface();
+        self.cleanup_prompt = Some(prompt);
+        self.popup = BoardPopup::CleanupConfirm;
+        self.clear_message();
+    }
+
+    pub fn cleanup_prompt(&self) -> Option<&CleanupPrompt> {
+        self.cleanup_prompt.as_ref()
+    }
+
+    pub fn arm_dispatch_again(&mut self, id: Uuid) {
+        self.pending_dispatch_again = Some(id);
+    }
+
+    pub fn take_dispatch_again(&mut self, id: Uuid) -> bool {
+        if self.pending_dispatch_again == Some(id) {
+            self.pending_dispatch_again = None;
+            true
+        } else {
+            self.pending_dispatch_again = None;
+            false
+        }
+    }
+
+    pub fn clear_dispatch_again(&mut self) {
+        self.pending_dispatch_again = None;
     }
 
     /// Present a failed board save without replacing its visible working state.
@@ -1003,6 +1135,7 @@ impl BoardModel {
                     form.notes = seeded_draft(task.notes.as_deref().unwrap_or_default());
                     form.thread = seeded_draft(task.thread.as_deref().unwrap_or_default());
                     form.thread_refusal = None;
+                    form.assignee = task.assignee.clone();
                     form.scope = task.scope.clone();
                     form.select_current_scope();
                     form.editing = false;
@@ -1159,6 +1292,7 @@ impl BoardModel {
         // becomes an ordinary project board: tab, dim rows and verbs all follow.
         if let BoardLocation::ArchivedProject(path) = &self.board_location {
             if !self.is_archived_project_path(path) {
+                self.pending_assignee_targets = None;
                 self.selected_project = Some(path.clone());
                 self.board_location = BoardLocation::Project(path.clone());
             }
@@ -1178,6 +1312,7 @@ impl BoardModel {
                 }
                 _ => String::new(),
             };
+            self.pending_assignee_targets = None;
             self.board_location = BoardLocation::Desk;
             self.selected_project = None;
             self.set_message(format!("project {name} is archived"));
@@ -1319,6 +1454,7 @@ impl BoardModel {
         // project's tasks again. (`2` stays put: the archived focus already occupies
         // slot 2.)
         if self.focus_is_archived() {
+            self.pending_assignee_targets = None;
             let previous_visible = self.visible_ids();
             self.search_query.clear();
             self.search_pinned = false;
@@ -1412,6 +1548,7 @@ impl BoardModel {
         // should keep the existing seat instead of paying that cost or dropping its session.
         let mut right = BoardModel::from_tasks(self.tasks.clone(), self.this_repo.clone());
         right.archived_projects = self.archived_projects.clone();
+        right.agent_names = self.agent_names.clone();
         right.board_location = BoardLocation::Project(path.clone());
         right.selected_project = Some(path);
         right.preview_seat = true;
@@ -1470,6 +1607,7 @@ impl BoardModel {
         if self.board_location == target {
             return;
         }
+        self.pending_assignee_targets = None;
         let previous_visible = self.visible_ids();
         let previous = self.selection_id;
         self.search_query.clear();
@@ -1606,6 +1744,7 @@ impl BoardModel {
 
     /// Leave the read-only archived focus for the desk (AC-45).
     pub(super) fn leave_archived_focus(&mut self) {
+        self.pending_assignee_targets = None;
         let previous_visible = self.visible_ids();
         self.clear_marks();
         self.search_query.clear();
@@ -1619,6 +1758,7 @@ impl BoardModel {
     /// Turn a read-only focus into the ordinary project focus on the same project
     /// (AC-43), keeping the selection where the user left it.
     pub(super) fn enter_project_focus(&mut self, path: PathBuf) {
+        self.pending_assignee_targets = None;
         self.selected_project = Some(path.clone());
         let previous_visible = self.visible_ids();
         let previous = self.selection_id;
@@ -1630,6 +1770,7 @@ impl BoardModel {
 
     /// Open the read-only focus on `path` (AC-41). Session-only: nothing persists.
     pub(super) fn open_archived_focus(&mut self, path: PathBuf) {
+        self.pending_assignee_targets = None;
         self.selected_project = None;
         self.close_popup();
         let previous_visible = self.visible_ids();
@@ -2252,6 +2393,7 @@ impl BoardModel {
             _ => false,
         };
         if applied {
+            self.pending_assignee_targets = None;
             self.list_picker = None;
             Some(value)
         } else {
@@ -2420,7 +2562,7 @@ impl BoardModel {
         }
     }
 
-    pub(super) fn clear_marks(&mut self) -> bool {
+    pub fn clear_marks(&mut self) -> bool {
         let had_mark_state = self.mark_mode || !self.marked_ids.is_empty();
         self.mark_mode = false;
         self.marked_ids.clear();
@@ -2430,6 +2572,11 @@ impl BoardModel {
     /// Whether this model's task list owns resolved input, including while a task page is parked.
     pub(super) fn task_list_owns_input(&self) -> bool {
         self.input_mode_local() == BoardInputMode::Normal && !self.projects_overview()
+    }
+
+    /// Whether a status verb currently targets the marked set rather than the cursor.
+    pub fn bulk_verb_active(&self) -> bool {
+        self.task_list_owns_input() && self.mark_mode && !self.marked_ids.is_empty()
     }
 
     /// Mark targets when the task list owns input, otherwise the cursor target.
@@ -2606,6 +2753,15 @@ impl BoardModel {
         match self.popup {
             BoardPopup::SaveRecovery => BoardInputMode::SaveRecovery,
             BoardPopup::LaunchCard => BoardInputMode::LaunchCard,
+            BoardPopup::CleanupConfirm
+                if self
+                    .cleanup_prompt
+                    .as_ref()
+                    .is_some_and(|prompt| prompt.dirty) =>
+            {
+                BoardInputMode::CleanupDirtyConfirm
+            }
+            BoardPopup::CleanupConfirm => BoardInputMode::CleanupConfirm,
             _ if self.project_picker.is_some() => BoardInputMode::ProjectPicker,
             _ if self.focused_surface() == FocusedSurface::Board
                 && self.input_mode == BoardInputMode::TaskPage =>
@@ -2625,6 +2781,7 @@ impl BoardModel {
             CaptureField::Title | CaptureField::Scope => form.title.value(),
             CaptureField::Notes => form.notes.value(),
             CaptureField::Thread => form.thread.value(),
+            CaptureField::Assignee => "",
         }
     }
 
@@ -2637,6 +2794,7 @@ impl BoardModel {
             CaptureField::Title | CaptureField::Scope => form.title.cursor(),
             CaptureField::Notes => form.notes.cursor(),
             CaptureField::Thread => form.thread.cursor(),
+            CaptureField::Assignee => 0,
         }
     }
 
@@ -2741,6 +2899,7 @@ impl BoardModel {
                 && task.notes == pending.notes
                 && task.scope == pending.scope
                 && task.thread == pending.thread
+                && task.assignee == pending.assignee
                 && pending.step_renames.iter().all(|(step_id, text)| {
                     task.steps
                         .iter()
@@ -2778,6 +2937,8 @@ impl BoardModel {
                 .unwrap_or(0);
             form.thread = seeded_draft(pending.thread.as_deref().unwrap_or_default());
             form.thread_refusal = None;
+            form.assignee = pending.assignee;
+            form.select_current_assignee();
             form.editing = false;
             form.steps.editor = None;
             form.steps.drafts.clear();
@@ -3003,7 +3164,7 @@ impl BoardModel {
         let Some(form) = self.form.as_mut() else {
             return;
         };
-        if self.input_mode == BoardInputMode::FormScopeDropdown {
+        if self.input_mode == BoardInputMode::FormDropdown {
             return;
         }
         if form.is_task() {
@@ -3079,6 +3240,7 @@ impl BoardModel {
         if form.title.value() != snapshot.title
             || form.notes.value() != snapshot.notes.as_deref().unwrap_or_default()
             || form.thread.value() != snapshot.thread.as_deref().unwrap_or_default()
+            || form.assignee != snapshot.assignee
             || form.scope != snapshot.scope
             || !form.steps.removals.is_empty()
         {
@@ -3107,62 +3269,105 @@ impl BoardModel {
         })
     }
 
+    pub(super) fn cycle_form_assignee(&mut self, forward: bool) {
+        if let Some(form) = self.form.as_mut() {
+            form.cycle_assignee(forward);
+        }
+    }
+
+    pub fn set_agent_profiles(&mut self, profiles: &crate::agents::AgentProfiles) {
+        self.agent_names = profiles.names().map(str::to_string).collect();
+        if let Some(form) = self.form.as_mut() {
+            form.set_agent_names(&self.agent_names);
+        }
+        if let Some(right) = self.right_seat.as_mut() {
+            right.set_agent_profiles(profiles);
+        }
+    }
+
     pub(super) fn cycle_form_scope(&mut self) {
         if let Some(form) = self.form.as_mut() {
             form.cycle_scope();
         }
     }
 
-    pub(super) fn open_form_scope_dropdown(&mut self) {
-        if !self.park_rename_step_draft() {
+    pub(super) fn open_form_dropdown(&mut self, field: CaptureField) {
+        if !matches!(field, CaptureField::Scope | CaptureField::Assignee)
+            || !self.park_rename_step_draft()
+        {
             return;
         }
         let Some(form) = self.form.as_mut() else {
             return;
         };
-        // A Scope row click reaches this route directly. Keyboard only reaches it after focus
-        // has moved to Scope, but both routes leave the parent form focused there.
-        form.focus = CaptureField::Scope;
-        // Each opening starts from the parent form's chosen scope. Esc therefore discards
-        // only the dropdown's pending highlight, never a field draft or the whole form.
-        form.select_current_scope();
-        self.input_mode = BoardInputMode::FormScopeDropdown;
+        form.focus = field;
+        match field {
+            CaptureField::Scope => form.select_current_scope(),
+            CaptureField::Assignee => form.select_current_assignee(),
+            _ => unreachable!(),
+        }
+        self.input_mode = BoardInputMode::FormDropdown;
     }
 
-    pub(super) fn close_form_scope_dropdown(&mut self, apply: bool) {
+    pub(super) fn close_form_dropdown(&mut self, apply: bool) -> bool {
         let Some(form) = self.form.as_mut() else {
-            return;
+            return false;
         };
-        if apply {
-            form.apply_scope_selection();
-        } else {
-            form.select_current_scope();
+        match (form.focus, apply) {
+            (CaptureField::Scope, true) => form.apply_scope_selection(),
+            (CaptureField::Scope, false) => form.select_current_scope(),
+            (CaptureField::Assignee, true) => form.apply_assignee_selection(),
+            (CaptureField::Assignee, false) => form.select_current_assignee(),
+            _ => return false,
         }
         self.input_mode = form.parent_mode();
+        true
     }
 
-    pub(super) fn move_form_scope_dropdown(&mut self, forward: bool) {
-        if self.input_mode == BoardInputMode::FormScopeDropdown {
-            if let Some(form) = self.form.as_mut() {
-                form.move_scope_selection(forward);
+    pub(super) fn move_form_dropdown(&mut self, forward: bool) {
+        if self.input_mode != BoardInputMode::FormDropdown {
+            return;
+        }
+        if let Some(form) = self.form.as_mut() {
+            match form.focus {
+                CaptureField::Scope => form.move_scope_selection(forward),
+                CaptureField::Assignee => form.move_assignee_selection(forward),
+                _ => {}
             }
         }
     }
 
     /// Apply a clicked source option exactly as keyboard navigation plus Enter would.
-    pub(super) fn select_form_scope_option(&mut self, index: usize) {
-        if self.input_mode != BoardInputMode::FormScopeDropdown {
-            return;
+    pub(super) fn select_form_dropdown_option(&mut self, index: usize) -> bool {
+        if self.input_mode != BoardInputMode::FormDropdown {
+            return false;
         }
         let Some(form) = self.form.as_mut() else {
-            return;
+            return false;
         };
-        if index >= form.scope_options.len() {
-            return;
+        match form.focus {
+            CaptureField::Scope if index < form.scope_options.len() => {
+                form.scope_selected = index;
+                form.apply_scope_selection();
+            }
+            CaptureField::Assignee if index < form.assignee_options.len() => {
+                form.assignee_selected = index;
+                form.apply_assignee_selection();
+            }
+            _ => return false,
         }
-        form.scope_selected = index;
-        form.apply_scope_selection();
         self.input_mode = form.parent_mode();
+        true
+    }
+
+    /// Close an assignment form only after its batch reached the persistence boundary.
+    pub fn finish_pending_assignee_assignment(&mut self) -> bool {
+        if self.pending_assignee_targets.take().is_none() {
+            return false;
+        }
+        self.form = None;
+        self.input_mode = BoardInputMode::Normal;
+        true
     }
 
     /// Help line listing primary key bindings.
@@ -3394,6 +3599,9 @@ impl BoardModel {
             }
             return false;
         }
+        if requested != bound {
+            self.pending_assignee_targets = None;
+        }
         if source == SelectionRetarget::Explicit
             && requested != bound
             && self.form.as_ref().is_some_and(BoardForm::is_task)
@@ -3407,6 +3615,7 @@ impl BoardModel {
                         &self.tasks,
                         CaptureField::Title,
                         &archived,
+                        &self.agent_names,
                     )
                 })
             });
@@ -3984,6 +4193,7 @@ mod tests {
             &right.tasks,
             CaptureField::Title,
             &right.archived_projects,
+            &right.agent_names,
         );
         form.editing = true;
         form.title.insert_char('!');

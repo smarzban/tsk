@@ -17,6 +17,8 @@ import { parseCapture } from "./capture.js";
     review: "▲",
     done: "✓",
   };
+  const taskGlyph = (task) =>
+    task.status === "started" && task.dispatch ? "◉" : GLYPH[task.status] || "○";
 
   const TABS = [
     ["desk", "desk"],
@@ -1250,8 +1252,9 @@ import { parseCapture } from "./capture.js";
 
   function metaFor(task) {
     const bits = [];
-    if (!state.focusProject && task.project) bits.push(projectName(task));
-    if (state.focusProject && task.thread) bits.push(`#${task.thread}`);
+    if (task.assignee) bits.push(`@${task.assignee}`);
+    if (task.thread) bits.push(`#${task.thread}`);
+    if (task.project) bits.push(projectName(task));
     return bits.join(" · ");
   }
 
@@ -2301,7 +2304,7 @@ import { parseCapture } from "./capture.js";
       editing === "title"
         ? `<input class="tsk-field" id="${editId}" value="${esc(editDraft)}" />`
         : esc(task.title);
-    const glyph = GLYPH[task.status] || "○";
+    const glyph = taskGlyph(task);
     let header = `<div class="tsk-task-header ${focused ? "is-bold" : "dim"}"><span class="glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> <span class="sec">${headTitle}</span><span class="tsk-state-slot">${esc(stateSlot)}</span></div><div class="tsk-task-rule" aria-hidden="true"></div>`;
     if (narrow && !editing) {
       const room = terminalColumns() - 9 - stateSlot.length;
@@ -2417,7 +2420,7 @@ import { parseCapture } from "./capture.js";
             ? "▪ "
             : "  ";
         const flash = task.id === state.flashId;
-        const glyph = GLYPH[task.status] || "○";
+        const glyph = taskGlyph(task);
         const titleLines = wrapText(
           task.title,
           Math.max(8, width - 2 - 4 - `T${task.number} `.length),
@@ -2429,6 +2432,7 @@ import { parseCapture } from "./capture.js";
           (task.notes || "").trim() || "no notes yet",
           Math.max(8, width - 7),
         );
+        const label = metaFor(task);
         const peek =
           rail && preview.peekId === task.id
             ? [
@@ -2443,10 +2447,11 @@ import { parseCapture } from "./capture.js";
                       `<div class="tsk-peek dim">    │ … ${noteLines.length - 5} more lines</div>`,
                     ]
                   : []),
-                ...(task.thread
-                  ? [
-                      `<div class="tsk-attribution dim">    └─ #${esc(task.thread)}</div>`,
-                    ]
+                ...(label
+                  ? wrapText(label, width - 9).map(
+                      (line, i) =>
+                        `<div class="tsk-attribution dim">${i ? "       " : "    └─ "}${esc(line)}</div>`,
+                    )
                   : [`<div class="tsk-peek dim">    └</div>`]),
               ].join("")
             : "";
@@ -2588,7 +2593,7 @@ import { parseCapture } from "./capture.js";
             ? "▪ "
             : "  ";
         const flash = task.id === state.flashId;
-        const glyph = GLYPH[task.status] || "○";
+        const glyph = taskGlyph(task);
         const indent = "  ".repeat(row.indent || 0);
         if (rail) {
           const prefix = `${rowMark}${glyph} `;

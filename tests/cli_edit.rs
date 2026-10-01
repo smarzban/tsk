@@ -61,6 +61,63 @@ fn edit(dir: &Path, args: &[&str]) -> CliOutput {
 }
 
 #[test]
+fn edit_assigns_and_unassigns_only_known_profiles() {
+    let dir = temp_state_dir("assignee");
+    let _guard = TempDirGuard(dir.clone());
+    fs::write(
+        dir.join("agents.toml"),
+        "[agent.reviewer]\ncommand = [\"true\"]\n",
+    )
+    .expect("write profiles");
+    assert_eq!(add_task(&dir, "assign me").code, 0);
+
+    let assigned = edit(&dir, &["T1", "--assignee", "Reviewer"]);
+    assert_eq!(assigned.code, 0, "{}", assigned.stderr);
+    assert_eq!(
+        TaskStore::new(&dir).load().expect("load").tasks()[0]
+            .assignee
+            .as_deref(),
+        Some("reviewer")
+    );
+
+    let unknown = edit(&dir, &["T1", "--assignee", "missing"]);
+    assert_eq!(unknown.code, 1);
+    assert!(
+        unknown.stderr.contains("unknown-agent"),
+        "{}",
+        unknown.stderr
+    );
+
+    let unassigned = edit(&dir, &["T1", "--unassign"]);
+    assert_eq!(unassigned.code, 0, "{}", unassigned.stderr);
+    assert_eq!(
+        TaskStore::new(&dir).load().expect("reload").tasks()[0].assignee,
+        None
+    );
+}
+
+#[test]
+fn edit_loads_malformed_agent_profiles_only_for_assignment() {
+    let dir = temp_state_dir("malformed-agents");
+    let _guard = TempDirGuard(dir.clone());
+    fs::write(
+        dir.join("agents.toml"),
+        "[agent.Reviewer]\ncommand = [\"true\"]\n",
+    )
+    .expect("write malformed profiles");
+    assert_eq!(add_task(&dir, "edit me").code, 0);
+
+    let ordinary = edit(&dir, &["T1", "--title", "edited without profiles"]);
+    assert_eq!(ordinary.code, 0, "{ordinary:?}");
+    let assigned = edit(&dir, &["T1", "--assignee", "reviewer"]);
+    assert_eq!(assigned.code, 2, "{assigned:?}");
+    assert!(assigned.stderr.contains("agents.toml"), "{assigned:?}");
+    let state = TaskStore::new(&dir).load().expect("load state");
+    assert_eq!(state.tasks()[0].title, "edited without profiles");
+    assert_eq!(state.tasks()[0].assignee, None);
+}
+
+#[test]
 fn edit_title_and_notes_and_repeat_is_idempotent() {
     let dir = temp_state_dir("round-trip");
     let _guard = TempDirGuard(dir.clone());
@@ -210,7 +267,9 @@ fn edit_without_fields_is_usage() {
     assert_eq!(add_task(&dir, "keep me").code, 0);
     let output = edit(&dir, &["T1"]);
     assert_eq!(output.code, 2);
-    assert!(output.stderr.contains("title or notes is required"));
+    assert!(output
+        .stderr
+        .contains("title, notes, assignee, or --unassign is required"));
 }
 
 #[test]

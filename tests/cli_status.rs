@@ -167,6 +167,43 @@ fn status_unknown_and_deleted_refuse_without_mutation() {
 }
 
 #[test]
+fn status_done_clean_persists_done_even_when_cleanup_refuses() {
+    let dir = temp_state_dir("done-clean-refusal");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "finish and clean").code, 0);
+
+    let output = cli(vec![
+        "tsk".into(),
+        "status".into(),
+        "T1".into(),
+        "done".into(),
+        "--clean".into(),
+        "--state-dir".into(),
+        dir.to_string_lossy().into_owned(),
+    ]);
+    assert_eq!(output.code, 1);
+    assert_eq!(output.stdout, "status T1 done finish and clean\n");
+    assert_eq!(
+        output.stderr,
+        "tsk status: not-dispatched: task has no dispatch to clean\n"
+    );
+    assert_eq!(loaded_status(&dir).0, HumanStatus::Done);
+
+    let invalid = cli(vec![
+        "tsk".into(),
+        "status".into(),
+        "T1".into(),
+        "ready".into(),
+        "--clean".into(),
+        "--state-dir".into(),
+        dir.to_string_lossy().into_owned(),
+    ]);
+    assert_eq!(invalid.code, 2);
+    assert!(invalid.stderr.contains("--clean requires done status"));
+    assert_eq!(loaded_status(&dir).0, HumanStatus::Done);
+}
+
+#[test]
 fn status_unknown_name_is_usage() {
     let dir = temp_state_dir("usage");
     let _guard = TempDirGuard(dir.clone());

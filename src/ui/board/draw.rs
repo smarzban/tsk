@@ -16,7 +16,7 @@ use crate::ui::input::help_card_lines_for_query;
 use crate::ui::mouse::BoardPopup;
 use crate::ui::queue::ThreadFilter;
 use crate::ui::render::{
-    self, BoardSurface, FormScopeDropdown, NavChipKind, NavChipPaint, NavPaint, PaletteCommandRow,
+    self, BoardSurface, FormDropdown, NavChipKind, NavChipPaint, NavPaint, PaletteCommandRow,
     QueueFrameModel, QueueOverlay, VerbEntry,
 };
 use crate::ui::tier;
@@ -184,7 +184,7 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
     let mut entries = Vec::with_capacity(6);
     if let Some(task) = selected_task {
         entries.push(OPEN);
-        entries.extend(status_verbs(task.status));
+        entries.extend(task_status_verbs(task));
         // Add is useful from the backlog and inbox, but the status-heavy in-motion and
         // done legends use that seat for their truthful lifecycle actions.
         if !matches!(task.status, HumanStatus::Started | HumanStatus::Done) {
@@ -253,6 +253,24 @@ fn status_verbs(status: HumanStatus) -> Vec<VerbEntry<'static>> {
     }
 }
 
+fn task_status_verbs(task: &crate::domain::Task) -> Vec<VerbEntry<'static>> {
+    let mut verbs = status_verbs(task.status);
+    if task.assignee.is_some() && task.status != HumanStatus::Done {
+        let after_start = verbs
+            .iter()
+            .position(|verb| verb.key == "s")
+            .map_or(verbs.len(), |index| index + 1);
+        verbs.insert(
+            after_start,
+            VerbEntry {
+                key: "g",
+                label: "dispatch",
+            },
+        );
+    }
+    verbs
+}
+
 fn task_page_verb_items(model: &BoardModel, task: &crate::domain::Task) -> Vec<VerbEntry<'static>> {
     // A parked edit session (dirty draft, no editor open) is about saving or discarding.
     if model.task_editing() {
@@ -276,7 +294,7 @@ fn task_page_verb_items(model: &BoardModel, task: &crate::domain::Task) -> Vec<V
         key: "e",
         label: "edit",
     });
-    entries.extend(status_verbs(task.status));
+    entries.extend(task_status_verbs(task));
     entries.push(VerbEntry {
         key: "esc",
         label: "close",
@@ -290,7 +308,7 @@ fn build_task_page_overlay<'a>(
     model: &'a BoardModel,
     form: &'a BoardForm,
     geo: &tier::TierGeometry,
-    scope_dropdown: Option<FormScopeDropdown<'a>>,
+    scope_dropdown: Option<FormDropdown<'a>>,
     column: bool,
 ) -> QueueOverlay<'a> {
     let width = geo.row_width as usize;
@@ -441,7 +459,9 @@ fn build_task_page_overlay<'a>(
             HumanStatus::Done => "done",
         },
     };
-    let glyph = render::status_glyph(status);
+    let glyph = bound_task
+        .map(render::task_status_glyph)
+        .unwrap_or_else(|| render::status_glyph(status));
 
     // Header: indent + glyph + the WRAPPED title rows + right-aligned status word
     // on row 0. A long title wraps onto further bold rows indented under the
@@ -548,7 +568,7 @@ fn build_task_page_overlay<'a>(
     let notes_width = width.saturating_sub(6);
     let want = lay.notes_rows as usize;
     let editing_notes = model.input_mode() == BoardInputMode::EditNotes;
-    let (notes_rows, notes_cursor, more_lines, notes_scroll) = if editing_notes {
+    let (mut notes_rows, notes_cursor, more_lines, notes_scroll) = if editing_notes {
         let (all_rows, cursor_row, cursor_column) = wrapped_edit_rows(&form.notes, notes_width);
         // Explicit pointer scrolling may leave the caret offscreen to reach steps.
         // Typing or moving the caret restores automatic following.
@@ -579,6 +599,34 @@ fn build_task_page_overlay<'a>(
             form.notes_scroll,
         )
     };
+    if !editing_notes {
+        if let Some(dispatch) = bound_task.and_then(|task| task.dispatch.as_ref()) {
+            if !notes_rows.is_empty() {
+                notes_rows.push(String::new());
+            }
+            let when = render::format_age(SystemTime::now(), dispatch.at);
+            for line in [
+                if dispatch.cleaned {
+                    "dispatch · cleaned".to_string()
+                } else {
+                    "dispatch".to_string()
+                },
+                if dispatch.cleaned {
+                    format!("worktree removed · {}", terminal_text(&dispatch.worktree))
+                } else {
+                    format!("worktree {}", terminal_text(&dispatch.worktree))
+                },
+                format!("branch {}", terminal_text(&dispatch.branch)),
+                format!("when {when} ago"),
+            ] {
+                notes_rows.extend(
+                    wrap_text(&line, notes_width)
+                        .into_iter()
+                        .map(|row| row.text),
+                );
+            }
+        }
+    }
     let step_rows: usize = step_views.iter().map(|step| step.rows.len().max(1)).sum();
     // Match the painter's stream exactly: it always paints one notes row and a trailing
     // `+ step` row, even when both stored notes and stored steps are empty.
@@ -588,7 +636,7 @@ fn build_task_page_overlay<'a>(
     form.steps.content_start.set(content.steps_start);
     form.notes_width.set(notes_width);
 
-    // Meta footer: thread · scope · created · updated (ages only while the bound task is
+    // Meta footer: assignee · thread · scope · created · updated (ages only while the task is
     // present). The identifier belongs in the header, so it never competes with footer hits.
     // A wide column moves the project up into its header slot: the scope footer paints only
     // while the edit session can change it, so its control stays reachable by mouse.
@@ -604,17 +652,34 @@ fn build_task_page_overlay<'a>(
     };
     let meta_scope_width = u16::try_from(render::display_width(&meta_scope)).unwrap_or(u16::MAX);
     let mut meta = String::new();
-    let mut thread_slot = None;
     let capture_form = !form.is_task();
+    let shown_assignee = if capture_form || (form.is_task() && form.editing) {
+        form.assignee.as_deref()
+    } else {
+        bound_task.and_then(|task| task.assignee.as_deref())
+    };
+    let assignee_segment = shown_assignee
+        .map(|assignee| format!("@{}", terminal_text(assignee)))
+        .or_else(|| {
+            (capture_form || (form.is_task() && form.editing)).then(|| "assignee".to_string())
+        });
+    let meta_assignee_x = assignee_segment.as_ref().map(|_| 0);
+    let meta_assignee_width = assignee_segment
+        .as_deref()
+        .map(render::display_width)
+        .and_then(|width| u16::try_from(width).ok())
+        .unwrap_or(0);
+    if let Some(segment) = assignee_segment {
+        meta.push_str(&segment);
+    }
+
     let shown_thread = if capture_form || (form.is_task() && form.editing) {
         Some(form.thread.value())
     } else {
         bound_task.and_then(|task| task.thread.as_deref())
     };
-    if bound_task.is_some() || capture_form {
-        // Thread leads the footer, so its slot has no separator even when the scope is hidden
-        // in a wide read-only column. The editing placeholder keeps the same hit target.
-        thread_slot = if let Some(thread) = shown_thread.filter(|thread| !thread.is_empty()) {
+    let thread_segment = if bound_task.is_some() || capture_form {
+        if let Some(thread) = shown_thread.filter(|thread| !thread.is_empty()) {
             Some(format!("#{}", terminal_text(thread)))
         } else if capture_form
             || (form.is_task() && form.editing)
@@ -625,22 +690,33 @@ fn build_task_page_overlay<'a>(
                     | BoardInputMode::SelectThread
                     | BoardInputMode::EditThread
                     | BoardInputMode::EditScope
-                    | BoardInputMode::FormScopeDropdown
+                    | BoardInputMode::EditAssignee
+                    | BoardInputMode::FormDropdown
             )
         {
             Some("thread".to_string())
         } else {
             None
-        };
-        if let Some(slot) = &thread_slot {
-            meta.push_str(slot);
         }
-    }
-    let meta_scope_x = u16::try_from(render::display_width(&meta)).unwrap_or(u16::MAX);
-    if !meta_scope.is_empty() {
+    } else {
+        None
+    };
+    let thread_slot_width = thread_segment
+        .as_deref()
+        .map(render::display_width)
+        .map(|width| u16::try_from(width).unwrap_or(u16::MAX));
+    if let Some(segment) = thread_segment {
         if !meta.is_empty() {
             meta.push_str(" · ");
         }
+        meta.push_str(&segment);
+    }
+
+    if !meta_scope.is_empty() && !meta.is_empty() {
+        meta.push_str(" · ");
+    }
+    let meta_scope_x = u16::try_from(render::display_width(&meta)).unwrap_or(u16::MAX);
+    if !meta_scope.is_empty() {
         meta.push_str(&meta_scope);
     }
     if let Some(task) = bound_task {
@@ -657,18 +733,25 @@ fn build_task_page_overlay<'a>(
             meta.push_str(&ages);
         }
     }
-    let thread_slot_width = thread_slot
-        .as_deref()
-        .map(render::display_width)
-        .map(|width| u16::try_from(width).unwrap_or(u16::MAX));
-
     let focus = match model.input_mode() {
         BoardInputMode::EditTitle => Some(CaptureField::Title),
         BoardInputMode::EditNotes => Some(CaptureField::Notes),
         BoardInputMode::SelectThread | BoardInputMode::EditThread => Some(CaptureField::Thread),
-        BoardInputMode::EditScope | BoardInputMode::FormScopeDropdown => Some(CaptureField::Scope),
+        BoardInputMode::EditScope => Some(CaptureField::Scope),
+        BoardInputMode::EditAssignee => Some(CaptureField::Assignee),
+        BoardInputMode::FormDropdown => Some(form.focus),
         _ => None,
     };
+
+    let scope_dropdown = scope_dropdown.map(|mut dropdown| {
+        let field_x = match dropdown.field {
+            CaptureField::Assignee => meta_assignee_x.unwrap_or(0),
+            CaptureField::Scope => meta_scope_x,
+            _ => 0,
+        };
+        dropdown.anchor_x = 2u16.saturating_add(field_x);
+        dropdown
+    });
 
     QueueOverlay::TaskPage {
         header_rows,
@@ -688,6 +771,8 @@ fn build_task_page_overlay<'a>(
         inline_step_editor,
         bottom_input,
         meta,
+        meta_assignee_x,
+        meta_assignee_width,
         meta_scope_x,
         meta_scope_width,
         thread_slot_width,
@@ -811,9 +896,9 @@ pub fn board_hit_map(area: ratatui::layout::Rect, model: &BoardModel) -> render:
 }
 
 /// Board-level surfaces whose payloads must outlive the overlay borrowing them.
-struct OverlayPayloads<'a> {
+struct OverlayPayloads {
     help_lines: Vec<String>,
-    palette_commands: Vec<PaletteCommandRow<'a>>,
+    palette_commands: Vec<PaletteCommandRow>,
     scope_options: Vec<String>,
     list_picker_options: Vec<String>,
     list_picker_query: Option<String>,
@@ -823,14 +908,14 @@ struct OverlayPayloads<'a> {
     scope_selected: usize,
 }
 
-impl<'a> OverlayPayloads<'a> {
-    fn collect(model: &'a BoardModel) -> Self {
+impl OverlayPayloads {
+    fn collect(model: &BoardModel) -> Self {
         let help_lines = if model.input_mode() == BoardInputMode::Help {
             help_card_lines_for_query(model.help_query())
         } else {
             Vec::new()
         };
-        let palette_commands: Vec<PaletteCommandRow<'_>> =
+        let palette_commands: Vec<PaletteCommandRow> =
             if model.command_surface() == CommandSurface::Palette {
                 let visible = model.visible_commands();
                 let selected = model.command_selected();
@@ -838,7 +923,7 @@ impl<'a> OverlayPayloads<'a> {
                     .iter()
                     .enumerate()
                     .map(|(i, cmd)| PaletteCommandRow {
-                        label: cmd.label,
+                        label: cmd.label.clone(),
                         selected: Some(i) == selected,
                     })
                     .collect()
@@ -861,16 +946,28 @@ impl<'a> OverlayPayloads<'a> {
                     .collect(),
             };
             labels
-        } else if model.input_mode() == BoardInputMode::FormScopeDropdown {
-            // Short project names: the dropdown lists scopes, not filesystem paths.
-            model
-                .form_scope_options()
-                .iter()
-                .map(|scope| match scope {
-                    TaskScope::Global => "desk".to_string(),
-                    TaskScope::Project { path } => render::short_project(path).to_string(),
-                })
-                .collect()
+        } else if model.input_mode() == BoardInputMode::FormDropdown {
+            match model.form.as_ref().map(|form| form.focus) {
+                Some(CaptureField::Scope) => model
+                    .form_scope_options()
+                    .iter()
+                    .map(|scope| match scope {
+                        TaskScope::Global => "desk".to_string(),
+                        TaskScope::Project { path } => render::short_project(path).to_string(),
+                    })
+                    .collect(),
+                Some(CaptureField::Assignee) => model
+                    .form
+                    .as_ref()
+                    .map(|form| {
+                        form.assignee_options
+                            .iter()
+                            .map(|option| option.clone().unwrap_or_else(|| "none".to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            }
         } else {
             Vec::new()
         };
@@ -888,9 +985,13 @@ impl<'a> OverlayPayloads<'a> {
             model.project_picker_index().unwrap_or(0)
         } else {
             model
-                .form_scope_options()
-                .iter()
-                .position(|scope| Some(scope) == model.form_scope_dropdown_choice())
+                .form
+                .as_ref()
+                .map(|form| match form.focus {
+                    CaptureField::Scope => form.scope_selected,
+                    CaptureField::Assignee => form.assignee_selected,
+                    _ => 0,
+                })
                 .unwrap_or(0)
         };
         let launch_card_name = model.launch_card.as_deref().map(|path| {
@@ -918,7 +1019,7 @@ impl<'a> OverlayPayloads<'a> {
     }
 
     /// The board-level modal or capture surface that outranks the list and the page, if any.
-    fn modal(
+    fn modal<'a>(
         &'a self,
         model: &'a BoardModel,
         geo: &tier::TierGeometry,
@@ -978,7 +1079,7 @@ impl<'a> OverlayPayloads<'a> {
                 input: crate::ui::render::BottomInputSlot {
                     text: title,
                     cursor_col: u16::try_from(cursor_column).unwrap_or(u16::MAX),
-                    placeholder: "title…   !p = desk · !p name = project · !t name = thread",
+                    placeholder: "title…   !p project · !t thread · !a assignee",
                     refusal: None,
                     // Save recovery owns the verb row; ordinary quick-add refusals
                     // use the shared slot's reserved row above the cursor. A wrapped
@@ -1008,6 +1109,15 @@ impl<'a> OverlayPayloads<'a> {
             return Some(QueueOverlay::Palette {
                 query: model.command_query(),
                 commands: &self.palette_commands,
+            });
+        }
+        if let Some(prompt) = model.cleanup_prompt() {
+            return Some(QueueOverlay::CleanupConfirm {
+                worktree: &prompt.worktree,
+                branch: &prompt.branch,
+                dirty: prompt.dirty,
+                branch_merged: prompt.branch_merged,
+                workspace_exists: prompt.workspace_exists,
             });
         }
         if let Some(name) = self.launch_card_name.as_deref() {
@@ -1041,19 +1151,20 @@ impl<'a> OverlayPayloads<'a> {
     }
 
     /// The open task page, painted from the retained form at `geo`.
-    fn task_page(
+    fn task_page<'a>(
         &'a self,
         model: &'a BoardModel,
         form: &'a BoardForm,
         geo: &tier::TierGeometry,
         column: bool,
     ) -> QueueOverlay<'a> {
-        let scope_dropdown = (model.input_mode() == BoardInputMode::FormScopeDropdown).then_some(
-            FormScopeDropdown {
+        let scope_dropdown =
+            (model.input_mode() == BoardInputMode::FormDropdown).then_some(FormDropdown {
                 options: &self.scope_options,
                 selected: self.scope_selected,
-            },
-        );
+                field: form.focus,
+                anchor_x: 0,
+            });
         build_task_page_overlay(model, form, geo, scope_dropdown, column)
     }
 }
@@ -1103,7 +1214,13 @@ fn editing_field(model: &BoardModel) -> Option<&'static str> {
         BoardInputMode::EditTitle => Some("title"),
         BoardInputMode::EditNotes => Some("notes"),
         BoardInputMode::SelectThread | BoardInputMode::EditThread => Some("thread"),
-        BoardInputMode::EditScope | BoardInputMode::FormScopeDropdown => Some("scope"),
+        BoardInputMode::EditScope => Some("scope"),
+        BoardInputMode::EditAssignee => Some("assignee"),
+        BoardInputMode::FormDropdown => match model.form_focus() {
+            Some(CaptureField::Scope) => Some("scope"),
+            Some(CaptureField::Assignee) => Some("assignee"),
+            _ => None,
+        },
         BoardInputMode::EditStep => Some("step"),
         _ => None,
     }
@@ -1154,8 +1271,8 @@ fn wide_status_hint(model: &BoardModel) -> (Option<&'static str>, &'static str) 
     }
     // Save/cancel keys apply only while a field editor is actually open or the parked draft
     // is dirty; a clean parked session shows the stage's normal keys again.
-    let field_editor = model.open_field_edit().is_some()
-        || model.input_mode() == BoardInputMode::FormScopeDropdown;
+    let field_editor =
+        model.open_field_edit().is_some() || model.input_mode() == BoardInputMode::FormDropdown;
     let editing = field_editor || model.task_session_dirty();
     // Stage navigation only: the verb row already carries the surface's keys, so the hint
     // never repeats them.
@@ -1217,9 +1334,6 @@ fn draw_board_hits(frame: &mut Frame, model: &BoardModel) -> render::QueueHitMap
         marked_ids: model.marked_ids.clone(),
         nav: nav_paint(model),
         surface,
-        thread_labels: surface == BoardSurface::Project
-            && model.thread_filter() == &ThreadFilter::All,
-        show_project_meta: matches!(surface, BoardSurface::Desk | BoardSurface::ThreadView),
         projects: &queue_view.projects,
         projects_index: surface == BoardSurface::Projects
             && matches!(model.projects_view(), ProjectsView::Overview),
@@ -1336,6 +1450,7 @@ fn draw_wide_board(
                     &model.tasks,
                     CaptureField::Title,
                     &model.archived_projects,
+                    &model.agent_names,
                 )
             })
         })
@@ -1359,7 +1474,7 @@ fn draw_wide_board(
     let header_title: Option<(String, Option<u16>)> = header_task.map(|(form, task)| {
         if editing_title {
             let width = task_geo.map(|geo| geo.row_width as usize).unwrap_or(0);
-            let glyph_w = render::display_width(render::status_glyph(task.status));
+            let glyph_w = render::display_width(render::task_status_glyph(task));
             let id_w = header_identifier
                 .as_deref()
                 .map(render::display_width)
@@ -1381,7 +1496,7 @@ fn draw_wide_board(
         .as_ref()
         .map(|(title, cursor)| render::TaskColumnHeader {
             glyph: header_task
-                .map(|(_, task)| render::status_glyph(task.status))
+                .map(|(_, task)| render::task_status_glyph(task))
                 .unwrap_or("○"),
             identifier: header_identifier.as_deref(),
             identifier_task: header_task.and_then(|(form, _)| form.task_id()),
@@ -1398,9 +1513,6 @@ fn draw_wide_board(
         marked_ids: model.marked_ids.clone(),
         nav: nav_paint(model),
         surface,
-        thread_labels: surface == BoardSurface::Project
-            && model.thread_filter() == &ThreadFilter::All,
-        show_project_meta: matches!(surface, BoardSurface::Desk | BoardSurface::ThreadView),
         projects: &queue_view.projects,
         projects_index: surface == BoardSurface::Projects
             && matches!(model.projects_view(), ProjectsView::Overview),
@@ -1591,7 +1703,7 @@ fn draw_projects_wide_board(
                 if let Some(task) = right.tasks.iter().find(|task| task.id == task_id) {
                     right_header_visible = true;
                     right_header_task = Some(task.id);
-                    right_header_glyph = render::status_glyph(task.status);
+                    right_header_glyph = render::task_status_glyph(task);
                     right_header_identifier = task.board_identifier();
                     right_header_state = task_header_state(right, form, task);
                 }
@@ -1647,8 +1759,6 @@ fn draw_projects_wide_board(
         marked_ids: BTreeSet::new(),
         nav: nav_paint(model),
         surface: BoardSurface::Projects,
-        thread_labels: false,
-        show_project_meta: false,
         projects: &outer_view.projects,
         projects_index: true,
         projects_cursor: model.projects_cursor(),
@@ -1684,8 +1794,6 @@ fn draw_projects_wide_board(
             marked_ids: right.marked_ids.clone(),
             nav: nav_paint(right),
             surface: BoardSurface::Project,
-            thread_labels: right.thread_filter() == &ThreadFilter::All,
-            show_project_meta: false,
             projects: &[],
             projects_index: false,
             projects_cursor: 0,

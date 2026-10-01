@@ -1,14 +1,14 @@
 ---
 name: tsk-cli
-description: Work the user's tsk task board from the command line. Use when asked to add, update, edit, start, block, finish, archive, or restore a task on the board (or "tsk", "the tsk board", "the desk"), to add or tick steps, to answer "what's on the board", "what's next", "what's on deck", "what needs me", or to refine a task ("refine T12", "let's discuss T12", "what's missing from T12", "improve / rewrite this task"). Always `tsk add|list|status|edit|steps|archive|trash`, never the TUI.
-version: 1.4.0
+description: Work the user's tsk task board from the command line. Use when asked to add, update, edit, start, block, finish, archive, or restore a task on the board (or "tsk", "the tsk board", "the desk"), to add or tick steps, to answer "what's on the board", "what's next", "what's on deck", "what needs me", or to refine a task ("refine T12", "let's discuss T12", "what's missing from T12", "improve / rewrite this task"). Always `tsk add|list|status|edit|steps|archive|dispatch|clean|trash`, never the TUI.
+version: 1.5.0
 ---
 
 # tsk: the user's task board
 
 tsk is the user's task board. Tasks have a human status (`open` · `ready` · `started` · `blocked` ·
 `review` · `done`), live on the **desk** (no project) or in a **project** (a Git repo root, named
-by its basename), and may carry a **thread** label. The user sees the board in a TUI; you never
+by its basename), and may carry a **thread** label and an optional **assignee** that exactly matches a configured agent profile. The user sees the board in a TUI; you never
 open it. Every read and write goes through the CLI, and the user's board updates live.
 
 `tsk --help` is the syntax reference: commands, statuses, and every flag. Run `tsk help <command>`
@@ -30,7 +30,7 @@ and stop. Never run an installer, package manager, or source build unless they a
 | inbox, untriaged | `open` | `tsk list --open --json` |
 | other projects, everything live | the five live statuses | `tsk list --all --json`, `--desk`, `-p <project>` |
 | done, archived, deleted | | `tsk list --done --json`, `--archived`, `--deleted` (each may combine with a scope flag) |
-| one task, in full | | `tsk list T12 --json` (notes, steps with `short_id`, thread) |
+| one task, in full | | `tsk list T12 --json` (notes, steps with `short_id`, assignee, thread) |
 
 `T12`, `t12`, `12`, and the UUID all address the same task. Prefer `T12`, it is what the user sees.
 New tasks start `open` in the inbox; `ready` means the user picked it.
@@ -48,7 +48,7 @@ New tasks start `open` in the inbox; `ready` means the user picked it.
    the user or troubleshooting interactively. Mutation acknowledgements may be human-only: trust
    the exit and refusal codes, then verify state with `tsk list … --json`.
 4. **Never blind-retry.** Read the exit code, then act (table below). `add`, `status`, `edit`,
-   `archive` are idempotent; `steps toggle` and `steps remove` are not, so run
+   `archive` are idempotent; `dispatch`, `steps toggle`, and `steps remove` are not, so run
    `tsk list T12 --json` before retrying any `steps` command.
 5. **Never pass `--state-dir`** unless the user asked. It points at a different board.
 6. **Ignore notice rows.** Rows the board paints as `N1`… are human-only (starter tasks and
@@ -57,6 +57,9 @@ New tasks start `open` in the inbox; `ready` means the user picked it.
 8. **Thread names** start with a letter or digit, then lowercase letters, digits, `-` and `.`, up
    to 32 characters. `--thread` lowercases the value; anything else is a usage error (exit 2). In a
    JSON plan a bad `thread` is an item refusal (`invalid-thread`).
+9. **Assignees are exact agent profiles.** `--assignee` normalizes to lowercase, then must match a
+   profile from `agents.toml`; unknown names refuse with `unknown-agent`. Use `--unassign` to clear.
+   `tsk list --assignee <name> --json` filters assigned work.
 
 ## Exit contract (all commands)
 
@@ -80,6 +83,8 @@ New tasks start `open` in the inbox; `ready` means the user picked it.
 **Start work on a task.** `tsk list T12 --json` for notes and steps. `tsk status T12 start`.
 Tick steps as you go: `tsk steps T12 toggle <short_id>`.
 
+**Dispatch assigned work.** When the user asks you to launch an assigned task, read it first, then run `tsk dispatch T12`. A previous launch refuses with `already-dispatched`; use `--again` only when the user explicitly wants the recorded Herdr workspace reused. After an uncertain result, read the task before retrying because an agent may already be running. After review and merge, the human runs `tsk clean T12`; an agent never cleans the worktree it is running in.
+
 **Hand back.** `tsk status T12 review`, and say in one line what you did and what to look at.
 Blocked on the user: `tsk status T12 blocked` and ask the question.
 
@@ -87,7 +92,7 @@ Blocked on the user: `tsk status T12 blocked` and ask the question.
 "…"` per step, in order. Do not add steps for your own bookkeeping.
 
 **Capture many.** `cat plan.json | tsk add` with
-`[{"title": "…", "notes": "…", "project": "…", "thread": "…"}]`; only `title` is required, an
+`[{"title": "…", "notes": "…", "project": "…", "thread": "…", "assignee": "…"}]`; only `title` is required, an
 omitted `project` takes the default scope. The result lists `created`, `existing` and `failed`
 items; on exit 1 retry only the `failed` items, never the whole plan. Full shape:
 https://gettsk.sh/docs/cli.md#json-plans.
@@ -117,7 +122,7 @@ criteria, no design document, no code. It ends with a better task on the board.
 5. **Settle and propose.** Present the rewrite in the notes shape below, then the exact commands
    you will run. Stop and wait.
 6. **Write back on a yes.**
-   - Exists: `tsk edit T12 --title "…" --notes "…"`.
+   - Exists: `tsk edit T12 --title "…" --notes "…"` (add `--assignee <profile>` or `--unassign` only when agreed).
    - Does not exist yet: `tsk add -t "…" -n "…"` in the agreed scope (`--desk`, `-p`), with
      `--thread` if agreed.
    - Steps only when the user wants order of work tracked: `tsk steps T12 add "…"` per step.

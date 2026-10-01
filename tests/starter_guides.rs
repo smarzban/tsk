@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
+use tsk_tui::agents::AgentProfiles;
 use tsk_tui::announcements;
 use tsk_tui::app::{load_board, load_board_for_quick_capture, load_board_model};
 use tsk_tui::context::{build_snapshot, RawHostContext, CONTEXT_JSON_ENV};
@@ -86,6 +87,63 @@ fn catalog_ids() -> BTreeSet<String> {
         .iter()
         .map(|guide| guide.catalog_id.to_string())
         .collect()
+}
+
+const STARTER_AGENTS: &str = "# tsk agent profiles. Assign with `!a name`, dispatch with ctrl+g.\n\
+# Placeholders in command and prompt: {number} {title} {notes} {steps} {worktree} {branch}\n\
+# The prompt is appended to the command as its last argument. Omit `prompt` for the default:\n\
+#   You were dispatched to T{number} in this worktree. Run `tsk guide`, then `tsk list {number}`.\n\
+#   Set the task to review when done, or blocked when a human is needed.\n\
+\n\
+# [agent.grok]\n\
+# command = [\"pi\", \"--model\", \"xai/grok-4.6\", \"--thinking\", \"high\"]\n\
+\n\
+# [agent.opus]\n\
+# command = [\"claude\", \"--model\", \"opus\", \"--effort\", \"high\"]\n\
+# prompt = \"Review the branch for T{number}: {title}. Leave findings as steps on the task, then set review.\"\n\
+\n\
+# [agent.fable]\n\
+# command = [\"fable\"]\n";
+
+#[test]
+fn full_board_open_seeds_a_parseable_commented_agent_profile_file() {
+    let _lock = env_lock();
+    suppress_background_fetch();
+    let env = StateDirEnv::set("agents-file");
+
+    let _ = load_board_model().expect("full board open");
+
+    assert_eq!(
+        fs::read_to_string(env.dir.join("agents.toml")).expect("seeded agents.toml"),
+        STARTER_AGENTS
+    );
+    assert!(
+        AgentProfiles::load(&env.dir)
+            .expect("seeded file parses")
+            .is_empty(),
+        "all starter profiles are commented out"
+    );
+}
+
+#[test]
+fn full_board_open_never_overwrites_an_existing_agent_profile_file() {
+    let _lock = env_lock();
+    suppress_background_fetch();
+    for (label, content) in [
+        ("agents-existing-empty", ""),
+        ("agents-existing-content", "owner content\n"),
+    ] {
+        let env = StateDirEnv::set(label);
+        fs::create_dir_all(&env.dir).expect("state dir");
+        fs::write(env.dir.join("agents.toml"), content).expect("existing agents.toml");
+
+        let _ = load_board_model().expect("full board open");
+
+        assert_eq!(
+            fs::read_to_string(env.dir.join("agents.toml")).expect("existing agents.toml"),
+            content
+        );
+    }
 }
 
 #[test]
@@ -223,6 +281,10 @@ fn quick_capture_open_seeds_nothing() {
     assert!(notices(&state).is_empty());
     assert!(notices(&store.load().expect("load")).is_empty());
     assert!(!env.dir.join(delivery::DELIVERY_FILE).exists());
+    assert!(
+        !env.dir.join("agents.toml").exists(),
+        "quick capture does not seed agent profiles"
+    );
 }
 
 fn drop_delivery_record(state_dir: &std::path::Path) {

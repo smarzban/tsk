@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use crate::agents::AgentProfiles;
 use crate::cli::add::has_c0_control;
 use crate::cli::parser::TaskAddress;
 use crate::domain::{DomainError, DomainState, TaskScope};
@@ -13,6 +14,8 @@ use uuid::Uuid;
 pub struct EditFields {
     pub title: Option<String>,
     pub notes: Option<String>,
+    /// `None` leaves it unchanged, `Some(None)` clears it.
+    pub assignee: Option<Option<String>>,
 }
 
 /// A successful edit, including an idempotent repeat.
@@ -29,6 +32,8 @@ pub enum EditError {
     SoftDeletedTask,
     EmptyTitle,
     InvalidTitle,
+    UnknownAgent(String),
+    AgentConfig(String),
     Store(String),
 }
 
@@ -39,6 +44,8 @@ impl EditError {
             Self::SoftDeletedTask => "soft-deleted-task",
             Self::EmptyTitle => "empty-title",
             Self::InvalidTitle => "invalid-title",
+            Self::UnknownAgent(_) => "unknown-agent",
+            Self::AgentConfig(_) => "agent-config",
             Self::Store(_) => "store-error",
         }
     }
@@ -61,7 +68,24 @@ pub fn run(
         }
     }
 
-    let store = TaskStore::new(state_dir.unwrap_or_else(default_state_dir));
+    let state_dir = state_dir.unwrap_or_else(default_state_dir);
+    let assignee = match fields.assignee.as_ref().and_then(|value| value.as_deref()) {
+        Some(name) => {
+            let profiles = AgentProfiles::load(&state_dir)
+                .map_err(|error| EditError::AgentConfig(error.to_string()))?;
+            Some(
+                profiles
+                    .resolve_name(name)
+                    .map_err(EditError::UnknownAgent)?,
+            )
+        }
+        None => None,
+    };
+    let mut fields = fields;
+    if fields.assignee.as_ref().is_some_and(Option::is_some) {
+        fields.assignee = Some(assignee);
+    }
+    let store = TaskStore::new(state_dir);
     store
         .locked_transition_if_changed(|state: &mut DomainState| {
             let found = state
@@ -75,6 +99,7 @@ pub fn run(
                     notes: task.notes.clone(),
                     scope: task.scope.clone(),
                     thread: task.thread.clone(),
+                    assignee: task.assignee.clone(),
                     soft_deleted: task.soft_deleted,
                 });
             Ok(apply(state, found, &fields))
@@ -89,6 +114,7 @@ struct Found {
     notes: Option<String>,
     scope: TaskScope,
     thread: Option<String>,
+    assignee: Option<String>,
     soft_deleted: bool,
 }
 
@@ -117,7 +143,11 @@ fn apply(
         Some(value) => Some(value.to_string()),
         None => found.notes.clone(),
     };
-    if next_title == found.title && next_notes == found.notes {
+    let next_assignee = fields
+        .assignee
+        .clone()
+        .unwrap_or_else(|| found.assignee.clone());
+    if next_title == found.title && next_notes == found.notes && next_assignee == found.assignee {
         return (
             Ok(EditResult {
                 number,
@@ -126,7 +156,14 @@ fn apply(
             false,
         );
     }
-    match state.edit(found.id, &next_title, next_notes, found.scope, found.thread) {
+    match state.edit_with_assignee(
+        found.id,
+        &next_title,
+        next_notes,
+        found.scope,
+        found.thread,
+        next_assignee,
+    ) {
         Ok(()) => (
             Ok(EditResult {
                 number,

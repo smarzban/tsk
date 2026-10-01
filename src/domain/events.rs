@@ -31,6 +31,9 @@ pub enum TaskEventKind {
     StepUnchecked,
     StepRenamed,
     StepRemoved,
+    Assigned,
+    Dispatched,
+    Cleaned,
 }
 
 /// One append-only history record on a task.

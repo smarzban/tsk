@@ -12,9 +12,22 @@ pub const UNDO_CAP: usize = 50;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UndoEntry {
-    SoftDelete { id: Uuid, expected_revision: Uuid },
-    Complete { id: Uuid, expected_revision: Uuid },
-    Batch { entries: Vec<UndoEntry> },
+    SoftDelete {
+        id: Uuid,
+        expected_revision: Uuid,
+    },
+    Complete {
+        id: Uuid,
+        expected_revision: Uuid,
+    },
+    Assign {
+        id: Uuid,
+        previous: Option<String>,
+        expected_revision: Uuid,
+    },
+    Batch {
+        entries: Vec<UndoEntry>,
+    },
 }
 
 impl UndoEntry {
@@ -27,7 +40,9 @@ impl UndoEntry {
                         collect(child, leaves);
                     }
                 }
-                UndoEntry::SoftDelete { .. } | UndoEntry::Complete { .. } => leaves.push(entry),
+                UndoEntry::SoftDelete { .. }
+                | UndoEntry::Complete { .. }
+                | UndoEntry::Assign { .. } => leaves.push(entry),
             }
         }
 
@@ -47,6 +62,11 @@ impl UndoEntry {
                 | UndoEntry::Complete {
                     id,
                     expected_revision,
+                }
+                | UndoEntry::Assign {
+                    id,
+                    expected_revision,
+                    ..
                 } => (id, expected_revision),
                 UndoEntry::Batch { .. } => unreachable!("batches are flattened"),
             })
@@ -57,6 +77,7 @@ impl UndoEntry {
         match self {
             UndoEntry::SoftDelete { id, .. } => state.restore(id),
             UndoEntry::Complete { id, .. } => state.reopen(id),
+            UndoEntry::Assign { id, previous, .. } => state.restore_assignee(id, previous),
             UndoEntry::Batch { entries } => {
                 for entry in entries.into_iter().rev() {
                     entry.reverse(state)?;
@@ -555,6 +576,59 @@ mod tests {
             state.get(id).expect("task exists").status,
             HumanStatus::Open
         );
+    }
+
+    #[test]
+    fn bulk_assignment_is_one_batch_and_one_undo_restores_every_previous_value() {
+        let mut state = DomainState::new();
+        let first = create_sample(&mut state);
+        let second = state
+            .create(
+                "second",
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create second");
+        state
+            .assign(first, Some("old-agent".into()))
+            .expect("seed assignment");
+        while state.pop_undo().is_some() {}
+
+        state
+            .assign_batch(&[second, first, first], Some("new-agent".into()))
+            .expect("bulk assign");
+        assert_eq!(persisted_undo_len(&state), 1);
+        assert!(
+            matches!(state.last_undo(), Some(UndoEntry::Batch { entries }) if entries.len() == 2)
+        );
+        assert_eq!(
+            state.get(first).expect("first").assignee.as_deref(),
+            Some("new-agent")
+        );
+        assert_eq!(
+            state.get(second).expect("second").assignee.as_deref(),
+            Some("new-agent")
+        );
+
+        state.undo().expect("undo batch");
+        assert_eq!(
+            state.get(first).expect("first").assignee.as_deref(),
+            Some("old-agent")
+        );
+        assert_eq!(state.get(second).expect("second").assignee, None);
+    }
+
+    #[test]
+    fn repeated_assignment_is_a_noop_without_an_undo_entry() {
+        let mut state = DomainState::new();
+        let id = create_sample(&mut state);
+        state.assign(id, Some("agent".into())).expect("assign");
+        while state.pop_undo().is_some() {}
+
+        state.assign(id, Some("agent".into())).expect("repeat");
+        assert_eq!(persisted_undo_len(&state), 0);
     }
 
     #[test]

@@ -10,7 +10,8 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::{Frame, Terminal};
 use tsk_tui::domain::{
-    DomainState, HumanStatus, Notice, ProvenanceOrigin, Task, TaskEvent, TaskEventKind, TaskScope,
+    Dispatch, DomainState, HumanStatus, Notice, ProvenanceOrigin, Task, TaskEvent, TaskEventKind,
+    TaskScope,
 };
 use tsk_tui::ui::input::map_key;
 use tsk_tui::ui::queue::{self, BoardLens, NavTab, QueueView, ThreadFilter};
@@ -48,6 +49,8 @@ fn task(id: u128, title: &str, status: HumanStatus, scope: TaskScope, secs_ago: 
         title: title.to_string(),
         notes: None,
         thread: None,
+        assignee: None,
+        dispatch: None,
         status,
         scope,
         provenance: ProvenanceOrigin::Manual,
@@ -270,7 +273,7 @@ fn accordion_verbs() -> Vec<VerbEntry<'static>> {
 ///
 /// Matches this file's palette scene: the fixture's selected task (1, Doing) with a "stat"
 /// query narrowed to the status tail, second row (`set status: blocked`) highlighted.
-fn palette_commands() -> Vec<PaletteCommandRow<'static>> {
+fn palette_commands() -> Vec<PaletteCommandRow> {
     let mut model = base_board_model();
     let mut domain = DomainState::new();
     apply_intent(
@@ -294,10 +297,10 @@ fn palette_commands() -> Vec<PaletteCommandRow<'static>> {
         "stat",
         "fixture query drifted from the scene's \"stat\" query"
     );
-    let labels: Vec<&str> = model
+    let labels: Vec<String> = model
         .visible_commands()
         .iter()
-        .map(|command| command.label)
+        .map(|command| command.label.clone())
         .collect();
     assert_eq!(
         labels,
@@ -327,7 +330,7 @@ fn palette_commands() -> Vec<PaletteCommandRow<'static>> {
         .iter()
         .enumerate()
         .map(|(i, command)| PaletteCommandRow {
-            label: command.label,
+            label: command.label.clone(),
             selected: Some(i) == selected,
         })
         .collect()
@@ -379,8 +382,6 @@ fn fixture_model_on_tab<'a>(
             }),
         },
         surface: tsk_tui::ui::render::BoardSurface::Desk,
-        thread_labels: false,
-        show_project_meta: true,
         projects: &[],
         projects_index: false,
         projects_cursor: 0,
@@ -1091,20 +1092,21 @@ fn overlay_rows_are_padded_exact_no_base_bleed() {
 
     // --- Palette query paints on status row; must be exact padded query, no status tail ---
     {
+        let commands = [
+            PaletteCommandRow {
+                label: "reopen".into(),
+                selected: true,
+            },
+            PaletteCommandRow {
+                label: "delete".into(),
+                selected: false,
+            },
+        ];
         let mut model = fixture_model(&tasks, &view);
         model.status_message = Some(status);
         model.overlay = QueueOverlay::Palette {
             query: "re",
-            commands: &[
-                PaletteCommandRow {
-                    label: "reopen",
-                    selected: true,
-                },
-                PaletteCommandRow {
-                    label: "delete",
-                    selected: false,
-                },
-            ],
+            commands: &commands,
         };
         let (rows, geo) = paint(80, 24, &model);
         let qrow = geo.status_row.expect("status row at 80x24");
@@ -1453,6 +1455,110 @@ fn peek_keeps_the_identifier_on_its_task_row_not_in_detail_meta() {
 }
 
 #[test]
+fn assigned_task_renders_on_the_row_and_before_thread_in_the_page_footer() {
+    let mut domain = DomainState::new();
+    let id = domain
+        .create_assigned(
+            "assigned work",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            Some("release".into()),
+            Some("reviewer".into()),
+        )
+        .expect("create assigned");
+    let mut model = BoardModel::from_domain(&domain, None);
+    let closed = board_rows(&model, 80, 24).join("\n");
+    assert!(
+        !closed.contains("@reviewer"),
+        "a closed row shows no metadata under its title:\n{closed}"
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::PeekDetail, None).expect("open peek");
+    let rows = board_rows(&model, 80, 24);
+    let row_body = rows.join("\n");
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.contains("└─ @reviewer · #release · desk"))
+            .count(),
+        1,
+        "an assigned task's open peek must contain one ordered metadata footer:\n{row_body}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.trim_end() == "    └"),
+        "peek metadata must own the closing corner:\n{row_body}"
+    );
+
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+    assert_eq!(model.selected_id(), Some(id));
+    let page_body = board_rows(&model, 80, 24).join("\n");
+    assert!(
+        page_body.contains("@reviewer · #release · desk"),
+        "task footer must order assignee, thread, project:\n{page_body}"
+    );
+}
+
+#[test]
+fn dispatched_started_task_uses_the_bullseye_glyph_on_rows_peek_and_page_only_while_started() {
+    let mut dispatched = task(
+        700,
+        "dispatched task",
+        HumanStatus::Started,
+        project("/repos/tsk"),
+        60,
+    );
+    dispatched.number = Some(70);
+    dispatched.dispatch = Some(Dispatch {
+        argv: vec!["agent".into()],
+        worktree: "/tmp/tsk-t70".into(),
+        branch: "tsk/t70-dispatched-task".into(),
+        base: None,
+        herdr_workspace_id: "workspace-70".into(),
+        at: at_secs_ago(30),
+        cleaned: false,
+    });
+    let mut model = BoardModel::from_tasks(vec![dispatched.clone()], None);
+    let board = board_rows(&model, 80, 24).join("\n");
+    assert!(
+        board.contains("◉ T70 dispatched task"),
+        "board row:\n{board}"
+    );
+
+    apply_intent(
+        &mut DomainState::new(),
+        &mut model,
+        BoardIntent::PeekDetail,
+        None,
+    )
+    .expect("open peek");
+    let peek = board_rows(&model, 80, 24).join("\n");
+    assert!(peek.contains("◉ T70 dispatched task"), "peek row:\n{peek}");
+
+    apply_intent(
+        &mut DomainState::new(),
+        &mut model,
+        BoardIntent::OpenTaskPage,
+        None,
+    )
+    .expect("open page");
+    let page = board_rows(&model, 80, 24).join("\n");
+    assert!(
+        page.contains("◉ T70 dispatched task"),
+        "page header:\n{page}"
+    );
+
+    dispatched.status = HumanStatus::Review;
+    let review = board_rows(&BoardModel::from_tasks(vec![dispatched], None), 80, 24).join("\n");
+    assert!(
+        review.contains("▲ T70 dispatched task"),
+        "review row:\n{review}"
+    );
+    assert!(
+        !review.contains("◉ T70"),
+        "stale dispatch must not override review:\n{review}"
+    );
+}
+
+#[test]
 fn task_page_header_shows_identifier_not_footer() {
     let tasks = fixture_tasks();
     let view = fixture_view(&tasks, false);
@@ -1475,6 +1581,8 @@ fn task_page_header_shows_identifier_not_footer() {
         inline_step_editor: None,
         bottom_input: None,
         meta: "desk · created 1m ago · updated 1m ago".to_string(),
+        meta_assignee_x: None,
+        meta_assignee_width: 0,
         meta_scope_x: 0,
         meta_scope_width: 4,
         thread_slot_width: None,
@@ -1583,6 +1691,8 @@ fn task_page_renders_header_notes_and_meta_as_a_full_takeover_in_both_tiers() {
         inline_step_editor: None,
         bottom_input: None,
         meta: "tsk \u{b7} created 1h ago \u{b7} updated 1h ago".to_string(),
+        meta_assignee_x: None,
+        meta_assignee_width: 0,
         meta_scope_x: 0,
         meta_scope_width: 11,
         thread_slot_width: None,
@@ -2118,6 +2228,9 @@ fn shift_tab_from_scope_resets_notes_stream_origin_and_aligns_caret() {
     )
     .expect("Shift+Tab reaches Thread from Scope");
     assert_eq!(model.input_mode(), BoardInputMode::SelectThread);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
+        .expect("Shift+Tab reaches Assignee from Thread");
+    assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
         .expect("Shift+Tab selects the trailing add target");
     assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
@@ -3189,7 +3302,10 @@ fn surface_goldens_board_accordion_palette_help_drawer_exist_for_reviewer_side_b
 #[test]
 fn palette_golden_scene_commands_are_bound_to_the_real_m1_catalog_and_exclude_dispatch() {
     let commands = palette_commands();
-    let labels: Vec<&str> = commands.iter().map(|command| command.label).collect();
+    let labels: Vec<String> = commands
+        .iter()
+        .map(|command| command.label.clone())
+        .collect();
     assert_eq!(
         labels,
         vec![
@@ -3448,7 +3564,7 @@ fn board_with_thread_labels_paints_within_40x10_and_all_tasks_reachable() {
 }
 
 #[test]
-fn peek_omits_thread_metadata_for_every_task() {
+fn peek_footer_includes_thread_when_set_and_omits_only_the_unset_part() {
     let mut threaded = task(200, "threaded", HumanStatus::Ready, TaskScope::Global, 1);
     threaded.thread = Some("release".to_string());
     let mut threaded_model = BoardModel::from_tasks(vec![threaded], None);
@@ -3460,11 +3576,10 @@ fn peek_omits_thread_metadata_for_every_task() {
         None,
     )
     .expect("open threaded peek");
+    let threaded_body = board_rows(&threaded_model, 80, 24).join("\n");
     assert!(
-        !board_rows(&threaded_model, 80, 24)
-            .join("\n")
-            .contains("thread #release"),
-        "thread metadata belongs to the task page, not the peek"
+        threaded_body.contains("└─ #release · desk"),
+        "threaded peek footer:\n{threaded_body}"
     );
 
     let mut unthreaded_model = BoardModel::from_tasks(
@@ -3484,11 +3599,10 @@ fn peek_omits_thread_metadata_for_every_task() {
         None,
     )
     .expect("open unthreaded peek");
+    let unthreaded_body = board_rows(&unthreaded_model, 80, 24).join("\n");
     assert!(
-        !board_rows(&unthreaded_model, 80, 24)
-            .join("\n")
-            .contains("thread #"),
-        "unthreaded peek must not invent a thread line"
+        unthreaded_body.contains("└─ desk") && !unthreaded_body.contains("└─ #"),
+        "unthreaded peek footer:\n{unthreaded_body}"
     );
 }
 
