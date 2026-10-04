@@ -9721,7 +9721,7 @@ mod queued_cleanup_tests {
     use crate::domain::{Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope};
     use crate::save_recovery::SaveRecovery;
     use crate::store::TaskStore;
-    use crate::ui::board::{apply_intent, BoardInputMode, BoardModel};
+    use crate::ui::board::{apply_intent, BoardModel};
     use crate::ui::input::BoardIntent;
     use crate::ui::queue::NavTab;
 
@@ -10133,6 +10133,7 @@ mod queued_cleanup_tests {
     #[cfg(unix)]
     #[test]
     fn a_parked_preview_whose_queued_cleanup_fails_to_save_shows_recovery_on_the_visible_board() {
+        use crate::ui::board::BoardInputMode;
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         use std::os::unix::fs::PermissionsExt;
         let (dir, store, mut domain, id) = setup("parked-save");
