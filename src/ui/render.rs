@@ -409,8 +409,11 @@ pub enum QueueOverlay<'a> {
     CleanupConfirm {
         worktree: &'a str,
         branch: &'a str,
+        base: &'a str,
         dirty: bool,
         branch_merged: bool,
+        base_available: bool,
+        warning: Option<&'a str>,
         workspace_exists: bool,
     },
     /// Project-scope dropdown from the selector chip.
@@ -488,6 +491,9 @@ pub enum QueueOverlay<'a> {
         meta_assignee_x: Option<u16>,
         /// Display width of the assignee inside `meta`.
         meta_assignee_width: u16,
+        /// Display offset and width of the dispatch base inside `meta`.
+        meta_base_x: Option<u16>,
+        meta_base_width: u16,
         /// Display offset of the scope inside `meta`. The number is chrome, not a scope hit.
         meta_scope_x: u16,
         /// Display width of scope inside `meta`, carried separately so mouse geometry never
@@ -679,6 +685,8 @@ pub enum QueueHitTarget {
     FormScope,
     /// Shared-form assignee portion of the task-page footer.
     FormAssignee,
+    /// Shared-form dispatch base portion of the task-page footer.
+    FormBase,
     /// Shared-form thread portion of the task-page footer.
     FormThread,
     /// One painted steps step row on the open task page, indexed by the step's
@@ -1127,6 +1135,8 @@ pub fn draw_task_column(
         ref meta,
         meta_assignee_x,
         meta_assignee_width,
+        meta_base_x,
+        meta_base_width,
         meta_scope_x,
         meta_scope_width,
         thread_slot_width,
@@ -1134,7 +1144,7 @@ pub fn draw_task_column(
         scope_dropdown,
     } = model.overlay
     {
-        paint_task_page(
+        let page_layout = paint_task_page(
             frame,
             geo,
             surface,
@@ -1156,6 +1166,8 @@ pub fn draw_task_column(
             meta,
             meta_assignee_x,
             meta_assignee_width,
+            meta_base_x,
+            meta_base_width,
             meta_scope_x,
             meta_scope_width,
             thread_slot_width,
@@ -1164,8 +1176,8 @@ pub fn draw_task_column(
             true,
             &mut hits,
         );
-        if let Some(dropdown) = scope_dropdown {
-            paint_page_form_dropdown(frame, geo, surface, dropdown, &mut hits);
+        if let (Some(dropdown), Some(lay)) = (scope_dropdown, page_layout) {
+            paint_page_form_dropdown(frame, geo, surface, dropdown, &lay, meta, &mut hits);
         }
     }
     if let Some(modal) = modal {
@@ -1653,6 +1665,16 @@ const FORM_ASSIGNEE_VERBS: &[VerbEntry<'static>] = &[
         label: "cancel",
     },
 ];
+const FORM_BASE_VERBS: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "enter",
+        label: "choose",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "cancel",
+    },
+];
 const FORM_SCOPE_DROPDOWN_VERBS: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "↑↓",
@@ -1681,6 +1703,7 @@ pub(crate) fn form_verb_items(
         CaptureField::Thread => FORM_THREAD_VERBS,
         CaptureField::Scope => FORM_SCOPE_VERBS,
         CaptureField::Assignee => FORM_ASSIGNEE_VERBS,
+        CaptureField::Base => FORM_BASE_VERBS,
     }
 }
 
@@ -1738,8 +1761,11 @@ fn paint_overlay(
         QueueOverlay::CleanupConfirm {
             worktree,
             branch,
+            base,
             dirty,
             branch_merged,
+            base_available,
+            warning,
             workspace_exists,
         } => {
             paint_cleanup_card(
@@ -1748,8 +1774,11 @@ fn paint_overlay(
                 surface,
                 worktree,
                 branch,
+                base,
                 *dirty,
                 *branch_merged,
+                *base_available,
+                *warning,
                 *workspace_exists,
                 hits,
             );
@@ -1799,13 +1828,15 @@ fn paint_overlay(
             ref meta,
             meta_assignee_x,
             meta_assignee_width,
+            meta_base_x,
+            meta_base_width,
             meta_scope_x,
             meta_scope_width,
             thread_slot_width,
             focus,
             scope_dropdown,
         } => {
-            paint_task_page(
+            let page_layout = paint_task_page(
                 frame,
                 geo,
                 surface,
@@ -1827,6 +1858,8 @@ fn paint_overlay(
                 meta,
                 *meta_assignee_x,
                 *meta_assignee_width,
+                *meta_base_x,
+                *meta_base_width,
                 *meta_scope_x,
                 *meta_scope_width,
                 *thread_slot_width,
@@ -1835,8 +1868,8 @@ fn paint_overlay(
                 false,
                 hits,
             );
-            if let Some(dropdown) = scope_dropdown {
-                paint_page_form_dropdown(frame, geo, surface, *dropdown, hits);
+            if let (Some(dropdown), Some(lay)) = (scope_dropdown, page_layout) {
+                paint_page_form_dropdown(frame, geo, surface, *dropdown, &lay, meta, hits);
             }
         }
     }
@@ -2757,20 +2790,47 @@ pub fn task_page_layout(
     _notes_floor: u16,
     title_rows: u16,
 ) -> TaskPageLayout {
-    let height = geo.height;
+    task_page_layout_rows(geo, title_rows, 1)
+}
+
+/// The footer uses the same wrap engine and width as its painter.
+pub fn task_page_layout_with_meta(
+    geo: &TierGeometry,
+    _section: StepsSection,
+    _notes_floor: u16,
+    title_rows: u16,
+    meta: &str,
+) -> TaskPageLayout {
+    task_page_layout_rows(geo, title_rows, footer_rows(meta, geo.row_width).len())
+}
+
+fn footer_rows(meta: &str, width: u16) -> Vec<super::edit::WrappedRow> {
+    super::edit::wrap_text(meta, usize::from(width.saturating_sub(2)))
+}
+
+fn task_page_layout_rows(
+    geo: &TierGeometry,
+    title_rows: u16,
+    footer_rows: usize,
+) -> TaskPageLayout {
     let bottom = [geo.rule_row, geo.status_row, geo.verb_row]
         .into_iter()
         .flatten()
         .min()
-        .unwrap_or(height);
+        .unwrap_or(geo.height);
     // Blank row 0, the title's wrapped rows from 1, divider, notes, steps, meta last.
     let title_rows = title_rows.max(1);
     let title_y: u16 = if bottom >= 2 { 1 } else { 0 };
     let title_end = title_y.saturating_add(title_rows);
-    let meta_y = if bottom >= 4 { Some(bottom - 1) } else { None };
+    // Even at tiny heights the footer cannot overlap the title or the last note row.
+    let footer_rows = u16::try_from(footer_rows)
+        .unwrap_or(u16::MAX)
+        .min(bottom.saturating_sub(title_end.saturating_add(1)));
+    let meta_y = (bottom >= 4 && footer_rows > 0).then(|| bottom - footer_rows);
+    let content_end = meta_y.unwrap_or(bottom);
     // The divider shows only when a note row survives under it; otherwise the
     // notes body starts directly under the title.
-    let divider_y = if bottom >= title_end.saturating_add(3) {
+    let divider_y = if content_end >= title_end.saturating_add(2) {
         Some(title_end)
     } else {
         None
@@ -2780,7 +2840,6 @@ pub fn task_page_layout(
     } else {
         bottom
     };
-    let content_end = meta_y.unwrap_or(bottom);
     let content_rows = content_end.saturating_sub(notes_y);
     TaskPageLayout {
         bottom,
@@ -2796,6 +2855,14 @@ pub fn task_page_layout(
 /// the body starts on the row after it, and the meta footer keeps the last row above the
 /// shared footer. There is no in-page title block and no divider.
 pub fn task_column_layout(geo: &TierGeometry) -> TaskPageLayout {
+    task_column_layout_rows(geo, 1)
+}
+
+pub fn task_column_layout_with_meta(geo: &TierGeometry, meta: &str) -> TaskPageLayout {
+    task_column_layout_rows(geo, footer_rows(meta, geo.row_width).len())
+}
+
+fn task_column_layout_rows(geo: &TierGeometry, footer_rows: usize) -> TaskPageLayout {
     let bottom = [geo.rule_row, geo.status_row, geo.verb_row]
         .into_iter()
         .flatten()
@@ -2805,7 +2872,10 @@ pub fn task_column_layout(geo: &TierGeometry) -> TaskPageLayout {
     // The header is two rows: the title (glyph, identifier, state slot) on the selector
     // row and its dash rule directly under it. The body starts on the row below the rule.
     let notes_y = title_y.saturating_add(2).min(bottom);
-    let meta_y = (bottom >= notes_y.saturating_add(2)).then(|| bottom - 1);
+    let footer_rows = u16::try_from(footer_rows)
+        .unwrap_or(u16::MAX)
+        .min(bottom.saturating_sub(notes_y.saturating_add(1)));
+    let meta_y = (footer_rows > 0).then(|| bottom - footer_rows);
     let content_end = meta_y.unwrap_or(bottom);
     TaskPageLayout {
         bottom,
@@ -2844,6 +2914,8 @@ fn paint_task_page(
     meta: &str,
     meta_assignee_x: Option<u16>,
     meta_assignee_width: u16,
+    meta_base_x: Option<u16>,
+    meta_base_width: u16,
     meta_scope_x: u16,
     meta_scope_width: u16,
     thread_slot_width: Option<u16>,
@@ -2851,26 +2923,27 @@ fn paint_task_page(
     footer_input_open: bool,
     column: bool,
     hits: &mut QueueHitMap,
-) {
+) -> Option<TaskPageLayout> {
     let width = geo.row_width;
     if width == 0 || geo.height == 0 {
-        return;
+        return None;
     }
     // `focus == Notes` arrives from the same frame's input mode the payload builder
     // used, so both sides of the payload/paint seam budget the same notes floor.
     let title_row_count = header_rows.len().max(1) as u16;
     let lay = if column {
-        task_column_layout(geo)
+        task_column_layout_with_meta(geo, meta)
     } else {
-        task_page_layout(
+        task_page_layout_with_meta(
             geo,
             steps_section(step_views.len()),
             u16::from(focus == Some(CaptureField::Notes)),
             title_row_count,
+            meta,
         )
     };
     if lay.bottom == 0 {
-        return;
+        return None;
     }
     if !column {
         frame.render_widget(
@@ -3231,24 +3304,24 @@ fn paint_task_page(
         );
     }
 
-    // Meta footer: assignee · thread · scope · created · updated. Inline step drafts leave this footer
-    // visible and do not claim its input slot.
+    // Every footer row shares the inset. Field offsets are unwrapped display-cell
+    // ranges, intersected with each wrapped row for both selection and pointer hits.
     if let Some(y) = lay.meta_y {
-        put_line(
-            frame,
-            surface,
-            y,
-            width,
-            paint_bounded_line(&format!("  {meta}"), width, style_dim()),
-        );
+        let rows = footer_rows(meta, width);
+        for (offset, row) in rows.iter().take(usize::from(lay.bottom - y)).enumerate() {
+            put_line(
+                frame,
+                surface,
+                y + offset as u16,
+                width,
+                Line::from(Span::styled(format!("  {}", row.text), style_dim())),
+            );
+        }
 
-        let footer_x = 2u16;
-        let assignee_slot =
-            meta_assignee_x.map(|x| (footer_x.saturating_add(x), meta_assignee_width));
-        let mut component_x = footer_x;
+        let mut component_x = 0u16;
         let mut thread_slot = None;
         for component in meta.split(" · ") {
-            if component_x.saturating_sub(footer_x) >= meta_scope_x {
+            if component_x >= meta_scope_x {
                 break;
             }
             let component_width = u16::try_from(display_width(component)).unwrap_or(u16::MAX);
@@ -3259,64 +3332,95 @@ fn paint_task_page(
                 .saturating_add(component_width)
                 .saturating_add(3);
         }
-        // Hand-built renderer fixtures predating explicit footer offsets carry only the old
-        // aggregate thread width. Keep that seam working when no component can be identified.
+        // Preserve the old aggregate-thread-width seam for hand-built fixtures.
         if thread_slot.is_none() {
-            thread_slot = thread_slot_width.map(|slot_width| (footer_x, slot_width));
+            thread_slot = thread_slot_width.map(|slot_width| (0, slot_width));
         }
-        let scope_x = footer_x.saturating_add(meta_scope_x).min(width);
-        let selected = match focus {
-            Some(CaptureField::Scope) => Some((scope_x, meta_scope_width)),
-            Some(CaptureField::Thread) => thread_slot,
-            Some(CaptureField::Assignee) => assignee_slot,
-            _ => None,
-        };
-        if let Some((selected_x, selected_width)) = selected {
-            let selected_width = selected_width.min(width.saturating_sub(selected_x));
-            let buffer = frame.buffer_mut();
-            for x in selected_x..selected_x.saturating_add(selected_width) {
-                buffer[(surface.x.saturating_add(x), surface.y.saturating_add(y))].set_style(
-                    Style::default()
-                        .add_modifier(Modifier::REVERSED)
-                        .remove_modifier(Modifier::DIM),
-                );
+        let slots = [
+            (
+                CaptureField::Assignee,
+                QueueHitTarget::FormAssignee,
+                meta_assignee_x.map(|x| (x, meta_assignee_width)),
+            ),
+            (
+                CaptureField::Base,
+                QueueHitTarget::FormBase,
+                meta_base_x.map(|x| (x, meta_base_width)),
+            ),
+            (
+                CaptureField::Thread,
+                QueueHitTarget::FormThread,
+                thread_slot,
+            ),
+            (
+                CaptureField::Scope,
+                QueueHitTarget::FormScope,
+                Some((meta_scope_x, meta_scope_width)),
+            ),
+        ];
+        for (field, target, slot) in slots {
+            let Some((start, cells)) = slot else { continue };
+            for area in footer_field_rects(meta, &rows, &lay, start, cells, width) {
+                if focus == Some(field) {
+                    let buffer = frame.buffer_mut();
+                    for x in area.x..area.right() {
+                        buffer[(
+                            surface.x.saturating_add(x),
+                            surface.y.saturating_add(area.y),
+                        )]
+                            .set_style(
+                                Style::default()
+                                    .add_modifier(Modifier::REVERSED)
+                                    .remove_modifier(Modifier::DIM),
+                            );
+                    }
+                }
+                if !footer_input_open {
+                    hits.push(target, area);
+                }
             }
         }
-        if footer_input_open {
-            return;
-        }
-        hits.push(
-            QueueHitTarget::FormScope,
-            Rect::new(
-                scope_x,
-                y,
-                meta_scope_width.min(width.saturating_sub(scope_x)),
-                1,
-            ),
-        );
-        if let Some((assignee_x, assignee_width)) = assignee_slot.filter(|(x, _)| *x < width) {
-            hits.push(
-                QueueHitTarget::FormAssignee,
-                Rect::new(
-                    assignee_x,
-                    y,
-                    assignee_width.min(width.saturating_sub(assignee_x)),
-                    1,
-                ),
-            );
-        }
-        if let Some((thread_x, thread_width)) = thread_slot.filter(|(x, _)| *x < width) {
-            hits.push(
-                QueueHitTarget::FormThread,
-                Rect::new(
-                    thread_x,
-                    y,
-                    thread_width.min(width.saturating_sub(thread_x)),
-                    1,
-                ),
-            );
-        }
     }
+    Some(lay)
+}
+
+/// Project an unwrapped display-cell range through the shared wrap engine's rows.
+/// Raw scalar offsets locate row starts, while display widths preserve wide glyphs.
+fn footer_field_rects(
+    meta: &str,
+    rows: &[super::edit::WrappedRow],
+    lay: &TaskPageLayout,
+    start: u16,
+    cells: u16,
+    width: u16,
+) -> Vec<Rect> {
+    let Some(y) = lay.meta_y else {
+        return Vec::new();
+    };
+    let mut offsets = vec![0usize];
+    for ch in meta.chars() {
+        offsets.push(offsets.last().copied().unwrap_or(0) + display_width(&ch.to_string()));
+    }
+    let start = usize::from(start);
+    let end = start.saturating_add(usize::from(cells));
+    rows.iter()
+        .take(usize::from(lay.bottom - y))
+        .enumerate()
+        .filter_map(|(index, row)| {
+            let row_start = offsets[row.first_raw];
+            let left = start.max(row_start);
+            let right = end
+                .min(row_start.saturating_add(row.width.min(usize::from(width.saturating_sub(2)))));
+            (right > left).then(|| {
+                Rect::new(
+                    2 + (left - row_start) as u16,
+                    y + index as u16,
+                    (right - left) as u16,
+                    1,
+                )
+            })
+        })
+        .collect()
 }
 
 /// Paint the shared-content scroll indicator on the viewport's right edge. The
@@ -3353,6 +3457,8 @@ fn paint_page_form_dropdown(
     geo: &TierGeometry,
     surface: Rect,
     dropdown: FormDropdown<'_>,
+    lay: &TaskPageLayout,
+    meta: &str,
     hits: &mut QueueHitMap,
 ) {
     let width = geo.row_width;
@@ -3361,10 +3467,21 @@ fn paint_page_form_dropdown(
     }
     // The dropdown anchors on the meta footer, which never moves with the steps,
     // and never opens while a field edit owns the page.
-    let lay = task_page_layout(geo, StepsSection::None, 0, 1);
     let Some(meta_y) = lay.meta_y else {
         return;
     };
+    let anchor = footer_field_rects(
+        meta,
+        &footer_rows(meta, width),
+        lay,
+        dropdown.anchor_x.saturating_sub(2),
+        1,
+        width,
+    )
+    .into_iter()
+    .next();
+    let anchor_y = anchor.map_or(meta_y, |area| area.y);
+    let anchor_x = anchor.map_or(2, |area| area.x);
     let max_label = dropdown
         .options
         .iter()
@@ -3372,7 +3489,7 @@ fn paint_page_form_dropdown(
         .max()
         .unwrap_or(0);
     let col_w = (max_label + 4).min(width as usize).max(8);
-    let rows_fit = meta_y.saturating_sub(1) as usize;
+    let rows_fit = anchor_y.saturating_sub(1) as usize;
     let rows = rows_fit.min(dropdown.options.len());
     if rows == 0 {
         return;
@@ -3388,7 +3505,7 @@ fn paint_page_form_dropdown(
     };
     // Options read top to bottom in list order, the last visible one directly above
     // the footer, so `Down` (the next option) moves the marker down the screen.
-    let top = meta_y - rows as u16;
+    let top = anchor_y - rows as u16;
     for (j, opt) in dropdown.options.iter().enumerate().skip(scroll).take(rows) {
         let y = top + (j - scroll) as u16;
         let marker = if j == selected { "▸ " } else { "  " };
@@ -3398,7 +3515,7 @@ fn paint_page_form_dropdown(
         } else {
             format!("{}{}", body, " ".repeat(col_w - display_width(&body)))
         };
-        let x = dropdown.anchor_x.min(width);
+        let x = anchor_x.min(width);
         let painted_width = u16::try_from(col_w)
             .unwrap_or(u16::MAX)
             .min(width.saturating_sub(x));
@@ -3447,8 +3564,11 @@ fn paint_cleanup_card(
     surface: Rect,
     worktree: &str,
     branch: &str,
+    base: &str,
     dirty: bool,
     branch_merged: bool,
+    base_available: bool,
+    warning: Option<&str>,
     workspace_exists: bool,
     hits: &mut QueueHitMap,
 ) {
@@ -3456,42 +3576,25 @@ fn paint_cleanup_card(
         return;
     }
     let bounds = Rect::new(0, 0, geo.row_width, geo.height);
-    let content = paint_modal_card(
-        frame,
-        geo,
-        surface,
-        bounds,
-        ModalCardSpec {
-            title: "Clean dispatch?",
-            content_rows: 5,
-            min_content_width: 24,
-            legend: if dirty {
-                DIRTY_CLEANUP_FOOTER
-            } else {
-                CLEANUP_FOOTER
-            },
-            dismiss: None,
-            legend_hits: None,
-        },
-        hits,
-    );
-    let lines = [
+    let mut lines = vec![
         format!("worktree {worktree}"),
         format!("branch {branch}"),
+        format!(
+            "base {base} · {}",
+            if !base_available {
+                "unavailable"
+            } else if branch_merged {
+                "merged ✓"
+            } else {
+                "not merged"
+            }
+        ),
         format!(
             "state {}",
             if dirty {
                 "dirty, cleanup will refuse"
             } else {
                 "clean"
-            }
-        ),
-        format!(
-            "commits {}",
-            if branch_merged {
-                "merged"
-            } else {
-                "unmerged, branch will be kept"
             }
         ),
         format!(
@@ -3503,6 +3606,48 @@ fn paint_cleanup_card(
             }
         ),
     ];
+    if !base_available {
+        lines.insert(3, "recorded base unavailable; branch retained".into());
+    } else if !branch_merged {
+        lines.insert(
+            3,
+            format!("not merged into {base}; squash-merged? delete by hand"),
+        );
+    }
+    if let Some(warning) = warning {
+        lines.insert(3, warning.to_string());
+    }
+    let pad = if geo.tier == Tier::Compact { 0 } else { 1 };
+    let wrap_width = modal_card_width(geo, bounds, 24)
+        .saturating_sub(2 + 2 * pad)
+        .max(1);
+    let lines = lines
+        .iter()
+        .flat_map(|line| {
+            crate::ui::edit::wrap_text(&crate::ui::terminal_text(line), usize::from(wrap_width))
+                .into_iter()
+                .map(|row| row.text)
+        })
+        .collect::<Vec<_>>();
+    let content = paint_modal_card(
+        frame,
+        geo,
+        surface,
+        bounds,
+        ModalCardSpec {
+            title: "Clean dispatch?",
+            content_rows: u16::try_from(lines.len()).unwrap_or(u16::MAX),
+            min_content_width: 24,
+            legend: if dirty {
+                DIRTY_CLEANUP_FOOTER
+            } else {
+                CLEANUP_FOOTER
+            },
+            dismiss: None,
+            legend_hits: None,
+        },
+        hits,
+    );
     for (row, line) in lines.iter().enumerate().take(content.height as usize) {
         put_line_at(
             frame,
@@ -5045,22 +5190,24 @@ fn row_meta(
         None
     };
     let assignee = task.assignee.as_deref().map(|name| format!("@{name}"));
+    let base = task.base.as_deref().map(|name| format!("⎇ {name}"));
     let thread = if thread_label {
         task.thread.as_deref().map(|name| format!("#{name}"))
     } else {
         None
     };
-    fit_row_meta(assignee, thread, project)
+    fit_row_meta(assignee, base, thread, project)
 }
 
 /// Keep the genuine project/thread attribution intact. Relative ages belong to task-page
 /// information, not task rows, so metadata has no fixed age reserve or artificial cap.
 fn fit_row_meta(
     assignee: Option<String>,
+    base: Option<String>,
     thread: Option<String>,
     project: Option<String>,
 ) -> String {
-    [assignee, thread, project]
+    [assignee, base, thread, project]
         .into_iter()
         .flatten()
         .filter(|value| !value.is_empty())

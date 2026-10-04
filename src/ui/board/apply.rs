@@ -31,6 +31,18 @@ const NO_SELECTION: &str = "select a task first";
 /// `@` with no `agents.toml` profile: the picker would offer only **none**.
 pub const NO_AGENT_PROFILES: &str = "no agent profiles · add one to agents.toml";
 
+fn base_target_project(domain: &DomainState, ids: &[Uuid]) -> Result<PathBuf, String> {
+    for id in ids {
+        let task = domain
+            .get(*id)
+            .ok_or_else(|| format!("unknown task {id}"))?;
+        if let TaskScope::Project { path } = &task.scope {
+            return Ok(PathBuf::from(path));
+        }
+    }
+    Err("base requires a project task".to_string())
+}
+
 fn take_verb_targets(model: &mut BoardModel) -> (Vec<Uuid>, bool) {
     let bulk = model.task_list_owns_input() && model.mark_mode_active() && model.marked_count() > 0;
     let targets = model.verb_target_ids();
@@ -147,7 +159,12 @@ pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> boo
         intent,
         BoardIntent::ConfirmListPicker | BoardIntent::SelectListOption(_)
     ) && model.input_mode == BoardInputMode::ListPicker
-        && model.list_picker_kind() == Some(crate::ui::board::ListPickerKind::Assignee);
+        && matches!(
+            model.list_picker_kind(),
+            Some(
+                crate::ui::board::ListPickerKind::Assignee | crate::ui::board::ListPickerKind::Base
+            )
+        );
     dropdown_assignment
         || picker_assignment
         || matches!(
@@ -239,7 +256,9 @@ fn read_only_focus_refuses(model: &BoardModel, intent: &BoardIntent) -> bool {
             | BoardIntent::BeginEditNotes
             | BoardIntent::BeginEditScope
             | BoardIntent::BeginEditAssignee
+            | BoardIntent::BeginEditBase
             | BoardIntent::OpenAssigneePicker
+            | BoardIntent::OpenBasePicker
             | BoardIntent::BeginAddStep
             | BoardIntent::ToggleThreadEditing
             | BoardIntent::FormCycleScope
@@ -384,6 +403,7 @@ fn apply_board_intent(
                 | BoardInputMode::EditNotes
                 | BoardInputMode::EditScope
                 | BoardInputMode::EditAssignee
+                | BoardInputMode::SelectBase
                 | BoardInputMode::FormDropdown
         )
     {
@@ -579,10 +599,11 @@ fn apply_board_intent(
                 model.focus_form_field(CaptureField::Notes);
                 return Ok(IntentOutcome::None);
             }
-            let lifted = match lift_quick_add_tokens(
+            let lifted = match crate::capture::lift_quick_add_tokens(
                 quick_add.title.value(),
                 domain,
                 quick_add.snapshot.as_ref().as_ref(),
+                &quick_add.default,
                 &model.agent_names,
             ) {
                 Ok(lifted) => lifted,
@@ -604,6 +625,7 @@ fn apply_board_intent(
             form.thread =
                 crate::ui::edit::seeded_draft(lifted.thread.as_deref().unwrap_or_default());
             form.assignee = lifted.assignee;
+            form.base = lifted.base;
             form.set_agent_names(&model.agent_names);
             form.focus = CaptureField::Notes;
             form.select_current_scope();
@@ -673,9 +695,9 @@ fn apply_board_intent(
                 && model.form.as_ref().is_some_and(|form| form.is_task())
             {
                 model.focus_form_field(CaptureField::Title);
-            } else if model.input_mode == BoardInputMode::EditAssignee
-                && model.form.as_ref().is_some_and(|form| form.is_task())
-            {
+            } else if model.input_mode == BoardInputMode::EditAssignee && model.form.is_some() {
+                model.focus_form_field(CaptureField::Base);
+            } else if model.input_mode == BoardInputMode::SelectBase && model.form.is_some() {
                 model.focus_form_field(CaptureField::Thread);
             } else if matches!(
                 model.input_mode,
@@ -737,6 +759,8 @@ fn apply_board_intent(
                 BoardInputMode::SelectThread | BoardInputMode::EditThread
             ) && model.form.is_some()
             {
+                model.focus_form_field(CaptureField::Base);
+            } else if model.input_mode == BoardInputMode::SelectBase && model.form.is_some() {
                 model.focus_form_field(CaptureField::Assignee);
             } else if model.input_mode == BoardInputMode::EditScope
                 && model.form.as_ref().is_some_and(|form| form.is_task())
@@ -1000,7 +1024,8 @@ fn apply_board_intent(
         BoardIntent::BeginEditTitle
         | BoardIntent::BeginEditNotes
         | BoardIntent::BeginEditScope
-        | BoardIntent::BeginEditAssignee => {
+        | BoardIntent::BeginEditAssignee
+        | BoardIntent::BeginEditBase => {
             model.close_popup();
             let assignee_targets =
                 (intent == BoardIntent::BeginEditAssignee).then(|| model.verb_target_ids());
@@ -1018,6 +1043,7 @@ fn apply_board_intent(
                 BoardIntent::BeginEditNotes => CaptureField::Notes,
                 BoardIntent::BeginEditScope => CaptureField::Scope,
                 BoardIntent::BeginEditAssignee => CaptureField::Assignee,
+                BoardIntent::BeginEditBase => CaptureField::Base,
                 _ => unreachable!("matched task-form entry intent"),
             };
             // Ctrl+E on a selected step begins the whole task edit session and opens that
@@ -1190,6 +1216,7 @@ fn apply_board_intent(
                     | BoardInputMode::EditThread
                     | BoardInputMode::EditScope
                     | BoardInputMode::EditAssignee
+                    | BoardInputMode::SelectBase
             ) && model.form.as_ref().is_some_and(BoardForm::is_task)
             {
                 let field = model
@@ -1280,8 +1307,9 @@ fn apply_board_intent(
                     }
                 };
                 let assignee = form.assignee.clone();
+                let base = form.base.clone();
                 let pending_adds = form.steps.pending_adds.clone();
-                return match crate::capture::capture_save_assigned(
+                return match crate::capture::capture_save_configured(
                     domain,
                     None,
                     &snap,
@@ -1290,6 +1318,7 @@ fn apply_board_intent(
                     scope_override,
                     thread,
                     assignee,
+                    base,
                 ) {
                     Ok(id) => {
                         for text in &pending_adds {
@@ -1544,6 +1573,67 @@ fn apply_board_intent(
             model.open_assignee_picker(ids, current, false);
             return Ok(IntentOutcome::None);
         }
+        BoardIntent::OpenBasePicker => {
+            if model.project_picker.is_some() || model.popup == BoardPopup::SaveRecovery {
+                return Ok(IntentOutcome::None);
+            }
+            model.close_popup();
+            model.close_help();
+            let task_page = model.input_mode == BoardInputMode::TaskPage
+                && model.form.as_ref().is_some_and(BoardForm::is_task);
+            let edit_draft =
+                (model.task_editing() || model.capture_draft_open()) && model.form.is_some();
+            if !(task_page || edit_draft || model.input_mode == BoardInputMode::Normal)
+                || model.projects_overview()
+            {
+                return Ok(IntentOutcome::None);
+            }
+            let ids: Vec<Uuid> = if edit_draft {
+                model
+                    .form
+                    .as_ref()
+                    .and_then(BoardForm::task_id)
+                    .into_iter()
+                    .collect()
+            } else {
+                model
+                    .verb_target_ids()
+                    .into_iter()
+                    .filter(|id| domain.get(*id).is_some_and(|task| !task.is_notice()))
+                    .collect()
+            };
+            if ids.is_empty() && !edit_draft {
+                model.set_message(NO_SELECTION);
+                return Ok(IntentOutcome::None);
+            }
+            let project = if edit_draft {
+                match model.form.as_ref().map(|form| &form.scope) {
+                    Some(TaskScope::Project { path }) => PathBuf::from(path),
+                    _ => {
+                        model.set_message("base requires a project task");
+                        return Ok(IntentOutcome::None);
+                    }
+                }
+            } else {
+                match base_target_project(domain, &ids) {
+                    Ok(project) => project,
+                    Err(message) => {
+                        model.set_message(message);
+                        return Ok(IntentOutcome::None);
+                    }
+                }
+            };
+            let current = if edit_draft {
+                model.form.as_ref().and_then(|form| form.base.clone())
+            } else {
+                ids.first()
+                    .and_then(|id| domain.get(*id))
+                    .and_then(|task| task.base.clone())
+            };
+            model.clear_message();
+            model.open_base_picker(ids, current, &project, edit_draft);
+            return Ok(IntentOutcome::None);
+        }
         BoardIntent::ListPickerNext => {
             model.move_list_picker(true);
             return Ok(IntentOutcome::None);
@@ -1567,10 +1657,65 @@ fn apply_board_intent(
         BoardIntent::SelectListOption(index) => {
             // Mouse-only jump onto a visible picker row, same discipline as
             // `SelectCommand`/`SelectProjectOption`: name the row directly.
-            if let Some(picker) = model.list_picker.as_mut() {
-                picker.selected = index;
+            if model.select_list_picker_option(index) {
+                return apply_board_intent(domain, model, BoardIntent::ConfirmListPicker, snapshot);
             }
-            return apply_board_intent(domain, model, BoardIntent::ConfirmListPicker, snapshot);
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::ConfirmListPicker
+            if model.list_picker_kind() == Some(crate::ui::board::ListPickerKind::Base) =>
+        {
+            let Some((_, option)) = model.selected_list_picker_option() else {
+                return Ok(IntentOutcome::None);
+            };
+            let ListPickerValue::Base(base) = option.value else {
+                return Ok(IntentOutcome::None);
+            };
+            let Some(target) = model.close_base_picker() else {
+                return Ok(IntentOutcome::None);
+            };
+            if target.edit_draft {
+                if let Some(form) = model.form.as_mut() {
+                    form.base = base;
+                    form.focus = CaptureField::Base;
+                    form.editing = true;
+                    model.input_mode = BoardInputMode::SelectBase;
+                }
+                return Ok(IntentOutcome::None);
+            }
+            if let Some(branch) = base.as_deref() {
+                for id in &target.ids {
+                    let Some(TaskScope::Project { path }) = domain.get(*id).map(|task| &task.scope)
+                    else {
+                        model.set_message("base requires a project task");
+                        return Ok(IntentOutcome::None);
+                    };
+                    if let Err(message) =
+                        crate::git_base::validate_branch(std::path::Path::new(path), branch)
+                    {
+                        model.set_message(message);
+                        return Ok(IntentOutcome::None);
+                    }
+                }
+            }
+            let changed = domain.set_base_batch(&target.ids, base.clone())?;
+            model.clear_marks();
+            if !changed {
+                return Ok(IntentOutcome::None);
+            }
+            model.pending_form_base_sync = Some(target.ids.clone());
+            let subject = match target.ids.as_slice() {
+                [id] => domain
+                    .get(*id)
+                    .and_then(|task| task.number)
+                    .map_or_else(|| "task".to_string(), |number| format!("T{number}")),
+                ids => format!("{} tasks", ids.len()),
+            };
+            model.set_message(match base {
+                Some(branch) => format!("set {subject} base to {branch}"),
+                None => format!("set {subject} base to default"),
+            });
+            return Ok(IntentOutcome::Persist);
         }
         BoardIntent::ConfirmListPicker
             if model.list_picker_kind() == Some(crate::ui::board::ListPickerKind::Assignee) =>
@@ -2755,7 +2900,7 @@ fn edit_draft(model: &mut BoardModel, operation: impl FnOnce(&mut EditBuffer)) {
             form.thread_refusal = None;
             operation(&mut form.thread);
         }
-        CaptureField::Scope | CaptureField::Assignee => {}
+        CaptureField::Scope | CaptureField::Assignee | CaptureField::Base => {}
     }
 }
 
@@ -2966,10 +3111,11 @@ fn refresh_quick_add_scope(model: &mut BoardModel, domain: &DomainState) {
         return;
     };
     let default = quick_add.default.clone();
-    let lifted = lift_quick_add_tokens(
+    let lifted = crate::capture::lift_quick_add_tokens(
         quick_add.title.value(),
         domain,
         quick_add.snapshot.as_ref().as_ref(),
+        &quick_add.default,
         &model.agent_names,
     );
     let Ok(lifted) = lifted else {
@@ -2993,10 +3139,11 @@ fn quick_add_save(
         model.set_message("capture context unavailable; press Esc and try again");
         return Ok(IntentOutcome::None);
     };
-    let lifted = match lift_quick_add_tokens(
+    let lifted = match crate::capture::lift_quick_add_tokens(
         quick_add.title.value(),
         domain,
         quick_add.snapshot.as_ref().as_ref(),
+        &quick_add.default,
         &model.agent_names,
     ) {
         Ok(lifted) => lifted,
@@ -3006,7 +3153,7 @@ fn quick_add_save(
         }
     };
     let scope = lifted.scope.unwrap_or_else(|| quick_add.scope.clone());
-    match crate::capture::capture_save_assigned(
+    match crate::capture::capture_save_configured(
         domain,
         None,
         &snapshot,
@@ -3015,6 +3162,7 @@ fn quick_add_save(
         Some(scope.clone()),
         lifted.thread,
         lifted.assignee,
+        lifted.base,
     ) {
         Ok(id) => {
             // Do not discard the draft until the app save boundary confirms persistence. A
@@ -3032,103 +3180,6 @@ fn quick_add_save(
             Ok(IntentOutcome::None)
         }
     }
-}
-
-/// Directives lifted from a quick-add title before capture.
-///
-/// This parser is deliberately private to quick-add. Title, notes, and checklist editors retain
-/// their literal text, while the status-row capture can apply scope and thread together.
-struct QuickAddTokens {
-    title: String,
-    scope: Option<TaskScope>,
-    thread: Option<String>,
-    assignee: Option<String>,
-}
-
-/// Lift whitespace-delimited `!p` and `!t` directives in either order.
-///
-/// A directive consumes only its immediate non-directive argument. Parsing completes before any
-/// value is returned, so a malformed thread cannot partially apply a preceding scope override.
-fn lift_quick_add_tokens(
-    value: &str,
-    domain: &DomainState,
-    snapshot: Option<&InvocationSnapshot>,
-    agent_names: &[String],
-) -> Result<QuickAddTokens, String> {
-    let words: Vec<&str> = value.split_whitespace().collect();
-    let mut title = Vec::new();
-    let mut scope = None;
-    let mut thread = None;
-    let mut assignee = None;
-    let mut index = 0;
-
-    while let Some(word) = words.get(index) {
-        match *word {
-            "!p" => {
-                let argument = quick_add_token_argument(&words, index);
-                scope = Some(match argument {
-                    Some(path) => {
-                        let resolved = crate::scope::resolve_project_path(path, domain, snapshot)
-                            .map_err(|error| error.message(path))?;
-                        if domain.is_project_archived(&resolved) {
-                            return Err(format!(
-                                "project {} is archived",
-                                crate::ui::render::short_project(&resolved)
-                            ));
-                        }
-                        TaskScope::Project { path: resolved }
-                    }
-                    None => TaskScope::Global,
-                });
-                index += usize::from(argument.is_some()) + 1;
-            }
-            "!t" => {
-                let argument = quick_add_token_argument(&words, index);
-                thread = match argument {
-                    Some(name) => Some(normalize_thread(name).map_err(thread_refusal_message)?),
-                    None => None,
-                };
-                index += usize::from(argument.is_some()) + 1;
-            }
-            "!a" => {
-                let argument = quick_add_token_argument(&words, index);
-                assignee = match argument {
-                    Some(name) => {
-                        let normalized = normalize_thread(name).map_err(|error| {
-                            thread_refusal_message(error).replacen("thread", "agent name", 1)
-                        })?;
-                        if agent_names.iter().any(|name| name == &normalized) {
-                            Some(normalized)
-                        } else {
-                            return Err(format!("unknown agent {normalized}"));
-                        }
-                    }
-                    None => None,
-                };
-                index += usize::from(argument.is_some()) + 1;
-            }
-            _ => {
-                title.push(*word);
-                index += 1;
-            }
-        }
-    }
-
-    Ok(QuickAddTokens {
-        title: title.join(" "),
-        scope,
-        thread,
-        assignee,
-    })
-}
-
-/// A directive consumes one argument only when the next word is neither another directive nor
-/// a literal `#` title word.
-fn quick_add_token_argument<'a>(words: &'a [&str], index: usize) -> Option<&'a str> {
-    words
-        .get(index + 1)
-        .copied()
-        .filter(|word| *word != "!p" && *word != "!t" && *word != "!a" && !word.starts_with('#'))
 }
 
 fn normalize_optional_thread(value: &str) -> Result<Option<String>, ThreadError> {
@@ -3155,6 +3206,7 @@ fn confirm_edit(
     let notes = (!form.notes.value().trim().is_empty()).then(|| form.notes.value().to_string());
     let scope = form.scope.clone();
     let assignee = form.assignee.clone();
+    let base = form.base.clone();
     let thread = match normalize_optional_thread(form.thread.value()) {
         Ok(thread) => thread,
         Err(error) => {
@@ -3187,6 +3239,19 @@ fn confirm_edit(
     if task.soft_deleted {
         return Err(DomainError::SoftDeleted(id));
     }
+    if let Some(branch) = base
+        .as_deref()
+        .filter(|_| base != task.base || scope != task.scope)
+    {
+        let TaskScope::Project { path } = &scope else {
+            model.set_message("base requires a project task");
+            return Ok(IntentOutcome::None);
+        };
+        if let Err(message) = crate::git_base::validate_branch(std::path::Path::new(path), branch) {
+            model.set_message(message);
+            return Ok(IntentOutcome::None);
+        }
+    }
 
     // The full page session changes under one revision, then the app persists exactly once.
     // A chained `edit` plus `rename_step` sequence would advance the merge base after each
@@ -3198,13 +3263,14 @@ fn confirm_edit(
     let extra_steps = extra_step
         .map(|text| vec![text.trim().to_string()])
         .unwrap_or_default();
-    domain.edit_with_step_changes(
+    domain.edit_with_step_changes_and_base(
         id,
         &title,
         notes.clone(),
         scope.clone(),
         thread.clone(),
         assignee.clone(),
+        base.clone(),
         &step_rename_list,
         &step_removals.iter().copied().collect::<Vec<_>>(),
         &extra_steps,
@@ -3219,6 +3285,7 @@ fn confirm_edit(
         scope,
         thread,
         assignee,
+        base,
         step_renames,
         step_removals,
         selected_step,

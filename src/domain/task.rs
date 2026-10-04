@@ -64,6 +64,15 @@ pub struct Dispatch {
     /// Branch or commit the dispatch branch was created from. Older v6 records omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
+    /// Exact branch namespace, preserved across subsequent remote configuration changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_ref: Option<String>,
+    /// Commit resolved from `base` when the dispatch worktree was created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_commit: Option<String>,
+    /// Exact fetch remote, retained so overlapping remote names cannot change provenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_remote: Option<String>,
     pub herdr_workspace_id: String,
     #[serde(with = "super::time_serde")]
     pub at: SystemTime,
@@ -98,6 +107,9 @@ pub struct Task {
     /// Optional normalized agent profile name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
+    /// Optional explicit branch from which this task should be dispatched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
     /// Last successful dispatch. Status changes never alter this record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch: Option<Dispatch>,
@@ -414,6 +426,7 @@ impl DomainState {
             notes,
             thread,
             assignee: None,
+            base: None,
             dispatch: None,
             status: HumanStatus::Open,
             scope,
@@ -441,8 +454,25 @@ impl DomainState {
         thread: Option<String>,
         assignee: Option<String>,
     ) -> Result<Uuid, DomainError> {
+        self.create_configured(title, notes, scope, provenance, thread, assignee, None)
+    }
+
+    /// Create with optional validated assignment and base in the same creation mutation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_configured(
+        &mut self,
+        title: impl AsRef<str>,
+        notes: Option<String>,
+        scope: TaskScope,
+        provenance: ProvenanceOrigin,
+        thread: Option<String>,
+        assignee: Option<String>,
+        base: Option<String>,
+    ) -> Result<Uuid, DomainError> {
         let id = self.create(title, notes, scope, provenance, thread)?;
-        self.task_mut(id)?.assignee = assignee;
+        let task = self.task_mut(id)?;
+        task.assignee = assignee;
+        task.base = base;
         Ok(id)
     }
 
@@ -672,6 +702,57 @@ impl DomainState {
         Ok(())
     }
 
+    /// Set one task's explicit dispatch base and make the change undoable.
+    pub fn set_base(&mut self, id: Uuid, base: Option<String>) -> Result<bool, DomainError> {
+        self.set_base_batch(&[id], base)
+    }
+
+    /// Set an ordered task set's explicit dispatch base as one atomic, undoable action.
+    pub fn set_base_batch(
+        &mut self,
+        ids: &[Uuid],
+        base: Option<String>,
+    ) -> Result<bool, DomainError> {
+        let ids = self.prevalidate_batch_ids(ids)?;
+        let changed = ids
+            .into_iter()
+            .filter(|id| self.get(*id).is_some_and(|task| task.base != base))
+            .collect::<Vec<_>>();
+        if changed.is_empty() {
+            return Ok(false);
+        }
+        let at = SystemTime::now();
+        let mut entries = Vec::with_capacity(changed.len());
+        for id in changed {
+            let task = self.task_mut(id)?;
+            let previous = task.base.clone();
+            task.base = base.clone();
+            record_mutation_at(task, TaskEventKind::BaseSet, at);
+            entries.push(UndoEntry::SetBase {
+                id,
+                previous,
+                expected_revision: task.revision,
+            });
+        }
+        self.undo_stack.push(if entries.len() == 1 {
+            entries.pop().expect("one base undo")
+        } else {
+            UndoEntry::Batch { entries }
+        });
+        Ok(true)
+    }
+
+    pub(crate) fn restore_base(
+        &mut self,
+        id: Uuid,
+        base: Option<String>,
+    ) -> Result<(), DomainError> {
+        let task = self.task_mut(id)?;
+        task.base = base;
+        record_mutation(task, TaskEventKind::BaseSet);
+        Ok(())
+    }
+
     /// Record one successful launch and set human status to started as one mutation.
     /// Dispatch is external and deliberately creates no undo entry.
     pub fn record_dispatch(&mut self, id: Uuid, mut dispatch: Dispatch) -> Result<(), DomainError> {
@@ -725,14 +806,38 @@ impl DomainState {
         thread: Option<String>,
         assignee: Option<String>,
     ) -> Result<(), DomainError> {
+        let base = self.get(id).and_then(|task| task.base.clone());
+        self.edit_with_assignee_and_base(id, title, notes, scope, thread, assignee, base)
+    }
+
+    /// Edit ordinary fields, assignee, and base without creating a standalone undo entry.
+    #[allow(clippy::too_many_arguments)]
+    pub fn edit_with_assignee_and_base(
+        &mut self,
+        id: Uuid,
+        title: impl AsRef<str>,
+        notes: Option<String>,
+        scope: TaskScope,
+        thread: Option<String>,
+        assignee: Option<String>,
+        base: Option<String>,
+    ) -> Result<(), DomainError> {
         let changed_assignee = self.get(id).is_some_and(|task| task.assignee != assignee);
+        let changed_base = self.get(id).is_some_and(|task| task.base != base);
         self.edit(id, title, notes, scope, thread)?;
         let task = self.task_mut(id)?;
         task.assignee = assignee;
+        task.base = base;
+        let at = task.updated_at;
         if changed_assignee {
-            let at = task.updated_at;
             task.history.push(TaskEvent {
                 kind: TaskEventKind::Assigned,
+                at,
+            });
+        }
+        if changed_base {
+            task.history.push(TaskEvent {
+                kind: TaskEventKind::BaseSet,
                 at,
             });
         }
@@ -754,6 +859,36 @@ impl DomainState {
         scope: TaskScope,
         thread: Option<String>,
         assignee: Option<String>,
+        step_renames: &[(Uuid, String)],
+        step_removals: &[Uuid],
+        step_adds: &[String],
+    ) -> Result<(), DomainError> {
+        let base = self.get(id).and_then(|task| task.base.clone());
+        self.edit_with_step_changes_and_base(
+            id,
+            title,
+            notes,
+            scope,
+            thread,
+            assignee,
+            base,
+            step_renames,
+            step_removals,
+            step_adds,
+        )
+    }
+
+    /// Apply task fields including base plus staged step changes in one edit mutation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn edit_with_step_changes_and_base(
+        &mut self,
+        id: Uuid,
+        title: impl AsRef<str>,
+        notes: Option<String>,
+        scope: TaskScope,
+        thread: Option<String>,
+        assignee: Option<String>,
+        base: Option<String>,
         step_renames: &[(Uuid, String)],
         step_removals: &[Uuid],
         step_adds: &[String],
@@ -798,9 +933,11 @@ impl DomainState {
         task.title = title.to_string();
         task.notes = notes;
         let changed_assignee = task.assignee != assignee;
+        let changed_base = task.base != base;
         task.scope = scope;
         task.thread = thread;
         task.assignee = assignee;
+        task.base = base;
         task.steps.retain(|step| !removals.contains(&step.id));
         for (step_id, text) in &actual_renames {
             if let Some(step) = task.steps.iter_mut().find(|step| step.id == *step_id) {
@@ -822,6 +959,12 @@ impl DomainState {
         if changed_assignee {
             task.history.push(TaskEvent {
                 kind: TaskEventKind::Assigned,
+                at,
+            });
+        }
+        if changed_base {
+            task.history.push(TaskEvent {
+                kind: TaskEventKind::BaseSet,
                 at,
             });
         }
@@ -1159,6 +1302,7 @@ impl DomainState {
                                 task.last_event_at(TaskEventKind::Completed)
                             }
                             UndoEntry::Assign { .. } => task.last_event_at(TaskEventKind::Assigned),
+                            UndoEntry::SetBase { .. } => task.last_event_at(TaskEventKind::BaseSet),
                             UndoEntry::Batch { .. } => unreachable!("batches are flattened"),
                         }
                     })

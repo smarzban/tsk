@@ -1,6 +1,6 @@
 ---
 title: Task page
-description: Read and edit a task's title, notes, project, thread, and assignee.
+description: Read and edit a task's title, notes, project, thread, assignee, and base branch.
 ---
 
 Read notes and steps, then edit the task when you need to change it.
@@ -11,7 +11,7 @@ Double-click a task or select it and press `Enter`. A double-click follows the t
 
 At 110 usable columns or wider, click a task or press `→` / `l` to open details beside the board, keeping board focus. Use `→` / `l` and `←` / `h` to move between [board and task views](/docs/board/#wide-stage-slider). From the board-focused split, `Esc` closes the details column, keeping any parked draft. Press `Enter` from the board for full screen; `Esc` or click **esc close** returns. In view mode, `ctrl+q` quits the whole board rather than closing the page; save or cancel unsaved edits first.
 
-Click the task's `T` number to copy it. The page shows its status, notes, steps, assignee, project, thread, and dates. After a dispatch it also shows the worktree, branch, relative dispatch time, and whether the worktree was removed. Its footer puts `@assignee` before `#thread`, then the project and created and updated dates. Long text wraps.
+Click the task's `T` number to copy it. The page shows its status, notes, steps, assignee, base, project, thread, and dates. After a dispatch it also shows the worktree, branch, `from <recorded ref> @ <short sha>`, relative dispatch time, and whether the worktree was removed. Its footer is ordered `@assignee · ⎇ <base> · #thread · project`, then created and updated dates. The base slot is always visible: an unset base shows the repository's default branch, for example `⎇ main (default)`. The name is cached without blocking rendering; until it is known, the slot shows `⎇ default`. Long text and the metadata footer wrap, and footer controls remain clickable on each wrapped row.
 
 ## Edit
 
@@ -31,19 +31,22 @@ Clicking Title, Notes, Scope, or Thread does not start an edit from view mode. S
 
 In view mode the footer's assignee is a quick control: click `@name` to open the assignee picker. An unassigned task shows `+ assign` there when `agents.toml` defines at least one profile; with no profiles the slot stays empty. Board rows and the peek never show `+ assign`. During an edit session, `@` and the click open the Assignee field's own list instead, so the edit's draft stays in charge.
 
+Click the footer's `⎇` slot to choose a base branch. The same picker opens from palette **set base**, or the **Base** field during editing. It offers **default (main)** (for a repository whose default is `main`) first, then deduplicated local and `origin/*` branches. The picker opens immediately with a disabled **loading branches** row while a bounded background fetch fills the list. Reopening during a lookup reuses the same project worker. Type to filter, select a branch, or choose **default** to clear the explicit base. There is no dedicated base key, and dispatch never prompts for a base.
+
 In view mode, `Tab` selects steps and **+ step**. It does not cycle task fields. Status shortcuts remain available on the task page; use `ctrl+e`, then `Tab` to reach Notes.
 
-During task editing, the forward order is Title → Notes → steps → **+ step** → Assignee → Thread → Scope → Title. `Shift+Tab` reverses the ring. The footer follows the same left-to-right order: Assignee, Thread, Scope. A field click moves the cursor and retains staged changes.
+During task editing, the forward order is Title → Notes → steps → **+ step** → Assignee → Base → Thread → Scope → Title. `Shift+Tab` reverses the ring. The footer follows the same left-to-right order: Assignee, Base, Thread, Scope. A field click moves the cursor and retains staged changes.
 
 ## Scope, thread, and assignee
 
-**Scope** is the task's project or desk. **Thread** groups related work within a project. **Assignee** optionally names one configured agent profile.
+**Scope** is the task's project or desk. **Thread** groups related work within a project. **Assignee** optionally names one configured agent profile. **Base** optionally selects an existing local or remote branch for dispatch, not a tag or commit. Without an explicit base, dispatch uses this task repository's remote default (`origin/HEAD`), regardless of where the board runs.
 
 | Field | Change it |
 | --- | --- |
 | Scope | Select it while editing, press `Enter`, choose a destination, then `Enter` again |
 | Thread | Select it, then press `Enter` or click again to edit its name |
 | Assignee | Select it, press `Enter`, choose an exact profile name or **none**, then press `Enter` again |
+| Base | Select it, press `Enter`, choose a branch or **default**, then press `Enter` again |
 
 Scope and Assignee also support cycling without opening their lists with `Space`, `←`, or `→`. Archived projects are not offered.
 
@@ -51,7 +54,7 @@ Thread is optional and follows the [thread name rules](/docs/capture/#thread-nam
 
 ## Save
 
-`Shift+Enter` saves the task's title, notes, scope, thread, assignee, and staged changes to existing steps.
+`Shift+Enter` saves the task's title, notes, scope, thread, assignee, base, and staged changes to existing steps. It revalidates the branch only when the base or project changes, so a pruned base does not block unrelated edits.
 
 | While editing | `Enter` does this |
 | --- | --- |

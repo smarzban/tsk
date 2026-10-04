@@ -54,6 +54,7 @@ pub fn parse_task_address(value: &str) -> Result<TaskAddress, String> {
 pub struct FlagDispatch {
     pub task: Option<TaskAddress>,
     pub again: bool,
+    pub base: Option<String>,
     pub state_dir: Option<PathBuf>,
     pub help: bool,
 }
@@ -65,6 +66,7 @@ pub fn parse_flag_dispatch(args: &[String]) -> Result<FlagDispatch, String> {
     let mut parsed = FlagDispatch {
         task: None,
         again: false,
+        base: None,
         state_dir: None,
         help: false,
     };
@@ -78,6 +80,14 @@ pub fn parse_flag_dispatch(args: &[String]) -> Result<FlagDispatch, String> {
             "--again" => {
                 parsed.again = true;
                 index += 1;
+            }
+            flag if flag.starts_with("--base=") => {
+                parsed.base = Some(flag["--base=".len()..].to_owned());
+                index += 1;
+            }
+            "--base" => {
+                parsed.base = Some(value(flag)?);
+                index += 2;
             }
             "--help" => {
                 parsed.help = true;
@@ -475,6 +485,8 @@ pub struct FlagEdit {
     pub notes: Option<String>,
     pub assignee: Option<String>,
     pub unassign: bool,
+    pub base: Option<String>,
+    pub clear_base: bool,
     pub state_dir: Option<PathBuf>,
     pub help: bool,
 }
@@ -491,6 +503,8 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
         notes: None,
         assignee: None,
         unassign: false,
+        base: None,
+        clear_base: false,
         state_dir: None,
         help: false,
     };
@@ -533,6 +547,18 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
                 parsed.unassign = true;
                 index += 1;
             }
+            flag if flag.starts_with("--base=") => {
+                parsed.base = Some(flag["--base=".len()..].to_owned());
+                index += 1;
+            }
+            "--base" => {
+                parsed.base = Some(value(flag)?);
+                index += 2;
+            }
+            "--clear-base" => {
+                parsed.clear_base = true;
+                index += 1;
+            }
             "--help" => {
                 parsed.help = true;
                 index += 1;
@@ -558,14 +584,17 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
     if parsed.unassign && parsed.assignee.is_some() {
         return Err("--unassign cannot be used with --assignee".into());
     }
+    if parsed.clear_base && parsed.base.is_some() {
+        return Err("--clear-base cannot be used with --base".into());
+    }
     Ok(parsed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_flag_edit, parse_flag_status, parse_flag_steps, parse_flag_trash, parse_task_address,
-        FlagEdit, FlagStatus, TaskAddress, TrashAction,
+        parse_flag_add, parse_flag_dispatch, parse_flag_edit, parse_flag_status, parse_flag_steps,
+        parse_flag_trash, parse_task_address, FlagEdit, FlagStatus, TaskAddress, TrashAction,
     };
     use crate::cli::steps::StepsAction;
     use crate::domain::HumanStatus;
@@ -680,10 +709,64 @@ mod tests {
                 notes: Some("-5 degrees".into()),
                 assignee: None,
                 unassign: false,
+                base: None,
+                clear_base: false,
                 state_dir: None,
                 help: false,
             }
         );
+    }
+
+    #[test]
+    fn edit_and_dispatch_parse_base_flags() {
+        let add = parse_flag_add(&[
+            "tsk".into(),
+            "add".into(),
+            "--title".into(),
+            "new".into(),
+            "--clear-base".into(),
+        ])
+        .expect("parse add clear base");
+        assert!(add.clear_base);
+        assert!(parse_flag_add(&[
+            "tsk".into(),
+            "add".into(),
+            "--title".into(),
+            "new".into(),
+            "--base".into(),
+            "main".into(),
+            "--clear-base".into(),
+        ])
+        .is_err());
+
+        let edit = parse_flag_edit(&[
+            "tsk".into(),
+            "edit".into(),
+            "T12".into(),
+            "--base=origin/release".into(),
+        ])
+        .expect("parse edit base");
+        assert_eq!(edit.base.as_deref(), Some("origin/release"));
+        assert!(!edit.clear_base);
+        assert!(parse_flag_edit(&[
+            "tsk".into(),
+            "edit".into(),
+            "T12".into(),
+            "--base".into(),
+            "main".into(),
+            "--clear-base".into(),
+        ])
+        .is_err());
+
+        let dispatch = parse_flag_dispatch(&[
+            "tsk".into(),
+            "dispatch".into(),
+            "T12".into(),
+            "--base".into(),
+            "release".into(),
+        ])
+        .expect("parse dispatch base");
+        assert_eq!(dispatch.base.as_deref(), Some("release"));
     }
 
     #[test]
@@ -751,6 +834,10 @@ pub struct FlagAdd {
     /// Normalized agent name, exact profile validation happens at execution.
     pub assignee: Option<String>,
     pub unassign: bool,
+    /// Explicit dispatch base branch, validated after the task scope resolves.
+    pub base: Option<String>,
+    /// Explicitly keep the new task on default base resolution.
+    pub clear_base: bool,
     pub global: bool,
     pub json: bool,
     pub state_dir: Option<PathBuf>,
@@ -772,6 +859,8 @@ pub fn parse_flag_add(args: &[String]) -> Result<FlagAdd, String> {
         thread: None,
         assignee: None,
         unassign: false,
+        base: None,
+        clear_base: false,
         global: false,
         json: false,
         state_dir: None,
@@ -853,6 +942,21 @@ pub fn parse_flag_add(args: &[String]) -> Result<FlagAdd, String> {
                 parsed.has_item_flags = true;
                 index += 1;
             }
+            flag if flag.starts_with("--base=") => {
+                parsed.base = Some(flag["--base=".len()..].to_owned());
+                parsed.has_item_flags = true;
+                index += 1;
+            }
+            "--base" => {
+                parsed.base = Some(value(flag)?);
+                parsed.has_item_flags = true;
+                index += 2;
+            }
+            "--clear-base" => {
+                parsed.clear_base = true;
+                parsed.has_item_flags = true;
+                index += 1;
+            }
             "--desk" => {
                 parsed.global = true;
                 parsed.has_item_flags = true;
@@ -891,6 +995,9 @@ pub fn parse_flag_add(args: &[String]) -> Result<FlagAdd, String> {
     }
     if parsed.unassign && parsed.assignee.is_some() {
         return Err("--unassign cannot be used with --assignee".into());
+    }
+    if parsed.clear_base && parsed.base.is_some() {
+        return Err("--clear-base cannot be used with --base".into());
     }
     if parsed.has_item_flags && parsed.file.is_some() {
         return Err("item flags cannot be used with --file".into());

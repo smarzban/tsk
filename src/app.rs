@@ -194,6 +194,7 @@ pub fn board_frame(
     wait: impl FnOnce(Duration) -> io::Result<bool>,
     active_animations: bool,
 ) -> io::Result<FramePoll> {
+    model.poll_base_picker_results();
     paint(model)?;
     if wait(board_poll_duration(active_animations))? {
         Ok(FramePoll::Event)
@@ -333,6 +334,8 @@ fn run_board_loop(
         // after one settled-size paint so a key typed mid-drag is not dropped.
         let mut pending_event: Option<Event> = None;
         loop {
+            // Apply completed branch discovery only on the board thread, before painting.
+            model.poll_base_picker_results();
             // Settle, paint, then wait. The wait is only the Frame Scheduler's idle floor.
             // All three are one call so the frame is painted before the wait can time out into
             // the `continue` below.
@@ -1040,6 +1043,7 @@ fn board_keyboard_intent(
         BoardInputMode::EditTitle
             | BoardInputMode::EditNotes
             | BoardInputMode::EditThread
+            | BoardInputMode::SelectBase
             | BoardInputMode::EditScope
             | BoardInputMode::EditAssignee
             | BoardInputMode::FormDropdown
@@ -1135,6 +1139,7 @@ pub fn apply_board_intent_with_save_recovery(
                     model.finish_pending_assignee_assignment();
                     model.sync_from_domain(domain);
                     model.finish_form_assignee_sync(true);
+                    model.finish_form_base_sync(true);
                     model.end_save_recovery(SaveResolution::Retried);
                     if !model.has_saved_task() {
                         model.set_message("saved");
@@ -1150,6 +1155,7 @@ pub fn apply_board_intent_with_save_recovery(
                 model.sync_from_domain(domain);
                 model.finish_pending_assignee_assignment();
                 model.finish_form_assignee_sync(false);
+                model.finish_form_base_sync(false);
                 let cancelled_quick_add = model.end_save_recovery(SaveResolution::Cancelled);
                 if !cancelled_quick_add {
                     model.set_message("save cancelled");
@@ -1255,6 +1261,7 @@ pub fn apply_board_intent_with_save_recovery(
     }
     model.sync_from_domain(domain);
     model.finish_form_assignee_sync(true);
+    model.finish_form_base_sync(true);
     Ok(IntentOutcome::Persisted)
 }
 
@@ -1982,10 +1989,13 @@ pub fn offer_cleanup_prompt_with_host(
             .and_then(|()| domain.complete_after_cleanup(id))
             .map_err(|error| CleanupError::Store(error.to_string()))?;
         return Ok(CleanupOffer::MissingConverged(CleanupResult {
+            warning: preview.inspection.warning,
+            branch_reason: Some(dispatch::BranchRetentionReason::MissingWorktree),
             number: preview.number,
             title: preview.title,
             worktree_path: preview.record.worktree,
             branch_name: preview.record.branch,
+            base: preview.record.base.or(preview.record.base_ref),
             workspace_id: preview.record.herdr_workspace_id,
             worktree: WorktreeCleanup::Missing,
             branch: BranchCleanup::Kept,
@@ -1996,8 +2006,15 @@ pub fn offer_cleanup_prompt_with_host(
         task_id: id,
         worktree: preview.record.worktree,
         branch: preview.record.branch,
+        base: preview
+            .record
+            .base
+            .or(preview.record.base_ref)
+            .unwrap_or_else(|| "unknown".to_string()),
         dirty: preview.inspection.dirty,
         branch_merged: preview.inspection.branch_merged,
+        base_available: preview.inspection.base_available,
+        warning: preview.inspection.warning,
         workspace_exists: preview.inspection.workspace_exists,
     });
     Ok(CleanupOffer::Prompted)
@@ -2072,10 +2089,12 @@ fn run_board_dispatch(
                 name_agent(naming);
             }
             model.sync_from_domain(domain);
-            model.set_message(format!(
-                "dispatched T{} to @{}",
-                result.number, result.assignee
-            ));
+            let mut message = format!("dispatched T{} to @{}", result.number, result.assignee);
+            if let Some(warning) = result.warning {
+                message.push_str(" · ");
+                message.push_str(&warning);
+            }
+            model.set_message(message);
             record_notice_dismissals_without_blocking_persist(store, domain);
         }
         Err(DispatchError::NoAssignee) => model.set_message(dispatch::BOARD_NO_ASSIGNEE),
@@ -7130,6 +7149,7 @@ mod tests {
             BoardInputMode::EditNotes,
             BoardInputMode::TaskPage,
             BoardInputMode::EditAssignee,
+            BoardInputMode::SelectBase,
             BoardInputMode::SelectThread,
             BoardInputMode::EditScope,
             BoardInputMode::EditTitle,
@@ -7140,6 +7160,7 @@ mod tests {
         for expected in [
             BoardInputMode::EditScope,
             BoardInputMode::SelectThread,
+            BoardInputMode::SelectBase,
             BoardInputMode::EditAssignee,
             BoardInputMode::TaskPage,
             BoardInputMode::EditNotes,
@@ -7170,6 +7191,7 @@ mod tests {
         for expected in [
             BoardInputMode::CapturePage,
             BoardInputMode::EditAssignee,
+            BoardInputMode::SelectBase,
             BoardInputMode::EditThread,
             BoardInputMode::EditScope,
             BoardInputMode::EditTitle,

@@ -8,7 +8,7 @@ version: 1.5.0
 
 tsk is the user's task board. Tasks have a human status (`open` · `ready` · `started` · `blocked` ·
 `review` · `done`), live on the **desk** (no project) or in a **project** (a Git repo root, named
-by its basename), and may carry a **thread** label and an optional **assignee** that exactly matches a configured agent profile. The user sees the board in a TUI; you never
+by its basename), and may carry a **thread** label and an optional **assignee** that exactly matches a configured agent profile, plus an optional dispatch **base** branch. The user sees the board in a TUI; you never
 open it. Every read and write goes through the CLI, and the user's board updates live.
 
 `tsk --help` is the syntax reference: commands, statuses, and every flag. Run `tsk help <command>`
@@ -30,7 +30,7 @@ and stop. Never run an installer, package manager, or source build unless they a
 | inbox, untriaged | `open` | `tsk list --open --json` |
 | other projects, everything live | the five live statuses | `tsk list --all --json`, `--desk`, `-p <project>` |
 | done, archived, deleted | | `tsk list --done --json`, `--archived`, `--deleted` (each may combine with a scope flag) |
-| one task, in full | | `tsk list T12 --json` (notes, steps with `short_id`, assignee, thread) |
+| one task, in full | | `tsk list T12 --json` (notes, steps with `short_id`, assignee, base, thread, dispatch) |
 
 `T12`, `t12`, `12`, and the UUID all address the same task. Prefer `T12`, it is what the user sees.
 New tasks start `open` in the inbox; `ready` means the user picked it.
@@ -60,6 +60,11 @@ New tasks start `open` in the inbox; `ready` means the user picked it.
 9. **Assignees are exact agent profiles.** `--assignee` normalizes to lowercase, then must match a
    profile from `agents.toml`; unknown names refuse with `unknown-agent`. Use `--unassign` to clear.
    `tsk list --assignee <name> --json` filters assigned work.
+10. **Bases are branches in the task's repo.** `tsk add/edit --base <branch>` sets an explicit local
+    or remote branch, never a tag or bare commit; unknown branches refuse with `unknown-base`.
+    `--clear-base` restores the repository's remote default (`origin/HEAD`). Where the CLI runs
+    never supplies the dispatch base. `tsk dispatch --base <branch>` overrides a first launch, not
+    the task. `--again` always keeps the recorded base and ignores overrides or later task edits.
 
 ## Exit contract (all commands)
 
@@ -83,7 +88,7 @@ New tasks start `open` in the inbox; `ready` means the user picked it.
 **Start work on a task.** `tsk list T12 --json` for notes and steps. `tsk status T12 start`.
 Tick steps as you go: `tsk steps T12 toggle <short_id>`.
 
-**Dispatch assigned work.** When the user asks you to launch an assigned task, read it first, then run `tsk dispatch T12`. A previous launch refuses with `already-dispatched`; use `--again` only when the user explicitly wants the recorded Herdr workspace reused. After an uncertain result, read the task before retrying because an agent may already be running. Watch the launched agent with `herdr agent get t12-<assignee>` (tsk names it when Herdr detects it). After review and merge, the human runs `tsk clean T12`; an agent never cleans the worktree it is running in.
+**Dispatch assigned work.** When the user asks you to launch an assigned task, read it first, then run `tsk dispatch T12`. A previous launch refuses with `already-dispatched`; use `--again` only when the user explicitly wants the recorded Herdr workspace reused. After an uncertain result, read the task before retrying because an agent may already be running. Watch the launched agent with `herdr agent get t12-<assignee>` (tsk names it when Herdr detects it). A first dispatch uses a one-off `--base` override, then the task base, otherwise the task repository's remote default (`origin/HEAD`), never the current checkout. Fetch is bounded and best effort; offline fallback is reported. Explicit remote-qualified bases are fetched before CLI validation, including add/edit. A local base with a remote upstream starts from that upstream; the dispatch records its actual ref and starting commit as `dispatch.base` and `dispatch.base_commit`, plus exact namespace `dispatch.base_ref` in direct-task JSON (the optional full record follows `thread`; filtered listings omit it). `--again` ignores base overrides and later task-base changes, reusing the recorded base. For a cleaned record it reopens a retained branch or recreates a removed branch from the original `base_commit`, falling back to the recorded base ref for legacy records. `{base}` in agent command and prompt templates is the short base branch name, for example `dispatch` for `origin/dispatch`. After review and merge, the human runs `tsk clean T12`; an agent never cleans the worktree it is running in. Cleanup fetches the recorded base before checking ancestry, so a remote merge counts without a local pull. Failed cleanup fetches warn that merged status used cached refs, in human and JSON output. A deleted or pruned base keeps the branch without preventing clean worktree removal. Only failed ancestry gets a squash hint; branches checked out elsewhere or changed during cleanup get their own retention reason. Manual deletion is the human's decision.
 
 **Hand back.** `tsk status T12 review`, and say in one line what you did and what to look at.
 Blocked on the user: `tsk status T12 blocked` and ask the question.
@@ -92,7 +97,7 @@ Blocked on the user: `tsk status T12 blocked` and ask the question.
 "…"` per step, in order. Do not add steps for your own bookkeeping.
 
 **Capture many.** `cat plan.json | tsk add` with
-`[{"title": "…", "notes": "…", "project": "…", "thread": "…", "assignee": "…"}]`; only `title` is required, an
+`[{"title": "…", "notes": "…", "project": "…", "thread": "…", "assignee": "…", "base": "…"}]`; only `title` is required, an
 omitted `project` takes the default scope. The result lists `created`, `existing` and `failed`
 items; on exit 1 retry only the `failed` items, never the whole plan. Full shape:
 https://gettsk.sh/docs/cli.md#json-plans.

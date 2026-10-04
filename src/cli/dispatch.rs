@@ -12,15 +12,17 @@ use crate::store::{default_state_dir, TaskStore};
 pub fn run(
     target: TaskAddress,
     again: bool,
+    base_override: Option<String>,
     state_dir: Option<PathBuf>,
 ) -> Result<DispatchResult, DispatchError> {
     dispatch::ensure_platform_supported()?;
     let mut host = SystemDispatchHost;
-    let result = run_with_host(
+    let result = run_with_host_base(
         target,
         again,
         state_dir,
         dispatch::running_inside_herdr(),
+        base_override.as_deref(),
         &mut host,
     )?;
     if let Some(naming) = result.naming.clone() {
@@ -53,6 +55,17 @@ pub fn run_with_host(
     in_herdr: bool,
     host: &mut impl DispatchHost,
 ) -> Result<DispatchResult, DispatchError> {
+    run_with_host_base(target, again, state_dir, in_herdr, None, host)
+}
+
+pub fn run_with_host_base(
+    target: TaskAddress,
+    again: bool,
+    state_dir: Option<PathBuf>,
+    in_herdr: bool,
+    base_override: Option<&str>,
+    host: &mut impl DispatchHost,
+) -> Result<DispatchResult, DispatchError> {
     let state_dir = state_dir.unwrap_or_else(default_state_dir);
     let store = TaskStore::new(&state_dir);
     let mut state = store
@@ -66,7 +79,15 @@ pub fn run_with_host(
         .ok_or(DispatchError::UnknownTask)?;
     let profiles = AgentProfiles::load(&state_dir)
         .map_err(|error| DispatchError::AgentConfig(error.to_string()))?;
-    let result = dispatch::run_with_host(&mut state, id, &profiles, again, in_herdr, host)?;
+    let result = dispatch::run_with_host_base(
+        &mut state,
+        id,
+        &profiles,
+        again,
+        in_herdr,
+        base_override,
+        host,
+    )?;
     store
         .reload_merge_save(&mut state)
         .map_err(|error| DispatchError::Store(error.to_string()))?;

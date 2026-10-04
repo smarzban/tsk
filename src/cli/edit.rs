@@ -16,6 +16,8 @@ pub struct EditFields {
     pub notes: Option<String>,
     /// `None` leaves it unchanged, `Some(None)` clears it.
     pub assignee: Option<Option<String>>,
+    /// `None` leaves it unchanged, `Some(None)` clears it.
+    pub base: Option<Option<String>>,
 }
 
 /// A successful edit, including an idempotent repeat.
@@ -33,6 +35,7 @@ pub enum EditError {
     EmptyTitle,
     InvalidTitle,
     UnknownAgent(String),
+    UnknownBase(String),
     AgentConfig(String),
     Store(String),
 }
@@ -45,6 +48,7 @@ impl EditError {
             Self::EmptyTitle => "empty-title",
             Self::InvalidTitle => "invalid-title",
             Self::UnknownAgent(_) => "unknown-agent",
+            Self::UnknownBase(_) => "unknown-base",
             Self::AgentConfig(_) => "agent-config",
             Self::Store(_) => "store-error",
         }
@@ -100,6 +104,7 @@ pub fn run(
                     scope: task.scope.clone(),
                     thread: task.thread.clone(),
                     assignee: task.assignee.clone(),
+                    base: task.base.clone(),
                     soft_deleted: task.soft_deleted,
                 });
             Ok(apply(state, found, &fields))
@@ -115,6 +120,7 @@ struct Found {
     scope: TaskScope,
     thread: Option<String>,
     assignee: Option<String>,
+    base: Option<String>,
     soft_deleted: bool,
 }
 
@@ -147,7 +153,26 @@ fn apply(
         .assignee
         .clone()
         .unwrap_or_else(|| found.assignee.clone());
-    if next_title == found.title && next_notes == found.notes && next_assignee == found.assignee {
+    let next_base = fields.base.clone().unwrap_or_else(|| found.base.clone());
+    if let Some(base) = fields.base.as_ref().and_then(|value| value.as_deref()) {
+        let TaskScope::Project { path } = &found.scope else {
+            return (
+                Err(EditError::UnknownBase(
+                    "base requires a project task".into(),
+                )),
+                false,
+            );
+        };
+        if let Err(error) = crate::git_base::validate_branch_fresh(std::path::Path::new(path), base)
+        {
+            return (Err(EditError::UnknownBase(error)), false);
+        }
+    }
+    if next_title == found.title
+        && next_notes == found.notes
+        && next_assignee == found.assignee
+        && next_base == found.base
+    {
         return (
             Ok(EditResult {
                 number,
@@ -156,13 +181,14 @@ fn apply(
             false,
         );
     }
-    match state.edit_with_assignee(
+    match state.edit_with_assignee_and_base(
         found.id,
         &next_title,
         next_notes,
         found.scope,
         found.thread,
         next_assignee,
+        next_base,
     ) {
         Ok(()) => (
             Ok(EditResult {

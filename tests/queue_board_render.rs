@@ -50,6 +50,7 @@ fn task(id: u128, title: &str, status: HumanStatus, scope: TaskScope, secs_ago: 
         notes: None,
         thread: None,
         assignee: None,
+        base: None,
         dispatch: None,
         status,
         scope,
@@ -1492,9 +1493,52 @@ fn assigned_task_renders_on_the_row_and_before_thread_in_the_page_footer() {
     assert_eq!(model.selected_id(), Some(id));
     let page_body = board_rows(&model, 80, 24).join("\n");
     assert!(
-        page_body.contains("@reviewer · #release · desk"),
-        "task footer must order assignee, thread, project:\n{page_body}"
+        page_body.contains("@reviewer · ⎇ default · #release · desk"),
+        "task footer must order assignee, base, thread, project:\n{page_body}"
     );
+}
+
+#[test]
+fn task_page_footer_wraps_long_base_and_keeps_all_metadata_at_fifty_columns() {
+    let mut domain = DomainState::new();
+    let id = domain
+        .create_assigned(
+            "wrapped footer",
+            Some("notes remain above the footer".into()),
+            project("/repos/界desk"),
+            ProvenanceOrigin::Manual,
+            Some("release".into()),
+            Some("审阅者".into()),
+        )
+        .expect("create");
+    let base = "origin/feature-a-branch-long-enough-to-cross-the-footer-row-boundary";
+    domain.set_base(id, Some(base.into())).expect("base");
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from("/repos/界desk")));
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+    let rows = board_rows(&model, 50, 24);
+    let first = rows
+        .iter()
+        .position(|row| row.contains("@审"))
+        .expect("assignee");
+    let footer: String = rows[first..]
+        .iter()
+        .take_while(|row| !row.contains('─'))
+        .flat_map(|row| row.chars().filter(|ch| !ch.is_whitespace()))
+        .collect();
+    let expected = format!("@审阅者·⎇{base}·#release·界desk·created");
+    assert!(
+        footer.starts_with(&expected),
+        "entire ordered footer must wrap:\n{}",
+        rows.join("\n")
+    );
+    assert!(
+        footer.contains("ago·updated") && footer.ends_with("ago"),
+        "both dates must remain visible:\n{}",
+        rows.join("\n")
+    );
+    assert!(rows[..first]
+        .iter()
+        .any(|row| row.contains("notes remain above")));
 }
 
 #[test]
@@ -1507,11 +1551,15 @@ fn dispatched_started_task_uses_the_bullseye_glyph_on_rows_peek_and_page_only_wh
         60,
     );
     dispatched.number = Some(70);
+    dispatched.base = Some("origin/main".into());
     dispatched.dispatch = Some(Dispatch {
         argv: vec!["agent".into()],
         worktree: "/tmp/tsk-t70".into(),
         branch: "tsk/t70-dispatched-task".into(),
-        base: None,
+        base: Some("origin/main".into()),
+        base_commit: Some("0123456789abcdef".into()),
+        base_remote: None,
+        base_ref: None,
         herdr_workspace_id: "workspace-70".into(),
         at: at_secs_ago(30),
         cleaned: false,
@@ -1532,6 +1580,10 @@ fn dispatched_started_task_uses_the_bullseye_glyph_on_rows_peek_and_page_only_wh
     .expect("open peek");
     let peek = board_rows(&model, 80, 24).join("\n");
     assert!(peek.contains("◉ T70 dispatched task"), "peek row:\n{peek}");
+    assert!(
+        peek.contains("⎇ origin/main"),
+        "peek must show only an explicit task base:\n{peek}"
+    );
 
     apply_intent(
         &mut DomainState::new(),
@@ -1555,6 +1607,52 @@ fn dispatched_started_task_uses_the_bullseye_glyph_on_rows_peek_and_page_only_wh
     assert!(
         !review.contains("◉ T70"),
         "stale dispatch must not override review:\n{review}"
+    );
+}
+
+#[test]
+fn task_page_shows_default_base_and_recorded_dispatch_origin() {
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "dispatch details",
+            None,
+            project("/repos/tsk"),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    domain
+        .record_dispatch(
+            id,
+            Dispatch {
+                argv: vec!["agent".into()],
+                worktree: "/tmp/tsk-dispatch-details".into(),
+                branch: "tsk/dispatch-details".into(),
+                base: Some("origin/main".into()),
+                base_commit: Some("0123456789abcdef".into()),
+                base_remote: None,
+                base_ref: None,
+                herdr_workspace_id: "workspace-details".into(),
+                at: at_secs_ago(30),
+                cleaned: false,
+            },
+        )
+        .expect("dispatch");
+    let mut model = BoardModel::from_domain(&domain, None);
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+    let page = board_rows(&model, 80, 24).join("\n");
+    assert!(
+        page.contains("⎇ default"),
+        "unset task base must always show a nonblocking default fallback:\n{page}"
+    );
+    assert!(
+        !page.contains("⎇ default (default)"),
+        "unknown default name must not repeat itself:\n{page}"
+    );
+    assert!(
+        page.contains("from origin/main @ 0123456"),
+        "dispatch provenance must show the recorded ref and short commit:\n{page}"
     );
 }
 
@@ -1583,6 +1681,8 @@ fn task_page_header_shows_identifier_not_footer() {
         meta: "desk · created 1m ago · updated 1m ago".to_string(),
         meta_assignee_x: None,
         meta_assignee_width: 0,
+        meta_base_x: None,
+        meta_base_width: 0,
         meta_scope_x: 0,
         meta_scope_width: 4,
         thread_slot_width: None,
@@ -1693,6 +1793,8 @@ fn task_page_renders_header_notes_and_meta_as_a_full_takeover_in_both_tiers() {
         meta: "tsk \u{b7} created 1h ago \u{b7} updated 1h ago".to_string(),
         meta_assignee_x: None,
         meta_assignee_width: 0,
+        meta_base_x: None,
+        meta_base_width: 0,
         meta_scope_x: 0,
         meta_scope_width: 11,
         thread_slot_width: None,
@@ -1707,13 +1809,14 @@ fn task_page_renders_header_notes_and_meta_as_a_full_takeover_in_both_tiers() {
             .map(|row| trimmed(row))
             .collect::<Vec<_>>()
             .join("\n");
-        // The meta footer clips at the 40x10 floor, so "updated" is only required at the
-        // 78-column standard width where the full line fits.
-        let mut expected = vec!["Rename this task", "ready", "first draft note", "created"];
-        if width >= 78 {
-            expected.push("updated");
-        }
-        for expected in expected {
+        // Even the 40x10 floor wraps dates instead of clipping the last field.
+        for expected in [
+            "Rename this task",
+            "ready",
+            "first draft note",
+            "created",
+            "updated",
+        ] {
             assert!(
                 body.contains(expected),
                 "{width}x{height} task page omitted {expected:?}:\n{body}"
@@ -1795,8 +1898,8 @@ fn task_page_paints_steps_section_between_notes_and_footer() {
         shown.join("\n")
     );
 
-    // The compact tier stays operable: the notes and their two-row separation remain
-    // visible at the head, while the steps section can be reached by scrolling. Every
+    // The compact tier stays operable: notes and the first spacing row remain visible,
+    // while the rest of the content scrolls above the wrapped metadata. Every
     // scroll position must preserve the fixed chrome and the frame width.
     let compact = board_rows(&model, 40, 10);
     let compact_shown: Vec<String> = compact.iter().map(|row| trimmed(row)).collect();
@@ -1805,9 +1908,8 @@ fn task_page_paints_steps_section_between_notes_and_footer() {
         .position(|row| row.contains("the notes body"))
         .expect("compact page omitted the notes");
     assert!(
-        list_body(&compact[compact_note + 1]).is_empty()
-            && list_body(&compact[compact_note + 2]).is_empty(),
-        "compact page must keep two blank rows before steps:\n{}",
+        list_body(&compact[compact_note + 1]).is_empty(),
+        "compact page must keep visible spacing above the wrapped footer:\n{}",
         compact_shown.join("\n")
     );
 
@@ -1914,8 +2016,8 @@ fn task_page_without_steps_reaches_its_trailing_add_target() {
     }
 }
 
-/// At the 40x10 compact floor, a notes edit keeps its draft row visible and preserves
-/// the two blank rows before the steps section. The notes editor owns the viewport, so
+/// At the 40x10 compact floor, a notes edit keeps its draft row and visible spacing
+/// above the wrapped footer. The notes editor owns the viewport, so
 /// below-fold steps become reachable after Esc returns to page view.
 #[test]
 fn task_page_notes_edit_keeps_a_visible_row_and_spacing_at_the_compact_floor() {
@@ -1951,8 +2053,8 @@ fn task_page_notes_edit_keeps_a_visible_row_and_spacing_at_the_compact_floor() {
         .position(|row| row.contains("draft line under edit"))
         .expect("notes edit row missing");
     assert!(
-        list_body(&rows[note_row + 1]).is_empty() && list_body(&rows[note_row + 2]).is_empty(),
-        "notes edit must preserve two blank rows before steps:\n{body}"
+        list_body(&rows[note_row + 1]).is_empty(),
+        "notes edit must preserve visible spacing above the wrapped footer:\n{body}"
     );
     assert!(
         rows.iter().all(|row| row_display_width(row) == 40),
@@ -2229,7 +2331,10 @@ fn shift_tab_from_scope_resets_notes_stream_origin_and_aligns_caret() {
     .expect("Shift+Tab reaches Thread from Scope");
     assert_eq!(model.input_mode(), BoardInputMode::SelectThread);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
-        .expect("Shift+Tab reaches Assignee from Thread");
+        .expect("Shift+Tab reaches Base from Thread");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
+        .expect("Shift+Tab reaches Assignee from Base");
     assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
         .expect("Shift+Tab selects the trailing add target");
@@ -5869,4 +5974,86 @@ fn peek_project_label_wraps_all_content_below_notes() {
     }
     assert!(continuation_count >= 2);
     assert_eq!(copied, label);
+}
+
+#[test]
+fn unmerged_cleanup_card_explains_squash_retention_without_clipping_the_hint() {
+    use tsk_tui::ui::board::CleanupPrompt;
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "cleanup",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    let mut model = BoardModel::from_domain(&domain, None);
+    model.begin_cleanup_prompt(CleanupPrompt {
+        task_id: id,
+        worktree: "/tmp/worktree".into(),
+        branch: "tsk/t1-cleanup".into(),
+        base: "origin/main".into(),
+        dirty: false,
+        branch_merged: false,
+        base_available: true,
+        warning: None,
+        workspace_exists: true,
+    });
+    for width in [40, 80] {
+        let rows = board_rows(&model, width, 24);
+        let painted = rows.join("\n");
+        assert!(painted.contains("squash-merged?"), "{width}: {painted}");
+        assert!(painted.contains("delete by hand"), "{width}: {painted}");
+        assert!(painted.contains("base origin/main"), "{width}: {painted}");
+    }
+}
+
+#[test]
+fn cleanup_card_exposes_cached_ref_warning_and_missing_base_without_a_squash_hint() {
+    use tsk_tui::ui::board::CleanupPrompt;
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "cleanup warning",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    for (available, merged, warning) in [
+        (
+            true,
+            true,
+            Some("fetch failed; merged status computed from cached refs"),
+        ),
+        (false, false, None),
+    ] {
+        let mut model = BoardModel::from_domain(&domain, None);
+        model.begin_cleanup_prompt(CleanupPrompt {
+            task_id: id,
+            worktree: "/tmp/worktree".into(),
+            branch: "tsk/t1-cleanup".into(),
+            base: "origin/main".into(),
+            dirty: false,
+            branch_merged: merged,
+            base_available: available,
+            warning: warning.map(str::to_owned),
+            workspace_exists: true,
+        });
+        for width in [40, 80] {
+            let painted = board_rows(&model, width, 24).join("\n");
+            assert!(!painted.contains("squash-merged?"), "{width}: {painted}");
+            assert!(
+                painted.contains(if available {
+                    "cached refs"
+                } else {
+                    "unavailable"
+                }),
+                "{width}: {painted}"
+            );
+        }
+    }
 }

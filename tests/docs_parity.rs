@@ -57,7 +57,7 @@ fn promised_labels(cell: &str) -> Vec<String> {
     let mut labels = Vec::new();
     for part in cell.split(',') {
         let part = part.trim().to_lowercase();
-        if part == "set assignee" {
+        if matches!(part.as_str(), "set assignee" | "set base") {
             labels.push(part);
         } else if let Some(rest) = part.strip_prefix("set ") {
             // "Set open/ready/started/blocked/review" is five status commands.
@@ -92,6 +92,9 @@ fn selected_model(dispatched: bool) -> BoardModel {
                     worktree: "/tmp/worktree".into(),
                     branch: "tsk/t1-palette-witness".into(),
                     base: None,
+                    base_commit: None,
+                    base_remote: None,
+                    base_ref: None,
                     herdr_workspace_id: "w1".into(),
                     at: SystemTime::now(),
                     cleaned: false,

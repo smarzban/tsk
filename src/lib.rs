@@ -11,6 +11,7 @@ pub mod delivery;
 pub mod dispatch;
 pub mod domain;
 pub(crate) mod fsperm;
+pub mod git_base;
 pub mod guides;
 pub mod save_recovery;
 pub mod scope;

@@ -32,6 +32,7 @@ pub enum TaskEventKind {
     StepRenamed,
     StepRemoved,
     Assigned,
+    BaseSet,
     Dispatched,
     Cleaned,
 }

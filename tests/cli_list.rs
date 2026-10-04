@@ -13,7 +13,7 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tsk_tui::cli::{run_with, run_with_terminal_width};
-use tsk_tui::domain::{DomainState, HumanStatus, ProvenanceOrigin, TaskScope};
+use tsk_tui::domain::{Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope};
 use tsk_tui::store::TaskStore;
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -195,6 +195,59 @@ fn list_filters_by_assignee_and_json_includes_nullable_assignee() {
     assert_eq!(rows.len(), 2);
     assert!(rows.iter().any(|row| row["assignee"] == "reviewer"));
     assert!(rows.iter().any(|row| row["assignee"].is_null()));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn list_human_and_json_include_each_tasks_optional_base() {
+    let _env = env_lock();
+    let dir = temp_state_dir("base");
+    let mut state = DomainState::new();
+    let based = state
+        .create(
+            "based",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create based");
+    state
+        .set_base(based, Some("release".into()))
+        .expect("set base");
+    state
+        .create(
+            "defaulted",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create defaulted");
+    TaskStore::new(&dir).save(&state).expect("save");
+
+    let human = list(&[
+        "tsk".into(),
+        "list".into(),
+        "--state-dir".into(),
+        state_dir_arg(&dir),
+        "--all".into(),
+    ]);
+    assert_eq!(human.code, 0, "{human:?}");
+    assert!(human.stdout.contains("based ⎇ release"), "{human:?}");
+
+    let json = list(&[
+        "tsk".into(),
+        "list".into(),
+        "--state-dir".into(),
+        state_dir_arg(&dir),
+        "--all".into(),
+        "--json".into(),
+    ]);
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&json.stdout).expect("json rows");
+    assert!(rows.iter().any(|row| row["base"] == "release"));
+    assert!(rows.iter().any(|row| row["base"].is_null()));
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -623,7 +676,7 @@ fn list_all_groups_each_status_by_concise_scope_for_every_filter() {
                 .keys()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
-            vec!["assignee", "id", "number", "project", "status", "thread", "title"]
+            vec!["assignee", "base", "id", "number", "project", "status", "thread", "title"]
         );
     }
     let done_human = list(&[
@@ -1493,6 +1546,7 @@ fn list_equals_project_form_accepts_dash_leading_scope() {
             "status": "ready",
             "project": "-maintenance",
             "assignee": null,
+            "base": null,
             "thread": null,
         })]
     );
@@ -1670,13 +1724,61 @@ fn list_task_prints_step_lines_with_state_and_short_id() {
     ]);
     assert_eq!(json.code, 0);
     let expected_json = format!(
-        "[{{\"id\":\"{}\",\"number\":1,\"project\":null,\"status\":\"open\",\"title\":\"steps target\",\"notes\":\"First note\\nSecond note\",\"steps\":[{{\"id\":\"{}\",\"done\":true,\"short_id\":\"aaa1\",\"text\":\"First step\"}},{{\"id\":\"aaa22222-0000-4000-8000-000000000002\",\"done\":false,\"short_id\":\"aaa2\",\"text\":\"Second step\"}}],\"assignee\":null,\"thread\":\"release\"}}]\n",
+        "[{{\"id\":\"{}\",\"number\":1,\"project\":null,\"status\":\"open\",\"title\":\"steps target\",\"notes\":\"First note\\nSecond note\",\"steps\":[{{\"id\":\"{}\",\"done\":true,\"short_id\":\"aaa1\",\"text\":\"First step\"}},{{\"id\":\"aaa22222-0000-4000-8000-000000000002\",\"done\":false,\"short_id\":\"aaa2\",\"text\":\"Second step\"}}],\"assignee\":null,\"base\":null,\"thread\":\"release\"}}]\n",
         task, first_step.id
     );
     assert_eq!(
         json.stdout, expected_json,
         "direct JSON keeps title, notes, steps, and thread together in contract order"
     );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn direct_json_includes_the_full_existing_dispatch_base_and_commit() {
+    let dir = temp_state_dir("dispatch-detail");
+    let mut state = DomainState::new();
+    let id = state
+        .create(
+            "dispatched",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create task");
+    state
+        .record_dispatch(
+            id,
+            Dispatch {
+                argv: vec!["runner".into()],
+                worktree: "/tmp/worktree".into(),
+                branch: "tsk/t1-dispatched".into(),
+                base: Some("origin/main".into()),
+                base_commit: Some("0123456789abcdef".into()),
+                base_remote: None,
+                base_ref: None,
+                herdr_workspace_id: "workspace-1".into(),
+                at: SystemTime::now(),
+                cleaned: false,
+            },
+        )
+        .expect("record dispatch");
+    TaskStore::new(&dir).save(&state).expect("seed store");
+
+    let output = list(&[
+        "tsk".into(),
+        "list".into(),
+        "T1".into(),
+        "--json".into(),
+        "--state-dir".into(),
+        state_dir_arg(&dir),
+    ]);
+    assert_eq!(output.code, 0, "{output:?}");
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&output.stdout).expect("JSON rows");
+    assert_eq!(rows[0]["dispatch"]["base"], "origin/main");
+    assert_eq!(rows[0]["dispatch"]["base_commit"], "0123456789abcdef");
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -1720,7 +1822,7 @@ fn list_task_without_steps_keeps_task_rows_and_rejects_conflicting_flags() {
     assert_eq!(rows[0]["thread"], serde_json::Value::Null);
     let raw = plain_json.stdout.as_str();
     assert!(
-        raw.contains("\"status\":\"ready\",\"title\":\"plain target\",\"notes\":null,\"steps\":[],\"assignee\":null,\"thread\":null"),
+        raw.contains("\"status\":\"ready\",\"title\":\"plain target\",\"notes\":null,\"steps\":[],\"assignee\":null,\"base\":null,\"thread\":null"),
         "direct JSON keeps empty detail fields and their contract order: {raw}"
     );
 

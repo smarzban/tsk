@@ -67,11 +67,15 @@ Assign threads when [capturing](/docs/capture/#title-tokens) or [editing a task]
 
 ## Assignees
 
-An optional assignee links a task to the exact name of an agent profile in [`agents.toml`](/docs/storage/#agent-profiles). Rows stay a title; the peek (`→`) footer names `@assignee · #thread · project`, in that order, for whatever is set. Press `@` (or use **set assignee** in the palette) to open the assignee picker: every profile in `agents.toml`, then **none**. The cursor task's assignee is preselected, or the first profile when it has none. `↑`/`↓` move, typing filters, `Enter` applies, and `Esc` closes without a change. With marked tasks, one choice updates the whole set and one `ctrl+u` reverses it. With no profile defined, `@` says so and opens nothing. On the Projects overview `@` does nothing.
+An optional assignee links a task to the exact name of an agent profile in [`agents.toml`](/docs/storage/#agent-profiles). Rows stay a title; the peek (`→`) footer names `@assignee · ⎇ <base> · #thread · project`, in that order, for whatever is set. The peek shows a base only when explicitly set, not the default. Press `@` (or use **set assignee** in the palette) to open the assignee picker: every profile in `agents.toml`, then **none**. The cursor task's assignee is preselected, or the first profile when it has none. `↑`/`↓` move, typing filters, `Enter` applies, and `Esc` closes without a change. With marked tasks, one choice updates the whole set and one `ctrl+u` reverses it. With no profile defined, `@` says so and opens nothing. On the Projects overview `@` does nothing.
 
 Press `ctrl+g`, or choose **dispatch to @name** from the palette, to send the cursored task to its assigned agent. On an unassigned task `ctrl+g` opens the assignee picker first: `Enter` on a profile saves the assignment, then dispatches; **none** or `Esc` changes nothing. If the launch then fails, the task stays assigned. With no profile defined, `ctrl+g` refuses: "no agent assigned: press @ or add a profile to agents.toml". Dispatch is cursor-only: it clears any marked set rather than launching several agents. tsk creates a dedicated Git worktree and Herdr workspace, renders the profile command there, starts the task, then records the worktree, branch, workspace, command argv, and time as one save. If creating or launching fails, task state does not change. After saving, tsk names the Herdr agent `t<number>-<assignee>` in the background (for example `t12-claude`, so `herdr agent get t12-claude` finds it; dots become hyphens and the name is cut to Herdr's 32 characters). If Herdr detects no agent within a few seconds, the name is taken, or a relaunch finds an agent still running in the pane, the agent stays unnamed and dispatch still succeeds. Dispatch requires Herdr, a project-scoped task in a Git repository, and a non-done, non-archived task with a known assignee. Dispatch runs on macOS and Linux only; on Windows `ctrl+g` refuses with "dispatch needs herdr on macOS or Linux".
 
-On a task with a dispatch record, the first `ctrl+g` names its worktree and asks for another press; the second relaunches there. The palette offers **dispatch again** instead. A cleaned record recreates the worktree, reopening a retained unmerged branch or recreating a removed merged branch.
+Choose **set base** in the palette to open a query-filtered branch picker. It offers **default (main)** (for a repository whose default is `main`) first, then deduplicated local and `origin/*` branches. It opens immediately with a disabled **loading branches** row while a bounded background fetch fills the list. Reopening the picker while its project lookup is running reuses that lookup, so cancellation and reopen cannot pile up fetches. Choosing **default** clears the explicit base. A choice applies to all marked tasks as one save and one undo, and each branch must exist in its task's repository. The same picker opens from the task page's `⎇` footer or edit **Base** field. There is no dedicated base key; `ctrl+g` never prompts for one.
+
+Dispatch starts from an explicit task base when set; otherwise it uses the task repository's remote default (`origin/HEAD`). The board's or CLI's checkout never supplies the default. A local branch with a remote upstream uses that upstream after a bounded best-effort fetch; a local-only branch is used directly. Offline dispatch falls back to the local ref and reports it. The dispatch records the actual ref and commit, shown on the task page as `from <ref> @ <short sha>`.
+
+On a task with a dispatch record, the first `ctrl+g` names its worktree and asks for another press; the second relaunches there. The palette offers **dispatch again** instead. Relaunch keeps the recorded base, even if the task's explicit base changed. A cleaned record recreates the worktree, reopening a retained branch or recreating a removed branch from its recorded original starting commit (falling back to the recorded base ref for legacy records).
 
 ## Status
 
@@ -104,9 +108,9 @@ On a task-board list, `ctrl+s`, `ctrl+n`, `ctrl+o`, `ctrl+d`, `ctrl+b`, `ctrl+r`
 
 `ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Bulk block and review toggles are all-or-nothing: if every target already has that status they all return to ready, otherwise they all move to that status. Other status verbs are absolute, so repeating the current status does nothing. Done tasks can be sent directly to ready or open.
 
-With no marks, `ctrl+d` on a live dispatched worktree asks before completing. The card shows the worktree, branch, whether branch commits are merged into the recorded dispatch base, and whether the agent pane will close. `y` safely cleans then marks done, `n` marks done and keeps everything, and `Esc` changes nothing. A dirty worktree cannot be cleaned, so the card offers only done-without-cleanup or cancel. If the recorded worktree is already missing, the dispatch is marked cleaned and the task completed in one save without a card. Bulk done, already-done tasks, archived tasks, and archived project views never open this card.
+With no marks, `ctrl+d` on a live dispatched worktree asks before completing. The card shows the worktree, branch, `base <recorded ref> · merged ✓ / not merged`, and whether the agent pane will close. `y` safely cleans then marks done, `n` marks done and keeps everything, and `Esc` changes nothing. A dirty worktree cannot be cleaned, so the card offers only done-without-cleanup or cancel. If the recorded worktree is already missing, the dispatch is marked cleaned and the task completed in one save without a card. Bulk done, already-done tasks, archived tasks, and archived project views never open this card.
 
-Cleanup removes a clean recorded worktree and its matching Herdr workspace. It refuses a path that is the project root, is not registered to that project, or disagrees with the recorded Herdr workspace. It removes the branch only when it is merged into the recorded dispatch base; an unmerged branch or a legacy dispatch with no base is kept. The dispatch record remains marked cleaned, and undo reverses only the completion. Agents can set any status with [the CLI](/docs/cli/#status). Task status does not change automatically when steps are checked or an agent stops.
+Cleanup removes a clean recorded worktree and its matching Herdr workspace. It refuses a path that is the project root, is not registered to that project, or disagrees with the recorded Herdr workspace. After a bounded best-effort fetch, it checks ancestry against the recorded base, so a remote merge counts without a local pull. It removes the branch only when it is merged into the recorded dispatch base; an unmerged branch or a legacy dispatch with no base is kept. Worktree listings, status and ancestry checks have a separate 10-second deadline, rather than the short metadata deadline. A preflight timeout refuses before removal; if the final branch recheck times out after worktree removal, the branch stays with an explanation. If fetching fails, the card says that merged status was computed from cached refs. A missing or pruned base does not prevent clean worktree removal: the branch stays and the card says the base is no longer available. Squash merges do not establish ancestry: only a failed ancestry check gets the explanation "not merged into origin/main; squash-merged? delete by hand". Branches checked out elsewhere or changed during cleanup stay with their own reason. The dispatch record remains marked cleaned, and undo reverses only the completion. Agents can set any status with [the CLI](/docs/cli/#status). Task status does not change automatically when steps are checked or an agent stops.
 
 ## Notices
 
@@ -126,7 +130,7 @@ Your first board open seeds four desk tasks with `N` ids (not `T`). They teach t
 | Wheel or drag a scrollbar | Scroll |
 | Drag across text | Select and copy on release |
 
-Open peeks show notes, followed by one metadata footer ordered `@assignee · #thread · project`, omitting unset parts. Below 110 columns, `→` or `l` opens a peek and `←` or `h` closes it. Peeks show up to five wrapped note lines; the [task page](/docs/task-page/) shows the rest.
+Open peeks show notes, followed by one metadata footer ordered `@assignee · ⎇ <base> · #thread · project`, omitting unset parts and hiding the default base. Below 110 columns, `→` or `l` opens a peek and `←` or `h` closes it. Peeks show up to five wrapped note lines; the [task page](/docs/task-page/) shows the rest.
 
 ## Wide stage slider
 
@@ -194,12 +198,12 @@ Press `:` and type to find an action. Use arrows or `Tab` to select, `Enter` to 
 | --- | --- |
 | New task, undo, done drawer, help, quit | Always |
 | Set open/ready/started/blocked/review, edit notes, change scope, delete | A task is selected |
-| Set assignee | A task is selected |
+| Set assignee, set base | A task is selected |
 | Dispatch to @name | An assigned task without a dispatch record is selected |
 | Dispatch again | A task with a dispatch record is selected |
 | Retry save, cancel save | A save has failed |
 
-**Set assignee** opens the same picker as `@` and applies to the marked set when marks are present. Dispatch commands ignore and clear marks, then dispatch only the cursor.
+**Set assignee** opens the same picker as `@`; **set base** opens the branch picker. Both apply to the marked set when marks are present, with one save and one undo. Dispatch commands ignore and clear marks, then dispatch only the cursor.
 
 Search matches letters in order: `ssr` finds `set status: review`.
 

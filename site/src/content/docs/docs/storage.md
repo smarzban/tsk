@@ -33,7 +33,7 @@ PI_PROVIDER = "anthropic"
 
 A malformed profile file does not block the board or CLI work that does not assign a task. The board opens without profiles and shows the error on its status row. `tsk add` and `tsk edit` read the file only when an assignee is supplied; a profile-file error then exits 2 without saving.
 
-The command and prompt templates support `{number}`, `{title}`, `{notes}`, `{steps}`, `{worktree}`, and `{branch}`. tsk replaces only these placeholders. It quotes every argument and renders one command line as `$SHELL -lc '…'`; it never chains commands. Profiles are read-only in tsk, edit the file to change them.
+The command and prompt templates support `{number}`, `{title}`, `{notes}`, `{steps}`, `{worktree}`, `{branch}`, and `{base}`. `{branch}` is the dispatched task branch; `{base}` is the short base branch name, for example `dispatch` for `origin/dispatch`, so a prompt can say "open the PR into {base}". tsk replaces only these placeholders. It quotes every argument and renders one command line as `$SHELL -lc '…'`; it never chains commands. Profiles are read-only in tsk, edit the file to change them.
 
 ## Backups
 
@@ -45,7 +45,7 @@ The command and prompt templates support `{number}`, `{title}`, `{notes}`, `{ste
 | `agents.toml` | Agent launch profiles, seeded with commented examples on the first full board open |
 | `delivery.json` | Which starter tasks this install has received or dismissed, and the newest release note it has seen |
 
-An older binary refuses a newer or unversioned store instead of rewriting it. Use a compatible tsk version to open it. On first save, v5 stores migrate to v6 to add optional task assignees and dispatch records; the original document is saved as `tsk.json.v5`. A dispatch record can include the branch or commit used as its cleanup base; older v6 records omit it and cleanup keeps their branch. Earlier stores still run through each migration in order, including v5 batch undo and the v3 to v4 move from ready to open.
+An older binary refuses a newer or unversioned store instead of rewriting it. Use a compatible tsk version to open it. On first save, v5 stores migrate to v6 to add optional task assignees, explicit base branches, and dispatch records; the original document is saved as `tsk.json.v5`. The optional task `base` is an explicit local or remote branch name; when absent, dispatch uses the task repository's remote default (`origin/HEAD`), not the current checkout. A dispatch record stores the resolved `base` display ref, `base_ref` fully qualified branch ref (`refs/heads/...` or `refs/remotes/...`), `base_commit` starting SHA, and optional `base_remote` fetch remote, using a local branch's remote upstream when present. Cleanup uses `base_ref` verbatim, so later remote configuration cannot change its namespace; older v6 records without it retain the legacy lookup. A missing base keeps the branch without blocking clean worktree removal. Cleanup checks ancestry against the recorded ref; relaunch keeps the recorded base and recreates a removed branch from its original `base_commit`, falling back to the recorded ref if the commit is absent. Older v6 records may omit these fields; cleanup keeps their branch when the base is unknown. Earlier stores still run through each migration in order, including v5 batch undo and the v3 to v4 move from ready to open.
 
 Archived tasks stay in the task document with their existing status. [Archive and restore](/docs/board/#archive).
 

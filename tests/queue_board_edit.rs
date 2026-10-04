@@ -23,6 +23,80 @@ fn project(path: &str) -> TaskScope {
     }
 }
 
+/// A pruned explicit base must not prevent unrelated title or notes edits.
+#[test]
+fn unchanged_missing_base_allows_title_and_notes_edits() {
+    for intent in [BoardIntent::BeginEditTitle, BoardIntent::BeginEditNotes] {
+        let mut domain = DomainState::new();
+        let id = domain
+            .create(
+                "original",
+                Some("notes".into()),
+                project(THIS_REPO),
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .unwrap();
+        domain
+            .set_base_batch(&[id], Some("origin/pruned-feature".into()))
+            .unwrap();
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+        apply_intent(&mut domain, &mut model, intent, None).unwrap();
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText(" updated".into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).unwrap(),
+            IntentOutcome::Persist
+        );
+        let task = domain.get(id).unwrap();
+        assert_eq!(task.base.as_deref(), Some("origin/pruned-feature"));
+        assert!(
+            task.title.contains("updated") || task.notes.as_deref().unwrap().contains("updated")
+        );
+    }
+}
+
+#[test]
+fn changing_scope_revalidates_an_unchanged_missing_base() {
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "original",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    domain
+        .create(
+            "other",
+            None,
+            project("/repos/other"),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    domain
+        .set_base_batch(&[id], Some("origin/pruned-feature".into()))
+        .unwrap();
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginEditScope, None).unwrap();
+    apply_intent(&mut domain, &mut model, BoardIntent::FormCycleScope, None).unwrap();
+    assert_ne!(model.form_scope(), Some(&project(THIS_REPO)));
+    assert_eq!(
+        apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).unwrap(),
+        IntentOutcome::None
+    );
+    assert_eq!(domain.get(id).unwrap().scope, project(THIS_REPO));
+    assert_eq!(model.edit_target(), Some(id), "refused save retains draft");
+}
+
 /// Title edit opened via `e` must obey EditBuffer char-index cursor, word chords,
 /// paste, and the bound-task refusal (confirm lands on the id bound at open, not live selection).
 #[test]
@@ -386,6 +460,8 @@ fn task_form_unifies_palette_field_routes_scope_dropdown_and_atomic_save() {
     .expect("Tab moves to Assignee");
     apply_intent(&mut domain, &mut model, tab, None).expect("focus Assignee");
     assert_eq!(model.form_focus(), Some(CaptureField::Assignee));
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus Base");
+    assert_eq!(model.form_focus(), Some(CaptureField::Base));
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus Thread");
     assert_eq!(model.form_focus(), Some(CaptureField::Thread));
     let tab = map_board_form_key(
@@ -696,7 +772,10 @@ fn task_page_form_tab_cycle_wraps_through_title() {
         .expect("add to Assignee");
     assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
-        .expect("Assignee to Thread");
+        .expect("Assignee to Base");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("Base to Thread");
     assert_eq!(model.input_mode(), BoardInputMode::SelectThread);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
         .expect("Thread to Scope");
@@ -712,7 +791,10 @@ fn task_page_form_tab_cycle_wraps_through_title() {
         .expect("Scope reverses to Thread");
     assert_eq!(model.input_mode(), BoardInputMode::SelectThread);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
-        .expect("Thread reverses to Assignee");
+        .expect("Thread reverses to Base");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
+        .expect("Base reverses to Assignee");
     assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
     for (expected, label) in [
         ("▸ + step", "Assignee reverses to add"),
@@ -748,6 +830,8 @@ fn scope_and_thread_are_selected_controls_with_enter_activation() {
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("add target");
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("Assignee");
     assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("Base");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("Thread");
     assert_eq!(model.input_mode(), BoardInputMode::SelectThread);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("Scope");
@@ -909,7 +993,7 @@ fn page_edit_sets_thread_and_clearing_unthreads() {
         .expect("create");
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("open form");
-    for _ in 0..4 {
+    for _ in 0..5 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
             .expect("focus next");
     }
@@ -940,7 +1024,7 @@ fn page_edit_sets_thread_and_clearing_unthreads() {
     );
 
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("reopen form");
-    for _ in 0..4 {
+    for _ in 0..5 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
             .expect("focus thread");
     }
@@ -973,7 +1057,7 @@ fn page_thread_field_refuses_invalid_name_without_persisting() {
         .expect("create");
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("open");
-    for _ in 0..4 {
+    for _ in 0..5 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus");
     }
     apply_intent(
@@ -1014,7 +1098,7 @@ fn page_thread_field_accepts_version_dots() {
         .expect("create");
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("open");
-    for _ in 0..4 {
+    for _ in 0..5 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus");
     }
     apply_intent(
@@ -1224,7 +1308,7 @@ fn thread_refusal_paints_inline_and_clears_without_status_leak() {
         .expect("create");
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("open");
-    for _ in 0..4 {
+    for _ in 0..5 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus");
     }
     apply_intent(
@@ -1281,30 +1365,34 @@ fn task_page_footer_hits_use_display_columns_and_stay_within_the_painted_row() {
     )));
     apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
 
-    let width = 40;
-    let hits = board_hit_map(Rect::new(0, 0, width, 10), &model);
-    let scope = hits
-        .regions
-        .iter()
-        .find(|hit| hit.target == QueueHitTarget::FormScope)
-        .expect("scope hit");
-    let thread = hits
-        .regions
-        .iter()
-        .find(|hit| hit.target == QueueHitTarget::FormThread)
-        .expect("thread hit");
-    assert_eq!(
-        scope.area.width, 2,
-        "the scope target is clipped after the leading thread at this narrow width"
-    );
-    assert_eq!(
-        thread.area.x, 2,
-        "thread leads the footer, with no number in the footer"
-    );
-    assert!(
-        thread.area.right() <= width,
-        "thread hit must not extend beyond the clipped footer: {thread:?}"
-    );
+    for width in [52, 54] {
+        let hits = board_hit_map(Rect::new(0, 0, width, 10), &model);
+        let scope = hits
+            .regions
+            .iter()
+            .find(|hit| hit.target == QueueHitTarget::FormScope)
+            .expect("scope hit");
+        let thread = hits
+            .regions
+            .iter()
+            .find(|hit| hit.target == QueueHitTarget::FormThread)
+            .expect("thread hit");
+        assert_eq!(scope.area.width, 12, "full CJK scope survives wrapping");
+        assert_eq!(thread.area.x, 14, "thread follows Base");
+        assert!(scope.area.y > thread.area.y, "scope wraps below the thread");
+        assert_eq!(scope.area.x, 2);
+        assert!(thread.area.right() <= width && scope.area.right() <= width);
+        let mut terminal = Terminal::new(TestBackend::new(width, 10)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = draw_board(frame, &model);
+            })
+            .unwrap();
+        assert_eq!(
+            terminal.backend().buffer()[(scope.area.x, scope.area.y)].symbol(),
+            "プ"
+        );
+    }
 }
 
 /// A persisted task page presents its identifier in the title and leaves the footer scope
@@ -1363,7 +1451,14 @@ fn task_page_header_identifier_precedes_the_title_and_footer_scope() {
         !footer.contains("1 ·"),
         "the production footer must not repeat the identifier: {footer:?}"
     );
-    assert_eq!(scope.area.x, 2, "scope starts at the footer inset");
+    assert!(
+        footer.starts_with("  ⎇ default · app"),
+        "base precedes scope: {footer:?}"
+    );
+    assert_eq!(
+        scope.area.x, 14,
+        "scope starts after the base glyph and separator"
+    );
 }
 
 #[test]
@@ -1437,7 +1532,7 @@ fn page_footer_thread_edit_operable_at_40x10() {
         .expect("create");
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("open");
-    for _ in 0..4 {
+    for _ in 0..5 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus");
     }
     apply_intent(
@@ -1491,6 +1586,8 @@ fn thread_paste_flattens_line_breaks_like_title() {
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("add target");
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
         .expect("select Assignee");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("select Base");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("select Thread");
     assert_eq!(model.input_mode(), BoardInputMode::SelectThread);
     apply_intent(

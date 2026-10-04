@@ -90,7 +90,7 @@ fn catalog_ids() -> BTreeSet<String> {
 }
 
 const STARTER_AGENTS: &str = "# tsk agent profiles. Assign with `!a name`, dispatch with ctrl+g.\n\
-# Placeholders in command and prompt: {number} {title} {notes} {steps} {worktree} {branch}\n\
+# Placeholders in command and prompt: {number} {title} {notes} {steps} {worktree} {branch} {base}\n\
 # The prompt is appended to the command as its last argument. Omit `prompt` for the default:\n\
 #   You were dispatched to T{number} in this worktree. Run `tsk guide`, then `tsk list {number}`.\n\
 #   Set the task to review when done, or blocked when a human is needed.\n\
