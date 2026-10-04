@@ -91,7 +91,7 @@ impl BoardModel {
                 ),
                 command("edit notes", BoardIntent::BeginEditNotes),
                 command("change scope", BoardIntent::BeginEditScope),
-                command("set assignee", BoardIntent::BeginEditAssignee),
+                command("set assignee", BoardIntent::OpenAssigneePicker),
             ]);
             if let Some(task) = self
                 .selected_id()

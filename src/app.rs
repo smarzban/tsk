@@ -2013,6 +2013,87 @@ pub fn cleanup_and_complete_with_host(
     Ok(cleanup)
 }
 
+/// The board's `ctrl+g` path: launch `target` through the real host and save its record.
+/// An unassigned target with at least one profile opens the assignee picker instead
+/// ([`open_dispatch_assignee_picker`]); its profile choice comes back here once assigned.
+#[allow(clippy::too_many_arguments)]
+fn run_board_dispatch(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    save_recovery: &mut SaveRecovery<DomainState>,
+    baseline: DomainState,
+    target: Option<uuid::Uuid>,
+    explicit_again: bool,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) {
+    if let Err(error) = dispatch::ensure_platform_supported() {
+        model.clear_marks();
+        model.set_message(error.to_string());
+        return;
+    }
+    let profiles = match AgentProfiles::load(store.path()) {
+        Ok(profiles) => profiles,
+        Err(error) => {
+            model.clear_marks();
+            model.set_message(error.to_string());
+            return;
+        }
+    };
+    let Some(target) = target else {
+        model.clear_marks();
+        model.set_message(DispatchError::UnknownTask.to_string());
+        return;
+    };
+    if !explicit_again && open_dispatch_assignee_picker(domain, model, target, &profiles) {
+        return;
+    }
+    let Some(again) = resolve_dispatch_again(domain, model, target, explicit_again) else {
+        return;
+    };
+    match dispatch_task_with_host(domain, model, target, &profiles, again, in_herdr, host) {
+        Ok(result) => {
+            if let Err(error) = store.reload_merge_save(domain) {
+                let working = std::mem::take(domain);
+                save_recovery.fail(baseline, working, error.to_string());
+                model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+                return;
+            }
+            model.sync_from_domain(domain);
+            model.set_message(format!(
+                "dispatched T{} to @{}",
+                result.number, result.assignee
+            ));
+            record_notice_dismissals_without_blocking_persist(store, domain);
+        }
+        Err(error) => model.set_message(error.to_string()),
+    }
+}
+
+/// `ctrl+g` on an unassigned task with profiles defined: open the assignee picker for that one
+/// cursor task, armed to dispatch after the choice is saved. Returns whether it opened. With no
+/// profile it does not, and dispatch refuses with [`dispatch::NO_ASSIGNEE`] as before.
+pub fn open_dispatch_assignee_picker(
+    domain: &DomainState,
+    model: &mut BoardModel,
+    target: uuid::Uuid,
+    profiles: &AgentProfiles,
+) -> bool {
+    let unassigned = domain
+        .get(target)
+        .is_some_and(|task| task.assignee.is_none() && !task.is_notice());
+    if !unassigned || profiles.is_empty() || model.focus_is_archived() {
+        return false;
+    }
+    model.set_agent_profiles(profiles);
+    model.clear_marks();
+    model.clear_dispatch_again();
+    model.clear_message();
+    model.open_dispatch_assignee_picker(target);
+    true
+}
+
 /// Apply a board intent. Returns `true` when the board loop should quit.
 ///
 /// In the quick-capture popup (`quick_capture`), the loop also quits once the capture
@@ -2026,6 +2107,31 @@ fn handle_board_intent(
     intent: BoardIntent,
     save_recovery: &mut SaveRecovery<DomainState>,
     quick_capture: bool,
+) -> io::Result<bool> {
+    handle_board_intent_with_host(
+        store,
+        domain,
+        model,
+        intent,
+        save_recovery,
+        quick_capture,
+        dispatch::running_inside_herdr(),
+        &mut SystemDispatchHost,
+    )
+}
+
+/// [`handle_board_intent`] over an explicit git/Herdr seam, so tests drive dispatch and
+/// cleanup through the real boundary with a fake host.
+#[allow(clippy::too_many_arguments)]
+fn handle_board_intent_with_host(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    intent: BoardIntent,
+    save_recovery: &mut SaveRecovery<DomainState>,
+    quick_capture: bool,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
 ) -> io::Result<bool> {
     let Some(intent) = resolve_board_command(model, intent) else {
         return Ok(false);
@@ -2087,14 +2193,7 @@ fn handle_board_intent(
 
     if intent == BoardIntent::Complete && !save_recovery.is_pending() {
         if let Some(target) = model.selected_id() {
-            let mut host = SystemDispatchHost;
-            match offer_cleanup_prompt_with_host(
-                domain,
-                model,
-                target,
-                dispatch::running_inside_herdr(),
-                &mut host,
-            ) {
+            match offer_cleanup_prompt_with_host(domain, model, target, in_herdr, host) {
                 Ok(CleanupOffer::Prompted) => return Ok(false),
                 Ok(CleanupOffer::MissingConverged(result)) => {
                     if let Err(error) = store.reload_merge_save(domain) {
@@ -2123,14 +2222,7 @@ fn handle_board_intent(
     ) && !save_recovery.is_pending()
     {
         let clean = intent == BoardIntent::ConfirmCleanup;
-        let mut host = SystemDispatchHost;
-        let result = cleanup_and_complete_with_host(
-            domain,
-            model,
-            clean,
-            dispatch::running_inside_herdr(),
-            &mut host,
-        );
+        let result = cleanup_and_complete_with_host(domain, model, clean, in_herdr, host);
         let cleanup = match result {
             Ok(cleanup) => cleanup,
             Err(error) => {
@@ -2175,57 +2267,29 @@ fn handle_board_intent(
     if matches!(intent, BoardIntent::Dispatch | BoardIntent::DispatchAgain)
         && !save_recovery.is_pending()
     {
-        if let Err(error) = dispatch::ensure_platform_supported() {
-            model.clear_marks();
-            model.set_message(error.to_string());
-            return Ok(false);
-        }
-        let profiles = match AgentProfiles::load(store.path()) {
-            Ok(profiles) => profiles,
-            Err(error) => {
-                model.clear_marks();
-                model.set_message(error.to_string());
-                return Ok(false);
-            }
-        };
-        let mut host = SystemDispatchHost;
-        let Some(target) = dispatch_target else {
-            model.clear_marks();
-            model.set_message(DispatchError::UnknownTask.to_string());
-            return Ok(false);
-        };
-        let Some(again) =
-            resolve_dispatch_again(domain, model, target, intent == BoardIntent::DispatchAgain)
-        else {
-            return Ok(false);
-        };
-        match dispatch_task_with_host(
+        run_board_dispatch(
+            store,
             domain,
             model,
-            target,
-            &profiles,
-            again,
-            dispatch::running_inside_herdr(),
-            &mut host,
-        ) {
-            Ok(result) => {
-                if let Err(error) = store.reload_merge_save(domain) {
-                    let working = std::mem::take(domain);
-                    save_recovery.fail(baseline, working, error.to_string());
-                    model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
-                    return Ok(false);
-                }
-                model.sync_from_domain(domain);
-                model.set_message(format!(
-                    "dispatched T{} to @{}",
-                    result.number, result.assignee
-                ));
-                record_notice_dismissals_without_blocking_persist(store, domain);
-            }
-            Err(error) => model.set_message(error.to_string()),
-        }
+            save_recovery,
+            baseline,
+            dispatch_target,
+            intent == BoardIntent::DispatchAgain,
+            in_herdr,
+            host,
+        );
         return Ok(false);
     }
+
+    // `ctrl+g` on an unassigned task opened the assignee picker: a profile choice is saved
+    // first, then the normal dispatch path runs, so a launch failure leaves it assigned.
+    let dispatch_after_assign = match intent {
+        BoardIntent::ConfirmListPicker => {
+            model.assignee_picker_dispatch_target(model.list_picker_selected())
+        }
+        BoardIntent::SelectListOption(index) => model.assignee_picker_dispatch_target(index),
+        _ => None,
+    };
 
     let loaded_snapshot;
     let snapshot_for_intent = if !save_recovery.is_pending() && intent == BoardIntent::OpenCapture {
@@ -2252,6 +2316,27 @@ fn handle_board_intent(
     );
     if outcome == IntentOutcome::Persisted {
         record_notice_dismissals_without_blocking_persist(store, domain);
+        if let Some(target) = dispatch_after_assign.filter(|target| {
+            !save_recovery.is_pending()
+                && domain
+                    .get(*target)
+                    .is_some_and(|task| task.assignee.is_some())
+        }) {
+            let baseline = store
+                .load()
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            run_board_dispatch(
+                store,
+                domain,
+                model,
+                save_recovery,
+                baseline,
+                Some(target),
+                false,
+                in_herdr,
+                host,
+            );
+        }
     }
     match outcome {
         IntentOutcome::Quit => Ok(true),
@@ -8314,5 +8399,478 @@ mod projects_view_tests {
             "no thread/project nesting"
         );
         let _ = SectionKind::NeedsYou;
+    }
+}
+
+#[cfg(test)]
+mod quick_assign_tests {
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+    use std::rc::Rc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::layout::Rect;
+
+    use super::{apply_intent, handle_board_intent_with_host, BoardIntent, DomainState};
+    use crate::agents::AgentProfiles;
+    use crate::dispatch::{CreatedWorktree, DispatchHost, NO_ASSIGNEE};
+    use crate::domain::{ProvenanceOrigin, TaskScope, UndoEntry};
+    use crate::save_recovery::SaveRecovery;
+    use crate::store::TaskStore;
+    use crate::ui::board::{board_hit_map, BoardInputMode, BoardModel, ListPickerKind};
+    use crate::ui::input::map_key;
+    use crate::ui::mouse::{left_click, map_board_mouse};
+    use crate::ui::render::QueueHitTarget;
+
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+    const PROJECT: &str = "/repos/app";
+
+    struct Temp {
+        dir: PathBuf,
+        store: TaskStore,
+    }
+
+    impl Temp {
+        fn new(label: &str, profiles: &[&str]) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos();
+            let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!("tsk-quick-assign-{label}-{nanos}-{seq}"));
+            std::fs::create_dir_all(&dir).expect("state dir");
+            let content = profiles
+                .iter()
+                .map(|name| format!("[agent.{name}]\ncommand = [\"true\"]\n"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            std::fs::write(dir.join("agents.toml"), content).expect("write profiles");
+            let store = TaskStore::new(&dir);
+            Temp { dir, store }
+        }
+
+        fn profiles(&self) -> AgentProfiles {
+            AgentProfiles::load(&self.dir).expect("load profiles")
+        }
+    }
+
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Saved project tasks (so each carries a number), and a board with the profiles loaded.
+    fn board(temp: &Temp, titles: &[&str]) -> (DomainState, BoardModel, Vec<uuid::Uuid>) {
+        let mut domain = DomainState::new();
+        let ids = titles
+            .iter()
+            .map(|title| {
+                domain
+                    .create(
+                        title,
+                        None,
+                        TaskScope::Project {
+                            path: PROJECT.into(),
+                        },
+                        ProvenanceOrigin::Manual,
+                        None,
+                    )
+                    .expect("create task")
+            })
+            .collect();
+        temp.store
+            .reload_merge_save(&mut domain)
+            .expect("save tasks");
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(PROJECT)));
+        model.set_selected_project(Some(PathBuf::from(PROJECT)));
+        model.set_agent_profiles(&temp.profiles());
+        (domain, model, ids)
+    }
+
+    fn select(domain: &mut DomainState, model: &mut BoardModel, id: uuid::Uuid) {
+        let index = model
+            .visible_ids()
+            .iter()
+            .position(|visible| *visible == id)
+            .expect("task visible");
+        apply_intent(domain, model, BoardIntent::SelectIndex(index), None).expect("select");
+    }
+
+    fn key(model: &BoardModel, code: KeyCode, modifiers: KeyModifiers) -> BoardIntent {
+        map_key(model.input_mode(), KeyEvent::new(code, modifiers)).expect("mapped key")
+    }
+
+    /// Records what the store held when the launch began, proving the assignment was durable
+    /// before any host work.
+    struct FakeHost {
+        store: TaskStore,
+        assignee_on_disk_at_launch: Rc<RefCell<Vec<Option<String>>>>,
+        launched: usize,
+    }
+
+    impl DispatchHost for FakeHost {
+        fn is_git_repo(&mut self, _: &Path) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        fn resolve_base(&mut self, _: &Path) -> Result<String, String> {
+            Ok("main".into())
+        }
+
+        fn create_worktree(
+            &mut self,
+            _: &Path,
+            branch: &str,
+            _: Option<&str>,
+            _: &str,
+        ) -> Result<CreatedWorktree, String> {
+            let disk = self.store.load().expect("load during launch");
+            self.assignee_on_disk_at_launch.borrow_mut().extend(
+                disk.tasks()
+                    .iter()
+                    .filter(|task| !task.is_notice())
+                    .map(|task| task.assignee.clone()),
+            );
+            self.launched += 1;
+            Ok(CreatedWorktree {
+                path: "/tmp/tsk-quick-assign-worktree".into(),
+                branch: branch.into(),
+                workspace_id: "w1".into(),
+                root_pane_id: "w1:p1".into(),
+            })
+        }
+
+        fn root_pane(&mut self, _: &str) -> Result<String, String> {
+            Ok("w1:p1".into())
+        }
+
+        fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn fake_host(temp: &Temp) -> FakeHost {
+        FakeHost {
+            store: TaskStore::new(&temp.dir),
+            assignee_on_disk_at_launch: Rc::default(),
+            launched: 0,
+        }
+    }
+
+    fn handle(
+        temp: &Temp,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        intent: BoardIntent,
+        host: &mut FakeHost,
+    ) {
+        let mut recovery = SaveRecovery::new();
+        handle_board_intent_with_host(
+            &temp.store,
+            domain,
+            model,
+            intent,
+            &mut recovery,
+            false,
+            true,
+            host,
+        )
+        .expect("board intent");
+        assert!(!recovery.is_pending(), "no save failure expected");
+    }
+
+    #[test]
+    fn at_opens_the_picker_and_enter_assigns_with_one_undo_entry() {
+        let temp = Temp::new("at", &["builder", "reviewer"]);
+        let (mut domain, mut model, ids) = board(&temp, &["pick an agent"]);
+        select(&mut domain, &mut model, ids[0]);
+
+        let open = key(&model, KeyCode::Char('@'), KeyModifiers::NONE);
+        assert_eq!(open, BoardIntent::OpenAssigneePicker);
+        apply_intent(&mut domain, &mut model, open, None).expect("open picker");
+        assert_eq!(model.input_mode(), BoardInputMode::ListPicker);
+        assert_eq!(model.list_picker_kind(), Some(ListPickerKind::Assignee));
+        let labels: Vec<_> = model
+            .visible_list_picker_options()
+            .into_iter()
+            .map(|(_, option)| option.label)
+            .collect();
+        assert_eq!(labels, ["@builder", "@reviewer", "none"]);
+        assert_eq!(
+            domain.get(ids[0]).expect("task").assignee,
+            None,
+            "nothing changes before Enter"
+        );
+
+        let down = key(&model, KeyCode::Down, KeyModifiers::NONE);
+        apply_intent(&mut domain, &mut model, down, None).expect("move");
+        let enter = key(&model, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(super::board_intent_may_persist(&model, &enter));
+        let outcome = apply_intent(&mut domain, &mut model, enter, None).expect("assign");
+        assert_eq!(outcome, crate::ui::board::IntentOutcome::Persist);
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+        assert_eq!(
+            domain.get(ids[0]).expect("task").assignee.as_deref(),
+            Some("reviewer")
+        );
+        assert!(matches!(
+            domain.last_undo(),
+            Some(UndoEntry::Assign { id, previous: None, .. }) if *id == ids[0]
+        ));
+
+        // Reopening preselects the current assignee.
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAssigneePicker,
+            None,
+        )
+        .expect("reopen");
+        assert_eq!(
+            model
+                .selected_list_picker_option()
+                .map(|(_, option)| option.label),
+            Some("@reviewer".to_string())
+        );
+    }
+
+    #[test]
+    fn esc_and_none_change_nothing_and_ctrl_g_none_never_dispatches() {
+        let temp = Temp::new("esc", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["leave me"]);
+        select(&mut domain, &mut model, ids[0]);
+        let before = domain.get(ids[0]).expect("task").revision;
+
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAssigneePicker,
+            None,
+        )
+        .expect("open");
+        let esc = key(&model, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(
+            apply_intent(&mut domain, &mut model, esc, None).expect("cancel"),
+            crate::ui::board::IntentOutcome::None
+        );
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+        assert!(!model.list_picker_open());
+
+        let mut host = fake_host(&temp);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Dispatch,
+            &mut host,
+        );
+        assert_eq!(model.list_picker_kind(), Some(ListPickerKind::Assignee));
+        apply_intent(&mut domain, &mut model, BoardIntent::ListPickerPrev, None)
+            .expect("wrap to none");
+        assert_eq!(
+            model
+                .selected_list_picker_option()
+                .map(|(_, option)| option.label),
+            Some("none".to_string())
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            &mut host,
+        );
+        let task = domain.get(ids[0]).expect("task");
+        assert_eq!(task.assignee, None);
+        assert!(task.dispatch.is_none());
+        assert_eq!(task.revision, before);
+        assert_eq!(host.launched, 0);
+    }
+
+    #[test]
+    fn ctrl_g_on_an_unassigned_task_assigns_then_dispatches() {
+        let temp = Temp::new("ctrl-g", &["builder", "reviewer"]);
+        let (mut domain, mut model, ids) = board(&temp, &["launch me"]);
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+
+        let ctrl_g = key(&model, KeyCode::Char('g'), KeyModifiers::CONTROL);
+        assert_eq!(ctrl_g, BoardIntent::Dispatch);
+        handle(&temp, &mut domain, &mut model, ctrl_g, &mut host);
+        assert_eq!(model.list_picker_kind(), Some(ListPickerKind::Assignee));
+        assert_eq!(host.launched, 0, "the picker opens before any host work");
+        assert_eq!(domain.get(ids[0]).expect("task").assignee, None);
+
+        let enter = key(&model, KeyCode::Enter, KeyModifiers::NONE);
+        handle(&temp, &mut domain, &mut model, enter, &mut host);
+        assert_eq!(host.launched, 1);
+        assert_eq!(
+            *host.assignee_on_disk_at_launch.borrow(),
+            [Some("builder".to_string())],
+            "the assignment was saved before the launch"
+        );
+        let task = domain.get(ids[0]).expect("task");
+        assert_eq!(task.assignee.as_deref(), Some("builder"));
+        assert!(task.dispatch.is_some(), "dispatched after assigning");
+        let disk = temp.store.load().expect("reload");
+        assert!(disk.get(ids[0]).expect("saved").dispatch.is_some());
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+        assert!(model
+            .message()
+            .is_some_and(|message| message.contains("dispatched")));
+    }
+
+    #[test]
+    fn ctrl_g_without_profiles_keeps_the_refusal_and_at_says_why() {
+        let temp = Temp::new("no-profiles", &[]);
+        let (mut domain, mut model, ids) = board(&temp, &["nobody to pick"]);
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Dispatch,
+            &mut host,
+        );
+        assert!(!model.list_picker_open());
+        assert_eq!(model.message(), Some(NO_ASSIGNEE));
+        assert!(NO_ASSIGNEE.contains('@'));
+
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAssigneePicker,
+            None,
+        )
+        .expect("at without profiles");
+        assert!(!model.list_picker_open());
+        assert_eq!(model.message(), Some(crate::ui::board::NO_AGENT_PROFILES));
+    }
+
+    #[test]
+    fn at_on_a_marked_set_assigns_every_task_with_one_undo() {
+        let temp = Temp::new("marks", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None)
+            .expect("mark mode");
+        for id in &ids {
+            select(&mut domain, &mut model, *id);
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        }
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAssigneePicker,
+            None,
+        )
+        .expect("open");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            None,
+        )
+        .expect("assign set");
+        for id in &ids {
+            assert_eq!(
+                domain.get(*id).expect("task").assignee.as_deref(),
+                Some("builder")
+            );
+        }
+        assert!(matches!(domain.last_undo(), Some(UndoEntry::Batch { .. })));
+        assert!(model.marked_ids().is_empty(), "marks clear after the verb");
+        assert_eq!(model.message(), Some("assigned 2 tasks to @builder"));
+
+        apply_intent(&mut domain, &mut model, BoardIntent::Undo, None).expect("undo");
+        for id in &ids {
+            assert_eq!(domain.get(*id).expect("task").assignee, None);
+        }
+    }
+
+    fn frame_text(model: &BoardModel, area: Rect) -> String {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))
+                .expect("terminal");
+        terminal
+            .draw(|frame| {
+                crate::ui::board::draw_board(frame, model);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buffer.cell((x, y)).expect("cell").symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn task_view_paints_plus_assign_only_when_unassigned_with_profiles_and_click_opens_picker() {
+        let area = Rect::new(0, 0, 80, 24);
+        let temp = Temp::new("footer", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["footer task"]);
+        select(&mut domain, &mut model, ids[0]);
+
+        // The peek keeps omitting an unset assignee.
+        apply_intent(&mut domain, &mut model, BoardIntent::PeekDetail, None).expect("peek");
+        assert!(!frame_text(&model, area).contains("+ assign"));
+        apply_intent(&mut domain, &mut model, BoardIntent::CollapseDetail, None)
+            .expect("close peek");
+
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+        assert!(frame_text(&model, area).contains("+ assign"));
+
+        let hits = board_hit_map(area, &model);
+        let hit = hits
+            .regions
+            .iter()
+            .find(|hit| hit.target == QueueHitTarget::FormAssignee)
+            .expect("+ assign is a click target");
+        let click = map_board_mouse(&model, &hits, left_click(hit.area.x, hit.area.y));
+        assert_eq!(click, Some(BoardIntent::OpenAssigneePicker));
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAssigneePicker,
+            None,
+        )
+        .expect("open from footer");
+        assert_eq!(model.list_picker_kind(), Some(ListPickerKind::Assignee));
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            None,
+        )
+        .expect("assign from footer");
+        model.sync_from_domain(&domain);
+        assert_eq!(
+            model.input_mode(),
+            BoardInputMode::TaskPage,
+            "the page survives the picker"
+        );
+        let text = frame_text(&model, area);
+        assert!(text.contains("@builder") && !text.contains("+ assign"));
+
+        // `@` on the page reopens the picker; Esc returns to the page.
+        let at = key(&model, KeyCode::Char('@'), KeyModifiers::NONE);
+        apply_intent(&mut domain, &mut model, at, None).expect("page @");
+        assert_eq!(model.list_picker_kind(), Some(ListPickerKind::Assignee));
+        apply_intent(&mut domain, &mut model, BoardIntent::CancelListPicker, None).expect("cancel");
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+
+        // No profiles: an unassigned page paints nothing in the slot.
+        let bare = Temp::new("footer-bare", &[]);
+        let (mut domain, mut model, ids) = board(&bare, &["no profiles"]);
+        select(&mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        assert!(!frame_text(&model, area).contains("+ assign"));
     }
 }

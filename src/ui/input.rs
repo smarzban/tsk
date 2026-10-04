@@ -247,6 +247,9 @@ pub enum BoardIntent {
     OpenThreadFilterPicker,
     /// Open the projects index's searchable View picker (bare `v`).
     OpenProjectsViewPicker,
+    /// Open the assignee picker over the selected task, the marked set, or the open task
+    /// page (bare `@`, the page's footer assignee, palette **set assignee**).
+    OpenAssigneePicker,
     /// Focus the active board lens's search field (`/` or a click).
     FocusSearch,
     /// Pin the live query and return input to normal board keys.
@@ -516,6 +519,15 @@ const NORMAL_KEYMAP: &[NormalKeyEntry] = &[
         help_label: "dispatch",
         modifier: NormalModifier::Ctrl,
     },
+    // `@` opens the assignee picker, an input surface like `t`: nothing changes until its
+    // Enter, so it stays bare rather than taking the verb modifier.
+    NormalKeyEntry {
+        code: KeyCode::Char('@'),
+        intent: BoardIntent::OpenAssigneePicker,
+        help_chord: "@",
+        help_label: "assign",
+        modifier: NormalModifier::Bare,
+    },
     NormalKeyEntry {
         code: KeyCode::Char('d'),
         intent: BoardIntent::Complete,
@@ -780,6 +792,7 @@ fn board_help_group(intent: &BoardIntent) -> HelpGroup {
         | BoardIntent::CollapseDetail => HelpGroup::Navigation,
         BoardIntent::PrimaryVerb
         | BoardIntent::Dispatch
+        | BoardIntent::OpenAssigneePicker
         | BoardIntent::SetStatus(_)
         | BoardIntent::Complete
         | BoardIntent::Reopen
@@ -1752,6 +1765,7 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::SelectNavTab(_)
         | BoardIntent::OpenThreadFilterPicker
         | BoardIntent::OpenProjectsViewPicker
+        | BoardIntent::OpenAssigneePicker
         | BoardIntent::ListPickerNext
         | BoardIntent::ListPickerPrev
         | BoardIntent::ConfirmListPicker
@@ -1920,6 +1934,7 @@ fn map_task_page(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Char('f') if verb => Some(BoardIntent::File),
         KeyCode::Char('e') if verb => Some(BoardIntent::BeginEditTitle),
         KeyCode::Char('?') if !extra => Some(BoardIntent::OpenHelp),
+        KeyCode::Char('@') if !extra => Some(BoardIntent::OpenAssigneePicker),
         KeyCode::Tab if !extra => Some(BoardIntent::FormFocusNext),
         KeyCode::BackTab
             if !mods

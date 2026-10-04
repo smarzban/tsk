@@ -215,6 +215,9 @@ pub enum ListPickerKind {
     ThreadFilter,
     /// The projects index's View selector (bare `v`).
     ProjectsView,
+    /// The quick assignee picker (bare `@`, the task-page footer, palette **set assignee**,
+    /// and `ctrl+g` on an unassigned task).
+    Assignee,
 }
 
 /// One choice inside a searchable list picker.
@@ -233,15 +236,30 @@ pub enum ListPickerValue {
     ThreadWithout,
     ProjectsOverview,
     ProjectsThread(String),
+    /// Assign this exact profile name, or clear the assignee with `None`.
+    Assignee(Option<String>),
 }
 
-/// An open searchable list picker (thread filter / projects view). Session-only.
+/// What the assignee picker applies to, captured when it opens so a refresh that moves the
+/// cursor underneath it can never redirect the assignment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AssigneePickerTarget {
+    pub ids: Vec<Uuid>,
+    /// Opened by `ctrl+g` on an unassigned task: a profile choice assigns, then dispatches.
+    pub dispatch_after: bool,
+}
+
+/// An open searchable list picker (thread filter / projects view / assignee). Session-only.
 #[derive(Debug, Clone)]
 pub(super) struct ListPickerState {
     pub kind: ListPickerKind,
     pub options: Vec<ListPickerOption>,
     pub selected: usize,
     pub query: String,
+    /// The mode confirm and cancel restore. The thread and View pickers open from the board
+    /// only; the assignee picker also opens over the task page, which must survive it.
+    pub return_mode: BoardInputMode,
+    pub assignee_target: Option<AssigneePickerTarget>,
 }
 /// The immutable value a board form carries for its whole lifetime.
 ///
@@ -2236,6 +2254,8 @@ impl BoardModel {
             options,
             selected,
             query: String::new(),
+            return_mode: BoardInputMode::Normal,
+            assignee_target: None,
         });
     }
 
@@ -2284,7 +2304,103 @@ impl BoardModel {
             options,
             selected,
             query: String::new(),
+            return_mode: BoardInputMode::Normal,
+            assignee_target: None,
         });
+    }
+
+    /// Open the assignee picker over `ids`: every defined profile, then **none** last.
+    /// `current` (the cursor task's assignee) is preselected, else the first profile. Nothing changes
+    /// until Enter.
+    pub(super) fn open_assignee_picker(
+        &mut self,
+        ids: Vec<Uuid>,
+        current: Option<String>,
+        dispatch_after: bool,
+    ) {
+        let mut options: Vec<ListPickerOption> = self
+            .agent_names
+            .iter()
+            .map(|name| ListPickerOption {
+                label: format!("@{name}"),
+                count: None,
+                value: ListPickerValue::Assignee(Some(name.clone())),
+            })
+            .collect();
+        options.push(ListPickerOption {
+            label: "none".to_string(),
+            count: None,
+            value: ListPickerValue::Assignee(None),
+        });
+        // An unassigned task starts on the first profile, so Enter right away assigns.
+        let selected = current
+            .and_then(|name| {
+                options.iter().position(|option| {
+                    option.value == ListPickerValue::Assignee(Some(name.clone()))
+                })
+            })
+            .unwrap_or(0);
+        self.list_picker = Some(ListPickerState {
+            kind: ListPickerKind::Assignee,
+            options,
+            selected,
+            query: String::new(),
+            return_mode: self.input_mode,
+            assignee_target: Some(AssigneePickerTarget {
+                ids,
+                dispatch_after,
+            }),
+        });
+        self.input_mode = BoardInputMode::ListPicker;
+    }
+
+    /// `ctrl+g` on an unassigned task: the picker for that one task, armed to dispatch once a
+    /// profile choice is saved.
+    pub fn open_dispatch_assignee_picker(&mut self, target: Uuid) {
+        self.open_assignee_picker(vec![target], None, true);
+    }
+
+    /// The task the open picker would dispatch after assigning, when confirming `visible`
+    /// (an index into the filtered options) lands on a profile. `None` for every other
+    /// picker, for **none**, and for an assign-only picker.
+    pub fn assignee_picker_dispatch_target(&self, visible: usize) -> Option<Uuid> {
+        let picker = self.list_picker.as_ref()?;
+        let target = picker.assignee_target.as_ref()?;
+        if !target.dispatch_after {
+            return None;
+        }
+        let options = self.visible_list_picker_options();
+        let (_, option) = options.get(visible.min(options.len().saturating_sub(1)))?;
+        matches!(option.value, ListPickerValue::Assignee(Some(_)))
+            .then(|| target.ids.first().copied())
+            .flatten()
+    }
+
+    /// Close the assignee picker after its choice was applied (or refused), restoring the
+    /// surface it opened over.
+    pub(super) fn close_assignee_picker(&mut self) -> Option<AssigneePickerTarget> {
+        let picker = self.list_picker.take()?;
+        self.input_mode = picker.return_mode;
+        picker.assignee_target
+    }
+
+    /// After an assignment persisted, bring an open task form bound to one of `ids` up to
+    /// date, unless its own assignee draft was already changed. Otherwise a later save of
+    /// that form would write its stale draft over the new assignee.
+    pub(super) fn sync_form_assignee(&mut self, ids: &[Uuid], tasks: &[Task]) {
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        let Some(id) = form.task_id().filter(|id| ids.contains(id)) else {
+            return;
+        };
+        let untouched = form
+            .task_snapshot
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.assignee == form.assignee);
+        if let (true, Some(task)) = (untouched, tasks.iter().find(|task| task.id == id)) {
+            form.reset_field_to_saved(CaptureField::Assignee, task);
+        }
     }
 
     /// Options the open picker shows after its search query, as (source index, option).
@@ -2402,7 +2518,11 @@ impl BoardModel {
     }
 
     pub(super) fn cancel_list_picker(&mut self) {
-        self.list_picker = None;
+        let return_mode = self
+            .list_picker
+            .take()
+            .map_or(BoardInputMode::Normal, |picker| picker.return_mode);
+        self.input_mode = return_mode;
     }
 
     /// Fold the group `g` addresses: archived while the drawer is open and that

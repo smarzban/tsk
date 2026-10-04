@@ -28,6 +28,8 @@ use super::model::{
 /// What the row says when an action that aims at the selection is asked for on a board that
 /// has none. One wording, so the same refusal always reads the same way.
 const NO_SELECTION: &str = "select a task first";
+/// `@` with no `agents.toml` profile: the picker would offer only **none**.
+pub const NO_AGENT_PROFILES: &str = "no agent profiles · add one to agents.toml";
 
 fn take_verb_targets(model: &mut BoardModel) -> (Vec<Uuid>, bool) {
     let bulk = model.task_list_owns_input() && model.mark_mode_active() && model.marked_count() > 0;
@@ -139,7 +141,15 @@ pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> boo
             .as_ref()
             .is_some_and(|form| form.focus == CaptureField::Assignee)
         && model.pending_assignee_targets.is_some();
+    // The mouse route recurses into ConfirmListPicker inside the reducer, so the outer
+    // intent is the one the save baseline is decided on.
+    let picker_assignment = matches!(
+        intent,
+        BoardIntent::ConfirmListPicker | BoardIntent::SelectListOption(_)
+    ) && model.input_mode == BoardInputMode::ListPicker
+        && model.list_picker_kind() == Some(crate::ui::board::ListPickerKind::Assignee);
     dropdown_assignment
+        || picker_assignment
         || matches!(
             intent,
             BoardIntent::ConfirmEdit
@@ -229,6 +239,7 @@ fn read_only_focus_refuses(model: &BoardModel, intent: &BoardIntent) -> bool {
             | BoardIntent::BeginEditNotes
             | BoardIntent::BeginEditScope
             | BoardIntent::BeginEditAssignee
+            | BoardIntent::OpenAssigneePicker
             | BoardIntent::BeginAddStep
             | BoardIntent::ToggleThreadEditing
             | BoardIntent::FormCycleScope
@@ -1487,6 +1498,52 @@ fn apply_board_intent(
             }
             return Ok(IntentOutcome::None);
         }
+        BoardIntent::OpenAssigneePicker => {
+            if model.project_picker.is_some() || model.popup == BoardPopup::SaveRecovery {
+                return Ok(IntentOutcome::None);
+            }
+            model.close_popup();
+            model.close_help();
+            // An open edit session owns its assignee draft: `@` opens that field's dropdown
+            // rather than writing behind the draft.
+            if model.input_mode == BoardInputMode::TaskPage && model.task_editing() {
+                return apply_board_intent(
+                    domain,
+                    model,
+                    BoardIntent::OpenFormDropdown(CaptureField::Assignee),
+                    snapshot,
+                );
+            }
+            let task_page = model.input_mode == BoardInputMode::TaskPage
+                && model.form.as_ref().is_some_and(BoardForm::is_task);
+            if !(task_page || model.input_mode == BoardInputMode::Normal)
+                || model.projects_overview()
+            {
+                return Ok(IntentOutcome::None);
+            }
+            let ids: Vec<Uuid> = model
+                .verb_target_ids()
+                .into_iter()
+                .filter(|id| domain.get(*id).is_some_and(|task| !task.is_notice()))
+                .collect();
+            if ids.is_empty() {
+                model.set_message(NO_SELECTION);
+                return Ok(IntentOutcome::None);
+            }
+            if model.agent_names.is_empty() {
+                model.set_message(NO_AGENT_PROFILES);
+                return Ok(IntentOutcome::None);
+            }
+            let current = model
+                .selected_id()
+                .filter(|id| ids.contains(id))
+                .or_else(|| ids.first().copied())
+                .and_then(|id| domain.get(id))
+                .and_then(|task| task.assignee.clone());
+            model.clear_message();
+            model.open_assignee_picker(ids, current, false);
+            return Ok(IntentOutcome::None);
+        }
         BoardIntent::ListPickerNext => {
             model.move_list_picker(true);
             return Ok(IntentOutcome::None);
@@ -1514,6 +1571,41 @@ fn apply_board_intent(
                 picker.selected = index;
             }
             return apply_board_intent(domain, model, BoardIntent::ConfirmListPicker, snapshot);
+        }
+        BoardIntent::ConfirmListPicker
+            if model.list_picker_kind() == Some(crate::ui::board::ListPickerKind::Assignee) =>
+        {
+            let Some((_, option)) = model.selected_list_picker_option() else {
+                return Ok(IntentOutcome::None);
+            };
+            let ListPickerValue::Assignee(assignee) = option.value else {
+                return Ok(IntentOutcome::None);
+            };
+            let Some(target) = model.close_assignee_picker() else {
+                return Ok(IntentOutcome::None);
+            };
+            // `ctrl+g` on an unassigned task: **none** leaves it exactly as it was.
+            if target.dispatch_after && assignee.is_none() {
+                return Ok(IntentOutcome::None);
+            }
+            let changed = domain.assign_batch(&target.ids, assignee.clone())?;
+            model.clear_marks();
+            if !changed {
+                return Ok(IntentOutcome::None);
+            }
+            model.sync_form_assignee(&target.ids, domain.tasks());
+            let subject = match target.ids.as_slice() {
+                [id] => domain
+                    .get(*id)
+                    .and_then(|task| task.number)
+                    .map_or_else(|| "task".to_string(), |number| format!("T{number}")),
+                ids => format!("{} tasks", ids.len()),
+            };
+            model.set_message(match assignee {
+                Some(name) => format!("assigned {subject} to @{name}"),
+                None => format!("unassigned {subject}"),
+            });
+            return Ok(IntentOutcome::Persist);
         }
         BoardIntent::ConfirmListPicker => {
             let drops_project_preview = model.projects_preview_active()
@@ -1554,7 +1646,6 @@ fn apply_board_intent(
         }
         BoardIntent::CancelListPicker => {
             model.cancel_list_picker();
-            model.input_mode = BoardInputMode::Normal;
             return Ok(IntentOutcome::None);
         }
         BoardIntent::FocusSearch => {

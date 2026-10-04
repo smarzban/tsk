@@ -21,7 +21,8 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 | Add task | `+` |
 | Edit title | `ctrl+e` |
 | Start open or ready task | `ctrl+s` |
-| Dispatch assigned task; press twice to relaunch an existing dispatch | `ctrl+g` |
+| Dispatch assigned task; press twice to relaunch an existing dispatch. On an unassigned task, pick an agent first | `ctrl+g` |
+| Assign: pick an agent profile or **none** | `@` |
 | Set ready, the picked queue | `ctrl+n` |
 | Set open, the inbox | `ctrl+o` |
 | Mark done; confirm cleanup for a live dispatched worktree | `ctrl+d` |
@@ -49,7 +50,7 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 
 `Shift+M` enters or leaves multi-select while the board owns input. While it is active, `Space`, shifted arrows, and a plain task click change marks instead of opening a task. Removing the last mark leaves the mode active. `Shift+M` again from the board, `Esc`, a task action, or a lens change leaves it and clears the set. Text entry keeps `Shift+M` as a capital `M`; `Esc` leaves multi-select before cancelling that surface.
 
-When tasks are marked, the status, delete, and archive shortcuts act on that set; without marks they act on the cursor. `Enter`, `ctrl+e`, and `ctrl+g` remain cursor-only. Dispatch clears the marks and launches only the cursored task. On an existing dispatch, the first `ctrl+g` asks and the second relaunches. `ctrl+d` offers cleanup only for an unmarked cursor task with a live worktree; `y` cleans and completes, `n` completes without cleanup, and `Esc` cancels. A dirty worktree has no `y` choice. `ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Bulk block and review toggles send every target to blocked or review unless all targets already have that status, in which case they all return to ready. `ctrl+n` and `ctrl+o` can send done tasks directly to ready or open. One `ctrl+u` reverses an entire marked completion or deletion.
+When tasks are marked, the status, delete, and archive shortcuts act on that set; without marks they act on the cursor. `@` assigns the marked set too. `Enter`, `ctrl+e`, and `ctrl+g` remain cursor-only. Dispatch clears the marks and launches only the cursored task. On an existing dispatch, the first `ctrl+g` asks and the second relaunches. `ctrl+d` offers cleanup only for an unmarked cursor task with a live worktree; `y` cleans and completes, `n` completes without cleanup, and `Esc` cancels. A dirty worktree has no `y` choice. `ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Bulk block and review toggles send every target to blocked or review unless all targets already have that status, in which case they all return to ready. `ctrl+n` and `ctrl+o` can send done tasks directly to ready or open. One `ctrl+u` reverses an entire marked completion or deletion.
 
 ## Task page
 
@@ -63,7 +64,8 @@ These keys apply in **view mode**:
 | Add step | `ctrl+a` |
 | Edit title or selected step | `ctrl+e` |
 | Change task status | Board status shortcuts above |
-| Dispatch assigned task | `ctrl+g` |
+| Dispatch assigned task; on an unassigned task, pick an agent first | `ctrl+g` |
+| Assign: pick an agent profile or **none** | `@` or click the footer's `@name` / `+ assign` |
 | Mark/remove selected step; otherwise confirm/delete task | `ctrl+x` |
 | All shortcuts | `?` |
 | Close task | `Esc` |
@@ -115,8 +117,9 @@ In Herdr quick capture, `Shift+Enter` saves and closes the popup. `Esc` closes a
 | Project archive | `ctrl+f` archives; on archived tab, `ctrl+f` or `ctrl+u` restores |
 | Archived project view | `ctrl+u` restores; `Esc`, `p`, or `1`–`3` leaves |
 | Thread/view selector | Type or paste to filter; arrows or `Tab` select; `Enter` chooses; `Esc` closes |
+| Assignee picker | Type to filter; arrows or `Tab` select; `Enter` applies; `Esc` closes with no change |
 | Board search | Type or paste; `Backspace` edits; `Enter` pins; `Esc` clears and closes |
-| Palette | Type to filter; arrows or `Tab` select; `Enter` runs; `Esc` closes. **set assignee** offers exact agent profiles and **none**; tasks offer **dispatch to @name** or **dispatch again** |
+| Palette | Type to filter; arrows or `Tab` select; `Enter` runs; `Esc` closes. **set assignee** opens the assignee picker; tasks offer **dispatch to @name** or **dispatch again** |
 | Help | Type or paste to filter by key or action; arrows, page keys, or wheel scroll; `Esc` clears the search, then closes |
 | Archived-project launch prompt | `y` restores; `n` or `Esc` keeps archived; `?` opens Help |
 | Dispatch cleanup prompt | `y` cleans and completes; `n` completes only; `Esc` cancels. Dirty worktrees omit `y` |

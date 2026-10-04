@@ -67,9 +67,9 @@ Assign threads when [capturing](/docs/capture/#title-tokens) or [editing a task]
 
 ## Assignees
 
-An optional assignee links a task to the exact name of an agent profile in [`agents.toml`](/docs/storage/#agent-profiles). Rows stay a title; the peek (`→`) footer names `@assignee · #thread · project`, in that order, for whatever is set. Use **set assignee** in the palette, then choose a profile or **none**. With marked tasks, one choice updates the whole set and one `ctrl+u` reverses it.
+An optional assignee links a task to the exact name of an agent profile in [`agents.toml`](/docs/storage/#agent-profiles). Rows stay a title; the peek (`→`) footer names `@assignee · #thread · project`, in that order, for whatever is set. Press `@` (or use **set assignee** in the palette) to open the assignee picker: every profile in `agents.toml`, then **none**. The cursor task's assignee is preselected, or the first profile when it has none. `↑`/`↓` move, typing filters, `Enter` applies, and `Esc` closes without a change. With marked tasks, one choice updates the whole set and one `ctrl+u` reverses it. With no profile defined, `@` says so and opens nothing. On the Projects overview `@` does nothing.
 
-Press `ctrl+g`, or choose **dispatch to @name** from the palette, to send the cursored task to its assigned agent. Dispatch is cursor-only: it clears any marked set rather than launching several agents. tsk creates a dedicated Git worktree and Herdr workspace, renders the profile command there, starts the task, then records the worktree, branch, workspace, command argv, and time as one save. If creating or launching fails, task state does not change. Dispatch requires Herdr, a project-scoped task in a Git repository, and a non-done, non-archived task with a known assignee. Dispatch runs on macOS and Linux only; on Windows `ctrl+g` refuses with "dispatch needs herdr on macOS or Linux".
+Press `ctrl+g`, or choose **dispatch to @name** from the palette, to send the cursored task to its assigned agent. On an unassigned task `ctrl+g` opens the assignee picker first: `Enter` on a profile saves the assignment, then dispatches; **none** or `Esc` changes nothing. If the launch then fails, the task stays assigned. With no profile defined, `ctrl+g` refuses: "no agent assigned: press @ or add a profile to agents.toml". Dispatch is cursor-only: it clears any marked set rather than launching several agents. tsk creates a dedicated Git worktree and Herdr workspace, renders the profile command there, starts the task, then records the worktree, branch, workspace, command argv, and time as one save. If creating or launching fails, task state does not change. Dispatch requires Herdr, a project-scoped task in a Git repository, and a non-done, non-archived task with a known assignee. Dispatch runs on macOS and Linux only; on Windows `ctrl+g` refuses with "dispatch needs herdr on macOS or Linux".
 
 On a task with a dispatch record, the first `ctrl+g` names its worktree and asks for another press; the second relaunches there. The palette offers **dispatch again** instead. A cleaned record recreates the worktree, reopening a retained unmerged branch or recreating a removed merged branch.
 
@@ -199,7 +199,7 @@ Press `:` and type to find an action. Use arrows or `Tab` to select, `Enter` to 
 | Dispatch again | A task with a dispatch record is selected |
 | Retry save, cancel save | A save has failed |
 
-**Set assignee** applies to the marked set when marks are present. Dispatch commands ignore and clear marks, then dispatch only the cursor.
+**Set assignee** opens the same picker as `@` and applies to the marked set when marks are present. Dispatch commands ignore and clear marks, then dispatch only the cursor.
 
 Search matches letters in order: `ssr` finds `set status: review`.
 
