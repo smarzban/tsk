@@ -1335,6 +1335,34 @@ impl BoardModel {
         landed || nested
     }
 
+    /// Make an unresolved failed save visible and reachable on whichever board owns input, and
+    /// take a resolved one down from both boards. A queued cleanup can finish (and fail its
+    /// save) inside a project preview that a narrowing frame has parked, and the frame can
+    /// widen or narrow again before the user answers Retry or Cancel.
+    pub fn present_save_recovery(&mut self, pending: Option<&str>) {
+        match pending {
+            Some(error) => {
+                let target = self.input_target_mut();
+                if target.popup != BoardPopup::SaveRecovery {
+                    target.begin_save_recovery(error);
+                }
+            }
+            None => {
+                self.drop_stale_save_recovery();
+                if let Some(right) = self.right_seat.as_deref_mut() {
+                    right.drop_stale_save_recovery();
+                }
+            }
+        }
+    }
+
+    fn drop_stale_save_recovery(&mut self) {
+        if self.popup == BoardPopup::SaveRecovery {
+            self.popup = BoardPopup::None;
+            self.clear_message();
+        }
+    }
+
     /// Whether a queued `y` waits in this board's retained project preview, focused or parked.
     pub fn preview_cleanup_confirm_due(&self) -> bool {
         self.right_seat

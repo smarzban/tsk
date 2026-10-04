@@ -2328,6 +2328,7 @@ pub fn finish_queued_cleanup_with_host(
     host: &mut impl DispatchHost,
 ) -> io::Result<()> {
     model.poll_cleanup_check();
+    model.present_save_recovery(save_recovery.error());
     if save_recovery.is_pending() {
         return Ok(());
     }
@@ -2340,6 +2341,7 @@ pub fn finish_queued_cleanup_with_host(
     } else {
         return Ok(());
     };
+    let parked = preview && !model.project_right_seat_focused();
     let target = if preview {
         model.preview_seat_mut().expect("due preview card")
     } else {
@@ -2359,6 +2361,18 @@ pub fn finish_queued_cleanup_with_host(
     if preview && !save_recovery.is_pending() {
         model.sync_from_domain(domain);
     }
+    if parked {
+        // The parked preview is not painted: its outcome belongs on the visible board.
+        let seat = model.preview_seat_mut().expect("parked preview");
+        let message = seat.message().map(str::to_owned);
+        if !save_recovery.is_pending() {
+            seat.clear_message();
+        }
+        if let Some(message) = message.filter(|_| !save_recovery.is_pending()) {
+            model.set_message(message);
+        }
+    }
+    model.present_save_recovery(save_recovery.error());
     Ok(())
 }
 
@@ -9707,7 +9721,7 @@ mod queued_cleanup_tests {
     use crate::domain::{Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope};
     use crate::save_recovery::SaveRecovery;
     use crate::store::TaskStore;
-    use crate::ui::board::{apply_intent, BoardModel};
+    use crate::ui::board::{apply_intent, BoardInputMode, BoardModel};
     use crate::ui::input::BoardIntent;
     use crate::ui::queue::NavTab;
 
@@ -10106,6 +10120,107 @@ mod queued_cleanup_tests {
         assert!(model
             .preview_seat_mut()
             .is_none_or(|seat| seat.cleanup_prompt().is_none()));
+        assert!(
+            model
+                .message()
+                .is_some_and(|message| message.starts_with("done T")),
+            "the outcome shows on the visible board: {:?}",
+            model.message()
+        );
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_parked_preview_whose_queued_cleanup_fails_to_save_shows_recovery_on_the_visible_board() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, store, mut domain, id) = setup("parked-save");
+        let mut model = BoardModel::from_domain(&domain, None);
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("projects overview");
+        for _ in 0..2 {
+            apply_intent(&mut domain, &mut model, BoardIntent::StageRight, None)
+                .expect("stage right");
+        }
+        let mut host = CheckHost::new(false);
+        offer_cleanup_prompt_with_host(&mut domain, model.input_target_mut(), id, true, &mut host)
+            .expect("offer");
+        press(
+            &store,
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        super::sync_frame_presentation(ratatui::layout::Rect::new(0, 0, 60, 24), &model);
+        assert!(!model.project_right_seat_focused());
+
+        // The save under the parked preview fails.
+        let permissions = |mode| std::fs::Permissions::from_mode(mode);
+        std::fs::set_permissions(&dir, permissions(0o555)).expect("read-only state dir");
+        host.check.complete(verdict(true));
+        host.cached_merged = true;
+        let mut recovery = SaveRecovery::new();
+        let finished = finish_queued_cleanup_with_host(
+            &store,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            false,
+            true,
+            &mut host,
+        );
+        std::fs::set_permissions(&dir, permissions(0o755)).expect("writable again");
+        finished.expect("loop step");
+        assert!(recovery.is_pending(), "the save failed");
+        assert_eq!(model.input_mode(), BoardInputMode::SaveRecovery);
+        assert!(model
+            .message()
+            .is_some_and(|message| message.contains("save failed")));
+        assert_eq!(
+            super::board_keyboard_intent(
+                &model,
+                model.input_mode(),
+                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)
+            ),
+            Some(BoardIntent::RetrySave)
+        );
+
+        handle_board_intent_with_host(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::RetrySave,
+            &mut recovery,
+            false,
+            true,
+            &mut host,
+            &mut |_| {},
+        )
+        .expect("retry");
+        assert!(!recovery.is_pending());
+        finish_queued_cleanup_with_host(
+            &store,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            false,
+            true,
+            &mut host,
+        )
+        .expect("loop step");
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+        assert!(model
+            .right_seat()
+            .is_some_and(|seat| seat.popup() != crate::ui::mouse::BoardPopup::SaveRecovery));
+        let disk = store.load().expect("load");
+        assert_eq!(disk.get(id).unwrap().status, HumanStatus::Done);
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
 
