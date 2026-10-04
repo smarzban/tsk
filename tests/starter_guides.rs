@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
-use tsk_tui::agents::AgentProfiles;
+use tsk_tui::agents::{AgentProfiles, STARTER_CONFIG};
 use tsk_tui::announcements;
 use tsk_tui::app::{load_board, load_board_for_quick_capture, load_board_model};
 use tsk_tui::context::{build_snapshot, RawHostContext, CONTEXT_JSON_ENV};
@@ -89,23 +89,6 @@ fn catalog_ids() -> BTreeSet<String> {
         .collect()
 }
 
-const STARTER_AGENTS: &str = "# tsk settings. Each [agent.<name>] table is a launch profile.\n\
-# Assign with `!a name`, dispatch with ctrl+g.\n\
-# Placeholders in command and prompt: {number} {title} {notes} {steps} {worktree} {branch} {base}\n\
-# The prompt is appended to the command as its last argument. Omit `prompt` for the default:\n\
-#   You were dispatched to T{number} in this worktree. Run `tsk guide`, then `tsk list {number}`.\n\
-#   Set the task to review when done, or blocked when a human is needed.\n\
-\n\
-# [agent.grok]\n\
-# command = [\"pi\", \"--model\", \"xai/grok-4.6\", \"--thinking\", \"high\"]\n\
-\n\
-# [agent.opus]\n\
-# command = [\"claude\", \"--model\", \"opus\", \"--effort\", \"high\"]\n\
-# prompt = \"Review the branch for T{number}: {title}. Leave findings as steps on the task, then set review.\"\n\
-\n\
-# [agent.fable]\n\
-# command = [\"fable\"]\n";
-
 #[test]
 fn full_board_open_seeds_a_parseable_commented_agent_profile_file() {
     let _lock = env_lock();
@@ -116,7 +99,7 @@ fn full_board_open_seeds_a_parseable_commented_agent_profile_file() {
 
     assert_eq!(
         fs::read_to_string(env.dir.join("config.toml")).expect("seeded config.toml"),
-        STARTER_AGENTS
+        STARTER_CONFIG
     );
     assert!(
         AgentProfiles::load(&env.dir)
