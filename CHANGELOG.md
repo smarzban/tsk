@@ -21,6 +21,7 @@ the GitHub release notes verbatim.
 
 ### Fixed
 
+- The verb legend on an assigned task shows dispatch as `ctrl+g dispatch`, matching its chord, instead of a bare `g`.
 - With tasks marked, `Esc` in the thread or view picker closes the picker instead of clearing the marks behind it and leaving it open.
 - The task page's project chooser lists options top to bottom, so `↓` moves the highlight down instead of up.
 - Completing a dispatched task from the board always offers worktree cleanup again: a stale prunable worktree left behind by another tool no longer silences the offer and completes the task without a prompt.
