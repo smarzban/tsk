@@ -83,7 +83,7 @@ New tasks start `open` in the inbox; `ready` means the user picked it.
 **Start work on a task.** `tsk list T12 --json` for notes and steps. `tsk status T12 start`.
 Tick steps as you go: `tsk steps T12 toggle <short_id>`.
 
-**Dispatch assigned work.** When the user asks you to launch an assigned task, read it first, then run `tsk dispatch T12`. A previous launch refuses with `already-dispatched`; use `--again` only when the user explicitly wants the recorded Herdr workspace reused. After an uncertain result, read the task before retrying because an agent may already be running. After review and merge, the human runs `tsk clean T12`; an agent never cleans the worktree it is running in.
+**Dispatch assigned work.** When the user asks you to launch an assigned task, read it first, then run `tsk dispatch T12`. A previous launch refuses with `already-dispatched`; use `--again` only when the user explicitly wants the recorded Herdr workspace reused. After an uncertain result, read the task before retrying because an agent may already be running. Watch the launched agent with `herdr agent get t12-<assignee>` (tsk names it when Herdr detects it). After review and merge, the human runs `tsk clean T12`; an agent never cleans the worktree it is running in.
 
 **Hand back.** `tsk status T12 review`, and say in one line what you did and what to look at.
 Blocked on the user: `tsk status T12 blocked` and ask the question.

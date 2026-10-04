@@ -2215,6 +2215,10 @@ fn handle_board_intent(
                     model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
                     return Ok(false);
                 }
+                if let Some(naming) = result.naming.clone() {
+                    // Detached: the board never waits on Herdr's agent detection.
+                    drop(dispatch::spawn_agent_naming(naming));
+                }
                 model.sync_from_domain(domain);
                 model.set_message(format!(
                     "dispatched T{} to @{}",

@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::Value;
 use uuid::Uuid;
@@ -110,6 +110,15 @@ pub struct DispatchResult {
     pub title: String,
     pub assignee: String,
     pub record: Dispatch,
+    /// The Herdr agent name to apply once the record is saved, or `None` when a relaunch found
+    /// an agent already running in the reused pane.
+    pub naming: Option<AgentNaming>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentNaming {
+    pub pane_id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -214,7 +223,15 @@ pub trait DispatchHost {
     }
     fn root_pane(&mut self, workspace_id: &str) -> Result<String, String>;
     fn run_in_pane(&mut self, pane_id: &str, command: &str) -> Result<(), String>;
+    /// Whether Herdr currently detects an agent in `pane_id`.
+    fn pane_has_agent(&mut self, _pane_id: &str) -> Result<bool, String> {
+        Err("agent detection is not supported".into())
+    }
 }
+
+/// How long dispatch waits for Herdr to detect the launched agent before leaving it unnamed.
+const AGENT_DETECTION_TIMEOUT: Duration = Duration::from_secs(3);
+const AGENT_DETECTION_POLL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Default)]
 pub struct SystemDispatchHost;
@@ -449,6 +466,55 @@ impl DispatchHost for SystemDispatchHost {
             .map_err(|error| format!("could not run herdr: {error}"))?;
         herdr_json(output).map(|_| ())
     }
+
+    fn pane_has_agent(&mut self, pane_id: &str) -> Result<bool, String> {
+        let output = Command::new("herdr")
+            .args(["agent", "get", pane_id])
+            .output()
+            .map_err(|error| format!("could not run herdr: {error}"))?;
+        if !output.status.success()
+            && herdr_error_code(&output.stderr).as_deref() == Some("agent_not_found")
+        {
+            return Ok(false);
+        }
+        herdr_json(output).map(|_| true)
+    }
+}
+
+/// Name the dispatched agent on a detached thread so neither the board nor the save waits on
+/// Herdr's detection. Best effort: every failure leaves the agent unnamed. A CLI process must
+/// join the handle before exiting, or the thread dies with it.
+pub fn spawn_agent_naming(naming: AgentNaming) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let _ = name_agent_when_detected(&naming);
+    })
+}
+
+fn name_agent_when_detected(naming: &AgentNaming) -> Result<(), String> {
+    // Herdr detects the agent shortly after the launch line runs; until then the pane has no
+    // agent and rename answers `agent_not_found`. Any other refusal, such as
+    // `agent_name_taken` by an agent elsewhere, is final: the agent stays unnamed.
+    let deadline = Instant::now() + AGENT_DETECTION_TIMEOUT;
+    loop {
+        let output = Command::new("herdr")
+            .args(["agent", "rename", &naming.pane_id, &naming.name])
+            .output()
+            .map_err(|error| format!("could not run herdr: {error}"))?;
+        let undetected = !output.status.success()
+            && herdr_error_code(&output.stderr).as_deref() == Some("agent_not_found");
+        if !undetected || Instant::now() >= deadline {
+            return herdr_json(output).map(|_| ());
+        }
+        std::thread::sleep(AGENT_DETECTION_POLL);
+    }
+}
+
+fn herdr_error_code(stderr: &[u8]) -> Option<String> {
+    let value: Value = serde_json::from_slice(stderr).ok()?;
+    value
+        .pointer("/error/code")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn canonical_cleanup_path(path: &Path) -> Result<PathBuf, String> {
@@ -738,6 +804,9 @@ pub fn run_with_host(
         )
     };
 
+    // A relaunch reuses the pane; never rename an agent that is still running there, it may be
+    // the previous launch under another assignee. An unanswered check counts as occupied.
+    let name_launch = task.dispatch.is_none() || host.pane_has_agent(&pane_id) == Ok(false);
     let steps = rendered_steps(&task);
     let rendered = profile.render(&RenderContext {
         number,
@@ -765,6 +834,10 @@ pub fn run_with_host(
     Ok(DispatchResult {
         number,
         title: task.title,
+        naming: name_launch.then(|| AgentNaming {
+            pane_id,
+            name: agent_name(number, &assignee),
+        }),
         assignee,
         record,
     })
@@ -782,6 +855,18 @@ pub fn ensure_platform_supported() -> Result<(), DispatchError> {
 
 pub fn running_inside_herdr() -> bool {
     std::env::var("HERDR_ENV").as_deref() == Ok("1")
+}
+
+/// Herdr agent name for a dispatched task, e.g. `t105-claude`. Assignees are lowercase
+/// thread-style names; Herdr refuses dots and names over 32 characters, so dots become hyphens
+/// and the assignee part is truncated to fit.
+pub fn agent_name(number: u64, assignee: &str) -> String {
+    const MAX: usize = 32;
+    let prefix = format!("t{number}-");
+    let room = MAX.saturating_sub(prefix.len());
+    let profile: String = assignee.replace('.', "-").chars().take(room).collect();
+    let name = format!("{prefix}{}", profile.trim_end_matches('-'));
+    name.trim_end_matches('-').to_string()
 }
 
 fn rendered_steps(task: &Task) -> String {
@@ -855,6 +940,8 @@ mod tests {
         git: bool,
         fail_create: Option<String>,
         fail_run: Option<String>,
+        pane_agent: Option<bool>,
+        agent_checks: usize,
         creates: usize,
         roots: usize,
         runs: Vec<(String, String)>,
@@ -934,6 +1021,11 @@ mod tests {
             } else {
                 Ok(())
             }
+        }
+
+        fn pane_has_agent(&mut self, _: &str) -> Result<bool, String> {
+            self.agent_checks += 1;
+            self.pane_agent.ok_or_else(|| "herdr unreachable".into())
         }
     }
 
@@ -1273,6 +1365,84 @@ mod tests {
         assert_eq!(host.runs.len(), 1);
         assert!(host.runs[0].1.contains("/tmp/worktree"));
         fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn launch_names_the_herdr_agent_after_the_task_and_profile() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let number = state.get(id).and_then(|task| task.number).expect("number");
+        let mut host = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        let result =
+            run_with_host(&mut state, id, &profiles, false, true, &mut host).expect("dispatch");
+        assert_eq!(
+            result.naming,
+            Some(AgentNaming {
+                pane_id: "w9:p1".into(),
+                name: format!("t{number}-implementer"),
+            })
+        );
+        assert_eq!(
+            host.agent_checks, 0,
+            "a fresh pane needs no occupancy check"
+        );
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn again_names_only_a_pane_that_had_no_running_agent() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let number = state.get(id).and_then(|task| task.number).expect("number");
+        let mut first = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        run_with_host(&mut state, id, &profiles, false, true, &mut first).expect("first");
+
+        let mut empty_pane = FakeHost {
+            git: true,
+            pane_agent: Some(false),
+            ..FakeHost::default()
+        };
+        let relaunch =
+            run_with_host(&mut state, id, &profiles, true, true, &mut empty_pane).expect("again");
+        assert_eq!(
+            relaunch.naming.map(|naming| naming.name),
+            Some(format!("t{number}-implementer"))
+        );
+
+        for pane_agent in [Some(true), None] {
+            let mut occupied = FakeHost {
+                git: true,
+                pane_agent,
+                ..FakeHost::default()
+            };
+            let relaunch =
+                run_with_host(&mut state, id, &profiles, true, true, &mut occupied).expect("again");
+            assert_eq!(occupied.agent_checks, 1);
+            assert_eq!(occupied.runs.len(), 1, "the relaunch itself still runs");
+            assert_eq!(relaunch.naming, None, "{pane_agent:?}");
+        }
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn agent_name_is_herdr_legal_for_every_profile_name() {
+        assert_eq!(agent_name(105, "claude"), "t105-claude");
+        assert_eq!(agent_name(12, "review.strict"), "t12-review-strict");
+        let long = "a".repeat(32);
+        let name = agent_name(1234, &long);
+        assert_eq!(name.len(), 32);
+        assert_eq!(name, format!("t1234-{}", "a".repeat(26)));
+        let cut_at_separator = format!("{}.b", "a".repeat(26));
+        assert_eq!(
+            agent_name(1234, &cut_at_separator),
+            format!("t1234-{}", "a".repeat(26))
+        );
     }
 
     #[test]
