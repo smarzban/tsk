@@ -805,7 +805,8 @@ pub fn map_board_mouse(
         BoardInputMode::EditTitle
         | BoardInputMode::EditNotes
         | BoardInputMode::EditScope
-        | BoardInputMode::EditAssignee => match hit_at(hits, pos) {
+        | BoardInputMode::EditAssignee
+        | BoardInputMode::SelectBase => match hit_at(hits, pos) {
             Some(QueueHitTarget::FormTitle) => {
                 Some(BoardIntent::FocusFormField(CaptureField::Title))
             }
@@ -818,6 +819,7 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::FormAssignee) => {
                 Some(BoardIntent::OpenFormDropdown(CaptureField::Assignee))
             }
+            Some(QueueHitTarget::FormBase) => Some(BoardIntent::OpenBasePicker),
             Some(QueueHitTarget::FormThread) => {
                 Some(BoardIntent::FocusFormField(CaptureField::Thread))
             }
@@ -842,6 +844,7 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::FormAssignee) => {
                 Some(BoardIntent::OpenFormDropdown(CaptureField::Assignee))
             }
+            Some(QueueHitTarget::FormBase) => Some(BoardIntent::OpenBasePicker),
             Some(QueueHitTarget::Step(index)) if model.task_editing() => {
                 Some(BoardIntent::SelectStep(index))
             }
@@ -866,6 +869,7 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::FormAssignee) if model.task_editing() => {
                 Some(BoardIntent::OpenFormDropdown(CaptureField::Assignee))
             }
+            Some(QueueHitTarget::FormBase) => Some(BoardIntent::OpenBasePicker),
             // View mode: `@name` or `+ assign` opens the quick assignee picker.
             Some(QueueHitTarget::FormAssignee) => Some(BoardIntent::OpenAssigneePicker),
             // Step clicks always select. In view mode this remains read-only; the reducer opens
@@ -899,6 +903,7 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::FormAssignee) => {
                 Some(BoardIntent::OpenFormDropdown(CaptureField::Assignee))
             }
+            Some(QueueHitTarget::FormBase) => Some(BoardIntent::OpenBasePicker),
             Some(QueueHitTarget::Step(index)) => Some(BoardIntent::SelectStep(index)),
             Some(QueueHitTarget::StepAdd) => Some(BoardIntent::BeginAddStep),
             Some(QueueHitTarget::Verb(index)) => verb_intent(model, index),

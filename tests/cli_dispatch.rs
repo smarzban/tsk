@@ -131,9 +131,60 @@ fn successful_cli_dispatch_persists_record_and_started_together() {
     let saved = store.load().expect("reload");
     let task = saved.tasks().first().expect("task");
     assert_eq!(task.status, HumanStatus::Started);
+    let record = task.dispatch.as_ref().expect("record");
+    assert_eq!(record.herdr_workspace_id, "workspace-1");
+    assert_eq!(record.base.as_deref(), Some("main"));
+    assert_eq!(record.base_commit, None);
+    fs::remove_dir_all(dir).expect("cleanup");
+}
+
+#[test]
+fn cli_dispatch_one_off_base_reaches_core_without_editing_task_base() {
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cli-dispatch-base-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&dir).expect("mkdir");
+    fs::write(
+        dir.join("agents.toml"),
+        "[agent.implementer]\ncommand = [\"runner\", \"{prompt}\"]\n",
+    )
+    .expect("profiles");
+    let store = TaskStore::new(&dir);
+    let mut state = DomainState::new();
+    state
+        .create_assigned(
+            "assigned",
+            None,
+            TaskScope::Project {
+                path: "/repos/app".into(),
+            },
+            ProvenanceOrigin::Manual,
+            None,
+            Some("implementer".into()),
+        )
+        .expect("task");
+    store.save(&state).expect("save");
+
+    let result = dispatch::run_with_host_base(
+        TaskAddress::Number(1),
+        false,
+        Some(dir.clone()),
+        true,
+        Some("release"),
+        &mut FakeHost::default(),
+    )
+    .expect("dispatch");
+    assert_eq!(result.record.base.as_deref(), Some("release"));
+    let loaded = store.load().expect("reload");
+    let task = &loaded.tasks()[0];
+    assert_eq!(task.base, None, "one-off override must not edit the task");
     assert_eq!(
-        task.dispatch.as_ref().expect("record").herdr_workspace_id,
-        "workspace-1"
+        task.dispatch
+            .as_ref()
+            .and_then(|record| record.base.as_deref()),
+        Some("release")
     );
     fs::remove_dir_all(dir).expect("cleanup");
 }

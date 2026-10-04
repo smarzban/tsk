@@ -25,6 +25,11 @@ pub enum UndoEntry {
         previous: Option<String>,
         expected_revision: Uuid,
     },
+    SetBase {
+        id: Uuid,
+        previous: Option<String>,
+        expected_revision: Uuid,
+    },
     Batch {
         entries: Vec<UndoEntry>,
     },
@@ -42,7 +47,8 @@ impl UndoEntry {
                 }
                 UndoEntry::SoftDelete { .. }
                 | UndoEntry::Complete { .. }
-                | UndoEntry::Assign { .. } => leaves.push(entry),
+                | UndoEntry::Assign { .. }
+                | UndoEntry::SetBase { .. } => leaves.push(entry),
             }
         }
 
@@ -67,6 +73,11 @@ impl UndoEntry {
                     id,
                     expected_revision,
                     ..
+                }
+                | UndoEntry::SetBase {
+                    id,
+                    expected_revision,
+                    ..
                 } => (id, expected_revision),
                 UndoEntry::Batch { .. } => unreachable!("batches are flattened"),
             })
@@ -78,6 +89,7 @@ impl UndoEntry {
             UndoEntry::SoftDelete { id, .. } => state.restore(id),
             UndoEntry::Complete { id, .. } => state.reopen(id),
             UndoEntry::Assign { id, previous, .. } => state.restore_assignee(id, previous),
+            UndoEntry::SetBase { id, previous, .. } => state.restore_base(id, previous),
             UndoEntry::Batch { entries } => {
                 for entry in entries.into_iter().rev() {
                     entry.reverse(state)?;
@@ -629,6 +641,48 @@ mod tests {
 
         state.assign(id, Some("agent".into())).expect("repeat");
         assert_eq!(persisted_undo_len(&state), 0);
+    }
+
+    #[test]
+    fn bulk_base_change_is_one_batch_and_one_undo_restores_every_previous_value() {
+        let mut state = DomainState::new();
+        let first = create_sample(&mut state);
+        let second = state
+            .create(
+                "second",
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create second");
+        state
+            .set_base(first, Some("release".into()))
+            .expect("seed base");
+        while state.pop_undo().is_some() {}
+
+        state
+            .set_base_batch(&[second, first, first], Some("dispatch".into()))
+            .expect("bulk base");
+        assert_eq!(persisted_undo_len(&state), 1);
+        assert!(
+            matches!(state.last_undo(), Some(UndoEntry::Batch { entries }) if entries.len() == 2)
+        );
+        assert_eq!(
+            state.get(first).expect("first").base.as_deref(),
+            Some("dispatch")
+        );
+        assert_eq!(
+            state.get(second).expect("second").base.as_deref(),
+            Some("dispatch")
+        );
+
+        state.undo().expect("undo batch");
+        assert_eq!(
+            state.get(first).expect("first").base.as_deref(),
+            Some("release")
+        );
+        assert_eq!(state.get(second).expect("second").base, None);
     }
 
     #[test]

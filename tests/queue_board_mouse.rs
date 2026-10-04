@@ -923,7 +923,7 @@ fn click_and_wheel_match_keyboard_effects_for_each_control() {
 /// this rewrite (its `CaptureLayout`/`map_capture_mouse` route is separate from the board's
 /// hit-map, per the task's implementation boundary).
 #[test]
-fn footer_assignee_then_thread_then_scope_each_focuses_its_field() {
+fn footer_assignee_then_base_then_thread_then_scope_each_routes_its_field() {
     let scope_path = "/repos/foo · thread";
     let mut domain = DomainState::new();
     domain
@@ -950,6 +950,11 @@ fn footer_assignee_then_thread_then_scope_each_focuses_its_field() {
         .iter()
         .find(|hit| hit.target == QueueHitTarget::FormAssignee)
         .expect("empty assignee target");
+    let base_hit = hits
+        .regions
+        .iter()
+        .find(|hit| hit.target == QueueHitTarget::FormBase)
+        .expect("base target");
     let thread_hit = hits
         .regions
         .iter()
@@ -965,9 +970,14 @@ fn footer_assignee_then_thread_then_scope_each_focuses_its_field() {
         "the leading assignee target starts at the footer inset"
     );
     assert_eq!(
-        thread_hit.area.x,
+        base_hit.area.x,
         2 + assignee_hit.area.width + 3,
-        "thread follows assignee and its separator"
+        "base follows assignee and its separator"
+    );
+    assert_eq!(
+        thread_hit.area.x,
+        base_hit.area.x + base_hit.area.width + 3,
+        "thread follows base and its separator"
     );
     assert_eq!(
         scope_hit.area.x,
@@ -1011,6 +1021,11 @@ fn footer_assignee_then_thread_then_scope_each_focuses_its_field() {
         None,
     )
     .expect("close assignee dropdown");
+    assert_eq!(
+        click(base_hit, &model, &hits),
+        Some(BoardIntent::OpenBasePicker),
+        "clicking the ⎇ footer slot opens the common branch picker"
+    );
     let thread = click(thread_hit, &model, &hits).expect("thread click intent");
     assert_eq!(thread, BoardIntent::FocusFormField(CaptureField::Thread));
     apply_intent(&mut domain, &mut model, thread, None).expect("focus thread");
@@ -1512,7 +1527,7 @@ fn the_modal_cards_close_control_and_chrome_behave_the_same_on_palette_help_and_
 }
 
 /// R-2: the standard-tier command surface windows to 6
-/// rows at 80x24 while 14 commands exist, and the painted `▲▼` marker is inert
+/// rows at 80x24 while 15 commands exist, and the painted `▲▼` marker is inert
 /// `CommandChrome`, so a mouse-only user could not reach the 7 commands outside the
 /// initial window (`quit`, the last one, among them). The wheel now moves the command
 /// selection the same `CommandNext`/`CommandPrev` the keyboard's `j`/`k` dispatch, which
@@ -1534,7 +1549,7 @@ fn wheel_scrolls_the_open_command_surface_so_every_command_becomes_reachable() {
     let commands = model.visible_commands();
     assert_eq!(
         commands.len(),
-        14,
+        15,
         "this ready fixture must expose every palette command a ready selection has: {commands:?}"
     );
     let last = commands.len() - 1;

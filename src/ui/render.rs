@@ -409,6 +409,7 @@ pub enum QueueOverlay<'a> {
     CleanupConfirm {
         worktree: &'a str,
         branch: &'a str,
+        base: &'a str,
         dirty: bool,
         branch_merged: bool,
         workspace_exists: bool,
@@ -488,6 +489,9 @@ pub enum QueueOverlay<'a> {
         meta_assignee_x: Option<u16>,
         /// Display width of the assignee inside `meta`.
         meta_assignee_width: u16,
+        /// Display offset and width of the dispatch base inside `meta`.
+        meta_base_x: Option<u16>,
+        meta_base_width: u16,
         /// Display offset of the scope inside `meta`. The number is chrome, not a scope hit.
         meta_scope_x: u16,
         /// Display width of scope inside `meta`, carried separately so mouse geometry never
@@ -679,6 +683,8 @@ pub enum QueueHitTarget {
     FormScope,
     /// Shared-form assignee portion of the task-page footer.
     FormAssignee,
+    /// Shared-form dispatch base portion of the task-page footer.
+    FormBase,
     /// Shared-form thread portion of the task-page footer.
     FormThread,
     /// One painted steps step row on the open task page, indexed by the step's
@@ -1127,6 +1133,8 @@ pub fn draw_task_column(
         ref meta,
         meta_assignee_x,
         meta_assignee_width,
+        meta_base_x,
+        meta_base_width,
         meta_scope_x,
         meta_scope_width,
         thread_slot_width,
@@ -1156,6 +1164,8 @@ pub fn draw_task_column(
             meta,
             meta_assignee_x,
             meta_assignee_width,
+            meta_base_x,
+            meta_base_width,
             meta_scope_x,
             meta_scope_width,
             thread_slot_width,
@@ -1653,6 +1663,16 @@ const FORM_ASSIGNEE_VERBS: &[VerbEntry<'static>] = &[
         label: "cancel",
     },
 ];
+const FORM_BASE_VERBS: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "enter",
+        label: "choose",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "cancel",
+    },
+];
 const FORM_SCOPE_DROPDOWN_VERBS: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "↑↓",
@@ -1681,6 +1701,7 @@ pub(crate) fn form_verb_items(
         CaptureField::Thread => FORM_THREAD_VERBS,
         CaptureField::Scope => FORM_SCOPE_VERBS,
         CaptureField::Assignee => FORM_ASSIGNEE_VERBS,
+        CaptureField::Base => FORM_BASE_VERBS,
     }
 }
 
@@ -1738,6 +1759,7 @@ fn paint_overlay(
         QueueOverlay::CleanupConfirm {
             worktree,
             branch,
+            base,
             dirty,
             branch_merged,
             workspace_exists,
@@ -1748,6 +1770,7 @@ fn paint_overlay(
                 surface,
                 worktree,
                 branch,
+                base,
                 *dirty,
                 *branch_merged,
                 *workspace_exists,
@@ -1799,6 +1822,8 @@ fn paint_overlay(
             ref meta,
             meta_assignee_x,
             meta_assignee_width,
+            meta_base_x,
+            meta_base_width,
             meta_scope_x,
             meta_scope_width,
             thread_slot_width,
@@ -1827,6 +1852,8 @@ fn paint_overlay(
                 meta,
                 *meta_assignee_x,
                 *meta_assignee_width,
+                *meta_base_x,
+                *meta_base_width,
                 *meta_scope_x,
                 *meta_scope_width,
                 *thread_slot_width,
@@ -2844,6 +2871,8 @@ fn paint_task_page(
     meta: &str,
     meta_assignee_x: Option<u16>,
     meta_assignee_width: u16,
+    meta_base_x: Option<u16>,
+    meta_base_width: u16,
     meta_scope_x: u16,
     meta_scope_width: u16,
     thread_slot_width: Option<u16>,
@@ -3245,6 +3274,7 @@ fn paint_task_page(
         let footer_x = 2u16;
         let assignee_slot =
             meta_assignee_x.map(|x| (footer_x.saturating_add(x), meta_assignee_width));
+        let base_slot = meta_base_x.map(|x| (footer_x.saturating_add(x), meta_base_width));
         let mut component_x = footer_x;
         let mut thread_slot = None;
         for component in meta.split(" · ") {
@@ -3269,6 +3299,7 @@ fn paint_task_page(
             Some(CaptureField::Scope) => Some((scope_x, meta_scope_width)),
             Some(CaptureField::Thread) => thread_slot,
             Some(CaptureField::Assignee) => assignee_slot,
+            Some(CaptureField::Base) => base_slot,
             _ => None,
         };
         if let Some((selected_x, selected_width)) = selected {
@@ -3303,6 +3334,12 @@ fn paint_task_page(
                     assignee_width.min(width.saturating_sub(assignee_x)),
                     1,
                 ),
+            );
+        }
+        if let Some((base_x, base_width)) = base_slot.filter(|(x, _)| *x < width) {
+            hits.push(
+                QueueHitTarget::FormBase,
+                Rect::new(base_x, y, base_width.min(width.saturating_sub(base_x)), 1),
             );
         }
         if let Some((thread_x, thread_width)) = thread_slot.filter(|(x, _)| *x < width) {
@@ -3447,6 +3484,7 @@ fn paint_cleanup_card(
     surface: Rect,
     worktree: &str,
     branch: &str,
+    base: &str,
     dirty: bool,
     branch_merged: bool,
     workspace_exists: bool,
@@ -3456,42 +3494,23 @@ fn paint_cleanup_card(
         return;
     }
     let bounds = Rect::new(0, 0, geo.row_width, geo.height);
-    let content = paint_modal_card(
-        frame,
-        geo,
-        surface,
-        bounds,
-        ModalCardSpec {
-            title: "Clean dispatch?",
-            content_rows: 5,
-            min_content_width: 24,
-            legend: if dirty {
-                DIRTY_CLEANUP_FOOTER
-            } else {
-                CLEANUP_FOOTER
-            },
-            dismiss: None,
-            legend_hits: None,
-        },
-        hits,
-    );
-    let lines = [
+    let mut lines = vec![
         format!("worktree {worktree}"),
         format!("branch {branch}"),
+        format!(
+            "base {base} · {}",
+            if branch_merged {
+                "merged ✓"
+            } else {
+                "not merged"
+            }
+        ),
         format!(
             "state {}",
             if dirty {
                 "dirty, cleanup will refuse"
             } else {
                 "clean"
-            }
-        ),
-        format!(
-            "commits {}",
-            if branch_merged {
-                "merged"
-            } else {
-                "unmerged, branch will be kept"
             }
         ),
         format!(
@@ -3503,6 +3522,43 @@ fn paint_cleanup_card(
             }
         ),
     ];
+    if !branch_merged {
+        lines.insert(
+            3,
+            format!("not merged into {base}; squash-merged? delete by hand"),
+        );
+    }
+    let pad = if geo.tier == Tier::Compact { 0 } else { 1 };
+    let wrap_width = modal_card_width(geo, bounds, 24)
+        .saturating_sub(2 + 2 * pad)
+        .max(1);
+    let lines = lines
+        .iter()
+        .flat_map(|line| {
+            crate::ui::edit::wrap_text(&crate::ui::terminal_text(line), usize::from(wrap_width))
+                .into_iter()
+                .map(|row| row.text)
+        })
+        .collect::<Vec<_>>();
+    let content = paint_modal_card(
+        frame,
+        geo,
+        surface,
+        bounds,
+        ModalCardSpec {
+            title: "Clean dispatch?",
+            content_rows: u16::try_from(lines.len()).unwrap_or(u16::MAX),
+            min_content_width: 24,
+            legend: if dirty {
+                DIRTY_CLEANUP_FOOTER
+            } else {
+                CLEANUP_FOOTER
+            },
+            dismiss: None,
+            legend_hits: None,
+        },
+        hits,
+    );
     for (row, line) in lines.iter().enumerate().take(content.height as usize) {
         put_line_at(
             frame,
@@ -5045,22 +5101,24 @@ fn row_meta(
         None
     };
     let assignee = task.assignee.as_deref().map(|name| format!("@{name}"));
+    let base = task.base.as_deref().map(|name| format!("⎇ {name}"));
     let thread = if thread_label {
         task.thread.as_deref().map(|name| format!("#{name}"))
     } else {
         None
     };
-    fit_row_meta(assignee, thread, project)
+    fit_row_meta(assignee, base, thread, project)
 }
 
 /// Keep the genuine project/thread attribution intact. Relative ages belong to task-page
 /// information, not task rows, so metadata has no fixed age reserve or artificial cap.
 fn fit_row_meta(
     assignee: Option<String>,
+    base: Option<String>,
     thread: Option<String>,
     project: Option<String>,
 ) -> String {
-    [assignee, thread, project]
+    [assignee, base, thread, project]
         .into_iter()
         .flatten()
         .filter(|value| !value.is_empty())

@@ -926,6 +926,7 @@ mod tests {
             notes: None,
             thread: thread.map(str::to_string),
             assignee: None,
+            base: None,
             dispatch: None,
             status,
             scope,

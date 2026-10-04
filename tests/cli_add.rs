@@ -60,6 +60,110 @@ fn write_agents(dir: &std::path::Path) {
     .expect("write agents");
 }
 
+fn init_git_project(path: &std::path::Path) {
+    std::fs::create_dir_all(path).expect("create project");
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "test@example.com"][..],
+        &["config", "user.name", "Test"][..],
+    ] {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .status()
+            .expect("run git")
+            .success());
+    }
+    std::fs::write(path.join("README"), "seed\n").expect("seed file");
+    assert!(Command::new("git")
+        .args(["add", "."])
+        .current_dir(path)
+        .status()
+        .expect("git add")
+        .success());
+    assert!(Command::new("git")
+        .args(["commit", "-qm", "seed"])
+        .current_dir(path)
+        .status()
+        .expect("git commit")
+        .success());
+    assert!(Command::new("git")
+        .args(["branch", "release"])
+        .current_dir(path)
+        .status()
+        .expect("git branch")
+        .success());
+}
+
+#[test]
+fn add_base_validates_against_the_resolved_task_project_and_persists() {
+    let _env = env_lock();
+    let dir = temp_state_dir("base");
+    let project = dir.join("project");
+    init_git_project(&project);
+
+    let output = add(
+        &[
+            "tsk".into(),
+            "add".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "--title".into(),
+            "based task".into(),
+            "--project".into(),
+            state_dir_arg(&project),
+            "--base".into(),
+            "release".into(),
+        ],
+        true,
+    );
+    assert_eq!(output.code, 0, "{output:?}");
+    assert_eq!(
+        task_store(&dir).load().expect("load").tasks()[0]
+            .base
+            .as_deref(),
+        Some("release")
+    );
+
+    let unknown = add(
+        &[
+            "tsk".into(),
+            "add".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "--title".into(),
+            "unknown base".into(),
+            "--project".into(),
+            state_dir_arg(&project),
+            "--base".into(),
+            "missing".into(),
+        ],
+        true,
+    );
+    assert_eq!(unknown.code, 1, "{unknown:?}");
+    assert!(unknown.stderr.contains("unknown-base"), "{unknown:?}");
+    assert_eq!(task_store(&dir).load().expect("reload").tasks().len(), 1);
+
+    let desk = add(
+        &[
+            "tsk".into(),
+            "add".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "--title".into(),
+            "desk base".into(),
+            "--desk".into(),
+            "--base".into(),
+            "release".into(),
+        ],
+        true,
+    );
+    assert_eq!(desk.code, 1, "{desk:?}");
+    assert!(desk.stderr.contains("unknown-base"), "{desk:?}");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn add_assignee_flag_and_json_plan_require_known_profiles_and_round_trip() {
     let _env = env_lock();

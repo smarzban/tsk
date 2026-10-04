@@ -3,6 +3,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use ratatui::layout::Position;
@@ -80,6 +81,8 @@ pub enum BoardInputMode {
     /// The task page footer's optional thread name is selected, ready for Enter or a second
     /// click to enter its text editor without ending the enclosing task edit session.
     SelectThread,
+    /// The task page footer's dispatch base is selected. Enter opens the branch picker.
+    SelectBase,
     /// The task page footer's optional thread name owns its text cursor.
     EditThread,
     /// The scope row of an open task form owns focus.
@@ -218,6 +221,8 @@ pub enum ListPickerKind {
     /// The quick assignee picker (bare `@`, the task-page footer, palette **set assignee**,
     /// and `ctrl+g` on an unassigned task).
     Assignee,
+    /// Explicit dispatch base, including the leading remote-default choice.
+    Base,
 }
 
 /// One choice inside a searchable list picker.
@@ -238,6 +243,8 @@ pub enum ListPickerValue {
     ProjectsThread(String),
     /// Assign this exact profile name, or clear the assignee with `None`.
     Assignee(Option<String>),
+    /// Set this exact branch name, or clear the explicit base with `None`.
+    Base(Option<String>),
 }
 
 /// What the assignee picker applies to, captured when it opens so a refresh that moves the
@@ -249,7 +256,16 @@ pub(super) struct AssigneePickerTarget {
     pub dispatch_after: bool,
 }
 
-/// An open searchable list picker (thread filter / projects view / assignee). Session-only.
+/// What the branch picker applies to. An edit-ring picker updates only its retained draft;
+/// every other picker target is one atomic domain batch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BasePickerTarget {
+    pub ids: Vec<Uuid>,
+    pub edit_draft: bool,
+}
+
+/// An open searchable list picker (thread filter / projects view / assignee / base).
+/// Session-only.
 #[derive(Debug, Clone)]
 pub(super) struct ListPickerState {
     pub kind: ListPickerKind,
@@ -260,6 +276,7 @@ pub(super) struct ListPickerState {
     /// only; the assignee picker also opens over the task page, which must survive it.
     pub return_mode: BoardInputMode,
     pub assignee_target: Option<AssigneePickerTarget>,
+    pub base_target: Option<BasePickerTarget>,
 }
 /// The immutable value a board form carries for its whole lifetime.
 ///
@@ -322,6 +339,7 @@ pub(super) struct TaskEditSave {
     pub(super) scope: TaskScope,
     pub(super) thread: Option<String>,
     pub(super) assignee: Option<String>,
+    pub(super) base: Option<String>,
     /// Existing-step names staged alongside the ordinary task fields. They reach the
     /// domain only when the task session is confirmed with Shift+Enter.
     pub(super) step_renames: BTreeMap<Uuid, String>,
@@ -343,6 +361,8 @@ pub(super) struct BoardForm {
     pub(super) thread_refusal: Option<String>,
     /// Optional assignee draft and the defined choices available this session.
     pub(super) assignee: Option<String>,
+    /// Optional explicit dispatch branch. `None` means the repository's remote default.
+    pub(super) base: Option<String>,
     pub(super) assignee_options: Vec<Option<String>>,
     pub(super) assignee_selected: usize,
     /// A task page starts view-only. Entering any field makes its steps selectable and editable
@@ -400,6 +420,7 @@ impl BoardForm {
         );
         form.thread = seeded_draft(task.thread.as_deref().unwrap_or_default());
         form.assignee = task.assignee.clone();
+        form.base = task.base.clone();
         form.set_agent_names(agent_names);
         form.task_snapshot = Some(Box::new(task.clone()));
         form
@@ -455,6 +476,7 @@ impl BoardForm {
             thread: seeded_draft(""),
             thread_refusal: None,
             assignee: None,
+            base: None,
             assignee_options: vec![None],
             assignee_selected: 0,
             editing: false,
@@ -500,6 +522,7 @@ impl BoardForm {
             CaptureField::Thread => BoardInputMode::EditThread,
             CaptureField::Scope => BoardInputMode::EditScope,
             CaptureField::Assignee => BoardInputMode::EditAssignee,
+            CaptureField::Base => BoardInputMode::SelectBase,
         }
     }
 
@@ -522,6 +545,7 @@ impl BoardForm {
                 self.assignee = task.assignee.clone();
                 self.select_current_assignee();
             }
+            CaptureField::Base => self.base = task.base.clone(),
         }
         if let Some(snapshot) = self.task_snapshot.as_mut() {
             match field {
@@ -530,6 +554,7 @@ impl BoardForm {
                 CaptureField::Thread => snapshot.thread = task.thread.clone(),
                 CaptureField::Scope => snapshot.scope = task.scope.clone(),
                 CaptureField::Assignee => snapshot.assignee = task.assignee.clone(),
+                CaptureField::Base => snapshot.base = task.base.clone(),
             }
         }
     }
@@ -538,7 +563,8 @@ impl BoardForm {
         self.focus = match self.focus {
             CaptureField::Title => CaptureField::Notes,
             CaptureField::Notes => CaptureField::Assignee,
-            CaptureField::Assignee => CaptureField::Thread,
+            CaptureField::Assignee => CaptureField::Base,
+            CaptureField::Base => CaptureField::Thread,
             CaptureField::Thread => CaptureField::Scope,
             CaptureField::Scope => CaptureField::Title,
         };
@@ -549,7 +575,8 @@ impl BoardForm {
             CaptureField::Title => CaptureField::Scope,
             CaptureField::Notes => CaptureField::Title,
             CaptureField::Assignee => CaptureField::Notes,
-            CaptureField::Thread => CaptureField::Assignee,
+            CaptureField::Base => CaptureField::Assignee,
+            CaptureField::Thread => CaptureField::Base,
             CaptureField::Scope => CaptureField::Thread,
         };
     }
@@ -757,6 +784,36 @@ fn board_form_scope_options(
     options
 }
 
+/// Shared, session-local remote-default cache. Missing entries are inserted as pending and
+/// resolved on a detached metadata thread, so the task-page renderer never waits on Git.
+#[derive(Debug, Clone, Default)]
+struct DefaultBranchCache(Arc<Mutex<BTreeMap<PathBuf, Option<String>>>>);
+
+impl DefaultBranchCache {
+    fn get_or_request(&self, project: &Path) -> String {
+        let path = project.to_path_buf();
+        let mut spawn = false;
+        let cached = self.0.try_lock().ok().and_then(|mut cache| {
+            if !cache.contains_key(&path) {
+                cache.insert(path.clone(), None);
+                spawn = true;
+            }
+            cache.get(&path).cloned().flatten()
+        });
+        if spawn {
+            let shared = Arc::clone(&self.0);
+            std::thread::spawn(move || {
+                let name = crate::git_base::default_branch_name(&path)
+                    .unwrap_or_else(|| "default".to_string());
+                if let Ok(mut cache) = shared.lock() {
+                    cache.insert(path, Some(name));
+                }
+            });
+        }
+        cached.unwrap_or_else(|| "default".to_string())
+    }
+}
+
 /// Pure board presentation state for one open session.
 ///
 /// Session-only UI state lives here and is never written under the task store or
@@ -771,6 +828,7 @@ pub struct BoardModel {
     /// Defined profile names loaded once for this session.
     pub(super) agent_names: Vec<String>,
     pub(super) this_repo: Option<PathBuf>,
+    default_branches: DefaultBranchCache,
     /// Session board location (active surface). Not durable.
     pub(super) board_location: BoardLocation,
     /// Slot 2 identity, independent from the active surface (for example after switching to
@@ -851,6 +909,8 @@ pub struct BoardModel {
     /// Tasks a quick-picker assignment changed, waiting for its save to land before an open
     /// task form bound to one of them adopts the new assignee. Cancel drops it unapplied.
     pub(super) pending_form_assignee_sync: Option<Vec<Uuid>>,
+    /// Same stale-draft guard for an immediately-applied Base picker.
+    pub(super) pending_form_base_sync: Option<Vec<Uuid>>,
     /// The app save boundary holds task-form release across its inner reducer sync.
     pub(super) hold_task_edit_save: bool,
     /// Last board action feedback or empty-selection chrome message.
@@ -929,6 +989,7 @@ pub struct CleanupPrompt {
     pub task_id: Uuid,
     pub worktree: String,
     pub branch: String,
+    pub base: String,
     pub dirty: bool,
     pub branch_merged: bool,
     pub workspace_exists: bool,
@@ -955,6 +1016,7 @@ impl BoardModel {
             archived_projects: BTreeSet::new(),
             agent_names: Vec::new(),
             this_repo: this_repo.clone(),
+            default_branches: DefaultBranchCache::default(),
             board_location: BoardLocation::Desk,
             selected_project: this_repo,
             wide_stage: WideStage::FullBoard,
@@ -991,6 +1053,7 @@ impl BoardModel {
             task_edit_save: None,
             pending_assignee_targets: None,
             pending_form_assignee_sync: None,
+            pending_form_base_sync: None,
             hold_task_edit_save: false,
             message: None,
             update_notice: None,
@@ -1158,6 +1221,7 @@ impl BoardModel {
                     form.thread = seeded_draft(task.thread.as_deref().unwrap_or_default());
                     form.thread_refusal = None;
                     form.assignee = task.assignee.clone();
+                    form.base = task.base.clone();
                     form.scope = task.scope.clone();
                     form.select_current_scope();
                     form.editing = false;
@@ -2260,6 +2324,7 @@ impl BoardModel {
             query: String::new(),
             return_mode: BoardInputMode::Normal,
             assignee_target: None,
+            base_target: None,
         });
     }
 
@@ -2310,6 +2375,7 @@ impl BoardModel {
             query: String::new(),
             return_mode: BoardInputMode::Normal,
             assignee_target: None,
+            base_target: None,
         });
     }
 
@@ -2354,8 +2420,63 @@ impl BoardModel {
                 ids,
                 dispatch_after,
             }),
+            base_target: None,
         });
         self.input_mode = BoardInputMode::ListPicker;
+    }
+
+    /// Open the common branch picker. The repository's default is always first, then local and
+    /// origin branches exactly as the Git seam reports them.
+    pub(super) fn open_base_picker(
+        &mut self,
+        ids: Vec<Uuid>,
+        current: Option<String>,
+        project: &Path,
+        branches: Vec<String>,
+        edit_draft: bool,
+    ) {
+        let default =
+            crate::git_base::default_branch_name(project).unwrap_or_else(|| "default".to_string());
+        let mut options = vec![ListPickerOption {
+            label: if default == "default" {
+                "default".to_string()
+            } else {
+                format!("default ({default})")
+            },
+            count: None,
+            value: ListPickerValue::Base(None),
+        }];
+        options.extend(branches.into_iter().map(|branch| ListPickerOption {
+            label: branch.clone(),
+            count: None,
+            value: ListPickerValue::Base(Some(branch)),
+        }));
+        let selected = options
+            .iter()
+            .position(|option| option.value == ListPickerValue::Base(current.clone()))
+            .unwrap_or(0);
+        self.list_picker = Some(ListPickerState {
+            kind: ListPickerKind::Base,
+            options,
+            selected,
+            query: String::new(),
+            return_mode: self.input_mode,
+            assignee_target: None,
+            base_target: Some(BasePickerTarget { ids, edit_draft }),
+        });
+        self.input_mode = BoardInputMode::ListPicker;
+    }
+
+    pub(super) fn close_base_picker(&mut self) -> Option<BasePickerTarget> {
+        let picker = self.list_picker.take()?;
+        self.input_mode = picker.return_mode;
+        picker.base_target
+    }
+
+    /// Cached remote-default label for the task footer. Cache misses schedule metadata lookup and
+    /// return `default` for this frame.
+    pub fn default_branch_name(&self, project: &Path) -> String {
+        self.default_branches.get_or_request(project)
     }
 
     /// `ctrl+g` on an unassigned task: the picker for that one task, armed to dispatch once a
@@ -2413,6 +2534,30 @@ impl BoardModel {
             .is_none_or(|snapshot| snapshot.assignee == form.assignee);
         if let (true, Some(task)) = (untouched, tasks.iter().find(|task| task.id == id)) {
             form.reset_field_to_saved(CaptureField::Assignee, task);
+        }
+    }
+
+    /// Resolve a persisted quick Base choice into an open page form without overwriting a base
+    /// draft the user changed while the save was in flight.
+    pub fn finish_form_base_sync(&mut self, saved: bool) {
+        let Some(ids) = self.pending_form_base_sync.take() else {
+            return;
+        };
+        if !saved {
+            return;
+        }
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        let Some(id) = form.task_id().filter(|id| ids.contains(id)) else {
+            return;
+        };
+        let untouched = form
+            .task_snapshot
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.base == form.base);
+        if let (true, Some(task)) = (untouched, self.tasks.iter().find(|task| task.id == id)) {
+            form.reset_field_to_saved(CaptureField::Base, task);
         }
     }
 
@@ -2911,7 +3056,7 @@ impl BoardModel {
             return "";
         };
         match form.focus {
-            CaptureField::Title | CaptureField::Scope => form.title.value(),
+            CaptureField::Title | CaptureField::Scope | CaptureField::Base => form.title.value(),
             CaptureField::Notes => form.notes.value(),
             CaptureField::Thread => form.thread.value(),
             CaptureField::Assignee => "",
@@ -2924,7 +3069,7 @@ impl BoardModel {
             return 0;
         };
         match form.focus {
-            CaptureField::Title | CaptureField::Scope => form.title.cursor(),
+            CaptureField::Title | CaptureField::Scope | CaptureField::Base => form.title.cursor(),
             CaptureField::Notes => form.notes.cursor(),
             CaptureField::Thread => form.thread.cursor(),
             CaptureField::Assignee => 0,
@@ -3033,6 +3178,7 @@ impl BoardModel {
                 && task.scope == pending.scope
                 && task.thread == pending.thread
                 && task.assignee == pending.assignee
+                && task.base == pending.base
                 && pending.step_renames.iter().all(|(step_id, text)| {
                     task.steps
                         .iter()
@@ -3071,6 +3217,7 @@ impl BoardModel {
             form.thread = seeded_draft(pending.thread.as_deref().unwrap_or_default());
             form.thread_refusal = None;
             form.assignee = pending.assignee;
+            form.base = pending.base;
             form.select_current_assignee();
             form.editing = false;
             form.steps.editor = None;
@@ -3374,6 +3521,7 @@ impl BoardModel {
             || form.notes.value() != snapshot.notes.as_deref().unwrap_or_default()
             || form.thread.value() != snapshot.thread.as_deref().unwrap_or_default()
             || form.assignee != snapshot.assignee
+            || form.base != snapshot.base
             || form.scope != snapshot.scope
             || !form.steps.removals.is_empty()
         {

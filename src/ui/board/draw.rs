@@ -605,7 +605,7 @@ fn build_task_page_overlay<'a>(
                 notes_rows.push(String::new());
             }
             let when = render::format_age(SystemTime::now(), dispatch.at);
-            for line in [
+            let mut dispatch_lines = vec![
                 if dispatch.cleaned {
                     "dispatch · cleaned".to_string()
                 } else {
@@ -617,8 +617,19 @@ fn build_task_page_overlay<'a>(
                     format!("worktree {}", terminal_text(&dispatch.worktree))
                 },
                 format!("branch {}", terminal_text(&dispatch.branch)),
-                format!("when {when} ago"),
-            ] {
+            ];
+            if let Some(base) = dispatch.base.as_ref() {
+                let commit = dispatch
+                    .base_commit
+                    .as_deref()
+                    .map(|commit| commit.chars().take(7).collect::<String>());
+                dispatch_lines.push(match commit {
+                    Some(commit) => format!("from {} @ {commit}", terminal_text(base)),
+                    None => format!("from {}", terminal_text(base)),
+                });
+            }
+            dispatch_lines.push(format!("when {when} ago"));
+            for line in dispatch_lines {
                 notes_rows.extend(
                     wrap_text(&line, notes_width)
                         .into_iter()
@@ -676,6 +687,49 @@ fn build_task_page_overlay<'a>(
         .and_then(|width| u16::try_from(width).ok())
         .unwrap_or(0);
     if let Some(segment) = assignee_segment {
+        meta.push_str(&segment);
+    }
+
+    let shown_base = if capture_form || (form.is_task() && form.editing) {
+        form.base.as_deref()
+    } else {
+        bound_task.and_then(|task| task.base.as_deref())
+    };
+    let show_base = capture_form || bound_task.is_some_and(|task| !task.is_notice());
+    let base_segment = show_base.then(|| {
+        shown_base.map_or_else(
+            || {
+                let scope = if capture_form || form.editing {
+                    &form.scope
+                } else {
+                    bound_task.map_or(&form.scope, |task| &task.scope)
+                };
+                let default = match scope {
+                    TaskScope::Project { path } => model.default_branch_name(Path::new(path)),
+                    TaskScope::Global => "default".to_string(),
+                };
+                if default == "default" {
+                    "⎇ default".to_string()
+                } else {
+                    format!("⎇ {default} (default)")
+                }
+            },
+            |base| format!("⎇ {}", terminal_text(base)),
+        )
+    });
+    let meta_base_x = base_segment.as_ref().map(|_| {
+        u16::try_from(render::display_width(&meta) + usize::from(!meta.is_empty()) * 3)
+            .unwrap_or(u16::MAX)
+    });
+    let meta_base_width = base_segment
+        .as_deref()
+        .map(render::display_width)
+        .and_then(|width| u16::try_from(width).ok())
+        .unwrap_or(0);
+    if let Some(segment) = base_segment {
+        if !meta.is_empty() {
+            meta.push_str(" · ");
+        }
         meta.push_str(&segment);
     }
 
@@ -743,6 +797,7 @@ fn build_task_page_overlay<'a>(
         BoardInputMode::EditTitle => Some(CaptureField::Title),
         BoardInputMode::EditNotes => Some(CaptureField::Notes),
         BoardInputMode::SelectThread | BoardInputMode::EditThread => Some(CaptureField::Thread),
+        BoardInputMode::SelectBase => Some(CaptureField::Base),
         BoardInputMode::EditScope => Some(CaptureField::Scope),
         BoardInputMode::EditAssignee => Some(CaptureField::Assignee),
         BoardInputMode::FormDropdown => Some(form.focus),
@@ -752,6 +807,7 @@ fn build_task_page_overlay<'a>(
     let scope_dropdown = scope_dropdown.map(|mut dropdown| {
         let field_x = match dropdown.field {
             CaptureField::Assignee => meta_assignee_x.unwrap_or(0),
+            CaptureField::Base => meta_base_x.unwrap_or(0),
             CaptureField::Scope => meta_scope_x,
             _ => 0,
         };
@@ -779,6 +835,8 @@ fn build_task_page_overlay<'a>(
         meta,
         meta_assignee_x,
         meta_assignee_width,
+        meta_base_x,
+        meta_base_width,
         meta_scope_x,
         meta_scope_width,
         thread_slot_width,
@@ -972,6 +1030,7 @@ impl OverlayPayloads {
                             .collect()
                     })
                     .unwrap_or_default(),
+                Some(CaptureField::Base) | None => Vec::new(),
                 _ => Vec::new(),
             }
         } else {
@@ -996,6 +1055,7 @@ impl OverlayPayloads {
                 .map(|form| match form.focus {
                     CaptureField::Scope => form.scope_selected,
                     CaptureField::Assignee => form.assignee_selected,
+                    CaptureField::Base => 0,
                     _ => 0,
                 })
                 .unwrap_or(0)
@@ -1085,7 +1145,7 @@ impl OverlayPayloads {
                 input: crate::ui::render::BottomInputSlot {
                     text: title,
                     cursor_col: u16::try_from(cursor_column).unwrap_or(u16::MAX),
-                    placeholder: "title…   !p project · !t thread · !a assignee",
+                    placeholder: "title…   !p project · !t thread · !a assignee · !b base",
                     refusal: None,
                     // Save recovery owns the verb row; ordinary quick-add refusals
                     // use the shared slot's reserved row above the cursor. A wrapped
@@ -1121,6 +1181,7 @@ impl OverlayPayloads {
             return Some(QueueOverlay::CleanupConfirm {
                 worktree: &prompt.worktree,
                 branch: &prompt.branch,
+                base: &prompt.base,
                 dirty: prompt.dirty,
                 branch_merged: prompt.branch_merged,
                 workspace_exists: prompt.workspace_exists,
@@ -1133,6 +1194,7 @@ impl OverlayPayloads {
             let title = match model.list_picker_kind() {
                 Some(crate::ui::board::ListPickerKind::ProjectsView) => "projects View",
                 Some(crate::ui::board::ListPickerKind::Assignee) => "assignee",
+                Some(crate::ui::board::ListPickerKind::Base) => "base",
                 _ => "thread filter",
             };
             return Some(QueueOverlay::ScopeDropdown {

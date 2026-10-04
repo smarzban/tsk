@@ -253,7 +253,7 @@ migration or design work they imply. What the behaviour *is* lives in the docs
   anything. Names normalize with the thread normalizer and exact-match a defined profile at the
   boundary; a task keeps a name whose profile was removed and renders it as-is.
 - Profiles are argv templates plus an optional prompt. tsk substitutes `{number} {title} {notes}
-  {steps} {worktree} {branch}` and nothing else; the prompt is appended as the last argument;
+  {steps} {worktree} {branch} {base}` and nothing else; the prompt is appended as the last argument;
   the launch is `$SHELL -lc '<quoted argv>'`, one command line, never chained. tsk carries no
   knowledge of any harness's flags. A malformed `agents.toml` never blocks the board or CLI work
   that does not assign.

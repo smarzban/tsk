@@ -1040,6 +1040,7 @@ fn board_keyboard_intent(
         BoardInputMode::EditTitle
             | BoardInputMode::EditNotes
             | BoardInputMode::EditThread
+            | BoardInputMode::SelectBase
             | BoardInputMode::EditScope
             | BoardInputMode::EditAssignee
             | BoardInputMode::FormDropdown
@@ -1135,6 +1136,7 @@ pub fn apply_board_intent_with_save_recovery(
                     model.finish_pending_assignee_assignment();
                     model.sync_from_domain(domain);
                     model.finish_form_assignee_sync(true);
+                    model.finish_form_base_sync(true);
                     model.end_save_recovery(SaveResolution::Retried);
                     if !model.has_saved_task() {
                         model.set_message("saved");
@@ -1150,6 +1152,7 @@ pub fn apply_board_intent_with_save_recovery(
                 model.sync_from_domain(domain);
                 model.finish_pending_assignee_assignment();
                 model.finish_form_assignee_sync(false);
+                model.finish_form_base_sync(false);
                 let cancelled_quick_add = model.end_save_recovery(SaveResolution::Cancelled);
                 if !cancelled_quick_add {
                     model.set_message("save cancelled");
@@ -1255,6 +1258,7 @@ pub fn apply_board_intent_with_save_recovery(
     }
     model.sync_from_domain(domain);
     model.finish_form_assignee_sync(true);
+    model.finish_form_base_sync(true);
     Ok(IntentOutcome::Persisted)
 }
 
@@ -1986,6 +1990,7 @@ pub fn offer_cleanup_prompt_with_host(
             title: preview.title,
             worktree_path: preview.record.worktree,
             branch_name: preview.record.branch,
+            base: preview.record.base,
             workspace_id: preview.record.herdr_workspace_id,
             worktree: WorktreeCleanup::Missing,
             branch: BranchCleanup::Kept,
@@ -1996,6 +2001,7 @@ pub fn offer_cleanup_prompt_with_host(
         task_id: id,
         worktree: preview.record.worktree,
         branch: preview.record.branch,
+        base: preview.record.base.unwrap_or_else(|| "unknown".to_string()),
         dirty: preview.inspection.dirty,
         branch_merged: preview.inspection.branch_merged,
         workspace_exists: preview.inspection.workspace_exists,
@@ -2072,10 +2078,12 @@ fn run_board_dispatch(
                 name_agent(naming);
             }
             model.sync_from_domain(domain);
-            model.set_message(format!(
-                "dispatched T{} to @{}",
-                result.number, result.assignee
-            ));
+            let mut message = format!("dispatched T{} to @{}", result.number, result.assignee);
+            if let Some(warning) = result.warning {
+                message.push_str(" · ");
+                message.push_str(&warning);
+            }
+            model.set_message(message);
             record_notice_dismissals_without_blocking_persist(store, domain);
         }
         Err(DispatchError::NoAssignee) => model.set_message(dispatch::BOARD_NO_ASSIGNEE),
@@ -7130,6 +7138,7 @@ mod tests {
             BoardInputMode::EditNotes,
             BoardInputMode::TaskPage,
             BoardInputMode::EditAssignee,
+            BoardInputMode::SelectBase,
             BoardInputMode::SelectThread,
             BoardInputMode::EditScope,
             BoardInputMode::EditTitle,
@@ -7140,6 +7149,7 @@ mod tests {
         for expected in [
             BoardInputMode::EditScope,
             BoardInputMode::SelectThread,
+            BoardInputMode::SelectBase,
             BoardInputMode::EditAssignee,
             BoardInputMode::TaskPage,
             BoardInputMode::EditNotes,
@@ -7170,6 +7180,7 @@ mod tests {
         for expected in [
             BoardInputMode::CapturePage,
             BoardInputMode::EditAssignee,
+            BoardInputMode::SelectBase,
             BoardInputMode::EditThread,
             BoardInputMode::EditScope,
             BoardInputMode::EditTitle,

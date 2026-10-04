@@ -23,6 +23,7 @@ pub enum AddError {
     /// The resolved scope is an archived project (cwd default or explicit `-p`).
     ProjectArchived(String),
     UnknownAgent(String),
+    UnknownBase(String),
     AgentConfig(String),
     Store(String),
 }
@@ -35,6 +36,7 @@ impl AddError {
             Self::UnknownProject(_) => "unknown-project",
             Self::ProjectArchived(_) => "project-archived",
             Self::UnknownAgent(_) => "unknown-agent",
+            Self::UnknownBase(_) => "unknown-base",
             Self::AgentConfig(_) => "agent-config",
             Self::Store(_) => "store-error",
         }
@@ -90,6 +92,8 @@ struct PlanItem {
     thread: Option<String>,
     /// Missing and JSON null both leave the item unassigned.
     assignee: Option<String>,
+    /// Missing and JSON null both use dispatch's default base resolution.
+    base: Option<String>,
 }
 
 struct ResolvedPlanItem {
@@ -99,6 +103,7 @@ struct ResolvedPlanItem {
     scope: TaskScope,
     thread: Option<String>,
     assignee: Option<String>,
+    base: Option<String>,
 }
 
 /// Result of one accepted flag add.
@@ -151,6 +156,7 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
     let global = input.global;
     let notes = input.notes.filter(|notes| !notes.trim().is_empty());
     let thread = input.thread;
+    let base = if input.clear_base { None } else { input.base };
     store
         .locked_transition_if_changed(|domain| {
             let scope = match resolve_flag_scope(project.as_deref(), global, domain, &snapshot) {
@@ -169,6 +175,18 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
                     let short = crate::ui::render::short_project(path).to_string();
                     return Ok((Err(AddError::ProjectArchived(short)), false));
                 }
+                if let Some(base) = base.as_deref() {
+                    if let Err(error) =
+                        crate::git_base::validate_branch(std::path::Path::new(path), base)
+                    {
+                        return Ok((Err(AddError::UnknownBase(error)), false));
+                    }
+                }
+            } else if base.is_some() {
+                return Ok((
+                    Err(AddError::UnknownBase("base requires a project task".into())),
+                    false,
+                ));
             }
             let outcome = if let Some(task) = existing_task(
                 domain,
@@ -176,6 +194,7 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
                 &scope,
                 thread.as_deref(),
                 assignee.as_deref(),
+                base.as_deref(),
             ) {
                 Ok(FlagAddResult::Existing {
                     id: task.id,
@@ -188,13 +207,14 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
                 })
             } else {
                 let project = scope_project(&scope);
-                let id = match domain.create_assigned(
+                let id = match domain.create_configured(
                     &title,
                     notes,
                     scope,
                     ProvenanceOrigin::Capture,
                     thread,
                     assignee,
+                    base,
                 ) {
                     Ok(id) => id,
                     Err(error) => {
@@ -269,6 +289,22 @@ pub fn run_plan(
                         ));
                         continue;
                     }
+                    if let Some(base) = item.base.as_deref() {
+                        if let Err(error) =
+                            crate::git_base::validate_branch(std::path::Path::new(path), base)
+                        {
+                            failed.push(fail_item(item.i, Some(item.title), "unknown-base", error));
+                            continue;
+                        }
+                    }
+                } else if item.base.is_some() {
+                    failed.push(fail_item(
+                        item.i,
+                        Some(item.title),
+                        "unknown-base",
+                        "base requires a project task",
+                    ));
+                    continue;
                 }
                 if let Some(task) = existing_task(
                     domain,
@@ -276,6 +312,7 @@ pub fn run_plan(
                     &item.scope,
                     item.thread.as_deref(),
                     item.assignee.as_deref(),
+                    item.base.as_deref(),
                 ) {
                     existing.push(Existing {
                         i: item.i,
@@ -288,13 +325,14 @@ pub fn run_plan(
                     continue;
                 }
                 let id = domain
-                    .create_assigned(
+                    .create_configured(
                         &item.title,
                         item.notes,
                         item.scope,
                         ProvenanceOrigin::Capture,
                         item.thread,
                         item.assignee,
+                        item.base,
                     )
                     .expect("plan item titles and threads are validated before domain creation");
                 domain.assign_numbers_for_persistence();
@@ -367,6 +405,7 @@ fn resolve_plan_items(
             scope,
             thread: item.thread,
             assignee,
+            base: item.base,
         });
     }
     (resolved, failed)
@@ -385,6 +424,7 @@ fn existing_task<'a>(
     scope: &TaskScope,
     thread: Option<&str>,
     assignee: Option<&str>,
+    base: Option<&str>,
 ) -> Option<&'a crate::domain::Task> {
     // Notice rows are board-only (no CLI address reaches them, not even their UUID) and
     // deliberately carry no T number, so a title collision with a seeded guide or the
@@ -396,6 +436,7 @@ fn existing_task<'a>(
             && &task.scope == scope
             && task.thread.as_deref() == thread
             && task.assignee.as_deref() == assignee
+            && task.base.as_deref() == base
     })
 }
 
@@ -491,6 +532,18 @@ fn parse_plan_item(i: usize, value: Value) -> Result<PlanItem, Failed> {
             ));
         }
     };
+    let base = match object.get("base") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(base)) => Some(base.clone()),
+        Some(_) => {
+            return Err(fail_item(
+                i,
+                Some(trimmed_title),
+                "invalid-item",
+                "base must be a string or null",
+            ));
+        }
+    };
 
     Ok(PlanItem {
         i,
@@ -499,6 +552,7 @@ fn parse_plan_item(i: usize, value: Value) -> Result<PlanItem, Failed> {
         project,
         thread,
         assignee,
+        base,
     })
 }
 
@@ -534,6 +588,8 @@ mod tests {
             thread: None,
             assignee: None,
             unassign: false,
+            base: None,
+            clear_base: false,
             global: false,
             json: false,
             state_dir: None,

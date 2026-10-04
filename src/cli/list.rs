@@ -60,6 +60,7 @@ pub(crate) struct ListRow {
     pub(crate) project: Option<String>,
     pub(crate) thread: Option<String>,
     pub(crate) assignee: Option<String>,
+    pub(crate) base: Option<String>,
     /// `archived` / `project archived` mark, set only in the archived view.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) archived: Option<&'static str>,
@@ -70,6 +71,7 @@ pub(crate) struct ListRow {
 pub(crate) struct DirectTaskDetails {
     pub(crate) notes: Option<String>,
     pub(crate) steps: Vec<crate::cli::steps::StepLine>,
+    pub(crate) dispatch: Option<crate::domain::Dispatch>,
 }
 
 /// Read-only result for the list command.
@@ -269,6 +271,7 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
             direct: Some(DirectTaskDetails {
                 notes: task.notes.clone(),
                 steps: crate::cli::steps::step_lines(&task.steps),
+                dispatch: task.dispatch.clone(),
             }),
         });
     }
@@ -426,6 +429,7 @@ fn row_for(task: &crate::domain::Task) -> ListRow {
         },
         thread: task.thread.clone(),
         assignee: task.assignee.clone(),
+        base: task.base.clone(),
         archived: None,
     }
 }

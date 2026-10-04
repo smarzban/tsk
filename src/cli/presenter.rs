@@ -161,14 +161,14 @@ pub fn help_usage(reason: &str) -> CliOutput {
 pub fn add_help() -> CliOutput {
     help(HelpDoc {
         usage: vec![
-            "tsk add -t <title> [-n <notes>] [-p <project> | --desk] [--thread <name>] [--assignee <name> | --unassign] [--json] [--state-dir <dir>]".into(),
+            "tsk add -t <title> [-n <notes>] [-p <project> | --desk] [--thread <name>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--json] [--state-dir <dir>]".into(),
             "tsk add [--file <path|->] [--state-dir <dir>]".into(),
         ],
         purpose: "Create one task or apply a JSON plan.".into(),
         groups: vec![
             group("Scope", &[("-p, --project <project>", "create in a project"), ("--desk", "create on your desk")]),
             group("Output", &[("--json", "print one result object for a flag add")]),
-            group("Values", &[("-t, --title <title>", "required task title"), ("-n, --notes <notes>", "optional notes"), ("--thread <name>", "optional normalized thread"), ("--assignee <name>", "assign a defined agent profile"), ("--unassign", "leave the task unassigned"), ("--file <path|->", "read a JSON plan from a file or stdin"), ("--state-dir <dir>", "use another board store"), ("--flag=<value>", "use equals syntax for dash-leading title, notes, project, state-dir, or file values")]),
+            group("Values", &[("-t, --title <title>", "required task title"), ("-n, --notes <notes>", "optional notes"), ("--thread <name>", "optional normalized thread"), ("--assignee <name>", "assign a defined agent profile"), ("--unassign", "leave the task unassigned"), ("--base <branch>", "set an existing project branch as the dispatch base"), ("--clear-base", "use the project's remote default branch"), ("--file <path|->", "read a JSON plan from a file or stdin"), ("--state-dir <dir>", "use another board store"), ("--flag=<value>", "use equals syntax for dash-leading title, notes, project, state-dir, or file values")]),
         ],
         examples: vec!["tsk add -t \"Draft release notes\"".into(), "tsk add -t \"Buy milk\" --desk".into(), "tsk add -t \"Fix widget\" --project widget --thread release-2026".into(), "tsk add --file plan.json".into(), "cat plan.json | tsk add".into()],
         refusals: vec![
@@ -178,6 +178,7 @@ pub fn add_help() -> CliOutput {
             "invalid-item (JSON plan)".into(),
             "unknown-project".into(),
             "unknown-agent".into(),
+            "unknown-base".into(),
             "project-archived".into(),
         ],
         exit: exit_line("every item was created or already existed", Some("one or more items refused, retry failed only"), true),
@@ -262,7 +263,7 @@ pub fn usage(reason: &str) -> CliOutput {
     CliOutput {
         stdout: String::new(),
         stderr: format!(
-            "tsk add: {}\nusage: tsk add -t <title> [-n <notes>] [-p <project> | --desk] [--thread <name>] [--json] [--state-dir <dir>]\n",
+            "tsk add: {}\nusage: tsk add -t <title> [-n <notes>] [-p <project> | --desk] [--thread <name>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--json] [--state-dir <dir>]\n",
             human_reason(reason)
         ),
         code: 2,
@@ -300,7 +301,10 @@ fn list_json(result: &ListResult) -> String {
             notes: &'a Option<String>,
             steps: &'a [StepLine],
             assignee: &'a Option<String>,
+            base: &'a Option<String>,
             thread: &'a Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            dispatch: Option<&'a crate::domain::Dispatch>,
         }
         let direct_row = DirectRow {
             id: row.id,
@@ -311,7 +315,9 @@ fn list_json(result: &ListResult) -> String {
             notes: &direct.notes,
             steps: &direct.steps,
             assignee: &row.assignee,
+            base: &row.base,
             thread: &row.thread,
+            dispatch: direct.dispatch.as_ref(),
         };
         return format!(
             "{}\n",
@@ -372,8 +378,7 @@ fn list_human(result: &ListResult, terminal_width: Option<usize>) -> String {
                     &mut output,
                     direct.notes.as_deref(),
                     &direct.steps,
-                    rows[0].assignee.as_deref(),
-                    rows[0].thread.as_deref(),
+                    rows[0],
                     " ",
                     output_width,
                 );
@@ -425,6 +430,10 @@ fn append_rows(
                 content.push_str(" @");
                 content.push_str(&terminal_text(assignee));
             }
+            if let Some(base) = row.base.as_deref() {
+                content.push_str(" ⎇ ");
+                content.push_str(&terminal_text(base));
+            }
             if let Some(thread) = row.thread.as_deref() {
                 content.push_str(" #");
                 content.push_str(&terminal_text(thread));
@@ -447,16 +456,18 @@ fn append_rows(
 }
 
 /// Direct detail is an ordered set of present blocks. Blank rows separate only
-/// adjacent blocks that exist: notes, steps, then thread.
+/// adjacent blocks that exist: notes, steps, assignee, base, then thread.
 fn append_direct_details(
     output: &mut String,
     notes: Option<&str>,
     steps: &[StepLine],
-    assignee: Option<&str>,
-    thread: Option<&str>,
+    row: &ListRow,
     indent: &str,
     output_width: usize,
 ) {
+    let assignee = row.assignee.as_deref();
+    let base = row.base.as_deref();
+    let thread = row.thread.as_deref();
     let mut has_prior = false;
     let detail_prefix = format!("{indent}  ");
     if let Some(notes) = notes {
@@ -482,6 +493,14 @@ fn append_direct_details(
             &assignee,
             output_width,
         );
+        has_prior = true;
+    }
+    if let Some(base) = base {
+        if has_prior {
+            output.push('\n');
+        }
+        let base = terminal_text(&format!("⎇ {base}"));
+        append_wrapped(output, &detail_prefix, &detail_prefix, &base, output_width);
         has_prior = true;
     }
     if let Some(thread) = thread {
@@ -926,7 +945,7 @@ fn status_name(status: HumanStatus) -> &'static str {
 
 pub fn dispatch_help() -> CliOutput {
     help(HelpDoc {
-        usage: vec!["tsk dispatch <task> [--again] [--state-dir <dir>]".into()],
+        usage: vec!["tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]".into()],
         purpose: "Create a project worktree and launch the task's assigned agent in Herdr.".into(),
         groups: vec![group(
             "Options",
@@ -934,6 +953,10 @@ pub fn dispatch_help() -> CliOutput {
                 (
                     "--again",
                     "relaunch, recreating a cleaned worktree when needed",
+                ),
+                (
+                    "--base <branch>",
+                    "use an existing project branch for this launch only",
                 ),
                 ("--state-dir <dir>", "use another board store"),
             ],
@@ -951,6 +974,7 @@ pub fn dispatch_help() -> CliOutput {
             "already-dispatched".into(),
             "unknown-agent".into(),
             "agent-config".into(),
+            "unknown-base".into(),
             "herdr-failed".into(),
         ],
         exit: exit_line(
@@ -1008,6 +1032,17 @@ pub fn cleaned(result: CleanupResult, json: bool) -> CliOutput {
     } else {
         "kept"
     };
+    let branch_reason =
+        if result.worktree == WorktreeCleanup::Removed && result.branch == BranchCleanup::Kept {
+            result.base.as_deref().map(|base| {
+                format!(
+                    "not merged into {}; squash-merged? delete by hand",
+                    terminal_text(base)
+                )
+            })
+        } else {
+            None
+        };
     let stdout = if json {
         format!(
             "{}\n",
@@ -1015,18 +1050,22 @@ pub fn cleaned(result: CleanupResult, json: bool) -> CliOutput {
                 "number": result.number,
                 "title": result.title,
                 "worktree": {"path": result.worktree_path, "outcome": worktree},
-                "branch": {"name": result.branch_name, "outcome": branch},
+                "branch": {"name": result.branch_name, "outcome": branch, "reason": branch_reason},
                 "workspace": {"id": result.workspace_id, "outcome": workspace},
             })
         )
     } else {
+        let branch_detail = match branch_reason {
+            Some(reason) => format!("{branch}, {reason}"),
+            None => branch.to_string(),
+        };
         format!(
             "cleaned T{}: worktree {} ({}), branch {} ({}), workspace {} ({})\n",
             result.number,
             terminal_text(&result.worktree_path),
             worktree,
             terminal_text(&result.branch_name),
-            branch,
+            branch_detail,
             terminal_text(&result.workspace_id),
             workspace,
         )
@@ -1075,7 +1114,10 @@ pub fn dispatched(result: DispatchResult) -> CliOutput {
             terminal_text(&result.assignee),
             terminal_text(&result.record.worktree)
         ),
-        stderr: String::new(),
+        stderr: result
+            .warning
+            .map(|warning| format!("tsk dispatch: warning: {}\n", terminal_text(&warning)))
+            .unwrap_or_default(),
         code: 0,
     }
 }
@@ -1084,7 +1126,7 @@ pub fn dispatch_usage(reason: &str) -> CliOutput {
     CliOutput {
         stdout: String::new(),
         stderr: format!(
-            "tsk dispatch: {}\nusage: tsk dispatch <task> [--again] [--state-dir <dir>]\n",
+            "tsk dispatch: {}\nusage: tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]\n",
             human_reason(reason)
         ),
         code: 2,
@@ -1178,9 +1220,9 @@ pub fn status_rejected(error: StatusError, task: TaskAddress) -> CliOutput {
 pub fn edit_help() -> CliOutput {
     help(HelpDoc {
         usage: vec![
-            "tsk edit <task> [--title <title>] [--notes <notes>] [--assignee <name> | --unassign] [--state-dir <dir>]".into(),
+            "tsk edit <task> [--title <title>] [--notes <notes>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--state-dir <dir>]".into(),
         ],
-        purpose: "Update a task's title, notes, or assignee without changing its scope or thread.".into(),
+        purpose: "Update a task's title, notes, assignee, or dispatch base without changing its scope or thread.".into(),
         groups: vec![group(
             "Values",
             &[
@@ -1189,6 +1231,8 @@ pub fn edit_help() -> CliOutput {
                 ("--notes <notes>", "replace notes, or clear them when blank"),
                 ("--assignee <name>", "assign a defined agent profile"),
                 ("--unassign", "clear the assignee"),
+                ("--base <branch>", "set an existing project branch as the dispatch base"),
+                ("--clear-base", "return to the project's remote default branch"),
                 ("--state-dir <dir>", "use another board store"),
                 (
                     "--flag=<value>",
@@ -1206,6 +1250,7 @@ pub fn edit_help() -> CliOutput {
             "empty-title".into(),
             "invalid-title".into(),
             "unknown-agent".into(),
+            "unknown-base".into(),
         ],
         exit: exit_line(
             "fields written, or already had the values",
@@ -1231,7 +1276,7 @@ pub fn edit_usage(reason: &str) -> CliOutput {
     CliOutput {
         stdout: String::new(),
         stderr: format!(
-            "tsk edit: {}\nusage: tsk edit <task> [--title <title>] [--notes <notes>] [--assignee <name> | --unassign] [--state-dir <dir>]\n",
+            "tsk edit: {}\nusage: tsk edit <task> [--title <title>] [--notes <notes>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--state-dir <dir>]\n",
             human_reason(reason)
         ),
         code: 2,
@@ -1240,6 +1285,7 @@ pub fn edit_usage(reason: &str) -> CliOutput {
 
 pub fn edit_rejected(error: EditError, task: TaskAddress) -> CliOutput {
     let (detail, code) = match error {
+        EditError::UnknownBase(detail) => (format!("unknown-base: {}", terminal_text(&detail)), 1),
         EditError::AgentConfig(detail) => (detail, 2),
         EditError::Store(detail) => (detail, 3),
         other => (task_refusal_message(other.code(), task), 1),
@@ -1490,6 +1536,7 @@ pub fn rejected(error: AddError) -> CliOutput {
             )
         }
         AddError::UnknownAgent(detail) => (format!("unknown-agent: {}", terminal_text(detail)), 1),
+        AddError::UnknownBase(detail) => (format!("unknown-base: {}", terminal_text(detail)), 1),
         AddError::AgentConfig(detail) => (detail.clone(), 2),
         AddError::Store(detail) => (detail.clone(), 3),
         other => (other.code().into(), 1),
@@ -1848,17 +1895,22 @@ mod tests {
             worktree: WorktreeCleanup::Removed,
             branch: BranchCleanup::Kept,
             workspace_removed: true,
+            base: Some("origin/main".into()),
         };
         let human = cleaned(result.clone(), false);
         assert_eq!(
             human.stdout,
-            "cleaned T12: worktree /tmp/task-12 (removed), branch tsk/t12-finished (kept), workspace w12 (removed)\n"
+            "cleaned T12: worktree /tmp/task-12 (removed), branch tsk/t12-finished (kept, not merged into origin/main; squash-merged? delete by hand), workspace w12 (removed)\n"
         );
         let json = cleaned(result, true);
         let value: serde_json::Value = serde_json::from_str(json.stdout.trim()).unwrap();
         assert_eq!(value["number"], 12);
         assert_eq!(value["worktree"]["outcome"], "removed");
         assert_eq!(value["branch"]["outcome"], "kept");
+        assert_eq!(
+            value["branch"]["reason"],
+            "not merged into origin/main; squash-merged? delete by hand"
+        );
         assert_eq!(value["workspace"]["outcome"], "removed");
     }
 

@@ -18,7 +18,7 @@ pub const AGENTS_TEMP_PREFIX: &str = ".agents.toml.tmp.";
 static AGENTS_TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 const STARTER_AGENTS: &str = "# tsk agent profiles. Assign with `!a name`, dispatch with ctrl+g.\n\
-# Placeholders in command and prompt: {number} {title} {notes} {steps} {worktree} {branch}\n\
+# Placeholders in command and prompt: {number} {title} {notes} {steps} {worktree} {branch} {base}\n\
 # The prompt is appended to the command as its last argument. Omit `prompt` for the default:\n\
 #   You were dispatched to T{number} in this worktree. Run `tsk guide`, then `tsk list {number}`.\n\
 #   Set the task to review when done, or blocked when a human is needed.\n\
@@ -227,6 +227,7 @@ pub struct RenderContext<'a> {
     pub steps: &'a str,
     pub worktree: &'a str,
     pub branch: &'a str,
+    pub base: &'a str,
 }
 
 /// Fully substituted values ready for a launcher.
@@ -366,6 +367,7 @@ fn render_template(template: &str, context: &RenderContext<'_>) -> String {
         ("{steps}", context.steps),
         ("{worktree}", context.worktree),
         ("{branch}", context.branch),
+        ("{base}", context.base),
     ];
     let mut rendered = String::with_capacity(template.len());
     let mut remaining = template;
@@ -470,7 +472,18 @@ mod tests {
             steps: "[ ] parse\n[x] validate",
             worktree: "/tmp/tsk-t101",
             branch: "tsk/t101-load-profiles",
+            base: "dispatch",
         }
+    }
+
+    #[test]
+    fn base_placeholder_uses_the_target_branch() {
+        let profiles = AgentProfiles::parse("[agent.builder]\ncommand = [\"echo\", \"{base}\"]\nprompt = \"Open the PR into {base}\"\n").unwrap();
+        let rendered = profiles.get("builder").unwrap().render(&context());
+        assert_eq!(
+            rendered.argv,
+            vec!["echo", "dispatch", "Open the PR into dispatch"]
+        );
     }
 
     #[test]

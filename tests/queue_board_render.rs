@@ -50,6 +50,7 @@ fn task(id: u128, title: &str, status: HumanStatus, scope: TaskScope, secs_ago: 
         notes: None,
         thread: None,
         assignee: None,
+        base: None,
         dispatch: None,
         status,
         scope,
@@ -1492,8 +1493,8 @@ fn assigned_task_renders_on_the_row_and_before_thread_in_the_page_footer() {
     assert_eq!(model.selected_id(), Some(id));
     let page_body = board_rows(&model, 80, 24).join("\n");
     assert!(
-        page_body.contains("@reviewer · #release · desk"),
-        "task footer must order assignee, thread, project:\n{page_body}"
+        page_body.contains("@reviewer · ⎇ default · #release · desk"),
+        "task footer must order assignee, base, thread, project:\n{page_body}"
     );
 }
 
@@ -1507,11 +1508,14 @@ fn dispatched_started_task_uses_the_bullseye_glyph_on_rows_peek_and_page_only_wh
         60,
     );
     dispatched.number = Some(70);
+    dispatched.base = Some("origin/main".into());
     dispatched.dispatch = Some(Dispatch {
         argv: vec!["agent".into()],
         worktree: "/tmp/tsk-t70".into(),
         branch: "tsk/t70-dispatched-task".into(),
-        base: None,
+        base: Some("origin/main".into()),
+        base_commit: Some("0123456789abcdef".into()),
+        base_remote: None,
         herdr_workspace_id: "workspace-70".into(),
         at: at_secs_ago(30),
         cleaned: false,
@@ -1532,6 +1536,10 @@ fn dispatched_started_task_uses_the_bullseye_glyph_on_rows_peek_and_page_only_wh
     .expect("open peek");
     let peek = board_rows(&model, 80, 24).join("\n");
     assert!(peek.contains("◉ T70 dispatched task"), "peek row:\n{peek}");
+    assert!(
+        peek.contains("⎇ origin/main"),
+        "peek must show only an explicit task base:\n{peek}"
+    );
 
     apply_intent(
         &mut DomainState::new(),
@@ -1555,6 +1563,51 @@ fn dispatched_started_task_uses_the_bullseye_glyph_on_rows_peek_and_page_only_wh
     assert!(
         !review.contains("◉ T70"),
         "stale dispatch must not override review:\n{review}"
+    );
+}
+
+#[test]
+fn task_page_shows_default_base_and_recorded_dispatch_origin() {
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "dispatch details",
+            None,
+            project("/repos/tsk"),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    domain
+        .record_dispatch(
+            id,
+            Dispatch {
+                argv: vec!["agent".into()],
+                worktree: "/tmp/tsk-dispatch-details".into(),
+                branch: "tsk/dispatch-details".into(),
+                base: Some("origin/main".into()),
+                base_commit: Some("0123456789abcdef".into()),
+                base_remote: None,
+                herdr_workspace_id: "workspace-details".into(),
+                at: at_secs_ago(30),
+                cleaned: false,
+            },
+        )
+        .expect("dispatch");
+    let mut model = BoardModel::from_domain(&domain, None);
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+    let page = board_rows(&model, 80, 24).join("\n");
+    assert!(
+        page.contains("⎇ default"),
+        "unset task base must always show a nonblocking default fallback:\n{page}"
+    );
+    assert!(
+        !page.contains("⎇ default (default)"),
+        "unknown default name must not repeat itself:\n{page}"
+    );
+    assert!(
+        page.contains("from origin/main @ 0123456"),
+        "dispatch provenance must show the recorded ref and short commit:\n{page}"
     );
 }
 
@@ -1583,6 +1636,8 @@ fn task_page_header_shows_identifier_not_footer() {
         meta: "desk · created 1m ago · updated 1m ago".to_string(),
         meta_assignee_x: None,
         meta_assignee_width: 0,
+        meta_base_x: None,
+        meta_base_width: 0,
         meta_scope_x: 0,
         meta_scope_width: 4,
         thread_slot_width: None,
@@ -1693,6 +1748,8 @@ fn task_page_renders_header_notes_and_meta_as_a_full_takeover_in_both_tiers() {
         meta: "tsk \u{b7} created 1h ago \u{b7} updated 1h ago".to_string(),
         meta_assignee_x: None,
         meta_assignee_width: 0,
+        meta_base_x: None,
+        meta_base_width: 0,
         meta_scope_x: 0,
         meta_scope_width: 11,
         thread_slot_width: None,
@@ -2229,7 +2286,10 @@ fn shift_tab_from_scope_resets_notes_stream_origin_and_aligns_caret() {
     .expect("Shift+Tab reaches Thread from Scope");
     assert_eq!(model.input_mode(), BoardInputMode::SelectThread);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
-        .expect("Shift+Tab reaches Assignee from Thread");
+        .expect("Shift+Tab reaches Base from Thread");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
+        .expect("Shift+Tab reaches Assignee from Base");
     assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
         .expect("Shift+Tab selects the trailing add target");
@@ -5869,4 +5929,36 @@ fn peek_project_label_wraps_all_content_below_notes() {
     }
     assert!(continuation_count >= 2);
     assert_eq!(copied, label);
+}
+
+#[test]
+fn unmerged_cleanup_card_explains_squash_retention_without_clipping_the_hint() {
+    use tsk_tui::ui::board::CleanupPrompt;
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "cleanup",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    let mut model = BoardModel::from_domain(&domain, None);
+    model.begin_cleanup_prompt(CleanupPrompt {
+        task_id: id,
+        worktree: "/tmp/worktree".into(),
+        branch: "tsk/t1-cleanup".into(),
+        base: "origin/main".into(),
+        dirty: false,
+        branch_merged: false,
+        workspace_exists: true,
+    });
+    for width in [40, 80] {
+        let rows = board_rows(&model, width, 24);
+        let painted = rows.join("\n");
+        assert!(painted.contains("squash-merged?"), "{width}: {painted}");
+        assert!(painted.contains("delete by hand"), "{width}: {painted}");
+        assert!(painted.contains("base origin/main"), "{width}: {painted}");
+    }
 }

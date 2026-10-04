@@ -144,7 +144,7 @@ fn run_dispatch(args: Vec<String>) -> CliOutput {
     let Some(task) = input.task else {
         return presenter::dispatch_usage("task number is required");
     };
-    match dispatch::run(task, input.again, input.state_dir) {
+    match dispatch::run(task, input.again, input.base, input.state_dir) {
         Ok(result) => presenter::dispatched(result),
         Err(error) => presenter::dispatch_rejected(error, task),
     }
@@ -215,14 +215,26 @@ fn run_edit(args: Vec<String>) -> CliOutput {
     let Some(task) = input.task else {
         return presenter::edit_usage("task number is required");
     };
-    if input.title.is_none() && input.notes.is_none() && input.assignee.is_none() && !input.unassign
+    if input.title.is_none()
+        && input.notes.is_none()
+        && input.assignee.is_none()
+        && !input.unassign
+        && input.base.is_none()
+        && !input.clear_base
     {
-        return presenter::edit_usage("title, notes, assignee, or --unassign is required");
+        return presenter::edit_usage(
+            "title, notes, assignee, base, --unassign, or --clear-base is required",
+        );
     }
     let assignee = if input.unassign {
         Some(None)
     } else {
         input.assignee.map(Some)
+    };
+    let base = if input.clear_base {
+        Some(None)
+    } else {
+        input.base.map(Some)
     };
     match edit::run(
         task,
@@ -230,6 +242,7 @@ fn run_edit(args: Vec<String>) -> CliOutput {
             title: input.title,
             notes: input.notes,
             assignee,
+            base,
         },
         input.state_dir,
     ) {

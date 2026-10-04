@@ -1,6 +1,7 @@
 //! Verb Surface reducers — primary verbs, done/reopen/block, drawer, Esc layers.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -22,7 +23,7 @@ use tsk_tui::store::TaskStore;
 use tsk_tui::ui::board::{
     apply_intent, board_hit_map, board_intent_may_persist, board_verb_items, draw_board,
     resolve_board_command, BoardInputMode, BoardModel, CleanupPrompt, CommandSurface,
-    IntentOutcome, ProjectScopeOption,
+    IntentOutcome, ListPickerKind, ProjectScopeOption,
 };
 use tsk_tui::ui::capture::CaptureField;
 use tsk_tui::ui::input::{
@@ -30,7 +31,7 @@ use tsk_tui::ui::input::{
     MarkDirection,
 };
 use tsk_tui::ui::mouse::BoardPopup;
-use tsk_tui::ui::queue::SectionKind;
+use tsk_tui::ui::queue::{NavTab, SectionKind};
 use tsk_tui::ui::tier;
 
 const THIS_REPO: &str = "/repos/app";
@@ -77,6 +78,35 @@ fn board_with_task(title: &str, status: HumanStatus) -> (DomainState, BoardModel
     }
     let model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
     (domain, model, id)
+}
+
+fn git_repo_with_branch(label: &str) -> PathBuf {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let root = std::env::temp_dir().join(format!(
+        "tsk-board-base-{label}-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&root).expect("create git repo");
+    let run = |args: &[&str]| {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    run(&["init", "-b", "main"]);
+    run(&["config", "user.email", "test@example.com"]);
+    run(&["config", "user.name", "test"]);
+    run(&["commit", "--allow-empty", "-m", "initial"]);
+    run(&["branch", "dispatch"]);
+    root
 }
 
 fn select_done_task(domain: &mut DomainState, model: &mut BoardModel, id: uuid::Uuid) {
@@ -201,6 +231,7 @@ fn dispatch_key_and_palette_route_to_the_cursor_only_verb() {
             .any(|label| label == "dispatch to @implementer"),
         "{labels:?}"
     );
+    assert!(labels.iter().any(|label| label == "set base"), "{labels:?}");
 }
 
 #[test]
@@ -210,6 +241,7 @@ fn cleanup_popup_maps_explicit_choices_and_paints_the_guardrail_state() {
         task_id: id,
         worktree: "/tmp/tsk-t1-clean-me".into(),
         branch: "tsk/t1-clean-me".into(),
+        base: "origin/main".into(),
         dirty: false,
         branch_merged: false,
         workspace_exists: true,
@@ -232,7 +264,7 @@ fn cleanup_popup_maps_explicit_choices_and_paints_the_guardrail_state() {
         "Clean dispatch?",
         "/tmp/tsk-t1-clean-me",
         "tsk/t1-clean-me",
-        "unmerged, branch will be kept",
+        "base origin/main · not merged",
         "agent pane will close",
         "y clean + done",
         "n done only",
@@ -262,6 +294,8 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
                 worktree: "/tmp/first".into(),
                 branch: "tsk/t1-first".into(),
                 base: None,
+                base_commit: None,
+                base_remote: None,
                 herdr_workspace_id: "w1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
@@ -362,6 +396,8 @@ fn missing_worktree_converges_cleaned_and_done_in_one_board_save_without_a_popup
                 worktree: "/tmp/already-removed".into(),
                 branch: "tsk/t1-already-removed".into(),
                 base: Some("main".into()),
+                base_commit: None,
+                base_remote: None,
                 herdr_workspace_id: "w1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
@@ -427,6 +463,8 @@ fn cleanup_offer_skips_done_and_archived_tasks_without_inspection_or_mutation() 
                     worktree: "/tmp/no-second-completion".into(),
                     branch: "tsk/t1-no-second-completion".into(),
                     base: Some("main".into()),
+                    base_commit: None,
+                    base_remote: None,
                     herdr_workspace_id: "w1".into(),
                     at: SystemTime::now(),
                     cleaned: false,
@@ -486,6 +524,8 @@ fn cleanup_offer_defers_to_the_archived_project_read_only_refusal() {
                 worktree: "/tmp/read-only".into(),
                 branch: "tsk/t1-read-only".into(),
                 base: Some("main".into()),
+                base_commit: None,
+                base_remote: None,
                 herdr_workspace_id: "w1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
@@ -547,6 +587,8 @@ fn successful_popup_cleanup_and_completion_save_once_and_undo_only_status() {
                 worktree: "/tmp/clean-and-done".into(),
                 branch: "tsk/t1-clean-and-done".into(),
                 base: None,
+                base_commit: None,
+                base_remote: None,
                 herdr_workspace_id: "w1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
@@ -626,6 +668,8 @@ fn dispatched_task_page_renders_the_record_and_assigned_legend() {
                 worktree: "/tmp/dispatch-worktree".into(),
                 branch: "tsk/t1-send-it".into(),
                 base: None,
+                base_commit: None,
+                base_remote: None,
                 herdr_workspace_id: "w9".into(),
                 at: SystemTime::now(),
                 cleaned: false,
@@ -684,6 +728,8 @@ fn dispatched_task_page_hides_record_during_notes_edit_and_restores_it_in_view_m
                 worktree: "/tmp/notes-edit-dispatch-worktree".into(),
                 branch: "tsk/t1-notes-edit-dispatch".into(),
                 base: None,
+                base_commit: None,
+                base_remote: None,
                 herdr_workspace_id: "w9".into(),
                 at: SystemTime::now(),
                 cleaned: false,
@@ -795,6 +841,158 @@ fn palette_assignment_applies_to_marked_tasks_as_one_undoable_batch() {
         domain.get(second).expect("second").status,
         HumanStatus::Review
     );
+}
+
+#[test]
+fn base_picker_applies_one_undoable_batch_across_marked_projects() {
+    let first_repo = git_repo_with_branch("first");
+    let second_repo = git_repo_with_branch("second");
+    let mut domain = DomainState::new();
+    let first = domain
+        .create(
+            "first",
+            None,
+            project(&first_repo.to_string_lossy()),
+            ProvenanceOrigin::Manual,
+            Some("dispatch".into()),
+        )
+        .expect("create first");
+    let second = domain
+        .create(
+            "second",
+            None,
+            project(&second_repo.to_string_lossy()),
+            ProvenanceOrigin::Manual,
+            Some("dispatch".into()),
+        )
+        .expect("create second");
+    let mut model = BoardModel::from_domain(&domain, Some(first_repo.clone()));
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::SelectNavTab(NavTab::Projects),
+        None,
+    )
+    .expect("projects");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenProjectsViewPicker,
+        None,
+    )
+    .expect("open View picker");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ListPickerQueryInsertText("dispatch".into()),
+        None,
+    )
+    .expect("filter View picker");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ConfirmListPicker,
+        None,
+    )
+    .expect("open cross-project thread");
+    mark_tasks(&mut domain, &mut model, &[first, second]);
+
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None)
+        .expect("open base picker");
+    assert_eq!(model.list_picker_kind(), Some(ListPickerKind::Base));
+    let labels = model
+        .visible_list_picker_options()
+        .into_iter()
+        .map(|(_, option)| option.label)
+        .collect::<Vec<_>>();
+    assert_eq!(labels.first().map(String::as_str), Some("default"));
+    assert!(labels.iter().any(|label| label == "dispatch"), "{labels:?}");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ListPickerQueryInsertText("dispatch".into()),
+        None,
+    )
+    .expect("filter branches");
+    assert_eq!(
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            None,
+        )
+        .expect("set marked base"),
+        IntentOutcome::Persist
+    );
+    assert_eq!(
+        domain.get(first).and_then(|task| task.base.as_deref()),
+        Some("dispatch")
+    );
+    assert_eq!(
+        domain.get(second).and_then(|task| task.base.as_deref()),
+        Some("dispatch")
+    );
+
+    domain
+        .undo()
+        .expect("one undo reverses the whole base batch");
+    assert_eq!(domain.get(first).expect("first").base, None);
+    assert_eq!(domain.get(second).expect("second").base, None);
+    std::fs::remove_dir_all(first_repo).expect("remove first repo");
+    std::fs::remove_dir_all(second_repo).expect("remove second repo");
+}
+
+#[test]
+fn task_edit_base_field_uses_picker_and_saves_with_the_page_session() {
+    let repo = git_repo_with_branch("edit-ring");
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "edit base",
+            None,
+            project(&repo.to_string_lossy()),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    let mut model = BoardModel::from_domain(&domain, Some(repo.clone()));
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginEditBase, None).expect("Base field");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
+    assert_eq!(
+        map_key(BoardInputMode::SelectBase, press(KeyCode::Enter)),
+        Some(BoardIntent::OpenBasePicker)
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None)
+        .expect("branch picker");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ListPickerQueryInsertText("dispatch".into()),
+        None,
+    )
+    .expect("filter branch");
+    assert_eq!(
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            None,
+        )
+        .expect("choose branch draft"),
+        IntentOutcome::None
+    );
+    assert_eq!(domain.get(id).expect("task").base, None);
+    assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
+    assert_eq!(
+        apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).expect("save page"),
+        IntentOutcome::Persist
+    );
+    assert_eq!(
+        domain.get(id).and_then(|task| task.base.as_deref()),
+        Some("dispatch")
+    );
+    std::fs::remove_dir_all(repo).expect("remove repo");
 }
 
 #[test]
@@ -2474,6 +2672,7 @@ fn palette_lists_exactly_m1_commands_for_selection_filters_by_subsequence_and_di
         "edit notes",
         "change scope",
         "set assignee",
+        "set base",
         "new task",
         "delete",
         "undo",
@@ -4131,7 +4330,10 @@ fn view_tab_selection_wraps_without_starting_task_edit_and_ctrl_e_opens_inline_s
         .expect("Tab leaves the add target for Assignee");
     assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
-        .expect("Tab leaves Assignee for Thread");
+        .expect("Tab leaves Assignee for Base");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("Tab leaves Base for Thread");
     assert_eq!(model.input_mode(), BoardInputMode::SelectThread);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
         .expect("Tab leaves Thread for Scope");
@@ -4173,7 +4375,10 @@ fn task_edit_tab_cycles_every_step_before_assignee_thread_and_scope() {
         .expect("Tab leaves the add target for Assignee");
     assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
-        .expect("Tab leaves Assignee for Thread");
+        .expect("Tab leaves Assignee for Base");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("Tab leaves Base for Thread");
     assert_eq!(model.input_mode(), BoardInputMode::SelectThread);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
         .expect("Tab reaches Scope");

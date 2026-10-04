@@ -20,7 +20,7 @@ Clicking a task while the quick-add line is open discards the draft and selects 
 
 ## Details
 
-Press `Tab` from quick-add to add notes, steps, an assignee, a thread, or a scope. The draft uses the full pane and opens in Notes. Its forward field ring is Title → Notes → steps → **+ step** → Assignee → Thread → Scope → Title; `Shift+Tab` reverses it. The footer uses that same left-to-right order. In a project preview, its title stays in the right-column header while Notes is active.
+Press `Tab` from quick-add to add notes, steps, an assignee, a base branch, a thread, or a scope. The draft uses the full pane and opens in Notes. Its forward field ring is Title → Notes → steps → **+ step** → Assignee → Base → Thread → Scope → Title; `Shift+Tab` reverses it. The footer uses that same left-to-right order. In a project preview, its title stays in the right-column header while Notes is active.
 
 - `Shift+Enter` saves.
 - `Esc` returns to the quick-add line.
@@ -42,14 +42,14 @@ Keeping an archived launch project archived changes the session's default to des
 
 ## Title tokens
 
-Add a project, thread, or assignee while typing the title:
+Add a project, thread, assignee, or base branch while typing the title:
 
 ```text
-Fix login timeout !p atlas !t auth !a reviewer
+Fix login timeout !p atlas !t auth !a reviewer !b main
 Buy coffee !p !a
 ```
 
-| Token | Destination, thread, or assignee |
+| Token | Destination, thread, assignee, or base |
 | --- | --- |
 | `!p` | Desk |
 | `!p name` | Existing project uniquely matching that basename, ignoring case |
@@ -58,8 +58,11 @@ Buy coffee !p !a
 | `!t name` | Named thread |
 | `!a` | Unassigned |
 | `!a name` | Exact configured agent profile name, normalized to lowercase |
+| `!b branch` | Explicit dispatch base branch in the task's project repository |
 
 Each token takes one whitespace-separated argument. Put bare `!p`, `!t`, or `!a` at the end, or before another token. A following `#word` also leaves the token bare.
+
+`!b` takes an existing local or remote branch, such as `dispatch` or `origin/dispatch`, not a tag, commit, or task number. An unknown branch refuses on save and keeps the draft open. With no explicit base, dispatch uses the task repository's remote default branch (`origin/HEAD`), never the checkout where you captured the task. Choose **default** in the Base picker to clear a staged base.
 
 Tokens are removed from the saved title. Remaining words are joined with single spaces. A title is required.
 
@@ -84,7 +87,7 @@ In Herdr, press **prefix+a** after [setup](/docs/install/#add-to-herdr). A popup
 | Action | Result |
 | --- | --- |
 | Type or edit the title | Name the task |
-| Add notes, a thread, an assignee, or steps | Include details before saving |
+| Add notes, a thread, an assignee, a base, or steps | Include details before saving |
 | `Shift+Enter` | Save and close the popup |
 | `Esc` | Discard and close |
 

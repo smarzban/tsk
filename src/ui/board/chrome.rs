@@ -66,6 +66,11 @@ fn edit_chrome_legends(mode: BoardInputMode) -> [&'static str; 3] {
             "Enter edit · Tab next · Esc",
             "Enter edit · Esc",
         ],
+        BoardInputMode::SelectBase => [
+            "Enter choose base · Tab next · Esc cancel",
+            "Enter choose · Tab next · Esc",
+            "Enter choose · Esc",
+        ],
         BoardInputMode::EditTitle => [
             "Shift+Enter save · Esc cancel",
             "Shift+Enter save · Esc cancel",

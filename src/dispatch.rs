@@ -55,6 +55,7 @@ pub struct CleanupResult {
     pub title: String,
     pub worktree_path: String,
     pub branch_name: String,
+    pub base: Option<String>,
     pub workspace_id: String,
     pub worktree: WorktreeCleanup,
     pub branch: BranchCleanup,
@@ -108,6 +109,8 @@ impl std::error::Error for CleanupError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchResult {
+    /// Fetch failures retain cached refs and are visible to the caller.
+    pub warning: Option<String>,
     pub number: u64,
     pub title: String,
     pub assignee: String,
@@ -135,6 +138,7 @@ pub enum DispatchError {
     SoftDeletedTask,
     AlreadyDispatched(String),
     UnknownAgent(String),
+    UnknownBase(String),
     AgentConfig(String),
     Herdr(String),
     Store(String),
@@ -153,6 +157,7 @@ impl DispatchError {
             Self::SoftDeletedTask => "soft-deleted-task",
             Self::AlreadyDispatched(_) => "already-dispatched",
             Self::UnknownAgent(_) => "unknown-agent",
+            Self::UnknownBase(_) => "unknown-base",
             Self::AgentConfig(_) => "agent-config",
             Self::Herdr(_) => "herdr-failed",
             Self::Store(_) => "store-error",
@@ -176,7 +181,10 @@ impl std::fmt::Display for DispatchError {
                 "already dispatched in {path}, use --again to relaunch"
             ),
             Self::UnknownAgent(name) => write!(formatter, "unknown agent {name}"),
-            Self::AgentConfig(reason) | Self::Herdr(reason) | Self::Store(reason) => {
+            Self::UnknownBase(reason)
+            | Self::AgentConfig(reason)
+            | Self::Herdr(reason)
+            | Self::Store(reason) => {
                 write!(formatter, "{reason}")
             }
         }
@@ -198,6 +206,22 @@ pub trait DispatchHost {
     fn is_git_repo(&mut self, project: &Path) -> Result<bool, String>;
     fn resolve_base(&mut self, _project: &Path) -> Result<String, String> {
         Err("dispatch base resolution is not supported".into())
+    }
+    fn resolve_base_choice(
+        &mut self,
+        project: &Path,
+        explicit: Option<&str>,
+    ) -> Result<crate::git_base::ResolvedBase, String> {
+        let reference = match explicit {
+            Some(base) => base.to_string(),
+            None => self.resolve_base(project)?,
+        };
+        Ok(crate::git_base::ResolvedBase {
+            reference,
+            commit: None,
+            remote: None,
+            warning: None,
+        })
     }
     fn create_worktree(
         &mut self,
@@ -222,6 +246,16 @@ pub trait DispatchHost {
     }
     fn delete_branch(&mut self, _project: &Path, _branch: &str) -> Result<(), String> {
         Err("git branch removal is not supported".into())
+    }
+    /// Recheck the latest tip after worktree removal, then delete only that exact tip.
+    fn delete_merged_branch(
+        &mut self,
+        project: &Path,
+        branch: &str,
+        _base: &str,
+    ) -> Result<bool, String> {
+        self.delete_branch(project, branch)?;
+        Ok(true)
     }
     fn root_pane(&mut self, workspace_id: &str) -> Result<String, String>;
     fn run_in_pane(&mut self, pane_id: &str, command: &str) -> Result<(), String>;
@@ -252,29 +286,15 @@ impl DispatchHost for SystemDispatchHost {
     }
 
     fn resolve_base(&mut self, project: &Path) -> Result<String, String> {
-        let symbolic = Command::new("git")
-            .args(["-C"])
-            .arg(project)
-            .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
-            .output()
-            .map_err(|error| format!("could not run git: {error}"))?;
-        if symbolic.status.success() {
-            return String::from_utf8(symbolic.stdout)
-                .map(|base| base.trim().to_string())
-                .map_err(|error| format!("git returned an invalid base: {error}"));
-        }
-        let detached = Command::new("git")
-            .args(["-C"])
-            .arg(project)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .map_err(|error| format!("could not run git: {error}"))?;
-        if !detached.status.success() {
-            return Err(command_failure("git rev-parse HEAD", &detached));
-        }
-        String::from_utf8(detached.stdout)
-            .map(|base| base.trim().to_string())
-            .map_err(|error| format!("git returned an invalid base: {error}"))
+        crate::git_base::resolve(project, None).map(|base| base.reference)
+    }
+
+    fn resolve_base_choice(
+        &mut self,
+        project: &Path,
+        explicit: Option<&str>,
+    ) -> Result<crate::git_base::ResolvedBase, String> {
+        crate::git_base::resolve(project, explicit)
     }
 
     fn create_worktree(
@@ -359,10 +379,24 @@ impl DispatchHost for SystemDispatchHost {
             return Err(command_failure("git status", &status));
         }
         let branch_merged = if let Some(base) = dispatch.base.as_deref() {
+            // Compare against the recorded upstream, not the stale checked-out branch.
+            let remote = dispatch
+                .base_remote
+                .clone()
+                .or_else(|| crate::git_base::remote_for_ref(project, base));
+            if let Some(remote) = remote {
+                let _ = crate::git_base::fetch_remote(project, &remote);
+            }
+            let exact_base = crate::git_base::recorded_branch_ref(project, base)?;
             let merged = Command::new("git")
                 .args(["-C"])
                 .arg(project)
-                .args(["merge-base", "--is-ancestor", &dispatch.branch, base])
+                .args([
+                    "merge-base",
+                    "--is-ancestor",
+                    &format!("refs/heads/{}", dispatch.branch),
+                    &exact_base,
+                ])
                 .output()
                 .map_err(|error| format!("could not run git: {error}"))?;
             match merged.status.code() {
@@ -445,6 +479,76 @@ impl DispatchHost for SystemDispatchHost {
         } else {
             Err(command_failure("git branch -d", &output))
         }
+    }
+
+    fn delete_merged_branch(
+        &mut self,
+        project: &Path,
+        branch: &str,
+        base: &str,
+    ) -> Result<bool, String> {
+        let reference = format!("refs/heads/{branch}");
+        let listed = Command::new("git")
+            .arg("-C")
+            .arg(project)
+            .args(["worktree", "list", "--porcelain"])
+            .output()
+            .map_err(|error| error.to_string())?;
+        if !listed.status.success() {
+            return Err(command_failure("git worktree list", &listed));
+        }
+        if String::from_utf8_lossy(&listed.stdout)
+            .lines()
+            .any(|line| line == format!("branch {reference}"))
+        {
+            return Ok(false);
+        }
+        let tip = Command::new("git")
+            .arg("-C")
+            .arg(project)
+            .args(["rev-parse", "--verify", &reference])
+            .output()
+            .map_err(|error| error.to_string())?;
+        if !tip.status.success() {
+            return Ok(false);
+        }
+        let tip = String::from_utf8(tip.stdout).map_err(|error| error.to_string())?;
+        let tip = tip.trim();
+        let exact_base = crate::git_base::recorded_branch_ref(project, base)?;
+        let merged = Command::new("git")
+            .arg("-C")
+            .arg(project)
+            .args(["merge-base", "--is-ancestor", tip, &exact_base])
+            .output()
+            .map_err(|error| error.to_string())?;
+        if merged.status.code() == Some(1) {
+            return Ok(false);
+        }
+        if !merged.status.success() {
+            return Err(command_failure("git merge-base", &merged));
+        }
+        // Git's -d consults this checkout's stale HEAD for an untracked dispatch branch.
+        // update-ref compares the exact checked OID atomically, unlike force deletion.
+        let deleted = Command::new("git")
+            .arg("-C")
+            .arg(project)
+            .args(["update-ref", "--no-deref", "-d", &reference, tip])
+            .output()
+            .map_err(|error| error.to_string())?;
+        if deleted.status.success() {
+            return Ok(true);
+        }
+        // A concurrent branch advance is not an error and must retain its new tip.
+        let current = Command::new("git")
+            .arg("-C")
+            .arg(project)
+            .args(["rev-parse", "--verify", &reference])
+            .output()
+            .map_err(|error| error.to_string())?;
+        if current.status.success() && String::from_utf8_lossy(&current.stdout).trim() != tip {
+            return Ok(false);
+        }
+        Err(command_failure("git update-ref", &deleted))
     }
 
     fn root_pane(&mut self, workspace_id: &str) -> Result<String, String> {
@@ -693,9 +797,18 @@ pub fn clean_with_host(
                 .map_err(CleanupError::Herdr)?;
         }
         let branch = if preview.inspection.branch_merged {
-            host.delete_branch(&preview.project, &preview.record.branch)
-                .map_err(CleanupError::Herdr)?;
-            BranchCleanup::Removed
+            if let Some(base) = preview.record.base.as_deref() {
+                if host
+                    .delete_merged_branch(&preview.project, &preview.record.branch, base)
+                    .map_err(CleanupError::Herdr)?
+                {
+                    BranchCleanup::Removed
+                } else {
+                    BranchCleanup::Kept
+                }
+            } else {
+                BranchCleanup::Kept
+            }
         } else {
             BranchCleanup::Kept
         };
@@ -712,6 +825,7 @@ pub fn clean_with_host(
         title: preview.title,
         worktree_path: preview.record.worktree,
         branch_name: preview.record.branch,
+        base: preview.record.base,
         workspace_id: preview.record.herdr_workspace_id,
         worktree,
         branch,
@@ -726,6 +840,20 @@ pub fn run_with_host(
     profiles: &AgentProfiles,
     again: bool,
     in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<DispatchResult, DispatchError> {
+    run_with_host_base(state, id, profiles, again, in_herdr, None, host)
+}
+
+/// One-off base overrides do not edit the task's saved preference or an existing dispatch.
+#[allow(clippy::too_many_arguments)]
+pub fn run_with_host_base(
+    state: &mut DomainState,
+    id: Uuid,
+    profiles: &AgentProfiles,
+    again: bool,
+    in_herdr: bool,
+    base_override: Option<&str>,
     host: &mut impl DispatchHost,
 ) -> Result<DispatchResult, DispatchError> {
     let task = state.get(id).cloned().ok_or(DispatchError::UnknownTask)?;
@@ -760,56 +888,89 @@ pub fn run_with_host(
         .get(&assignee)
         .ok_or_else(|| DispatchError::UnknownAgent(assignee.clone()))?;
 
-    let (worktree, branch, base, workspace_id, pane_id) = if let Some(existing) = &task.dispatch {
-        if !again {
-            return Err(DispatchError::AlreadyDispatched(existing.worktree.clone()));
-        }
-        if existing.cleaned {
-            let label = format!("T{number} {}", task.title);
-            // Herdr's create command deliberately handles both cases: it creates a missing
-            // branch from the recorded base, or checks out an existing retained branch.
-            let recreated = host
-                .create_worktree(project, &existing.branch, existing.base.as_deref(), &label)
-                .map_err(DispatchError::Herdr)?;
-            (
-                recreated.path.to_string_lossy().into_owned(),
-                recreated.branch,
-                existing.base.clone(),
-                recreated.workspace_id,
-                recreated.root_pane_id,
-            )
+    let mut warning = None;
+    let (worktree, branch, base, base_commit, base_remote, workspace_id, pane_id) =
+        if let Some(existing) = &task.dispatch {
+            if !again {
+                return Err(DispatchError::AlreadyDispatched(existing.worktree.clone()));
+            }
+            if existing.cleaned {
+                let label = format!("T{number} {}", task.title);
+                // Herdr's create command deliberately handles both cases: it creates a missing
+                // branch from the recorded base, or checks out an existing retained branch.
+                let recreated = host
+                    .create_worktree(
+                        project,
+                        &existing.branch,
+                        existing.base_commit.as_deref().or(existing.base.as_deref()),
+                        &label,
+                    )
+                    .map_err(DispatchError::Herdr)?;
+                (
+                    recreated.path.to_string_lossy().into_owned(),
+                    recreated.branch,
+                    existing.base.clone(),
+                    existing.base_commit.clone(),
+                    existing.base_remote.clone(),
+                    recreated.workspace_id,
+                    recreated.root_pane_id,
+                )
+            } else {
+                let pane = host
+                    .root_pane(&existing.herdr_workspace_id)
+                    .map_err(DispatchError::Herdr)?;
+                (
+                    existing.worktree.clone(),
+                    existing.branch.clone(),
+                    existing.base.clone(),
+                    existing.base_commit.clone(),
+                    existing.base_remote.clone(),
+                    existing.herdr_workspace_id.clone(),
+                    pane,
+                )
+            }
         } else {
-            let pane = host
-                .root_pane(&existing.herdr_workspace_id)
+            let requested_branch = format!("tsk/t{number}-{}", slug(&task.title));
+            let label = format!("T{number} {}", task.title);
+            let explicit = base_override.or(task.base.as_deref());
+            let choice = host
+                .resolve_base_choice(project, explicit)
+                .map_err(|reason| {
+                    if explicit.is_some() {
+                        DispatchError::UnknownBase(reason)
+                    } else {
+                        DispatchError::Herdr(reason)
+                    }
+                })?;
+            let base = choice.reference;
+            warning = choice.warning;
+            let created = host
+                .create_worktree(
+                    project,
+                    &requested_branch,
+                    Some(choice.commit.as_deref().unwrap_or(&base)),
+                    &label,
+                )
                 .map_err(DispatchError::Herdr)?;
             (
-                existing.worktree.clone(),
-                existing.branch.clone(),
-                existing.base.clone(),
-                existing.herdr_workspace_id.clone(),
-                pane,
+                created.path.to_string_lossy().into_owned(),
+                created.branch,
+                Some(base),
+                choice.commit,
+                choice.remote,
+                created.workspace_id,
+                created.root_pane_id,
             )
-        }
-    } else {
-        let requested_branch = format!("tsk/t{number}-{}", slug(&task.title));
-        let label = format!("T{number} {}", task.title);
-        let base = host.resolve_base(project).map_err(DispatchError::Herdr)?;
-        let created = host
-            .create_worktree(project, &requested_branch, Some(&base), &label)
-            .map_err(DispatchError::Herdr)?;
-        (
-            created.path.to_string_lossy().into_owned(),
-            created.branch,
-            Some(base),
-            created.workspace_id,
-            created.root_pane_id,
-        )
-    };
+        };
 
     // A relaunch reuses the pane; never rename an agent that is still running there, it may be
     // the previous launch under another assignee. An unanswered check counts as occupied.
     let name_launch = task.dispatch.is_none() || host.pane_has_agent(&pane_id) == Ok(false);
     let steps = rendered_steps(&task);
+    let short_base = base
+        .as_deref()
+        .map(|base| crate::git_base::short_name_for_remote(base, base_remote.as_deref()))
+        .unwrap_or_default();
     let rendered = profile.render(&RenderContext {
         number,
         title: &task.title,
@@ -817,6 +978,7 @@ pub fn run_with_host(
         steps: &steps,
         worktree: &worktree,
         branch: &branch,
+        base: &short_base,
     });
     host.run_in_pane(&pane_id, &rendered.command)
         .map_err(DispatchError::Herdr)?;
@@ -826,6 +988,8 @@ pub fn run_with_host(
         worktree,
         branch,
         base,
+        base_commit,
+        base_remote,
         herdr_workspace_id: workspace_id,
         at: SystemTime::now(),
         cleaned: false,
@@ -834,6 +998,7 @@ pub fn run_with_host(
         .record_dispatch(id, record.clone())
         .map_err(|error| DispatchError::Store(error.to_string()))?;
     Ok(DispatchResult {
+        warning,
         number,
         title: task.title,
         naming: name_launch.then(|| AgentNaming {
@@ -1738,6 +1903,8 @@ mod tests {
                     worktree: "/tmp/worktree".into(),
                     branch: "tsk/t1-legacy".into(),
                     base: None,
+                    base_commit: None,
+                    base_remote: None,
                     herdr_workspace_id: "w9".into(),
                     at: SystemTime::now(),
                     cleaned: false,
@@ -1759,6 +1926,47 @@ mod tests {
         assert_eq!(result.branch, BranchCleanup::Kept);
         assert_eq!(cleanup.deleted_branches, 0);
         fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn explicit_base_and_one_off_override_leave_task_preference_unchanged() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        state.set_base(id, Some("saved-base".into())).unwrap();
+        let mut launch = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        let dispatched = run_with_host_base(
+            &mut state,
+            id,
+            &profiles,
+            false,
+            true,
+            Some("override"),
+            &mut launch,
+        )
+        .unwrap();
+        assert_eq!(dispatched.record.base.as_deref(), Some("override"));
+        assert_eq!(state.get(id).unwrap().base.as_deref(), Some("saved-base"));
+        assert_eq!(launch.created_bases, vec![Some("override".into())]);
+        let mut again = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        let relaunched = run_with_host_base(
+            &mut state,
+            id,
+            &profiles,
+            true,
+            true,
+            Some("different"),
+            &mut again,
+        )
+        .unwrap();
+        assert_eq!(relaunched.record.base.as_deref(), Some("override"));
+        assert!(again.created_bases.is_empty());
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
@@ -1804,6 +2012,8 @@ mod tests {
             worktree: "/tmp/worktree".into(),
             branch: "tsk/t1-task".into(),
             base: None,
+            base_commit: None,
+            base_remote: None,
             herdr_workspace_id: "w1".into(),
             at: SystemTime::now(),
             cleaned: false,
@@ -1889,6 +2099,8 @@ mod tests {
             worktree: worktree.to_string_lossy().into_owned(),
             branch: "tsk/t1-x".into(),
             base: None,
+            base_commit: None,
+            base_remote: None,
             herdr_workspace_id: "w9".into(),
             at: SystemTime::now(),
             cleaned: false,
