@@ -603,7 +603,9 @@ fn task_page_scope_dropdown_sits_above_the_footer_with_short_names() {
     let option_rows: Vec<(usize, &String)> = rows[..footer_y]
         .iter()
         .enumerate()
-        .filter(|(_, row)| row.contains("tsk") || row.contains("other-project"))
+        .filter(|(_, row)| {
+            row.contains("tsk") || row.contains("other-project") || row.contains("desk")
+        })
         .collect();
     assert!(
         !option_rows.is_empty(),

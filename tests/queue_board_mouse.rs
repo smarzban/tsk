@@ -370,6 +370,100 @@ fn scoped_project_named_all_projects_has_no_group_header_hit_target() {
 /// topmost, the dropdown click equals keyboard navigation plus Enter, and inactive board
 /// chrome never escapes the modal form.
 #[test]
+fn task_form_scope_dropdown_paints_in_list_order_so_down_moves_down() {
+    let mut domain = DomainState::new();
+    let target = domain
+        .create(
+            "dropdown target",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create target");
+    for repo in [OTHER_REPO, "/repos/third"] {
+        domain
+            .create(
+                "scope option",
+                None,
+                project(repo),
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create scope option");
+    }
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    let target_index = model
+        .visible_ids()
+        .iter()
+        .position(|id| *id == target)
+        .expect("target visible");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::SelectIndex(target_index),
+        None,
+    )
+    .expect("select target");
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None)
+        .expect("open task form");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenFormDropdown(CaptureField::Scope),
+        None,
+    )
+    .expect("open dropdown");
+    assert!(model.form_scope_options().len() >= 3, "needs 3+ options");
+
+    let option_rows = |model: &BoardModel| -> Vec<u16> {
+        let hits = board_hit_map(STANDARD, model);
+        (0..model.form_scope_options().len())
+            .map(|index| {
+                hits.regions
+                    .iter()
+                    .find(|hit| hit.target == QueueHitTarget::FormDropdownOption(index))
+                    .unwrap_or_else(|| panic!("option {index} painted"))
+                    .area
+                    .y
+            })
+            .collect()
+    };
+    let rows = option_rows(&model);
+    assert!(
+        rows.windows(2).all(|pair| pair[0] < pair[1]),
+        "options paint top to bottom in list order: {rows:?}"
+    );
+
+    let selected_row = |model: &BoardModel| {
+        let choice = model.form_scope_dropdown_choice().expect("dropdown choice");
+        let index = model
+            .form_scope_options()
+            .iter()
+            .position(|scope| scope == choice)
+            .expect("choice is an option");
+        option_rows(model)[index]
+    };
+    let key = |model: &mut BoardModel, domain: &mut DomainState, code| {
+        let intent =
+            map_board_form_key(CaptureField::Scope, true, press(code)).expect("dropdown key maps");
+        apply_intent(domain, model, intent, None).expect("move dropdown choice");
+    };
+    while model.form_scope_options().first() != model.form_scope_dropdown_choice() {
+        key(&mut model, &mut domain, KeyCode::Up);
+    }
+    let before = selected_row(&model);
+    key(&mut model, &mut domain, KeyCode::Down);
+    let after_down = selected_row(&model);
+    assert!(
+        after_down > before,
+        "Down moves the marker down: {before} -> {after_down}"
+    );
+    key(&mut model, &mut domain, KeyCode::Up);
+    assert_eq!(selected_row(&model), before, "Up moves the marker back up");
+}
+
+#[test]
 fn task_form_mouse_fields_dropdown_and_verbs_match_keyboard_while_scrolled() {
     let mut domain = DomainState::new();
     let target = domain

@@ -3386,8 +3386,11 @@ fn paint_page_form_dropdown(
     } else {
         (selected + 1 - rows).min(dropdown.options.len() - rows)
     };
+    // Options read top to bottom in list order, the last visible one directly above
+    // the footer, so `Down` (the next option) moves the marker down the screen.
+    let top = meta_y - rows as u16;
     for (j, opt) in dropdown.options.iter().enumerate().skip(scroll).take(rows) {
-        let y = meta_y.saturating_sub((j - scroll + 1) as u16);
+        let y = top + (j - scroll) as u16;
         let marker = if j == selected { "▸ " } else { "  " };
         let body = present_line(&format!("{marker}{opt}"), col_w);
         let text = if display_width(&body) >= col_w {
