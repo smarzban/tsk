@@ -854,6 +854,9 @@ impl DefaultBranchCache {
     }
 }
 
+/// The base picker's disabled row while its background fetch runs.
+pub const REFRESHING_BRANCHES: &str = "refreshing…";
+
 /// Workers publish here, only the event-loop poll updates the active picker.
 #[derive(Debug)]
 struct BasePickerWorker {
@@ -1052,6 +1055,22 @@ pub struct CleanupPrompt {
     pub workspace_exists: bool,
     pub warning: Option<String>,
     pub base_available: bool,
+    /// The background fetch and ancestry recheck still running; the card shows `checking…`
+    /// in place of the cached merged status until it lands.
+    pub merge_check: Option<crate::dispatch::MergeCheck>,
+    /// `y` pressed while checking: the event loop finishes the cleanup when the verdict lands,
+    /// or at this deadline with the branch retained.
+    pub confirm_deadline: Option<Instant>,
+}
+
+impl CleanupPrompt {
+    pub fn checking(&self) -> bool {
+        self.merge_check.is_some()
+    }
+
+    pub fn confirm_queued(&self) -> bool {
+        self.confirm_deadline.is_some()
+    }
 }
 
 /// How an unresolved failed save ended.
@@ -1189,6 +1208,57 @@ impl BoardModel {
 
     pub fn cleanup_prompt(&self) -> Option<&CleanupPrompt> {
         self.cleanup_prompt.as_ref()
+    }
+
+    pub fn cleanup_prompt_mut(&mut self) -> Option<&mut CleanupPrompt> {
+        self.cleanup_prompt.as_mut()
+    }
+
+    /// `y` while the card's merged check runs: queue the confirmation instead of waiting on
+    /// the network here. True while it stays queued; false once it should run now (no check
+    /// running, or the queued confirmation's bound has passed).
+    pub fn queue_cleanup_confirm(&mut self) -> bool {
+        let Some(prompt) = self
+            .cleanup_prompt
+            .as_mut()
+            .filter(|prompt| prompt.checking())
+        else {
+            return false;
+        };
+        let deadline = *prompt
+            .confirm_deadline
+            .get_or_insert_with(|| Instant::now() + crate::dispatch::MERGE_CHECK_TIMEOUT);
+        Instant::now() < deadline
+    }
+
+    /// A queued `y` whose check has landed, or whose bound has passed: the event loop runs it.
+    pub fn cleanup_confirm_due(&self) -> bool {
+        self.cleanup_prompt.as_ref().is_some_and(|prompt| {
+            prompt
+                .confirm_deadline
+                .is_some_and(|deadline| !prompt.checking() || Instant::now() >= deadline)
+        })
+    }
+
+    /// Apply a finished background merged check to the open cleanup card (this board's or its
+    /// project preview's). A check whose card was closed is dropped with it, so a late result
+    /// never reaches another prompt.
+    pub fn poll_cleanup_check(&mut self) -> bool {
+        let nested = self
+            .right_seat
+            .as_deref_mut()
+            .is_some_and(BoardModel::poll_cleanup_check);
+        let Some(prompt) = self.cleanup_prompt.as_mut() else {
+            return nested;
+        };
+        let Some(verdict) = prompt.merge_check.as_ref().and_then(|check| check.take()) else {
+            return nested;
+        };
+        prompt.merge_check = None;
+        prompt.branch_merged = verdict.branch_merged;
+        prompt.base_available = verdict.base_available;
+        prompt.warning = verdict.warning;
+        true
     }
 
     pub fn arm_dispatch_again(&mut self, id: Uuid) {
@@ -2500,7 +2570,9 @@ impl BoardModel {
         self.input_mode = BoardInputMode::ListPicker;
     }
 
-    /// Open immediately; fetching and local metadata queries belong only to the worker.
+    /// Open on the branches already on disk (bounded local queries, never the network). Unless
+    /// origin was fetched inside the fetch window, a background worker fetches and refreshes
+    /// the list in place behind a disabled `refreshing…` row.
     pub(super) fn open_base_picker(
         &mut self,
         ids: Vec<Uuid>,
@@ -2508,22 +2580,67 @@ impl BoardModel {
         project: &Path,
         edit_draft: bool,
     ) {
-        let request = Uuid::new_v4();
         let project = project
             .canonicalize()
             .unwrap_or_else(|_| project.to_path_buf());
-        let default = self.default_branch_name(&project);
+        let default = crate::git_base::default_branch_name(&project)
+            .unwrap_or_else(|| self.default_branch_name(&project));
+        self.open_base_picker_from(
+            ids,
+            current,
+            project,
+            edit_draft,
+            default,
+            |project| crate::git_base::fetch_is_fresh(project, "origin"),
+            crate::git_base::list_cached_branches,
+        );
+    }
+
+    /// Freshness is read before the snapshot: a fetch that lands between the two then leaves
+    /// a not-fresh answer and a refresh subscription, never a fresh answer over pre-fetch refs.
+    #[allow(clippy::too_many_arguments)]
+    fn open_base_picker_from(
+        &mut self,
+        ids: Vec<Uuid>,
+        current: Option<String>,
+        project: PathBuf,
+        edit_draft: bool,
+        default: String,
+        is_fresh: impl FnOnce(&Path) -> bool,
+        cached_branches: impl FnOnce(&Path) -> Result<Vec<String>, String>,
+    ) {
+        let request = Uuid::new_v4();
+        let fresh = is_fresh(&project);
+        let cached = cached_branches(&project);
+        let mut options = vec![Self::default_base_option(default)];
+        let status = match &cached {
+            Ok(branches) => {
+                options.extend(branches.iter().map(|branch| ListPickerOption {
+                    label: branch.clone(),
+                    count: None,
+                    value: ListPickerValue::Base(Some(branch.clone())),
+                }));
+                (!fresh).then(|| REFRESHING_BRANCHES.to_string())
+            }
+            Err(_) if !fresh => Some(REFRESHING_BRANCHES.to_string()),
+            Err(message) => Some(message.clone()),
+        };
+        if let Some(label) = status {
+            options.push(ListPickerOption {
+                label,
+                count: None,
+                value: ListPickerValue::Unavailable,
+            });
+        }
+        let preferred = ListPickerValue::Base(current.clone());
+        let selected = options
+            .iter()
+            .position(|option| option.value == preferred)
+            .unwrap_or(0);
         self.list_picker = Some(ListPickerState {
             kind: ListPickerKind::Base,
-            options: vec![
-                Self::default_base_option(default),
-                ListPickerOption {
-                    label: "loading branches".into(),
-                    count: None,
-                    value: ListPickerValue::Unavailable,
-                },
-            ],
-            selected: 0,
+            options,
+            selected,
             query: String::new(),
             return_mode: self.input_mode,
             assignee_target: None,
@@ -2533,10 +2650,15 @@ impl BoardModel {
                 request,
                 project: project.clone(),
                 current,
-                selection_pending: true,
+                // A cached list already placed the cursor; the refresh keeps whatever the
+                // user moves it to. Without one, the refresh selects the current base.
+                selection_pending: cached.is_err(),
             }),
         });
         self.input_mode = BoardInputMode::ListPicker;
+        if fresh {
+            return;
+        }
         // A cancelled picker leaves its bounded lookup running. Reopening subscribes
         // the new request to that project's existing job instead of starting another fetch.
         {
@@ -4324,7 +4446,7 @@ mod tests {
             options: vec![
                 BoardModel::default_base_option("default".into()),
                 ListPickerOption {
-                    label: "loading branches".into(),
+                    label: REFRESHING_BRANCHES.into(),
                     count: None,
                     value: ListPickerValue::Unavailable,
                 },
@@ -4413,6 +4535,36 @@ mod tests {
     }
 
     #[test]
+    fn base_picker_refreshes_when_its_fetch_lands_during_the_cached_snapshot() {
+        let mut model = BoardModel::from_domain(&DomainState::new(), None);
+        let project = PathBuf::from(format!("/repos/race-{}", Uuid::new_v4()));
+        let fetched = std::cell::Cell::new(false);
+        model.open_base_picker_from(
+            vec![Uuid::new_v4()],
+            None,
+            project.clone(),
+            false,
+            "main".into(),
+            |_| fetched.get(),
+            |_| {
+                // The worker's fetch completes while the pre-fetch refs are being read.
+                fetched.set(true);
+                Ok(vec!["main".into()])
+            },
+        );
+        let labels: Vec<_> = model
+            .visible_list_picker_options()
+            .into_iter()
+            .map(|(_, option)| option.label)
+            .collect();
+        assert_eq!(
+            labels.last().map(String::as_str),
+            Some(REFRESHING_BRANCHES),
+            "a refresh is subscribed for the pre-fetch snapshot"
+        );
+    }
+
+    #[test]
     fn base_picker_rejects_another_projects_result_even_with_current_request() {
         let mut model = BoardModel::from_domain(&DomainState::new(), None);
         let request = Uuid::new_v4();
@@ -4430,7 +4582,7 @@ mod tests {
         assert!(!model.poll_base_picker_results());
         assert_eq!(
             model.visible_list_picker_options()[1].1.label,
-            "loading branches"
+            REFRESHING_BRANCHES
         );
     }
 

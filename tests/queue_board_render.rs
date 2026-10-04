@@ -6018,6 +6018,8 @@ fn unmerged_cleanup_card_explains_squash_retention_without_clipping_the_hint() {
         .unwrap();
     let mut model = BoardModel::from_domain(&domain, None);
     model.begin_cleanup_prompt(CleanupPrompt {
+        merge_check: None,
+        confirm_deadline: None,
         task_id: id,
         worktree: "/tmp/worktree".into(),
         branch: "tsk/t1-cleanup".into(),
@@ -6060,6 +6062,8 @@ fn cleanup_card_exposes_cached_ref_warning_and_missing_base_without_a_squash_hin
     ] {
         let mut model = BoardModel::from_domain(&domain, None);
         model.begin_cleanup_prompt(CleanupPrompt {
+            merge_check: None,
+            confirm_deadline: None,
             task_id: id,
             worktree: "/tmp/worktree".into(),
             branch: "tsk/t1-cleanup".into(),

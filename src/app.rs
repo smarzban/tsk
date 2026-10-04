@@ -195,6 +195,7 @@ pub fn board_frame(
     active_animations: bool,
 ) -> io::Result<FramePoll> {
     model.poll_base_picker_results();
+    model.poll_cleanup_check();
     paint(model)?;
     if wait(board_poll_duration(active_animations))? {
         Ok(FramePoll::Event)
@@ -291,6 +292,7 @@ fn run_capture() -> Result<(), Box<dyn Error>> {
 
 fn run_board() -> Result<(), Box<dyn Error>> {
     let (store, domain, model) = load_board()?;
+    crate::git_base::remember_fetches_in(store.path());
     run_board_loop(store, domain, model, false)
 }
 
@@ -334,8 +336,18 @@ fn run_board_loop(
         // after one settled-size paint so a key typed mid-drag is not dropped.
         let mut pending_event: Option<Event> = None;
         loop {
-            // Apply completed branch discovery only on the board thread, before painting.
+            // Apply completed branch discovery and cleanup checks only on the board thread,
+            // before painting.
             model.poll_base_picker_results();
+            finish_queued_cleanup_with_host(
+                &store,
+                &mut domain,
+                &mut model,
+                &mut save_recovery,
+                quick_capture,
+                dispatch::running_inside_herdr(),
+                &mut SystemDispatchHost,
+            )?;
             // Settle, paint, then wait. The wait is only the Frame Scheduler's idle floor.
             // All three are one call so the frame is painted before the wait can time out into
             // the `continue` below.
@@ -1982,7 +1994,20 @@ pub fn offer_cleanup_prompt_with_host(
     if record.cleaned {
         return Ok(CleanupOffer::None);
     }
-    let preview = dispatch::inspect_cleanup_with_host(domain, id, in_herdr, host)?;
+    // Decide on the background check before the snapshot, as the base picker does: a fetch
+    // that lands between the two then still has a check to fill the card, rather than a
+    // fresh answer sitting over pre-fetch ancestry with nothing left to refresh it.
+    let merge_check = match (
+        &task.scope,
+        record.base.is_some() || record.base_ref.is_some(),
+    ) {
+        (crate::domain::TaskScope::Project { path }, true) => {
+            host.begin_merge_check(std::path::Path::new(path), record)
+        }
+        _ => None,
+    };
+    // Cached refs only: the card opens at once and the background check fills merged status.
+    let preview = dispatch::inspect_cleanup_cached_with_host(domain, id, in_herdr, host)?;
     if !preview.inspection.worktree_exists {
         domain
             .record_dispatch_cleaned(id)
@@ -2003,6 +2028,8 @@ pub fn offer_cleanup_prompt_with_host(
         }));
     }
     model.begin_cleanup_prompt(CleanupPrompt {
+        merge_check,
+        confirm_deadline: None,
         task_id: id,
         worktree: preview.record.worktree,
         branch: preview.record.branch,
@@ -2020,6 +2047,44 @@ pub fn offer_cleanup_prompt_with_host(
     Ok(CleanupOffer::Prompted)
 }
 
+/// One board-loop step for cleanup cards: apply landed merged checks (this board's card or
+/// its focused project preview's), then finish a `y` queued behind one once its verdict has
+/// landed or its bound has passed. `run_board_loop` calls this every iteration, before paint.
+pub fn finish_queued_cleanup_with_host(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    save_recovery: &mut SaveRecovery<DomainState>,
+    quick_capture: bool,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> io::Result<()> {
+    model.poll_cleanup_check();
+    if save_recovery.is_pending() {
+        return Ok(());
+    }
+    let target = if model.cleanup_confirm_due() {
+        BoardIntentTarget::Outer
+    } else if model.input_target_mut().cleanup_confirm_due() {
+        BoardIntentTarget::Focused
+    } else {
+        return Ok(());
+    };
+    handle_board_intent_with_host(
+        store,
+        domain,
+        board_intent_target_mut(model, target),
+        BoardIntent::ConfirmCleanup,
+        save_recovery,
+        quick_capture,
+        in_herdr,
+        host,
+        &mut |_| {},
+    )?;
+    sync_focused_project_preview(model, domain, save_recovery);
+    Ok(())
+}
+
 /// Apply one cleanup-modal completion choice. Completion is attempted even when cleanup refuses.
 pub fn cleanup_and_complete_with_host(
     domain: &mut DomainState,
@@ -2028,10 +2093,19 @@ pub fn cleanup_and_complete_with_host(
     in_herdr: bool,
     host: &mut impl DispatchHost,
 ) -> Result<Option<Result<CleanupResult, CleanupError>>, DomainError> {
-    let Some(target) = model.cleanup_prompt().map(|prompt| prompt.task_id) else {
+    let Some(prompt) = model.cleanup_prompt() else {
         return Ok(None);
     };
-    let cleanup = clean.then(|| dispatch::clean_with_host(domain, target, in_herdr, host));
+    let target = prompt.task_id;
+    // The card refreshed the base off the event loop; never fetch here. A check that is still
+    // running (its queued `y` ran out of time) confirms nothing, so the branch stays.
+    let refs = if prompt.checking() {
+        dispatch::CleanupRefs::Unconfirmed
+    } else {
+        dispatch::CleanupRefs::Cached
+    };
+    let cleanup =
+        clean.then(|| dispatch::clean_with_host_refs(domain, target, in_herdr, refs, host));
     domain.complete_after_cleanup(target)?;
     model.close_popup();
     Ok(cleanup)
@@ -2256,6 +2330,9 @@ fn handle_board_intent_with_host(
     ) && !save_recovery.is_pending()
     {
         let clean = intent == BoardIntent::ConfirmCleanup;
+        if clean && model.queue_cleanup_confirm() {
+            return Ok(false);
+        }
         let result = cleanup_and_complete_with_host(domain, model, clean, in_herdr, host);
         let cleanup = match result {
             Ok(cleanup) => cleanup,
@@ -9275,5 +9352,369 @@ mod quick_assign_tests {
             map_board_mouse(&model, &hits, left_click(hit.area.x, hit.area.y)),
             Some(BoardIntent::OpenAssigneePicker)
         );
+    }
+}
+
+#[cfg(test)]
+mod queued_cleanup_tests {
+    use std::cell::Cell;
+    use std::path::Path;
+    use std::rc::Rc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Instant, SystemTime};
+
+    use super::{
+        finish_queued_cleanup_with_host, handle_board_intent_with_host,
+        offer_cleanup_prompt_with_host, CleanupOffer,
+    };
+    use crate::dispatch::{
+        CleanupInspection, CreatedWorktree, DispatchHost, MergeCheck, MergeVerdict,
+    };
+    use crate::domain::{Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope};
+    use crate::save_recovery::SaveRecovery;
+    use crate::store::TaskStore;
+    use crate::ui::board::{apply_intent, BoardModel};
+    use crate::ui::input::BoardIntent;
+    use crate::ui::queue::NavTab;
+
+    /// The board's cleanup path must never take the fetching inspection: that is the network
+    /// wait the event loop may not block on.
+    struct CheckHost {
+        check: MergeCheck,
+        cached_merged: bool,
+        /// Whether a fetch counts as fresh; the snapshot may flip it (a fetch landing mid-read).
+        fresh: Rc<Cell<bool>>,
+        fetch_lands_during_snapshot: bool,
+        removed: usize,
+        deleted: usize,
+    }
+
+    impl CheckHost {
+        fn new(cached_merged: bool) -> Self {
+            Self {
+                check: MergeCheck::default(),
+                cached_merged,
+                fresh: Rc::default(),
+                fetch_lands_during_snapshot: false,
+                removed: 0,
+                deleted: 0,
+            }
+        }
+    }
+
+    impl DispatchHost for CheckHost {
+        fn is_git_repo(&mut self, _: &Path) -> Result<bool, String> {
+            Ok(true)
+        }
+        fn create_worktree(
+            &mut self,
+            _: &Path,
+            _: &str,
+            _: Option<&str>,
+            _: &str,
+        ) -> Result<CreatedWorktree, String> {
+            Err("not used".into())
+        }
+        fn inspect_cleanup(
+            &mut self,
+            _: &Path,
+            _: &Dispatch,
+            _: bool,
+        ) -> Result<CleanupInspection, String> {
+            panic!("the board must not fetch on its own thread")
+        }
+        fn inspect_cleanup_cached(
+            &mut self,
+            _: &Path,
+            _: &Dispatch,
+            _: bool,
+        ) -> Result<CleanupInspection, String> {
+            if self.fetch_lands_during_snapshot {
+                self.fresh.set(true);
+            }
+            Ok(CleanupInspection {
+                worktree_exists: true,
+                dirty: false,
+                branch_merged: self.cached_merged,
+                workspace_exists: true,
+                target_matches: true,
+                warning: None,
+                base_available: true,
+            })
+        }
+        fn begin_merge_check(&mut self, _: &Path, _: &Dispatch) -> Option<MergeCheck> {
+            (!self.fresh.get()).then(|| self.check.clone())
+        }
+        fn remove_herdr_worktree(&mut self, _: &str) -> Result<(), String> {
+            self.removed += 1;
+            Ok(())
+        }
+        fn delete_branch(&mut self, _: &Path, _: &str) -> Result<(), String> {
+            self.deleted += 1;
+            Ok(())
+        }
+        fn root_pane(&mut self, _: &str) -> Result<String, String> {
+            Err("not used".into())
+        }
+        fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
+            Err("not used".into())
+        }
+    }
+
+    const PROJECT: &str = "/repos/queued";
+
+    fn setup(label: &str) -> (std::path::PathBuf, TaskStore, DomainState, uuid::Uuid) {
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "tsk-queued-cleanup-{label}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("state dir");
+        let store = TaskStore::new(&dir);
+        let mut domain = DomainState::new();
+        let id = domain
+            .create(
+                "queued",
+                None,
+                TaskScope::Project {
+                    path: PROJECT.into(),
+                },
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create");
+        domain.set_status(id, HumanStatus::Started).expect("start");
+        domain
+            .record_dispatch(
+                id,
+                Dispatch {
+                    argv: vec!["agent".into()],
+                    worktree: "/tmp/tsk-queued".into(),
+                    branch: "tsk/t1-queued".into(),
+                    base: Some("origin/main".into()),
+                    base_commit: None,
+                    base_remote: Some("origin".into()),
+                    base_ref: Some("refs/remotes/origin/main".into()),
+                    herdr_workspace_id: "w1".into(),
+                    at: SystemTime::now(),
+                    cleaned: false,
+                },
+            )
+            .expect("dispatch");
+        store.reload_merge_save(&mut domain).expect("save");
+        (dir, store, domain, id)
+    }
+
+    fn press(
+        store: &TaskStore,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        intent: BoardIntent,
+        host: &mut CheckHost,
+    ) {
+        let mut recovery = SaveRecovery::new();
+        handle_board_intent_with_host(
+            store,
+            domain,
+            model,
+            intent,
+            &mut recovery,
+            false,
+            true,
+            host,
+            &mut |_| {},
+        )
+        .expect("intent");
+        assert!(!recovery.is_pending());
+    }
+
+    /// One iteration of the board loop's cleanup step; nothing else confirms.
+    fn tick(
+        store: &TaskStore,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        host: &mut CheckHost,
+    ) {
+        let mut recovery = SaveRecovery::new();
+        finish_queued_cleanup_with_host(store, domain, model, &mut recovery, false, true, host)
+            .expect("loop step");
+        assert!(!recovery.is_pending());
+    }
+
+    fn verdict(merged: bool) -> MergeVerdict {
+        MergeVerdict {
+            branch_merged: merged,
+            base_available: true,
+            warning: None,
+        }
+    }
+
+    #[test]
+    fn one_y_during_the_merged_check_is_finished_by_the_loop_when_the_verdict_lands() {
+        let (dir, store, mut domain, id) = setup("lands");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut host = CheckHost::new(false);
+        assert_eq!(
+            offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+                .expect("offer"),
+            CleanupOffer::Prompted
+        );
+        let pressed = Instant::now();
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        assert!(pressed.elapsed() < std::time::Duration::from_millis(500));
+        let deadline = model.cleanup_prompt().unwrap().confirm_deadline;
+        assert!(model.cleanup_prompt().unwrap().confirm_queued());
+        // A second y while queued changes nothing, including the bound.
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        assert_eq!(model.cleanup_prompt().unwrap().confirm_deadline, deadline);
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert!(model.cleanup_prompt().is_some(), "no verdict yet");
+        assert_eq!(domain.get(id).unwrap().status, HumanStatus::Started);
+
+        host.check.complete(verdict(true));
+        host.cached_merged = true; // the refs the check fetched
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert!(model.cleanup_prompt().is_none());
+        assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
+        assert_eq!((host.removed, host.deleted), (1, 1));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn a_queued_y_whose_check_never_lands_is_finished_at_its_bound_keeping_the_branch() {
+        let (dir, store, mut domain, id) = setup("bound");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut host = CheckHost::new(true);
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            .expect("offer");
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert!(model.cleanup_prompt().is_some());
+        model.cleanup_prompt_mut().unwrap().confirm_deadline = Some(Instant::now());
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
+        assert_eq!(host.removed, 1, "the clean worktree is still removed");
+        assert_eq!(
+            host.deleted, 0,
+            "cached ancestry says merged, but no check confirmed it"
+        );
+        assert!(model
+            .message()
+            .is_some_and(|message| message.contains("branch kept")));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn esc_drops_a_queued_y_before_its_verdict_lands() {
+        let (dir, store, mut domain, id) = setup("cancel");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut host = CheckHost::new(true);
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            .expect("offer");
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::CancelCleanup,
+            &mut host,
+        );
+        host.check.complete(verdict(true));
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert!(model.cleanup_prompt().is_none());
+        assert_eq!(domain.get(id).unwrap().status, HumanStatus::Started);
+        assert_eq!((host.removed, host.deleted), (0, 0));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn a_queued_y_in_the_focused_project_preview_is_finished_by_the_outer_loop() {
+        let (dir, store, mut domain, id) = setup("preview");
+        let mut model = BoardModel::from_domain(&domain, None);
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("projects overview");
+        for _ in 0..2 {
+            apply_intent(&mut domain, &mut model, BoardIntent::StageRight, None)
+                .expect("stage right");
+        }
+        assert!(model.project_right_seat_focused());
+        let mut host = CheckHost::new(false);
+        assert_eq!(
+            offer_cleanup_prompt_with_host(
+                &mut domain,
+                model.input_target_mut(),
+                id,
+                true,
+                &mut host
+            )
+            .expect("offer"),
+            CleanupOffer::Prompted
+        );
+        press(
+            &store,
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        assert!(
+            model.cleanup_prompt().is_none(),
+            "the card lives in the preview"
+        );
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert!(model.input_target_mut().cleanup_prompt().is_some());
+
+        host.check.complete(verdict(true));
+        host.cached_merged = true;
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert!(model.input_target_mut().cleanup_prompt().is_none());
+        assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
+        assert_eq!((host.removed, host.deleted), (1, 1));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn a_fetch_landing_during_the_card_snapshot_still_leaves_a_check_to_refresh_it() {
+        let (dir, _store, mut domain, id) = setup("interleave");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut host = CheckHost::new(false);
+        host.fetch_lands_during_snapshot = true;
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            .expect("offer");
+        assert!(
+            model.cleanup_prompt().unwrap().checking(),
+            "pre-fetch ancestry is never shown as a final verdict"
+        );
+        std::fs::remove_dir_all(dir).expect("cleanup");
     }
 }

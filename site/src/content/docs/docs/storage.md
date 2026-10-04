@@ -82,6 +82,14 @@ tsk trash restore T12
 
 The list includes both recently deleted tasks still in the main store and tasks in trash. Restore reads trash; use board undo for a recent deletion that has not moved there yet.
 
+## Fetch window
+
+Dispatch, the branch picker, and cleanup each fetch a base's remote before reading its branches. A remote tsk fetched successfully in the last 60 seconds is not fetched again; the cached refs are used instead, so opening the picker and then dispatching pays for one round trip. Each of these fetches also refreshes the remote's default branch (`origin/HEAD`), so a dispatch to the default inside the window uses a default as fresh as the branches. On Git older than 2.48 that refresh is a separate `git remote set-head --auto` request; if it fails, the fetch still counts for branches but not for the default, so the next default-base dispatch fetches again and warns that it used the cached default. tsk passes the refresh setting through Git's `GIT_CONFIG_COUNT` environment, after any entries you already set there; if your `GIT_CONFIG_COUNT` is not a number, tsk leaves it alone and uses the separate request instead. A surface that needs a remote while another is still fetching it waits for that fetch and shares its result. Failed fetches are never remembered.
+
+| File | Purpose |
+| --- | --- |
+| `fetch-stamps.json` | When CLI verbs and the board last fetched each repository's remote, so the window carries across `tsk` processes. Entries older than the window are dropped on the next write; deleting the file only costs one fetch |
+
 ## Update check
 
 On launch, tsk checks for a newer release if its cached check is older than 24 hours. A newer version appears on the board's idle status row as `vX.Y.Z available, run tsk update`.

@@ -412,6 +412,10 @@ pub enum QueueOverlay<'a> {
         base: &'a str,
         dirty: bool,
         branch_merged: bool,
+        /// Merged status is still being rechecked after a background fetch.
+        checking: bool,
+        /// `y` was pressed while checking; cleanup runs when the check lands.
+        confirm_queued: bool,
         base_available: bool,
         warning: Option<&'a str>,
         workspace_exists: bool,
@@ -1764,6 +1768,8 @@ fn paint_overlay(
             base,
             dirty,
             branch_merged,
+            checking,
+            confirm_queued,
             base_available,
             warning,
             workspace_exists,
@@ -1777,6 +1783,8 @@ fn paint_overlay(
                 base,
                 *dirty,
                 *branch_merged,
+                *checking,
+                *confirm_queued,
                 *base_available,
                 *warning,
                 *workspace_exists,
@@ -3567,6 +3575,8 @@ fn paint_cleanup_card(
     base: &str,
     dirty: bool,
     branch_merged: bool,
+    checking: bool,
+    confirm_queued: bool,
     base_available: bool,
     warning: Option<&str>,
     workspace_exists: bool,
@@ -3581,7 +3591,9 @@ fn paint_cleanup_card(
         format!("branch {branch}"),
         format!(
             "base {base} · {}",
-            if !base_available {
+            if checking {
+                "checking…"
+            } else if !base_available {
                 "unavailable"
             } else if branch_merged {
                 "merged ✓"
@@ -3606,7 +3618,12 @@ fn paint_cleanup_card(
             }
         ),
     ];
-    if !base_available {
+    if checking {
+        // No verdict yet: neither retention line applies until the recheck lands.
+        if confirm_queued {
+            lines.insert(3, "cleaning once the check finishes".into());
+        }
+    } else if !base_available {
         lines.insert(3, "recorded base unavailable; branch retained".into());
     } else if !branch_merged {
         lines.insert(

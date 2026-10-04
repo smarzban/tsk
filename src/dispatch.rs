@@ -55,6 +55,57 @@ pub struct CleanupInspection {
     pub target_matches: bool,
 }
 
+/// Longest a board `y` waits for its card's background merged check: the bounded fetch
+/// plus the bounded ancestry query the check runs after it.
+pub const MERGE_CHECK_TIMEOUT: Duration = Duration::from_secs(
+    crate::git_base::NETWORK_TIMEOUT.as_secs() + CLEANUP_QUERY_TIMEOUT.as_secs(),
+);
+
+/// Which refs a cleanup trusts for the branch's merged status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleanupRefs {
+    /// Fetch the recorded base's remote first (the CLI).
+    Fetch,
+    /// The refs on disk now. The board's card already refreshed them off the event loop.
+    Cached,
+    /// The card's refresh never finished: remove a clean worktree, never the branch.
+    Unconfirmed,
+}
+
+/// The base-dependent half of a cleanup inspection, recomputed after a background fetch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeVerdict {
+    pub branch_merged: bool,
+    pub base_available: bool,
+    pub warning: Option<String>,
+}
+
+/// A board cleanup card's merged check running off the event loop. The host completes it
+/// once; the board polls it on idle ticks and never waits on it except through `y`.
+#[derive(Debug, Clone, Default)]
+pub struct MergeCheck(std::sync::Arc<std::sync::Mutex<Option<MergeVerdict>>>);
+
+/// Identity, not content: two handles are equal when they watch the same check.
+impl PartialEq for MergeCheck {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for MergeCheck {}
+
+impl MergeCheck {
+    pub fn complete(&self, verdict: MergeVerdict) {
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = Some(verdict);
+        }
+    }
+
+    pub fn take(&self) -> Option<MergeVerdict> {
+        self.0.try_lock().ok().and_then(|mut slot| slot.take())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorktreeCleanup {
     Removed,
@@ -83,6 +134,9 @@ pub enum BranchRetentionReason {
     /// deleting the branch without a confirmed merge is never safe either.
     AncestryCheckTimedOut,
     WorktreeListingTimedOut,
+    /// A board `y` queued behind the background merged check outlived its bound: without a
+    /// completed check the merge is unconfirmed, so the branch stays.
+    MergeCheckUnfinished,
 }
 
 impl BranchRetentionReason {
@@ -101,6 +155,9 @@ impl BranchRetentionReason {
                 "ancestry check timed out after the worktree was removed; branch retained".into()
             }
             Self::WorktreeListingTimedOut => "worktree listing timed out; branch retained".into(),
+            Self::MergeCheckUnfinished => {
+                "merged check did not finish; branch retained".into()
+            }
         }
     }
 }
@@ -312,6 +369,21 @@ pub trait DispatchHost {
     ) -> Result<CleanupInspection, String> {
         Err("cleanup inspection is not supported".into())
     }
+    /// Same inspection from the refs already on disk: the board's cleanup card opens on this
+    /// without waiting for the network.
+    fn inspect_cleanup_cached(
+        &mut self,
+        project: &Path,
+        dispatch: &Dispatch,
+        in_herdr: bool,
+    ) -> Result<CleanupInspection, String> {
+        self.inspect_cleanup(project, dispatch, in_herdr)
+    }
+    /// Start the recorded base's fetch and ancestry recheck off the event loop. `None` means
+    /// the cached verdict is already current (no remote, or fetched inside the fetch window).
+    fn begin_merge_check(&mut self, _project: &Path, _dispatch: &Dispatch) -> Option<MergeCheck> {
+        None
+    }
     fn remove_herdr_worktree(&mut self, _workspace_id: &str) -> Result<(), String> {
         Err("Herdr worktree removal is not supported".into())
     }
@@ -408,164 +480,39 @@ impl DispatchHost for SystemDispatchHost {
         dispatch: &Dispatch,
         in_herdr: bool,
     ) -> Result<CleanupInspection, String> {
-        let worktree = Path::new(&dispatch.worktree);
-        let project_path = canonical_cleanup_path(project)?;
-        let Ok(worktree_path) = canonical_cleanup_path(worktree) else {
-            return Ok(CleanupInspection {
-                warning: None,
-                base_available: false,
-                worktree_exists: worktree.exists(),
-                dirty: false,
-                branch_merged: false,
-                workspace_exists: false,
-                target_matches: false,
-            });
-        };
-        // A worktree deleted by hand may already be pruned from git's list, so a missing
-        // directory converges to cleaned before the registration gate can refuse it. The
-        // project root itself is never a removal target, present or not.
-        if project_path == worktree_path {
-            return Ok(CleanupInspection {
-                warning: None,
-                base_available: false,
-                worktree_exists: worktree.exists(),
-                dirty: false,
-                branch_merged: false,
-                workspace_exists: false,
-                target_matches: false,
-            });
-        }
-        if !worktree.exists() {
-            return Ok(CleanupInspection {
-                warning: None,
-                base_available: false,
-                worktree_exists: false,
-                dirty: false,
-                branch_merged: false,
-                workspace_exists: false,
-                target_matches: true,
-            });
-        }
-        let registered = git_worktree_paths(project)?
-            .iter()
-            .any(|listed| listed == &worktree_path);
-        if !registered {
-            return Ok(CleanupInspection {
-                warning: None,
-                base_available: false,
-                worktree_exists: true,
-                dirty: false,
-                branch_merged: false,
-                workspace_exists: false,
-                target_matches: false,
-            });
-        }
-        // Full untracked status on a real checkout, not a quick plumbing ref: give it cleanup's
-        // longer deadline rather than git_base's 250ms metadata default. A timeout here returns
-        // Err before any worktree or branch is touched below, so the refusal is always safe.
-        let status = cleanup_query(
-            worktree,
-            &["status", "--porcelain", "--untracked-files=all"],
-        )
-        .map_err(|error| cleanup_inspection_error("status", error))?;
-        if !status.status.success() {
-            return Err(command_failure("git status", &status));
-        }
-        let mut fetch_failure = None;
-        let mut base_available = false;
-        let branch_merged =
-            if let Some(base) = dispatch.base.as_deref().or(dispatch.base_ref.as_deref()) {
-                // A new fully qualified record never borrows another namespace, even if
-                // a remote with the same prefix is configured later.
-                let remote = dispatch.base_remote.clone().or_else(|| {
-                    if let Some(exact) = dispatch.base_ref.as_deref() {
-                        exact
-                            .strip_prefix("refs/remotes/")
-                            .and_then(|_| crate::git_base::remote_for_ref(project, exact))
-                    } else {
-                        crate::git_base::remote_for_ref(project, base)
-                    }
-                });
-                if let Some(remote) = remote {
-                    if let Err(reason) = crate::git_base::fetch_remote(project, &remote) {
-                        fetch_failure = Some(reason);
-                    }
-                }
-                let exact_base =
-                    cleanup_base_ref(project, dispatch.base_ref.as_deref().unwrap_or(base))?;
-                if let Some(exact_base) = exact_base {
-                    base_available = true;
-                    // Same deadline reasoning as the status read above: this still runs before
-                    // any worktree or branch mutation, so a timeout here refuses safely too.
-                    let merged = cleanup_query(
-                        project,
-                        &[
-                            "merge-base",
-                            "--is-ancestor",
-                            &format!("refs/heads/{}", dispatch.branch),
-                            &exact_base,
-                        ],
-                    )
-                    .map_err(|error| cleanup_inspection_error("ancestry check", error))?;
-                    match merged.status.code() {
-                        Some(0) => true,
-                        Some(1) => false,
-                        _ => return Err(command_failure("git merge-base", &merged)),
-                    }
-                } else {
-                    // Fetch may have pruned the base, or a local base was deleted.
-                    // Removing a clean worktree is still safe, deleting its branch is not.
-                    false
-                }
-            } else {
-                false
-            };
-        let warning = fetch_failure.map(|reason| {
-            if base_available {
-                format!("merged status computed from cached refs because fetch failed: {reason}")
-            } else {
-                format!("fetch failed: {reason}; merged status unavailable because recorded base no longer available")
-            }
-        });
-        let (workspace_exists, workspace_matches) = if in_herdr {
-            let listed = Command::new("herdr")
-                .args(["worktree", "list", "--cwd"])
-                .arg(project)
-                .output()
-                .map_err(|error| format!("could not run herdr: {error}"))?;
-            let value = herdr_json(listed)?;
-            let workspace = value
-                .pointer("/result/worktrees")
-                .and_then(Value::as_array)
-                .and_then(|worktrees| {
-                    worktrees.iter().find(|entry| {
-                        entry.get("open_workspace_id").and_then(Value::as_str)
-                            == Some(dispatch.herdr_workspace_id.as_str())
-                    })
-                });
-            match workspace {
-                Some(entry) => {
-                    let matches = herdr_checkout_path(entry)
-                        .and_then(|path| canonical_cleanup_path(Path::new(path)).ok())
-                        .is_some_and(|path| path == worktree_path);
-                    (true, matches)
-                }
-                None => (false, true),
-            }
-        } else {
-            (false, true)
-        };
-        Ok(CleanupInspection {
-            warning,
-            base_available,
-            worktree_exists: true,
-            dirty: !status.stdout.is_empty(),
-            branch_merged,
-            workspace_exists,
-            target_matches: workspace_matches,
-        })
+        system_inspect_cleanup(project, dispatch, in_herdr, true)
     }
 
+    fn inspect_cleanup_cached(
+        &mut self,
+        project: &Path,
+        dispatch: &Dispatch,
+        in_herdr: bool,
+    ) -> Result<CleanupInspection, String> {
+        system_inspect_cleanup(project, dispatch, in_herdr, false)
+    }
+
+    fn begin_merge_check(&mut self, project: &Path, dispatch: &Dispatch) -> Option<MergeCheck> {
+        let remote = cleanup_base_remote(project, dispatch)?;
+        if crate::git_base::fetch_is_fresh(project, &remote) {
+            return None;
+        }
+        let check = MergeCheck::default();
+        let job = check.clone();
+        let (project, dispatch) = (project.to_path_buf(), dispatch.clone());
+        std::thread::spawn(move || {
+            let fetched = crate::git_base::fetch_remote(&project, &remote);
+            job.complete(match merge_verdict(&project, &dispatch, fetched.err()) {
+                Ok(verdict) => verdict,
+                Err(reason) => MergeVerdict {
+                    branch_merged: false,
+                    base_available: false,
+                    warning: Some(reason),
+                },
+            });
+        });
+        Some(check)
+    }
     fn remove_herdr_worktree(&mut self, workspace_id: &str) -> Result<(), String> {
         let output = Command::new("herdr")
             .args(["worktree", "remove", "--workspace", workspace_id])
@@ -801,6 +748,195 @@ fn git_worktree_paths(project: &Path) -> Result<Vec<PathBuf>, String> {
         .collect())
 }
 
+/// Cleanup inspection for the real host. `fetch` refreshes the recorded base's remote first
+/// (through the shared fetch window); the board's card opens with it off.
+fn system_inspect_cleanup(
+    project: &Path,
+    dispatch: &Dispatch,
+    in_herdr: bool,
+    fetch: bool,
+) -> Result<CleanupInspection, String> {
+    let worktree = Path::new(&dispatch.worktree);
+    let project_path = canonical_cleanup_path(project)?;
+    let Ok(worktree_path) = canonical_cleanup_path(worktree) else {
+        return Ok(CleanupInspection {
+            warning: None,
+            base_available: false,
+            worktree_exists: worktree.exists(),
+            dirty: false,
+            branch_merged: false,
+            workspace_exists: false,
+            target_matches: false,
+        });
+    };
+    // A worktree deleted by hand may already be pruned from git's list, so a missing
+    // directory converges to cleaned before the registration gate can refuse it. The
+    // project root itself is never a removal target, present or not.
+    if project_path == worktree_path {
+        return Ok(CleanupInspection {
+            warning: None,
+            base_available: false,
+            worktree_exists: worktree.exists(),
+            dirty: false,
+            branch_merged: false,
+            workspace_exists: false,
+            target_matches: false,
+        });
+    }
+    if !worktree.exists() {
+        return Ok(CleanupInspection {
+            warning: None,
+            base_available: false,
+            worktree_exists: false,
+            dirty: false,
+            branch_merged: false,
+            workspace_exists: false,
+            target_matches: true,
+        });
+    }
+    let registered = git_worktree_paths(project)?
+        .iter()
+        .any(|listed| listed == &worktree_path);
+    if !registered {
+        return Ok(CleanupInspection {
+            warning: None,
+            base_available: false,
+            worktree_exists: true,
+            dirty: false,
+            branch_merged: false,
+            workspace_exists: false,
+            target_matches: false,
+        });
+    }
+    // Full untracked status on a real checkout, not a quick plumbing ref: give it cleanup's
+    // longer deadline rather than git_base's 250ms metadata default. A timeout here returns
+    // Err before any worktree or branch is touched below, so the refusal is always safe.
+    let status = cleanup_query(
+        worktree,
+        &["status", "--porcelain", "--untracked-files=all"],
+    )
+    .map_err(|error| cleanup_inspection_error("status", error))?;
+    if !status.status.success() {
+        return Err(command_failure("git status", &status));
+    }
+    let fetch_failure = if fetch {
+        cleanup_base_remote(project, dispatch)
+            .and_then(|remote| crate::git_base::fetch_remote(project, &remote).err())
+    } else {
+        None
+    };
+    let MergeVerdict {
+        branch_merged,
+        base_available,
+        warning,
+    } = merge_verdict(project, dispatch, fetch_failure)?;
+    let (workspace_exists, workspace_matches) = if in_herdr {
+        let listed = Command::new("herdr")
+            .args(["worktree", "list", "--cwd"])
+            .arg(project)
+            .output()
+            .map_err(|error| format!("could not run herdr: {error}"))?;
+        let value = herdr_json(listed)?;
+        let workspace = value
+            .pointer("/result/worktrees")
+            .and_then(Value::as_array)
+            .and_then(|worktrees| {
+                worktrees.iter().find(|entry| {
+                    entry.get("open_workspace_id").and_then(Value::as_str)
+                        == Some(dispatch.herdr_workspace_id.as_str())
+                })
+            });
+        match workspace {
+            Some(entry) => {
+                let matches = herdr_checkout_path(entry)
+                    .and_then(|path| canonical_cleanup_path(Path::new(path)).ok())
+                    .is_some_and(|path| path == worktree_path);
+                (true, matches)
+            }
+            None => (false, true),
+        }
+    } else {
+        (false, true)
+    };
+    Ok(CleanupInspection {
+        warning,
+        base_available,
+        worktree_exists: true,
+        dirty: !status.stdout.is_empty(),
+        branch_merged,
+        workspace_exists,
+        target_matches: workspace_matches,
+    })
+}
+
+/// The remote whose fetch can change the recorded base. A new fully qualified record never
+/// borrows another namespace, even if a remote with the same prefix is configured later.
+fn cleanup_base_remote(project: &Path, dispatch: &Dispatch) -> Option<String> {
+    let base = dispatch.base.as_deref().or(dispatch.base_ref.as_deref())?;
+    dispatch.base_remote.clone().or_else(|| {
+        if let Some(exact) = dispatch.base_ref.as_deref() {
+            exact
+                .strip_prefix("refs/remotes/")
+                .and_then(|_| crate::git_base::remote_for_ref(project, exact))
+        } else {
+            crate::git_base::remote_for_ref(project, base)
+        }
+    })
+}
+
+/// Ancestry against the recorded base from the refs on disk now. `fetch_failure` is the
+/// reason the preceding fetch failed, reported as cached-ref provenance.
+fn merge_verdict(
+    project: &Path,
+    dispatch: &Dispatch,
+    fetch_failure: Option<String>,
+) -> Result<MergeVerdict, String> {
+    let mut base_available = false;
+    let branch_merged = if let Some(base) =
+        dispatch.base.as_deref().or(dispatch.base_ref.as_deref())
+    {
+        let exact_base = cleanup_base_ref(project, dispatch.base_ref.as_deref().unwrap_or(base))?;
+        if let Some(exact_base) = exact_base {
+            base_available = true;
+            // Same deadline reasoning as the status read: this still runs before any
+            // worktree or branch mutation, so a timeout here refuses safely too.
+            let merged = cleanup_query(
+                project,
+                &[
+                    "merge-base",
+                    "--is-ancestor",
+                    &format!("refs/heads/{}", dispatch.branch),
+                    &exact_base,
+                ],
+            )
+            .map_err(|error| cleanup_inspection_error("ancestry check", error))?;
+            match merged.status.code() {
+                Some(0) => true,
+                Some(1) => false,
+                _ => return Err(command_failure("git merge-base", &merged)),
+            }
+        } else {
+            // Fetch may have pruned the base, or a local base was deleted.
+            // Removing a clean worktree is still safe, deleting its branch is not.
+            false
+        }
+    } else {
+        false
+    };
+    let warning = fetch_failure.map(|reason| {
+        if base_available {
+            format!("merged status computed from cached refs because fetch failed: {reason}")
+        } else {
+            format!("fetch failed: {reason}; merged status unavailable because recorded base no longer available")
+        }
+    });
+    Ok(MergeVerdict {
+        branch_merged,
+        base_available,
+        warning,
+    })
+}
+
 /// Missing bases are a retention reason, not a failure to clean the worktree.
 /// Exact refs are verified verbatim; only records without one use legacy inference.
 fn cleanup_base_ref(project: &Path, base: &str) -> Result<Option<String>, String> {
@@ -900,6 +1036,26 @@ pub fn inspect_cleanup_with_host(
     in_herdr: bool,
     host: &mut impl DispatchHost,
 ) -> Result<CleanupPreview, CleanupError> {
+    inspect_cleanup_refs(state, id, in_herdr, false, host)
+}
+
+/// The board card's preview: cached refs only, so it opens without a network round trip.
+pub fn inspect_cleanup_cached_with_host(
+    state: &DomainState,
+    id: Uuid,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<CleanupPreview, CleanupError> {
+    inspect_cleanup_refs(state, id, in_herdr, true, host)
+}
+
+fn inspect_cleanup_refs(
+    state: &DomainState,
+    id: Uuid,
+    in_herdr: bool,
+    cached: bool,
+    host: &mut impl DispatchHost,
+) -> Result<CleanupPreview, CleanupError> {
     let task = state.get(id).cloned().ok_or(CleanupError::UnknownTask)?;
     let number = task.number.ok_or(CleanupError::UnknownTask)?;
     let record = task.dispatch.clone().ok_or(CleanupError::NotDispatched)?;
@@ -910,9 +1066,12 @@ pub fn inspect_cleanup_with_host(
         TaskScope::Project { path } => PathBuf::from(path),
         TaskScope::Global => return Err(CleanupError::NotDispatched),
     };
-    let mut inspection = host
-        .inspect_cleanup(&project, &record, in_herdr)
-        .map_err(CleanupError::Herdr)?;
+    let mut inspection = if cached {
+        host.inspect_cleanup_cached(&project, &record, in_herdr)
+    } else {
+        host.inspect_cleanup(&project, &record, in_herdr)
+    }
+    .map_err(CleanupError::Herdr)?;
     if !inspection.target_matches {
         return Err(CleanupError::WorktreeMismatch);
     }
@@ -941,7 +1100,18 @@ pub fn clean_with_host(
     in_herdr: bool,
     host: &mut impl DispatchHost,
 ) -> Result<CleanupResult, CleanupError> {
-    let preview = inspect_cleanup_with_host(state, id, in_herdr, host)?;
+    clean_with_host_refs(state, id, in_herdr, CleanupRefs::Fetch, host)
+}
+
+/// [`clean_with_host`] with an explicit ref policy; the board never fetches on its own thread.
+pub fn clean_with_host_refs(
+    state: &mut DomainState,
+    id: Uuid,
+    in_herdr: bool,
+    refs: CleanupRefs,
+    host: &mut impl DispatchHost,
+) -> Result<CleanupResult, CleanupError> {
+    let preview = inspect_cleanup_refs(state, id, in_herdr, refs != CleanupRefs::Fetch, host)?;
     if preview.inspection.dirty {
         return Err(CleanupError::DirtyWorktree);
     }
@@ -957,6 +1127,8 @@ pub fn clean_with_host(
         }
         let deletion = if preview.record.base.is_none() && preview.record.base_ref.is_none() {
             BranchDeletion::Kept(BranchRetentionReason::NoRecordedBase)
+        } else if refs == CleanupRefs::Unconfirmed {
+            BranchDeletion::Kept(BranchRetentionReason::MergeCheckUnfinished)
         } else if !preview.inspection.base_available {
             BranchDeletion::Kept(BranchRetentionReason::BaseUnavailable)
         } else if preview.inspection.branch_merged {
