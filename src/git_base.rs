@@ -287,14 +287,31 @@ const FETCH_STAMPS_FILE: &str = "fetch-stamps.json";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FetchOutcome {
     Fetched,
+    /// The branches were fetched but `refs/remotes/<remote>/HEAD` could not be refreshed
+    /// (only the pre-2.48 `remote set-head` fallback can fail separately).
+    FetchedStaleHead,
     /// Inside the fetch window, or joined a fetch that finished while this caller waited.
     Reused,
+}
+
+/// What a caller needs fresh before it may skip the network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FetchNeed {
+    /// Remote-tracking branches inside the window.
+    Refs,
+    /// Branches and the remote default (`<remote>/HEAD`): default-base resolution.
+    RefsAndHead,
+    /// Fetch now; only joining a fetch already running counts.
+    Now,
 }
 
 #[derive(Debug, Default)]
 struct FetchSlot {
     last_success: Option<std::time::SystemTime>,
-    last_attempt: Option<(std::time::Instant, Result<(), String>)>,
+    /// Last success that also refreshed the remote default.
+    last_head: Option<std::time::SystemTime>,
+    /// Ok(true) when that attempt refreshed the remote default too.
+    last_attempt: Option<(std::time::Instant, Result<bool, String>)>,
 }
 
 type FetchKey = (std::path::PathBuf, String);
@@ -342,6 +359,11 @@ fn stamp_name((project, remote): &FetchKey) -> String {
     format!("{}\n{remote}", project.display())
 }
 
+/// The remote default's own stamp: written only when that fetch refreshed `<remote>/HEAD`.
+fn head_stamp_name(key: &FetchKey) -> String {
+    format!("{}\nHEAD", stamp_name(key))
+}
+
 fn read_stamps(dir: &Path) -> std::collections::BTreeMap<String, u64> {
     std::fs::read_to_string(dir.join(FETCH_STAMPS_FILE))
         .ok()
@@ -355,8 +377,8 @@ fn unix_secs(time: std::time::SystemTime) -> u64 {
         .unwrap_or(0)
 }
 
-fn stamp_fresh(dir: &Path, key: &FetchKey, now: std::time::SystemTime) -> bool {
-    read_stamps(dir).get(&stamp_name(key)).is_some_and(|secs| {
+fn stamp_fresh(dir: &Path, name: &str, now: std::time::SystemTime) -> bool {
+    read_stamps(dir).get(name).is_some_and(|secs| {
         within_window(
             std::time::UNIX_EPOCH + std::time::Duration::from_secs(*secs),
             now,
@@ -365,7 +387,7 @@ fn stamp_fresh(dir: &Path, key: &FetchKey, now: std::time::SystemTime) -> bool {
 }
 
 /// Best effort: a lost stamp only costs the next process one fetch.
-fn write_stamp(dir: &Path, key: &FetchKey, now: std::time::SystemTime) {
+fn write_stamp(dir: &Path, names: &[String], now: std::time::SystemTime) {
     let mut stamps = read_stamps(dir);
     stamps.retain(|_, secs| {
         within_window(
@@ -373,7 +395,9 @@ fn write_stamp(dir: &Path, key: &FetchKey, now: std::time::SystemTime) {
             now,
         )
     });
-    stamps.insert(stamp_name(key), unix_secs(now));
+    for name in names {
+        stamps.insert(name.clone(), unix_secs(now));
+    }
     let Ok(text) = serde_json::to_string(&stamps) else {
         return;
     };
@@ -398,35 +422,62 @@ fn gated_fetch(
     key: &FetchKey,
     stamps: Option<&Path>,
     now: impl Fn() -> std::time::SystemTime,
-    window: bool,
-    fetch: impl FnOnce() -> Result<(), String>,
+    need: FetchNeed,
+    fetch: impl FnOnce() -> Result<bool, String>,
 ) -> Result<FetchOutcome, String> {
     let arrived = std::time::Instant::now();
     let slot = fetch_slot(key);
     let mut slot = slot.lock().unwrap_or_else(|poison| poison.into_inner());
     if let Some((finished, result)) = &slot.last_attempt {
         if *finished >= arrived {
-            return result.clone().map(|()| FetchOutcome::Reused);
+            match result {
+                Err(reason) => return Err(reason.clone()),
+                // A joined fetch that left the default stale does not serve a caller that
+                // needs the default: it fetches again below.
+                Ok(head) if *head || need != FetchNeed::RefsAndHead => {
+                    return Ok(FetchOutcome::Reused)
+                }
+                Ok(_) => {}
+            }
         }
     }
-    let fresh = window
-        && (slot
-            .last_success
-            .is_some_and(|stamp| within_window(stamp, now()))
-            || stamps.is_some_and(|dir| stamp_fresh(dir, key, now())));
+    let fresh = match need {
+        FetchNeed::Now => false,
+        FetchNeed::Refs => {
+            slot.last_success
+                .is_some_and(|stamp| within_window(stamp, now()))
+                || stamps.is_some_and(|dir| stamp_fresh(dir, &stamp_name(key), now()))
+        }
+        FetchNeed::RefsAndHead => {
+            slot.last_head
+                .is_some_and(|stamp| within_window(stamp, now()))
+                || stamps.is_some_and(|dir| stamp_fresh(dir, &head_stamp_name(key), now()))
+        }
+    };
     if fresh {
         return Ok(FetchOutcome::Reused);
     }
     let result = fetch();
-    if result.is_ok() {
+    if let Ok(head) = result {
         let stamp = now();
         slot.last_success = Some(stamp);
+        let mut names = vec![stamp_name(key)];
+        if head {
+            slot.last_head = Some(stamp);
+            names.push(head_stamp_name(key));
+        }
         if let Some(dir) = stamps {
-            write_stamp(dir, key, stamp);
+            write_stamp(dir, &names, stamp);
         }
     }
     slot.last_attempt = Some((std::time::Instant::now(), result.clone()));
-    result.map(|()| FetchOutcome::Fetched)
+    result.map(|head| {
+        if head {
+            FetchOutcome::Fetched
+        } else {
+            FetchOutcome::FetchedStaleHead
+        }
+    })
 }
 
 /// Whether `remote` needs no fetch now: it was fetched inside the window, or the repository
@@ -445,7 +496,7 @@ pub fn fetch_is_fresh(project: &Path, remote: &str) -> bool {
     };
     slot.last_success
         .is_some_and(|stamp| within_window(stamp, now))
-        || stamp_dir().is_some_and(|dir| stamp_fresh(&dir, &key, now))
+        || stamp_dir().is_some_and(|dir| stamp_fresh(&dir, &stamp_name(&key), now))
 }
 
 fn stamp_dir() -> Option<std::path::PathBuf> {
@@ -459,16 +510,26 @@ pub fn fetch_remote(project: &Path, remote: &str) -> Result<(), String> {
 /// Bounded fetch behind the shared fetch window. Failures are never remembered: the next
 /// caller tries the network again, unless it was already waiting on that failed attempt.
 pub fn fetch_remote_outcome(project: &Path, remote: &str) -> Result<FetchOutcome, String> {
-    gated_fetch_remote(project, remote, true)
+    gated_fetch_remote(project, remote, FetchNeed::Refs)
 }
 
 /// Fetch even inside the window (still joining a fetch already running), for a ref the
 /// caller needs that the cached refs do not have.
 fn fetch_remote_now(project: &Path, remote: &str) -> Result<(), String> {
-    gated_fetch_remote(project, remote, false).map(|_| ())
+    gated_fetch_remote(project, remote, FetchNeed::Now).map(|_| ())
 }
 
-fn gated_fetch_remote(project: &Path, remote: &str, window: bool) -> Result<FetchOutcome, String> {
+/// Default-base resolution: the window counts only when its fetch also refreshed
+/// `<remote>/HEAD`.
+fn fetch_remote_with_head(project: &Path, remote: &str) -> Result<FetchOutcome, String> {
+    gated_fetch_remote(project, remote, FetchNeed::RefsAndHead)
+}
+
+fn gated_fetch_remote(
+    project: &Path,
+    remote: &str,
+    need: FetchNeed,
+) -> Result<FetchOutcome, String> {
     if remote.is_empty() || remote.starts_with('-') || remote == "." {
         return Err("invalid remote".into());
     }
@@ -477,48 +538,78 @@ fn gated_fetch_remote(project: &Path, remote: &str, window: bool) -> Result<Fetc
         &key,
         stamp_dir().as_deref(),
         std::time::SystemTime::now,
-        window,
+        need,
         || fetch_with_remote_head(project, remote),
     )
 }
 
-/// One fetch that also refreshes `refs/remotes/<remote>/HEAD`, so every fetch that fills the
-/// window leaves the remote default as fresh as the branches: default-base dispatch can then
-/// trust a reused fetch. The setting goes through Git's environment config so the argv stays
-/// a plain `fetch`.
-fn fetch_with_remote_head(project: &Path, remote: &str) -> Result<(), String> {
-    // Appended after any GIT_CONFIG_* entries the caller's environment already carries.
-    let index = std::env::var("GIT_CONFIG_COUNT")
-        .ok()
-        .and_then(|count| count.parse::<usize>().ok())
-        .unwrap_or(0);
-    let (count, key_name, value_name) = (
-        (index + 1).to_string(),
-        format!("GIT_CONFIG_KEY_{index}"),
-        format!("GIT_CONFIG_VALUE_{index}"),
-    );
-    let key = format!("remote.{remote}.followRemoteHEAD");
-    bounded_git_env(
-        project,
-        &[
-            "fetch",
-            "--quiet",
-            "--no-tags",
-            "--no-recurse-submodules",
-            remote,
-        ],
-        &[
-            ("GIT_CONFIG_COUNT", &count),
-            (&key_name, &key),
-            (&value_name, "always"),
-        ],
-    )?;
-    // Git before 2.48 ignores followRemoteHEAD: ask the remote separately. A failure keeps the
-    // cached default, as it always has.
-    if !git_follows_remote_head(project) {
-        let _ = bounded_git(project, &["remote", "set-head", remote, "--auto"]);
+/// One fetch that also refreshes `refs/remotes/<remote>/HEAD`, so a fetch that fills the
+/// window normally leaves the remote default as fresh as the branches. Returns whether the
+/// default was refreshed: only then may default-base resolution reuse the window.
+///
+/// The setting goes through Git's environment config so the argv stays a plain `fetch`.
+fn fetch_with_remote_head(project: &Path, remote: &str) -> Result<bool, String> {
+    let fetch = [
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        "--no-recurse-submodules",
+        remote,
+    ];
+    let inherited = std::env::var_os("GIT_CONFIG_COUNT");
+    let follow = follows_remote_head(project)
+        .then(|| follow_head_env(inherited.as_deref(), remote))
+        .flatten();
+    if let Some(envs) = follow {
+        let envs: Vec<(&str, &str)> = envs
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        bounded_git_env(project, &fetch, &envs)?;
+        return Ok(true);
     }
-    Ok(())
+    // Git before 2.48 (or a malformed inherited count we will not rewrite): ask the remote
+    // separately. Its failure keeps the cached default and is reported, never certified.
+    bounded_git(project, &fetch)?;
+    Ok(bounded_git(project, &["remote", "set-head", remote, "--auto"]).is_ok())
+}
+
+/// `remote.<remote>.followRemoteHEAD=always` appended after any `GIT_CONFIG_*` entries the
+/// caller's environment already carries (an absent or empty count is zero). A malformed
+/// count is left alone: rewriting it would change how Git reads the caller's own entries
+/// (Git itself rejects it), so the caller falls back to `remote set-head`.
+fn follow_head_env(
+    inherited: Option<&std::ffi::OsStr>,
+    remote: &str,
+) -> Option<[(String, String); 3]> {
+    let index = match inherited.map(|count| count.to_str()) {
+        None => 0,
+        Some(Some("")) => 0,
+        Some(Some(count)) => count.parse::<usize>().ok()?,
+        Some(None) => return None,
+    };
+    Some([
+        ("GIT_CONFIG_COUNT".into(), (index + 1).to_string()),
+        (
+            format!("GIT_CONFIG_KEY_{index}"),
+            format!("remote.{remote}.followRemoteHEAD"),
+        ),
+        (format!("GIT_CONFIG_VALUE_{index}"), "always".into()),
+    ])
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests force either remote-HEAD path regardless of the installed Git.
+    static FOLLOWS_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+fn follows_remote_head(project: &Path) -> bool {
+    #[cfg(test)]
+    if let Some(forced) = FOLLOWS_OVERRIDE.with(std::cell::Cell::get) {
+        return forced;
+    }
+    git_follows_remote_head(project)
 }
 
 fn git_follows_remote_head(project: &Path) -> bool {
@@ -624,11 +715,17 @@ pub fn resolve(project: &Path, explicit: Option<&str>) -> Result<ResolvedBase, S
         target
     } else {
         selected_remote = Some("origin".into());
-        // Every windowed fetch refreshes origin/HEAD with the branches (an existing local
-        // symbolic ref can be stale after the hosting service changes its default), so a
-        // reused fetch's default is as fresh as its refs.
-        if let Err(reason) = fetch_remote(project, "origin") {
-            warning = Some(format!("{reason}; using cached origin default ref"));
+        // Refresh origin/HEAD with the branches: an existing local symbolic ref can be stale
+        // after the hosting service changes its default. The window is reused only when its
+        // fetch refreshed the default too.
+        match fetch_remote_with_head(project, "origin") {
+            Err(reason) => {
+                warning = Some(format!("{reason}; using cached origin default ref"));
+            }
+            Ok(FetchOutcome::FetchedStaleHead) => {
+                warning = Some("could not refresh origin/HEAD; using cached default ref".into());
+            }
+            Ok(FetchOutcome::Fetched | FetchOutcome::Reused) => {}
         }
         default_ref(project)?
     };
@@ -716,21 +813,21 @@ mod tests {
         let count = AtomicUsize::new(0);
         let fetch = || {
             count.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+            Ok(true)
         };
         assert_eq!(
-            gated_fetch(&key, None, || start, true, fetch),
+            gated_fetch(&key, None, || start, FetchNeed::Refs, fetch),
             Ok(FetchOutcome::Fetched)
         );
         let later = start + Duration::from_secs(59);
         assert_eq!(
-            gated_fetch(&key, None, || later, true, fetch),
+            gated_fetch(&key, None, || later, FetchNeed::Refs, fetch),
             Ok(FetchOutcome::Reused)
         );
         assert_eq!(count.load(Ordering::SeqCst), 1);
         let expired = start + FETCH_WINDOW;
         assert_eq!(
-            gated_fetch(&key, None, || expired, true, fetch),
+            gated_fetch(&key, None, || expired, FetchNeed::Refs, fetch),
             Ok(FetchOutcome::Fetched)
         );
         assert_eq!(count.load(Ordering::SeqCst), 2);
@@ -743,11 +840,11 @@ mod tests {
         let count = AtomicUsize::new(0);
         let fetch = || {
             count.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+            Ok(true)
         };
-        gated_fetch(&key, None, || now, true, fetch).unwrap();
+        gated_fetch(&key, None, || now, FetchNeed::Refs, fetch).unwrap();
         assert_eq!(
-            gated_fetch(&key, None, || now, false, fetch),
+            gated_fetch(&key, None, || now, FetchNeed::Now, fetch),
             Ok(FetchOutcome::Fetched)
         );
         assert_eq!(count.load(Ordering::SeqCst), 2);
@@ -762,8 +859,8 @@ mod tests {
             count.fetch_add(1, Ordering::SeqCst);
             Err("fetch failed".to_string())
         };
-        assert!(gated_fetch(&key, None, || now, true, fail).is_err());
-        assert!(gated_fetch(&key, None, || now, true, fail).is_err());
+        assert!(gated_fetch(&key, None, || now, FetchNeed::Refs, fail).is_err());
+        assert!(gated_fetch(&key, None, || now, FetchNeed::Refs, fail).is_err());
         assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 
@@ -777,7 +874,7 @@ mod tests {
             let key = key.clone();
             let count = Arc::clone(&count);
             std::thread::spawn(move || {
-                gated_fetch(&key, None, SystemTime::now, true, || {
+                gated_fetch(&key, None, SystemTime::now, FetchNeed::Refs, || {
                     count.fetch_add(1, Ordering::SeqCst);
                     started_tx.send(()).unwrap();
                     release_rx.recv().unwrap();
@@ -790,9 +887,9 @@ mod tests {
             let key = key.clone();
             let count = Arc::clone(&count);
             std::thread::spawn(move || {
-                gated_fetch(&key, None, SystemTime::now, true, || {
+                gated_fetch(&key, None, SystemTime::now, FetchNeed::Refs, || {
                     count.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
+                    Ok(true)
                 })
             })
         };
@@ -815,23 +912,255 @@ mod tests {
         ));
         let key = key("stamps");
         let now = SystemTime::now();
-        assert!(!stamp_fresh(&dir, &key, now));
-        write_stamp(&dir, &key, now);
-        assert!(stamp_fresh(&dir, &key, now + Duration::from_secs(30)));
-        assert!(!stamp_fresh(&dir, &key, now + FETCH_WINDOW));
+        assert!(!stamp_fresh(&dir, &stamp_name(&key), now));
+        write_stamp(&dir, &[stamp_name(&key)], now);
+        assert!(stamp_fresh(
+            &dir,
+            &stamp_name(&key),
+            now + Duration::from_secs(30)
+        ));
+        assert!(!stamp_fresh(&dir, &stamp_name(&key), now + FETCH_WINDOW));
         // A fresh in-memory slot for the same key (a new process) reuses the stamp.
         let other = key.clone();
         FETCHES.lock().unwrap().remove(&other);
         let count = AtomicUsize::new(0);
         let fetch = || {
             count.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+            Ok(true)
         };
         assert_eq!(
-            gated_fetch(&other, Some(&dir), || now, true, fetch),
+            gated_fetch(&other, Some(&dir), || now, FetchNeed::Refs, fetch),
             Ok(FetchOutcome::Reused)
         );
         assert_eq!(count.load(Ordering::SeqCst), 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_fetch_that_left_the_default_stale_never_serves_default_resolution() {
+        let key = key("stale-head");
+        let now = SystemTime::now();
+        let count = AtomicUsize::new(0);
+        let refs_only = || {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok(false)
+        };
+        assert_eq!(
+            gated_fetch(&key, None, || now, FetchNeed::Refs, refs_only),
+            Ok(FetchOutcome::FetchedStaleHead)
+        );
+        assert_eq!(
+            gated_fetch(&key, None, || now, FetchNeed::Refs, refs_only),
+            Ok(FetchOutcome::Reused),
+            "branches are fresh"
+        );
+        assert_eq!(
+            gated_fetch(&key, None, || now, FetchNeed::RefsAndHead, refs_only),
+            Ok(FetchOutcome::FetchedStaleHead),
+            "the default is not"
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        let with_head = || {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok(true)
+        };
+        gated_fetch(&key, None, || now, FetchNeed::RefsAndHead, with_head).unwrap();
+        assert_eq!(
+            gated_fetch(&key, None, || now, FetchNeed::RefsAndHead, with_head),
+            Ok(FetchOutcome::Reused)
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn a_stale_default_is_not_stamped_for_other_processes() {
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "tsk-head-stamps-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let key = key("head-stamps");
+        let now = SystemTime::now();
+        gated_fetch(&key, Some(&dir), || now, FetchNeed::Refs, || Ok(false)).unwrap();
+        FETCHES.lock().unwrap().remove(&key);
+        let count = AtomicUsize::new(0);
+        let fetch = || {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok(true)
+        };
+        assert_eq!(
+            gated_fetch(&key, Some(&dir), || now, FetchNeed::Refs, fetch),
+            Ok(FetchOutcome::Reused)
+        );
+        assert_eq!(
+            gated_fetch(&key, Some(&dir), || now, FetchNeed::RefsAndHead, fetch),
+            Ok(FetchOutcome::Fetched)
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn follow_head_config_appends_after_inherited_entries() {
+        use std::ffi::OsStr;
+        let entry = |inherited: Option<&OsStr>| follow_head_env(inherited, "origin");
+        let expect = |index: usize| {
+            Some([
+                ("GIT_CONFIG_COUNT".to_string(), (index + 1).to_string()),
+                (
+                    format!("GIT_CONFIG_KEY_{index}"),
+                    "remote.origin.followRemoteHEAD".to_string(),
+                ),
+                (format!("GIT_CONFIG_VALUE_{index}"), "always".to_string()),
+            ])
+        };
+        assert_eq!(entry(None), expect(0));
+        assert_eq!(entry(Some(OsStr::new(""))), expect(0));
+        assert_eq!(entry(Some(OsStr::new("2"))), expect(2));
+        // Malformed: leave the caller's environment alone and use `remote set-head`.
+        assert_eq!(entry(Some(OsStr::new("two"))), None);
+        assert_eq!(entry(Some(OsStr::new("-1"))), None);
+    }
+
+    struct Repos {
+        root: std::path::PathBuf,
+        local: std::path::PathBuf,
+    }
+
+    impl Drop for Repos {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
+    /// A clone whose remote default then moves to `trunk`, unseen by the clone.
+    fn moved_default() -> Repos {
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "tsk-head-repos-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let (remote, local) = (root.join("remote"), root.join("local"));
+        std::fs::create_dir_all(&remote).unwrap();
+        git(&remote, &["init", "-q", "-b", "main"]);
+        git(&remote, &["config", "user.email", "test@example.com"]);
+        git(&remote, &["config", "user.name", "test"]);
+        git(&remote, &["commit", "-q", "--allow-empty", "-m", "initial"]);
+        git(
+            &root,
+            &[
+                "clone",
+                "-q",
+                remote.to_str().unwrap(),
+                local.to_str().unwrap(),
+            ],
+        );
+        git(&remote, &["branch", "trunk"]);
+        git(&remote, &["symbolic-ref", "HEAD", "refs/heads/trunk"]);
+        Repos { root, local }
+    }
+
+    /// Route the clone's upload-pack through a wrapper that counts calls and fails every
+    /// call after the first `ok_calls`.
+    #[cfg(unix)]
+    fn counted_upload_pack(repos: &Repos, ok_calls: usize) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let counter = repos.root.join("upload-count");
+        let wrapper = repos.root.join("upload-pack");
+        std::fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nprintf 'x\\n' >> '{counter}'\nif [ $(wc -l < '{counter}') -gt {ok_calls} ]; then exit 1; fi\nexec git-upload-pack \"$@\"\n",
+                counter = counter.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        git(
+            &repos.local,
+            &[
+                "config",
+                "remote.origin.uploadpack",
+                wrapper.to_str().unwrap(),
+            ],
+        );
+        counter
+    }
+
+    #[cfg(unix)]
+    fn calls(counter: &Path) -> usize {
+        std::fs::read_to_string(counter)
+            .map(|text| text.lines().count())
+            .unwrap_or(0)
+    }
+
+    fn origin_head(repos: &Repos) -> String {
+        git(&repos.local, &["symbolic-ref", "refs/remotes/origin/HEAD"])
+    }
+
+    #[test]
+    fn the_legacy_path_refreshes_the_remote_default_with_set_head() {
+        FOLLOWS_OVERRIDE.with(|forced| forced.set(Some(false)));
+        let repos = moved_default();
+        fetch_remote(&repos.local, "origin").unwrap();
+        FOLLOWS_OVERRIDE.with(|forced| forced.set(None));
+        assert_eq!(origin_head(&repos), "refs/remotes/origin/trunk");
+        let base = resolve(&repos.local, None).unwrap();
+        assert_eq!(base.reference, "origin/trunk");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_legacy_set_head_is_reported_and_never_certifies_the_default() {
+        FOLLOWS_OVERRIDE.with(|forced| forced.set(Some(false)));
+        let repos = moved_default();
+        // The fetch succeeds; set-head (the second upload-pack call) and later calls fail.
+        let counter = counted_upload_pack(&repos, 1);
+        fetch_remote(&repos.local, "origin").unwrap();
+        assert_eq!(calls(&counter), 2);
+        assert_eq!(origin_head(&repos), "refs/remotes/origin/main");
+        let base = resolve(&repos.local, None).unwrap();
+        FOLLOWS_OVERRIDE.with(|forced| forced.set(None));
+        assert_eq!(
+            calls(&counter),
+            3,
+            "default resolution fetches again instead of reusing a stale default"
+        );
+        assert!(base
+            .warning
+            .is_some_and(|warning| warning.contains("cached")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_follow_path_refreshes_the_remote_default_inside_the_fetch() {
+        if !git_follows_remote_head(Path::new(".")) {
+            return; // needs Git 2.48+; the legacy path has its own tests
+        }
+        FOLLOWS_OVERRIDE.with(|forced| forced.set(Some(true)));
+        let repos = moved_default();
+        let counter = counted_upload_pack(&repos, usize::MAX >> 1);
+        let outcome = fetch_remote_outcome(&repos.local, "origin");
+        FOLLOWS_OVERRIDE.with(|forced| forced.set(None));
+        assert_eq!(outcome, Ok(FetchOutcome::Fetched));
+        assert_eq!(calls(&counter), 1, "no separate set-head round trip");
+        assert_eq!(origin_head(&repos), "refs/remotes/origin/trunk");
     }
 }

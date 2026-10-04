@@ -836,3 +836,51 @@ fn two_tsk_processes_on_one_state_dir_share_one_fetch() {
         "the second process reuses the first one's fetch"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn inherited_git_config_entries_survive_the_remote_default_refresh() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = repo();
+    git(&r.remote, &["branch", "trunk"]);
+    git(&r.remote, &["symbolic-ref", "HEAD", "refs/heads/trunk"]);
+    let counter = r.root.join("inherited-upload-count");
+    let upload = r.root.join("inherited-upload");
+    std::fs::write(
+        &upload,
+        format!(
+            "#!/bin/sh\nprintf 'fetch\\n' >> '{}'\nexec git-upload-pack \"$@\"\n",
+            counter.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&upload, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let state = r.root.join("state");
+    // The caller's own entry 0 routes upload-pack; tsk must append, not overwrite it.
+    let output = Command::new(env!("CARGO_BIN_EXE_tsk"))
+        .args(["add", "--state-dir"])
+        .arg(&state)
+        .arg("-p")
+        .arg(&r.local)
+        .args(["-t", "inherited", "--base", "origin/main"])
+        .env("TSK_NO_UPDATE_CHECK", "1")
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "remote.origin.uploadpack")
+        .env("GIT_CONFIG_VALUE_0", &upload)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        std::fs::read_to_string(&counter).is_ok_and(|text| text.lines().count() >= 1),
+        "the inherited config entry was honoured"
+    );
+    assert_eq!(
+        git(&r.local, &["symbolic-ref", "refs/remotes/origin/HEAD"]),
+        "refs/remotes/origin/trunk",
+        "and the remote default was refreshed alongside it"
+    );
+}
