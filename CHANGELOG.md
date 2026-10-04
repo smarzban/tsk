@@ -9,6 +9,10 @@ the GitHub release notes verbatim.
 
 ## Unreleased
 
+### Fixed
+
+- The task page's project chooser lists options top to bottom, so `↓` moves the highlight down instead of up.
+
 ## v0.11.6
 
 ### Added
