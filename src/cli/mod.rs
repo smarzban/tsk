@@ -88,6 +88,14 @@ where
     }
 }
 
+/// Verbs that may fetch a base's remote share the fetch window with later `tsk` processes.
+fn share_fetch_window(state_dir: &Option<std::path::PathBuf>) {
+    let dir = state_dir
+        .clone()
+        .unwrap_or_else(crate::store::default_state_dir);
+    crate::git_base::remember_fetches_in(&dir);
+}
+
 fn run_help(args: Vec<String>) -> CliOutput {
     match args.get(2..).unwrap_or(&[]) {
         [] => CliOutput {
@@ -144,6 +152,7 @@ fn run_dispatch(args: Vec<String>) -> CliOutput {
     let Some(task) = input.task else {
         return presenter::dispatch_usage("task number is required");
     };
+    share_fetch_window(&input.state_dir);
     match dispatch::run(task, input.again, input.base, input.state_dir) {
         Ok(result) => presenter::dispatched(result),
         Err(error) => presenter::dispatch_rejected(error, task),
@@ -161,6 +170,7 @@ fn run_clean(args: Vec<String>) -> CliOutput {
     let Some(task) = input.task else {
         return presenter::clean_usage("task number is required");
     };
+    share_fetch_window(&input.state_dir);
     match clean::run(task, input.state_dir) {
         Ok(result) => presenter::cleaned(result, input.json),
         Err(error) => presenter::clean_rejected(error, task),
@@ -187,6 +197,7 @@ fn run_status(args: Vec<String>) -> CliOutput {
         Ok(result) => {
             let mut output = presenter::status(result);
             if input.clean {
+                share_fetch_window(&state_dir);
                 match clean::run(task, state_dir) {
                     Ok(result) => output
                         .stdout
@@ -236,6 +247,9 @@ fn run_edit(args: Vec<String>) -> CliOutput {
     } else {
         input.base.map(Some)
     };
+    if matches!(base, Some(Some(_))) {
+        share_fetch_window(&input.state_dir);
+    }
     match edit::run(
         task,
         edit::EditFields {
@@ -335,6 +349,7 @@ fn run_add<R: Read>(args: Vec<String>, stdin: &mut R, stdin_is_tty: bool) -> Cli
         return presenter::add_help();
     }
 
+    share_fetch_window(&input.state_dir);
     if input.has_item_flags {
         if input.title.is_none() {
             return presenter::usage("title is required");

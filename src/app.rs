@@ -195,6 +195,7 @@ pub fn board_frame(
     active_animations: bool,
 ) -> io::Result<FramePoll> {
     model.poll_base_picker_results();
+    model.poll_cleanup_check();
     paint(model)?;
     if wait(board_poll_duration(active_animations))? {
         Ok(FramePoll::Event)
@@ -291,6 +292,7 @@ fn run_capture() -> Result<(), Box<dyn Error>> {
 
 fn run_board() -> Result<(), Box<dyn Error>> {
     let (store, domain, model) = load_board()?;
+    crate::git_base::remember_fetches_in(store.path());
     run_board_loop(store, domain, model, false)
 }
 
@@ -334,8 +336,10 @@ fn run_board_loop(
         // after one settled-size paint so a key typed mid-drag is not dropped.
         let mut pending_event: Option<Event> = None;
         loop {
-            // Apply completed branch discovery only on the board thread, before painting.
+            // Apply completed branch discovery and cleanup checks only on the board thread,
+            // before painting.
             model.poll_base_picker_results();
+            model.poll_cleanup_check();
             // Settle, paint, then wait. The wait is only the Frame Scheduler's idle floor.
             // All three are one call so the frame is painted before the wait can time out into
             // the `continue` below.
@@ -1982,7 +1986,8 @@ pub fn offer_cleanup_prompt_with_host(
     if record.cleaned {
         return Ok(CleanupOffer::None);
     }
-    let preview = dispatch::inspect_cleanup_with_host(domain, id, in_herdr, host)?;
+    // Cached refs only: the card opens at once and a background check fills merged status.
+    let preview = dispatch::inspect_cleanup_cached_with_host(domain, id, in_herdr, host)?;
     if !preview.inspection.worktree_exists {
         domain
             .record_dispatch_cleaned(id)
@@ -2002,7 +2007,12 @@ pub fn offer_cleanup_prompt_with_host(
             workspace_removed: false,
         }));
     }
+    let has_base = preview.record.base.is_some() || preview.record.base_ref.is_some();
+    let merge_check = has_base
+        .then(|| host.begin_merge_check(&preview.project, &preview.record))
+        .flatten();
     model.begin_cleanup_prompt(CleanupPrompt {
+        merge_check,
         task_id: id,
         worktree: preview.record.worktree,
         branch: preview.record.branch,

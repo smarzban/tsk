@@ -15,7 +15,9 @@ use tsk_tui::app::{
     CleanupOffer,
 };
 use tsk_tui::context::InvocationSnapshot;
-use tsk_tui::dispatch::{CleanupError, CleanupInspection, CreatedWorktree, DispatchHost};
+use tsk_tui::dispatch::{
+    CleanupError, CleanupInspection, CreatedWorktree, DispatchHost, MergeCheck, MergeVerdict,
+};
 use tsk_tui::domain::{
     Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskEventKind, TaskScope,
 };
@@ -23,7 +25,7 @@ use tsk_tui::store::TaskStore;
 use tsk_tui::ui::board::{
     apply_intent, board_hit_map, board_intent_may_persist, board_verb_items, draw_board,
     resolve_board_command, BoardInputMode, BoardModel, CleanupPrompt, CommandSurface,
-    IntentOutcome, ListPickerKind, ProjectScopeOption,
+    IntentOutcome, ListPickerKind, ProjectScopeOption, REFRESHING_BRANCHES,
 };
 use tsk_tui::ui::capture::CaptureField;
 use tsk_tui::ui::input::{
@@ -109,9 +111,16 @@ fn git_repo_with_branch(label: &str) -> PathBuf {
     root
 }
 
+/// Wait out the picker's background refresh, if it started one.
 fn await_base_picker(model: &mut BoardModel) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !model.poll_base_picker_results() {
+    let refreshing = |model: &BoardModel| {
+        model
+            .visible_list_picker_options()
+            .iter()
+            .any(|(_, option)| option.label == REFRESHING_BRANCHES)
+    };
+    while refreshing(model) && !model.poll_base_picker_results() {
         assert!(
             std::time::Instant::now() < deadline,
             "branch picker lookup timed out"
@@ -249,6 +258,7 @@ fn dispatch_key_and_palette_route_to_the_cursor_only_verb() {
 fn cleanup_popup_maps_explicit_choices_and_paints_the_guardrail_state() {
     let (_, mut model, id) = board_with_task("clean me", HumanStatus::Started);
     model.begin_cleanup_prompt(CleanupPrompt {
+        merge_check: None,
         task_id: id,
         worktree: "/tmp/tsk-t1-clean-me".into(),
         branch: "tsk/t1-clean-me".into(),
@@ -398,6 +408,188 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
     store
         .reload_merge_save(&mut domain)
         .expect("cleanup and completion retain the original save merge base");
+    std::fs::remove_dir_all(dir).expect("cleanup temp store");
+}
+
+/// A host whose cached-ref inspection and network-refreshed inspection disagree, with a
+/// merged check the test completes by hand.
+struct MergeCheckHost {
+    cached: CleanupInspection,
+    fetched: CleanupInspection,
+    check: MergeCheck,
+    deleted: usize,
+}
+
+impl DispatchHost for MergeCheckHost {
+    fn is_git_repo(&mut self, _: &Path) -> Result<bool, String> {
+        Ok(true)
+    }
+
+    fn create_worktree(
+        &mut self,
+        _: &Path,
+        _: &str,
+        _: Option<&str>,
+        _: &str,
+    ) -> Result<CreatedWorktree, String> {
+        Err("not used".into())
+    }
+
+    fn inspect_cleanup(
+        &mut self,
+        _: &Path,
+        _: &Dispatch,
+        _: bool,
+    ) -> Result<CleanupInspection, String> {
+        Ok(self.fetched.clone())
+    }
+
+    fn inspect_cleanup_cached(
+        &mut self,
+        _: &Path,
+        _: &Dispatch,
+        _: bool,
+    ) -> Result<CleanupInspection, String> {
+        Ok(self.cached.clone())
+    }
+
+    fn begin_merge_check(&mut self, _: &Path, _: &Dispatch) -> Option<MergeCheck> {
+        Some(self.check.clone())
+    }
+
+    fn remove_herdr_worktree(&mut self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn delete_branch(&mut self, _: &Path, _: &str) -> Result<(), String> {
+        self.deleted += 1;
+        Ok(())
+    }
+
+    fn root_pane(&mut self, _: &str) -> Result<String, String> {
+        Err("not used".into())
+    }
+
+    fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
+        Err("not used".into())
+    }
+}
+
+fn dispatched_board_for_merge_check(label: &str) -> (DomainState, BoardModel, uuid::Uuid, PathBuf) {
+    let (mut domain, mut model, id) = board_with_task(label, HumanStatus::Started);
+    domain
+        .record_dispatch(
+            id,
+            Dispatch {
+                argv: vec!["agent".into()],
+                worktree: format!("/tmp/{label}"),
+                branch: format!("tsk/t1-{label}"),
+                base: Some("origin/main".into()),
+                base_commit: None,
+                base_remote: Some("origin".into()),
+                base_ref: Some("refs/remotes/origin/main".into()),
+                herdr_workspace_id: "w1".into(),
+                at: SystemTime::now(),
+                cleaned: false,
+            },
+        )
+        .expect("dispatch");
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cleanup-check-{label}-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).expect("temp store");
+    let store = TaskStore::new(&dir);
+    store.save(&domain).expect("number tasks");
+    domain = store.load().expect("reload numbered tasks");
+    model.sync_from_domain(&domain);
+    (domain, model, id, dir)
+}
+
+fn merge_check_host(cached_merged: bool, fetched_merged: bool) -> MergeCheckHost {
+    let inspection = |branch_merged| CleanupInspection {
+        worktree_exists: true,
+        dirty: false,
+        branch_merged,
+        workspace_exists: true,
+        target_matches: true,
+        warning: None,
+        base_available: true,
+    };
+    MergeCheckHost {
+        cached: inspection(cached_merged),
+        fetched: inspection(fetched_merged),
+        check: MergeCheck::default(),
+        deleted: 0,
+    }
+}
+
+#[test]
+fn cleanup_card_opens_from_cached_refs_and_a_background_check_fills_merged_status() {
+    let (mut domain, mut model, id, dir) = dispatched_board_for_merge_check("card-check");
+    let mut host = merge_check_host(false, true);
+    assert_eq!(
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            .expect("offer"),
+        CleanupOffer::Prompted
+    );
+    assert!(model.cleanup_prompt().unwrap().checking());
+    let screen = rendered_board(&model, 100, 30);
+    assert!(
+        screen.contains("base origin/main · checking…"),
+        "card paints before the fetch lands:\n{screen}"
+    );
+    assert!(!screen.contains("squash-merged"), "{screen}");
+    assert!(!model.poll_cleanup_check(), "nothing to apply yet");
+
+    host.check.complete(MergeVerdict {
+        branch_merged: true,
+        base_available: true,
+        warning: None,
+    });
+    assert!(model.poll_cleanup_check());
+    assert!(!model.cleanup_prompt().unwrap().checking());
+    let screen = rendered_board(&model, 100, 30);
+    assert!(screen.contains("base origin/main · merged ✓"), "{screen}");
+
+    // Esc drops the check with its card; a late verdict reaches no other prompt.
+    apply_intent(&mut domain, &mut model, BoardIntent::CancelCleanup, None).expect("cancel");
+    host.check = MergeCheck::default();
+    offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host).expect("reoffer");
+    let stale = host.check.clone();
+    apply_intent(&mut domain, &mut model, BoardIntent::CancelCleanup, None).expect("cancel");
+    stale.complete(MergeVerdict {
+        branch_merged: true,
+        base_available: true,
+        warning: None,
+    });
+    assert!(!model.poll_cleanup_check());
+    assert!(model.cleanup_prompt().is_none());
+    std::fs::remove_dir_all(dir).expect("cleanup temp store");
+}
+
+#[test]
+fn cleanup_confirmed_while_checking_never_deletes_on_the_cached_verdict() {
+    // Cached refs say merged; the refreshed inspection `y` runs says not merged.
+    let (mut domain, mut model, id, dir) = dispatched_board_for_merge_check("confirm-early");
+    let mut host = merge_check_host(true, false);
+    offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host).expect("offer");
+    assert!(model.cleanup_prompt().unwrap().checking());
+    let result = cleanup_and_complete_with_host(&mut domain, &mut model, true, true, &mut host)
+        .expect("completion")
+        .expect("cleanup attempted")
+        .expect("cleanup ran");
+    assert_eq!(
+        host.deleted, 0,
+        "an unconfirmed merge never deletes the branch"
+    );
+    assert_eq!(
+        result.branch_reason,
+        Some(tsk_tui::dispatch::BranchRetentionReason::NotMerged)
+    );
+    assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
     std::fs::remove_dir_all(dir).expect("cleanup temp store");
 }
 
@@ -874,7 +1066,7 @@ fn palette_assignment_applies_to_marked_tasks_as_one_undoable_batch() {
 }
 
 #[test]
-fn base_picker_opens_with_a_disabled_loading_row_and_cancels_immediately() {
+fn base_picker_opens_on_cached_branches_with_a_disabled_refreshing_row_and_cancels_immediately() {
     let repo = git_repo_with_branch("loading");
     // An inaccessible transport exercises the picker fetch without any caller environment changes.
     let output = Command::new("git")
@@ -920,19 +1112,23 @@ fn base_picker_opens_with_a_disabled_loading_row_and_cancels_immediately() {
     let started = std::time::Instant::now();
     apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
     assert!(started.elapsed() < std::time::Duration::from_millis(500));
-    let rows = model.visible_list_picker_options();
-    assert_eq!(rows.len(), 2);
-    assert!(rows[1].1.label.contains("loading branches"));
-    apply_intent(&mut domain, &mut model, BoardIntent::ListPickerNext, None).unwrap();
+    // Cached refs paint at once, before the (slow, failing) fetch has returned.
+    let labels: Vec<String> = model
+        .visible_list_picker_options()
+        .into_iter()
+        .map(|(_, option)| option.label)
+        .collect();
+    assert_eq!(&labels[1..], ["dispatch", "main", REFRESHING_BRANCHES]);
+    apply_intent(&mut domain, &mut model, BoardIntent::ListPickerPrev, None).unwrap();
     assert_eq!(
         model.list_picker_selected(),
-        0,
-        "loading is not a selectable branch"
+        2,
+        "refreshing is not a selectable branch"
     );
     apply_intent(
         &mut domain,
         &mut model,
-        BoardIntent::SelectListOption(1),
+        BoardIntent::SelectListOption(3),
         None,
     )
     .unwrap();
@@ -954,6 +1150,124 @@ fn base_picker_opens_with_a_disabled_loading_row_and_cancels_immediately() {
     assert!(cancelled.elapsed() < std::time::Duration::from_millis(500));
     assert_eq!(model.input_mode(), BoardInputMode::Normal);
     // Bounded worker owns this path after cancel; removing it is safe for its error result.
+    std::fs::remove_dir_all(repo).unwrap();
+}
+
+#[test]
+fn base_picker_refreshes_in_place_after_its_fetch_and_keeps_the_users_selection() {
+    let repo = git_repo_with_branch("refresh");
+    let remote = repo.with_extension("remote.git");
+    let git = |args: &[&str]| {
+        assert!(Command::new("git").args(args).status().unwrap().success());
+    };
+    git(&[
+        "clone",
+        "-q",
+        "--bare",
+        repo.to_str().unwrap(),
+        remote.to_str().unwrap(),
+    ]);
+    git(&[
+        "-C",
+        repo.to_str().unwrap(),
+        "remote",
+        "add",
+        "origin",
+        remote.to_str().unwrap(),
+    ]);
+    let mut domain = DomainState::new();
+    domain
+        .create(
+            "refresh task",
+            None,
+            project(&repo.to_string_lossy()),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    let mut model = BoardModel::from_domain(&domain, Some(repo.clone()));
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
+    let labels = |model: &BoardModel| -> Vec<String> {
+        model
+            .visible_list_picker_options()
+            .into_iter()
+            .map(|(_, option)| option.label)
+            .collect()
+    };
+    assert_eq!(
+        &labels(&model)[1..],
+        ["dispatch", "main", REFRESHING_BRANCHES]
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::ListPickerNext, None).unwrap();
+    apply_intent(&mut domain, &mut model, BoardIntent::ListPickerNext, None).unwrap();
+    await_base_picker(&mut model);
+    assert_eq!(
+        &labels(&model)[1..],
+        ["dispatch", "main", "origin/dispatch", "origin/main"]
+    );
+    assert_eq!(
+        model.selected_list_picker_option().unwrap().1.label,
+        "main",
+        "the refresh keeps the user's choice"
+    );
+
+    // Inside the fetch window a reopen is already current: no refresh row, no second fetch.
+    apply_intent(&mut domain, &mut model, BoardIntent::CancelListPicker, None).unwrap();
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
+    assert_eq!(
+        &labels(&model)[1..],
+        ["dispatch", "main", "origin/dispatch", "origin/main"]
+    );
+    std::fs::remove_dir_all(repo).unwrap();
+    std::fs::remove_dir_all(remote).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn base_picker_reports_an_offline_refresh_and_keeps_cached_branches() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = git_repo_with_branch("offline");
+    let upload = repo.join("failing-upload");
+    std::fs::write(&upload, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&upload, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for args in [
+        vec!["remote", "add", "origin", repo.to_str().unwrap()],
+        vec![
+            "config",
+            "remote.origin.uploadpack",
+            upload.to_str().unwrap(),
+        ],
+    ] {
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(args)
+            .status()
+            .unwrap()
+            .success());
+    }
+    let mut domain = DomainState::new();
+    domain
+        .create(
+            "offline task",
+            None,
+            project(&repo.to_string_lossy()),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    let mut model = BoardModel::from_domain(&domain, Some(repo.clone()));
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
+    await_base_picker(&mut model);
+    let labels: Vec<String> = model
+        .visible_list_picker_options()
+        .into_iter()
+        .map(|(_, option)| option.label)
+        .collect();
+    assert_eq!(
+        &labels[1..],
+        ["dispatch", "main", tsk_tui::git_base::OFFLINE_BRANCHES]
+    );
     std::fs::remove_dir_all(repo).unwrap();
 }
 
@@ -7297,7 +7611,7 @@ fn base_picker_reopen_reuses_one_in_flight_worker_for_the_project() {
     while model
         .visible_list_picker_options()
         .iter()
-        .any(|(_, option)| option.label == "loading branches")
+        .any(|(_, option)| option.label == REFRESHING_BRANCHES)
     {
         assert!(std::time::Instant::now() < deadline);
         model.poll_base_picker_results();

@@ -600,3 +600,109 @@ fn dispatch_exact_base_ref_is_optional_in_v6_and_round_trips() {
         serde_json::from_value(serde_json::to_value(&dispatch).unwrap()).unwrap();
     assert_eq!(loaded.base_ref, dispatch.base_ref);
 }
+
+#[test]
+fn fetch_window_reuses_a_fetch_from_the_last_minute() {
+    let r = repo();
+    assert!(!fetch_is_fresh(&r.local, "origin"));
+    assert_eq!(
+        fetch_remote_outcome(&r.local, "origin"),
+        Ok(FetchOutcome::Fetched)
+    );
+    assert!(fetch_is_fresh(&r.local, "origin"));
+    git(&r.remote, &["branch", "pushed-after-fetch"]);
+    assert_eq!(
+        fetch_remote_outcome(&r.local, "origin"),
+        Ok(FetchOutcome::Reused)
+    );
+    assert!(!list_cached_branches(&r.local)
+        .unwrap()
+        .contains(&"origin/pushed-after-fetch".to_string()));
+    // A repository without the remote never waits on a fetch it cannot run.
+    assert!(fetch_is_fresh(&r.local, "upstream"));
+}
+
+#[cfg(unix)]
+#[test]
+fn cleanup_confirmed_during_a_background_check_waits_for_that_one_fetch() {
+    use std::os::unix::fs::PermissionsExt;
+    use tsk_tui::dispatch::{DispatchHost, SystemDispatchHost};
+    use tsk_tui::domain::Dispatch;
+    let r = repo();
+    let worktree = r.root.join("checking-worktree");
+    git(
+        &r.local,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "tsk/checking",
+            worktree.to_str().unwrap(),
+            "origin/main",
+        ],
+    );
+    let counter = r.root.join("upload-count");
+    let upload = r.root.join("counted-upload");
+    std::fs::write(
+        &upload,
+        format!(
+            "#!/bin/sh\nprintf 'fetch\\n' >> '{}'\nsleep 1\nexit 1\n",
+            counter.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&upload, std::fs::Permissions::from_mode(0o700)).unwrap();
+    git(
+        &r.local,
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            upload.to_str().unwrap(),
+        ],
+    );
+    let record = Dispatch {
+        argv: vec![],
+        worktree: worktree.to_string_lossy().into_owned(),
+        branch: "tsk/checking".into(),
+        base: Some("origin/main".into()),
+        base_ref: Some("refs/remotes/origin/main".into()),
+        base_commit: None,
+        base_remote: Some("origin".into()),
+        herdr_workspace_id: "not-used".into(),
+        at: std::time::SystemTime::now(),
+        cleaned: false,
+    };
+    let mut host = SystemDispatchHost;
+    let cached = host
+        .inspect_cleanup_cached(&r.local, &record, false)
+        .unwrap();
+    assert!(cached.branch_merged && cached.warning.is_none());
+    assert!(!counter.exists(), "cached inspection never fetches");
+    let check = host
+        .begin_merge_check(&r.local, &record)
+        .expect("background check starts");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !counter.exists() {
+        assert!(std::time::Instant::now() < deadline, "fetch did not start");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // `y` arrives mid-fetch: its inspection waits for that fetch and shares its failure.
+    let confirmed = host.inspect_cleanup(&r.local, &record, false).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&counter).unwrap().lines().count(),
+        1
+    );
+    assert!(confirmed
+        .warning
+        .unwrap()
+        .contains("merged status computed from cached refs"));
+    let verdict = loop {
+        if let Some(verdict) = check.take() {
+            break verdict;
+        }
+        assert!(std::time::Instant::now() < deadline, "check did not land");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    assert!(verdict.branch_merged);
+    assert!(verdict.warning.unwrap().contains("cached refs"));
+}

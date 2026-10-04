@@ -13,4 +13,5 @@ pub use draw::{board_hit_map, board_verb_items, draw_board};
 pub use model::{
     project_option_label, BoardInputMode, BoardModel, BoardTab, CleanupPrompt, IntentOutcome,
     ListPickerKind, PickerTab, ProjectScopeOption, ProjectsView, SaveResolution, BOARD_TITLE,
+    REFRESHING_BRANCHES,
 };

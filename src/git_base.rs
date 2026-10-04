@@ -37,7 +37,13 @@ fn refresh_explicit_remote(project: &Path, base: &str) -> Option<(String, Result
         return None;
     }
     let remote = remote_for_ref(project, base)?;
-    let result = fetch_remote(project, &remote);
+    // The fetch window only covers refs already on disk: a branch named before tsk has
+    // seen it (pushed seconds ago) always gets a real fetch.
+    let result = if branch_ref(project, base).is_ok() {
+        fetch_remote(project, &remote)
+    } else {
+        fetch_remote_now(project, &remote)
+    };
     Some((remote, result))
 }
 
@@ -254,19 +260,221 @@ fn bounded_git(project: &Path, args: &[&str]) -> Result<(), String> {
     }
 }
 
+/// A remote tsk fetched successfully this recently is not fetched again: dispatch, the
+/// branch picker and cleanup share one window, so back-to-back surfaces pay one round trip.
+pub const FETCH_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Picker row while a background fetch fails: the list stays on the cached refs.
+pub const OFFLINE_BRANCHES: &str = "offline, showing cached branches";
+
+const FETCH_STAMPS_FILE: &str = "fetch-stamps.json";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchOutcome {
+    Fetched,
+    /// Inside the fetch window, or joined a fetch that finished while this caller waited.
+    Reused,
+}
+
+#[derive(Debug, Default)]
+struct FetchSlot {
+    last_success: Option<std::time::SystemTime>,
+    last_attempt: Option<(std::time::Instant, Result<(), String>)>,
+}
+
+type FetchKey = (std::path::PathBuf, String);
+
+/// One slot per repository and remote. Holding the slot's lock for the whole fetch is what
+/// serialises callers: a second surface waits for the running fetch and takes its result.
+static FETCHES: std::sync::LazyLock<
+    std::sync::Mutex<
+        std::collections::HashMap<FetchKey, std::sync::Arc<std::sync::Mutex<FetchSlot>>>,
+    >,
+> = std::sync::LazyLock::new(Default::default);
+
+/// State dir for the cross-process stamp file. Only the binary's entry points set it, so
+/// in-process tests never write beside a real store.
+static FETCH_STAMP_DIR: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+/// Share the fetch window with later `tsk` processes through `fetch-stamps.json` in `dir`.
+pub fn remember_fetches_in(dir: &Path) {
+    if let Ok(mut slot) = FETCH_STAMP_DIR.lock() {
+        *slot = Some(dir.to_path_buf());
+    }
+}
+
+fn fetch_key(project: &Path, remote: &str) -> FetchKey {
+    (
+        project
+            .canonicalize()
+            .unwrap_or_else(|_| project.to_path_buf()),
+        remote.to_string(),
+    )
+}
+
+fn fetch_slot(key: &FetchKey) -> std::sync::Arc<std::sync::Mutex<FetchSlot>> {
+    let mut slots = FETCHES.lock().unwrap_or_else(|poison| poison.into_inner());
+    std::sync::Arc::clone(slots.entry(key.clone()).or_default())
+}
+
+fn within_window(stamp: std::time::SystemTime, now: std::time::SystemTime) -> bool {
+    // A stamp from the future (clock moved back) is not trusted.
+    now.duration_since(stamp)
+        .is_ok_and(|age| age < FETCH_WINDOW)
+}
+
+fn stamp_name((project, remote): &FetchKey) -> String {
+    format!("{}\n{remote}", project.display())
+}
+
+fn read_stamps(dir: &Path) -> std::collections::BTreeMap<String, u64> {
+    std::fs::read_to_string(dir.join(FETCH_STAMPS_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn unix_secs(time: std::time::SystemTime) -> u64 {
+    time.duration_since(std::time::UNIX_EPOCH)
+        .map(|age| age.as_secs())
+        .unwrap_or(0)
+}
+
+fn stamp_fresh(dir: &Path, key: &FetchKey, now: std::time::SystemTime) -> bool {
+    read_stamps(dir).get(&stamp_name(key)).is_some_and(|secs| {
+        within_window(
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(*secs),
+            now,
+        )
+    })
+}
+
+/// Best effort: a lost stamp only costs the next process one fetch.
+fn write_stamp(dir: &Path, key: &FetchKey, now: std::time::SystemTime) {
+    let mut stamps = read_stamps(dir);
+    stamps.retain(|_, secs| {
+        within_window(
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(*secs),
+            now,
+        )
+    });
+    stamps.insert(stamp_name(key), unix_secs(now));
+    let Ok(text) = serde_json::to_string(&stamps) else {
+        return;
+    };
+    if crate::fsperm::ensure_private_dir(dir).is_err() {
+        return;
+    }
+    let tmp = dir.join(format!(".{FETCH_STAMPS_FILE}.{}", uuid::Uuid::new_v4()));
+    let written = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        let mut file = crate::fsperm::create_private_file(&tmp)?;
+        file.write_all(text.as_bytes())?;
+        drop(file);
+        crate::fsperm::replace_file(&tmp, &dir.join(FETCH_STAMPS_FILE))
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+/// The fetch window's decision, with the network call and clock injected for tests.
+fn gated_fetch(
+    key: &FetchKey,
+    stamps: Option<&Path>,
+    now: impl Fn() -> std::time::SystemTime,
+    window: bool,
+    fetch: impl FnOnce() -> Result<(), String>,
+) -> Result<FetchOutcome, String> {
+    let arrived = std::time::Instant::now();
+    let slot = fetch_slot(key);
+    let mut slot = slot.lock().unwrap_or_else(|poison| poison.into_inner());
+    if let Some((finished, result)) = &slot.last_attempt {
+        if *finished >= arrived {
+            return result.clone().map(|()| FetchOutcome::Reused);
+        }
+    }
+    let fresh = window
+        && (slot
+            .last_success
+            .is_some_and(|stamp| within_window(stamp, now()))
+            || stamps.is_some_and(|dir| stamp_fresh(dir, key, now())));
+    if fresh {
+        return Ok(FetchOutcome::Reused);
+    }
+    let result = fetch();
+    if result.is_ok() {
+        let stamp = now();
+        slot.last_success = Some(stamp);
+        if let Some(dir) = stamps {
+            write_stamp(dir, key, stamp);
+        }
+    }
+    slot.last_attempt = Some((std::time::Instant::now(), result.clone()));
+    result.map(|()| FetchOutcome::Fetched)
+}
+
+/// Whether `remote` needs no fetch now: it was fetched inside the window, or the repository
+/// has no such remote to fetch. A fetch still running counts as not fresh.
+pub fn fetch_is_fresh(project: &Path, remote: &str) -> bool {
+    if !git_output(project, &["remote"])
+        .is_ok_and(|remotes| remotes.lines().any(|name| name == remote))
+    {
+        return true;
+    }
+    let key = fetch_key(project, remote);
+    let now = std::time::SystemTime::now();
+    let slot = fetch_slot(&key);
+    let Ok(slot) = slot.try_lock() else {
+        return false;
+    };
+    slot.last_success
+        .is_some_and(|stamp| within_window(stamp, now))
+        || stamp_dir().is_some_and(|dir| stamp_fresh(&dir, &key, now))
+}
+
+fn stamp_dir() -> Option<std::path::PathBuf> {
+    FETCH_STAMP_DIR.lock().ok().and_then(|dir| dir.clone())
+}
+
 pub fn fetch_remote(project: &Path, remote: &str) -> Result<(), String> {
+    fetch_remote_outcome(project, remote).map(|_| ())
+}
+
+/// Bounded fetch behind the shared fetch window. Failures are never remembered: the next
+/// caller tries the network again, unless it was already waiting on that failed attempt.
+pub fn fetch_remote_outcome(project: &Path, remote: &str) -> Result<FetchOutcome, String> {
+    gated_fetch_remote(project, remote, true)
+}
+
+/// Fetch even inside the window (still joining a fetch already running), for a ref the
+/// caller needs that the cached refs do not have.
+fn fetch_remote_now(project: &Path, remote: &str) -> Result<(), String> {
+    gated_fetch_remote(project, remote, false).map(|_| ())
+}
+
+fn gated_fetch_remote(project: &Path, remote: &str, window: bool) -> Result<FetchOutcome, String> {
     if remote.is_empty() || remote.starts_with('-') || remote == "." {
         return Err("invalid remote".into());
     }
-    bounded_git(
-        project,
-        &[
-            "fetch",
-            "--quiet",
-            "--no-tags",
-            "--no-recurse-submodules",
-            remote,
-        ],
+    let key = fetch_key(project, remote);
+    gated_fetch(
+        &key,
+        stamp_dir().as_deref(),
+        std::time::SystemTime::now,
+        window,
+        || {
+            bounded_git(
+                project,
+                &[
+                    "fetch",
+                    "--quiet",
+                    "--no-tags",
+                    "--no-recurse-submodules",
+                    remote,
+                ],
+            )
+        },
     )
 }
 
@@ -278,7 +486,12 @@ pub fn list_branches(project: &Path) -> Result<Vec<String>, String> {
 pub fn list_branches_with_warning(project: &Path) -> Result<(Vec<String>, Option<String>), String> {
     let warning = fetch_remote(project, "origin")
         .err()
-        .map(|reason| format!("{reason}; using cached origin refs"));
+        .map(|_| OFFLINE_BRANCHES.to_string());
+    list_cached_branches(project).map(|branches| (branches, warning))
+}
+
+/// Local and `origin/*` branches from the refs already on disk. Never touches the network.
+pub fn list_cached_branches(project: &Path) -> Result<Vec<String>, String> {
     let text = git_output(
         project,
         &[
@@ -297,7 +510,7 @@ pub fn list_branches_with_warning(project: &Path) -> Result<(Vec<String>, Option
             branches.insert(name.to_string());
         }
     }
-    Ok((branches.into_iter().collect(), warning))
+    Ok(branches.into_iter().collect())
 }
 
 /// Infer a legacy/direct remote name. Explicitly resolved upstreams keep actual provenance.
@@ -352,14 +565,20 @@ pub fn resolve(project: &Path, explicit: Option<&str>) -> Result<ResolvedBase, S
         target
     } else {
         selected_remote = Some("origin".into());
-        if let Err(reason) = fetch_remote(project, "origin") {
-            warning = Some(format!("{reason}; using cached origin default ref"));
-        } else {
+        match fetch_remote_outcome(project, "origin") {
+            Err(reason) => {
+                warning = Some(format!("{reason}; using cached origin default ref"));
+            }
             // Refresh origin/HEAD too: an existing local symbolic ref can be stale after
             // the hosting service changes its default. Failure preserves the cached value.
-            if bounded_git(project, &["remote", "set-head", "origin", "--auto"]).is_err() {
-                warning = Some("could not refresh origin/HEAD; using cached default ref".into());
+            // Inside the fetch window the cached default is as fresh as the cached refs.
+            Ok(FetchOutcome::Fetched) => {
+                if bounded_git(project, &["remote", "set-head", "origin", "--auto"]).is_err() {
+                    warning =
+                        Some("could not refresh origin/HEAD; using cached default ref".into());
+                }
             }
+            Ok(FetchOutcome::Reused) => {}
         }
         default_ref(project)?
     };
@@ -424,4 +643,145 @@ pub fn short_name_for_remote(reference: &str, remote: Option<&str>) -> String {
         .and_then(|remote| reference.strip_prefix(&format!("{remote}/")))
         .unwrap_or(reference)
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, SystemTime};
+
+    fn key(name: &str) -> FetchKey {
+        (
+            std::path::PathBuf::from(format!("/fetch-window/{name}/{}", uuid::Uuid::new_v4())),
+            "origin".into(),
+        )
+    }
+
+    #[test]
+    fn fetch_window_skips_a_second_fetch_inside_sixty_seconds_and_fetches_after() {
+        let key = key("window");
+        let start = SystemTime::now();
+        let count = AtomicUsize::new(0);
+        let fetch = || {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        };
+        assert_eq!(
+            gated_fetch(&key, None, || start, true, fetch),
+            Ok(FetchOutcome::Fetched)
+        );
+        let later = start + Duration::from_secs(59);
+        assert_eq!(
+            gated_fetch(&key, None, || later, true, fetch),
+            Ok(FetchOutcome::Reused)
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let expired = start + FETCH_WINDOW;
+        assert_eq!(
+            gated_fetch(&key, None, || expired, true, fetch),
+            Ok(FetchOutcome::Fetched)
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_ref_missing_from_disk_fetches_inside_the_window() {
+        let key = key("forced");
+        let now = SystemTime::now();
+        let count = AtomicUsize::new(0);
+        let fetch = || {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        };
+        gated_fetch(&key, None, || now, true, fetch).unwrap();
+        assert_eq!(
+            gated_fetch(&key, None, || now, false, fetch),
+            Ok(FetchOutcome::Fetched)
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn fetch_window_never_remembers_a_failure() {
+        let key = key("failure");
+        let now = SystemTime::now();
+        let count = AtomicUsize::new(0);
+        let fail = || {
+            count.fetch_add(1, Ordering::SeqCst);
+            Err("fetch failed".to_string())
+        };
+        assert!(gated_fetch(&key, None, || now, true, fail).is_err());
+        assert!(gated_fetch(&key, None, || now, true, fail).is_err());
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_caller_arriving_during_a_fetch_waits_and_takes_its_result() {
+        let key = key("join");
+        let count = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let first = {
+            let key = key.clone();
+            let count = Arc::clone(&count);
+            std::thread::spawn(move || {
+                gated_fetch(&key, None, SystemTime::now, true, || {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Err("offline".to_string())
+                })
+            })
+        };
+        started_rx.recv().unwrap();
+        let second = {
+            let key = key.clone();
+            let count = Arc::clone(&count);
+            std::thread::spawn(move || {
+                gated_fetch(&key, None, SystemTime::now, true, || {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            })
+        };
+        // The second caller is blocked behind the first fetch, not running its own.
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!second.is_finished());
+        release_tx.send(()).unwrap();
+        assert_eq!(first.join().unwrap(), Err("offline".into()));
+        assert_eq!(second.join().unwrap(), Err("offline".into()));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn fetch_stamps_share_the_window_across_processes() {
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "tsk-fetch-stamps-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let key = key("stamps");
+        let now = SystemTime::now();
+        assert!(!stamp_fresh(&dir, &key, now));
+        write_stamp(&dir, &key, now);
+        assert!(stamp_fresh(&dir, &key, now + Duration::from_secs(30)));
+        assert!(!stamp_fresh(&dir, &key, now + FETCH_WINDOW));
+        // A fresh in-memory slot for the same key (a new process) reuses the stamp.
+        let other = key.clone();
+        FETCHES.lock().unwrap().remove(&other);
+        let count = AtomicUsize::new(0);
+        let fetch = || {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        };
+        assert_eq!(
+            gated_fetch(&other, Some(&dir), || now, true, fetch),
+            Ok(FetchOutcome::Reused)
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

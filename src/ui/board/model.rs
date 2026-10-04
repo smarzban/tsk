@@ -854,6 +854,9 @@ impl DefaultBranchCache {
     }
 }
 
+/// The base picker's disabled row while its background fetch runs.
+pub const REFRESHING_BRANCHES: &str = "refreshing…";
+
 /// Workers publish here, only the event-loop poll updates the active picker.
 #[derive(Debug)]
 struct BasePickerWorker {
@@ -1052,6 +1055,15 @@ pub struct CleanupPrompt {
     pub workspace_exists: bool,
     pub warning: Option<String>,
     pub base_available: bool,
+    /// The background fetch and ancestry recheck still running; the card shows `checking…`
+    /// in place of the cached merged status until it lands.
+    pub merge_check: Option<crate::dispatch::MergeCheck>,
+}
+
+impl CleanupPrompt {
+    pub fn checking(&self) -> bool {
+        self.merge_check.is_some()
+    }
 }
 
 /// How an unresolved failed save ended.
@@ -1189,6 +1201,22 @@ impl BoardModel {
 
     pub fn cleanup_prompt(&self) -> Option<&CleanupPrompt> {
         self.cleanup_prompt.as_ref()
+    }
+
+    /// Apply a finished background merged check to the open cleanup card. A check whose card
+    /// was closed is dropped with it, so a late result never reaches another prompt.
+    pub fn poll_cleanup_check(&mut self) -> bool {
+        let Some(prompt) = self.cleanup_prompt.as_mut() else {
+            return false;
+        };
+        let Some(verdict) = prompt.merge_check.as_ref().and_then(|check| check.take()) else {
+            return false;
+        };
+        prompt.merge_check = None;
+        prompt.branch_merged = verdict.branch_merged;
+        prompt.base_available = verdict.base_available;
+        prompt.warning = verdict.warning;
+        true
     }
 
     pub fn arm_dispatch_again(&mut self, id: Uuid) {
@@ -2500,7 +2528,9 @@ impl BoardModel {
         self.input_mode = BoardInputMode::ListPicker;
     }
 
-    /// Open immediately; fetching and local metadata queries belong only to the worker.
+    /// Open on the branches already on disk (bounded local queries, never the network). Unless
+    /// origin was fetched inside the fetch window, a background worker fetches and refreshes
+    /// the list in place behind a disabled `refreshing…` row.
     pub(super) fn open_base_picker(
         &mut self,
         ids: Vec<Uuid>,
@@ -2512,18 +2542,39 @@ impl BoardModel {
         let project = project
             .canonicalize()
             .unwrap_or_else(|_| project.to_path_buf());
-        let default = self.default_branch_name(&project);
+        let default = crate::git_base::default_branch_name(&project)
+            .unwrap_or_else(|| self.default_branch_name(&project));
+        let cached = crate::git_base::list_cached_branches(&project);
+        let fresh = crate::git_base::fetch_is_fresh(&project, "origin");
+        let mut options = vec![Self::default_base_option(default)];
+        let status = match &cached {
+            Ok(branches) => {
+                options.extend(branches.iter().map(|branch| ListPickerOption {
+                    label: branch.clone(),
+                    count: None,
+                    value: ListPickerValue::Base(Some(branch.clone())),
+                }));
+                (!fresh).then(|| REFRESHING_BRANCHES.to_string())
+            }
+            Err(_) if !fresh => Some(REFRESHING_BRANCHES.to_string()),
+            Err(message) => Some(message.clone()),
+        };
+        if let Some(label) = status {
+            options.push(ListPickerOption {
+                label,
+                count: None,
+                value: ListPickerValue::Unavailable,
+            });
+        }
+        let preferred = ListPickerValue::Base(current.clone());
+        let selected = options
+            .iter()
+            .position(|option| option.value == preferred)
+            .unwrap_or(0);
         self.list_picker = Some(ListPickerState {
             kind: ListPickerKind::Base,
-            options: vec![
-                Self::default_base_option(default),
-                ListPickerOption {
-                    label: "loading branches".into(),
-                    count: None,
-                    value: ListPickerValue::Unavailable,
-                },
-            ],
-            selected: 0,
+            options,
+            selected,
             query: String::new(),
             return_mode: self.input_mode,
             assignee_target: None,
@@ -2533,10 +2584,15 @@ impl BoardModel {
                 request,
                 project: project.clone(),
                 current,
-                selection_pending: true,
+                // A cached list already placed the cursor; the refresh keeps whatever the
+                // user moves it to. Without one, the refresh selects the current base.
+                selection_pending: cached.is_err(),
             }),
         });
         self.input_mode = BoardInputMode::ListPicker;
+        if fresh {
+            return;
+        }
         // A cancelled picker leaves its bounded lookup running. Reopening subscribes
         // the new request to that project's existing job instead of starting another fetch.
         {
@@ -4324,7 +4380,7 @@ mod tests {
             options: vec![
                 BoardModel::default_base_option("default".into()),
                 ListPickerOption {
-                    label: "loading branches".into(),
+                    label: REFRESHING_BRANCHES.into(),
                     count: None,
                     value: ListPickerValue::Unavailable,
                 },
@@ -4430,7 +4486,7 @@ mod tests {
         assert!(!model.poll_base_picker_results());
         assert_eq!(
             model.visible_list_picker_options()[1].1.label,
-            "loading branches"
+            REFRESHING_BRANCHES
         );
     }
 
