@@ -1014,10 +1014,17 @@ fn board_keyboard_intent(
                 | BoardInputMode::ListPicker
                 | BoardInputMode::Search
                 | BoardInputMode::QuickAdd
+                | BoardInputMode::CleanupConfirm
+                | BoardInputMode::CleanupDirtyConfirm
         );
-        // A list picker's Esc is its own cancel: clearing marks underneath would leave the
-        // picker open, still bound to the set it captured.
-        let surface_owns_escape = mode == BoardInputMode::ListPicker;
+        // A list picker's or bulk cleanup card's Esc is its own cancel: clearing marks
+        // underneath would leave it open, still bound to the set it captured.
+        let surface_owns_escape = matches!(
+            mode,
+            BoardInputMode::ListPicker
+                | BoardInputMode::CleanupConfirm
+                | BoardInputMode::CleanupDirtyConfirm
+        );
         if !text_entry_owns_capital_m
             && mode != BoardInputMode::SaveRecovery
             && key.code == KeyCode::Char('M')
@@ -2159,7 +2166,7 @@ pub struct BulkCleanupOutcome {
     pub done: usize,
     /// Per cleanable row that was attempted (`y` only): its number and outcome.
     pub cleaned: Vec<(u64, Result<CleanupResult, CleanupError>)>,
-    /// Rows kept because their worktree has uncommitted changes.
+    /// Rows `y` kept because their worktree has uncommitted changes.
     pub dirty: Vec<u64>,
     /// Worktrees already gone, converged to cleaned.
     pub missing: usize,
@@ -2262,9 +2269,12 @@ pub fn bulk_cleanup_and_complete_with_host(
         missing: 0,
     };
     for row in rows.iter().filter(|row| targets.contains(&row.task_id)) {
+        if !clean {
+            continue;
+        }
         if row.dirty {
             outcome.dirty.push(row.number);
-        } else if clean {
+        } else {
             let refs = if row.checking() {
                 dispatch::CleanupRefs::Unconfirmed
             } else {
@@ -10361,9 +10371,20 @@ mod bulk_cleanup_tests {
 
     #[test]
     fn esc_on_the_bulk_card_changes_nothing_and_keeps_the_marked_set() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut board = marked_board("esc");
         let mut host = host();
         press(&mut board, BoardIntent::Complete, &mut host);
+        let key = |code| {
+            super::board_keyboard_intent(
+                &board.model,
+                board.model.input_mode(),
+                KeyEvent::new(code, KeyModifiers::NONE),
+            )
+        };
+        // The card owns Esc and `M`: mark mode must not clear the set out from under it.
+        assert_eq!(key(KeyCode::Esc), Some(BoardIntent::CancelCleanup));
+        assert_eq!(key(KeyCode::Char('M')), None);
         press(&mut board, BoardIntent::CancelCleanup, &mut host);
         assert!(board.model.cleanup_prompt().is_none());
         assert_eq!(board.model.popup(), BoardPopup::None);
@@ -10440,6 +10461,7 @@ mod bulk_cleanup_tests {
         assert!(host.removed.is_empty() && host.deleted.is_empty());
         assert!(!cleaned(&board, 0) && !cleaned(&board, 1));
         assert!(board.model.marked_ids().is_empty());
+        assert_eq!(board.model.message(), Some("done 3 · worktrees kept"));
         let disk = board.store.load().expect("load");
         assert!(matches!(
             disk.last_undo(),

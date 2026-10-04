@@ -373,7 +373,7 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
     );
     assert_eq!(
         host.inspections, 0,
-        "bulk done never inspects one cursor worktree"
+        "with marks active the single cursor offer stands aside for the bulk card"
     );
 
     let first_index = model

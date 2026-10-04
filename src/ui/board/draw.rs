@@ -1476,6 +1476,10 @@ fn status_row_content(model: &BoardModel) -> (Option<String>, Option<usize>, Opt
         (Some(notice), None) => Some(notice.to_string()),
         (None, Some(msg)) => Some(msg.to_string()),
         (None, None) if editing_on_page => Some("editing…".to_string()),
+        // Under a bulk cleanup card, Esc cancels the card and keeps the marks.
+        (None, None) if model.mark_mode_active() && model.cleanup_prompt().is_some() => {
+            Some(format!("multi-select · {} selected", model.marked_count()))
+        }
         (None, None) if model.mark_mode_active() && model.marked_count() > 0 => Some(format!(
             "multi-select · {} selected · esc clears",
             model.marked_count()
