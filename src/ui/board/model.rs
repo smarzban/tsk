@@ -1089,8 +1089,10 @@ pub struct BulkCleanup {
     pub targets: Vec<Uuid>,
     /// Board identifiers (`T12`) of targets with no live dispatch: marked done, nothing to clean.
     pub plain: Vec<String>,
-    /// Targets whose recorded worktree is already gone: converge to cleaned on `y` or `n`.
-    pub missing: Vec<(Uuid, String)>,
+    /// Targets whose recorded worktree was already gone, with the dispatch record inspected:
+    /// on `y` or `n` they converge to cleaned only if that same record is still current and
+    /// its worktree is still gone.
+    pub missing: Vec<(Uuid, String, crate::domain::Dispatch)>,
     /// Dispatched targets whose worktree could not be inspected, with the reason: kept, still
     /// marked done.
     pub refused: Vec<(String, String)>,

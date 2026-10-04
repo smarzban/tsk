@@ -2134,7 +2134,7 @@ pub fn offer_bulk_cleanup_prompt_with_host(
         let merge_check = begin_cleanup_merge_check(task, record, host);
         match dispatch::inspect_cleanup_cached_with_host(domain, id, in_herdr, host) {
             Ok(preview) if !preview.inspection.worktree_exists => {
-                bulk.missing.push((id, identifier));
+                bulk.missing.push((id, identifier, preview.record));
             }
             Ok(preview) => rows.push(cleanup_row(id, preview, merge_check)),
             Err(error) => bulk.refused.push((identifier, error.to_string())),
@@ -2142,7 +2142,7 @@ pub fn offer_bulk_cleanup_prompt_with_host(
     }
     if rows.is_empty() && bulk.refused.is_empty() {
         let missing = bulk.missing.len();
-        for (id, _) in &bulk.missing {
+        for (id, _, _) in &bulk.missing {
             domain.record_dispatch_cleaned(*id)?;
         }
         domain.complete_batch_after_cleanup(&targets)?;
@@ -2285,12 +2285,18 @@ pub fn bulk_cleanup_and_complete_with_host(
             outcome.cleaned.push((row.number, result));
         }
     }
-    for (id, _) in &bulk.missing {
-        let unconverged = domain
+    for (id, _, inspected) in &bulk.missing {
+        // The card's snapshot may be stale: another board can have relaunched this task since.
+        // Converge only the dispatch that was inspected, and only while its worktree is still
+        // gone; a relaunched or reappeared worktree is left live.
+        let same_dispatch = domain
             .get(*id)
             .and_then(|task| task.dispatch.as_ref())
-            .is_some_and(|record| !record.cleaned);
-        if unconverged {
+            .is_some_and(|record| record == inspected);
+        let still_missing = same_dispatch
+            && dispatch::inspect_cleanup_cached_with_host(domain, *id, in_herdr, host)
+                .is_ok_and(|preview| !preview.inspection.worktree_exists);
+        if still_missing {
             domain.record_dispatch_cleaned(*id)?;
             outcome.missing += 1;
         }
@@ -10568,6 +10574,34 @@ mod bulk_cleanup_tests {
             disk.last_undo(),
             Some(UndoEntry::Batch { entries }) if entries.len() == 3
         ));
+    }
+
+    #[test]
+    fn a_missing_worktree_relaunched_while_the_card_is_open_is_not_marked_cleaned() {
+        let mut board = marked_board("relaunched");
+        let mut host = host();
+        host.missing = HashSet::from(["/tmp/tsk-bulk-clean".to_string()]);
+        press(&mut board, BoardIntent::Complete, &mut host);
+        let bulk = board.model.cleanup_prompt().unwrap().bulk.clone().unwrap();
+        assert_eq!(bulk.missing.len(), 1, "T1 opens as already gone");
+
+        // Another board relaunches T1 before this card is answered: a fresh worktree and a
+        // fresh, live dispatch record land on disk.
+        let mut other = board.store.load().expect("load");
+        let mut relaunched = dispatched("clean");
+        relaunched.at = SystemTime::now() + std::time::Duration::from_secs(1);
+        other
+            .record_dispatch(board.ids[0], relaunched.clone())
+            .expect("relaunch");
+        board.store.reload_merge_save(&mut other).expect("save relaunch");
+        host.missing.clear();
+
+        press(&mut board, BoardIntent::KeepCleanup, &mut host);
+        let record = board.domain.get(board.ids[0]).unwrap().dispatch.clone().unwrap();
+        assert_eq!(record, relaunched, "the relaunched dispatch stays live");
+        assert!(!record.cleaned);
+        let disk = board.store.load().expect("load");
+        assert!(!disk.get(board.ids[0]).unwrap().dispatch.as_ref().unwrap().cleaned);
     }
 
     #[test]

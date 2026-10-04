@@ -152,7 +152,7 @@ pub(crate) fn cleanup_overlay<'a>(prompt: &CleanupPrompt, home: Option<&str>) ->
                 };
                 lines.push(CleanupCardLine::Text(format!(
                     "+ {} {noun} already gone, marked cleaned",
-                    identifiers_list(bulk.missing.iter().map(|(_, identifier)| identifier))
+                    identifiers_list(bulk.missing.iter().map(|(_, identifier, _)| identifier))
                 )));
             }
             if !bulk.plain.is_empty() {
