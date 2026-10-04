@@ -125,7 +125,7 @@ In Herdr quick capture, `Shift+Enter` saves and closes the popup. `Esc` closes a
 | Dispatch cleanup prompt | `y` cleans and completes; `n` completes only; `Esc` cancels. Dirty worktrees omit `y` |
 | Failed save | `r` or `Enter` retries; `c` or `Esc` cancels |
 
-`j` and `k` are text in board search, thread/view filters, and Help search, not navigation. `?` and `/` are text in every input field, including Help search.
+`j` and `k` are text in board search, thread/view and assignee filters, and Help search, not navigation. `?` and `/` are text in every input field, including Help search.
 
 ## Wide stage slider
 
