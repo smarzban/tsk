@@ -10,6 +10,30 @@ use uuid::Uuid;
 use crate::agents::{AgentProfiles, RenderContext};
 use crate::domain::{Dispatch, DomainState, HumanStatus, Task, TaskScope};
 
+/// Cleanup metadata queries (full untracked-file status, merge-base ancestry) read a real
+/// checkout rather than a quick plumbing ref, so git_base's 250ms metadata deadline false-times
+/// out on an ordinarily slow repo. Bounded finitely so an unusually stuck repo still converges
+/// instead of hanging a `tsk clean`.
+const CLEANUP_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Dedicated timeout for cleanup's heavier queries: the full untracked-file status and the
+/// merge-base ancestry checks, both of which can legitimately exceed git_base's 250ms metadata
+/// deadline on an ordinary repo.
+fn cleanup_query(project: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+    crate::git_base::git_process_output_timeout(project, args, CLEANUP_QUERY_TIMEOUT)
+}
+
+fn cleanup_inspection_error(operation: &str, error: String) -> String {
+    if error == "git timed out" {
+        format!(
+            "Git {operation} timed out after {}s; cleanup refused before removal",
+            CLEANUP_QUERY_TIMEOUT.as_secs()
+        )
+    } else {
+        error
+    }
+}
+
 pub const NO_ASSIGNEE: &str = "no agent assigned, use tsk edit T<n> --assignee <name>";
 /// The board's wording of the same refusal: there `@` assigns, and with no profile it opens nothing.
 pub const BOARD_NO_ASSIGNEE: &str = "no agent assigned: press @ or add a profile to agents.toml";
@@ -56,6 +80,9 @@ pub enum BranchRetentionReason {
     NoRecordedBase,
     MissingWorktree,
     BranchUnavailable,
+    /// The worktree is already removed; a slow ancestry check must not block on it, but
+    /// deleting the branch without a confirmed merge is never safe either.
+    AncestryCheckTimedOut,
 }
 
 impl BranchRetentionReason {
@@ -70,6 +97,9 @@ impl BranchRetentionReason {
             Self::NoRecordedBase => "no recorded base; branch retained".into(),
             Self::MissingWorktree => "worktree already missing; branch retained".into(),
             Self::BranchUnavailable => "branch no longer available".into(),
+            Self::AncestryCheckTimedOut => {
+                "ancestry check timed out after the worktree was removed; branch retained".into()
+            }
         }
     }
 }
@@ -429,10 +459,14 @@ impl DispatchHost for SystemDispatchHost {
                 target_matches: false,
             });
         }
-        let status = crate::git_base::git_process_output(
+        // Full untracked status on a real checkout, not a quick plumbing ref: give it cleanup's
+        // longer deadline rather than git_base's 250ms metadata default. A timeout here returns
+        // Err before any worktree or branch is touched below, so the refusal is always safe.
+        let status = cleanup_query(
             worktree,
             &["status", "--porcelain", "--untracked-files=all"],
-        )?;
+        )
+        .map_err(|error| cleanup_inspection_error("status", error))?;
         if !status.status.success() {
             return Err(command_failure("git status", &status));
         }
@@ -460,7 +494,9 @@ impl DispatchHost for SystemDispatchHost {
                     cleanup_base_ref(project, dispatch.base_ref.as_deref().unwrap_or(base))?;
                 if let Some(exact_base) = exact_base {
                     base_available = true;
-                    let merged = crate::git_base::git_process_output(
+                    // Same deadline reasoning as the status read above: this still runs before
+                    // any worktree or branch mutation, so a timeout here refuses safely too.
+                    let merged = cleanup_query(
                         project,
                         &[
                             "merge-base",
@@ -468,7 +504,8 @@ impl DispatchHost for SystemDispatchHost {
                             &format!("refs/heads/{}", dispatch.branch),
                             &exact_base,
                         ],
-                    )?;
+                    )
+                    .map_err(|error| cleanup_inspection_error("ancestry check", error))?;
                     match merged.status.code() {
                         Some(0) => true,
                         Some(1) => false,
@@ -607,10 +644,20 @@ impl DispatchHost for SystemDispatchHost {
         let Some(exact_base) = cleanup_base_ref(project, base)? else {
             return Ok(BranchDeletion::Kept(BranchRetentionReason::BaseUnavailable));
         };
-        let merged = crate::git_base::git_process_output(
-            project,
-            &["merge-base", "--is-ancestor", tip, &exact_base],
-        )?;
+        // The worktree is already gone by the time this runs, so a timeout here must retain
+        // the branch rather than surface a bare process error or a false merged/not-merged
+        // reason: cleanup_query's longer deadline keeps this rare, but it must still resolve
+        // to an honest, dedicated retention reason instead of an opaque failure.
+        let merged =
+            match cleanup_query(project, &["merge-base", "--is-ancestor", tip, &exact_base]) {
+                Ok(output) => output,
+                Err(error) if error == "git timed out" => {
+                    return Ok(BranchDeletion::Kept(
+                        BranchRetentionReason::AncestryCheckTimedOut,
+                    ));
+                }
+                Err(error) => return Err(error),
+            };
         if merged.status.code() == Some(1) {
             return Ok(BranchDeletion::Kept(
                 BranchRetentionReason::LatestTipNotMerged,

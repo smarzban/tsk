@@ -7243,3 +7243,75 @@ fn expanded_capture_base_picker_stages_and_clears_base_without_editing_the_board
     }
     std::fs::remove_dir_all(repo).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn base_picker_reopen_reuses_one_in_flight_worker_for_the_project() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = git_repo_with_branch("reopen-single-worker");
+    let ssh = repo.join("counted-ssh");
+    let counter = repo.join("fetch-count");
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\nprintf 'fetch\\n' >> '{}'\nsleep 1\nexit 1\n",
+            counter.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for args in [
+        vec!["remote", "add", "origin", "ssh://127.0.0.1:1/unreachable"],
+        vec!["config", "ssh.variant", "ssh"],
+        vec!["config", "core.sshCommand", ssh.to_str().unwrap()],
+    ] {
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(args)
+            .status()
+            .unwrap()
+            .success());
+    }
+    let mut domain = DomainState::new();
+    domain
+        .create(
+            "picker task",
+            None,
+            project(&repo.to_string_lossy()),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    let mut model = BoardModel::from_domain(&domain, Some(repo.clone()));
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !counter.exists() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    for _ in 0..8 {
+        apply_intent(&mut domain, &mut model, BoardIntent::CancelListPicker, None).unwrap();
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
+    }
+    while model
+        .visible_list_picker_options()
+        .iter()
+        .any(|(_, option)| option.label == "loading branches")
+    {
+        assert!(std::time::Instant::now() < deadline);
+        model.poll_base_picker_results();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // Let any incorrectly detached duplicate worker reach the transport too.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(
+        std::fs::read_to_string(&counter).unwrap().lines().count(),
+        1
+    );
+    assert!(model
+        .visible_list_picker_options()
+        .iter()
+        .any(|(_, option)| option.label == "dispatch"));
+    std::fs::remove_dir_all(repo).unwrap();
+}

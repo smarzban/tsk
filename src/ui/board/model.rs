@@ -265,6 +265,7 @@ pub(super) struct BasePickerTarget {
     pub ids: Vec<Uuid>,
     pub edit_draft: bool,
     request: Uuid,
+    project: PathBuf,
     current: Option<String>,
     selection_pending: bool,
 }
@@ -855,8 +856,15 @@ impl DefaultBranchCache {
 
 /// Workers publish here, only the event-loop poll updates the active picker.
 #[derive(Debug)]
+struct BasePickerWorker {
+    job: Uuid,
+    request: Uuid,
+}
+
+#[derive(Debug)]
 struct BasePickerResult {
     request: Uuid,
+    project: PathBuf,
     branches: Result<(Vec<String>, Option<String>), String>,
     default: String,
 }
@@ -899,6 +907,7 @@ pub struct BoardModel {
     /// Open searchable list picker (thread filter / projects view). Session-only.
     pub(super) list_picker: Option<ListPickerState>,
     base_picker_results: Arc<Mutex<Vec<BasePickerResult>>>,
+    base_picker_workers: Arc<Mutex<HashMap<PathBuf, BasePickerWorker>>>,
     /// Whether the done drawer lists completed tasks. Session-only.
     pub(super) drawer_open: bool,
     /// The done drawer's archived group starts collapsed on every launch. Session-only.
@@ -1078,6 +1087,7 @@ impl BoardModel {
             projects_selected: 0,
             list_picker: None,
             base_picker_results: Arc::default(),
+            base_picker_workers: Arc::default(),
             drawer_open: false,
             archived_collapsed: true,
             inbox_collapsed: false,
@@ -2499,7 +2509,10 @@ impl BoardModel {
         edit_draft: bool,
     ) {
         let request = Uuid::new_v4();
-        let default = self.default_branch_name(project);
+        let project = project
+            .canonicalize()
+            .unwrap_or_else(|_| project.to_path_buf());
+        let default = self.default_branch_name(&project);
         self.list_picker = Some(ListPickerState {
             kind: ListPickerKind::Base,
             options: vec![
@@ -2518,23 +2531,55 @@ impl BoardModel {
                 ids,
                 edit_draft,
                 request,
+                project: project.clone(),
                 current,
                 selection_pending: true,
             }),
         });
         self.input_mode = BoardInputMode::ListPicker;
-        let project = project.to_path_buf();
+        // A cancelled picker leaves its bounded lookup running. Reopening subscribes
+        // the new request to that project's existing job instead of starting another fetch.
+        {
+            let mut workers = self
+                .base_picker_workers
+                .lock()
+                .expect("base worker registry");
+            if let Some(worker) = workers.get_mut(&project) {
+                worker.request = request;
+                return;
+            }
+            workers.insert(
+                project.clone(),
+                BasePickerWorker {
+                    job: request,
+                    request,
+                },
+            );
+        }
         let mailbox = Arc::clone(&self.base_picker_results);
+        let workers = Arc::clone(&self.base_picker_workers);
         std::thread::spawn(move || {
             let branches = crate::git_base::list_branches_with_warning(&project);
             let default =
                 crate::git_base::default_branch_name(&project).unwrap_or_else(|| "default".into());
-            if let Ok(mut results) = mailbox.lock() {
-                results.push(BasePickerResult {
-                    request,
-                    branches,
-                    default,
-                });
+            if let Ok(mut workers) = workers.lock() {
+                if workers
+                    .get(&project)
+                    .is_some_and(|worker| worker.job == request)
+                {
+                    let subscriber = workers
+                        .remove(&project)
+                        .expect("completed base worker")
+                        .request;
+                    if let Ok(mut results) = mailbox.lock() {
+                        results.push(BasePickerResult {
+                            request: subscriber,
+                            project,
+                            branches,
+                            default,
+                        });
+                    }
+                }
             }
         });
     }
@@ -2564,7 +2609,9 @@ impl BoardModel {
                 .list_picker
                 .as_ref()
                 .and_then(|picker| picker.base_target.as_ref())
-                .filter(|target| target.request == result.request)
+                .filter(|target| {
+                    target.request == result.request && target.project == result.project
+                })
             else {
                 continue;
             };
@@ -4290,6 +4337,7 @@ mod tests {
                 ids,
                 edit_draft: false,
                 request,
+                project: PathBuf::from("/repos/picker"),
                 current: None,
                 selection_pending: true,
             }),
@@ -4310,6 +4358,7 @@ mod tests {
                 wait.recv().unwrap();
                 mailbox.lock().unwrap().push(BasePickerResult {
                     request: old_request,
+                    project: PathBuf::from("/repos/picker"),
                     branches: Ok((vec!["stale".into()], None)),
                     default: "stale-default".into(),
                 });
@@ -4325,6 +4374,7 @@ mod tests {
                 .unwrap()
                 .push(BasePickerResult {
                     request: new_request,
+                    project: PathBuf::from("/repos/picker"),
                     branches: Ok((vec!["main".into(), "release".into()], None)),
                     default: "main".into(),
                 });
@@ -4363,6 +4413,28 @@ mod tests {
     }
 
     #[test]
+    fn base_picker_rejects_another_projects_result_even_with_current_request() {
+        let mut model = BoardModel::from_domain(&DomainState::new(), None);
+        let request = Uuid::new_v4();
+        model.list_picker = Some(loading_picker(request, vec![Uuid::new_v4()]));
+        model
+            .base_picker_results
+            .lock()
+            .unwrap()
+            .push(BasePickerResult {
+                request,
+                project: PathBuf::from("/repos/different"),
+                branches: Ok((vec!["wrong-project".into()], None)),
+                default: "wrong-default".into(),
+            });
+        assert!(!model.poll_base_picker_results());
+        assert_eq!(
+            model.visible_list_picker_options()[1].1.label,
+            "loading branches"
+        );
+    }
+
+    #[test]
     fn base_picker_results_preserve_selection_and_show_disabled_warnings() {
         let mut model = BoardModel::from_domain(&DomainState::new(), None);
         let request = Uuid::new_v4();
@@ -4375,6 +4447,7 @@ mod tests {
             .unwrap()
             .push(BasePickerResult {
                 request,
+                project: PathBuf::from("/repos/picker"),
                 branches: Ok((
                     vec!["main".into(), "release".into()],
                     Some("offline: using cached refs".into()),
@@ -4400,6 +4473,7 @@ mod tests {
             .unwrap()
             .push(BasePickerResult {
                 request,
+                project: PathBuf::from("/repos/picker"),
                 branches: Err("failed".into()),
                 default: "default".into(),
             });

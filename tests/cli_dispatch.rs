@@ -838,13 +838,61 @@ fn cleanup_advanced_merged_branch_has_truthful_reason() {
     repo.git(&["show-ref", "--verify", "refs/heads/tsk/t1-clean"]);
 }
 
+// Cleanup's status and ancestry reads use a dedicated ~10s deadline (`cleanup_query` in
+// src/dispatch.rs), longer than git_base's 250ms metadata default: a real checkout's full
+// untracked-file status, or an ancestry walk, can legitimately run past 250ms. These tests
+// exercise both edges: a stall well past the dedicated deadline still refuses (and bounds
+// the wait), while a stall under it still completes.
+
 #[cfg(unix)]
 #[test]
 fn cleanup_git_status_is_bounded_even_when_fsmonitor_stalls() {
     use std::os::unix::fs::PermissionsExt;
     let repo = CleanupRepo::new();
     let hook = repo.root.join("slow-fsmonitor");
-    fs::write(&hook, "#!/bin/sh\nsleep 10\nprintf 'token\\0'\n").unwrap();
+    // Longer than cleanup's ~10s deadline, so the deadline (not the hook) ends the wait.
+    fs::write(&hook, "#!/bin/sh\nsleep 13\nprintf 'token\\0'\n").unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o700)).unwrap();
+    repo.git(&["config", "core.fsmonitor", hook.to_str().unwrap()]);
+    let (mut state, id) = repo.state("base", None);
+    let start = std::time::Instant::now();
+    let result = tsk_tui::dispatch::clean_with_host(
+        &mut state,
+        id,
+        false,
+        &mut tsk_tui::dispatch::SystemDispatchHost,
+    );
+    let elapsed = start.elapsed();
+    assert!(result.is_err(), "stalled Git must time out: {result:?}");
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("Git status timed out after 10s; cleanup refused before removal"));
+    assert!(
+        elapsed >= std::time::Duration::from_secs(9)
+            && elapsed < std::time::Duration::from_secs(12),
+        "expected cleanup's dedicated ~10s deadline, got {elapsed:?}"
+    );
+    // Refused before any removal: the worktree and its branch both survive.
+    assert!(
+        repo.worktree.exists(),
+        "a refused cleanup must not remove the worktree"
+    );
+    repo.git(&["show-ref", "--verify", "refs/heads/tsk/t1-clean"]);
+    assert!(
+        !state.get(id).unwrap().dispatch.as_ref().unwrap().cleaned,
+        "a refused cleanup must not mark the dispatch cleaned"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn cleanup_status_tolerates_a_slow_but_finishing_filesystem_watcher() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = CleanupRepo::new();
+    let hook = repo.root.join("slow-fsmonitor-ok");
+    // Longer than git_base's 250ms metadata default, well under cleanup's ~10s deadline.
+    fs::write(&hook, "#!/bin/sh\nsleep 1\nprintf 'token\\0'\n").unwrap();
     fs::set_permissions(&hook, fs::Permissions::from_mode(0o700)).unwrap();
     repo.git(&["config", "core.fsmonitor", hook.to_str().unwrap()]);
     let (state, id) = repo.state("base", None);
@@ -852,9 +900,160 @@ fn cleanup_git_status_is_bounded_even_when_fsmonitor_stalls() {
     let start = std::time::Instant::now();
     let result =
         tsk_tui::dispatch::SystemDispatchHost.inspect_cleanup(&repo.project, record, false);
-    assert!(result.is_err(), "stalled Git must time out: {result:?}");
+    let elapsed = start.elapsed();
     assert!(
-        start.elapsed() < std::time::Duration::from_secs(2),
-        "local inspection must have a short deadline"
+        result.is_ok(),
+        "a status read slower than 250ms must still succeed under the longer deadline: {result:?}"
     );
+    assert!(
+        elapsed >= std::time::Duration::from_secs(1),
+        "expected the hook's artificial delay to be observed, got {elapsed:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "must still stay within cleanup's deadline, got {elapsed:?}"
+    );
+}
+
+/// Run PATH-sensitive probes in their own test process, never the parallel shared harness.
+#[cfg(unix)]
+fn ancestry_probe_child(name: &str, sleep_secs: u64) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    if std::env::var("TSK_CLEANUP_ANCESTRY_CHILD").ok().as_deref() == Some(name) {
+        return false;
+    }
+    let output = std::process::Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let real_git = String::from_utf8(output.stdout).unwrap();
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-slow-ancestry-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("git");
+    fs::write(&script, format!("#!/bin/sh\nfor a in \"$@\"; do if [ \"$a\" = merge-base ]; then sleep {sleep_secs}; fi; done\nexec \"{}\" \"$@\"\n", real_git.trim())).unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", name, "--nocapture"])
+        .env("TSK_CLEANUP_ANCESTRY_CHILD", name)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                dir.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .output()
+        .unwrap();
+    fs::remove_dir_all(dir).unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
+
+#[cfg(unix)]
+#[test]
+fn delete_merged_branch_retains_branch_when_late_ancestry_check_times_out() {
+    if ancestry_probe_child(
+        "cli_dispatch::delete_merged_branch_retains_branch_when_late_ancestry_check_times_out",
+        11,
+    ) {
+        return;
+    }
+    let repo = CleanupRepo::new();
+    tsk_tui::dispatch::SystemDispatchHost
+        .remove_git_worktree(&repo.project, &repo.worktree)
+        .expect("remove worktree ahead of the late ancestry check");
+    let start = std::time::Instant::now();
+    let result = {
+        tsk_tui::dispatch::SystemDispatchHost.delete_merged_branch_with_reason(
+            &repo.project,
+            "tsk/t1-clean",
+            "base",
+        )
+    };
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= std::time::Duration::from_secs(9)
+            && elapsed < std::time::Duration::from_secs(13),
+        "expected cleanup's dedicated ~10s deadline, got {elapsed:?}"
+    );
+    assert_eq!(
+        result,
+        Ok(tsk_tui::dispatch::BranchDeletion::Kept(
+            tsk_tui::dispatch::BranchRetentionReason::AncestryCheckTimedOut
+        )),
+        "a late ancestry timeout must retain the branch with an honest reason, not NotMerged"
+    );
+    // Branch retained: it must still exist after the timed-out check.
+    repo.git(&["show-ref", "--verify", "refs/heads/tsk/t1-clean"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn delete_merged_branch_tolerates_a_slow_but_finishing_ancestry_check() {
+    if ancestry_probe_child(
+        "cli_dispatch::delete_merged_branch_tolerates_a_slow_but_finishing_ancestry_check",
+        1,
+    ) {
+        return;
+    }
+    let repo = CleanupRepo::new();
+    tsk_tui::dispatch::SystemDispatchHost
+        .remove_git_worktree(&repo.project, &repo.worktree)
+        .expect("remove worktree ahead of the ancestry check");
+    let start = std::time::Instant::now();
+    let result = {
+        tsk_tui::dispatch::SystemDispatchHost.delete_merged_branch_with_reason(
+            &repo.project,
+            "tsk/t1-clean",
+            "base",
+        )
+    };
+    let elapsed = start.elapsed();
+    assert_eq!(
+        result,
+        Ok(tsk_tui::dispatch::BranchDeletion::Removed),
+        "an ancestry check slower than 250ms must still complete and delete a merged branch: {result:?}"
+    );
+    assert!(
+        elapsed >= std::time::Duration::from_secs(1),
+        "expected the wrapper's artificial delay to be observed, got {elapsed:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "must still stay within cleanup's deadline, got {elapsed:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn cleanup_inspection_tolerates_a_slow_but_finishing_ancestry_check() {
+    if ancestry_probe_child(
+        "cli_dispatch::cleanup_inspection_tolerates_a_slow_but_finishing_ancestry_check",
+        1,
+    ) {
+        return;
+    }
+    let repo = CleanupRepo::new();
+    let (state, id) = repo.state("base", None);
+    let start = std::time::Instant::now();
+    let result = tsk_tui::dispatch::SystemDispatchHost
+        .inspect_cleanup(
+            &repo.project,
+            state.get(id).unwrap().dispatch.as_ref().unwrap(),
+            false,
+        )
+        .unwrap();
+    assert!(result.branch_merged);
+    assert!(start.elapsed() >= std::time::Duration::from_secs(1));
 }
