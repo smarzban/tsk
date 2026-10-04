@@ -17,22 +17,90 @@ const CONFIG_FILE: &str = "config.toml";
 pub const CONFIG_TEMP_PREFIX: &str = ".config.toml.tmp.";
 static CONFIG_TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
-const STARTER_AGENTS: &str = "# tsk settings. Each [agent.<name>] table is a launch profile.\n\
-# Assign with `!a name`, dispatch with ctrl+g.\n\
-# Placeholders in command and prompt: {number} {title} {notes} {steps} {worktree} {branch} {base}\n\
-# The prompt is appended to the command as its last argument. Omit `prompt` for the default:\n\
-#   You were dispatched to T{number} in this worktree. Run `tsk guide`, then `tsk list {number}`.\n\
-#   Set the task to review when done, or blocked when a human is needed.\n\
-\n\
-# [agent.grok]\n\
-# command = [\"pi\", \"--model\", \"xai/grok-4.6\", \"--thinking\", \"high\"]\n\
-\n\
-# [agent.opus]\n\
-# command = [\"claude\", \"--model\", \"opus\", \"--effort\", \"high\"]\n\
-# prompt = \"Review the branch for T{number}: {title}. Leave findings as steps on the task, then set review.\"\n\
-\n\
-# [agent.fable]\n\
-# command = [\"fable\"]\n";
+/// The commented `config.toml` a full board open seeds. Every profile is commented out, and
+/// the quoted default prompt must stay equal to [`DEFAULT_PROMPT`] (pinned by a test).
+pub const STARTER_CONFIG: &str = r##"# tsk configuration
+#
+# Agent profiles let you assign a task to an agent (`!a name` or `@`) and
+# launch it with ctrl+g. tsk creates a git worktree for the task, opens a
+# Herdr workspace there, and runs the profile's command in it.
+#
+# Any agent that runs in a terminal works, including ones not listed here.
+# A profile needs only:
+#
+#   [agent.<name>]                     name: lowercase letters, digits, - and .
+#   command = ["program", "arg", ...]  the program and its arguments
+#
+# tsk adds the prompt as the LAST argument, so the agent must accept its first
+# message as a trailing argument (`claude "…"`, `pi "…"`, `codex "…"`).
+#
+# Optional:
+#   prompt = "…"                       replaces the default prompt below
+#   [agent.<name>.env]                 extra environment variables
+#   KEY = "value"
+#
+# Placeholders, usable in `command` and `prompt`:
+#   {number}    task number, e.g. 158
+#   {title}     task title
+#   {notes}     task notes
+#   {steps}     task steps, one per line as [ ] or [x]
+#   {worktree}  path of the task's worktree
+#   {branch}    the task's branch
+#   {base}      the branch the work starts from, e.g. main
+#
+# The default prompt, used when a profile has no `prompt`:
+#
+#   You were dispatched to T{number} ({title}) in worktree {worktree} on
+#   branch {branch}, based on {base}.
+#
+#   1. Run `tsk guide`, then `tsk list {number} --json`. The task notes are
+#      your brief.
+#   2. Read the repo's agent instructions (AGENTS.md or CLAUDE.md) if present.
+#   3. Work only on {branch}. Run the project's checks before saying you are
+#      done.
+#   4. Push and open a pull request into {base}. Never merge it.
+#   5. Set the task to review with one line on what to look at, or to blocked
+#      with your question when you need a human.
+#
+# Remove the leading # from a block below to use it.
+
+# --- Examples using the default prompt -------------------------------------
+
+# [agent.claude]
+# command = ["claude"]
+
+# [agent.sol]
+# command = ["codex", "--model", "gpt-6.1-sol"]
+
+# [agent.pi-opus]
+# command = ["pi", "--model", "anthropic/claude-opus-5-5", "--thinking", "high"]
+
+# --- Examples with their own prompt -----------------------------------------
+
+# A quick fixer for small tasks, with the task text inlined.
+# [agent.grok]
+# command = ["grok", "--model", "grok-4.7"]
+# prompt = """
+# Fix T{number}: {title}
+#
+# {notes}
+#
+# {steps}
+#
+# Keep the change small, commit on {branch}, open a pull request into {base},
+# then set the task to review.
+# """
+
+# Any other terminal agent: put its program and flags in `command`.
+# `env` sets environment variables for that agent only. For example, mark
+# the agent's commits so they are easy to tell apart from yours.
+# Do not put API keys here: this file is plain text.
+# [agent.my-agent]
+# command = ["my-agent", "--some-flag"]
+# [agent.my-agent.env]
+# GIT_AUTHOR_NAME = "my-agent (via tsk)"
+# GIT_COMMITTER_NAME = "my-agent (via tsk)"
+"##;
 
 /// Seed the commented profile examples on a full board open.
 ///
@@ -49,7 +117,7 @@ pub fn seed_on_open(state_dir: &Path) -> io::Result<bool> {
     let tmp = unique_tmp_path(state_dir);
     let write_result = (|| -> io::Result<bool> {
         let mut temp_file = create_private_temp(&tmp)?;
-        temp_file.write_all(STARTER_AGENTS.as_bytes())?;
+        temp_file.write_all(STARTER_CONFIG.as_bytes())?;
         temp_file.sync_all()?;
         drop(temp_file);
         match fs::hard_link(&tmp, &target) {
@@ -94,8 +162,15 @@ fn unique_tmp_path(dir: &Path) -> PathBuf {
     ))
 }
 
-/// Prompt used by a profile that does not define its own template.
-pub const DEFAULT_PROMPT: &str = "You were dispatched to T{number} in this worktree. Run `tsk guide`, then `tsk list {number}`. Set the task to review when done, or blocked when a human is needed.";
+/// Prompt used by a profile that does not define its own template. It assumes a git
+/// worktree, which dispatch guarantees (non-git projects refuse before rendering).
+pub const DEFAULT_PROMPT: &str = "You were dispatched to T{number} ({title}) in worktree {worktree} on branch {branch}, based on {base}.
+
+1. Run `tsk guide`, then `tsk list {number} --json`. The task notes are your brief.
+2. Read the repo's agent instructions (AGENTS.md or CLAUDE.md) if present.
+3. Work only on {branch}. Run the project's checks before saying you are done.
+4. Push and open a pull request into {base}. Never merge it.
+5. Set the task to review with one line on what to look at, or to blocked with your question when you need a human.";
 
 /// All agent profiles loaded from one state directory.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -665,7 +740,10 @@ command = ["pi"]
         let rendered = profile.render(&context());
         assert_eq!(
             rendered.argv,
-            ["fable", DEFAULT_PROMPT.replace("{number}", "101").as_str()]
+            [
+                "fable",
+                render_template(DEFAULT_PROMPT, &context()).as_str()
+            ]
         );
     }
 
@@ -725,12 +803,130 @@ command = ["pi"]
         };
 
         let rendered = profile.render(&context());
-        let prompt = rendered.argv.last().expect("appended prompt");
-        assert_eq!(prompt, &DEFAULT_PROMPT.replace("{number}", "101"));
-        assert!(prompt.contains("tsk guide"));
-        assert!(prompt.contains("tsk list 101"));
-        assert!(prompt.contains("review"));
-        assert!(prompt.contains("blocked"));
+        assert_eq!(
+            rendered.argv.last().expect("appended prompt"),
+            "You were dispatched to T101 (Load profiles) in worktree /tmp/tsk-t101 on branch \
+tsk/t101-load-profiles, based on dispatch.
+
+1. Run `tsk guide`, then `tsk list 101 --json`. The task notes are your brief.
+2. Read the repo's agent instructions (AGENTS.md or CLAUDE.md) if present.
+3. Work only on tsk/t101-load-profiles. Run the project's checks before saying you are done.
+4. Push and open a pull request into dispatch. Never merge it.
+5. Set the task to review with one line on what to look at, or to blocked with your question \
+when you need a human."
+        );
+    }
+
+    // The rendered line is POSIX shell; Windows refuses dispatch before rendering.
+    #[cfg(unix)]
+    #[test]
+    fn rendering_the_builtin_prompt_survives_shell_quoting_of_a_hostile_title() {
+        let profile = AgentProfile {
+            command: vec!["printf".into(), "%s".into()],
+            prompt: None,
+            env: Default::default(),
+        };
+        let context = RenderContext {
+            title: "Don't run `rm -rf $HOME`; echo \"hi\"",
+            ..context()
+        };
+
+        let rendered = profile.render(&context);
+        let pinned = rendered
+            .command
+            .strip_prefix("$SHELL ")
+            .map(|rest| format!("/bin/sh {rest}"))
+            .expect("rendered command starts with $SHELL");
+        let output = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(pinned)
+            .env_remove("SHELL")
+            .output()
+            .expect("run rendered command");
+        assert!(output.status.success());
+        let printed = String::from_utf8(output.stdout).expect("utf-8");
+        assert_eq!(&printed, rendered.argv.last().expect("appended prompt"));
+        assert!(printed.starts_with(
+            "You were dispatched to T101 (Don't run `rm -rf $HOME`; echo \"hi\") in worktree"
+        ));
+    }
+
+    /// The default prompt as the starter file quotes it, unwrapped: `#   ` prefixes stripped,
+    /// a bare `#` is a paragraph break, a `N. ` line starts a new line, and any other line
+    /// continues the one before it.
+    fn starter_quoted_default_prompt() -> String {
+        let lines = STARTER_CONFIG
+            .lines()
+            .skip_while(|line| !line.starts_with("# The default prompt, used when"))
+            .skip(2)
+            .take_while(|line| !line.starts_with("# Remove the leading #"))
+            .collect::<Vec<_>>();
+        let mut prompt = String::new();
+        for line in lines {
+            if line == "#" {
+                prompt.push_str("\n\n");
+                continue;
+            }
+            let text = line.strip_prefix("#   ").expect("quoted prompt line");
+            let starts_item = text.split_once(". ").is_some_and(|(number, _)| {
+                !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
+            });
+            if prompt.is_empty() || prompt.ends_with('\n') {
+                prompt.push_str(text);
+            } else if starts_item {
+                prompt.push('\n');
+                prompt.push_str(text);
+            } else {
+                prompt.push(' ');
+                prompt.push_str(text.trim_start());
+            }
+        }
+        prompt.trim_end().to_string()
+    }
+
+    #[test]
+    fn starter_file_quotes_the_default_prompt_verbatim() {
+        assert_eq!(starter_quoted_default_prompt(), DEFAULT_PROMPT);
+    }
+
+    #[test]
+    fn starter_file_has_no_active_profiles_and_every_example_parses() {
+        assert!(AgentProfiles::parse(STARTER_CONFIG)
+            .expect("starter parses")
+            .is_empty());
+
+        // Uncomment each block from its `# [agent.` header to the next blank line, as the
+        // header tells the user to; prose comments around the blocks stay comments.
+        let mut in_block = false;
+        let examples = STARTER_CONFIG
+            .lines()
+            .map(|line| {
+                in_block = line.starts_with("# [agent.") || (in_block && !line.is_empty());
+                if in_block {
+                    line.strip_prefix("# ")
+                        .unwrap_or(line.trim_start_matches('#'))
+                } else {
+                    line
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let profiles = AgentProfiles::parse(&examples).expect("uncommented examples parse");
+        assert_eq!(
+            profiles.names().collect::<Vec<_>>(),
+            ["claude", "grok", "my-agent", "pi-opus", "sol"]
+        );
+        let grok = profiles.get("grok").expect("grok example");
+        assert!(grok
+            .prompt
+            .as_deref()
+            .expect("grok prompt")
+            .starts_with("Fix T{number}: {title}\n\n{notes}"));
+        assert_eq!(
+            profiles.get("my-agent").expect("generic example").env["GIT_AUTHOR_NAME"],
+            "my-agent (via tsk)"
+        );
+        assert!(profiles.get("sol").expect("sol").prompt.is_none());
     }
 
     #[test]

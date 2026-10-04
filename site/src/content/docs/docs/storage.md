@@ -18,7 +18,7 @@ Herdr's plugin-specific state/config directories do not override these locations
 
 ## Configuration
 
-Settings are read from `config.toml` in the state directory, beside `tsk.json`. The first full board open creates a starter file when it is missing, with commented examples that define no profiles. Quick capture, CLI commands, and setup do not create it, and tsk never replaces an existing file, even an empty one. Top-level keys and tables tsk does not recognize are ignored, so a file written for a newer tsk still loads; inside an `[agent.<name>]` table an unknown key is an error.
+Settings are read from `config.toml` in the state directory, beside `tsk.json`. The first full board open creates a starter file when it is missing: it explains profiles and placeholders, quotes the default prompt, and holds commented examples (Claude Code, Codex, Pi, Grok, and any other terminal agent) that define no profiles until you uncomment one. Quick capture, CLI commands, and setup do not create it, and tsk never replaces an existing file, even an empty one. Top-level keys and tables tsk does not recognize are ignored, so a file written for a newer tsk still loads; inside an `[agent.<name>]` table an unknown key is an error.
 
 ### Agent profiles
 
@@ -33,7 +33,19 @@ prompt = "Work on T{number}: {title}\n\n{notes}\n\n{steps}"
 PI_PROVIDER = "anthropic"
 ```
 
-`command` is a required, non-empty argv template. `prompt` is optional; without it, tsk supplies a prompt that points the agent to `tsk guide` and the task, then asks it to set the task to review or blocked. The rendered prompt is always appended to the command as its last argument. `env` is an optional table of string values passed to the launched command unchanged.
+`command` is a required, non-empty argv template. `prompt` is optional; without it, tsk supplies this default:
+
+```text
+You were dispatched to T{number} ({title}) in worktree {worktree} on branch {branch}, based on {base}.
+
+1. Run `tsk guide`, then `tsk list {number} --json`. The task notes are your brief.
+2. Read the repo's agent instructions (AGENTS.md or CLAUDE.md) if present.
+3. Work only on {branch}. Run the project's checks before saying you are done.
+4. Push and open a pull request into {base}. Never merge it.
+5. Set the task to review with one line on what to look at, or to blocked with your question when you need a human.
+```
+
+A profile with its own `prompt` replaces the default entirely. The rendered prompt is always appended to the command as its last argument. `env` is an optional table of string values passed to the launched command unchanged.
 
 A malformed `config.toml` does not block the board or CLI work that does not assign a task. The board opens without profiles and shows the error on its status row. `tsk add` and `tsk edit` read the file only when an assignee is supplied; a configuration error then exits 2 without saving.
 

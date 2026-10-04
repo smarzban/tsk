@@ -5146,7 +5146,7 @@ fn paint_selector_chip(model: &QueueFrameModel<'_>, width: u16) -> (Line<'static
 fn mutating_verb_key(key: &str) -> bool {
     matches!(
         key,
-        "s" | "d" | "o" | "b" | "r" | "x" | "a" | "e" | "u" | "n" | "f" | "q"
+        "s" | "d" | "o" | "b" | "r" | "x" | "a" | "e" | "u" | "n" | "f" | "g" | "q"
     )
 }
 
