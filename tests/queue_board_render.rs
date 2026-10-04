@@ -6090,3 +6090,74 @@ fn cleanup_card_exposes_cached_ref_warning_and_missing_base_without_a_squash_hin
         }
     }
 }
+
+fn bulk_cleanup_model() -> BoardModel {
+    use tsk_tui::ui::board::{BulkCleanup, CleanupPrompt, CleanupRow};
+    let domain = DomainState::new();
+    let mut model = BoardModel::from_domain(&domain, None);
+    let row = |number: u64, dirty: bool, merged: bool| CleanupRow {
+        merge_check: None,
+        number,
+        task_id: Uuid::from_u128(u128::from(number)),
+        worktree: format!("/tmp/tsk-t{number}-bulk"),
+        branch: format!("tsk/t{number}-bulk"),
+        base: "origin/dispatch".into(),
+        dirty,
+        branch_merged: merged,
+        base_available: true,
+        warning: None,
+        workspace_exists: true,
+    };
+    model.begin_cleanup_prompt(CleanupPrompt {
+        rows: vec![row(148, false, true), row(157, false, false), row(164, true, false)],
+        bulk: Some(BulkCleanup {
+            targets: (1..=4).map(Uuid::from_u128).collect(),
+            plain: vec!["T101".into()],
+            missing: Vec::new(),
+            refused: Vec::new(),
+        }),
+        confirm_deadline: None,
+        scroll: 0,
+    });
+    model
+}
+
+#[test]
+fn bulk_cleanup_card_lists_each_dispatch_without_paths_and_wraps_at_forty_columns() {
+    let model = bulk_cleanup_model();
+    let painted = board_rows(&model, 80, 30).join("\n");
+    for text in [
+        "Done 4 tasks · clean up 2 of 3?",
+        "T148  merged ✓",
+        "delete branch · remove worktree · close pane",
+        "T157  not merged into origin/dispatch",
+        "keep branch · remove worktree · close pane",
+        "T164  uncommitted changes",
+        "keep everything",
+        "+ T101 has no dispatch, just marked done",
+        "y done all + clean up · n done only · esc cancel",
+    ] {
+        assert!(painted.contains(text), "missing {text:?}:\n{painted}");
+    }
+    assert!(!painted.contains("/tmp/tsk-t148"), "bulk rows omit paths:\n{painted}");
+    assert!(!painted.contains("tsk/t148"), "bulk rows omit branches:\n{painted}");
+
+    let narrow = board_rows(&model, 40, 30).join("\n");
+    for text in ["merged ✓", "close pane", "keep everything", "marked done", "y clean up"] {
+        assert!(narrow.contains(text), "40 columns lost {text:?}:\n{narrow}");
+    }
+}
+
+#[test]
+fn a_bulk_cleanup_card_taller_than_the_frame_scrolls_like_help() {
+    let mut model = bulk_cleanup_model();
+    let first = board_rows(&model, 60, 8).join("\n");
+    assert!(first.contains("▼"), "more rows below:\n{first}");
+    assert!(first.contains("T148"), "{first}");
+    for _ in 0..20 {
+        model.scroll_cleanup(true);
+    }
+    let last = board_rows(&model, 60, 8).join("\n");
+    assert!(last.contains("▲") && !last.contains("▼"), "{last}");
+    assert!(last.contains("marked done"), "{last}");
+}

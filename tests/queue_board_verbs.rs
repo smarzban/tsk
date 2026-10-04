@@ -283,6 +283,19 @@ fn cleanup_popup_maps_explicit_choices_and_paints_the_guardrail_state() {
         map_key(BoardInputMode::CleanupConfirm, press(KeyCode::Esc)),
         Some(BoardIntent::CancelCleanup)
     );
+    for mode in [
+        BoardInputMode::CleanupConfirm,
+        BoardInputMode::CleanupDirtyConfirm,
+    ] {
+        assert_eq!(
+            map_key(mode, press(KeyCode::Down)),
+            Some(BoardIntent::CleanupScrollDown)
+        );
+        assert_eq!(
+            map_key(mode, press(KeyCode::Up)),
+            Some(BoardIntent::CleanupScrollUp)
+        );
+    }
     let screen = rendered_board(&model, 100, 30);
     for text in [
         "Done T1 · clean up?",

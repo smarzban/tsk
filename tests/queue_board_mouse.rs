@@ -17,7 +17,7 @@ use tsk_tui::app::{drag_content_area, tick_drag_autoscroll};
 use tsk_tui::domain::{DomainState, HumanStatus, ProvenanceOrigin, TaskScope};
 use tsk_tui::ui::board::{
     apply_intent, board_hit_map, board_verb_items, draw_board, resolve_board_command,
-    BoardInputMode, BoardModel, ProjectScopeOption,
+    BoardInputMode, BoardModel, CleanupPrompt, CleanupRow, ProjectScopeOption,
 };
 use tsk_tui::ui::capture::CaptureField;
 use tsk_tui::ui::input::{
@@ -3799,4 +3799,91 @@ fn peek_attribution_is_copyable_but_not_a_task_click_target() {
         .iter()
         .any(|area| area.y == y && area.x == 7 && area.width == 14));
     assert_eq!(map_board_mouse(&model, &hits, left_click(8, y)), None);
+}
+
+fn cleanup_card(model: &mut BoardModel, id: uuid::Uuid, dirty: bool) {
+    model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
+        merge_check: None,
+        number: 1,
+        task_id: id,
+        worktree: "/tmp/tsk-mouse-cleanup".into(),
+        branch: "tsk/t1-mouse".into(),
+        base: "origin/main".into(),
+        dirty,
+        branch_merged: true,
+        base_available: true,
+        warning: None,
+        workspace_exists: true,
+    }));
+}
+
+fn cleanup_option(hits: &QueueHitMap, index: usize) -> &QueueHit {
+    hits.regions
+        .iter()
+        .find(|hit| matches!(hit.target, QueueHitTarget::CleanupOption(i) if i == index))
+        .unwrap_or_else(|| panic!("cleanup footer entry {index} must be clickable"))
+}
+
+#[test]
+fn cleanup_card_close_control_cancels_like_esc() {
+    for dirty in [false, true] {
+        let (_domain, mut model, id) = board_with_task("cleanup close", HumanStatus::Started);
+        cleanup_card(&mut model, id, dirty);
+        let hits = board_hit_map(STANDARD, &model);
+        let close = hits
+            .regions
+            .iter()
+            .find(|hit| matches!(hit.target, QueueHitTarget::ModalClose))
+            .expect("the cleanup card paints `[x]`");
+        assert_eq!(
+            click(close, &model, &hits),
+            Some(BoardIntent::CancelCleanup),
+            "dirty: {dirty}"
+        );
+        let chrome = hits
+            .regions
+            .iter()
+            .find(|hit| matches!(hit.target, QueueHitTarget::ModalChrome))
+            .expect("card chrome");
+        assert_eq!(click(chrome, &model, &hits), None, "the border stays inert");
+    }
+}
+
+#[test]
+fn cleanup_card_footer_choices_dispatch_like_their_keys() {
+    let (_domain, mut model, id) = board_with_task("cleanup footer", HumanStatus::Started);
+    cleanup_card(&mut model, id, false);
+    assert_eq!(model.input_mode(), BoardInputMode::CleanupConfirm);
+    let hits = board_hit_map(STANDARD, &model);
+    for (index, intent) in [
+        BoardIntent::ConfirmCleanup,
+        BoardIntent::KeepCleanup,
+        BoardIntent::CancelCleanup,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(
+            click(cleanup_option(&hits, index), &model, &hits),
+            Some(intent)
+        );
+    }
+
+    // The dirty card has no `y`: its first entry is `n`.
+    let (_domain, mut model, id) = board_with_task("cleanup dirty", HumanStatus::Started);
+    cleanup_card(&mut model, id, true);
+    assert_eq!(model.input_mode(), BoardInputMode::CleanupDirtyConfirm);
+    let hits = board_hit_map(STANDARD, &model);
+    assert_eq!(
+        click(cleanup_option(&hits, 0), &model, &hits),
+        Some(BoardIntent::KeepCleanup)
+    );
+    assert_eq!(
+        click(cleanup_option(&hits, 1), &model, &hits),
+        Some(BoardIntent::CancelCleanup)
+    );
+    assert!(!hits
+        .regions
+        .iter()
+        .any(|hit| matches!(hit.target, QueueHitTarget::CleanupOption(2))));
 }
