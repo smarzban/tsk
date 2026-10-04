@@ -8434,7 +8434,7 @@ mod quick_assign_tests {
         handle_board_intent_with_host, BoardIntent, BoardSaveContext, DomainState,
     };
     use crate::agents::AgentProfiles;
-    use crate::dispatch::{CreatedWorktree, DispatchHost, BOARD_NO_ASSIGNEE, NO_ASSIGNEE};
+    use crate::dispatch::{CreatedWorktree, DispatchHost};
     use crate::domain::{ProvenanceOrigin, TaskScope, UndoEntry};
     use crate::save_recovery::SaveRecovery;
     use crate::store::TaskStore;
@@ -8664,7 +8664,7 @@ mod quick_assign_tests {
     }
 
     #[test]
-    fn esc_and_none_change_nothing_and_ctrl_g_none_never_dispatches() {
+    fn esc_in_the_at_picker_changes_nothing() {
         let temp = Temp::new("esc", &["builder"]);
         let (mut domain, mut model, ids) = board(&temp, &["leave me"]);
         select(&mut domain, &mut model, ids[0]);
@@ -8684,6 +8684,19 @@ mod quick_assign_tests {
         );
         assert_eq!(model.input_mode(), BoardInputMode::Normal);
         assert!(!model.list_picker_open());
+        let task = domain.get(ids[0]).expect("task");
+        assert_eq!(task.assignee, None);
+        assert_eq!(task.revision, before);
+    }
+
+    // Dispatch refuses on Windows before the picker can open; see the Windows test below.
+    #[cfg(unix)]
+    #[test]
+    fn none_in_the_ctrl_g_picker_never_dispatches() {
+        let temp = Temp::new("ctrl-g-none", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["leave me"]);
+        select(&mut domain, &mut model, ids[0]);
+        let before = domain.get(ids[0]).expect("task").revision;
 
         let mut host = fake_host(&temp);
         handle(
@@ -8716,6 +8729,7 @@ mod quick_assign_tests {
         assert_eq!(host.launched, 0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn ctrl_g_on_an_unassigned_task_assigns_then_dispatches() {
         let temp = Temp::new("ctrl-g", &["builder", "reviewer"]);
@@ -8749,8 +8763,10 @@ mod quick_assign_tests {
             .is_some_and(|message| message.contains("dispatched")));
     }
 
+    #[cfg(unix)]
     #[test]
-    fn ctrl_g_without_profiles_keeps_the_refusal_and_at_says_why() {
+    fn ctrl_g_without_profiles_keeps_the_refusal() {
+        use crate::dispatch::{BOARD_NO_ASSIGNEE, NO_ASSIGNEE};
         let temp = Temp::new("no-profiles", &[]);
         let (mut domain, mut model, ids) = board(&temp, &["nobody to pick"]);
         select(&mut domain, &mut model, ids[0]);
@@ -8769,7 +8785,35 @@ mod quick_assign_tests {
             !NO_ASSIGNEE.contains('@'),
             "the CLI refusal names the CLI route, not a board key"
         );
+    }
 
+    #[cfg(windows)]
+    #[test]
+    fn ctrl_g_on_an_unassigned_task_refuses_on_windows_before_the_picker() {
+        let temp = Temp::new("windows", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["no dispatch here"]);
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        let ctrl_g = key(&model, KeyCode::Char('g'), KeyModifiers::CONTROL);
+        handle(&temp, &mut domain, &mut model, ctrl_g, &mut host);
+        assert!(!model.list_picker_open(), "no picker opens");
+        assert_eq!(
+            model.message(),
+            Some(
+                crate::dispatch::DispatchError::UnsupportedPlatform
+                    .to_string()
+                    .as_str()
+            )
+        );
+        assert_eq!(domain.get(ids[0]).expect("task").assignee, None);
+        assert_eq!(host.launched, 0);
+    }
+
+    #[test]
+    fn at_without_profiles_says_why() {
+        let temp = Temp::new("at-no-profiles", &[]);
+        let (mut domain, mut model, ids) = board(&temp, &["nobody to pick"]);
+        select(&mut domain, &mut model, ids[0]);
         apply_intent(
             &mut domain,
             &mut model,
@@ -9051,6 +9095,7 @@ mod quick_assign_tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_failed_launch_after_picking_leaves_the_task_assigned_only() {
         let temp = Temp::new("launch-fails", &["builder"]);
@@ -9090,6 +9135,7 @@ mod quick_assign_tests {
         );
     }
 
+    #[cfg(unix)]
     fn click_picker_row(model: &BoardModel, label: &str) -> BoardIntent {
         let area = Rect::new(0, 0, 80, 24);
         let hits = board_hit_map(area, model);
@@ -9106,6 +9152,7 @@ mod quick_assign_tests {
         map_board_mouse(model, &hits, left_click(hit.area.x, hit.area.y)).expect("click intent")
     }
 
+    #[cfg(unix)]
     #[test]
     fn clicking_a_profile_in_the_ctrl_g_picker_dispatches_and_none_does_not() {
         let temp = Temp::new("click", &["builder", "reviewer"]);
