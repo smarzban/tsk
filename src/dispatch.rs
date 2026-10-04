@@ -354,6 +354,11 @@ pub trait DispatchHost {
             warning: None,
         })
     }
+    /// Whether a first dispatch must not take `branch`: a local or remote-tracking branch of that
+    /// name, or a registered worktree in the directory Herdr would derive from it, exists.
+    fn branch_taken(&mut self, _project: &Path, _branch: &str) -> Result<bool, String> {
+        Ok(false)
+    }
     fn create_worktree(
         &mut self,
         project: &Path,
@@ -472,6 +477,11 @@ impl DispatchHost for SystemDispatchHost {
             .output()
             .map_err(|error| format!("could not run herdr: {error}"))?;
         created_worktree_from_value(herdr_json(output)?)
+    }
+
+    fn branch_taken(&mut self, project: &Path, branch: &str) -> Result<bool, String> {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        system_branch_taken(project, branch, home.as_deref())
     }
 
     fn inspect_cleanup(
@@ -1237,7 +1247,7 @@ pub fn run_with_host_base(
                 return Err(DispatchError::AlreadyDispatched(existing.worktree.clone()));
             }
             if existing.cleaned {
-                let label = format!("T{number} {}", task.title);
+                let label = workspace_label(number, &task.title);
                 // Herdr's create command deliberately handles both cases: it creates a missing
                 // branch from the recorded base, or checks out an existing retained branch.
                 let recreated = host
@@ -1274,8 +1284,8 @@ pub fn run_with_host_base(
                 )
             }
         } else {
-            let requested_branch = format!("tsk/t{number}-{}", slug(&task.title));
-            let label = format!("T{number} {}", task.title);
+            let names = DispatchNames::new(number, &task.title);
+            let label = names.label.clone();
             let explicit = base_override.or(task.base.as_deref());
             let choice = host
                 .resolve_base_choice(project, explicit)
@@ -1288,6 +1298,7 @@ pub fn run_with_host_base(
                 })?;
             let base = choice.reference;
             warning = choice.warning;
+            let requested_branch = free_branch(host, project, &names, number)?;
             let created = host
                 .create_worktree(
                     project,
@@ -1390,35 +1401,187 @@ fn rendered_steps(task: &Task) -> String {
         .join("\n")
 }
 
-/// Git-safe, bounded title component. An all-punctuation title falls back to `task`.
-pub fn slug(title: &str) -> String {
-    const MAX: usize = 40;
-    let mut result = String::new();
-    let mut separator = false;
-    for character in title.chars().flat_map(char::to_lowercase) {
-        if character.is_ascii_alphanumeric() {
-            if separator && !result.is_empty() && result.len() < MAX {
-                result.push('-');
-            }
-            separator = false;
-            if result.len() < MAX {
-                result.push(character);
-            }
+/// Longest slug a dispatch name carries, before any `-2` collision suffix.
+const SLUG_MAX: usize = 30;
+
+/// Branch, worktree directory, and Herdr workspace label for a first dispatch, cut from one rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchNames {
+    /// Git-safe title component, possibly empty (a title of only symbols).
+    pub slug: String,
+    /// Herdr workspace label: `T<n>` plus the title words the slug kept, `…` when cut.
+    pub label: String,
+}
+
+impl DispatchNames {
+    pub fn new(number: u64, title: &str) -> Self {
+        let (slug, words) = cut_title(title);
+        let label = if words.is_empty() {
+            format!("T{number}")
         } else {
-            separator = true;
-        }
-        if result.len() >= MAX {
-            break;
-        }
+            format!("T{number} {words}")
+        };
+        Self { slug, label }
     }
-    while result.ends_with('-') {
-        result.pop();
+
+    /// `tsk/t<n>-<slug>`, or `tsk/t<n>` for an empty slug; `attempt` above 1 appends `-<attempt>`.
+    pub fn branch(&self, number: u64, attempt: u32) -> String {
+        let mut branch = format!("tsk/t{number}");
+        if !self.slug.is_empty() {
+            branch.push('-');
+            branch.push_str(&self.slug);
+        }
+        if attempt > 1 {
+            branch.push_str(&format!("-{attempt}"));
+        }
+        branch
     }
-    if result.is_empty() {
-        "task".into()
+}
+
+/// Label for a dispatch whose branch already exists (a cleaned record recreated by `--again`).
+pub fn workspace_label(number: u64, title: &str) -> String {
+    DispatchNames::new(number, title).label
+}
+
+/// Cuts the title into a slug and a label from one word list. Words are runs of alphanumeric
+/// characters (any script); everything else separates them and becomes one `-`. Whole words are
+/// kept while the lowercased slug stays within `SLUG_MAX` characters; a first word longer than
+/// that is hard-cut at a character boundary. The label is the original title up to the end of
+/// the last kept character, whitespace collapsed, with `…` only when something was cut.
+fn cut_title(title: &str) -> (String, String) {
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut slug = String::new();
+    let mut slug_chars = 0;
+    // Byte offset in `title` just past the last kept character.
+    let mut kept_end = 0;
+    let mut cut = false;
+    for (start, word) in alphanumeric_words(&title) {
+        let lower: String = word.chars().flat_map(char::to_lowercase).collect();
+        let joined = slug_chars + usize::from(slug_chars > 0) + lower.chars().count();
+        if joined <= SLUG_MAX {
+            if slug_chars > 0 {
+                slug.push('-');
+            }
+            slug.push_str(&lower);
+            slug_chars = joined;
+            kept_end = start + word.len();
+            continue;
+        }
+        if slug_chars == 0 {
+            for (offset, character) in word.char_indices() {
+                let lowered: String = character.to_lowercase().collect();
+                let width = lowered.chars().count();
+                if slug_chars + width > SLUG_MAX {
+                    break;
+                }
+                slug.push_str(&lowered);
+                slug_chars += width;
+                kept_end = start + offset + character.len_utf8();
+            }
+        }
+        cut = true;
+        break;
+    }
+    let label = if cut {
+        format!("{}…", title[..kept_end].trim_end())
     } else {
-        result
+        title
+    };
+    (slug, label)
+}
+
+/// Maximal runs of alphanumeric characters with their byte offsets.
+fn alphanumeric_words(text: &str) -> Vec<(usize, &str)> {
+    let mut words = Vec::new();
+    let mut start = None;
+    for (offset, character) in text.char_indices() {
+        match (character.is_alphanumeric(), start) {
+            (true, None) => start = Some(offset),
+            (false, Some(begin)) => {
+                words.push((begin, &text[begin..offset]));
+                start = None;
+            }
+            _ => {}
+        }
     }
+    if let Some(begin) = start {
+        words.push((begin, &text[begin..]));
+    }
+    words
+}
+
+/// Directory Herdr gives a worktree for `branch`: every run of characters other than ASCII
+/// letters and digits becomes one `-`, so `tsk/t1-café-東京` checks out in `tsk-t1-caf`.
+fn herdr_worktree_directory(branch: &str) -> String {
+    branch
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// Real-host name check: a local or remote-tracking branch, a registered worktree in the
+/// directory Herdr derives from `branch`, or any entry already at Herdr's default checkout path
+/// (`~/.herdr/worktrees/<repo>/<directory>`), registered or not.
+fn system_branch_taken(project: &Path, branch: &str, home: Option<&Path>) -> Result<bool, String> {
+    let local = format!("refs/heads/{branch}");
+    let remote = format!("refs/remotes/*/{branch}");
+    let output = crate::git_base::git_process_output_timeout(
+        project,
+        &["for-each-ref", "--format=%(refname)", &local, &remote],
+        Duration::from_secs(5),
+    )?;
+    if !output.status.success() {
+        return Err(command_failure("git for-each-ref", &output));
+    }
+    if !String::from_utf8_lossy(&output.stdout).trim().is_empty() {
+        return Ok(true);
+    }
+    let output = crate::git_base::git_process_output_timeout(
+        project,
+        &["worktree", "list", "--porcelain"],
+        Duration::from_secs(5),
+    )?;
+    if !output.status.success() {
+        return Err(command_failure("git worktree list", &output));
+    }
+    let directory = herdr_worktree_directory(branch);
+    if let (Some(home), Some(repo)) = (home, project.file_name()) {
+        let default = home.join(".herdr/worktrees").join(repo).join(&directory);
+        if default.symlink_metadata().is_ok() {
+            return Ok(true);
+        }
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .any(|path| Path::new(path).file_name() == Some(directory.as_ref())))
+}
+
+/// Collision suffixes tried before dispatch gives up (`-2` through this).
+const MAX_NAME_ATTEMPT: u32 = 99;
+
+/// First of `tsk/t<n>-<slug>`, `…-2`, `…-3` that no branch or worktree holds. A failed check
+/// refuses: guessing could hand the agent someone else's branch.
+fn free_branch(
+    host: &mut impl DispatchHost,
+    project: &Path,
+    names: &DispatchNames,
+    number: u64,
+) -> Result<String, DispatchError> {
+    for attempt in 1..=MAX_NAME_ATTEMPT {
+        let branch = names.branch(number, attempt);
+        if !host
+            .branch_taken(project, &branch)
+            .map_err(DispatchError::Herdr)?
+        {
+            return Ok(branch);
+        }
+    }
+    Err(DispatchError::Herdr(format!(
+        "no free branch name: {} through -{MAX_NAME_ATTEMPT} exist",
+        names.branch(number, 1)
+    )))
 }
 
 #[cfg(test)]
@@ -1451,6 +1614,9 @@ mod tests {
     #[derive(Default)]
     struct FakeHost {
         git: bool,
+        taken: Vec<String>,
+        fail_taken: Option<String>,
+        created_labels: Vec<String>,
         fail_create: Option<String>,
         fail_run: Option<String>,
         pane_agent: Option<bool>,
@@ -1475,15 +1641,23 @@ mod tests {
             Ok("main".into())
         }
 
+        fn branch_taken(&mut self, _: &Path, branch: &str) -> Result<bool, String> {
+            if let Some(error) = self.fail_taken.clone() {
+                return Err(error);
+            }
+            Ok(self.taken.iter().any(|taken| taken == branch))
+        }
+
         fn create_worktree(
             &mut self,
             _: &Path,
             branch: &str,
             base: Option<&str>,
-            _: &str,
+            label: &str,
         ) -> Result<CreatedWorktree, String> {
             self.creates += 1;
             self.created_bases.push(base.map(str::to_string));
+            self.created_labels.push(label.into());
             if let Some(error) = self.fail_create.clone() {
                 return Err(error);
             }
@@ -2397,13 +2571,338 @@ mod tests {
         assert_eq!(CleanupError::Herdr("failed".into()).code(), "herdr-failed");
     }
 
+    fn names(title: &str) -> (String, String) {
+        let names = DispatchNames::new(7, title);
+        (names.branch(7, 1), names.label)
+    }
+
     #[test]
-    fn slug_is_lowercase_bounded_and_trimmed() {
-        assert_eq!(slug("  Hello, WORLD!! "), "hello-world");
-        assert_eq!(slug("!!!"), "task");
-        let value = slug(&"A".repeat(100));
-        assert_eq!(value.len(), 40);
-        assert!(value.bytes().all(|byte| byte.is_ascii_lowercase()));
+    fn dispatch_names_keep_short_titles_whole() {
+        assert_eq!(
+            names("  Hello, WORLD!! "),
+            ("tsk/t7-hello-world".into(), "T7 Hello, WORLD!!".into())
+        );
+    }
+
+    #[test]
+    fn dispatch_names_cut_long_titles_at_a_word_boundary_within_30() {
+        assert_eq!(
+            names("up/down is reveresd in project selector"),
+            (
+                "tsk/t7-up-down-is-reveresd-in-project".into(),
+                "T7 up/down is reveresd in project…".into()
+            )
+        );
+        assert_eq!(
+            names("Shorter dispatch branch, worktree, and workspace names"),
+            (
+                "tsk/t7-shorter-dispatch-branch".into(),
+                "T7 Shorter dispatch branch…".into()
+            )
+        );
+    }
+
+    #[test]
+    fn dispatch_names_split_words_on_every_separator_not_only_whitespace() {
+        assert_eq!(
+            names("fix parser/lexer_tokenizer_overflow bug"),
+            (
+                "tsk/t7-fix-parser-lexer-tokenizer".into(),
+                "T7 fix parser/lexer_tokenizer…".into()
+            )
+        );
+    }
+
+    #[test]
+    fn dispatch_names_keep_a_slug_of_exactly_30_without_ellipsis() {
+        let thirty = "abcdefghij abcdefghi abcdefghi";
+        assert_eq!(cut_title(thirty).0.chars().count(), 30);
+        assert_eq!(
+            names(thirty),
+            (
+                "tsk/t7-abcdefghij-abcdefghi-abcdefghi".into(),
+                "T7 abcdefghij abcdefghi abcdefghi".into()
+            )
+        );
+        assert_eq!(names(&format!("{thirty} x")).1, format!("T7 {thirty}…"));
+    }
+
+    #[test]
+    fn dispatch_names_let_symbol_only_tokens_cost_nothing() {
+        assert_eq!(
+            names("abcdefghij abcdefghi abcdefghi 🚀"),
+            (
+                "tsk/t7-abcdefghij-abcdefghi-abcdefghi".into(),
+                "T7 abcdefghij abcdefghi abcdefghi 🚀".into()
+            )
+        );
+        assert_eq!(
+            names("Bump deps (serde, tokio, clap) — CI"),
+            (
+                "tsk/t7-bump-deps-serde-tokio-clap-ci".into(),
+                "T7 Bump deps (serde, tokio, clap) — CI".into()
+            )
+        );
+        let rockets = "🚀".repeat(31);
+        assert_eq!(
+            names(&format!("{rockets} fix")),
+            ("tsk/t7-fix".into(), format!("T7 {rockets} fix"))
+        );
+    }
+
+    #[test]
+    fn dispatch_names_hard_cut_a_first_word_longer_than_30_in_slug_and_label() {
+        let (branch, label) = names(&format!("{} tail", "a".repeat(40)));
+        assert_eq!(branch, format!("tsk/t7-{}", "a".repeat(30)));
+        assert_eq!(label, format!("T7 {}…", "a".repeat(30)));
+        // The label cut lands where the slug cut does, past leading symbols.
+        let (branch, label) = names(&format!("!!!{}", "a".repeat(31)));
+        assert_eq!(branch, format!("tsk/t7-{}", "a".repeat(30)));
+        assert_eq!(label, format!("T7 !!!{}…", "a".repeat(30)));
+    }
+
+    #[test]
+    fn dispatch_names_cut_multibyte_words_at_character_boundaries() {
+        let (branch, label) = names(&"é".repeat(40));
+        assert_eq!(branch, format!("tsk/t7-{}", "é".repeat(30)));
+        assert_eq!(label, format!("T7 {}…", "é".repeat(30)));
+        // `İ` lowercases to two characters; the cut never splits that pair.
+        let (branch, label) = names(&"İ".repeat(20));
+        assert_eq!(branch, format!("tsk/t7-{}", "i\u{307}".repeat(15)));
+        assert_eq!(label, format!("T7 {}…", "İ".repeat(15)));
+    }
+
+    #[test]
+    fn dispatch_names_drop_the_slug_for_a_symbols_only_title() {
+        assert_eq!(names("!!! ???"), ("tsk/t7".into(), "T7 !!! ???".into()));
+        assert_eq!(names("🚀"), ("tsk/t7".into(), "T7 🚀".into()));
+        let long = "🚀 ".repeat(40);
+        assert_eq!(
+            names(&long),
+            ("tsk/t7".into(), format!("T7 {}", long.trim()))
+        );
+        assert_eq!(DispatchNames::new(7, "!!!").branch(7, 2), "tsk/t7-2");
+    }
+
+    #[test]
+    fn dispatch_names_keep_unicode_letters_and_digits() {
+        assert_eq!(
+            names("Café crème 🚀 launch"),
+            (
+                "tsk/t7-café-crème-launch".into(),
+                "T7 Café crème 🚀 launch".into()
+            )
+        );
+        assert_eq!(
+            names("東京 タワー２"),
+            ("tsk/t7-東京-タワー２".into(), "T7 東京 タワー２".into())
+        );
+        let long =
+            "修复项目 选择器上下 方向颠倒问题 以及其他 一些很长的标题文字 还有更多内容在这里";
+        let (branch, label) = names(long);
+        assert_eq!(branch, "tsk/t7-修复项目-选择器上下-方向颠倒问题-以及其他");
+        assert_eq!(label, "T7 修复项目 选择器上下 方向颠倒问题 以及其他…");
+    }
+
+    #[test]
+    fn system_host_treats_local_remote_and_worktree_names_as_taken() {
+        let root = std::env::temp_dir().join(format!(
+            "tsk-dispatch-taken-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let project = root.join("repo");
+        fs::create_dir_all(&project).expect("mkdir");
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&project)
+                .args(args)
+                .output()
+                .expect("run git");
+            assert!(output.status.success(), "{args:?}: {output:?}");
+        };
+        git(&["init", "-q"]);
+        git(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ]);
+        git(&["branch", "tsk/t1-local"]);
+        git(&["update-ref", "refs/remotes/origin/tsk/t2-remote", "HEAD"]);
+        let worktree = root.join("tsk-t3-dir");
+        git(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "elsewhere",
+            worktree.to_str().unwrap(),
+        ]);
+
+        // Left behind at Herdr's default checkout path with no registration and no branch.
+        let home = root.join("home");
+        fs::create_dir_all(home.join(".herdr/worktrees/repo/tsk-t4-leftover")).expect("mkdir");
+
+        for (branch, taken) in [
+            ("tsk/t1-local", true),
+            ("tsk/t2-remote", true),
+            ("tsk/t3-dir", true),
+            ("tsk/t4-leftover", true),
+            ("tsk/t1", false),
+            ("tsk/t1-local-2", false),
+            ("tsk/t4-leftover-2", false),
+        ] {
+            assert_eq!(
+                system_branch_taken(&project, branch, Some(&home)),
+                Ok(taken),
+                "{branch}"
+            );
+        }
+        assert!(system_branch_taken(&root, "tsk/t1", Some(&home)).is_err());
+
+        // Herdr checks a Unicode branch out in an ASCII directory, which can collide.
+        assert_eq!(
+            herdr_worktree_directory("tsk/t6-café-東京-x"),
+            "tsk-t6-caf-x"
+        );
+        fs::create_dir_all(home.join(".herdr/worktrees/repo/tsk-t6-caf-x")).expect("mkdir");
+        assert_eq!(
+            system_branch_taken(&project, "tsk/t6-café-東京-x", Some(&home)),
+            Ok(true)
+        );
+
+        // Unicode slugs stay valid branch names.
+        let branch = DispatchNames::new(5, "Café 東京 İstanbul — ünïcode").branch(5, 2);
+        git(&["check-ref-format", "--branch", &branch]);
+        git(&["branch", &branch]);
+        assert_eq!(system_branch_taken(&project, &branch, None), Ok(true));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn first_dispatch_hands_the_cut_label_and_suffixed_branch_to_herdr_and_the_agent() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let title = "Shorter dispatch branch, worktree, and workspace names";
+        state
+            .edit(
+                id,
+                title,
+                None,
+                state.get(id).expect("task").scope.clone(),
+                None,
+            )
+            .expect("retitle");
+        let mut host = FakeHost {
+            git: true,
+            taken: vec!["tsk/t1-shorter-dispatch-branch".into()],
+            ..FakeHost::default()
+        };
+        let result =
+            run_with_host(&mut state, id, &profiles, false, true, &mut host).expect("dispatch");
+        let branch = "tsk/t1-shorter-dispatch-branch-2";
+        assert_eq!(result.record.branch, branch);
+        assert_eq!(host.created_labels, ["T1 Shorter dispatch branch…"]);
+        assert!(result.record.argv.iter().any(|arg| arg == branch));
+        assert!(host.runs[0].1.contains(branch));
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn again_keeps_recorded_names_after_a_retitle_and_never_rechecks_them() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let mut first = FakeHost {
+            git: true,
+            taken: vec!["tsk/t1-ship-dispatch".into()],
+            ..FakeHost::default()
+        };
+        run_with_host(&mut state, id, &profiles, false, true, &mut first).expect("dispatch");
+        let recorded = "tsk/t1-ship-dispatch-2";
+        let scope = state.get(id).expect("task").scope.clone();
+        state
+            .edit(
+                id,
+                "A much longer title that the slug has to cut",
+                None,
+                scope,
+                None,
+            )
+            .expect("retitle");
+        // Any name probe on a relaunch would fail it: the recorded branch is reused as-is.
+        let probe_fails = || FakeHost {
+            git: true,
+            fail_taken: Some("name probe must not run on --again".into()),
+            ..FakeHost::default()
+        };
+
+        let mut live = probe_fails();
+        let result =
+            run_with_host(&mut state, id, &profiles, true, true, &mut live).expect("again live");
+        assert_eq!(result.record.branch, recorded);
+        assert_eq!(live.creates, 0);
+
+        let mut clean = FakeHost {
+            cleanup: Some(CleanupInspection {
+                warning: None,
+                base_available: true,
+                worktree_exists: false,
+                dirty: false,
+                branch_merged: false,
+                workspace_exists: false,
+                target_matches: true,
+            }),
+            ..FakeHost::default()
+        };
+        clean_with_host(&mut state, id, true, &mut clean).expect("clean");
+        let mut recreate = probe_fails();
+        recreate.taken = vec![recorded.into()];
+        let result = run_with_host(&mut state, id, &profiles, true, true, &mut recreate)
+            .expect("again cleaned");
+        assert_eq!(result.record.branch, recorded);
+        assert_eq!(
+            recreate.created_labels,
+            ["T1 A much longer title that the…"]
+        );
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn first_dispatch_appends_a_suffix_past_taken_branch_names() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let mut host = FakeHost {
+            git: true,
+            taken: vec![
+                "tsk/t1-ship-dispatch".into(),
+                "tsk/t1-ship-dispatch-2".into(),
+            ],
+            ..FakeHost::default()
+        };
+        let result =
+            run_with_host(&mut state, id, &profiles, false, true, &mut host).expect("dispatch");
+        assert_eq!(result.record.branch, "tsk/t1-ship-dispatch-3");
+        assert_eq!(host.created_labels, ["T1 Ship Dispatch!!!"]);
+
+        let (mut state, id) = task();
+        let mut host = FakeHost {
+            git: true,
+            fail_taken: Some("git timed out".into()),
+            ..FakeHost::default()
+        };
+        let error = run_with_host(&mut state, id, &profiles, false, true, &mut host)
+            .expect_err("unanswered name check refuses");
+        assert!(matches!(error, DispatchError::Herdr(_)), "{error}");
+        assert_eq!(host.creates, 0);
+        assert!(state.get(id).expect("task").dispatch.is_none());
+        fs::remove_dir_all(path).expect("cleanup");
     }
 
     #[test]
