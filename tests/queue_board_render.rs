@@ -1499,6 +1499,33 @@ fn assigned_task_renders_on_the_row_and_before_thread_in_the_page_footer() {
 }
 
 #[test]
+fn assigned_task_legend_shows_dispatch_with_its_ctrl_chord() {
+    let mut domain = DomainState::new();
+    domain
+        .create_assigned(
+            "assigned work",
+            None,
+            project("/repos/atlas"),
+            ProvenanceOrigin::Manual,
+            None,
+            Some("reviewer".into()),
+        )
+        .expect("create assigned");
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from("/repos/atlas")));
+    let board = board_rows(&model, 100, 24).join("\n");
+    assert!(
+        board.contains("ctrl+s start · ctrl+g dispatch · "),
+        "the board legend must show dispatch's ctrl chord beside its siblings:\n{board}"
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+    let page = board_rows(&model, 100, 24).join("\n");
+    assert!(
+        page.contains("ctrl+s start · ctrl+g dispatch · "),
+        "the task page legend must show dispatch's ctrl chord:\n{page}"
+    );
+}
+
+#[test]
 fn task_page_footer_wraps_long_base_and_keeps_all_metadata_at_fifty_columns() {
     let mut domain = DomainState::new();
     let id = domain
