@@ -9,16 +9,20 @@ The board, CLI, and Herdr plugin share one store. The current store format is v6
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `TSK_STATE_DIR` | Platform default | Task data, agent profiles, backups, trash, and release-check cache. The default is `~/.tsk` on macOS/Linux, `%LOCALAPPDATA%\tsk` on Windows, or `%USERPROFILE%\.tsk` when `LOCALAPPDATA` is unavailable. Without a usable platform home, tsk refuses to run rather than pick a directory |
+| `TSK_STATE_DIR` | Platform default | Task data, configuration, backups, trash, and release-check cache. The default is `~/.tsk` on macOS/Linux, `%LOCALAPPDATA%\tsk` on Windows, or `%USERPROFILE%\.tsk` when `LOCALAPPDATA` is unavailable. Without a usable platform home, tsk refuses to run rather than pick a directory |
 | `--state-dir <dir>` | State directory | Override storage for a data command |
 
 Use a local disk. NFS and synced folders such as Dropbox or iCloud Drive are unsupported. Directory roots must be real directories, not symlinks or Windows reparse points such as junctions.
 
 Herdr's plugin-specific state/config directories do not override these locations. Removing tsk leaves its task data intact.
 
-## Agent profiles
+## Configuration
 
-Agent profiles are read from `agents.toml` in the state directory, beside `tsk.json`. The first full board open creates a starter file when it is missing, with commented examples that define no profiles. Quick capture, CLI commands, and setup do not create it, and tsk never replaces an existing file, even an empty one. Each profile name must already be lowercase and use the same shape as a thread name: start with a letter or number, then use only letters, numbers, hyphens, and dots, up to 32 characters. Quote a name that contains dots, for example `[agent."review.strict"]`.
+Settings are read from `config.toml` in the state directory, beside `tsk.json`. The first full board open creates a starter file when it is missing, with commented examples that define no profiles. Quick capture, CLI commands, and setup do not create it, and tsk never replaces an existing file, even an empty one. Top-level keys and tables tsk does not recognize are ignored, so a file written for a newer tsk still loads; inside an `[agent.<name>]` table an unknown key is an error.
+
+### Agent profiles
+
+Each `[agent.<name>]` table is an agent launch profile. Each profile name must already be lowercase and use the same shape as a thread name: start with a letter or number, then use only letters, numbers, hyphens, and dots, up to 32 characters. Quote a name that contains dots, for example `[agent."review.strict"]`.
 
 ```toml
 [agent.implementer]
@@ -31,7 +35,7 @@ PI_PROVIDER = "anthropic"
 
 `command` is a required, non-empty argv template. `prompt` is optional; without it, tsk supplies a prompt that points the agent to `tsk guide` and the task, then asks it to set the task to review or blocked. The rendered prompt is always appended to the command as its last argument. `env` is an optional table of string values passed to the launched command unchanged.
 
-A malformed profile file does not block the board or CLI work that does not assign a task. The board opens without profiles and shows the error on its status row. `tsk add` and `tsk edit` read the file only when an assignee is supplied; a profile-file error then exits 2 without saving.
+A malformed `config.toml` does not block the board or CLI work that does not assign a task. The board opens without profiles and shows the error on its status row. `tsk add` and `tsk edit` read the file only when an assignee is supplied; a configuration error then exits 2 without saving.
 
 The command and prompt templates support `{number}`, `{title}`, `{notes}`, `{steps}`, `{worktree}`, `{branch}`, and `{base}`. `{branch}` is the dispatched task branch; `{base}` is the short base branch name, for example `dispatch` for `origin/dispatch`, so a prompt can say "open the PR into {base}". tsk replaces only these placeholders. It quotes every argument and renders one command line as `$SHELL -lc '…'`; it never chains commands. Profiles are read-only in tsk, edit the file to change them.
 
@@ -42,7 +46,7 @@ The command and prompt templates support `{number}`, `{title}`, `{notes}`, `{ste
 | `tsk.json` | Current tasks and archived-project records |
 | `tsk.json.1` | Previous valid task document |
 | `tsk.json.v<N>` | Backup made when migrating an older store format, such as `tsk.json.v5` for the v5 → v6 migration |
-| `agents.toml` | Agent launch profiles, seeded with commented examples on the first full board open |
+| `config.toml` | Settings, including agent launch profiles, seeded with commented examples on the first full board open |
 | `delivery.json` | Which starter tasks this install has received or dismissed, and the newest release note it has seen |
 
 An older binary refuses a newer or unversioned store instead of rewriting it. Use a compatible tsk version to open it. On first save, v5 stores migrate to v6 to add optional task assignees, explicit base branches, and dispatch records; the original document is saved as `tsk.json.v5`. The optional task `base` is an explicit local or remote branch name; when absent, dispatch uses the task repository's remote default (`origin/HEAD`), not the current checkout. A dispatch record stores the resolved `base` display ref, `base_ref` fully qualified branch ref (`refs/heads/...` or `refs/remotes/...`), `base_commit` starting SHA, and optional `base_remote` fetch remote, using a local branch's remote upstream when present. Cleanup uses `base_ref` verbatim, so later remote configuration cannot change its namespace; older v6 records without it retain the legacy lookup. A missing base keeps the branch without blocking clean worktree removal. Cleanup checks ancestry against the recorded ref; relaunch keeps the recorded base and recreates a removed branch from its original `base_commit`, falling back to the recorded ref if the commit is absent. Older v6 records may omit these fields; cleanup keeps their branch when the base is unknown. Earlier stores still run through each migration in order, including v5 batch undo and the v3 to v4 move from ready to open.

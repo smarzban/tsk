@@ -28,8 +28,8 @@ use super::model::{
 /// What the row says when an action that aims at the selection is asked for on a board that
 /// has none. One wording, so the same refusal always reads the same way.
 const NO_SELECTION: &str = "select a task first";
-/// `@` with no `agents.toml` profile: the picker would offer only **none**.
-pub const NO_AGENT_PROFILES: &str = "no agent profiles · add one to agents.toml";
+/// `@` with no `config.toml` profile: the picker would offer only **none**.
+pub const NO_AGENT_PROFILES: &str = "no agent profiles · add one to config.toml";
 
 fn base_target_project(domain: &DomainState, ids: &[Uuid]) -> Result<PathBuf, String> {
     for id in ids {

@@ -35,7 +35,7 @@ fn cleanup_inspection_error(operation: &str, error: String) -> String {
 
 pub const NO_ASSIGNEE: &str = "no agent assigned, use tsk edit T<n> --assignee <name>";
 /// The board's wording of the same refusal: there `@` assigns, and with no profile it opens nothing.
-pub const BOARD_NO_ASSIGNEE: &str = "no agent assigned: press @ or add a profile to agents.toml";
+pub const BOARD_NO_ASSIGNEE: &str = "no agent assigned: press @ or add a profile to config.toml";
 pub const NOT_IN_HERDR: &str = "dispatch works inside herdr for now";
 pub const NEEDS_GIT_PROJECT: &str = "dispatch needs a project in a git repo";
 pub const UNSUPPORTED_PLATFORM: &str = "dispatch needs herdr on macOS or Linux";
@@ -1378,7 +1378,7 @@ mod tests {
         ));
         fs::create_dir_all(&path).expect("mkdir");
         fs::write(
-            path.join("agents.toml"),
+            path.join("config.toml"),
             "[agent.implementer]\ncommand = [\"runner\", \"{worktree}\", \"{branch}\", \"{prompt}\"]\n",
         )
         .expect("agents");

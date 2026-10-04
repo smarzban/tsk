@@ -3376,7 +3376,7 @@ mod tests {
     fn projects_preview_right_seat_inherits_agent_profiles_when_it_is_created() {
         let temp = TempStore::new("projects-preview-agents");
         std::fs::write(
-            temp.dir.join("agents.toml"),
+            temp.dir.join("config.toml"),
             "[agent.reviewer]\ncommand = [\"true\"]\n",
         )
         .expect("write profiles");
@@ -7402,7 +7402,7 @@ mod tests {
     fn dropdown_assignment_save_failure_retains_form_and_retry_finishes_batch() {
         let temp = TempStore::new("dropdown-assignment-recovery");
         std::fs::write(
-            temp.dir.join("agents.toml"),
+            temp.dir.join("config.toml"),
             "[agent.reviewer]\ncommand = [\"true\"]\n",
         )
         .expect("write profiles");
@@ -8488,7 +8488,7 @@ mod quick_assign_tests {
                 .map(|name| format!("[agent.{name}]\ncommand = [\"true\"]\n"))
                 .collect::<Vec<_>>()
                 .join("\n");
-            std::fs::write(dir.join("agents.toml"), content).expect("write profiles");
+            std::fs::write(dir.join("config.toml"), content).expect("write profiles");
             let store = TaskStore::new(&dir);
             Temp { dir, store }
         }

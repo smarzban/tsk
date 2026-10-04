@@ -89,7 +89,8 @@ fn catalog_ids() -> BTreeSet<String> {
         .collect()
 }
 
-const STARTER_AGENTS: &str = "# tsk agent profiles. Assign with `!a name`, dispatch with ctrl+g.\n\
+const STARTER_AGENTS: &str = "# tsk settings. Each [agent.<name>] table is a launch profile.\n\
+# Assign with `!a name`, dispatch with ctrl+g.\n\
 # Placeholders in command and prompt: {number} {title} {notes} {steps} {worktree} {branch} {base}\n\
 # The prompt is appended to the command as its last argument. Omit `prompt` for the default:\n\
 #   You were dispatched to T{number} in this worktree. Run `tsk guide`, then `tsk list {number}`.\n\
@@ -114,7 +115,7 @@ fn full_board_open_seeds_a_parseable_commented_agent_profile_file() {
     let _ = load_board_model().expect("full board open");
 
     assert_eq!(
-        fs::read_to_string(env.dir.join("agents.toml")).expect("seeded agents.toml"),
+        fs::read_to_string(env.dir.join("config.toml")).expect("seeded config.toml"),
         STARTER_AGENTS
     );
     assert!(
@@ -135,12 +136,12 @@ fn full_board_open_never_overwrites_an_existing_agent_profile_file() {
     ] {
         let env = StateDirEnv::set(label);
         fs::create_dir_all(&env.dir).expect("state dir");
-        fs::write(env.dir.join("agents.toml"), content).expect("existing agents.toml");
+        fs::write(env.dir.join("config.toml"), content).expect("existing config.toml");
 
         let _ = load_board_model().expect("full board open");
 
         assert_eq!(
-            fs::read_to_string(env.dir.join("agents.toml")).expect("existing agents.toml"),
+            fs::read_to_string(env.dir.join("config.toml")).expect("existing config.toml"),
             content
         );
     }
@@ -282,7 +283,7 @@ fn quick_capture_open_seeds_nothing() {
     assert!(notices(&store.load().expect("load")).is_empty());
     assert!(!env.dir.join(delivery::DELIVERY_FILE).exists());
     assert!(
-        !env.dir.join("agents.toml").exists(),
+        !env.dir.join("config.toml").exists(),
         "quick capture does not seed agent profiles"
     );
 }

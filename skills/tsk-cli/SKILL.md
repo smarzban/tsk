@@ -58,7 +58,7 @@ New tasks start `open` in the inbox; `ready` means the user picked it.
    to 32 characters. `--thread` lowercases the value; anything else is a usage error (exit 2). In a
    JSON plan a bad `thread` is an item refusal (`invalid-thread`).
 9. **Assignees are exact agent profiles.** `--assignee` normalizes to lowercase, then must match a
-   profile from `agents.toml`; unknown names refuse with `unknown-agent`. Use `--unassign` to clear.
+   profile from `config.toml`; unknown names refuse with `unknown-agent`. Use `--unassign` to clear.
    `tsk list --assignee <name> --json` filters assigned work.
 10. **Bases are branches in the task's repo.** `tsk add/edit --base <branch>` sets an explicit local
     or remote branch, never a tag or bare commit; unknown branches refuse with `unknown-base`.
