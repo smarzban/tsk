@@ -2027,6 +2027,7 @@ fn run_board_dispatch(
     explicit_again: bool,
     in_herdr: bool,
     host: &mut impl DispatchHost,
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
 ) {
     if let Err(error) = dispatch::ensure_platform_supported() {
         model.clear_marks();
@@ -2059,6 +2060,9 @@ fn run_board_dispatch(
                 save_recovery.fail(baseline, working, error.to_string());
                 model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
                 return;
+            }
+            if let Some(naming) = result.naming.clone() {
+                name_agent(naming);
             }
             model.sync_from_domain(domain);
             model.set_message(format!(
@@ -2117,6 +2121,8 @@ fn handle_board_intent(
         quick_capture,
         dispatch::running_inside_herdr(),
         &mut SystemDispatchHost,
+        // Detached: the board never waits on Herdr's agent detection.
+        &mut |naming| drop(dispatch::spawn_agent_naming(naming)),
     )
 }
 
@@ -2132,6 +2138,7 @@ fn handle_board_intent_with_host(
     quick_capture: bool,
     in_herdr: bool,
     host: &mut impl DispatchHost,
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
 ) -> io::Result<bool> {
     let Some(intent) = resolve_board_command(model, intent) else {
         return Ok(false);
@@ -2277,6 +2284,7 @@ fn handle_board_intent_with_host(
             intent == BoardIntent::DispatchAgain,
             in_herdr,
             host,
+            name_agent,
         );
         return Ok(false);
     }
@@ -2335,6 +2343,7 @@ fn handle_board_intent_with_host(
                 false,
                 in_herdr,
                 host,
+                name_agent,
             );
         }
     }
@@ -8576,6 +8585,7 @@ mod quick_assign_tests {
             false,
             true,
             host,
+            &mut |_| {},
         )
         .expect("board intent");
         assert!(!recovery.is_pending(), "no save failure expected");

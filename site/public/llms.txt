@@ -23,7 +23,7 @@ The quit shortcut exits from non-editor board surfaces, including task pages, He
 - `tsk guide` prints the workflow; `tsk setup` detects agents and can install the skill; `tsk setup <agent>` targets one agent
 - The skill covers rules of engagement, board language, the exit contract, and workflows, and points at `tsk help <command>` for syntax; its `Refine a task` section shapes a rough task into a brief on the board (propose, then write)
 - `tsk list T<n>` returns the complete task, including notes, steps, assignee, and thread, in human-readable or JSON form
-- `tsk dispatch T<n>` launches assigned project work in Herdr (macOS and Linux only; Windows refuses with `unsupported-platform`); `--again` reuses a live dispatch or recreates a cleaned worktree
+- `tsk dispatch T<n>` launches assigned project work in Herdr (macOS and Linux only; Windows refuses with `unsupported-platform`); `--again` reuses a live dispatch or recreates a cleaned worktree; the launched agent is named `t<n>-<assignee>` in Herdr when detected
 - `tsk clean T<n> [--json]` removes only the recorded non-root project worktree and matching Herdr workspace; `tsk status T<n> done --clean` persists done before trying cleanup
 - Guide: https://gettsk.sh/docs/agents.md
 - CLI: https://gettsk.sh/docs/cli.md
