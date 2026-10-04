@@ -168,7 +168,10 @@ test("demo matches the quick-add, peek, and group-toggle contracts", async () =>
   assert.match(landing, /overflow-wrap: anywhere/);
   assert.match(demo, /e\.key === "z" \|\| e\.key === "D"/);
   assert.doesNotMatch(demo, /saveDraft\(e\.ctrlKey \|\| e\.metaKey\)/);
-  assert.doesNotMatch(demo, /thread #\$\{task\.thread\}|scope \$\{projectName\(task\)\}|created \$\{age\(/);
+  assert.doesNotMatch(demo, /thread #\$\{task\.thread\}|scope \$\{projectName\(task\)\}/);
+  // Dates belong on the task page, never in the compact peek attribution.
+  const peekMeta = demo.slice(demo.indexOf("function metaFor(task)"), demo.indexOf("function showCopyNotice"));
+  assert.doesNotMatch(peekMeta, /created|updated|age\(/);
   assert.match(demo, /function toggleAllGroups\(\)/);
   assert.match(demo, /id: "groups", label: "toggle groups"/);
   assert.match(demo, /if \(e\.key === "g" && !e\.altKey && !e\.ctrlKey && !e\.metaKey\)/);

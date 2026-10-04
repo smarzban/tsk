@@ -1120,3 +1120,25 @@ fn timed_out_final_worktree_listing_keeps_the_branch_with_a_clear_reason() {
         .contains("worktree listing timed out; branch retained"));
     repo.git(&["show-ref", "--verify", "refs/heads/tsk/t1-clean"]);
 }
+
+// Real Git probes belong in this harness, away from PATH-mutating setup unit tests.
+#[test]
+fn git_worktree_listing_survives_prunable_entries_whose_directories_are_gone() {
+    let repo = CleanupRepo::new();
+    let parent = repo.root.join("stale");
+    let stale = parent.join("worktree");
+    repo.git(&["worktree", "add", "--detach", stale.to_str().unwrap()]);
+    fs::remove_dir_all(parent).unwrap();
+    let (state, id) = repo.state("base", None);
+    let inspection = tsk_tui::dispatch::SystemDispatchHost
+        .inspect_cleanup(
+            &repo.project,
+            state.get(id).unwrap().dispatch.as_ref().unwrap(),
+            false,
+        )
+        .unwrap();
+    assert!(
+        inspection.target_matches,
+        "the recorded worktree must remain resolvable beside a prunable entry"
+    );
+}

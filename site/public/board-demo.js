@@ -18,7 +18,9 @@ import { parseCapture } from "./capture.js";
     done: "✓",
   };
   const taskGlyph = (task) =>
-    task.status === "started" && task.dispatch ? "◉" : GLYPH[task.status] || "○";
+    task.status === "started" && task.dispatch
+      ? "◉"
+      : GLYPH[task.status] || "○";
 
   const TABS = [
     ["desk", "desk"],
@@ -665,7 +667,9 @@ import { parseCapture } from "./capture.js";
 
   function previewVisibleTasks() {
     const scoped = previewProjectTasks().filter(previewMatchesThread);
-    const live = scoped.filter((task) => taskMatchesSearch(task, preview.searchQuery));
+    const live = scoped.filter((task) =>
+      taskMatchesSearch(task, preview.searchQuery),
+    );
     const done = preview.drawer
       ? scoped.filter((task) => taskMatchesSearch(task, preview.searchQuery))
       : scoped;
@@ -680,9 +684,7 @@ import { parseCapture } from "./capture.js";
         .filter((task) => task.status === "blocked")
         .sort(byStatusChange),
       ready: live.filter((task) => task.status === "ready").sort(byCreated),
-      done: done
-        .filter((task) => task.status === "done")
-        .sort(byStatusChange),
+      done: done.filter((task) => task.status === "done").sort(byStatusChange),
     };
   }
 
@@ -2345,23 +2347,54 @@ import { parseCapture } from "./capture.js";
       .join(
         "",
       )}${pageSteps.editor && !pageSteps.editor.id ? `<div class="tsk-step-new">${inlineEditor}</div>` : `<button type="button" class="tsk-step-add dim" ${addAttribute}="1">   + step</button>`}</div>`;
-    const metaField = (field, text) =>
-      editing === field
-        ? `<span class="tsk-meta-selected" data-page-field="${field}">${text}</span>`
-        : text;
-    const thread = task.thread
-      ? `#${esc(task.thread)}`
-      : editing === "thread"
-        ? "thread"
-        : "";
-    const scope = previewMode || narrow || editing ? esc(project) : "";
+    // Match the TUI's pinned, wrapped footer, including bases without a repo/default lookup.
+    const base =
+      task.base || (task.project && !fixture ? "main (default)" : "default");
     const parts = [
-      thread && metaField("thread", thread),
-      scope && metaField("scope", scope),
-      `created ${esc(age(task.createdAt))} ago`,
-      `updated ${esc(age(task.updatedAt))} ago`,
+      task.assignee && { field: "assignee", text: `@${task.assignee}` },
+      { field: "base", text: `⎇ ${base}` },
+      (task.thread || editing === "thread") && {
+        field: "thread",
+        text: task.thread ? `#${task.thread}` : "thread",
+      },
+      (previewMode || narrow || editing) && { field: "scope", text: project },
+      { text: `created ${age(task.createdAt)} ago` },
+      { text: `updated ${age(task.updatedAt)} ago` },
     ].filter(Boolean);
-    const meta = `<div class="tsk-page-meta dim">${parts.join(" · ")}</div>`;
+    let position = 0;
+    const fields = parts.map((part) => {
+      const start = position;
+      position += [...part.text].length;
+      const end = position;
+      position += 3;
+      return { ...part, start, end };
+    });
+    let offset = 0;
+    const metaRows = wrapText(
+      parts.map((part) => part.text).join(" · "),
+      taskColumnWidth() - 2,
+    ).map((line) => {
+      const chars = [...line];
+      const end = offset + chars.length;
+      let painted = "";
+      let cursor = offset;
+      for (const part of fields) {
+        const left = Math.max(offset, part.start);
+        const right = Math.min(end, part.end);
+        if (right <= left) continue;
+        painted += esc(chars.slice(cursor - offset, left - offset).join(""));
+        const text = esc(chars.slice(left - offset, right - offset).join(""));
+        painted +=
+          editing === part.field
+            ? `<span class="tsk-meta-selected" data-page-field="${part.field}">${text}</span>`
+            : text;
+        cursor = right;
+      }
+      painted += esc(chars.slice(cursor - offset).join(""));
+      offset = end;
+      return `<span class="tsk-meta-row">${painted}</span>`;
+    });
+    const meta = `<div class="tsk-page-meta dim">${metaRows.join("")}</div>`;
     const editField = editing?.startsWith("step:") ? "steps" : editing || "";
     const editTarget = editing?.startsWith("step:")
       ? editing.slice("step:".length)
@@ -2766,6 +2799,46 @@ import { parseCapture } from "./capture.js";
       </div>`;
   }
 
+  // Paint terminal-cell chrome separately from note/step text. The final blank row
+  // belongs to the scrolling stream, just as in ui/render.rs::page_content_layout.
+  function refreshPageScrollbars() {
+    root.querySelectorAll(".tsk-task-surface.tsk-page").forEach((content) => {
+      const column = content.closest(".tsk-task-column");
+      let track = column.querySelector(".tsk-page-scrollbar");
+      if (!track) {
+        track = document.createElement("div");
+        track.className = "tsk-page-scrollbar dim";
+        track.setAttribute("aria-hidden", "true");
+        column.append(track);
+      }
+      const paint = () => {
+        const lineHeight = parseFloat(getComputedStyle(content).lineHeight);
+        const viewport = Math.floor(content.clientHeight / lineHeight);
+        const total = Math.round(content.scrollHeight / lineHeight);
+        track.style.top = `${content.offsetTop}px`;
+        track.hidden = viewport === 0 || total <= viewport;
+        if (track.hidden) return;
+        const rows = Math.min(
+          viewport,
+          Math.max(1, Math.ceil((viewport * viewport) / total)),
+        );
+        const travel = viewport - rows;
+        const scroll = Math.round(content.scrollTop / lineHeight);
+        const start = Math.min(
+          travel,
+          Math.floor((scroll * travel) / (total - viewport)),
+        );
+        track.innerHTML = Array.from(
+          { length: viewport },
+          (_, row) =>
+            `<span>${row >= start && row < start + rows ? "▌" : " "}</span>`,
+        ).join("");
+      };
+      content.onscroll = paint;
+      paint();
+    });
+  }
+
   function render() {
     renderColumns = terminalColumns();
     try {
@@ -2819,6 +2892,7 @@ import { parseCapture } from "./capture.js";
       root.innerHTML = html;
       const content = root.querySelector(".tsk-task-surface");
       if (content) content.scrollTop = oldScroll;
+      refreshPageScrollbars();
       const stepInput = root.querySelector("#tsk-step-edit");
       const previewStepInput = root.querySelector("#tsk-preview-step-edit");
       if (stepInput || previewStepInput) {
@@ -2829,6 +2903,7 @@ import { parseCapture } from "./capture.js";
           stepState.refusal = "";
           root.querySelector(".tsk-step-refusal").textContent = "";
           input.rows = wrapText(input.value, taskColumnWidth() - 8).length;
+          refreshPageScrollbars();
         });
         input.focus({ preventScroll: true });
         input.setSelectionRange(input.value.length, input.value.length);

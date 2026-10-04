@@ -59,12 +59,25 @@ fn export_reference(text: &str, width: u16, name: &str) {
         let dir = PathBuf::from(dir);
         fs::write(dir.join(format!("app-{width}-{name}.txt")), text).unwrap();
         if name == "page" {
+            // Step content and frame-edge scrollbar chrome are separate contracts.
+            // Export both, rather than treating a painted thumb as part of a step.
+            let scrollbar_rows: Vec<_> = text
+                .lines()
+                .enumerate()
+                .filter_map(|(row, line)| line.ends_with('▌').then_some(row))
+                .collect();
+            fs::write(
+                dir.join(format!("page-scrollbar-{width}.json")),
+                serde_json::to_string_pretty(&scrollbar_rows).unwrap(),
+            )
+            .unwrap();
             let lines: Vec<_> = text
                 .lines()
                 .skip_while(|line| !line.contains("✓ Check"))
                 .take_while(|line| !line.contains("+ step"))
                 .map(|line| {
                     line.chars()
+                        .take(width.saturating_sub(1) as usize)
                         .skip(4)
                         .collect::<String>()
                         .trim_end()

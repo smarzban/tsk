@@ -26,7 +26,34 @@ for (const width of [40, 78, 109, 110])
       ).map((x) => x.trimEnd()),
     ).toEqual(reference);
 
+    await expect(page.locator(".tsk-page-meta")).toContainText("⎇ default");
     await expect(page.locator(".tsk-page-meta")).toContainText("created");
+    await expect(page.locator(".tsk-meta-row")).toHaveCount(
+      width === 40 ? 2 : 1,
+    );
+    const scrollbarRows = await readReference(`page-scrollbar-${width}`);
+    const chrome = await page.locator("#tsk-demo").evaluate((el) => {
+      const origin = el.getBoundingClientRect();
+      const track = el.querySelector(".tsk-page-scrollbar:not([hidden])");
+      if (!track) return { rows: [], atFrameEdge: true, overflow: false };
+      const lineHeight = parseFloat(getComputedStyle(el).lineHeight);
+      const body = el.querySelector(".tsk-task-surface");
+      return {
+        rows: [...track.children]
+          .filter((row) => row.textContent === "▌")
+          .map((row) =>
+            Math.round(
+              (row.getBoundingClientRect().top - origin.top) / lineHeight,
+            ),
+          ),
+        atFrameEdge:
+          Math.abs(track.getBoundingClientRect().right - origin.right) < 1,
+        overflow: body.scrollHeight > body.clientHeight,
+      };
+    });
+    expect(chrome.rows).toEqual(scrollbarRows);
+    expect(chrome.atFrameEdge).toBe(true);
+    expect(chrome.overflow).toBe(scrollbarRows.length > 0);
     if (width < 110) {
       const fits = await page.locator(".tsk-narrow-header").evaluate((el) => {
         const title = el.querySelector(".tsk-page-title > span"),
@@ -98,3 +125,15 @@ for (const width of [40, 78, 109, 110])
     );
     await expect(page.locator("[data-step]")).toHaveCount(3);
   });
+
+test("landing project task page keeps its default base visible", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:4180/");
+  await page.locator('[data-tab="project"]').click();
+  await page.locator("#board-demo").focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".tsk-page-meta")).toContainText(
+    "⎇ main (default)",
+  );
+});
