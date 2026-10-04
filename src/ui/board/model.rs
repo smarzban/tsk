@@ -1,10 +1,10 @@
 //! Session-only board state, forms, selection, and recovery presentation.
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ratatui::layout::Position;
 use uuid::Uuid;
@@ -784,29 +784,63 @@ fn board_form_scope_options(
     options
 }
 
-/// Shared, session-local remote-default cache. Missing entries are inserted as pending and
-/// resolved on a detached metadata thread, so the task-page renderer never waits on Git.
+/// Shared, session-local remote-default cache. Metadata refreshes off the render
+/// thread, after a dispatch changes origin/HEAD or a short TTL catches external changes.
 #[derive(Debug, Clone, Default)]
-struct DefaultBranchCache(Arc<Mutex<BTreeMap<PathBuf, Option<String>>>>);
+struct DefaultBranchCache(Arc<Mutex<BTreeMap<PathBuf, CachedDefaultBranch>>>);
+
+#[derive(Debug, Clone)]
+struct CachedDefaultBranch {
+    name: Option<String>,
+    checked_at: Instant,
+    loading: bool,
+    request: Uuid,
+}
 
 impl DefaultBranchCache {
+    fn invalidate(&self, project: &Path) {
+        if let Ok(mut cache) = self.0.try_lock() {
+            cache.remove(project);
+        }
+    }
+
     fn get_or_request(&self, project: &Path) -> String {
+        const TTL: Duration = Duration::from_secs(2);
         let path = project.to_path_buf();
-        let mut spawn = false;
+        let mut request = None;
         let cached = self.0.try_lock().ok().and_then(|mut cache| {
-            if !cache.contains_key(&path) {
-                cache.insert(path.clone(), None);
-                spawn = true;
+            let entry = cache.entry(path.clone()).or_insert_with(|| {
+                let id = Uuid::new_v4();
+                request = Some(id);
+                CachedDefaultBranch {
+                    name: None,
+                    checked_at: Instant::now(),
+                    loading: true,
+                    request: id,
+                }
+            });
+            if !entry.loading && entry.checked_at.elapsed() >= TTL {
+                let id = Uuid::new_v4();
+                entry.request = id;
+                entry.loading = true;
+                request = Some(id);
             }
-            cache.get(&path).cloned().flatten()
+            entry.name.clone()
         });
-        if spawn {
+        if let Some(request) = request {
             let shared = Arc::clone(&self.0);
             std::thread::spawn(move || {
                 let name = crate::git_base::default_branch_name(&path)
                     .unwrap_or_else(|| "default".to_string());
                 if let Ok(mut cache) = shared.lock() {
-                    cache.insert(path, Some(name));
+                    if let Some(entry) = cache
+                        .get_mut(&path)
+                        .filter(|entry| entry.request == request)
+                    {
+                        entry.name = Some(name);
+                        entry.checked_at = Instant::now();
+                        entry.loading = false;
+                    }
                 }
             });
         }
@@ -1347,6 +1381,20 @@ impl BoardModel {
             .then(|| self.selected_project_row().map(|row| row.path))
             .flatten();
         let previous_id_set: HashSet<Uuid> = self.tasks.iter().map(|task| task.id).collect();
+        // Dispatch refreshes origin/HEAD in the task repository. Do not keep a footer
+        // cached before that fetch, and do not invalidate on ordinary unchanged reloads.
+        let prior_dispatches = self
+            .tasks
+            .iter()
+            .filter_map(|task| task.dispatch.as_ref().map(|record| (task.id, record)))
+            .collect::<HashMap<_, _>>();
+        for task in state.tasks() {
+            if prior_dispatches.get(&task.id).copied() != task.dispatch.as_ref() {
+                if let TaskScope::Project { path } = &task.scope {
+                    self.default_branches.invalidate(Path::new(path));
+                }
+            }
+        }
         self.tasks = state.tasks().to_vec();
         self.archived_projects = state.archived_projects();
         if let Some(previous_path) = previous_project_path.as_deref() {

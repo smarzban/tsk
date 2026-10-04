@@ -355,3 +355,79 @@ fn quick_add_tokens_lift_base_and_validate_it_in_the_effective_task_repo() {
         lift_quick_add_tokens("Do not save !b missing", &state, None, &scope, &[]).unwrap_err();
     assert!(error.contains("missing"));
 }
+
+fn await_default_name(model: &tsk_tui::ui::BoardModel, repo: &Path, expected: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let actual = model.default_branch_name(repo);
+        if actual == expected {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cached {actual}, expected {expected}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn footer_default_cache_refreshes_after_dispatch_updates_origin_head() {
+    use tsk_tui::domain::{Dispatch, DomainState, ProvenanceOrigin, TaskScope};
+    use tsk_tui::ui::BoardModel;
+    let r = repo();
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "cache",
+            None,
+            TaskScope::Project {
+                path: r.local.to_string_lossy().into_owned(),
+            },
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    let mut model = BoardModel::from_domain(&domain, Some(r.local.clone()));
+    await_default_name(&model, &r.local, "main");
+    git(&r.remote, &["checkout", "-b", "dispatch"]);
+    let base = resolve(&r.local, None).unwrap();
+    assert_eq!(base.reference, "origin/dispatch");
+    assert_eq!(default_branch_name(&r.local).as_deref(), Some("dispatch"));
+    domain
+        .record_dispatch(
+            id,
+            Dispatch {
+                argv: vec![],
+                worktree: r.root.join("not-opened").to_string_lossy().into_owned(),
+                branch: "tsk/cache".into(),
+                base: Some(base.reference),
+                base_commit: base.commit,
+                base_remote: base.remote,
+                herdr_workspace_id: "not-opened".into(),
+                at: std::time::SystemTime::now(),
+                cleaned: false,
+            },
+        )
+        .unwrap();
+    model.sync_from_domain(&domain);
+    await_default_name(&model, &r.local, "dispatch");
+}
+
+#[test]
+fn footer_default_cache_eventually_refreshes_external_metadata_without_a_task_change() {
+    let r = repo();
+    let model = tsk_tui::ui::BoardModel::from_tasks(vec![], None);
+    await_default_name(&model, &r.local, "main");
+    git(&r.remote, &["branch", "other-default"]);
+    git(&r.local, &["fetch", "origin"]);
+    git(
+        &r.local,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/other-default",
+        ],
+    );
+    await_default_name(&model, &r.local, "other-default");
+}

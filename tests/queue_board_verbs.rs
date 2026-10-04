@@ -7046,3 +7046,83 @@ fn shift_enter_on_add_keeps_a_dirty_title() {
     assert_eq!(texts, vec!["alpha", "bravo"]);
     assert!(!model.task_editing());
 }
+
+#[test]
+fn expanded_capture_base_picker_stages_and_clears_base_without_editing_the_board_task() {
+    let repo = git_repo_with_branch("capture-base-picker");
+    for (title, query, expected) in [
+        ("Captured branch", "dispatch", Some("dispatch")),
+        ("Captured default !b dispatch", "default", None),
+    ] {
+        let mut domain = DomainState::new();
+        let existing = domain
+            .create(
+                "existing",
+                None,
+                project(&repo.to_string_lossy()),
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .unwrap();
+        domain.set_status(existing, HumanStatus::Ready).unwrap();
+        let mut model = BoardModel::from_domain(&domain, Some(repo.clone()));
+        let snapshot = InvocationSnapshot {
+            default_scope: project(&repo.to_string_lossy()),
+            this_repo: Some(repo.clone()),
+            title_prefill: None,
+            provenance: ProvenanceOrigin::Capture,
+        };
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenCapture,
+            Some(&snapshot),
+        )
+        .unwrap();
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::QuickAddInsertText(title.into()),
+            None,
+        )
+        .unwrap();
+        apply_intent(&mut domain, &mut model, BoardIntent::ExpandQuickAdd, None).unwrap();
+        for _ in 0..3 {
+            apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).unwrap();
+        }
+        assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
+        let before = serde_json::to_value(&domain).unwrap();
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ListPickerQueryInsertText(query.into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            apply_intent(
+                &mut domain,
+                &mut model,
+                BoardIntent::ConfirmListPicker,
+                None
+            )
+            .unwrap(),
+            IntentOutcome::None
+        );
+        assert_eq!(serde_json::to_value(&domain).unwrap(), before);
+        assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
+        assert_eq!(
+            apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).unwrap(),
+            IntentOutcome::Persist
+        );
+        let captured = domain
+            .tasks()
+            .iter()
+            .find(|task| task.id != existing)
+            .unwrap();
+        assert_eq!(captured.base.as_deref(), expected);
+        assert_eq!(domain.get(existing).unwrap().base, None);
+    }
+    std::fs::remove_dir_all(repo).unwrap();
+}

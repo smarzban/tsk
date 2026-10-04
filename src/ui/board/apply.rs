@@ -1682,7 +1682,7 @@ fn apply_board_intent(
                 return Ok(IntentOutcome::None);
             };
             if target.edit_draft {
-                if let Some(form) = model.form.as_mut().filter(|form| form.is_task()) {
+                if let Some(form) = model.form.as_mut() {
                     form.base = base;
                     form.focus = CaptureField::Base;
                     form.editing = true;
