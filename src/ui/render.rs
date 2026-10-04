@@ -414,6 +414,8 @@ pub enum QueueOverlay<'a> {
         branch_merged: bool,
         /// Merged status is still being rechecked after a background fetch.
         checking: bool,
+        /// `y` was pressed while checking; cleanup runs when the check lands.
+        confirm_queued: bool,
         base_available: bool,
         warning: Option<&'a str>,
         workspace_exists: bool,
@@ -1767,6 +1769,7 @@ fn paint_overlay(
             dirty,
             branch_merged,
             checking,
+            confirm_queued,
             base_available,
             warning,
             workspace_exists,
@@ -1781,6 +1784,7 @@ fn paint_overlay(
                 *dirty,
                 *branch_merged,
                 *checking,
+                *confirm_queued,
                 *base_available,
                 *warning,
                 *workspace_exists,
@@ -3572,6 +3576,7 @@ fn paint_cleanup_card(
     dirty: bool,
     branch_merged: bool,
     checking: bool,
+    confirm_queued: bool,
     base_available: bool,
     warning: Option<&str>,
     workspace_exists: bool,
@@ -3615,6 +3620,9 @@ fn paint_cleanup_card(
     ];
     if checking {
         // No verdict yet: neither retention line applies until the recheck lands.
+        if confirm_queued {
+            lines.insert(3, "cleaning once the check finishes".into());
+        }
     } else if !base_available {
         lines.insert(3, "recorded base unavailable; branch retained".into());
     } else if !branch_merged {

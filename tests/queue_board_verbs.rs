@@ -259,6 +259,7 @@ fn cleanup_popup_maps_explicit_choices_and_paints_the_guardrail_state() {
     let (_, mut model, id) = board_with_task("clean me", HumanStatus::Started);
     model.begin_cleanup_prompt(CleanupPrompt {
         merge_check: None,
+        confirm_deadline: None,
         task_id: id,
         worktree: "/tmp/tsk-t1-clean-me".into(),
         branch: "tsk/t1-clean-me".into(),
@@ -571,8 +572,8 @@ fn cleanup_card_opens_from_cached_refs_and_a_background_check_fills_merged_statu
 }
 
 #[test]
-fn cleanup_confirmed_while_checking_never_deletes_on_the_cached_verdict() {
-    // Cached refs say merged; the refreshed inspection `y` runs says not merged.
+fn cleanup_completed_while_still_checking_never_deletes_on_the_cached_verdict() {
+    // Cached refs say merged, but no check has confirmed it (a queued `y` past its bound).
     let (mut domain, mut model, id, dir) = dispatched_board_for_merge_check("confirm-early");
     let mut host = merge_check_host(true, false);
     offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host).expect("offer");
@@ -587,7 +588,7 @@ fn cleanup_confirmed_while_checking_never_deletes_on_the_cached_verdict() {
     );
     assert_eq!(
         result.branch_reason,
-        Some(tsk_tui::dispatch::BranchRetentionReason::NotMerged)
+        Some(tsk_tui::dispatch::BranchRetentionReason::MergeCheckUnfinished)
     );
     assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
     std::fs::remove_dir_all(dir).expect("cleanup temp store");
@@ -1217,6 +1218,57 @@ fn base_picker_refreshes_in_place_after_its_fetch_and_keeps_the_users_selection(
     assert_eq!(
         &labels(&model)[1..],
         ["dispatch", "main", "origin/dispatch", "origin/main"]
+    );
+    std::fs::remove_dir_all(repo).unwrap();
+    std::fs::remove_dir_all(remote).unwrap();
+}
+
+#[test]
+fn base_picker_opens_on_the_tasks_current_base_and_keeps_it_through_the_refresh() {
+    let repo = git_repo_with_branch("current-base");
+    let remote = repo.with_extension("remote.git");
+    let git = |args: &[&str]| {
+        assert!(Command::new("git").args(args).status().unwrap().success());
+    };
+    git(&[
+        "clone",
+        "-q",
+        "--bare",
+        repo.to_str().unwrap(),
+        remote.to_str().unwrap(),
+    ]);
+    git(&[
+        "-C",
+        repo.to_str().unwrap(),
+        "remote",
+        "add",
+        "origin",
+        remote.to_str().unwrap(),
+    ]);
+    let mut domain = DomainState::new();
+    domain
+        .create(
+            "based task",
+            None,
+            project(&repo.to_string_lossy()),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    let id = domain.tasks()[0].id;
+    domain.set_base(id, Some("dispatch".into())).unwrap();
+    let mut model = BoardModel::from_domain(&domain, Some(repo.clone()));
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
+    assert_eq!(
+        model.selected_list_picker_option().unwrap().1.label,
+        "dispatch",
+        "cached list opens on the current base"
+    );
+    await_base_picker(&mut model);
+    assert_eq!(
+        model.selected_list_picker_option().unwrap().1.label,
+        "dispatch",
+        "the refresh keeps it"
     );
     std::fs::remove_dir_all(repo).unwrap();
     std::fs::remove_dir_all(remote).unwrap();

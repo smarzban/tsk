@@ -48,7 +48,7 @@ fn refresh_explicit_remote(project: &Path, base: &str) -> Option<(String, Result
 }
 
 const LOCAL_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
-const NETWORK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+pub(crate) const NETWORK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A file rather than a pipe: a verbose Git process cannot block while we poll its
 /// deadline, nor can a descendant holding stdout open stall a reader-thread join.
@@ -114,6 +114,16 @@ fn run_git(
     timeout: std::time::Duration,
     capture: bool,
 ) -> Result<std::process::Output, String> {
+    run_git_env(project, args, &[], timeout, capture)
+}
+
+fn run_git_env(
+    project: &Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    timeout: std::time::Duration,
+    capture: bool,
+) -> Result<std::process::Output, String> {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
     let deadline = Instant::now() + timeout;
@@ -126,6 +136,7 @@ fn run_git(
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "never")
+        .envs(envs.iter().copied())
         .stdin(Stdio::null());
     for (stream, is_stdout) in [(&stdout, true), (&stderr, false)] {
         let io = match stream {
@@ -246,7 +257,11 @@ fn default_ref(project: &Path) -> Result<String, String> {
 
 /// The network path is bounded and cannot prompt in an unattended dispatch or picker.
 fn bounded_git(project: &Path, args: &[&str]) -> Result<(), String> {
-    let output = run_git(project, args, NETWORK_TIMEOUT, false).map_err(|reason| {
+    bounded_git_env(project, args, &[])
+}
+
+fn bounded_git_env(project: &Path, args: &[&str], envs: &[(&str, &str)]) -> Result<(), String> {
+    let output = run_git_env(project, args, envs, NETWORK_TIMEOUT, false).map_err(|reason| {
         if reason == "git timed out" {
             "fetch timed out".into()
         } else {
@@ -463,19 +478,63 @@ fn gated_fetch_remote(project: &Path, remote: &str, window: bool) -> Result<Fetc
         stamp_dir().as_deref(),
         std::time::SystemTime::now,
         window,
-        || {
-            bounded_git(
-                project,
-                &[
-                    "fetch",
-                    "--quiet",
-                    "--no-tags",
-                    "--no-recurse-submodules",
-                    remote,
-                ],
-            )
-        },
+        || fetch_with_remote_head(project, remote),
     )
+}
+
+/// One fetch that also refreshes `refs/remotes/<remote>/HEAD`, so every fetch that fills the
+/// window leaves the remote default as fresh as the branches: default-base dispatch can then
+/// trust a reused fetch. The setting goes through Git's environment config so the argv stays
+/// a plain `fetch`.
+fn fetch_with_remote_head(project: &Path, remote: &str) -> Result<(), String> {
+    // Appended after any GIT_CONFIG_* entries the caller's environment already carries.
+    let index = std::env::var("GIT_CONFIG_COUNT")
+        .ok()
+        .and_then(|count| count.parse::<usize>().ok())
+        .unwrap_or(0);
+    let (count, key_name, value_name) = (
+        (index + 1).to_string(),
+        format!("GIT_CONFIG_KEY_{index}"),
+        format!("GIT_CONFIG_VALUE_{index}"),
+    );
+    let key = format!("remote.{remote}.followRemoteHEAD");
+    bounded_git_env(
+        project,
+        &[
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-recurse-submodules",
+            remote,
+        ],
+        &[
+            ("GIT_CONFIG_COUNT", &count),
+            (&key_name, &key),
+            (&value_name, "always"),
+        ],
+    )?;
+    // Git before 2.48 ignores followRemoteHEAD: ask the remote separately. A failure keeps the
+    // cached default, as it always has.
+    if !git_follows_remote_head(project) {
+        let _ = bounded_git(project, &["remote", "set-head", remote, "--auto"]);
+    }
+    Ok(())
+}
+
+fn git_follows_remote_head(project: &Path) -> bool {
+    static FOLLOWS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FOLLOWS.get_or_init(|| {
+        git_output(project, &["--version"])
+            .ok()
+            .and_then(|text| {
+                let version = text.strip_prefix("git version ")?;
+                let mut parts = version.split('.');
+                let major: u32 = parts.next()?.parse().ok()?;
+                let minor: u32 = parts.next()?.parse().ok()?;
+                Some((major, minor) >= (2, 48))
+            })
+            .unwrap_or(false)
+    })
 }
 
 pub fn list_branches(project: &Path) -> Result<Vec<String>, String> {
@@ -565,20 +624,11 @@ pub fn resolve(project: &Path, explicit: Option<&str>) -> Result<ResolvedBase, S
         target
     } else {
         selected_remote = Some("origin".into());
-        match fetch_remote_outcome(project, "origin") {
-            Err(reason) => {
-                warning = Some(format!("{reason}; using cached origin default ref"));
-            }
-            // Refresh origin/HEAD too: an existing local symbolic ref can be stale after
-            // the hosting service changes its default. Failure preserves the cached value.
-            // Inside the fetch window the cached default is as fresh as the cached refs.
-            Ok(FetchOutcome::Fetched) => {
-                if bounded_git(project, &["remote", "set-head", "origin", "--auto"]).is_err() {
-                    warning =
-                        Some("could not refresh origin/HEAD; using cached default ref".into());
-                }
-            }
-            Ok(FetchOutcome::Reused) => {}
+        // Every windowed fetch refreshes origin/HEAD with the branches (an existing local
+        // symbolic ref can be stale after the hosting service changes its default), so a
+        // reused fetch's default is as fresh as its refs.
+        if let Err(reason) = fetch_remote(project, "origin") {
+            warning = Some(format!("{reason}; using cached origin default ref"));
         }
         default_ref(project)?
     };

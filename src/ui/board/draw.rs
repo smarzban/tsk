@@ -1198,6 +1198,7 @@ impl OverlayPayloads {
                 dirty: prompt.dirty,
                 branch_merged: prompt.branch_merged,
                 checking: prompt.checking(),
+                confirm_queued: prompt.confirm_queued(),
                 workspace_exists: prompt.workspace_exists,
                 warning: prompt.warning.as_deref(),
                 base_available: prompt.base_available,

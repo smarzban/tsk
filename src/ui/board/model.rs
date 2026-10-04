@@ -1058,11 +1058,18 @@ pub struct CleanupPrompt {
     /// The background fetch and ancestry recheck still running; the card shows `checking…`
     /// in place of the cached merged status until it lands.
     pub merge_check: Option<crate::dispatch::MergeCheck>,
+    /// `y` pressed while checking: the event loop finishes the cleanup when the verdict lands,
+    /// or at this deadline with the branch retained.
+    pub confirm_deadline: Option<Instant>,
 }
 
 impl CleanupPrompt {
     pub fn checking(&self) -> bool {
         self.merge_check.is_some()
+    }
+
+    pub fn confirm_queued(&self) -> bool {
+        self.confirm_deadline.is_some()
     }
 }
 
@@ -1203,14 +1210,49 @@ impl BoardModel {
         self.cleanup_prompt.as_ref()
     }
 
-    /// Apply a finished background merged check to the open cleanup card. A check whose card
-    /// was closed is dropped with it, so a late result never reaches another prompt.
-    pub fn poll_cleanup_check(&mut self) -> bool {
-        let Some(prompt) = self.cleanup_prompt.as_mut() else {
+    pub fn cleanup_prompt_mut(&mut self) -> Option<&mut CleanupPrompt> {
+        self.cleanup_prompt.as_mut()
+    }
+
+    /// `y` while the card's merged check runs: queue the confirmation instead of waiting on
+    /// the network here. True while it stays queued; false once it should run now (no check
+    /// running, or the queued confirmation's bound has passed).
+    pub fn queue_cleanup_confirm(&mut self) -> bool {
+        let Some(prompt) = self
+            .cleanup_prompt
+            .as_mut()
+            .filter(|prompt| prompt.checking())
+        else {
             return false;
         };
+        let deadline = *prompt
+            .confirm_deadline
+            .get_or_insert_with(|| Instant::now() + crate::dispatch::MERGE_CHECK_TIMEOUT);
+        Instant::now() < deadline
+    }
+
+    /// A queued `y` whose check has landed, or whose bound has passed: the event loop runs it.
+    pub fn cleanup_confirm_due(&self) -> bool {
+        self.cleanup_prompt.as_ref().is_some_and(|prompt| {
+            prompt
+                .confirm_deadline
+                .is_some_and(|deadline| !prompt.checking() || Instant::now() >= deadline)
+        })
+    }
+
+    /// Apply a finished background merged check to the open cleanup card (this board's or its
+    /// project preview's). A check whose card was closed is dropped with it, so a late result
+    /// never reaches another prompt.
+    pub fn poll_cleanup_check(&mut self) -> bool {
+        let nested = self
+            .right_seat
+            .as_deref_mut()
+            .is_some_and(BoardModel::poll_cleanup_check);
+        let Some(prompt) = self.cleanup_prompt.as_mut() else {
+            return nested;
+        };
         let Some(verdict) = prompt.merge_check.as_ref().and_then(|check| check.take()) else {
-            return false;
+            return nested;
         };
         prompt.merge_check = None;
         prompt.branch_merged = verdict.branch_merged;
@@ -2538,14 +2580,38 @@ impl BoardModel {
         project: &Path,
         edit_draft: bool,
     ) {
-        let request = Uuid::new_v4();
         let project = project
             .canonicalize()
             .unwrap_or_else(|_| project.to_path_buf());
         let default = crate::git_base::default_branch_name(&project)
             .unwrap_or_else(|| self.default_branch_name(&project));
-        let cached = crate::git_base::list_cached_branches(&project);
-        let fresh = crate::git_base::fetch_is_fresh(&project, "origin");
+        self.open_base_picker_from(
+            ids,
+            current,
+            project,
+            edit_draft,
+            default,
+            |project| crate::git_base::fetch_is_fresh(project, "origin"),
+            crate::git_base::list_cached_branches,
+        );
+    }
+
+    /// Freshness is read before the snapshot: a fetch that lands between the two then leaves
+    /// a not-fresh answer and a refresh subscription, never a fresh answer over pre-fetch refs.
+    #[allow(clippy::too_many_arguments)]
+    fn open_base_picker_from(
+        &mut self,
+        ids: Vec<Uuid>,
+        current: Option<String>,
+        project: PathBuf,
+        edit_draft: bool,
+        default: String,
+        is_fresh: impl FnOnce(&Path) -> bool,
+        cached_branches: impl FnOnce(&Path) -> Result<Vec<String>, String>,
+    ) {
+        let request = Uuid::new_v4();
+        let fresh = is_fresh(&project);
+        let cached = cached_branches(&project);
         let mut options = vec![Self::default_base_option(default)];
         let status = match &cached {
             Ok(branches) => {
@@ -4466,6 +4532,36 @@ mod tests {
                 .iter()
                 .any(|option| option.label.contains("stale")));
         }
+    }
+
+    #[test]
+    fn base_picker_refreshes_when_its_fetch_lands_during_the_cached_snapshot() {
+        let mut model = BoardModel::from_domain(&DomainState::new(), None);
+        let project = PathBuf::from(format!("/repos/race-{}", Uuid::new_v4()));
+        let fetched = std::cell::Cell::new(false);
+        model.open_base_picker_from(
+            vec![Uuid::new_v4()],
+            None,
+            project.clone(),
+            false,
+            "main".into(),
+            |_| fetched.get(),
+            |_| {
+                // The worker's fetch completes while the pre-fetch refs are being read.
+                fetched.set(true);
+                Ok(vec!["main".into()])
+            },
+        );
+        let labels: Vec<_> = model
+            .visible_list_picker_options()
+            .into_iter()
+            .map(|(_, option)| option.label)
+            .collect();
+        assert_eq!(
+            labels.last().map(String::as_str),
+            Some(REFRESHING_BRANCHES),
+            "a refresh is subscribed for the pre-fetch snapshot"
+        );
     }
 
     #[test]

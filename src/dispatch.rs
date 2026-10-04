@@ -55,6 +55,23 @@ pub struct CleanupInspection {
     pub target_matches: bool,
 }
 
+/// Longest a board `y` waits for its card's background merged check: the bounded fetch
+/// plus the bounded ancestry query the check runs after it.
+pub const MERGE_CHECK_TIMEOUT: Duration = Duration::from_secs(
+    crate::git_base::NETWORK_TIMEOUT.as_secs() + CLEANUP_QUERY_TIMEOUT.as_secs(),
+);
+
+/// Which refs a cleanup trusts for the branch's merged status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleanupRefs {
+    /// Fetch the recorded base's remote first (the CLI).
+    Fetch,
+    /// The refs on disk now. The board's card already refreshed them off the event loop.
+    Cached,
+    /// The card's refresh never finished: remove a clean worktree, never the branch.
+    Unconfirmed,
+}
+
 /// The base-dependent half of a cleanup inspection, recomputed after a background fetch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergeVerdict {
@@ -117,6 +134,9 @@ pub enum BranchRetentionReason {
     /// deleting the branch without a confirmed merge is never safe either.
     AncestryCheckTimedOut,
     WorktreeListingTimedOut,
+    /// A board `y` queued behind the background merged check outlived its bound: without a
+    /// completed check the merge is unconfirmed, so the branch stays.
+    MergeCheckUnfinished,
 }
 
 impl BranchRetentionReason {
@@ -135,6 +155,9 @@ impl BranchRetentionReason {
                 "ancestry check timed out after the worktree was removed; branch retained".into()
             }
             Self::WorktreeListingTimedOut => "worktree listing timed out; branch retained".into(),
+            Self::MergeCheckUnfinished => {
+                "merged check did not finish; branch retained".into()
+            }
         }
     }
 }
@@ -1077,7 +1100,18 @@ pub fn clean_with_host(
     in_herdr: bool,
     host: &mut impl DispatchHost,
 ) -> Result<CleanupResult, CleanupError> {
-    let preview = inspect_cleanup_with_host(state, id, in_herdr, host)?;
+    clean_with_host_refs(state, id, in_herdr, CleanupRefs::Fetch, host)
+}
+
+/// [`clean_with_host`] with an explicit ref policy; the board never fetches on its own thread.
+pub fn clean_with_host_refs(
+    state: &mut DomainState,
+    id: Uuid,
+    in_herdr: bool,
+    refs: CleanupRefs,
+    host: &mut impl DispatchHost,
+) -> Result<CleanupResult, CleanupError> {
+    let preview = inspect_cleanup_refs(state, id, in_herdr, refs != CleanupRefs::Fetch, host)?;
     if preview.inspection.dirty {
         return Err(CleanupError::DirtyWorktree);
     }
@@ -1093,6 +1127,8 @@ pub fn clean_with_host(
         }
         let deletion = if preview.record.base.is_none() && preview.record.base_ref.is_none() {
             BranchDeletion::Kept(BranchRetentionReason::NoRecordedBase)
+        } else if refs == CleanupRefs::Unconfirmed {
+            BranchDeletion::Kept(BranchRetentionReason::MergeCheckUnfinished)
         } else if !preview.inspection.base_available {
             BranchDeletion::Kept(BranchRetentionReason::BaseUnavailable)
         } else if preview.inspection.branch_merged {

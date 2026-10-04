@@ -72,7 +72,7 @@ The list includes both recently deleted tasks still in the main store and tasks 
 
 ## Fetch window
 
-Dispatch, the branch picker, and cleanup each fetch a base's remote before reading its branches. A remote tsk fetched successfully in the last 60 seconds is not fetched again; the cached refs are used instead, so opening the picker and then dispatching pays for one round trip. A surface that needs a remote while another is still fetching it waits for that fetch and shares its result. Failed fetches are never remembered.
+Dispatch, the branch picker, and cleanup each fetch a base's remote before reading its branches. A remote tsk fetched successfully in the last 60 seconds is not fetched again; the cached refs are used instead, so opening the picker and then dispatching pays for one round trip. Each of these fetches also refreshes the remote's default branch (`origin/HEAD`), so a dispatch to the default inside the window uses a default as fresh as the branches. A surface that needs a remote while another is still fetching it waits for that fetch and shares its result. Failed fetches are never remembered.
 
 | File | Purpose |
 | --- | --- |

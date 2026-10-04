@@ -706,3 +706,133 @@ fn cleanup_confirmed_during_a_background_check_waits_for_that_one_fetch() {
     assert!(verdict.branch_merged);
     assert!(verdict.warning.unwrap().contains("cached refs"));
 }
+
+#[test]
+fn a_picker_fetch_refreshes_the_remote_default_for_a_reused_dispatch() {
+    let r = repo();
+    git(&r.remote, &["branch", "trunk"]);
+    git(&r.remote, &["symbolic-ref", "HEAD", "refs/heads/trunk"]);
+    // Picker-style fetch fills the window; the default dispatch then reuses it.
+    fetch_remote(&r.local, "origin").unwrap();
+    let base = resolve(&r.local, None).unwrap();
+    assert_eq!(base.reference, "origin/trunk");
+    assert_eq!(base.warning, None);
+}
+
+#[test]
+fn a_branch_pushed_inside_the_window_still_resolves_by_name() {
+    let r = repo();
+    assert_eq!(
+        fetch_remote_outcome(&r.local, "origin"),
+        Ok(FetchOutcome::Fetched)
+    );
+    git(&r.remote, &["branch", "new-release"]);
+    let base = resolve(&r.local, Some("origin/new-release")).unwrap();
+    assert_eq!(base.reference, "origin/new-release");
+    assert!(validate_branch_fresh(&r.local, "origin/new-release").is_ok());
+}
+
+#[test]
+fn a_background_merge_check_sees_a_remote_merge_the_cached_refs_miss() {
+    use tsk_tui::dispatch::{DispatchHost, SystemDispatchHost};
+    use tsk_tui::domain::Dispatch;
+    let r = repo();
+    let worktree = r.root.join("merged-remotely");
+    git(
+        &r.local,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "tsk/remote-merge",
+            worktree.to_str().unwrap(),
+            "origin/main",
+        ],
+    );
+    git(&worktree, &["commit", "--allow-empty", "-m", "task commit"]);
+    git(
+        &r.remote,
+        &["fetch", r.local.to_str().unwrap(), "tsk/remote-merge"],
+    );
+    git(&r.remote, &["merge", "--ff-only", "FETCH_HEAD"]);
+    let record = Dispatch {
+        argv: vec![],
+        worktree: worktree.to_string_lossy().into_owned(),
+        branch: "tsk/remote-merge".into(),
+        base: Some("origin/main".into()),
+        base_ref: Some("refs/remotes/origin/main".into()),
+        base_commit: None,
+        base_remote: Some("origin".into()),
+        herdr_workspace_id: "not-used".into(),
+        at: std::time::SystemTime::now(),
+        cleaned: false,
+    };
+    let mut host = SystemDispatchHost;
+    assert!(
+        !host
+            .inspect_cleanup_cached(&r.local, &record, false)
+            .unwrap()
+            .branch_merged,
+        "the cached refs predate the remote merge"
+    );
+    let check = host.begin_merge_check(&r.local, &record).expect("check");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let verdict = loop {
+        if let Some(verdict) = check.take() {
+            break verdict;
+        }
+        assert!(std::time::Instant::now() < deadline, "check did not land");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    assert!(verdict.branch_merged && verdict.base_available);
+    assert_eq!(verdict.warning, None);
+}
+
+#[cfg(unix)]
+#[test]
+fn two_tsk_processes_on_one_state_dir_share_one_fetch() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = repo();
+    let counter = r.root.join("upload-count");
+    let upload = r.root.join("counted-upload");
+    std::fs::write(
+        &upload,
+        format!(
+            "#!/bin/sh\nprintf 'fetch\\n' >> '{}'\nexec git-upload-pack \"$@\"\n",
+            counter.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&upload, std::fs::Permissions::from_mode(0o700)).unwrap();
+    git(
+        &r.local,
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            upload.to_str().unwrap(),
+        ],
+    );
+    let state = r.root.join("state");
+    for title in ["first", "second"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_tsk"))
+            .args(["add", "--state-dir"])
+            .arg(&state)
+            .arg("-p")
+            .arg(&r.local)
+            .args(["-t", title, "--base", "origin/main"])
+            .env("TSK_NO_UPDATE_CHECK", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(state.join("fetch-stamps.json").exists());
+    assert_eq!(
+        std::fs::read_to_string(&counter).unwrap().lines().count(),
+        1,
+        "the second process reuses the first one's fetch"
+    );
+}
