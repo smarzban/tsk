@@ -94,6 +94,7 @@ fn selected_model(dispatched: bool) -> BoardModel {
                     base: None,
                     base_commit: None,
                     base_remote: None,
+                    base_ref: None,
                     herdr_workspace_id: "w1".into(),
                     at: SystemTime::now(),
                     cleaned: false,

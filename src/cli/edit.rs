@@ -163,7 +163,8 @@ fn apply(
                 false,
             );
         };
-        if let Err(error) = crate::git_base::validate_branch(std::path::Path::new(path), base) {
+        if let Err(error) = crate::git_base::validate_branch_fresh(std::path::Path::new(path), base)
+        {
             return (Err(EditError::UnknownBase(error)), false);
         }
     }

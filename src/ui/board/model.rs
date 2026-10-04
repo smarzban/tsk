@@ -245,6 +245,8 @@ pub enum ListPickerValue {
     Assignee(Option<String>),
     /// Set this exact branch name, or clear the explicit base with `None`.
     Base(Option<String>),
+    /// Informational row, never a selectable or confirmable value.
+    Unavailable,
 }
 
 /// What the assignee picker applies to, captured when it opens so a refresh that moves the
@@ -262,6 +264,9 @@ pub(super) struct AssigneePickerTarget {
 pub(super) struct BasePickerTarget {
     pub ids: Vec<Uuid>,
     pub edit_draft: bool,
+    request: Uuid,
+    current: Option<String>,
+    selection_pending: bool,
 }
 
 /// An open searchable list picker (thread filter / projects view / assignee / base).
@@ -848,6 +853,14 @@ impl DefaultBranchCache {
     }
 }
 
+/// Workers publish here, only the event-loop poll updates the active picker.
+#[derive(Debug)]
+struct BasePickerResult {
+    request: Uuid,
+    branches: Result<(Vec<String>, Option<String>), String>,
+    default: String,
+}
+
 /// Pure board presentation state for one open session.
 ///
 /// Session-only UI state lives here and is never written under the task store or
@@ -885,6 +898,7 @@ pub struct BoardModel {
     pub(super) projects_selected: usize,
     /// Open searchable list picker (thread filter / projects view). Session-only.
     pub(super) list_picker: Option<ListPickerState>,
+    base_picker_results: Arc<Mutex<Vec<BasePickerResult>>>,
     /// Whether the done drawer lists completed tasks. Session-only.
     pub(super) drawer_open: bool,
     /// The done drawer's archived group starts collapsed on every launch. Session-only.
@@ -1027,6 +1041,8 @@ pub struct CleanupPrompt {
     pub dirty: bool,
     pub branch_merged: bool,
     pub workspace_exists: bool,
+    pub warning: Option<String>,
+    pub base_available: bool,
 }
 
 /// How an unresolved failed save ended.
@@ -1061,6 +1077,7 @@ impl BoardModel {
             search_pinned: false,
             projects_selected: 0,
             list_picker: None,
+            base_picker_results: Arc::default(),
             drawer_open: false,
             archived_collapsed: true,
             inbox_collapsed: false,
@@ -2473,46 +2490,134 @@ impl BoardModel {
         self.input_mode = BoardInputMode::ListPicker;
     }
 
-    /// Open the common branch picker. The repository's default is always first, then local and
-    /// origin branches exactly as the Git seam reports them.
+    /// Open immediately; fetching and local metadata queries belong only to the worker.
     pub(super) fn open_base_picker(
         &mut self,
         ids: Vec<Uuid>,
         current: Option<String>,
         project: &Path,
-        branches: Vec<String>,
         edit_draft: bool,
     ) {
-        let default =
-            crate::git_base::default_branch_name(project).unwrap_or_else(|| "default".to_string());
-        let mut options = vec![ListPickerOption {
+        let request = Uuid::new_v4();
+        let default = self.default_branch_name(project);
+        self.list_picker = Some(ListPickerState {
+            kind: ListPickerKind::Base,
+            options: vec![
+                Self::default_base_option(default),
+                ListPickerOption {
+                    label: "loading branches".into(),
+                    count: None,
+                    value: ListPickerValue::Unavailable,
+                },
+            ],
+            selected: 0,
+            query: String::new(),
+            return_mode: self.input_mode,
+            assignee_target: None,
+            base_target: Some(BasePickerTarget {
+                ids,
+                edit_draft,
+                request,
+                current,
+                selection_pending: true,
+            }),
+        });
+        self.input_mode = BoardInputMode::ListPicker;
+        let project = project.to_path_buf();
+        let mailbox = Arc::clone(&self.base_picker_results);
+        std::thread::spawn(move || {
+            let branches = crate::git_base::list_branches_with_warning(&project);
+            let default =
+                crate::git_base::default_branch_name(&project).unwrap_or_else(|| "default".into());
+            if let Ok(mut results) = mailbox.lock() {
+                results.push(BasePickerResult {
+                    request,
+                    branches,
+                    default,
+                });
+            }
+        });
+    }
+
+    fn default_base_option(default: String) -> ListPickerOption {
+        ListPickerOption {
             label: if default == "default" {
-                "default".to_string()
+                default
             } else {
                 format!("default ({default})")
             },
             count: None,
             value: ListPickerValue::Base(None),
-        }];
-        options.extend(branches.into_iter().map(|branch| ListPickerOption {
-            label: branch.clone(),
-            count: None,
-            value: ListPickerValue::Base(Some(branch)),
-        }));
-        let selected = options
-            .iter()
-            .position(|option| option.value == ListPickerValue::Base(current.clone()))
-            .unwrap_or(0);
-        self.list_picker = Some(ListPickerState {
-            kind: ListPickerKind::Base,
-            options,
-            selected,
-            query: String::new(),
-            return_mode: self.input_mode,
-            assignee_target: None,
-            base_target: Some(BasePickerTarget { ids, edit_draft }),
-        });
-        self.input_mode = BoardInputMode::ListPicker;
+        }
+    }
+
+    /// Apply completed branch lookup on the event loop, including idle redraw ticks.
+    /// Cancelled and superseded generations cannot overwrite a newly opened picker.
+    pub fn poll_base_picker_results(&mut self) -> bool {
+        let results = match self.base_picker_results.try_lock() {
+            Ok(mut mailbox) => std::mem::take(&mut *mailbox),
+            Err(_) => return false,
+        };
+        let mut changed = false;
+        for result in results {
+            let Some(target) = self
+                .list_picker
+                .as_ref()
+                .and_then(|picker| picker.base_target.as_ref())
+                .filter(|target| target.request == result.request)
+            else {
+                continue;
+            };
+            let preferred = if target.selection_pending {
+                Some(ListPickerValue::Base(target.current.clone()))
+            } else {
+                self.selected_list_picker_option()
+                    .map(|(_, option)| option.value)
+            };
+            let picker = self.list_picker.as_mut().expect("active base picker");
+            picker.options = vec![Self::default_base_option(result.default)];
+            match result.branches {
+                Ok((branches, warning)) => {
+                    picker
+                        .options
+                        .extend(branches.into_iter().map(|branch| ListPickerOption {
+                            label: branch.clone(),
+                            count: None,
+                            value: ListPickerValue::Base(Some(branch)),
+                        }));
+                    if let Some(warning) = warning {
+                        picker.options.push(ListPickerOption {
+                            label: warning,
+                            count: None,
+                            value: ListPickerValue::Unavailable,
+                        });
+                    }
+                }
+                Err(message) => picker.options.push(ListPickerOption {
+                    label: message,
+                    count: None,
+                    value: ListPickerValue::Unavailable,
+                }),
+            }
+            picker
+                .base_target
+                .as_mut()
+                .expect("base target")
+                .selection_pending = false;
+            let visible = self.visible_list_picker_options();
+            let selected = visible
+                .iter()
+                .position(|(_, option)| Some(&option.value) == preferred.as_ref())
+                .or_else(|| {
+                    visible
+                        .iter()
+                        .position(|(_, option)| option.value != ListPickerValue::Unavailable)
+                })
+                .unwrap_or(0);
+            self.list_picker.as_mut().expect("active picker").selected = selected;
+            changed = true;
+        }
+        changed
     }
 
     pub(super) fn close_base_picker(&mut self) -> Option<BasePickerTarget> {
@@ -2615,15 +2720,29 @@ impl BoardModel {
             return Vec::new();
         };
         let query = picker.query.trim().to_ascii_lowercase();
-        picker
+        let mut visible: Vec<_> = picker
             .options
             .iter()
             .enumerate()
             .filter(|(_, option)| {
-                query.is_empty() || option.label.to_ascii_lowercase().contains(&query)
+                option.value == ListPickerValue::Unavailable
+                    || query.is_empty()
+                    || option.label.to_ascii_lowercase().contains(&query)
             })
             .map(|(index, option)| (index, option.clone()))
-            .collect()
+            .collect();
+        // With only a loading/error row matching, retain the real default choice rather than
+        // putting a highlight on an informational row.
+        if picker.kind == ListPickerKind::Base
+            && !visible
+                .iter()
+                .any(|(_, option)| option.value != ListPickerValue::Unavailable)
+        {
+            if let Some(option) = picker.options.first() {
+                visible.insert(0, (0, option.clone()));
+            }
+        }
+        visible
     }
 
     /// The picker row the cursor rests on, in the visible (filtered) order.
@@ -2635,39 +2754,60 @@ impl BoardModel {
     }
 
     pub fn selected_list_picker_option(&self) -> Option<(usize, ListPickerOption)> {
-        let visible = self.visible_list_picker_options();
-        let selected = self
-            .list_picker
-            .as_ref()
-            .map(|picker| picker.selected.min(visible.len().saturating_sub(1)))
-            .unwrap_or(0);
-        visible.into_iter().nth(selected)
+        self.visible_list_picker_options()
+            .into_iter()
+            .nth(self.list_picker_selected())
+            .filter(|(_, option)| option.value != ListPickerValue::Unavailable)
+    }
+
+    pub(super) fn select_list_picker_option(&mut self, index: usize) -> bool {
+        if self
+            .visible_list_picker_options()
+            .get(index)
+            .is_none_or(|(_, option)| option.value == ListPickerValue::Unavailable)
+        {
+            return false;
+        }
+        if let Some(picker) = self.list_picker.as_mut() {
+            picker.selected = index;
+            if let Some(target) = picker.base_target.as_mut() {
+                target.selection_pending = false;
+            }
+        }
+        true
     }
 
     pub(super) fn move_list_picker(&mut self, forward: bool) {
-        let len = self.visible_list_picker_options().len();
+        let visible = self.visible_list_picker_options();
+        let len = visible.len();
         if let Some(picker) = self.list_picker.as_mut() {
-            picker.selected = if len == 0 {
-                0
-            } else if forward {
-                (picker.selected + 1) % len
-            } else {
-                picker.selected.checked_sub(1).unwrap_or(len - 1)
-            };
+            if let Some(target) = picker.base_target.as_mut() {
+                target.selection_pending = false;
+            }
+            for _ in 0..len {
+                picker.selected = if forward {
+                    (picker.selected + 1) % len
+                } else {
+                    picker.selected.checked_sub(1).unwrap_or(len - 1)
+                };
+                if visible[picker.selected].1.value != ListPickerValue::Unavailable {
+                    break;
+                }
+            }
         }
     }
 
     pub(super) fn list_picker_query_insert(&mut self, character: char) {
-        if let Some(picker) = self.list_picker.as_mut() {
-            picker.query.push(character);
-            picker.selected = 0;
-        }
+        self.list_picker_query_insert_text(&character.to_string());
     }
 
     pub(super) fn list_picker_query_backspace(&mut self) {
         if let Some(picker) = self.list_picker.as_mut() {
             picker.query.pop();
             picker.selected = 0;
+            if let Some(target) = picker.base_target.as_mut() {
+                target.selection_pending = false;
+            }
         }
     }
 
@@ -2675,6 +2815,9 @@ impl BoardModel {
         if let Some(picker) = self.list_picker.as_mut() {
             picker.query.push_str(text);
             picker.selected = 0;
+            if let Some(target) = picker.base_target.as_mut() {
+                target.selection_pending = false;
+            }
         }
     }
 
@@ -4127,6 +4270,142 @@ pub(super) fn project_scope_option_label(option: &ProjectScopeOption) -> String 
 mod tests {
     use super::*;
     use crate::domain::ProvenanceOrigin;
+
+    fn loading_picker(request: Uuid, ids: Vec<Uuid>) -> ListPickerState {
+        ListPickerState {
+            kind: ListPickerKind::Base,
+            options: vec![
+                BoardModel::default_base_option("default".into()),
+                ListPickerOption {
+                    label: "loading branches".into(),
+                    count: None,
+                    value: ListPickerValue::Unavailable,
+                },
+            ],
+            selected: 0,
+            query: String::new(),
+            return_mode: BoardInputMode::Normal,
+            assignee_target: None,
+            base_target: Some(BasePickerTarget {
+                ids,
+                edit_draft: false,
+                request,
+                current: None,
+                selection_pending: true,
+            }),
+        }
+    }
+
+    #[test]
+    fn delayed_base_picker_result_cannot_replace_reopened_generation_or_target() {
+        let id = Uuid::new_v4();
+        for ids in [vec![id], vec![Uuid::new_v4()], Vec::new()] {
+            let mut model = BoardModel::from_domain(&DomainState::new(), None);
+            let old_request = Uuid::new_v4();
+            model.list_picker = Some(loading_picker(old_request, vec![id]));
+            model.input_mode = BoardInputMode::ListPicker;
+            let mailbox = Arc::clone(&model.base_picker_results);
+            let (release, wait) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                wait.recv().unwrap();
+                mailbox.lock().unwrap().push(BasePickerResult {
+                    request: old_request,
+                    branches: Ok((vec!["stale".into()], None)),
+                    default: "stale-default".into(),
+                });
+            });
+            model.cancel_list_picker();
+            let new_request = Uuid::new_v4();
+            model.list_picker = Some(loading_picker(new_request, ids.clone()));
+            model.input_mode = BoardInputMode::ListPicker;
+            model.list_picker_query_insert_text("release");
+            model
+                .base_picker_results
+                .lock()
+                .unwrap()
+                .push(BasePickerResult {
+                    request: new_request,
+                    branches: Ok((vec!["main".into(), "release".into()], None)),
+                    default: "main".into(),
+                });
+            assert!(model.poll_base_picker_results());
+            assert_eq!(model.list_picker_query(), Some("release"));
+            assert_eq!(
+                model.selected_list_picker_option().unwrap().1.value,
+                ListPickerValue::Base(Some("release".into()))
+            );
+            assert_eq!(
+                model
+                    .list_picker
+                    .as_ref()
+                    .unwrap()
+                    .base_target
+                    .as_ref()
+                    .unwrap()
+                    .ids,
+                ids
+            );
+            release.send(()).unwrap();
+            worker.join().unwrap();
+            assert!(!model.poll_base_picker_results());
+            assert_eq!(
+                model.selected_list_picker_option().unwrap().1.value,
+                ListPickerValue::Base(Some("release".into()))
+            );
+            assert!(!model
+                .list_picker
+                .as_ref()
+                .unwrap()
+                .options
+                .iter()
+                .any(|option| option.label.contains("stale")));
+        }
+    }
+
+    #[test]
+    fn base_picker_results_preserve_selection_and_show_disabled_warnings() {
+        let mut model = BoardModel::from_domain(&DomainState::new(), None);
+        let request = Uuid::new_v4();
+        let mut picker = loading_picker(request, vec![Uuid::new_v4()]);
+        picker.base_target.as_mut().unwrap().current = Some("release".into());
+        model.list_picker = Some(picker);
+        model
+            .base_picker_results
+            .lock()
+            .unwrap()
+            .push(BasePickerResult {
+                request,
+                branches: Ok((
+                    vec!["main".into(), "release".into()],
+                    Some("offline: using cached refs".into()),
+                )),
+                default: "main".into(),
+            });
+        assert!(model.poll_base_picker_results());
+        assert_eq!(
+            model.selected_list_picker_option().unwrap().1.value,
+            ListPickerValue::Base(Some("release".into()))
+        );
+        model.move_list_picker(true);
+        assert_eq!(
+            model.selected_list_picker_option().unwrap().1.value,
+            ListPickerValue::Base(None)
+        );
+        assert!(!model.select_list_picker_option(3));
+        assert_eq!(model.list_picker_selected(), 0);
+        model.cancel_list_picker();
+        model
+            .base_picker_results
+            .lock()
+            .unwrap()
+            .push(BasePickerResult {
+                request,
+                branches: Err("failed".into()),
+                default: "default".into(),
+            });
+        assert!(!model.poll_base_picker_results());
+        assert!(model.list_picker.is_none());
+    }
 
     const REPO_A: &str = "/repos/a";
     const REPO_B: &str = "/repos/b";

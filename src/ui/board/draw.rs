@@ -463,190 +463,6 @@ fn build_task_page_overlay<'a>(
         .map(render::task_status_glyph)
         .unwrap_or_else(|| render::status_glyph(status));
 
-    // Header: indent + glyph + the WRAPPED title rows + right-aligned status word
-    // on row 0. A long title wraps onto further bold rows indented under the
-    // glyph instead of truncating; edit mode wraps the draft with its cursor.
-    // The uniform budget keeps every row's wrap identical.
-    let editing_title = model.input_mode() == BoardInputMode::EditTitle;
-    let header_identifier = (!editing_title)
-        .then(|| bound_task.and_then(|task| task.board_identifier()))
-        .flatten();
-    let mut header_rows: Vec<String> = Vec::new();
-    let mut title_cursor = None;
-    // The wide column paints its own two-row header (`draw_task_column`), so the in-page
-    // header rows are only built for the single-pane page that actually consumes them.
-    if !column {
-        let word_cells = status_word.chars().count() + 1;
-        let identifier_cells = header_identifier
-            .as_deref()
-            .map(render::display_width)
-            .unwrap_or(0);
-        let title_avail = width
-            .saturating_sub(4 + word_cells + identifier_cells + usize::from(identifier_cells > 0));
-        // The header may grow only inside the page body: it must stop one row short
-        // of the lowest chrome row with one note row still living under it, or a
-        // pathological title would eat the page (and the painter's chrome).
-        let page_bottom = [page_geo.rule_row, page_geo.status_row, page_geo.verb_row]
-            .into_iter()
-            .flatten()
-            .min()
-            .unwrap_or(page_geo.height);
-        let header_cap = page_bottom.saturating_sub(3).max(1) as usize;
-        form.title_wrap_width.set(title_avail);
-        if editing_title {
-            let (mut rows, cursor_row, cursor_col) = wrapped_edit_rows(&form.title, title_avail);
-            let overflowed = rows.len() > header_cap;
-            rows.truncate(header_cap);
-            if overflowed {
-                if let Some(last) = rows.last_mut() {
-                    *last = present_line(last, title_avail.saturating_sub(1));
-                }
-            }
-            for (offset, segment) in rows.iter().enumerate() {
-                if offset == 0 {
-                    header_rows.push(format!("{glyph} {segment}"));
-                } else {
-                    header_rows.push(segment.clone());
-                }
-            }
-            // A caret hidden below the cap parks at the END of the last shown row:
-            // its own hidden column would otherwise paint an unrelated position on
-            // the ellipsis row.
-            let shown_cursor_row = cursor_row.min(rows.len().saturating_sub(1));
-            let shown_cursor_col = if cursor_row > shown_cursor_row {
-                rows.last()
-                    .map(|last| render::display_width(last))
-                    .unwrap_or(0)
-            } else {
-                cursor_col
-            };
-            title_cursor = Some((
-                u16::try_from(shown_cursor_row).unwrap_or(u16::MAX),
-                u16::try_from(shown_cursor_col).unwrap_or(u16::MAX),
-            ));
-        } else {
-            let mut rows: Vec<String> = wrap_text(form.title.value(), title_avail)
-                .iter()
-                .map(|row| row.text.clone())
-                .collect();
-            let overflowed = rows.len() > header_cap;
-            rows.truncate(header_cap);
-            if overflowed {
-                if let Some(last) = rows.last_mut() {
-                    *last = present_line(last, title_avail.saturating_sub(1));
-                }
-            }
-            for (offset, row) in rows.iter().enumerate() {
-                if offset == 0 {
-                    header_rows.push(format!("{glyph} {row}"));
-                } else {
-                    header_rows.push(row.clone());
-                }
-            }
-        }
-    }
-    let lay = if column {
-        render::task_column_layout(&page_geo)
-    } else {
-        render::task_page_layout(
-            &page_geo,
-            render::steps_section(step_views.len()),
-            u16::from(model.input_mode() == BoardInputMode::EditNotes),
-            header_rows.len().max(1) as u16,
-        )
-    };
-    // The renderer and input reducer share this viewport size for page scrolling.
-    form.steps.window_rows.set(lay.notes_rows as usize);
-
-    // View mode supplies every wrapped note row; Notes edit mode wraps too, with the
-    // caret mapped into wrapped coordinates. The shared page painter combines that
-    // stream with the steps, then windows it once against the fixed viewport.
-    // Wrap at the width the painter can show WHOLE: the content region less its
-    // two-cell gutter and one further reserved cell, taken in the scrollbar state
-    // (content_width - 3 there), so an overflowing page never re-wraps rows that
-    // were already painted -- and no wrapped row ever ends in the presenter's … .
-    let notes_width = width.saturating_sub(6);
-    let want = lay.notes_rows as usize;
-    let editing_notes = model.input_mode() == BoardInputMode::EditNotes;
-    let (mut notes_rows, notes_cursor, more_lines, notes_scroll) = if editing_notes {
-        let (all_rows, cursor_row, cursor_column) = wrapped_edit_rows(&form.notes, notes_width);
-        // Explicit pointer scrolling may leave the caret offscreen to reach steps.
-        // Typing or moving the caret restores automatic following.
-        let follow = if form.manual_page_scroll {
-            form.notes_scroll
-        } else {
-            form.notes_scroll.clamp(
-                cursor_row.saturating_sub(want.saturating_sub(1)),
-                cursor_row,
-            )
-        };
-        (
-            all_rows,
-            (!form.manual_page_scroll).then_some((
-                u16::try_from(cursor_row).unwrap_or(u16::MAX),
-                u16::try_from(cursor_column).unwrap_or(u16::MAX),
-            )),
-            0,
-            follow,
-        )
-    } else if form.notes.value().trim().is_empty() {
-        (Vec::new(), None, 0, form.notes_scroll)
-    } else {
-        (
-            wrapped_draft_rows(&form.notes, notes_width),
-            None,
-            0,
-            form.notes_scroll,
-        )
-    };
-    if !editing_notes {
-        if let Some(dispatch) = bound_task.and_then(|task| task.dispatch.as_ref()) {
-            if !notes_rows.is_empty() {
-                notes_rows.push(String::new());
-            }
-            let when = render::format_age(SystemTime::now(), dispatch.at);
-            let mut dispatch_lines = vec![
-                if dispatch.cleaned {
-                    "dispatch · cleaned".to_string()
-                } else {
-                    "dispatch".to_string()
-                },
-                if dispatch.cleaned {
-                    format!("worktree removed · {}", terminal_text(&dispatch.worktree))
-                } else {
-                    format!("worktree {}", terminal_text(&dispatch.worktree))
-                },
-                format!("branch {}", terminal_text(&dispatch.branch)),
-            ];
-            if let Some(base) = dispatch.base.as_ref() {
-                let commit = dispatch
-                    .base_commit
-                    .as_deref()
-                    .map(|commit| commit.chars().take(7).collect::<String>());
-                dispatch_lines.push(match commit {
-                    Some(commit) => format!("from {} @ {commit}", terminal_text(base)),
-                    None => format!("from {}", terminal_text(base)),
-                });
-            }
-            dispatch_lines.push(format!("when {when} ago"));
-            for line in dispatch_lines {
-                notes_rows.extend(
-                    wrap_text(&line, notes_width)
-                        .into_iter()
-                        .map(|row| row.text),
-                );
-            }
-        }
-    }
-    let step_rows: usize = step_views.iter().map(|step| step.rows.len().max(1)).sum();
-    // Match the painter's stream exactly: it always paints one notes row and a trailing
-    // `+ step` row, even when both stored notes and stored steps are empty.
-    let content =
-        render::page_content_layout(notes_rows.len().max(1), step_rows + 1, lay.notes_rows);
-    form.notes_max_scroll.set(content.max_scroll);
-    form.steps.content_start.set(content.steps_start);
-    form.notes_width.set(notes_width);
-
     // Meta footer: assignee · thread · scope · created · updated (ages only while the task is
     // present). The identifier belongs in the header, so it never competes with footer hits.
     // A wide column moves the project up into its header slot: the scope footer paints only
@@ -793,6 +609,197 @@ fn build_task_page_overlay<'a>(
             meta.push_str(&ages);
         }
     }
+    // Header: indent + glyph + the WRAPPED title rows + right-aligned status word
+    // on row 0. A long title wraps onto further bold rows indented under the
+    // glyph instead of truncating; edit mode wraps the draft with its cursor.
+    // The uniform budget keeps every row's wrap identical.
+    let editing_title = model.input_mode() == BoardInputMode::EditTitle;
+    let header_identifier = (!editing_title)
+        .then(|| bound_task.and_then(|task| task.board_identifier()))
+        .flatten();
+    let mut header_rows: Vec<String> = Vec::new();
+    let mut title_cursor = None;
+    // The wide column paints its own two-row header (`draw_task_column`), so the in-page
+    // header rows are only built for the single-pane page that actually consumes them.
+    if !column {
+        let word_cells = status_word.chars().count() + 1;
+        let identifier_cells = header_identifier
+            .as_deref()
+            .map(render::display_width)
+            .unwrap_or(0);
+        let title_avail = width
+            .saturating_sub(4 + word_cells + identifier_cells + usize::from(identifier_cells > 0));
+        // The header may grow only inside the page body: it must stop one row short
+        // of the lowest chrome row with one note row still living under it, or a
+        // pathological title would eat the page (and the painter's chrome).
+        let page_bottom = [page_geo.rule_row, page_geo.status_row, page_geo.verb_row]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(page_geo.height);
+        let footer_rows = wrap_text(&meta, width.saturating_sub(2)).len();
+        let footer_rows = u16::try_from(footer_rows)
+            .unwrap_or(u16::MAX)
+            .min(page_bottom.saturating_sub(3));
+        let header_cap = page_bottom
+            .saturating_sub(footer_rows.saturating_add(2))
+            .max(1) as usize;
+        form.title_wrap_width.set(title_avail);
+        if editing_title {
+            let (mut rows, cursor_row, cursor_col) = wrapped_edit_rows(&form.title, title_avail);
+            let overflowed = rows.len() > header_cap;
+            rows.truncate(header_cap);
+            if overflowed {
+                if let Some(last) = rows.last_mut() {
+                    *last = present_line(last, title_avail.saturating_sub(1));
+                }
+            }
+            for (offset, segment) in rows.iter().enumerate() {
+                if offset == 0 {
+                    header_rows.push(format!("{glyph} {segment}"));
+                } else {
+                    header_rows.push(segment.clone());
+                }
+            }
+            // A caret hidden below the cap parks at the END of the last shown row:
+            // its own hidden column would otherwise paint an unrelated position on
+            // the ellipsis row.
+            let shown_cursor_row = cursor_row.min(rows.len().saturating_sub(1));
+            let shown_cursor_col = if cursor_row > shown_cursor_row {
+                rows.last()
+                    .map(|last| render::display_width(last))
+                    .unwrap_or(0)
+            } else {
+                cursor_col
+            };
+            title_cursor = Some((
+                u16::try_from(shown_cursor_row).unwrap_or(u16::MAX),
+                u16::try_from(shown_cursor_col).unwrap_or(u16::MAX),
+            ));
+        } else {
+            let mut rows: Vec<String> = wrap_text(form.title.value(), title_avail)
+                .iter()
+                .map(|row| row.text.clone())
+                .collect();
+            let overflowed = rows.len() > header_cap;
+            rows.truncate(header_cap);
+            if overflowed {
+                if let Some(last) = rows.last_mut() {
+                    *last = present_line(last, title_avail.saturating_sub(1));
+                }
+            }
+            for (offset, row) in rows.iter().enumerate() {
+                if offset == 0 {
+                    header_rows.push(format!("{glyph} {row}"));
+                } else {
+                    header_rows.push(row.clone());
+                }
+            }
+        }
+    }
+    let lay = if column {
+        render::task_column_layout_with_meta(&page_geo, &meta)
+    } else {
+        render::task_page_layout_with_meta(
+            &page_geo,
+            render::steps_section(step_views.len()),
+            u16::from(model.input_mode() == BoardInputMode::EditNotes),
+            header_rows.len().max(1) as u16,
+            &meta,
+        )
+    };
+    // The renderer and input reducer share this viewport size for page scrolling.
+    form.steps.window_rows.set(lay.notes_rows as usize);
+
+    // View mode supplies every wrapped note row; Notes edit mode wraps too, with the
+    // caret mapped into wrapped coordinates. The shared page painter combines that
+    // stream with the steps, then windows it once against the fixed viewport.
+    // Wrap at the width the painter can show WHOLE: the content region less its
+    // two-cell gutter and one further reserved cell, taken in the scrollbar state
+    // (content_width - 3 there), so an overflowing page never re-wraps rows that
+    // were already painted -- and no wrapped row ever ends in the presenter's … .
+    let notes_width = width.saturating_sub(6);
+    let want = lay.notes_rows as usize;
+    let editing_notes = model.input_mode() == BoardInputMode::EditNotes;
+    let (mut notes_rows, notes_cursor, more_lines, notes_scroll) = if editing_notes {
+        let (all_rows, cursor_row, cursor_column) = wrapped_edit_rows(&form.notes, notes_width);
+        // Explicit pointer scrolling may leave the caret offscreen to reach steps.
+        // Typing or moving the caret restores automatic following.
+        let follow = if form.manual_page_scroll {
+            form.notes_scroll
+        } else {
+            form.notes_scroll.clamp(
+                cursor_row.saturating_sub(want.saturating_sub(1)),
+                cursor_row,
+            )
+        };
+        (
+            all_rows,
+            (!form.manual_page_scroll).then_some((
+                u16::try_from(cursor_row).unwrap_or(u16::MAX),
+                u16::try_from(cursor_column).unwrap_or(u16::MAX),
+            )),
+            0,
+            follow,
+        )
+    } else if form.notes.value().trim().is_empty() {
+        (Vec::new(), None, 0, form.notes_scroll)
+    } else {
+        (
+            wrapped_draft_rows(&form.notes, notes_width),
+            None,
+            0,
+            form.notes_scroll,
+        )
+    };
+    if !editing_notes {
+        if let Some(dispatch) = bound_task.and_then(|task| task.dispatch.as_ref()) {
+            if !notes_rows.is_empty() {
+                notes_rows.push(String::new());
+            }
+            let when = render::format_age(SystemTime::now(), dispatch.at);
+            let mut dispatch_lines = vec![
+                if dispatch.cleaned {
+                    "dispatch · cleaned".to_string()
+                } else {
+                    "dispatch".to_string()
+                },
+                if dispatch.cleaned {
+                    format!("worktree removed · {}", terminal_text(&dispatch.worktree))
+                } else {
+                    format!("worktree {}", terminal_text(&dispatch.worktree))
+                },
+                format!("branch {}", terminal_text(&dispatch.branch)),
+            ];
+            if let Some(base) = dispatch.base.as_ref() {
+                let commit = dispatch
+                    .base_commit
+                    .as_deref()
+                    .map(|commit| commit.chars().take(7).collect::<String>());
+                dispatch_lines.push(match commit {
+                    Some(commit) => format!("from {} @ {commit}", terminal_text(base)),
+                    None => format!("from {}", terminal_text(base)),
+                });
+            }
+            dispatch_lines.push(format!("when {when} ago"));
+            for line in dispatch_lines {
+                notes_rows.extend(
+                    wrap_text(&line, notes_width)
+                        .into_iter()
+                        .map(|row| row.text),
+                );
+            }
+        }
+    }
+    let step_rows: usize = step_views.iter().map(|step| step.rows.len().max(1)).sum();
+    // Match the painter's stream exactly: it always paints one notes row and a trailing
+    // `+ step` row, even when both stored notes and stored steps are empty.
+    let content =
+        render::page_content_layout(notes_rows.len().max(1), step_rows + 1, lay.notes_rows);
+    form.notes_max_scroll.set(content.max_scroll);
+    form.steps.content_start.set(content.steps_start);
+    form.notes_width.set(notes_width);
+
     let focus = match model.input_mode() {
         BoardInputMode::EditTitle => Some(CaptureField::Title),
         BoardInputMode::EditNotes => Some(CaptureField::Notes),
@@ -1039,9 +1046,15 @@ impl OverlayPayloads {
         let list_picker_options = model
             .visible_list_picker_options()
             .into_iter()
-            .map(|(_, option)| match option.count {
-                Some(count) => format!("{}  {count}", option.label),
-                None => option.label,
+            .map(|(_, option)| {
+                if option.value == super::model::ListPickerValue::Unavailable {
+                    format!("({})", option.label)
+                } else {
+                    match option.count {
+                        Some(count) => format!("{}  {count}", option.label),
+                        None => option.label,
+                    }
+                }
             })
             .collect();
         let list_picker_query = model.list_picker_query().map(str::to_string);
@@ -1185,6 +1198,8 @@ impl OverlayPayloads {
                 dirty: prompt.dirty,
                 branch_merged: prompt.branch_merged,
                 workspace_exists: prompt.workspace_exists,
+                warning: prompt.warning.as_deref(),
+                base_available: prompt.base_available,
             });
         }
         if let Some(name) = self.launch_card_name.as_deref() {

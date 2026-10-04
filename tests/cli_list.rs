@@ -1758,6 +1758,7 @@ fn direct_json_includes_the_full_existing_dispatch_base_and_commit() {
                 base: Some("origin/main".into()),
                 base_commit: Some("0123456789abcdef".into()),
                 base_remote: None,
+                base_ref: None,
                 herdr_workspace_id: "workspace-1".into(),
                 at: SystemTime::now(),
                 cleaned: false,

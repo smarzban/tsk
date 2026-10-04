@@ -1032,17 +1032,9 @@ pub fn cleaned(result: CleanupResult, json: bool) -> CliOutput {
     } else {
         "kept"
     };
-    let branch_reason =
-        if result.worktree == WorktreeCleanup::Removed && result.branch == BranchCleanup::Kept {
-            result.base.as_deref().map(|base| {
-                format!(
-                    "not merged into {}; squash-merged? delete by hand",
-                    terminal_text(base)
-                )
-            })
-        } else {
-            None
-        };
+    let branch_reason = result
+        .branch_reason
+        .map(|reason| reason.message(result.base.as_deref()));
     let stdout = if json {
         format!(
             "{}\n",
@@ -1052,15 +1044,21 @@ pub fn cleaned(result: CleanupResult, json: bool) -> CliOutput {
                 "worktree": {"path": result.worktree_path, "outcome": worktree},
                 "branch": {"name": result.branch_name, "outcome": branch, "reason": branch_reason},
                 "workspace": {"id": result.workspace_id, "outcome": workspace},
+                "warning": result.warning,
             })
         )
     } else {
         let branch_detail = match branch_reason {
-            Some(reason) => format!("{branch}, {reason}"),
+            Some(reason) => format!("{branch}, {}", terminal_text(&reason)),
             None => branch.to_string(),
         };
+        let warning = result
+            .warning
+            .as_deref()
+            .map(|warning| format!("warning: {}\n", terminal_text(warning)))
+            .unwrap_or_default();
         format!(
-            "cleaned T{}: worktree {} ({}), branch {} ({}), workspace {} ({})\n",
+            "{warning}cleaned T{}: worktree {} ({}), branch {} ({}), workspace {} ({})\n",
             result.number,
             terminal_text(&result.worktree_path),
             worktree,
@@ -1887,6 +1885,8 @@ mod tests {
     #[test]
     fn clean_output_names_every_resource_in_human_and_json_forms() {
         let result = CleanupResult {
+            warning: None,
+            branch_reason: Some(crate::dispatch::BranchRetentionReason::NotMerged),
             number: 12,
             title: "finished".into(),
             worktree_path: "/tmp/task-12".into(),

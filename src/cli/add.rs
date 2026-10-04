@@ -177,7 +177,7 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
                 }
                 if let Some(base) = base.as_deref() {
                     if let Err(error) =
-                        crate::git_base::validate_branch(std::path::Path::new(path), base)
+                        crate::git_base::validate_branch_fresh(std::path::Path::new(path), base)
                     {
                         return Ok((Err(AddError::UnknownBase(error)), false));
                     }
@@ -291,7 +291,7 @@ pub fn run_plan(
                     }
                     if let Some(base) = item.base.as_deref() {
                         if let Err(error) =
-                            crate::git_base::validate_branch(std::path::Path::new(path), base)
+                            crate::git_base::validate_branch_fresh(std::path::Path::new(path), base)
                         {
                             failed.push(fail_item(item.i, Some(item.title), "unknown-base", error));
                             continue;

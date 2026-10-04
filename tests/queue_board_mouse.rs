@@ -919,6 +919,173 @@ fn click_and_wheel_match_keyboard_effects_for_each_control() {
     assert_eq!(model_mouse.visible_ids().len(), 2);
 }
 
+#[test]
+fn wrapped_footer_field_hits_follow_unicode_cells_and_every_continuation_clicks() {
+    let assignee = format!("界{}", "a".repeat(60));
+    let base = format!("origin/{}", "b".repeat(60));
+    let thread = "t".repeat(60);
+    let scope = format!("/repos/界{}", "p".repeat(60));
+    let mut domain = DomainState::new();
+    let id = domain
+        .create_assigned(
+            "wrapped hits",
+            Some(
+                (0..40)
+                    .map(|index| format!("note {index}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            project(&scope),
+            ProvenanceOrigin::Manual,
+            Some(thread),
+            Some(assignee),
+        )
+        .expect("create");
+    domain.set_base(id, Some(base)).expect("base");
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(&scope)));
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("edit page");
+    let area = Rect::new(0, 0, 50, 30);
+    let hits = board_hit_map(area, &model);
+    let first_y = hits
+        .regions
+        .iter()
+        .find(|hit| hit.target == QueueHitTarget::FormAssignee)
+        .expect("assignee")
+        .area
+        .y;
+    let scroll_hits: Vec<_> = hits
+        .regions
+        .iter()
+        .filter(|hit| matches!(hit.target, QueueHitTarget::PageScroll(_)))
+        .collect();
+    assert!(!scroll_hits.is_empty(), "long notes must have a scrollbar");
+    assert!(
+        scroll_hits.iter().all(|hit| hit.area.bottom() <= first_y),
+        "scrollbar must end before the wrapped footer"
+    );
+    let last_scroll = scroll_hits.last().expect("scrollbar bottom");
+    let ScrollbarMouse::Intent(scroll_intent) = map_scrollbar_mouse(
+        model.input_mode(),
+        &hits,
+        left_click(last_scroll.area.x, last_scroll.area.y),
+        &mut false,
+    ) else {
+        panic!("scroll click")
+    };
+    apply_intent(&mut domain, &mut model, scroll_intent, None).expect("scroll notes");
+    let cases = [
+        (
+            QueueHitTarget::FormAssignee,
+            vec![(2, 0, 48), (2, 1, 15)],
+            BoardIntent::OpenFormDropdown(CaptureField::Assignee),
+        ),
+        (
+            QueueHitTarget::FormBase,
+            vec![(20, 1, 2), (2, 2, 48), (2, 3, 19)],
+            BoardIntent::OpenBasePicker,
+        ),
+        (
+            QueueHitTarget::FormThread,
+            vec![(2, 4, 48), (2, 5, 13)],
+            BoardIntent::FocusFormField(CaptureField::Thread),
+        ),
+        (
+            QueueHitTarget::FormScope,
+            vec![(2, 6, 48), (2, 7, 14)],
+            BoardIntent::OpenFormDropdown(CaptureField::Scope),
+        ),
+    ];
+    for (target, expected, intent) in cases {
+        let regions: Vec<_> = hits
+            .regions
+            .iter()
+            .filter(|hit| hit.target == target)
+            .collect();
+        let actual: Vec<_> = regions
+            .iter()
+            .map(|hit| (hit.area.x, hit.area.y - first_y, hit.area.width))
+            .collect();
+        assert_eq!(actual, expected, "wrapped geometry for {target:?}");
+        for hit in regions {
+            for x in hit.area.x..hit.area.right() {
+                assert_eq!(
+                    map_board_mouse(&model, &hits, left_click(x, hit.area.y)),
+                    Some(intent.clone()),
+                    "{target:?} at ({x}, {})",
+                    hit.area.y
+                );
+            }
+        }
+    }
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::FocusFormField(CaptureField::Thread),
+        None,
+    )
+    .expect("select thread");
+    let mut terminal = Terminal::new(TestBackend::new(50, 30)).expect("terminal");
+    terminal
+        .draw(|frame| {
+            let _ = draw_board(frame, &model);
+        })
+        .expect("draw");
+    let buffer = terminal.backend().buffer();
+    let text = (0..first_y)
+        .map(|y| (0..50).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("note 39"),
+        "scrollbar click reaches the last note:\n{text}"
+    );
+    for row in [first_y + 4, first_y + 5] {
+        let end = if row == first_y + 4 { 50 } else { 15 };
+        for x in 2..end {
+            assert!(
+                buffer[(x, row)]
+                    .modifier
+                    .contains(ratatui::style::Modifier::REVERSED),
+                "selected thread continuation at ({x}, {row})"
+            );
+        }
+        assert!(!buffer[(1, row)]
+            .modifier
+            .contains(ratatui::style::Modifier::REVERSED));
+    }
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenFormDropdown(CaptureField::Scope),
+        None,
+    )
+    .expect("scope dropdown");
+    let dropdown_hits = board_hit_map(area, &model);
+    let choices: Vec<_> = dropdown_hits
+        .regions
+        .iter()
+        .filter(|hit| matches!(hit.target, QueueHitTarget::FormDropdownOption(_)))
+        .collect();
+    assert!(!choices.is_empty());
+    assert!(choices.iter().all(|hit| hit.area.x == 2));
+    assert_eq!(
+        choices.iter().map(|hit| hit.area.bottom()).max(),
+        Some(first_y + 6),
+        "chooser anchors above the wrapped scope row"
+    );
+    for area in [
+        Rect::new(0, 0, 1, 1),
+        Rect::new(0, 0, 2, 3),
+        Rect::new(0, 0, 3, 8),
+    ] {
+        let hits = board_hit_map(area, &model);
+        assert!(hits
+            .regions
+            .iter()
+            .all(|hit| hit.area.right() <= area.right() && hit.area.bottom() <= area.bottom()));
+    }
+}
+
 /// non-regression: the standalone quick-capture popup's mouse paths are untouched by
 /// this rewrite (its `CaptureLayout`/`map_capture_mouse` route is separate from the board's
 /// hit-map, per the task's implementation boundary).

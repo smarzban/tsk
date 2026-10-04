@@ -194,6 +194,7 @@ pub fn board_frame(
     wait: impl FnOnce(Duration) -> io::Result<bool>,
     active_animations: bool,
 ) -> io::Result<FramePoll> {
+    model.poll_base_picker_results();
     paint(model)?;
     if wait(board_poll_duration(active_animations))? {
         Ok(FramePoll::Event)
@@ -333,6 +334,8 @@ fn run_board_loop(
         // after one settled-size paint so a key typed mid-drag is not dropped.
         let mut pending_event: Option<Event> = None;
         loop {
+            // Apply completed branch discovery only on the board thread, before painting.
+            model.poll_base_picker_results();
             // Settle, paint, then wait. The wait is only the Frame Scheduler's idle floor.
             // All three are one call so the frame is painted before the wait can time out into
             // the `continue` below.
@@ -1986,11 +1989,13 @@ pub fn offer_cleanup_prompt_with_host(
             .and_then(|()| domain.complete_after_cleanup(id))
             .map_err(|error| CleanupError::Store(error.to_string()))?;
         return Ok(CleanupOffer::MissingConverged(CleanupResult {
+            warning: preview.inspection.warning,
+            branch_reason: Some(dispatch::BranchRetentionReason::MissingWorktree),
             number: preview.number,
             title: preview.title,
             worktree_path: preview.record.worktree,
             branch_name: preview.record.branch,
-            base: preview.record.base,
+            base: preview.record.base.or(preview.record.base_ref),
             workspace_id: preview.record.herdr_workspace_id,
             worktree: WorktreeCleanup::Missing,
             branch: BranchCleanup::Kept,
@@ -2001,9 +2006,15 @@ pub fn offer_cleanup_prompt_with_host(
         task_id: id,
         worktree: preview.record.worktree,
         branch: preview.record.branch,
-        base: preview.record.base.unwrap_or_else(|| "unknown".to_string()),
+        base: preview
+            .record
+            .base
+            .or(preview.record.base_ref)
+            .unwrap_or_else(|| "unknown".to_string()),
         dirty: preview.inspection.dirty,
         branch_merged: preview.inspection.branch_merged,
+        base_available: preview.inspection.base_available,
+        warning: preview.inspection.warning,
         workspace_exists: preview.inspection.workspace_exists,
     });
     Ok(CleanupOffer::Prompted)

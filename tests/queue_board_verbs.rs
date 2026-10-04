@@ -109,6 +109,17 @@ fn git_repo_with_branch(label: &str) -> PathBuf {
     root
 }
 
+fn await_base_picker(model: &mut BoardModel) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !model.poll_base_picker_results() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "branch picker lookup timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 fn select_done_task(domain: &mut DomainState, model: &mut BoardModel, id: uuid::Uuid) {
     apply_intent(domain, model, BoardIntent::ToggleDoneDrawer, None).expect("drawer");
     let index = model
@@ -245,6 +256,8 @@ fn cleanup_popup_maps_explicit_choices_and_paints_the_guardrail_state() {
         dirty: false,
         branch_merged: false,
         workspace_exists: true,
+        warning: None,
+        base_available: true,
     });
     assert_eq!(model.input_mode(), BoardInputMode::CleanupConfirm);
     assert_eq!(
@@ -296,6 +309,7 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
                 base: None,
                 base_commit: None,
                 base_remote: None,
+                base_ref: None,
                 herdr_workspace_id: "w1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
@@ -320,6 +334,8 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
             branch_merged: false,
             workspace_exists: true,
             target_matches: true,
+            warning: None,
+            base_available: false,
         }),
         ..CleanupHost::default()
     };
@@ -398,6 +414,7 @@ fn missing_worktree_converges_cleaned_and_done_in_one_board_save_without_a_popup
                 base: Some("main".into()),
                 base_commit: None,
                 base_remote: None,
+                base_ref: None,
                 herdr_workspace_id: "w1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
@@ -424,6 +441,8 @@ fn missing_worktree_converges_cleaned_and_done_in_one_board_save_without_a_popup
             branch_merged: false,
             workspace_exists: false,
             target_matches: true,
+            warning: None,
+            base_available: true,
         }),
         ..CleanupHost::default()
     };
@@ -465,6 +484,7 @@ fn cleanup_offer_skips_done_and_archived_tasks_without_inspection_or_mutation() 
                     base: Some("main".into()),
                     base_commit: None,
                     base_remote: None,
+                    base_ref: None,
                     herdr_workspace_id: "w1".into(),
                     at: SystemTime::now(),
                     cleaned: false,
@@ -497,6 +517,8 @@ fn cleanup_offer_skips_done_and_archived_tasks_without_inspection_or_mutation() 
                 branch_merged: true,
                 workspace_exists: true,
                 target_matches: true,
+                warning: None,
+                base_available: true,
             }),
             ..CleanupHost::default()
         };
@@ -526,6 +548,7 @@ fn cleanup_offer_defers_to_the_archived_project_read_only_refusal() {
                 base: Some("main".into()),
                 base_commit: None,
                 base_remote: None,
+                base_ref: None,
                 herdr_workspace_id: "w1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
@@ -553,6 +576,8 @@ fn cleanup_offer_defers_to_the_archived_project_read_only_refusal() {
             branch_merged: true,
             workspace_exists: true,
             target_matches: true,
+            warning: None,
+            base_available: true,
         }),
         ..CleanupHost::default()
     };
@@ -589,6 +614,7 @@ fn successful_popup_cleanup_and_completion_save_once_and_undo_only_status() {
                 base: None,
                 base_commit: None,
                 base_remote: None,
+                base_ref: None,
                 herdr_workspace_id: "w1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
@@ -615,6 +641,8 @@ fn successful_popup_cleanup_and_completion_save_once_and_undo_only_status() {
             branch_merged: false,
             workspace_exists: true,
             target_matches: true,
+            warning: None,
+            base_available: false,
         }),
         ..CleanupHost::default()
     };
@@ -670,6 +698,7 @@ fn dispatched_task_page_renders_the_record_and_assigned_legend() {
                 base: None,
                 base_commit: None,
                 base_remote: None,
+                base_ref: None,
                 herdr_workspace_id: "w9".into(),
                 at: SystemTime::now(),
                 cleaned: false,
@@ -730,6 +759,7 @@ fn dispatched_task_page_hides_record_during_notes_edit_and_restores_it_in_view_m
                 base: None,
                 base_commit: None,
                 base_remote: None,
+                base_ref: None,
                 herdr_workspace_id: "w9".into(),
                 at: SystemTime::now(),
                 cleaned: false,
@@ -844,6 +874,90 @@ fn palette_assignment_applies_to_marked_tasks_as_one_undoable_batch() {
 }
 
 #[test]
+fn base_picker_opens_with_a_disabled_loading_row_and_cancels_immediately() {
+    let repo = git_repo_with_branch("loading");
+    // An inaccessible transport exercises the picker fetch without any caller environment changes.
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["remote", "add", "origin", "ssh://127.0.0.1:1/unreachable"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let ssh = repo.join("delayed-ssh");
+        std::fs::write(
+            &ssh,
+            format!(
+                "#!/bin/sh\ntouch '{}'\nsleep 2\nexit 1\n",
+                repo.join("fetch-started").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["config", "core.sshCommand"])
+            .arg(&ssh)
+            .status()
+            .unwrap()
+            .success());
+    }
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "task",
+            None,
+            project(&repo.to_string_lossy()),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    let mut model = BoardModel::from_domain(&domain, Some(repo.clone()));
+    let started = std::time::Instant::now();
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_millis(500));
+    let rows = model.visible_list_picker_options();
+    assert_eq!(rows.len(), 2);
+    assert!(rows[1].1.label.contains("loading branches"));
+    apply_intent(&mut domain, &mut model, BoardIntent::ListPickerNext, None).unwrap();
+    assert_eq!(
+        model.list_picker_selected(),
+        0,
+        "loading is not a selectable branch"
+    );
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::SelectListOption(1),
+        None,
+    )
+    .unwrap();
+    assert_eq!(model.list_picker_kind(), Some(ListPickerKind::Base));
+    assert_eq!(domain.get(id).unwrap().base, None);
+    #[cfg(unix)]
+    {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !repo.join("fetch-started").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fake SSH worker did not start"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    let cancelled = std::time::Instant::now();
+    apply_intent(&mut domain, &mut model, BoardIntent::CancelListPicker, None).unwrap();
+    assert!(cancelled.elapsed() < std::time::Duration::from_millis(500));
+    assert_eq!(model.input_mode(), BoardInputMode::Normal);
+    // Bounded worker owns this path after cancel; removing it is safe for its error result.
+    std::fs::remove_dir_all(repo).unwrap();
+}
+
+#[test]
 fn base_picker_applies_one_undoable_batch_across_marked_projects() {
     let first_repo = git_repo_with_branch("first");
     let second_repo = git_repo_with_branch("second");
@@ -899,6 +1013,7 @@ fn base_picker_applies_one_undoable_batch_across_marked_projects() {
 
     apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None)
         .expect("open base picker");
+    await_base_picker(&mut model);
     assert_eq!(model.list_picker_kind(), Some(ListPickerKind::Base));
     let labels = model
         .visible_list_picker_options()
@@ -965,6 +1080,7 @@ fn task_edit_base_field_uses_picker_and_saves_with_the_page_session() {
     );
     apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None)
         .expect("branch picker");
+    await_base_picker(&mut model);
     apply_intent(
         &mut domain,
         &mut model,
@@ -7093,6 +7209,7 @@ fn expanded_capture_base_picker_stages_and_clears_base_without_editing_the_board
         assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
         let before = serde_json::to_value(&domain).unwrap();
         apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
+        await_base_picker(&mut model);
         apply_intent(
             &mut domain,
             &mut model,

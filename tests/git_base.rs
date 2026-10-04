@@ -66,6 +66,7 @@ fn default_ignores_checkout_and_fetches_remote_tip() {
     let expected = git(&r.remote, &["rev-parse", "HEAD"]);
     let base = resolve(&r.local, None).unwrap();
     assert_eq!(base.reference, "origin/main");
+    assert_eq!(base.full_ref.as_deref(), Some("refs/remotes/origin/main"));
     assert_eq!(base.commit.as_deref(), Some(expected.as_str()));
     assert!(base.warning.is_none());
     assert_eq!(default_branch_name(&r.local).as_deref(), Some("main"));
@@ -210,6 +211,9 @@ fn offline_keeps_cached_remote_ref_and_reports_fallback() {
     let base = resolve(&r.local, None).unwrap();
     assert_eq!(base.reference, "origin/main");
     assert!(base.warning.unwrap().contains("cached"));
+    let (branches, warning) = list_branches_with_warning(&r.local).unwrap();
+    assert!(branches.contains(&"origin/main".to_string()));
+    assert!(warning.unwrap().contains("cached"));
 }
 #[test]
 fn cleanup_fetches_recorded_upstream_without_a_local_pull_and_keeps_squash_branches() {
@@ -237,6 +241,7 @@ fn cleanup_fetches_recorded_upstream_without_a_local_pull_and_keeps_squash_branc
         worktree: worktree.to_string_lossy().into_owned(),
         branch: "tsk/test".into(),
         base: Some("origin/main".into()),
+        base_ref: Some("refs/remotes/origin/main".into()),
         base_commit: Some(initial_local.clone()),
         base_remote: Some("origin".into()),
         herdr_workspace_id: "not-used".into(),
@@ -402,6 +407,7 @@ fn footer_default_cache_refreshes_after_dispatch_updates_origin_head() {
                 worktree: r.root.join("not-opened").to_string_lossy().into_owned(),
                 branch: "tsk/cache".into(),
                 base: Some(base.reference),
+                base_ref: base.full_ref,
                 base_commit: base.commit,
                 base_remote: base.remote,
                 herdr_workspace_id: "not-opened".into(),
@@ -430,4 +436,167 @@ fn footer_default_cache_eventually_refreshes_external_metadata_without_a_task_ch
         ],
     );
     await_default_name(&model, &r.local, "other-default");
+}
+
+#[test]
+fn local_upstream_dot_keeps_the_selected_local_tip() {
+    let r = repo();
+    git(&r.local, &["branch", "--track", "feature", "main"]);
+    git(&r.local, &["checkout", "feature"]);
+    git(
+        &r.local,
+        &["commit", "--allow-empty", "-m", "local feature work"],
+    );
+    let expected = git(&r.local, &["rev-parse", "HEAD"]);
+    let base = resolve(&r.local, Some("feature")).unwrap();
+    assert_eq!(base.reference, "feature");
+    assert_eq!(base.full_ref.as_deref(), Some("refs/heads/feature"));
+    assert_eq!(base.commit.as_deref(), Some(expected.as_str()));
+    assert_eq!(base.remote, None);
+}
+
+#[test]
+fn explicit_remote_base_fetches_a_newly_pushed_branch_before_validation() {
+    let r = repo();
+    git(&r.remote, &["checkout", "-b", "new-release"]);
+    git(&r.remote, &["commit", "--allow-empty", "-m", "new release"]);
+    assert!(validate_branch(&r.local, "origin/new-release").is_err());
+    let base = resolve(&r.local, Some("origin/new-release")).unwrap();
+    assert_eq!(base.reference, "origin/new-release");
+    assert_eq!(
+        base.full_ref.as_deref(),
+        Some("refs/remotes/origin/new-release")
+    );
+    assert_eq!(base.remote.as_deref(), Some("origin"));
+    assert_eq!(base.commit.unwrap(), git(&r.remote, &["rev-parse", "HEAD"]));
+}
+
+#[cfg(unix)]
+#[test]
+fn local_git_queries_are_bounded_and_kill_output_holding_children() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    // Mutate PATH only in a dedicated subprocess, never the shared harness.
+    if let Ok(root) = std::env::var("TSK_GIT_BASE_TIMEOUT_CHILD") {
+        let path = Path::new(&root);
+        // Allow script/DD startup overhead for the saturation probe; the local
+        // metadata calls below still use the production 250ms deadline.
+        let captured =
+            git_process_output_timeout(path, &["capture-output"], Duration::from_secs(2)).unwrap();
+        assert!(!captured.status.success());
+        assert_eq!(captured.stdout.len(), 256 * 1024);
+        assert_eq!(captured.stderr.len(), 256 * 1024);
+        for query in 0..6 {
+            let started = Instant::now();
+            match query {
+                0 => assert_eq!(default_branch_name(path), None),
+                1 => assert!(validate_branch(path, "main").is_err()),
+                2 => assert!(recorded_branch_ref(path, "refs/heads/main").is_err()),
+                3 => assert_eq!(remote_for_ref(path, "origin/main"), None),
+                4 => assert!(list_branches(path).is_err()),
+                _ => assert!(resolve(path, None).is_err()),
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "query {query} stalled"
+            );
+        }
+        return;
+    }
+    let r = repo();
+    let fake = r.root.join("git");
+    let escaped_root = r.root.to_string_lossy().replace('\'', "'\\''");
+    std::fs::write(&fake, format!("#!/bin/sh\ncase \"$3:$4\" in fetch:*|remote:set-head) exit 0;; capture-output:*) dd if=/dev/zero bs=262144 count=1 2>/dev/null; dd if=/dev/zero bs=262144 count=1 1>&2 2>/dev/null; exit 7;; esac\n(sleep 1; echo escaped > '{escaped_root}/escaped') &\n# More than a pipe buffer on both streams, then hold them open.\ndd if=/dev/zero bs=262144 count=1 2>/dev/null\ndd if=/dev/zero bs=262144 count=1 1>&2 2>/dev/null\nsleep 30\n")).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "git_base::local_git_queries_are_bounded_and_kill_output_holding_children",
+            "--nocapture",
+        ])
+        .env("TSK_GIT_BASE_TIMEOUT_CHILD", &r.root)
+        .env("PATH", format!("{}:/usr/bin:/bin", r.root.display()))
+        .stdin(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > Duration::from_secs(8) {
+            // SAFETY: the child was launched into its own process group.
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
+            let _ = child.wait();
+            panic!("local Git query exceeded its deadline");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(status.success());
+    std::thread::sleep(Duration::from_millis(1200));
+    assert!(
+        !r.root.join("escaped").exists(),
+        "Git descendants escaped timeout cancellation"
+    );
+}
+
+#[test]
+fn exact_local_base_survives_a_new_remote_named_after_its_prefix() {
+    let r = repo();
+    git(&r.local, &["branch", "integration/main"]);
+    let base = resolve(&r.local, Some("integration/main")).unwrap();
+    assert_eq!(base.reference, "integration/main");
+    assert_eq!(
+        base.full_ref.as_deref(),
+        Some("refs/heads/integration/main")
+    );
+    git(
+        &r.local,
+        &["remote", "add", "integration", r.remote.to_str().unwrap()],
+    );
+    git(&r.local, &["fetch", "integration"]);
+    assert_eq!(
+        recorded_branch_ref(&r.local, base.full_ref.as_deref().unwrap()).unwrap(),
+        "refs/heads/integration/main"
+    );
+}
+
+#[test]
+fn fresh_validation_fetches_remote_but_board_validation_is_local_only() {
+    let r = repo();
+    git(&r.remote, &["branch", "fresh-validation"]);
+    assert!(validate_branch(&r.local, "origin/fresh-validation").is_err());
+    assert!(git(
+        &r.local,
+        &["for-each-ref", "refs/remotes/origin/fresh-validation"]
+    )
+    .is_empty());
+    validate_branch_fresh(&r.local, "origin/fresh-validation").unwrap();
+    validate_branch(&r.local, "origin/fresh-validation").unwrap();
+}
+
+#[test]
+fn dispatch_exact_base_ref_is_optional_in_v6_and_round_trips() {
+    use tsk_tui::domain::{Dispatch, STORE_FORMAT_VERSION};
+    let r = repo();
+    let old = serde_json::json!({
+        "argv": [], "worktree": r.local, "branch": "tsk/test", "base": "integration/main",
+        "herdr_workspace_id": "unused", "at": [0, 0]
+    });
+    let mut dispatch: Dispatch = serde_json::from_value(old).unwrap();
+    assert_eq!(STORE_FORMAT_VERSION, 6);
+    assert_eq!(dispatch.base_ref, None);
+    assert!(serde_json::to_value(&dispatch)
+        .unwrap()
+        .get("base_ref")
+        .is_none());
+    dispatch.base_ref = Some("refs/heads/integration/main".into());
+    let loaded: Dispatch =
+        serde_json::from_value(serde_json::to_value(&dispatch).unwrap()).unwrap();
+    assert_eq!(loaded.base_ref, dispatch.base_ref);
 }

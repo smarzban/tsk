@@ -64,6 +64,9 @@ pub struct Dispatch {
     /// Branch or commit the dispatch branch was created from. Older v6 records omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
+    /// Exact branch namespace, preserved across subsequent remote configuration changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_ref: Option<String>,
     /// Commit resolved from `base` when the dispatch worktree was created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_commit: Option<String>,

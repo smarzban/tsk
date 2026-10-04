@@ -381,3 +381,46 @@ fn edit_help_names_title_notes_and_equals_forms() {
         );
     }
 }
+
+#[test]
+fn edit_fetches_a_new_remote_base_before_validation() {
+    let dir = temp_state_dir("fresh-remote-base");
+    let _guard = TempDirGuard(dir.clone());
+    let remote = dir.join("remote");
+    let local = dir.join("local");
+    init_git_project(&remote);
+    assert!(Command::new("git")
+        .args(["clone", "-q"])
+        .arg(&remote)
+        .arg(&local)
+        .status()
+        .unwrap()
+        .success());
+    let mut domain = DomainState::new();
+    domain
+        .create(
+            "fresh edit",
+            None,
+            TaskScope::Project {
+                path: local.to_string_lossy().into_owned(),
+            },
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    TaskStore::new(&dir).save(&domain).unwrap();
+    assert!(Command::new("git")
+        .current_dir(&remote)
+        .args(["branch", "new-edit"])
+        .status()
+        .unwrap()
+        .success());
+    let output = edit(&dir, &["T1", "--base", "origin/new-edit"]);
+    assert_eq!(output.code, 0, "{output:?}");
+    assert_eq!(
+        TaskStore::new(&dir).load().unwrap().tasks()[0]
+            .base
+            .as_deref(),
+        Some("origin/new-edit")
+    );
+}

@@ -2761,3 +2761,68 @@ fn plan_failed_rows_keep_item_order_when_an_archived_refusal_precedes_a_parse_fa
     let _ = std::fs::remove_dir_all(repo);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn flag_and_plan_add_fetch_new_remote_base_before_validation() {
+    let _env = env_lock();
+    let dir = temp_state_dir("fresh-remote-base");
+    let remote = dir.join("remote");
+    let local = dir.join("local");
+    init_git_project(&remote);
+    assert!(Command::new("git")
+        .args(["clone", "-q"])
+        .arg(&remote)
+        .arg(&local)
+        .status()
+        .unwrap()
+        .success());
+    for (index, branch) in ["new-flag", "new-plan"].iter().enumerate() {
+        assert!(Command::new("git")
+            .current_dir(&remote)
+            .args(["branch", branch])
+            .status()
+            .unwrap()
+            .success());
+        let base = format!("origin/{branch}");
+        let output = if index == 0 {
+            run_with(
+                [
+                    "tsk",
+                    "add",
+                    "--state-dir",
+                    &state_dir_arg(&dir),
+                    "-p",
+                    &local.to_string_lossy(),
+                    "-t",
+                    "fresh flag",
+                    "--base",
+                    &base,
+                ],
+                Cursor::new(Vec::<u8>::new()),
+                true,
+            )
+        } else {
+            let plan = serde_json::json!([{"title": "fresh plan", "project": local, "base": base}]);
+            run_with(
+                [
+                    "tsk",
+                    "add",
+                    "--state-dir",
+                    &state_dir_arg(&dir),
+                    "--file",
+                    "-",
+                ],
+                Cursor::new(serde_json::to_vec(&plan).unwrap()),
+                true,
+            )
+        };
+        assert_eq!(output.code, 0, "{output:?}");
+        assert!(TaskStore::new(&dir)
+            .load()
+            .unwrap()
+            .tasks()
+            .iter()
+            .any(|task| task.base.as_deref() == Some(base.as_str())));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

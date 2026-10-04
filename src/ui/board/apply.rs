@@ -1623,13 +1623,6 @@ fn apply_board_intent(
                     }
                 }
             };
-            let branches = match crate::git_base::list_branches(&project) {
-                Ok(branches) => branches,
-                Err(message) => {
-                    model.set_message(message);
-                    return Ok(IntentOutcome::None);
-                }
-            };
             let current = if edit_draft {
                 model.form.as_ref().and_then(|form| form.base.clone())
             } else {
@@ -1638,7 +1631,7 @@ fn apply_board_intent(
                     .and_then(|task| task.base.clone())
             };
             model.clear_message();
-            model.open_base_picker(ids, current, &project, branches, edit_draft);
+            model.open_base_picker(ids, current, &project, edit_draft);
             return Ok(IntentOutcome::None);
         }
         BoardIntent::ListPickerNext => {
@@ -1664,10 +1657,10 @@ fn apply_board_intent(
         BoardIntent::SelectListOption(index) => {
             // Mouse-only jump onto a visible picker row, same discipline as
             // `SelectCommand`/`SelectProjectOption`: name the row directly.
-            if let Some(picker) = model.list_picker.as_mut() {
-                picker.selected = index;
+            if model.select_list_picker_option(index) {
+                return apply_board_intent(domain, model, BoardIntent::ConfirmListPicker, snapshot);
             }
-            return apply_board_intent(domain, model, BoardIntent::ConfirmListPicker, snapshot);
+            return Ok(IntentOutcome::None);
         }
         BoardIntent::ConfirmListPicker
             if model.list_picker_kind() == Some(crate::ui::board::ListPickerKind::Base) =>
@@ -3246,7 +3239,10 @@ fn confirm_edit(
     if task.soft_deleted {
         return Err(DomainError::SoftDeleted(id));
     }
-    if let Some(branch) = base.as_deref() {
+    if let Some(branch) = base
+        .as_deref()
+        .filter(|_| base != task.base || scope != task.scope)
+    {
         let TaskScope::Project { path } = &scope else {
             model.set_message("base requires a project task");
             return Ok(IntentOutcome::None);
