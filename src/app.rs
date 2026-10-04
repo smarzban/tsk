@@ -21,7 +21,7 @@ use crate::save_recovery::SaveRecovery;
 use crate::store::{default_state_dir, StoreSignature, TaskStore};
 use crate::ui::board::{
     apply_intent, board_intent_may_persist, draw_board, resolve_board_command, BoardInputMode,
-    BoardModel, CleanupPrompt, IntentOutcome, SaveResolution,
+    BoardModel, BulkCleanup, CleanupPrompt, CleanupRow, IntentOutcome, SaveResolution,
 };
 use crate::ui::capture::{CaptureField, TITLE_REQUIRED_MESSAGE};
 use crate::ui::input::{
@@ -1997,15 +1997,7 @@ pub fn offer_cleanup_prompt_with_host(
     // Decide on the background check before the snapshot, as the base picker does: a fetch
     // that lands between the two then still has a check to fill the card, rather than a
     // fresh answer sitting over pre-fetch ancestry with nothing left to refresh it.
-    let merge_check = match (
-        &task.scope,
-        record.base.is_some() || record.base_ref.is_some(),
-    ) {
-        (crate::domain::TaskScope::Project { path }, true) => {
-            host.begin_merge_check(std::path::Path::new(path), record)
-        }
-        _ => None,
-    };
+    let merge_check = begin_cleanup_merge_check(task, record, host);
     // Cached refs only: the card opens at once and the background check fills merged status.
     let preview = dispatch::inspect_cleanup_cached_with_host(domain, id, in_herdr, host)?;
     if !preview.inspection.worktree_exists {
@@ -2027,10 +2019,36 @@ pub fn offer_cleanup_prompt_with_host(
             workspace_removed: false,
         }));
     }
-    model.begin_cleanup_prompt(CleanupPrompt {
+    model.begin_cleanup_prompt(CleanupPrompt::single(cleanup_row(id, preview, merge_check)));
+    Ok(CleanupOffer::Prompted)
+}
+
+/// Start a dispatched task's background merged check, when it has a recorded base to check.
+fn begin_cleanup_merge_check(
+    task: &crate::domain::Task,
+    record: &crate::domain::Dispatch,
+    host: &mut impl DispatchHost,
+) -> Option<dispatch::MergeCheck> {
+    match (
+        &task.scope,
+        record.base.is_some() || record.base_ref.is_some(),
+    ) {
+        (crate::domain::TaskScope::Project { path }, true) => {
+            host.begin_merge_check(std::path::Path::new(path), record)
+        }
+        _ => None,
+    }
+}
+
+fn cleanup_row(
+    id: uuid::Uuid,
+    preview: dispatch::CleanupPreview,
+    merge_check: Option<dispatch::MergeCheck>,
+) -> CleanupRow {
+    CleanupRow {
         merge_check,
-        confirm_deadline: None,
         task_id: id,
+        number: preview.number,
         worktree: preview.record.worktree,
         branch: preview.record.branch,
         base: preview
@@ -2043,8 +2061,241 @@ pub fn offer_cleanup_prompt_with_host(
         base_available: preview.inspection.base_available,
         warning: preview.inspection.warning,
         workspace_exists: preview.inspection.workspace_exists,
+    }
+}
+
+/// What a bulk `ctrl+d` on a marked set did before the reducer's plain batch completion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BulkCleanupOffer {
+    /// No target has a live dispatch: complete the set as before, no card.
+    None,
+    /// The card is open over the marked set, which stays marked until `y` or `n`.
+    Prompted,
+    /// Every live dispatch's worktree was already gone: they converged to cleaned and the
+    /// whole set completed in this transaction, still one undo entry. The caller saves.
+    MissingConverged { done: usize, missing: usize },
+}
+
+/// Bulk `ctrl+d`: when the marked set holds tasks with a live dispatch, open one card listing
+/// each of them (cached refs plus a background merged check per task). Tasks without one are
+/// listed as just marked done. Nothing is mutated while the card is open.
+pub fn offer_bulk_cleanup_prompt_with_host(
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<BulkCleanupOffer, DomainError> {
+    if !model.bulk_verb_active() || model.focus_is_archived() {
+        return Ok(BulkCleanupOffer::None);
+    }
+    // The tasks this verb would newly complete, in the reducer's target order.
+    let targets = model
+        .marked_ids()
+        .iter()
+        .copied()
+        .filter(|id| {
+            domain
+                .get(*id)
+                .is_some_and(|task| task.status != HumanStatus::Done)
+        })
+        .collect::<Vec<_>>();
+    let live = |task: &crate::domain::Task| {
+        !task.archived
+            && matches!(task.scope, crate::domain::TaskScope::Project { .. })
+            && task.dispatch.as_ref().is_some_and(|record| !record.cleaned)
+    };
+    if !targets
+        .iter()
+        .any(|id| domain.get(*id).is_some_and(|task| live(task)))
+    {
+        return Ok(BulkCleanupOffer::None);
+    }
+    let mut rows = Vec::new();
+    let mut bulk = BulkCleanup {
+        targets: targets.clone(),
+        ..BulkCleanup::default()
+    };
+    for &id in &targets {
+        let task = domain.get(id).expect("targets exist");
+        let identifier = task
+            .board_identifier()
+            .unwrap_or_else(|| "new task".to_string());
+        let Some(record) = task.dispatch.as_ref().filter(|_| live(task)) else {
+            bulk.plain.push(identifier);
+            continue;
+        };
+        // Check before the snapshot, as the single card does, so a fetch landing between the
+        // two still has a check left to refresh the row.
+        let merge_check = begin_cleanup_merge_check(task, record, host);
+        match dispatch::inspect_cleanup_cached_with_host(domain, id, in_herdr, host) {
+            Ok(preview) if !preview.inspection.worktree_exists => {
+                bulk.missing.push((id, identifier));
+            }
+            Ok(preview) => rows.push(cleanup_row(id, preview, merge_check)),
+            Err(error) => bulk.refused.push((identifier, error.to_string())),
+        }
+    }
+    if rows.is_empty() && bulk.refused.is_empty() {
+        let missing = bulk.missing.len();
+        for (id, _) in &bulk.missing {
+            domain.record_dispatch_cleaned(*id)?;
+        }
+        domain.complete_batch_after_cleanup(&targets)?;
+        model.clear_marks();
+        return Ok(BulkCleanupOffer::MissingConverged {
+            done: targets.len(),
+            missing,
+        });
+    }
+    model.begin_cleanup_prompt(CleanupPrompt {
+        rows,
+        bulk: Some(bulk),
+        confirm_deadline: None,
+        scroll: 0,
     });
-    Ok(CleanupOffer::Prompted)
+    Ok(BulkCleanupOffer::Prompted)
+}
+
+/// What a bulk card's `y` or `n` did, for the status line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BulkCleanupOutcome {
+    pub done: usize,
+    /// Per cleanable row that was attempted (`y` only): its number and outcome.
+    pub cleaned: Vec<(u64, Result<CleanupResult, CleanupError>)>,
+    /// Rows kept because their worktree has uncommitted changes.
+    pub dirty: Vec<u64>,
+    /// Worktrees already gone, converged to cleaned.
+    pub missing: usize,
+}
+
+impl BulkCleanupOutcome {
+    pub fn message(&self) -> String {
+        let mut parts = vec![format!("done {}", self.done)];
+        let removed = self
+            .cleaned
+            .iter()
+            .filter_map(|(number, result)| result.as_ref().ok().map(|result| (*number, result)))
+            .collect::<Vec<_>>();
+        let list = |numbers: &mut dyn Iterator<Item = u64>| {
+            numbers
+                .map(|number| format!("T{number}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        if !removed.is_empty() {
+            parts.push(format!(
+                "cleaned {}",
+                list(&mut removed.iter().map(|(number, _)| *number))
+            ));
+            let deleted = removed
+                .iter()
+                .filter(|(_, result)| result.branch == BranchCleanup::Removed)
+                .map(|(number, _)| *number)
+                .collect::<Vec<_>>();
+            let kept = removed
+                .iter()
+                .filter(|(_, result)| result.branch == BranchCleanup::Kept)
+                .map(|(number, _)| *number)
+                .collect::<Vec<_>>();
+            if !deleted.is_empty() {
+                parts.push(format!("branch deleted {}", list(&mut deleted.into_iter())));
+            }
+            if !kept.is_empty() {
+                parts.push(format!("branch kept {}", list(&mut kept.into_iter())));
+            }
+        } else if self.cleaned.is_empty() && self.dirty.is_empty() {
+            parts.push("worktrees kept".into());
+        }
+        if !self.dirty.is_empty() {
+            parts.push(format!(
+                "kept {} (uncommitted changes)",
+                list(&mut self.dirty.iter().copied())
+            ));
+        }
+        if self.missing > 0 {
+            parts.push(format!("{} already gone", plural(self.missing, "worktree")));
+        }
+        for (number, result) in &self.cleaned {
+            if let Err(error) = result {
+                parts.push(format!("T{number} cleanup refused: {error}"));
+            }
+        }
+        parts.join(" · ")
+    }
+}
+
+fn plural(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
+/// Apply a bulk card's choice: with `y`, clean every cleanable row (its own refs: a row whose
+/// check never landed keeps its branch), then converge already-missing worktrees and complete
+/// the whole set as one batch, one undo entry. A refusal on one row never stops the others.
+pub fn bulk_cleanup_and_complete_with_host(
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    clean: bool,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<Option<BulkCleanupOutcome>, DomainError> {
+    let Some(prompt) = model.cleanup_prompt().filter(|prompt| prompt.bulk.is_some()) else {
+        return Ok(None);
+    };
+    let bulk = prompt.bulk.clone().expect("bulk card");
+    let rows = prompt.rows.clone();
+    // A target another actor removed since the card opened is dropped before any host work,
+    // so a refused batch can never follow a cleanup.
+    let targets = bulk
+        .targets
+        .iter()
+        .copied()
+        .filter(|id| domain.get(*id).is_some())
+        .collect::<Vec<_>>();
+    let mut outcome = BulkCleanupOutcome {
+        done: 0,
+        cleaned: Vec::new(),
+        dirty: Vec::new(),
+        missing: 0,
+    };
+    for row in rows.iter().filter(|row| targets.contains(&row.task_id)) {
+        if row.dirty {
+            outcome.dirty.push(row.number);
+        } else if clean {
+            let refs = if row.checking() {
+                dispatch::CleanupRefs::Unconfirmed
+            } else {
+                dispatch::CleanupRefs::Cached
+            };
+            let result = dispatch::clean_with_host_refs(domain, row.task_id, in_herdr, refs, host);
+            outcome.cleaned.push((row.number, result));
+        }
+    }
+    for (id, _) in &bulk.missing {
+        let unconverged = domain
+            .get(*id)
+            .and_then(|task| task.dispatch.as_ref())
+            .is_some_and(|record| !record.cleaned);
+        if unconverged {
+            domain.record_dispatch_cleaned(*id)?;
+            outcome.missing += 1;
+        }
+    }
+    outcome.done = targets
+        .iter()
+        .filter(|id| {
+            domain
+                .get(**id)
+                .is_some_and(|task| task.status != HumanStatus::Done)
+        })
+        .count();
+    domain.complete_batch_after_cleanup(&targets)?;
+    model.close_popup();
+    model.clear_marks();
+    Ok(Some(outcome))
 }
 
 /// One board-loop step for cleanup cards: apply landed merged checks (this board's card or
@@ -2063,17 +2314,24 @@ pub fn finish_queued_cleanup_with_host(
     if save_recovery.is_pending() {
         return Ok(());
     }
-    let target = if model.cleanup_confirm_due() {
-        BoardIntentTarget::Outer
-    } else if model.input_target_mut().cleanup_confirm_due() {
-        BoardIntentTarget::Focused
+    // A project preview keeps its card while parked (the frame narrowed under it), so its
+    // queued `y` is finished whether or not the preview owns input right now.
+    let preview = if model.cleanup_confirm_due() {
+        false
+    } else if model.preview_cleanup_confirm_due() {
+        true
     } else {
         return Ok(());
+    };
+    let target = if preview {
+        model.preview_seat_mut().expect("due preview card")
+    } else {
+        &mut *model
     };
     handle_board_intent_with_host(
         store,
         domain,
-        board_intent_target_mut(model, target),
+        target,
         BoardIntent::ConfirmCleanup,
         save_recovery,
         quick_capture,
@@ -2081,7 +2339,9 @@ pub fn finish_queued_cleanup_with_host(
         host,
         &mut |_| {},
     )?;
-    sync_focused_project_preview(model, domain, save_recovery);
+    if preview && !save_recovery.is_pending() {
+        model.sync_from_domain(domain);
+    }
     Ok(())
 }
 
@@ -2093,13 +2353,17 @@ pub fn cleanup_and_complete_with_host(
     in_herdr: bool,
     host: &mut impl DispatchHost,
 ) -> Result<Option<Result<CleanupResult, CleanupError>>, DomainError> {
-    let Some(prompt) = model.cleanup_prompt() else {
+    let Some(row) = model
+        .cleanup_prompt()
+        .filter(|prompt| prompt.bulk.is_none())
+        .and_then(|prompt| prompt.rows.first())
+    else {
         return Ok(None);
     };
-    let target = prompt.task_id;
+    let target = row.task_id;
     // The card refreshed the base off the event loop; never fetch here. A check that is still
     // running (its queued `y` ran out of time) confirms nothing, so the branch stays.
-    let refs = if prompt.checking() {
+    let refs = if row.checking() {
         dispatch::CleanupRefs::Unconfirmed
     } else {
         dispatch::CleanupRefs::Cached
@@ -2299,6 +2563,32 @@ fn handle_board_intent_with_host(
         refresh_before_mutation(&intent, &baseline, domain, model);
     }
 
+    if intent == BoardIntent::Complete && !save_recovery.is_pending() && model.bulk_verb_active() {
+        match offer_bulk_cleanup_prompt_with_host(domain, model, in_herdr, host) {
+            Ok(BulkCleanupOffer::Prompted) => return Ok(false),
+            Ok(BulkCleanupOffer::MissingConverged { done, missing }) => {
+                if let Err(error) = store.reload_merge_save(domain) {
+                    let working = std::mem::take(domain);
+                    save_recovery.fail(baseline, working, error.to_string());
+                    model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+                    return Ok(false);
+                }
+                model.sync_from_domain(domain);
+                model.set_message(format!(
+                    "done {done} · {} already gone",
+                    plural(missing, "worktree")
+                ));
+                record_notice_dismissals_without_blocking_persist(store, domain);
+                return Ok(false);
+            }
+            Ok(BulkCleanupOffer::None) => {}
+            Err(error) => {
+                model.set_message(board_rejection_message(&error));
+                return Ok(false);
+            }
+        }
+    }
+
     if intent == BoardIntent::Complete && !save_recovery.is_pending() {
         if let Some(target) = model.selected_id() {
             match offer_cleanup_prompt_with_host(domain, model, target, in_herdr, host) {
@@ -2331,6 +2621,33 @@ fn handle_board_intent_with_host(
     {
         let clean = intent == BoardIntent::ConfirmCleanup;
         if clean && model.queue_cleanup_confirm() {
+            return Ok(false);
+        }
+        if model
+            .cleanup_prompt()
+            .is_some_and(|prompt| prompt.bulk.is_some())
+        {
+            let outcome = match bulk_cleanup_and_complete_with_host(
+                domain, model, clean, in_herdr, host,
+            ) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    model.close_popup();
+                    model.set_message(board_rejection_message(&error));
+                    return Ok(false);
+                }
+            };
+            if let Err(error) = store.reload_merge_save(domain) {
+                let working = std::mem::take(domain);
+                save_recovery.fail(baseline, working, error.to_string());
+                model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+                return Ok(false);
+            }
+            model.sync_from_domain(domain);
+            if let Some(outcome) = outcome {
+                model.set_message(outcome.message());
+            }
+            record_notice_dismissals_without_blocking_persist(store, domain);
             return Ok(false);
         }
         let result = cleanup_and_complete_with_host(domain, model, clean, in_herdr, host);

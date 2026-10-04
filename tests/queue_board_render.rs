@@ -6005,7 +6005,7 @@ fn peek_project_label_wraps_all_content_below_notes() {
 
 #[test]
 fn unmerged_cleanup_card_explains_squash_retention_without_clipping_the_hint() {
-    use tsk_tui::ui::board::CleanupPrompt;
+    use tsk_tui::ui::board::{CleanupPrompt, CleanupRow};
     let mut domain = DomainState::new();
     let id = domain
         .create(
@@ -6017,9 +6017,9 @@ fn unmerged_cleanup_card_explains_squash_retention_without_clipping_the_hint() {
         )
         .unwrap();
     let mut model = BoardModel::from_domain(&domain, None);
-    model.begin_cleanup_prompt(CleanupPrompt {
+    model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
         merge_check: None,
-        confirm_deadline: None,
+        number: 1,
         task_id: id,
         worktree: "/tmp/worktree".into(),
         branch: "tsk/t1-cleanup".into(),
@@ -6029,19 +6029,21 @@ fn unmerged_cleanup_card_explains_squash_retention_without_clipping_the_hint() {
         base_available: true,
         warning: None,
         workspace_exists: true,
-    });
+    }));
     for width in [40, 80] {
         let rows = board_rows(&model, width, 24);
         let painted = rows.join("\n");
         assert!(painted.contains("squash-merged?"), "{width}: {painted}");
-        assert!(painted.contains("delete by hand"), "{width}: {painted}");
-        assert!(painted.contains("base origin/main"), "{width}: {painted}");
+        assert!(painted.contains("delete it by"), "{width}: {painted}");
+        assert!(painted.contains("hand)"), "{width}: {painted}");
+        assert!(painted.contains("origin/main"), "{width}: {painted}");
+        assert!(painted.contains("keep branch"), "{width}: {painted}");
     }
 }
 
 #[test]
 fn cleanup_card_exposes_cached_ref_warning_and_missing_base_without_a_squash_hint() {
-    use tsk_tui::ui::board::CleanupPrompt;
+    use tsk_tui::ui::board::{CleanupPrompt, CleanupRow};
     let mut domain = DomainState::new();
     let id = domain
         .create(
@@ -6061,9 +6063,9 @@ fn cleanup_card_exposes_cached_ref_warning_and_missing_base_without_a_squash_hin
         (false, false, None),
     ] {
         let mut model = BoardModel::from_domain(&domain, None);
-        model.begin_cleanup_prompt(CleanupPrompt {
+        model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
             merge_check: None,
-            confirm_deadline: None,
+            number: 1,
             task_id: id,
             worktree: "/tmp/worktree".into(),
             branch: "tsk/t1-cleanup".into(),
@@ -6073,7 +6075,7 @@ fn cleanup_card_exposes_cached_ref_warning_and_missing_base_without_a_squash_hin
             base_available: available,
             warning: warning.map(str::to_owned),
             workspace_exists: true,
-        });
+        }));
         for width in [40, 80] {
             let painted = board_rows(&model, width, 24).join("\n");
             assert!(!painted.contains("squash-merged?"), "{width}: {painted}");
