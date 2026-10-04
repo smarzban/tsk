@@ -1,6 +1,8 @@
 //! Headless task dispatch.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::thread::JoinHandle;
 
 use crate::agents::AgentProfiles;
 use crate::cli::parser::TaskAddress;
@@ -14,13 +16,34 @@ pub fn run(
 ) -> Result<DispatchResult, DispatchError> {
     dispatch::ensure_platform_supported()?;
     let mut host = SystemDispatchHost;
-    run_with_host(
+    let result = run_with_host(
         target,
         again,
         state_dir,
         dispatch::running_inside_herdr(),
         &mut host,
-    )
+    )?;
+    if let Some(naming) = result.naming.clone() {
+        let handle = dispatch::spawn_agent_naming(naming);
+        if let Ok(mut pending) = PENDING_NAMING.lock() {
+            pending.push(handle);
+        }
+    }
+    Ok(result)
+}
+
+static PENDING_NAMING: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
+
+/// Let a dispatch's background agent naming finish before the process exits; bounded by its
+/// detection timeout. Call only after the command's output is written.
+pub fn wait_for_agent_naming() {
+    let handles = PENDING_NAMING
+        .lock()
+        .map(|mut pending| std::mem::take(&mut *pending))
+        .unwrap_or_default();
+    for handle in handles {
+        let _ = handle.join();
+    }
 }
 
 pub fn run_with_host(

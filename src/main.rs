@@ -96,6 +96,8 @@ fn headless_main(args: Vec<String>) -> ExitCode {
     if io::stderr().write_all(output.stderr.as_bytes()).is_err() {
         return ExitCode::from(1);
     }
+    let _ = io::stdout().flush();
+    tsk_tui::cli::dispatch::wait_for_agent_naming();
     ExitCode::from(output.code)
 }
 
