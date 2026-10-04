@@ -220,7 +220,7 @@ tsk dispatch T12
 tsk dispatch T12 --again
 ```
 
-Dispatch requires Herdr, an assigned project task whose project is a Git repository, and a matching profile in `agents.toml`. It runs on macOS and Linux only; on Windows it refuses with `unsupported-platform`. It creates a branch and worktree, opens a Herdr workspace there, and runs the profile's rendered command in its root pane. Only after the launch succeeds, tsk saves the dispatch record and sets the task to `started` in the same write. The dispatch itself is not undoable.
+Dispatch requires Herdr, an assigned project task whose project is a Git repository, and a matching profile in `agents.toml`. It runs on macOS and Linux only; on Windows it refuses with `unsupported-platform`. It creates a branch and worktree, opens a Herdr workspace there, and runs the profile's rendered command in its root pane. After launching, tsk names the Herdr agent `t<number>-<assignee>` (for example `t12-claude`) so `herdr agent get t12-claude` finds it; if Herdr detects no agent within a few seconds or the name is taken, the agent stays unnamed and dispatch still succeeds. Only after the launch succeeds, tsk saves the dispatch record and sets the task to `started` in the same write. The dispatch itself is not undoable.
 
 A task with an existing record refuses with `already-dispatched`. Use `--again` deliberately to reuse the recorded Herdr workspace and rerun the rendered command in its root pane. If the record was cleaned, `--again` recreates the worktree: it opens the retained unmerged branch or recreates a branch that cleanup removed. Ordinary status changes retain the record.
 

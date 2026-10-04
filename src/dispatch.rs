@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::Value;
 use uuid::Uuid;
@@ -214,7 +214,15 @@ pub trait DispatchHost {
     }
     fn root_pane(&mut self, workspace_id: &str) -> Result<String, String>;
     fn run_in_pane(&mut self, pane_id: &str, command: &str) -> Result<(), String>;
+    /// Best effort: name the agent Herdr detects in `pane_id`. Never fails a dispatch.
+    fn name_agent(&mut self, _pane_id: &str, _name: &str) -> Result<(), String> {
+        Err("agent naming is not supported".into())
+    }
 }
+
+/// How long dispatch waits for Herdr to detect the launched agent before leaving it unnamed.
+const AGENT_DETECTION_TIMEOUT: Duration = Duration::from_secs(3);
+const AGENT_DETECTION_POLL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Default)]
 pub struct SystemDispatchHost;
@@ -449,6 +457,33 @@ impl DispatchHost for SystemDispatchHost {
             .map_err(|error| format!("could not run herdr: {error}"))?;
         herdr_json(output).map(|_| ())
     }
+
+    fn name_agent(&mut self, pane_id: &str, name: &str) -> Result<(), String> {
+        // Herdr detects the agent shortly after the launch line runs; until then the pane has
+        // no agent and rename answers `agent_not_found`. Any other refusal, such as
+        // `agent_name_taken` by an agent elsewhere, is final: the agent stays unnamed.
+        let deadline = Instant::now() + AGENT_DETECTION_TIMEOUT;
+        loop {
+            let output = Command::new("herdr")
+                .args(["agent", "rename", pane_id, name])
+                .output()
+                .map_err(|error| format!("could not run herdr: {error}"))?;
+            let undetected = !output.status.success()
+                && herdr_error_code(&output.stderr).as_deref() == Some("agent_not_found");
+            if !undetected || Instant::now() >= deadline {
+                return herdr_json(output).map(|_| ());
+            }
+            std::thread::sleep(AGENT_DETECTION_POLL);
+        }
+    }
+}
+
+fn herdr_error_code(stderr: &[u8]) -> Option<String> {
+    let value: Value = serde_json::from_slice(stderr).ok()?;
+    value
+        .pointer("/error/code")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn canonical_cleanup_path(path: &Path) -> Result<PathBuf, String> {
@@ -749,6 +784,8 @@ pub fn run_with_host(
     });
     host.run_in_pane(&pane_id, &rendered.command)
         .map_err(DispatchError::Herdr)?;
+    // The launch already succeeded; an undetected agent or a taken name leaves it unnamed.
+    let _ = host.name_agent(&pane_id, &agent_name(number, &assignee));
 
     let record = Dispatch {
         argv: rendered.argv,
@@ -782,6 +819,12 @@ pub fn ensure_platform_supported() -> Result<(), DispatchError> {
 
 pub fn running_inside_herdr() -> bool {
     std::env::var("HERDR_ENV").as_deref() == Ok("1")
+}
+
+/// Herdr agent name for a dispatched task, e.g. `t105-claude`. Assignees are already
+/// lowercase thread-style names, so the result is Herdr-legal as-is.
+pub fn agent_name(number: u64, assignee: &str) -> String {
+    format!("t{number}-{assignee}")
 }
 
 fn rendered_steps(task: &Task) -> String {
@@ -855,6 +898,8 @@ mod tests {
         git: bool,
         fail_create: Option<String>,
         fail_run: Option<String>,
+        fail_name: Option<String>,
+        names: Vec<(String, String)>,
         creates: usize,
         roots: usize,
         runs: Vec<(String, String)>,
@@ -934,6 +979,11 @@ mod tests {
             } else {
                 Ok(())
             }
+        }
+
+        fn name_agent(&mut self, pane: &str, name: &str) -> Result<(), String> {
+            self.names.push((pane.into(), name.into()));
+            self.fail_name.clone().map_or(Ok(()), Err)
         }
     }
 
@@ -1272,6 +1322,60 @@ mod tests {
         assert_eq!(host.creates, 1);
         assert_eq!(host.runs.len(), 1);
         assert!(host.runs[0].1.contains("/tmp/worktree"));
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn launch_names_the_herdr_agent_after_the_task_and_profile() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let number = state.get(id).and_then(|task| task.number).expect("number");
+        let expected = format!("t{number}-implementer");
+        let mut host = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        run_with_host(&mut state, id, &profiles, false, true, &mut host).expect("dispatch");
+        assert_eq!(host.names, vec![("w9:p1".to_string(), expected.clone())]);
+
+        let mut again_host = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        run_with_host(&mut state, id, &profiles, true, true, &mut again_host).expect("again");
+        assert_eq!(again_host.names, vec![("w9:p1".to_string(), expected)]);
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn undetected_or_taken_agent_name_still_dispatches() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let mut host = FakeHost {
+            git: true,
+            fail_name: Some("herdr: agent target w9:p1 not found".into()),
+            ..FakeHost::default()
+        };
+        let result =
+            run_with_host(&mut state, id, &profiles, false, true, &mut host).expect("dispatch");
+        assert_eq!(host.names.len(), 1);
+        let task = state.get(id).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        assert_eq!(task.dispatch.as_ref(), Some(&result.record));
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn failed_launch_never_names_an_agent() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let mut host = FakeHost {
+            git: true,
+            fail_run: Some("pane gone".into()),
+            ..FakeHost::default()
+        };
+        assert!(run_with_host(&mut state, id, &profiles, false, true, &mut host).is_err());
+        assert!(host.names.is_empty());
         fs::remove_dir_all(path).expect("cleanup");
     }
 
