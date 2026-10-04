@@ -1126,6 +1126,62 @@ fn board_keyboard_intent(
     }
 }
 
+/// Resolve a failed save on the board that owns it, which need not be the board the user
+/// answered from: a project preview parked by a narrowing frame keeps its held form and
+/// drafts while the visible board shows a proxy of its banner (and the reverse after the
+/// frame widens). Owners unwind their session; proxies only take the banner down.
+fn resolve_save_recovery(model: &mut BoardModel, domain: &DomainState, resolution: SaveResolution) {
+    let seat_owns = model
+        .preview_seat_mut()
+        .is_some_and(|seat| seat.owns_save_recovery());
+    // A board answering with no other owner in sight owns it, as before proxies existed.
+    let outer_owns =
+        model.owns_save_recovery() || (!seat_owns && !model.shows_save_recovery_proxy());
+    let retried = resolution == SaveResolution::Retried;
+    let before_sync = |board: &mut BoardModel| {
+        if retried {
+            board.release_task_edit_save();
+            board.finish_pending_assignee_assignment();
+        }
+    };
+    let after_sync = |board: &mut BoardModel| {
+        if !retried {
+            board.finish_pending_assignee_assignment();
+        }
+        board.finish_form_assignee_sync(retried);
+        board.finish_form_base_sync(retried);
+        let cancelled_quick_add = board.end_save_recovery(resolution);
+        if retried && !board.has_saved_task() {
+            board.set_message("saved");
+        } else if !retried && !cancelled_quick_add {
+            board.set_message("save cancelled");
+        }
+    };
+    let proxy_message = if retried { "saved" } else { "save cancelled" };
+    if outer_owns {
+        before_sync(model);
+    }
+    if seat_owns {
+        before_sync(model.preview_seat_mut().expect("seat owns recovery"));
+    }
+    // The outer sync carries the preview seat with it.
+    model.sync_from_domain(domain);
+    if outer_owns {
+        after_sync(model);
+    } else if model.shows_save_recovery_proxy() {
+        model.end_proxy_save_recovery();
+        model.set_message(proxy_message);
+    }
+    if let Some(seat) = model.preview_seat_mut() {
+        if seat_owns {
+            after_sync(seat);
+        } else if seat.shows_save_recovery_proxy() {
+            seat.end_proxy_save_recovery();
+            seat.set_message(proxy_message);
+        }
+    }
+}
+
 pub fn apply_board_intent_with_save_recovery(
     domain: &mut DomainState,
     model: &mut BoardModel,
@@ -1154,15 +1210,7 @@ pub fn apply_board_intent_with_save_recovery(
                 model.close_command_surface();
                 if let Some(working) = recovery.retry(|working| persist(working)) {
                     *domain = working;
-                    model.release_task_edit_save();
-                    model.finish_pending_assignee_assignment();
-                    model.sync_from_domain(domain);
-                    model.finish_form_assignee_sync(true);
-                    model.finish_form_base_sync(true);
-                    model.end_save_recovery(SaveResolution::Retried);
-                    if !model.has_saved_task() {
-                        model.set_message("saved");
-                    }
+                    resolve_save_recovery(model, domain, SaveResolution::Retried);
                     return Ok(IntentOutcome::Persisted);
                 }
                 model.begin_save_recovery(recovery.error().unwrap_or("save failed"));
@@ -1171,14 +1219,7 @@ pub fn apply_board_intent_with_save_recovery(
             BoardIntent::CancelSave => {
                 model.close_command_surface();
                 *domain = recovery.cancel().expect("pending recovery has a baseline");
-                model.sync_from_domain(domain);
-                model.finish_pending_assignee_assignment();
-                model.finish_form_assignee_sync(false);
-                model.finish_form_base_sync(false);
-                let cancelled_quick_add = model.end_save_recovery(SaveResolution::Cancelled);
-                if !cancelled_quick_add {
-                    model.set_message("save cancelled");
-                }
+                resolve_save_recovery(model, domain, SaveResolution::Cancelled);
                 return Ok(IntentOutcome::None);
             }
             // Navigation and presentation state mutate nothing.
@@ -1901,7 +1942,12 @@ fn dispatch_board_intent(
     let intent_for_preview = intent.clone();
     // Quit belongs to the whole application, even when a focused preview supplied it.
     // Its guard must see both the outer parked form and the nested preview's draft.
-    let target = if intent == BoardIntent::Quit {
+    // Retry and Cancel resolve the failed save on whichever board owns it, so they start from
+    // the outer board, which reaches its preview seat whether or not that seat has focus.
+    let target = if matches!(
+        intent,
+        BoardIntent::Quit | BoardIntent::RetrySave | BoardIntent::CancelSave
+    ) {
         BoardIntentTarget::Outer
     } else {
         route.target
@@ -10071,6 +10117,160 @@ mod queued_cleanup_tests {
         assert!(model.input_target_mut().cleanup_prompt().is_none());
         assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
         assert_eq!((host.removed, host.deleted), (1, 1));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    /// A preview task-page edit whose save fails, then the frame narrows so the preview parks.
+    /// Returns the persistent recovery, with the visible board showing it.
+    #[cfg(unix)]
+    fn parked_preview_with_a_failed_task_edit(
+        dir: &Path,
+        store: &TaskStore,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+    ) -> SaveRecovery<DomainState> {
+        use std::os::unix::fs::PermissionsExt;
+        apply_intent(
+            domain,
+            model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("projects overview");
+        for _ in 0..2 {
+            apply_intent(domain, model, BoardIntent::StageRight, None).expect("stage right");
+        }
+        assert!(model.project_right_seat_focused());
+        let seat = model.input_target_mut();
+        apply_intent(domain, seat, BoardIntent::OpenTaskPage, None).expect("task page");
+        apply_intent(domain, seat, BoardIntent::BeginEditTitle, None).expect("edit title");
+        apply_intent(
+            domain,
+            seat,
+            BoardIntent::EditInsertText(" edited".into()),
+            None,
+        )
+        .expect("type");
+        let mut recovery = SaveRecovery::new();
+        let mut host = CheckHost::new(false);
+        let permissions = std::fs::Permissions::from_mode;
+        std::fs::set_permissions(dir, permissions(0o555)).expect("read-only state dir");
+        let saved = handle_board_intent_with_host(
+            store,
+            domain,
+            model.input_target_mut(),
+            BoardIntent::ConfirmEdit,
+            &mut recovery,
+            false,
+            true,
+            &mut host,
+            &mut |_| {},
+        );
+        std::fs::set_permissions(dir, permissions(0o755)).expect("writable again");
+        saved.expect("confirm");
+        assert!(recovery.is_pending(), "the preview's save failed");
+        let seat = model.right_seat().expect("seat");
+        assert!(seat.owns_save_recovery() && seat.task_edit_save_held());
+
+        super::sync_frame_presentation(ratatui::layout::Rect::new(0, 0, 60, 24), model);
+        assert!(!model.project_right_seat_focused());
+        finish_queued_cleanup_with_host(
+            store,
+            domain,
+            model,
+            &mut recovery,
+            false,
+            true,
+            &mut host,
+        )
+        .expect("loop step");
+        assert_eq!(
+            model.input_mode(),
+            crate::ui::board::BoardInputMode::SaveRecovery
+        );
+        recovery
+    }
+
+    /// Answer from the visible board through the event loop's own dispatch boundary.
+    #[cfg(unix)]
+    fn answer_recovery(
+        store: &TaskStore,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        recovery: &mut SaveRecovery<DomainState>,
+        intent: BoardIntent,
+    ) {
+        super::dispatch_board_intent(
+            store,
+            domain,
+            model,
+            super::BoardDispatchRoute {
+                area: ratatui::layout::Rect::new(0, 0, 60, 24),
+                target: super::BoardIntentTarget::Focused,
+            },
+            intent,
+            recovery,
+            false,
+        )
+        .expect("answer");
+        let mut host = CheckHost::new(false);
+        finish_queued_cleanup_with_host(store, domain, model, recovery, false, true, &mut host)
+            .expect("loop step");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancel_on_the_visible_board_unwinds_a_parked_previews_failed_task_edit() {
+        let (dir, store, mut domain, id) = setup("parked-cancel");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut recovery =
+            parked_preview_with_a_failed_task_edit(&dir, &store, &mut domain, &mut model);
+        answer_recovery(
+            &store,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardIntent::CancelSave,
+        );
+        assert!(!recovery.is_pending());
+        assert_eq!(model.input_mode(), crate::ui::board::BoardInputMode::Normal);
+        assert_eq!(model.message(), Some("save cancelled"));
+        let seat = model.right_seat().expect("seat");
+        assert!(!seat.task_edit_save_held(), "the hold is released");
+        assert!(!seat.owns_save_recovery() && !seat.shows_save_recovery_proxy());
+        assert_eq!(
+            seat.task_form_title(),
+            Some("queued"),
+            "the cancelled draft is gone"
+        );
+        assert_eq!(store.load().unwrap().get(id).unwrap().title, "queued");
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retry_on_the_visible_board_lands_and_releases_a_parked_previews_failed_task_edit() {
+        let (dir, store, mut domain, id) = setup("parked-retry");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut recovery =
+            parked_preview_with_a_failed_task_edit(&dir, &store, &mut domain, &mut model);
+        answer_recovery(
+            &store,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardIntent::RetrySave,
+        );
+        assert!(!recovery.is_pending());
+        assert_eq!(model.input_mode(), crate::ui::board::BoardInputMode::Normal);
+        assert_eq!(
+            store.load().unwrap().get(id).unwrap().title,
+            "queued edited"
+        );
+        let seat = model.right_seat().expect("seat");
+        assert!(!seat.task_edit_save_held(), "the hold is released");
+        assert!(!seat.owns_save_recovery() && !seat.shows_save_recovery_proxy());
+        assert_eq!(seat.task_form_title(), Some("queued edited"));
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
 

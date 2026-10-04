@@ -947,6 +947,8 @@ pub struct BoardModel {
     pub(super) help_scroll: usize,
     /// Furthest help scroll the last painted card could show (renderer-recorded).
     pub(super) help_max_scroll: Cell<usize>,
+    /// This board's SaveRecovery popup only mirrors a failed save another board owns.
+    pub(super) save_recovery_proxy: bool,
     /// Furthest cleanup-card scroll the last painted card could show (renderer-recorded).
     pub(super) cleanup_max_scroll: Cell<usize>,
     /// Underlying surface to restore after Help closes.
@@ -1190,6 +1192,7 @@ impl BoardModel {
             help_scroll: 0,
             help_max_scroll: Cell::new(usize::MAX),
             cleanup_max_scroll: Cell::new(usize::MAX),
+            save_recovery_proxy: false,
             help_return_mode: BoardInputMode::Normal,
             search_return_mode: BoardInputMode::Normal,
             input_mode: BoardInputMode::Normal,
@@ -1342,12 +1345,16 @@ impl BoardModel {
     /// take a resolved one down from both boards. A queued cleanup can finish (and fail its
     /// save) inside a project preview that a narrowing frame has parked, and the frame can
     /// widen or narrow again before the user answers Retry or Cancel.
+    ///
+    /// The board that failed keeps owning the recovery (its held form, its drafts); a board
+    /// that only shows it for input is a proxy, and Retry or Cancel resolve the owner.
     pub fn present_save_recovery(&mut self, pending: Option<&str>) {
         match pending {
             Some(error) => {
                 let target = self.input_target_mut();
                 if target.popup != BoardPopup::SaveRecovery {
                     target.begin_save_recovery(error);
+                    target.save_recovery_proxy = true;
                 }
             }
             None => {
@@ -1361,9 +1368,25 @@ impl BoardModel {
 
     fn drop_stale_save_recovery(&mut self) {
         if self.popup == BoardPopup::SaveRecovery {
-            self.popup = BoardPopup::None;
+            self.end_proxy_save_recovery();
             self.clear_message();
         }
+    }
+
+    /// Whether this board holds the failed save itself, not just a proxy of its banner.
+    pub fn owns_save_recovery(&self) -> bool {
+        self.popup == BoardPopup::SaveRecovery && !self.save_recovery_proxy
+    }
+
+    pub fn shows_save_recovery_proxy(&self) -> bool {
+        self.popup == BoardPopup::SaveRecovery && self.save_recovery_proxy
+    }
+
+    /// Take down a proxied recovery banner. Nothing failed on this board, so its own state
+    /// (drafts, a durable delete notice) is restored as it was.
+    pub fn end_proxy_save_recovery(&mut self) {
+        self.save_recovery_proxy = false;
+        self.end_save_recovery(SaveResolution::Retried);
     }
 
     /// Whether a queued `y` waits in this board's retained project preview, focused or parked.
@@ -1445,6 +1468,7 @@ impl BoardModel {
         if self.popup == BoardPopup::SaveRecovery {
             self.popup = BoardPopup::None;
         }
+        self.save_recovery_proxy = false;
         let armed = (self.delete_notice.take(), self.delete_notice_count.take());
         let suspended = (
             self.suspended_delete_notice.take(),
@@ -3723,6 +3747,19 @@ impl BoardModel {
     /// Hold a task form through the reducer's pre-persist sync.
     pub fn hold_task_edit_save(&mut self) {
         self.hold_task_edit_save = true;
+    }
+
+    /// Whether a task form is held through an unresolved save.
+    pub fn task_edit_save_held(&self) -> bool {
+        self.hold_task_edit_save
+    }
+
+    /// The task page form's title draft, if a task form is open.
+    pub fn task_form_title(&self) -> Option<&str> {
+        self.form
+            .as_ref()
+            .filter(|form| form.is_task())
+            .map(|form| form.title.value())
     }
 
     /// Release a held form only after Retry or the initial persistence succeeds.
