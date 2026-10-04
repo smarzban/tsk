@@ -6180,3 +6180,70 @@ fn a_bulk_cleanup_card_taller_than_the_frame_scrolls_like_help() {
     assert!(last.contains("▲") && !last.contains("▼"), "{last}");
     assert!(last.contains("marked done"), "{last}");
 }
+
+fn large_bulk_cleanup_model(count: u64, dirty: bool) -> BoardModel {
+    use tsk_tui::ui::board::{BulkCleanup, CleanupPrompt, CleanupRow};
+    let domain = DomainState::new();
+    let mut model = BoardModel::from_domain(&domain, None);
+    let rows = (1..=count)
+        .map(|number| CleanupRow {
+            merge_check: None,
+            check_failed: false,
+            number,
+            task_id: Uuid::from_u128(u128::from(number)),
+            worktree: format!("/tmp/tsk-t{number}-bulk"),
+            branch: format!("tsk/t{number}-bulk"),
+            base: "origin/dispatch".into(),
+            // All dirty, or every row but the last clean.
+            dirty: dirty || number == count,
+            branch_merged: true,
+            base_available: true,
+            warning: None,
+            workspace_exists: true,
+        })
+        .collect();
+    model.begin_cleanup_prompt(CleanupPrompt {
+        rows,
+        bulk: Some(BulkCleanup {
+            targets: (1..=count)
+                .map(|n| Uuid::from_u128(u128::from(n)))
+                .collect(),
+            ..BulkCleanup::default()
+        }),
+        confirm_deadline: None,
+        scroll: 0,
+    });
+    model
+}
+
+#[test]
+fn a_scrolling_bulk_cleanup_card_at_forty_columns_never_cuts_its_counts() {
+    for (count, dirty, question) in [
+        (10, false, "Clean up 9 of 10 worktrees?"),
+        (12, true, "Can't clean up any worktree."),
+    ] {
+        let model = large_bulk_cleanup_model(count, dirty);
+        let rows = board_rows(&model, 40, 24);
+        let painted = rows.join("\n");
+        let title = rows
+            .iter()
+            .find(|row| row.contains("[x]"))
+            .unwrap_or_else(|| panic!("card title row:\n{painted}"));
+        assert!(!title.contains('…'), "title cut: {title}\n{painted}");
+        assert!(title.contains(&format!("Done {count} tasks")), "{title}");
+        assert!(title.contains('▼'), "the card scrolls: {title}");
+        let body = rows
+            .iter()
+            .map(|row| row.trim_matches(|c: char| c == ' ' || c == '│'))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            body.contains(question),
+            "the counts move into the body:\n{painted}"
+        );
+    }
+    // Where the full title fits, the counts stay in the title and the body is unchanged.
+    let wide = board_rows(&large_bulk_cleanup_model(10, false), 80, 24).join("\n");
+    assert!(wide.contains("Done 10 tasks · clean up 9 of 10?"), "{wide}");
+    assert!(!wide.contains("worktrees?"), "{wide}");
+}

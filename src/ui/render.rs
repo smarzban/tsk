@@ -407,9 +407,7 @@ pub enum QueueOverlay<'a> {
     LaunchCard { name: &'a str },
     /// Dispatched worktree cleanup confirmation: the cursor task or a marked set.
     CleanupConfirm {
-        /// Full title, and the shorter one used when the full one would not fit.
-        title: String,
-        short_title: String,
+        title: CleanupTitle,
         lines: Vec<CleanupCardLine>,
         footer: CleanupFooter,
         /// First visible body row; clamped to what fits.
@@ -1763,7 +1761,6 @@ fn paint_overlay(
         }
         QueueOverlay::CleanupConfirm {
             title,
-            short_title,
             lines,
             footer,
             scroll,
@@ -1774,7 +1771,6 @@ fn paint_overlay(
                 surface,
                 CleanupCard {
                     title,
-                    short_title,
                     lines,
                     footer: *footer,
                     scroll: *scroll,
@@ -3538,6 +3534,17 @@ pub enum CleanupCardLine {
     Field { label: String, value: String },
 }
 
+/// A cleanup card's title at three lengths. The question it asks (the counts, on a bulk card)
+/// is never cut: when neither the full nor the short title fits the border, the card uses
+/// `bare` and moves `question` to the first body line instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupTitle {
+    pub full: String,
+    pub short: String,
+    pub bare: String,
+    pub question: String,
+}
+
 /// Which choices a cleanup card offers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CleanupFooter {
@@ -3629,8 +3636,7 @@ const SHORT_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[
 ];
 
 struct CleanupCard<'a> {
-    title: &'a str,
-    short_title: &'a str,
+    title: &'a CleanupTitle,
     lines: &'a [CleanupCardLine],
     footer: CleanupFooter,
     scroll: usize,
@@ -3725,8 +3731,25 @@ fn paint_cleanup_card(
             card.footer.legend(true)
         }
     };
+    // Room for the title beside its rule and `[x]`, keeping three cells for a scroll marker.
+    let title_budget = inner.saturating_sub(9);
+    let fits = |title: &str| display_width(title) + 3 <= title_budget;
+    let (base_title, question) = if fits(&card.title.full) {
+        (card.title.full.as_str(), None)
+    } else if fits(&card.title.short) {
+        (card.title.short.as_str(), None)
+    } else {
+        (
+            card.title.bare.as_str(),
+            Some(CleanupCardLine::Text(card.title.question.clone())),
+        )
+    };
     let wrap_width = usize::from(card_w.saturating_sub(2 + 2 * pad).max(1));
-    let rows = cleanup_card_rows(card.lines, wrap_width);
+    let lines: Vec<CleanupCardLine> = question
+        .into_iter()
+        .chain(card.lines.iter().cloned())
+        .collect();
+    let rows = cleanup_card_rows(&lines, wrap_width);
     let capacity = usize::from(
         bounds
             .height
@@ -3736,12 +3759,6 @@ fn paint_cleanup_card(
     hits.cleanup_max_scroll = Some(max_scroll);
     let scroll = card.scroll.min(max_scroll);
     let window: Vec<&String> = rows.iter().skip(scroll).take(capacity).collect();
-    let title_budget = inner.saturating_sub(9);
-    let base_title = if display_width(card.title) + 3 <= title_budget {
-        card.title
-    } else {
-        card.short_title
-    };
     let title =
         titled_with_scroll_marker(base_title, scroll > 0, scroll + window.len() < rows.len());
     let content = paint_modal_card(

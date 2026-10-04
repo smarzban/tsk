@@ -10641,9 +10641,14 @@ mod bulk_cleanup_tests {
         assert!(!board.model.cleanup_prompt().unwrap().checking());
         host.cached_merged = true;
         press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
-        assert!(statuses(&board).iter().all(|status| *status == HumanStatus::Done));
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Done));
         assert_eq!(host.removed, vec!["w-clean".to_string()]);
-        assert!(host.deleted.is_empty(), "a failed check never confirms a merge");
+        assert!(
+            host.deleted.is_empty(),
+            "a failed check never confirms a merge"
+        );
     }
 
     #[test]
@@ -10708,15 +10713,32 @@ mod bulk_cleanup_tests {
         other
             .record_dispatch(board.ids[0], relaunched.clone())
             .expect("relaunch");
-        board.store.reload_merge_save(&mut other).expect("save relaunch");
+        board
+            .store
+            .reload_merge_save(&mut other)
+            .expect("save relaunch");
         host.missing.clear();
 
         press(&mut board, BoardIntent::KeepCleanup, &mut host);
-        let record = board.domain.get(board.ids[0]).unwrap().dispatch.clone().unwrap();
+        let record = board
+            .domain
+            .get(board.ids[0])
+            .unwrap()
+            .dispatch
+            .clone()
+            .unwrap();
         assert_eq!(record, relaunched, "the relaunched dispatch stays live");
         assert!(!record.cleaned);
         let disk = board.store.load().expect("load");
-        assert!(!disk.get(board.ids[0]).unwrap().dispatch.as_ref().unwrap().cleaned);
+        assert!(
+            !disk
+                .get(board.ids[0])
+                .unwrap()
+                .dispatch
+                .as_ref()
+                .unwrap()
+                .cleaned
+        );
     }
 
     #[test]

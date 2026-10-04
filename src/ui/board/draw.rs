@@ -28,7 +28,7 @@ use super::model::{
     project_option_label, project_scope_option_label, BoardForm, BoardInputMode, BoardLocation,
     BoardModel, CleanupPrompt, CleanupRow, PickerTab, ProjectScopeOption, ProjectsView,
 };
-use crate::ui::render::{CleanupCardLine, CleanupFooter};
+use crate::ui::render::{CleanupCardLine, CleanupFooter, CleanupTitle};
 
 fn home_dir() -> Option<String> {
     std::env::var("HOME").ok().filter(|home| !home.is_empty())
@@ -73,23 +73,27 @@ pub(crate) fn cleanup_overlay<'a>(prompt: &CleanupPrompt, home: Option<&str>) ->
         (true, true) => CleanupFooter::Bulk,
     };
     let queued = prompt.confirm_queued() && prompt.checking();
-    let (title, short_title, lines) = match (&prompt.bulk, prompt.rows.first()) {
+    let (title, lines) = match (&prompt.bulk, prompt.rows.first()) {
         (None, Some(row)) => single_cleanup_lines(row, queued, home),
         (Some(bulk), _) => {
             let total =
                 prompt.rows.len() + bulk.refused.len() + bulk.missing.len() + bulk.plain.len();
             let dispatched = prompt.rows.len() + bulk.refused.len();
             let cleanable = prompt.rows.iter().filter(|row| row.cleanable()).count();
-            let (title, short_title) = if cleanable == 0 {
-                (
-                    format!("Done {total} tasks · can't clean up"),
-                    format!("Done {total} · can't clean up"),
-                )
+            let title = if cleanable == 0 {
+                CleanupTitle {
+                    full: format!("Done {total} tasks · can't clean up"),
+                    short: format!("Done {total} · can't clean up"),
+                    bare: format!("Done {total} tasks"),
+                    question: "Can't clean up any worktree.".into(),
+                }
             } else {
-                (
-                    format!("Done {total} tasks · clean up {cleanable} of {dispatched}?"),
-                    format!("Done {total} · clean {cleanable} of {dispatched}?"),
-                )
+                CleanupTitle {
+                    full: format!("Done {total} tasks · clean up {cleanable} of {dispatched}?"),
+                    short: format!("Done {total} · clean {cleanable} of {dispatched}?"),
+                    bare: format!("Done {total} tasks"),
+                    question: format!("Clean up {cleanable} of {dispatched} worktrees?"),
+                }
             };
             let mut lines = Vec::new();
             if queued {
@@ -162,13 +166,20 @@ pub(crate) fn cleanup_overlay<'a>(prompt: &CleanupPrompt, home: Option<&str>) ->
                     identifiers_list(&bulk.plain)
                 )));
             }
-            (title, short_title, lines)
+            (title, lines)
         }
-        (None, None) => (String::new(), String::new(), Vec::new()),
+        (None, None) => (
+            CleanupTitle {
+                full: String::new(),
+                short: String::new(),
+                bare: String::new(),
+                question: String::new(),
+            },
+            Vec::new(),
+        ),
     };
     QueueOverlay::CleanupConfirm {
         title,
-        short_title,
         lines,
         footer,
         scroll: prompt.scroll,
@@ -179,19 +190,23 @@ fn single_cleanup_lines(
     row: &CleanupRow,
     queued: bool,
     home: Option<&str>,
-) -> (String, String, Vec<CleanupCardLine>) {
+) -> (CleanupTitle, Vec<CleanupCardLine>) {
     let number = row.number;
     let base = &row.base;
-    let (title, short_title) = if row.dirty {
-        (
-            format!("Done T{number} · can't clean up"),
-            format!("T{number} · can't clean up"),
-        )
+    let title = if row.dirty {
+        CleanupTitle {
+            full: format!("Done T{number} · can't clean up"),
+            short: format!("T{number} · can't clean up"),
+            bare: format!("Done T{number}"),
+            question: "Can't clean up.".into(),
+        }
     } else {
-        (
-            format!("Done T{number} · clean up?"),
-            format!("T{number} · clean up?"),
-        )
+        CleanupTitle {
+            full: format!("Done T{number} · clean up?"),
+            short: format!("T{number} · clean up?"),
+            bare: format!("Done T{number}"),
+            question: "Clean up?".into(),
+        }
     };
     let headline = if row.dirty {
         "Worktree has uncommitted changes, so it stays.".to_string()
@@ -240,7 +255,7 @@ fn single_cleanup_lines(
             lines.push(field("agent pane", "already closed".into()));
         }
     }
-    (title, short_title, lines)
+    (title, lines)
 }
 
 /// Verb bar for the base board list.
