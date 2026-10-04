@@ -1482,6 +1482,65 @@ mod tests {
     }
 
     #[test]
+    fn git_worktree_listing_survives_prunable_entries_whose_directories_are_gone() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("tsk-dispatch-prunable-{nanos}-{seq}"));
+        let repo = root.join("repo");
+        fs::create_dir_all(&repo).expect("repo dir");
+        struct Guard(PathBuf);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _guard = Guard(root.clone());
+
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .args(["-C"])
+                .arg(&repo)
+                .args(args)
+                .output()
+                .expect("run git")
+        };
+        assert!(git(&["init", "-q"]).status.success());
+        fs::write(repo.join("README"), "init\n").expect("write readme");
+        assert!(git(&["add", "."]).status.success());
+        assert!(git(&[
+            "-c",
+            "user.email=tsk@example.com",
+            "-c",
+            "user.name=tsk",
+            "commit",
+            "-qm",
+            "init",
+        ])
+        .status
+        .success());
+        let stale = root.join("stale").join("wt");
+        assert!(
+            git(&["worktree", "add", "--detach", stale.to_str().expect("utf8")])
+                .status
+                .success()
+        );
+        // Delete the worktree's whole parent tree without pruning it: git keeps listing
+        // the entry as prunable with no resolvable path or parent, and that must not fail
+        // the listing for every other worktree.
+        fs::remove_dir_all(root.join("stale")).expect("remove stale tree");
+
+        let listed = git_worktree_paths(&repo).expect("worktree paths");
+        let canonical_repo = repo.canonicalize().expect("canonical repo");
+        assert!(
+            listed.contains(&canonical_repo),
+            "listing must keep resolvable worktrees: {listed:?}"
+        );
+    }
+
+    #[test]
     fn successful_herdr_command_may_have_empty_stdout() {
         let output = Output {
             status: exit_code(0),
