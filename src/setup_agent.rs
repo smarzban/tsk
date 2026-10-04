@@ -411,6 +411,10 @@ pub fn install(target: &Target, force: bool) -> Result<InstallOutcome, Error> {
 }
 
 pub fn detect() -> Result<Vec<AgentStatus>, Error> {
+    detect_with_search(&CliSearchPath::from_env())
+}
+
+fn detect_with_search(search: &CliSearchPath) -> Result<Vec<AgentStatus>, Error> {
     let home = home_dir()?;
     let embedded = embedded_skill_version();
     let mut out = Vec::new();
@@ -421,7 +425,7 @@ pub fn detect() -> Result<Vec<AgentStatus>, Error> {
             Err(error) => return Err(error),
         };
         let skill_path = skills_root.join(SKILL_FOLDER).join(SKILL_FILE);
-        if !agent_present(&home, &target, &skills_root) {
+        if !agent_present(&home, &target, &skills_root, search) {
             continue;
         }
         let (installed_version, state) = match skill_status(&skills_root, &skill_path)? {
@@ -527,7 +531,16 @@ pub fn run_interactive_batch(
     writer: &mut impl Write,
     interactive: bool,
 ) -> Result<BatchResult, Error> {
-    let detected = detect()?;
+    run_interactive_batch_with_search(reader, writer, interactive, &CliSearchPath::from_env())
+}
+
+fn run_interactive_batch_with_search(
+    reader: &mut impl BufRead,
+    writer: &mut impl Write,
+    interactive: bool,
+    search: &CliSearchPath,
+) -> Result<BatchResult, Error> {
+    let detected = detect_with_search(search)?;
     if detected.is_empty() {
         let _ = write!(writer, "{}", list_text());
         let _ = writeln!(
@@ -710,7 +723,7 @@ fn named_target(id: &str) -> Result<Target, Error> {
     }
 }
 
-fn agent_present(home: &Path, target: &Target, skills_root: &Path) -> bool {
+fn agent_present(home: &Path, target: &Target, skills_root: &Path, search: &CliSearchPath) -> bool {
     let marker = match target {
         Target::Claude => home.join(".claude"),
         Target::Pi => home.join(".pi"),
@@ -727,11 +740,11 @@ fn agent_present(home: &Path, target: &Target, skills_root: &Path) -> bool {
         || real_dir(skills_root)
         || omp_agent_dir_present
         || match target {
-            Target::Claude => cli_on_path("claude"),
-            Target::Omp => executable_cli_on_path("omp"),
-            Target::Cursor => cli_on_path("cursor"),
-            Target::Codex => cli_on_path("codex"),
-            Target::OpenCode => cli_on_path("opencode"),
+            Target::Claude => search.cli_on_path("claude"),
+            Target::Omp => search.executable_cli_on_path("omp"),
+            Target::Cursor => search.cli_on_path("cursor"),
+            Target::Codex => search.cli_on_path("codex"),
+            Target::OpenCode => search.cli_on_path("opencode"),
             Target::Pi | Target::Grok | Target::SkillDir(_) => false,
         }
 }
@@ -743,30 +756,45 @@ fn real_dir(path: &Path) -> bool {
     }
 }
 
-fn cli_on_path(name: &str) -> bool {
-    path_contains(name, |candidate| {
-        fs::symlink_metadata(candidate).is_ok_and(|meta| meta.is_file())
-    })
+// Snapshot the process search path at the entry point. Tests inject their own
+// search path instead of changing PATH/PATHEXT for concurrent subprocess users.
+struct CliSearchPath {
+    path: Option<std::ffi::OsString>,
+    #[cfg(windows)]
+    extensions: std::ffi::OsString,
 }
 
-fn executable_cli_on_path(name: &str) -> bool {
-    path_contains(name, |candidate| {
-        fs::metadata(candidate).is_ok_and(|meta| executable_file(&meta))
-    })
-}
-
-fn path_contains(name: &str, predicate: impl Fn(&Path) -> bool) -> bool {
-    let Some(path) = env::var_os("PATH") else {
-        return false;
-    };
-    for directory in env::split_paths(&path) {
-        if predicate(&directory.join(name)) {
-            return true;
+impl CliSearchPath {
+    fn from_env() -> Self {
+        Self {
+            path: env::var_os("PATH"),
+            #[cfg(windows)]
+            extensions: env::var_os("PATHEXT").unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into()),
         }
-        #[cfg(windows)]
-        {
-            let extensions = env::var_os("PATHEXT").unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
-            for extension in extensions.to_string_lossy().split(';') {
+    }
+
+    fn cli_on_path(&self, name: &str) -> bool {
+        self.contains(name, |candidate| {
+            fs::symlink_metadata(candidate).is_ok_and(|meta| meta.is_file())
+        })
+    }
+
+    fn executable_cli_on_path(&self, name: &str) -> bool {
+        self.contains(name, |candidate| {
+            fs::metadata(candidate).is_ok_and(|meta| executable_file(&meta))
+        })
+    }
+
+    fn contains(&self, name: &str, predicate: impl Fn(&Path) -> bool) -> bool {
+        let Some(path) = &self.path else {
+            return false;
+        };
+        for directory in env::split_paths(path) {
+            if predicate(&directory.join(name)) {
+                return true;
+            }
+            #[cfg(windows)]
+            for extension in self.extensions.to_string_lossy().split(';') {
                 let extension = extension.trim();
                 if extension.is_empty() {
                     continue;
@@ -777,8 +805,8 @@ fn path_contains(name: &str, predicate: impl Fn(&Path) -> bool) -> bool {
                 }
             }
         }
+        false
     }
-    false
 }
 
 fn executable_file(meta: &fs::Metadata) -> bool {
@@ -1063,6 +1091,15 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
 
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn test_root(kind: &str) -> PathBuf {
+        let seq = TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        env::temp_dir().join(format!(
+            "tsk-setup-agent-{kind}-{}-{seq}",
+            std::process::id()
+        ))
+    }
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         ENV_LOCK
@@ -1157,28 +1194,67 @@ mod tests {
         assert_eq!(frontmatter_version(md), None);
     }
 
+    #[test]
+    fn injected_search_path_does_not_change_subprocess_path() {
+        let root = test_root("search-path");
+        fs::create_dir_all(&root).expect("bin");
+        struct Guard(PathBuf);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _guard = Guard(root.clone());
+        let original_path = env::var_os("PATH");
+        let original_pathext = env::var_os("PATHEXT");
+        let name = "tsk-injected-search-probe";
+        fs::write(root.join(name), "fixture").expect("marker");
+        let search = CliSearchPath {
+            path: Some(root.into_os_string()),
+            #[cfg(windows)]
+            extensions: ".EXE;.CMD".into(),
+        };
+        assert!(
+            search.cli_on_path(name),
+            "must search the injected directory"
+        );
+        assert!(
+            !search.cli_on_path("git"),
+            "fixture path must hide Git from detection only"
+        );
+        let missing_path = CliSearchPath {
+            path: None,
+            #[cfg(windows)]
+            extensions: ".EXE;.CMD".into(),
+        };
+        assert!(!missing_path.cli_on_path(name));
+        assert_eq!(env::var_os("PATH"), original_path);
+        assert_eq!(env::var_os("PATHEXT"), original_pathext);
+        let git = std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .expect("subprocess still finds Git on the process PATH");
+        assert!(git.status.success(), "{git:?}");
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_path_detection_honors_pathext() {
         let _lock = env_lock();
-        let root =
-            std::env::temp_dir().join(format!("tsk-setup-agent-pathext-{}", std::process::id()));
+        let root = test_root("pathext");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("bin");
         fs::write(root.join("claude.cmd"), "@exit /b 0\r\n").expect("command");
-        let previous_path = std::env::var_os("PATH");
-        let previous_pathext = std::env::var_os("PATHEXT");
-        std::env::set_var("PATH", &root);
-        std::env::set_var("PATHEXT", ".EXE;.CMD");
-        assert!(cli_on_path("claude"));
-        match previous_path {
-            Some(value) => std::env::set_var("PATH", value),
-            None => std::env::remove_var("PATH"),
-        }
-        match previous_pathext {
-            Some(value) => std::env::set_var("PATHEXT", value),
-            None => std::env::remove_var("PATHEXT"),
-        }
+        let search = CliSearchPath {
+            path: Some(root.as_os_str().to_owned()),
+            extensions: ".EXE;.CMD".into(),
+        };
+        assert!(search.cli_on_path("claude"));
+        let without_cmd = CliSearchPath {
+            path: search.path.clone(),
+            extensions: ".EXE".into(),
+        };
+        assert!(!without_cmd.cli_on_path("claude"));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1186,20 +1262,22 @@ mod tests {
     fn interactive_batch_yes_installs_detected_agent() {
         let _lock = env_lock();
         let _omp_env = OmpEnvGuard::cleared();
-        let root =
-            std::env::temp_dir().join(format!("tsk-setup-agent-batch-yes-{}", std::process::id()));
+        let root = test_root("batch-yes");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("home/.cursor")).expect("cursor");
         fs::create_dir_all(root.join("empty-bin")).expect("bin");
         let previous_home = std::env::var_os("HOME");
         let previous_userprofile = std::env::var_os("USERPROFILE");
-        let previous_path = std::env::var_os("PATH");
         std::env::set_var("HOME", root.join("home"));
         std::env::set_var("USERPROFILE", root.join("home"));
-        std::env::set_var("PATH", root.join("empty-bin"));
+        let search = CliSearchPath {
+            path: Some(root.join("empty-bin").into_os_string()),
+            #[cfg(windows)]
+            extensions: ".COM;.EXE;.BAT;.CMD".into(),
+        };
         let mut reader = Cursor::new(b"y\n".to_vec());
         let mut writer = Vec::new();
-        let result = run_interactive_batch(&mut reader, &mut writer, true);
+        let result = run_interactive_batch_with_search(&mut reader, &mut writer, true, &search);
         match previous_home {
             Some(value) => std::env::set_var("HOME", value),
             None => std::env::remove_var("HOME"),
@@ -1207,10 +1285,6 @@ mod tests {
         match previous_userprofile {
             Some(value) => std::env::set_var("USERPROFILE", value),
             None => std::env::remove_var("USERPROFILE"),
-        }
-        match previous_path {
-            Some(value) => std::env::set_var("PATH", value),
-            None => std::env::remove_var("PATH"),
         }
         let result = result.expect("batch");
         assert!(!result.declined);
@@ -1230,20 +1304,22 @@ mod tests {
     fn interactive_batch_no_skips_write() {
         let _lock = env_lock();
         let _omp_env = OmpEnvGuard::cleared();
-        let root =
-            std::env::temp_dir().join(format!("tsk-setup-agent-batch-no-{}", std::process::id()));
+        let root = test_root("batch-no");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("home/.cursor")).expect("cursor");
         fs::create_dir_all(root.join("empty-bin")).expect("bin");
         let previous_home = std::env::var_os("HOME");
         let previous_userprofile = std::env::var_os("USERPROFILE");
-        let previous_path = std::env::var_os("PATH");
         std::env::set_var("HOME", root.join("home"));
         std::env::set_var("USERPROFILE", root.join("home"));
-        std::env::set_var("PATH", root.join("empty-bin"));
+        let search = CliSearchPath {
+            path: Some(root.join("empty-bin").into_os_string()),
+            #[cfg(windows)]
+            extensions: ".COM;.EXE;.BAT;.CMD".into(),
+        };
         let mut reader = Cursor::new(b"n\n".to_vec());
         let mut writer = Vec::new();
-        let result = run_interactive_batch(&mut reader, &mut writer, true);
+        let result = run_interactive_batch_with_search(&mut reader, &mut writer, true, &search);
         match previous_home {
             Some(value) => std::env::set_var("HOME", value),
             None => std::env::remove_var("HOME"),
@@ -1251,10 +1327,6 @@ mod tests {
         match previous_userprofile {
             Some(value) => std::env::set_var("USERPROFILE", value),
             None => std::env::remove_var("USERPROFILE"),
-        }
-        match previous_path {
-            Some(value) => std::env::set_var("PATH", value),
-            None => std::env::remove_var("PATH"),
         }
         let result = result.expect("batch");
         assert!(result.declined);
