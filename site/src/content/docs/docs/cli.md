@@ -227,7 +227,7 @@ tsk dispatch T12 --again
 tsk dispatch T12 --base dispatch
 ```
 
-Dispatch requires Herdr, an assigned project task whose project is a Git repository, and a matching profile in `agents.toml`. It runs on macOS and Linux only; on Windows it refuses with `unsupported-platform`. It creates a branch and worktree, opens a Herdr workspace there, and runs the profile's rendered command in its root pane. After saving, tsk names the Herdr agent `t<number>-<assignee>` in the background (for example `t12-claude`, so `herdr agent get t12-claude` finds it; dots become hyphens and the name is cut to Herdr's 32 characters). If Herdr detects no agent within a few seconds, the name is taken, or a relaunch finds an agent still running in the pane, the agent stays unnamed and dispatch still succeeds. Only after the launch succeeds, tsk saves the dispatch record and sets the task to `started` in the same write. The dispatch itself is not undoable.
+Dispatch requires Herdr, an assigned project task whose project is a Git repository, and a matching profile in `config.toml`. It runs on macOS and Linux only; on Windows it refuses with `unsupported-platform`. It creates a branch and worktree, opens a Herdr workspace there, and runs the profile's rendered command in its root pane. After saving, tsk names the Herdr agent `t<number>-<assignee>` in the background (for example `t12-claude`, so `herdr agent get t12-claude` finds it; dots become hyphens and the name is cut to Herdr's 32 characters). If Herdr detects no agent within a few seconds, the name is taken, or a relaunch finds an agent still running in the pane, the agent stays unnamed and dispatch still succeeds. Only after the launch succeeds, tsk saves the dispatch record and sets the task to `started` in the same write. The dispatch itself is not undoable.
 
 For a first dispatch, base resolution uses the one-off `--base <branch>` override first, then the task's explicit `base`, otherwise the task repository's remote default (`origin/HEAD`). The checkout where you run the CLI never supplies the default. The override does not change the task's stored base. If the repository has no usable `origin/HEAD`, choose an explicit branch; tsk does not substitute the current checkout. Explicit bases must be existing local or remote branches in the task's repository, not tags or commits; an unknown branch refuses with `unknown-base`.
 
@@ -390,7 +390,7 @@ For data commands:
 | --- | --- | --- |
 | `0` | Success, including an already-existing task or unchanged value | Continue |
 | `1` | Refusal; a plan may have saved other items | Correct refusals; retry only failed items |
-| `2` | Invalid arguments, input, or assignee profile configuration; nothing saved | Fix the invocation or `agents.toml` |
+| `2` | Invalid arguments, input, or assignee profile configuration; nothing saved | Fix the invocation or `config.toml` |
 | `3` | Storage error; a write may have committed | Read back before retrying |
 
 After an uncertain add, inspect `tsk list --all --json`. Also check `--done` and `--archived` when a duplicate could be hidden there. If you know the task number, use direct lookup.
@@ -407,7 +407,7 @@ After an uncertain add, inspect `tsk list --all --json`. Also check `--done` and
 
 A refusal prints as `tsk <command>: <code>: <message>` on stderr, for example `tsk status: unknown-task: T99 is not on the board`. Branch on the code; the message is for people and may change.
 
-Invalid thread flags fail argument parsing with exit 2; an invalid thread in a JSON plan is an item refusal with exit 1. When add or edit supplies an assignee, an invalid `agents.toml` also exits 2 without saving. Unknown agents and unknown or archived project refusals save nothing for that item; other valid plan items can still save.
+Invalid thread flags fail argument parsing with exit 2; an invalid thread in a JSON plan is an item refusal with exit 1. When add or edit supplies an assignee, an invalid `config.toml` also exits 2 without saving. Unknown agents and unknown or archived project refusals save nothing for that item; other valid plan items can still save.
 
 Human-readable output escapes stored terminal control characters. JSON retains the underlying text.
 

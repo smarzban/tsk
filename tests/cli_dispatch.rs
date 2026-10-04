@@ -114,7 +114,7 @@ fn successful_cli_dispatch_persists_record_and_started_together() {
     ));
     fs::create_dir_all(&dir).expect("mkdir");
     fs::write(
-        dir.join("agents.toml"),
+        dir.join("config.toml"),
         "[agent.implementer]\ncommand = [\"runner\", \"{prompt}\"]\n",
     )
     .expect("profiles");
@@ -178,7 +178,7 @@ fn cli_dispatch_one_off_base_reaches_core_without_editing_task_base() {
     ));
     fs::create_dir_all(&dir).expect("mkdir");
     fs::write(
-        dir.join("agents.toml"),
+        dir.join("config.toml"),
         "[agent.implementer]\ncommand = [\"runner\", \"{prompt}\"]\n",
     )
     .expect("profiles");
@@ -246,7 +246,7 @@ fn clean_cli_help_and_success_report_each_removed_resource() {
     ));
     fs::create_dir_all(&dir).expect("mkdir");
     fs::write(
-        dir.join("agents.toml"),
+        dir.join("config.toml"),
         "[agent.implementer]\ncommand = [\"runner\", \"{prompt}\"]\n",
     )
     .expect("profiles");

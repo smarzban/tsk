@@ -148,7 +148,7 @@ fn edit_assigns_and_unassigns_only_known_profiles() {
     let dir = temp_state_dir("assignee");
     let _guard = TempDirGuard(dir.clone());
     fs::write(
-        dir.join("agents.toml"),
+        dir.join("config.toml"),
         "[agent.reviewer]\ncommand = [\"true\"]\n",
     )
     .expect("write profiles");
@@ -184,7 +184,7 @@ fn edit_loads_malformed_agent_profiles_only_for_assignment() {
     let dir = temp_state_dir("malformed-agents");
     let _guard = TempDirGuard(dir.clone());
     fs::write(
-        dir.join("agents.toml"),
+        dir.join("config.toml"),
         "[agent.Reviewer]\ncommand = [\"true\"]\n",
     )
     .expect("write malformed profiles");
@@ -194,7 +194,7 @@ fn edit_loads_malformed_agent_profiles_only_for_assignment() {
     assert_eq!(ordinary.code, 0, "{ordinary:?}");
     let assigned = edit(&dir, &["T1", "--assignee", "reviewer"]);
     assert_eq!(assigned.code, 2, "{assigned:?}");
-    assert!(assigned.stderr.contains("agents.toml"), "{assigned:?}");
+    assert!(assigned.stderr.contains("config.toml"), "{assigned:?}");
     let state = TaskStore::new(&dir).load().expect("load state");
     assert_eq!(state.tasks()[0].title, "edited without profiles");
     assert_eq!(state.tasks()[0].assignee, None);

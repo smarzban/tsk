@@ -13,11 +13,12 @@ use toml_edit::{DocumentMut, TableLike};
 
 use crate::domain::{normalize_thread, thread_refusal_message};
 
-const AGENTS_FILE: &str = "agents.toml";
-pub const AGENTS_TEMP_PREFIX: &str = ".agents.toml.tmp.";
-static AGENTS_TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+const CONFIG_FILE: &str = "config.toml";
+pub const CONFIG_TEMP_PREFIX: &str = ".config.toml.tmp.";
+static CONFIG_TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
-const STARTER_AGENTS: &str = "# tsk agent profiles. Assign with `!a name`, dispatch with ctrl+g.\n\
+const STARTER_AGENTS: &str = "# tsk settings. Each [agent.<name>] table is a launch profile.\n\
+# Assign with `!a name`, dispatch with ctrl+g.\n\
 # Placeholders in command and prompt: {number} {title} {notes} {steps} {worktree} {branch} {base}\n\
 # The prompt is appended to the command as its last argument. Omit `prompt` for the default:\n\
 #   You were dispatched to T{number} in this worktree. Run `tsk guide`, then `tsk list {number}`.\n\
@@ -38,7 +39,7 @@ const STARTER_AGENTS: &str = "# tsk agent profiles. Assign with `!a name`, dispa
 /// The temporary file is complete and synced before one atomic hard-link creates the target.
 /// A target that already exists wins without being changed, including an empty file.
 pub fn seed_on_open(state_dir: &Path) -> io::Result<bool> {
-    let target = state_dir.join(AGENTS_FILE);
+    let target = state_dir.join(CONFIG_FILE);
     // The common case is an existing file: answer without writing anything. The hard
     // link below still decides the race when two opens find it missing at once.
     if target.exists() {
@@ -86,9 +87,9 @@ fn unique_tmp_path(dir: &Path) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
-    let sequence = AGENTS_TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let sequence = CONFIG_TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
     dir.join(format!(
-        "{AGENTS_TEMP_PREFIX}{}.{nanos}.{sequence}",
+        "{CONFIG_TEMP_PREFIX}{}.{nanos}.{sequence}",
         std::process::id()
     ))
 }
@@ -103,9 +104,9 @@ pub struct AgentProfiles {
 }
 
 impl AgentProfiles {
-    /// Load `<state_dir>/agents.toml`. A missing file is an empty profile set.
+    /// Load profiles from `<state_dir>/config.toml`. A missing file is an empty profile set.
     pub fn load(state_dir: impl AsRef<Path>) -> Result<Self, AgentLoadError> {
-        let path = state_dir.as_ref().join(AGENTS_FILE);
+        let path = state_dir.as_ref().join(CONFIG_FILE);
         let content = match fs::read_to_string(&path) {
             Ok(content) => content,
             Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
@@ -121,17 +122,13 @@ impl AgentProfiles {
                 .map_err(|source| AgentLoadError::MalformedToml {
                     source: Box::new(source),
                 })?;
-        if document.is_empty() {
+        // Other top-level keys are settings for other features, possibly from a newer
+        // binary: ignore them so an older tsk still reads its profiles.
+        let Some(agents) = document.get("agent") else {
             return Ok(Self::default());
-        }
-        if document.len() != 1 {
-            return Err(AgentLoadError::InvalidDocument {
-                message: "only [agent.<name>] tables are allowed".into(),
-            });
-        }
-        let agents = document
-            .get("agent")
-            .and_then(|item| item.as_table_like())
+        };
+        let agents = agents
+            .as_table_like()
             .ok_or_else(|| AgentLoadError::InvalidDocument {
                 message: "expected [agent.<name>] tables".into(),
             })?;
@@ -181,7 +178,7 @@ impl AgentProfiles {
     }
 }
 
-/// One named launch profile from `agents.toml`.
+/// One named launch profile from `config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentProfile {
     pub command: Vec<String>,
@@ -238,7 +235,7 @@ pub struct RenderedLaunch {
     pub env: BTreeMap<String, String>,
 }
 
-/// Typed failures from reading or validating `agents.toml`.
+/// Typed failures from reading or validating `config.toml`.
 #[derive(Debug)]
 pub enum AgentLoadError {
     Io { path: PathBuf, source: io::Error },
@@ -255,17 +252,17 @@ impl fmt::Display for AgentLoadError {
                 write!(formatter, "could not read {}: {source}", path.display())
             }
             Self::MalformedToml { source } => {
-                write!(formatter, "agents.toml is malformed: {source}")
+                write!(formatter, "config.toml is malformed: {source}")
             }
-            Self::InvalidDocument { message } => write!(formatter, "agents.toml: {message}"),
+            Self::InvalidDocument { message } => write!(formatter, "config.toml: {message}"),
             Self::InvalidName { name, message } => {
                 write!(
                     formatter,
-                    "agents.toml: invalid agent name {name:?}: {message}"
+                    "config.toml: invalid agent name {name:?}: {message}"
                 )
             }
             Self::InvalidProfile { name, message } => {
-                write!(formatter, "agents.toml: agent {name:?}: {message}")
+                write!(formatter, "config.toml: agent {name:?}: {message}")
             }
         }
     }
@@ -421,7 +418,7 @@ mod tests {
         }
 
         fn write(&self, content: &str) {
-            fs::write(self.0.join("agents.toml"), content).expect("write agents.toml");
+            fs::write(self.0.join("config.toml"), content).expect("write config.toml");
         }
     }
 
@@ -435,7 +432,7 @@ mod tests {
     fn seeding_an_existing_file_writes_nothing_to_the_state_dir() {
         let dir = TempDir::new("seed-existing");
         dir.write("");
-        let before = fs::metadata(dir.path().join("agents.toml"))
+        let before = fs::metadata(dir.path().join("config.toml"))
             .expect("metadata")
             .modified()
             .expect("mtime");
@@ -452,14 +449,14 @@ mod tests {
                     .into_owned()
             })
             .collect();
-        assert_eq!(names, vec!["agents.toml".to_string()], "{names:?}");
-        let after = fs::metadata(dir.path().join("agents.toml"))
+        assert_eq!(names, vec!["config.toml".to_string()], "{names:?}");
+        let after = fs::metadata(dir.path().join("config.toml"))
             .expect("metadata")
             .modified()
             .expect("mtime");
         assert_eq!(before, after);
         assert_eq!(
-            fs::read_to_string(dir.path().join("agents.toml")).expect("read"),
+            fs::read_to_string(dir.path().join("config.toml")).expect("read"),
             ""
         );
     }
@@ -534,7 +531,55 @@ command = ["claude", "--print"]
 
         let error = AgentProfiles::load(dir.path()).expect_err("malformed file refused");
         assert!(matches!(error, AgentLoadError::MalformedToml { .. }));
-        assert!(error.to_string().contains("agents.toml"));
+        assert!(error.to_string().contains("config.toml"));
+    }
+
+    #[test]
+    fn unknown_top_level_settings_are_ignored_beside_profiles() {
+        let dir = TempDir::new("unknown-top-level");
+        dir.write(
+            r#"
+theme = "future"
+
+[board]
+wide = true
+
+[agent.implementer]
+command = ["pi"]
+"#,
+        );
+
+        let profiles = AgentProfiles::load(dir.path()).expect("unknown settings ignored");
+        assert_eq!(profiles.names().collect::<Vec<_>>(), vec!["implementer"]);
+
+        dir.write("[board]\nwide = true\n");
+        let profiles = AgentProfiles::load(dir.path()).expect("settings without profiles");
+        assert!(profiles.is_empty());
+    }
+
+    #[test]
+    fn unknown_keys_inside_a_profile_still_refuse() {
+        let dir = TempDir::new("unknown-profile-key");
+        dir.write(
+            "[board]\nwide = true\n\n[agent.implementer]\ncommand = [\"pi\"]\ncomand = [\"x\"]\n",
+        );
+
+        let error = AgentProfiles::load(dir.path()).expect_err("profile typo refused");
+        assert!(matches!(
+            error,
+            AgentLoadError::InvalidProfile { ref name, .. } if name == "implementer"
+        ));
+        assert!(error.to_string().contains("config.toml"), "{error}");
+        assert!(error.to_string().contains("comand"), "{error}");
+    }
+
+    #[test]
+    fn a_non_table_agent_key_still_refuses() {
+        let dir = TempDir::new("agent-scalar");
+        dir.write("agent = \"pi\"\n");
+
+        let error = AgentProfiles::load(dir.path()).expect_err("scalar agent refused");
+        assert!(matches!(error, AgentLoadError::InvalidDocument { .. }));
     }
 
     #[test]

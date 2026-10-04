@@ -237,14 +237,14 @@ fn malformed_agent_profiles_degrade_to_a_painted_board_status() {
     let _dir_guard = TempDirGuard(dir.clone());
     let _env_guard = EnvVarGuard::set("TSK_STATE_DIR", &dir);
     fs::write(
-        dir.join("agents.toml"),
+        dir.join("config.toml"),
         "[agent.Reviewer]\ncommand = [\"true\"]\n",
     )
     .expect("write malformed profiles");
 
     let model = load_board_model().expect("malformed optional profiles must not block open");
     let message = model.message().expect("profile load error on status row");
-    assert!(message.contains("agents.toml"), "{message}");
+    assert!(message.contains("config.toml"), "{message}");
 
     let backend = TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).expect("test terminal");
@@ -261,7 +261,7 @@ fn malformed_agent_profiles_degrade_to_a_painted_board_status() {
         .map(|cell| cell.symbol())
         .collect::<String>();
     assert!(
-        painted.contains("agents.toml"),
+        painted.contains("config.toml"),
         "the load error must be visible in the painted frame: {painted}"
     );
 }

@@ -40,7 +40,7 @@ For scriptable board work use `tsk add`, `tsk list`, `tsk status`, `tsk edit`,
 | Quick-add and `tsk capture` | `capture.md` |
 | Every key of every surface | `keys.md`, code in `src/ui/input.rs` |
 | CLI verbs, exit codes, error codes | `cli.md`, code in `src/cli/`, glossary in `CONTEXT.md` |
-| Storage, env vars, update check, `agents.toml` profiles | `storage.md` |
+| Storage, env vars, update check, `config.toml` profiles | `storage.md` |
 | Assignee, dispatch, cleanup (board) | `board.md`, `task-page.md`, code in `src/dispatch.rs` |
 | Install, Homebrew, `tsk setup herdr` | `install.md`, `packaging/README.md` |
 | Agent skill | `skills/tsk-cli/SKILL.md` (`tsk guide`, `/docs/agents/`) |
@@ -57,7 +57,7 @@ same PR, never leave them apart.
 | `src/ui/` | chrome: `board/` (model · apply · commands · chrome · draw), `input`, `mouse`, `render`, `edit` (the one wrap engine), `markdown` |
 | `src/cli/` | headless verbs, `parser`, `router`, `presenter` |
 | `src/store.rs`, `src/domain/` | `tsk.json` format, migrations, trash |
-| `src/agents.rs` | `agents.toml` profile loader, prompt/argv rendering, starter seed |
+| `src/agents.rs` | `config.toml` profile loader, prompt/argv rendering, starter seed |
 | `src/dispatch.rs` | dispatch and cleanup engine behind a `DispatchHost` seam (git and herdr calls), cleanup guardrails |
 | `src/setup.rs`, `src/setup/`, `src/setup_agent.rs` | `tsk setup herdr`, agent skill install |
 | `src/guides.rs`, `src/announcements.rs`, `src/delivery.rs` | seeded notice tasks |
@@ -249,13 +249,13 @@ migration or design work they imply. What the behaviour *is* lives in the docs
 
 ### Assignee and dispatch
 
-- Assignee is a label naming an `agents.toml` profile; it never changes status or triggers
+- Assignee is a label naming a `config.toml` profile; it never changes status or triggers
   anything. Names normalize with the thread normalizer and exact-match a defined profile at the
   boundary; a task keeps a name whose profile was removed and renders it as-is.
 - Profiles are argv templates plus an optional prompt. tsk substitutes `{number} {title} {notes}
   {steps} {worktree} {branch} {base}` and nothing else; the prompt is appended as the last argument;
   the launch is `$SHELL -lc '<quoted argv>'`, one command line, never chained. tsk carries no
-  knowledge of any harness's flags. A malformed `agents.toml` never blocks the board or CLI work
+  knowledge of any harness's flags. A malformed `config.toml` never blocks the board or CLI work
   that does not assign.
 - Dispatch is its own verb (ADR-0004 in `docs/specs/adr/`, local-only), never a side effect of
   `started`: cursor-only, not undoable, sets `started` in the same save as the record. Outside

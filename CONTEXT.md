@@ -52,7 +52,7 @@ Canonical terms for this repo. No implementation detail.
 - **twin**: the Markdown representation of a docs page at `/docs/<slug>.md`.
 - **bootstrap prompt**: the three-line text a human pastes to an agent to start using tsk.
 - **definition sentence**: `tsk is a terminal task board for you and your agents: one shared queue, a TUI for you, a CLI for them.`
-- **agent profile**: a named entry in `agents.toml` describing how to launch one agent: an argv template with placeholders, an optional prompt template, optional environment. tsk substitutes placeholders and knows nothing about any harness's flags.
+- **agent profile**: a named entry in `config.toml` describing how to launch one agent: an argv template with placeholders, an optional prompt template, optional environment. tsk substitutes placeholders and knows nothing about any harness's flags.
 - **assignee**: the optional agent profile name a task carries. A label saying which agent the task is meant for; the human stays owner. It never changes status or triggers anything by itself. Displayed as `@name`.
 - **assignee token**: the `!a name` capture directive, sibling of `!p` and `!t`; bare `!a` means unassigned. The name must match a defined agent profile exactly after normalization, or the add refuses.
 - **unassigned**: carrying no assignee.

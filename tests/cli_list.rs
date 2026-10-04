@@ -110,7 +110,7 @@ fn list_does_not_seed_agent_profiles() {
     ]);
 
     assert_eq!(output.code, 0);
-    assert!(!dir.join("agents.toml").exists());
+    assert!(!dir.join("config.toml").exists());
     let _ = std::fs::remove_dir_all(dir);
 }
 

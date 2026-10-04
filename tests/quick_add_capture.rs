@@ -71,7 +71,7 @@ fn set_agent_profiles(model: &mut BoardModel, names: &[&str]) {
         .map(|name| format!("[agent.{name}]\ncommand = [\"true\"]\n"))
         .collect::<Vec<_>>()
         .join("\n");
-    std::fs::write(dir.join("agents.toml"), content).expect("write profiles");
+    std::fs::write(dir.join("config.toml"), content).expect("write profiles");
     let profiles = AgentProfiles::load(&dir).expect("load profiles");
     model.set_agent_profiles(&profiles);
     std::fs::remove_dir_all(dir).expect("remove agents dir");

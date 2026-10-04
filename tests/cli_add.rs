@@ -54,7 +54,7 @@ fn task_store(dir: &std::path::Path) -> TaskStore {
 
 fn write_agents(dir: &std::path::Path) {
     std::fs::write(
-        dir.join("agents.toml"),
+        dir.join("config.toml"),
         "[agent.reviewer]\ncommand = [\"true\"]\n",
     )
     .expect("write agents");
@@ -255,7 +255,7 @@ fn add_does_not_seed_agent_profiles() {
     );
 
     assert_eq!(output.code, 0);
-    assert!(!dir.join("agents.toml").exists());
+    assert!(!dir.join("config.toml").exists());
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -265,7 +265,7 @@ fn malformed_agent_profiles_are_lazy_and_assignment_is_a_usage_error() {
     let _env = env_lock();
     let dir = temp_state_dir("malformed-agents");
     std::fs::write(
-        dir.join("agents.toml"),
+        dir.join("config.toml"),
         "[agent.Reviewer]\ncommand = [\"true\"]\n",
     )
     .expect("write malformed agents");
@@ -297,7 +297,7 @@ fn malformed_agent_profiles_are_lazy_and_assignment_is_a_usage_error() {
         true,
     );
     assert_eq!(assigned.code, 2, "{assigned:?}");
-    assert!(assigned.stderr.contains("agents.toml"), "{assigned:?}");
+    assert!(assigned.stderr.contains("config.toml"), "{assigned:?}");
     let state = task_store(&dir).load().expect("load state");
     assert_eq!(state.tasks().len(), 1);
     assert_eq!(state.tasks()[0].title, "ordinary");

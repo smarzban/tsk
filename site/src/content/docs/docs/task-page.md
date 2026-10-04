@@ -29,7 +29,7 @@ The page opens in view mode.
 
 Clicking Title, Notes, Scope, or Thread does not start an edit from view mode. Start editing first; then click the field you want.
 
-In view mode the footer's assignee is a quick control: click `@name` to open the assignee picker. An unassigned task shows `+ assign` there when `agents.toml` defines at least one profile; with no profiles the slot stays empty. Board rows and the peek never show `+ assign`. During an edit session, `@` and the click open the Assignee field's own list instead, so the edit's draft stays in charge.
+In view mode the footer's assignee is a quick control: click `@name` to open the assignee picker. An unassigned task shows `+ assign` there when `config.toml` defines at least one profile; with no profiles the slot stays empty. Board rows and the peek never show `+ assign`. During an edit session, `@` and the click open the Assignee field's own list instead, so the edit's draft stays in charge.
 
 Click the footer's `⎇` slot to choose a base branch. The same picker opens from palette **set base**, or the **Base** field during editing. It offers **default (main)** (for a repository whose default is `main`) first, then deduplicated local and `origin/*` branches. The picker opens immediately with a disabled **loading branches** row while a bounded background fetch fills the list. Reopening during a lookup reuses the same project worker. Type to filter, select a branch, or choose **default** to clear the explicit base. There is no dedicated base key, and dispatch never prompts for a base.
 
