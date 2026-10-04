@@ -2104,10 +2104,7 @@ pub fn offer_bulk_cleanup_prompt_with_host(
             && matches!(task.scope, crate::domain::TaskScope::Project { .. })
             && task.dispatch.as_ref().is_some_and(|record| !record.cleaned)
     };
-    if !targets
-        .iter()
-        .any(|id| domain.get(*id).is_some_and(|task| live(task)))
-    {
+    if !targets.iter().any(|id| domain.get(*id).is_some_and(&live)) {
         return Ok(BulkCleanupOffer::None);
     }
     let mut rows = Vec::new();
@@ -2242,7 +2239,10 @@ pub fn bulk_cleanup_and_complete_with_host(
     in_herdr: bool,
     host: &mut impl DispatchHost,
 ) -> Result<Option<BulkCleanupOutcome>, DomainError> {
-    let Some(prompt) = model.cleanup_prompt().filter(|prompt| prompt.bulk.is_some()) else {
+    let Some(prompt) = model
+        .cleanup_prompt()
+        .filter(|prompt| prompt.bulk.is_some())
+    else {
         return Ok(None);
     };
     let bulk = prompt.bulk.clone().expect("bulk card");
@@ -2627,16 +2627,15 @@ fn handle_board_intent_with_host(
             .cleanup_prompt()
             .is_some_and(|prompt| prompt.bulk.is_some())
         {
-            let outcome = match bulk_cleanup_and_complete_with_host(
-                domain, model, clean, in_herdr, host,
-            ) {
-                Ok(outcome) => outcome,
-                Err(error) => {
-                    model.close_popup();
-                    model.set_message(board_rejection_message(&error));
-                    return Ok(false);
-                }
-            };
+            let outcome =
+                match bulk_cleanup_and_complete_with_host(domain, model, clean, in_herdr, host) {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        model.close_popup();
+                        model.set_message(board_rejection_message(&error));
+                        return Ok(false);
+                    }
+                };
             if let Err(error) = store.reload_merge_save(domain) {
                 let working = std::mem::take(domain);
                 save_recovery.fail(baseline, working, error.to_string());
@@ -10091,7 +10090,9 @@ mod bulk_cleanup_tests {
     use crate::dispatch::{
         CleanupInspection, CreatedWorktree, DispatchHost, MergeCheck, MergeVerdict,
     };
-    use crate::domain::{Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope, UndoEntry};
+    use crate::domain::{
+        Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope, UndoEntry,
+    };
     use crate::save_recovery::SaveRecovery;
     use crate::store::TaskStore;
     use crate::ui::board::{apply_intent, BoardInputMode, BoardModel};
@@ -10150,7 +10151,12 @@ mod bulk_cleanup_tests {
             })
         }
         fn begin_merge_check(&mut self, _: &Path, record: &Dispatch) -> Option<MergeCheck> {
-            Some(self.checks.entry(record.worktree.clone()).or_default().clone())
+            Some(
+                self.checks
+                    .entry(record.worktree.clone())
+                    .or_default()
+                    .clone(),
+            )
         }
         fn remove_herdr_worktree(&mut self, workspace_id: &str) -> Result<(), String> {
             self.removed.push(workspace_id.to_string());
@@ -10238,8 +10244,12 @@ mod bulk_cleanup_tests {
             id
         };
         let ids = [create("clean"), create("dirty"), create("plain")];
-        domain.record_dispatch(ids[0], dispatched("clean")).expect("dispatch");
-        domain.record_dispatch(ids[1], dispatched("dirty")).expect("dispatch");
+        domain
+            .record_dispatch(ids[0], dispatched("clean"))
+            .expect("dispatch");
+        domain
+            .record_dispatch(ids[1], dispatched("dirty"))
+            .expect("dispatch");
         store.reload_merge_save(&mut domain).expect("save");
         let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(PROJECT)));
         apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None)
@@ -10250,8 +10260,13 @@ mod bulk_cleanup_tests {
                 .iter()
                 .position(|visible| *visible == id)
                 .expect("visible");
-            apply_intent(&mut domain, &mut model, BoardIntent::SelectIndex(index), None)
-                .expect("select");
+            apply_intent(
+                &mut domain,
+                &mut model,
+                BoardIntent::SelectIndex(index),
+                None,
+            )
+            .expect("select");
             apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
         }
         assert!(model.bulk_verb_active());
@@ -10311,7 +10326,14 @@ mod bulk_cleanup_tests {
     }
 
     fn cleaned(board: &Board, index: usize) -> bool {
-        board.domain.get(board.ids[index]).unwrap().dispatch.as_ref().unwrap().cleaned
+        board
+            .domain
+            .get(board.ids[index])
+            .unwrap()
+            .dispatch
+            .as_ref()
+            .unwrap()
+            .cleaned
     }
 
     #[test]
@@ -10326,8 +10348,14 @@ mod bulk_cleanup_tests {
         assert_eq!(bulk.targets.len(), 3);
         assert_eq!(bulk.plain.len(), 1);
         assert_eq!(board.model.input_mode(), BoardInputMode::CleanupConfirm);
-        assert_eq!(board.model.marked_ids().len(), 3, "marks survive while the card is up");
-        assert!(statuses(&board).iter().all(|status| *status == HumanStatus::Started));
+        assert_eq!(
+            board.model.marked_ids().len(),
+            3,
+            "marks survive while the card is up"
+        );
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Started));
         assert!(host.removed.is_empty());
     }
 
@@ -10339,7 +10367,9 @@ mod bulk_cleanup_tests {
         press(&mut board, BoardIntent::CancelCleanup, &mut host);
         assert!(board.model.cleanup_prompt().is_none());
         assert_eq!(board.model.popup(), BoardPopup::None);
-        assert!(statuses(&board).iter().all(|status| *status == HumanStatus::Started));
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Started));
         assert!(host.removed.is_empty() && host.deleted.is_empty());
         assert_eq!(board.model.marked_ids().len(), 3);
         assert!(board.model.bulk_verb_active());
@@ -10360,7 +10390,9 @@ mod bulk_cleanup_tests {
         assert!(!board.model.cleanup_prompt().unwrap().checking());
         press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
         assert!(board.model.cleanup_prompt().is_none());
-        assert!(statuses(&board).iter().all(|status| *status == HumanStatus::Done));
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Done));
         assert_eq!(host.removed, vec!["w-clean".to_string()]);
         assert_eq!(host.deleted, vec!["tsk/clean".to_string()]);
         assert!(cleaned(&board, 0));
@@ -10369,20 +10401,31 @@ mod bulk_cleanup_tests {
         let message = board.model.message().unwrap_or_default().to_string();
         assert!(message.contains("done 3"), "{message}");
         assert!(message.contains("cleaned T1"), "{message}");
-        assert!(message.contains("kept T2 (uncommitted changes)"), "{message}");
+        assert!(
+            message.contains("kept T2 (uncommitted changes)"),
+            "{message}"
+        );
 
         let disk = board.store.load().expect("one save persisted everything");
-        assert!(disk.tasks().iter().all(|task| task.status == HumanStatus::Done));
+        assert!(disk
+            .tasks()
+            .iter()
+            .all(|task| task.status == HumanStatus::Done));
         assert!(matches!(
             disk.last_undo(),
             Some(UndoEntry::Batch { entries }) if entries.len() == 3
         ));
         press(&mut board, BoardIntent::Undo, &mut host);
         assert!(
-            statuses(&board).iter().all(|status| *status == HumanStatus::Open),
+            statuses(&board)
+                .iter()
+                .all(|status| *status == HumanStatus::Open),
             "one undo reopens the whole set"
         );
-        assert!(cleaned(&board, 0), "undo reverses only completion, not cleanup");
+        assert!(
+            cleaned(&board, 0),
+            "undo reverses only completion, not cleanup"
+        );
     }
 
     #[test]
@@ -10391,7 +10434,9 @@ mod bulk_cleanup_tests {
         let mut host = host();
         press(&mut board, BoardIntent::Complete, &mut host);
         press(&mut board, BoardIntent::KeepCleanup, &mut host);
-        assert!(statuses(&board).iter().all(|status| *status == HumanStatus::Done));
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Done));
         assert!(host.removed.is_empty() && host.deleted.is_empty());
         assert!(!cleaned(&board, 0) && !cleaned(&board, 1));
         assert!(board.model.marked_ids().is_empty());
@@ -10416,7 +10461,9 @@ mod bulk_cleanup_tests {
         assert!(board.model.cleanup_prompt().is_some(), "no verdict yet");
         board.model.cleanup_prompt_mut().unwrap().confirm_deadline = Some(Instant::now());
         tick(&mut board, &mut host);
-        assert!(statuses(&board).iter().all(|status| *status == HumanStatus::Done));
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Done));
         assert_eq!(host.removed, vec!["w-clean".to_string()]);
         assert!(
             host.deleted.is_empty(),
@@ -10434,7 +10481,9 @@ mod bulk_cleanup_tests {
         ]);
         press(&mut board, BoardIntent::Complete, &mut host);
         assert!(board.model.cleanup_prompt().is_none());
-        assert!(statuses(&board).iter().all(|status| *status == HumanStatus::Done));
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Done));
         assert!(cleaned(&board, 0) && cleaned(&board, 1));
         let disk = board.store.load().expect("load");
         assert!(matches!(
@@ -10452,7 +10501,10 @@ mod bulk_cleanup_tests {
                 .record_dispatch_cleaned(board.ids[index])
                 .expect("cleaned");
         }
-        board.store.reload_merge_save(&mut board.domain).expect("save");
+        board
+            .store
+            .reload_merge_save(&mut board.domain)
+            .expect("save");
         board.model.sync_from_domain(&board.domain);
         let mut host = host();
         assert_eq!(
@@ -10467,6 +10519,8 @@ mod bulk_cleanup_tests {
         );
         press(&mut board, BoardIntent::Complete, &mut host);
         assert!(board.model.cleanup_prompt().is_none());
-        assert!(statuses(&board).iter().all(|status| *status == HumanStatus::Done));
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Done));
     }
 }

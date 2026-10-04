@@ -6109,7 +6109,11 @@ fn bulk_cleanup_model() -> BoardModel {
         workspace_exists: true,
     };
     model.begin_cleanup_prompt(CleanupPrompt {
-        rows: vec![row(148, false, true), row(157, false, false), row(164, true, false)],
+        rows: vec![
+            row(148, false, true),
+            row(157, false, false),
+            row(164, true, false),
+        ],
         bulk: Some(BulkCleanup {
             targets: (1..=4).map(Uuid::from_u128).collect(),
             plain: vec!["T101".into()],
@@ -6139,11 +6143,23 @@ fn bulk_cleanup_card_lists_each_dispatch_without_paths_and_wraps_at_forty_column
     ] {
         assert!(painted.contains(text), "missing {text:?}:\n{painted}");
     }
-    assert!(!painted.contains("/tmp/tsk-t148"), "bulk rows omit paths:\n{painted}");
-    assert!(!painted.contains("tsk/t148"), "bulk rows omit branches:\n{painted}");
+    assert!(
+        !painted.contains("/tmp/tsk-t148"),
+        "bulk rows omit paths:\n{painted}"
+    );
+    assert!(
+        !painted.contains("tsk/t148"),
+        "bulk rows omit branches:\n{painted}"
+    );
 
     let narrow = board_rows(&model, 40, 30).join("\n");
-    for text in ["merged ✓", "close pane", "keep everything", "marked done", "y clean up"] {
+    for text in [
+        "merged ✓",
+        "close pane",
+        "keep everything",
+        "marked done",
+        "y clean up",
+    ] {
         assert!(narrow.contains(text), "40 columns lost {text:?}:\n{narrow}");
     }
 }

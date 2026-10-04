@@ -3742,11 +3742,8 @@ fn paint_cleanup_card(
     } else {
         card.short_title
     };
-    let title = titled_with_scroll_marker(
-        base_title,
-        scroll > 0,
-        scroll + window.len() < rows.len(),
-    );
+    let title =
+        titled_with_scroll_marker(base_title, scroll > 0, scroll + window.len() < rows.len());
     let content = paint_modal_card(
         frame,
         geo,

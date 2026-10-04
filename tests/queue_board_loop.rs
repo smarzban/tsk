@@ -727,6 +727,6 @@ fn board_frame_paints_a_cleanup_verdict_that_landed_while_idle() {
     )
     .expect("frame");
     assert!(!model.cleanup_prompt().unwrap().checking());
-    assert!(painted.contains("merged ✓"), "{painted}");
-    assert!(!painted.contains("checking…"), "{painted}");
+    assert!(painted.contains("Merged into origin/main ✓"), "{painted}");
+    assert!(!painted.contains("Checking merge"), "{painted}");
 }

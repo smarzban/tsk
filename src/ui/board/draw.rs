@@ -76,7 +76,8 @@ pub(crate) fn cleanup_overlay<'a>(prompt: &CleanupPrompt, home: Option<&str>) ->
     let (title, short_title, lines) = match (&prompt.bulk, prompt.rows.first()) {
         (None, Some(row)) => single_cleanup_lines(row, queued, home),
         (Some(bulk), _) => {
-            let total = prompt.rows.len() + bulk.refused.len() + bulk.missing.len() + bulk.plain.len();
+            let total =
+                prompt.rows.len() + bulk.refused.len() + bulk.missing.len() + bulk.plain.len();
             let dispatched = prompt.rows.len() + bulk.refused.len();
             let cleanable = prompt.rows.iter().filter(|row| row.cleanable()).count();
             let (title, short_title) = if cleanable == 0 {
@@ -98,7 +99,10 @@ pub(crate) fn cleanup_overlay<'a>(prompt: &CleanupPrompt, home: Option<&str>) ->
             }
             for row in &prompt.rows {
                 let (verdict, actions) = if row.dirty {
-                    ("uncommitted changes".to_string(), "keep everything".to_string())
+                    (
+                        "uncommitted changes".to_string(),
+                        "keep everything".to_string(),
+                    )
                 } else {
                     let verdict = if row.checking() {
                         "checking…".to_string()
@@ -2136,7 +2140,7 @@ fn draw_projects_wide_board(
         hits.regions.append(&mut board_hits.regions);
         hits.copyable.append(&mut board_hits.copyable);
         hits.help_max_scroll = hits.help_max_scroll.or(board_hits.help_max_scroll);
-            hits.cleanup_max_scroll = hits.cleanup_max_scroll.or(board_hits.cleanup_max_scroll);
+        hits.cleanup_max_scroll = hits.cleanup_max_scroll.or(board_hits.cleanup_max_scroll);
     }
     if responsive.rule.width > 0 {
         let rule = column_rect(responsive.rule);
