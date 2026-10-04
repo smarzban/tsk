@@ -2055,6 +2055,7 @@ fn cleanup_row(
     CleanupRow {
         merge_check,
         check_failed: false,
+        inspected: Some(preview.record.clone()),
         task_id: id,
         number: preview.number,
         worktree: preview.record.worktree,
@@ -2070,6 +2071,17 @@ fn cleanup_row(
         warning: preview.inspection.warning,
         workspace_exists: preview.inspection.workspace_exists,
     }
+}
+
+/// Whether `row`'s task still carries the dispatch its card inspected. Another board or the
+/// CLI may have cleaned or relaunched it while the card was open; cleanup then must not touch
+/// the new worktree or agent.
+fn cleanup_row_current(domain: &DomainState, row: &CleanupRow) -> bool {
+    row.inspected.is_some()
+        && domain
+            .get(row.task_id)
+            .and_then(|task| task.dispatch.as_ref())
+            == row.inspected.as_ref()
 }
 
 /// What a bulk `ctrl+d` on a marked set did before the reducer's plain batch completion.
@@ -2275,6 +2287,10 @@ pub fn bulk_cleanup_and_complete_with_host(
         }
         if row.dirty {
             outcome.dirty.push(row.number);
+        } else if !cleanup_row_current(domain, row) {
+            outcome
+                .cleaned
+                .push((row.number, Err(CleanupError::DispatchChanged)));
         } else {
             let refs = if row.merge_unconfirmed() {
                 dispatch::CleanupRefs::Unconfirmed
@@ -2400,8 +2416,14 @@ pub fn cleanup_and_complete_with_host(
     } else {
         dispatch::CleanupRefs::Cached
     };
-    let cleanup =
-        clean.then(|| dispatch::clean_with_host_refs(domain, target, in_herdr, refs, host));
+    let current = cleanup_row_current(domain, row);
+    let cleanup = clean.then(|| {
+        if current {
+            dispatch::clean_with_host_refs(domain, target, in_herdr, refs, host)
+        } else {
+            Err(CleanupError::DispatchChanged)
+        }
+    });
     domain.complete_after_cleanup(target)?;
     model.close_popup();
     Ok(cleanup)
@@ -10083,6 +10105,49 @@ mod queued_cleanup_tests {
     }
 
     #[test]
+    fn y_on_a_card_whose_dispatch_was_relaunched_meanwhile_leaves_the_new_one_alone() {
+        let (dir, store, mut domain, id) = setup("relaunched");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut host = CheckHost::new(true);
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            .expect("offer");
+        host.check.complete(verdict(true));
+        tick(&store, &mut domain, &mut model, &mut host);
+
+        // The CLI cleans and relaunches the task while the card is open.
+        let mut other = store.load().expect("load");
+        other.record_dispatch_cleaned(id).expect("cleaned");
+        store.reload_merge_save(&mut other).expect("save cleaned");
+        let mut other = store.load().expect("load");
+        let mut relaunched = other.get(id).unwrap().dispatch.clone().unwrap();
+        relaunched.cleaned = false;
+        relaunched.herdr_workspace_id = "w2".into();
+        relaunched.at = SystemTime::now() + std::time::Duration::from_secs(1);
+        other
+            .record_dispatch(id, relaunched.clone())
+            .expect("relaunch");
+        store.reload_merge_save(&mut other).expect("save");
+
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        assert_eq!(
+            (host.removed, host.deleted),
+            (0, 0),
+            "the new launch is untouched"
+        );
+        assert_eq!(domain.get(id).unwrap().dispatch.as_ref(), Some(&relaunched));
+        assert!(model
+            .message()
+            .is_some_and(|message| message.contains("changed since the card opened")));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
     fn a_queued_y_in_a_preview_parked_by_a_narrowing_frame_still_finishes_on_time() {
         let (dir, store, mut domain, id) = setup("parked");
         let mut model = BoardModel::from_domain(&domain, None);
@@ -10739,6 +10804,53 @@ mod bulk_cleanup_tests {
                 .as_ref()
                 .unwrap()
                 .cleaned
+        );
+    }
+
+    #[test]
+    fn a_bulk_row_relaunched_while_the_card_is_open_is_skipped_not_cleaned() {
+        let mut board = marked_board("row-relaunched");
+        let mut host = host();
+        host.cached_merged = true;
+        press(&mut board, BoardIntent::Complete, &mut host);
+        host.land_all(true);
+        tick(&mut board, &mut host);
+
+        let mut other = board.store.load().expect("load");
+        other
+            .record_dispatch_cleaned(board.ids[0])
+            .expect("cleaned");
+        board
+            .store
+            .reload_merge_save(&mut other)
+            .expect("save cleaned");
+        let mut other = board.store.load().expect("load");
+        let mut relaunched = dispatched("clean");
+        relaunched.herdr_workspace_id = "w-clean-2".into();
+        relaunched.at = SystemTime::now() + std::time::Duration::from_secs(1);
+        other
+            .record_dispatch(board.ids[0], relaunched.clone())
+            .expect("relaunch");
+        board.store.reload_merge_save(&mut other).expect("save");
+
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        assert!(
+            host.removed.is_empty() && host.deleted.is_empty(),
+            "{:?}",
+            host.removed
+        );
+        let record = board
+            .domain
+            .get(board.ids[0])
+            .unwrap()
+            .dispatch
+            .clone()
+            .unwrap();
+        assert_eq!(record, relaunched);
+        let message = board.model.message().unwrap_or_default().to_string();
+        assert!(
+            message.contains("T1 cleanup refused: changed since the card opened"),
+            "{message}"
         );
     }
 

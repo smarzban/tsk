@@ -260,6 +260,7 @@ fn cleanup_popup_maps_explicit_choices_and_paints_the_guardrail_state() {
     model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
         merge_check: None,
         check_failed: false,
+        inspected: None,
         number: 1,
         task_id: id,
         worktree: "/tmp/tsk-t1-clean-me".into(),

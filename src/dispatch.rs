@@ -202,6 +202,9 @@ pub enum CleanupError {
     AlreadyCleaned,
     DirtyWorktree,
     WorktreeMismatch,
+    /// Board only: the task's dispatch is no longer the one its cleanup card inspected
+    /// (another board or the CLI cleaned or relaunched it), so nothing is touched.
+    DispatchChanged,
     Herdr(String),
     Store(String),
 }
@@ -214,6 +217,7 @@ impl CleanupError {
             Self::AlreadyCleaned => "already-cleaned",
             Self::DirtyWorktree => "dirty-worktree",
             Self::WorktreeMismatch => "worktree-mismatch",
+            Self::DispatchChanged => "dispatch-changed",
             Self::Herdr(_) => "herdr-failed",
             Self::Store(_) => "store-error",
         }
@@ -233,6 +237,7 @@ impl std::fmt::Display for CleanupError {
                     "recorded worktree does not match the project or workspace"
                 )
             }
+            Self::DispatchChanged => write!(formatter, "changed since the card opened"),
             Self::Herdr(reason) | Self::Store(reason) => write!(formatter, "{reason}"),
         }
     }
@@ -2574,6 +2579,7 @@ mod tests {
         assert_eq!(CleanupError::AlreadyCleaned.code(), "already-cleaned");
         assert_eq!(CleanupError::DirtyWorktree.code(), "dirty-worktree");
         assert_eq!(CleanupError::WorktreeMismatch.code(), "worktree-mismatch");
+        assert_eq!(CleanupError::DispatchChanged.code(), "dispatch-changed");
         assert_eq!(CleanupError::Herdr("failed".into()).code(), "herdr-failed");
     }
 

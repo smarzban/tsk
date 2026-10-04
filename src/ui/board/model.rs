@@ -1061,6 +1061,9 @@ pub struct CleanupRow {
     /// The background fetch and ancestry recheck still running; the card shows `checking…`
     /// in place of the cached merged status until it lands.
     pub merge_check: Option<crate::dispatch::MergeCheck>,
+    /// The dispatch record the card inspected. Cleanup touches the task only while this is
+    /// still its record; `None` (a card built without one) never cleans.
+    pub inspected: Option<crate::domain::Dispatch>,
     /// The background check landed without confirming anything (its ancestry query errored
     /// or timed out): the branch stays, whatever the refs on disk say later.
     pub check_failed: bool,
