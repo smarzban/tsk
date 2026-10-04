@@ -918,6 +918,11 @@ fn cleanup_status_tolerates_a_slow_but_finishing_filesystem_watcher() {
 /// Run PATH-sensitive probes in their own test process, never the parallel shared harness.
 #[cfg(unix)]
 fn ancestry_probe_child(name: &str, sleep_secs: u64) -> bool {
+    cleanup_query_probe_child(name, sleep_secs, "merge-base:*")
+}
+
+#[cfg(unix)]
+fn cleanup_query_probe_child(name: &str, sleep_secs: u64, pattern: &str) -> bool {
     use std::os::unix::fs::PermissionsExt;
     if std::env::var("TSK_CLEANUP_ANCESTRY_CHILD").ok().as_deref() == Some(name) {
         return false;
@@ -935,7 +940,7 @@ fn ancestry_probe_child(name: &str, sleep_secs: u64) -> bool {
     ));
     fs::create_dir_all(&dir).unwrap();
     let script = dir.join("git");
-    fs::write(&script, format!("#!/bin/sh\nfor a in \"$@\"; do if [ \"$a\" = merge-base ]; then sleep {sleep_secs}; fi; done\nexec \"{}\" \"$@\"\n", real_git.trim())).unwrap();
+    fs::write(&script, format!("#!/bin/sh\ncase \"$3:$4\" in {pattern}) sleep {sleep_secs};; esac\nexec \"{}\" \"$@\"\n", real_git.trim())).unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", name, "--nocapture"])
@@ -1056,4 +1061,62 @@ fn cleanup_inspection_tolerates_a_slow_but_finishing_ancestry_check() {
         .unwrap();
     assert!(result.branch_merged);
     assert!(start.elapsed() >= std::time::Duration::from_secs(1));
+}
+
+#[cfg(unix)]
+#[test]
+fn cleanup_tolerates_slow_worktree_listings_at_both_safety_checks() {
+    if cleanup_query_probe_child(
+        "cli_dispatch::cleanup_tolerates_slow_worktree_listings_at_both_safety_checks",
+        1,
+        "worktree:list",
+    ) {
+        return;
+    }
+    let repo = CleanupRepo::new();
+    let (mut state, id) = repo.state("base", None);
+    let start = std::time::Instant::now();
+    let result = tsk_tui::dispatch::clean_with_host(
+        &mut state,
+        id,
+        false,
+        &mut tsk_tui::dispatch::SystemDispatchHost,
+    )
+    .unwrap();
+    assert_eq!(result.branch, tsk_tui::dispatch::BranchCleanup::Removed);
+    assert!(!repo.worktree.exists());
+    assert!(
+        start.elapsed() >= std::time::Duration::from_secs(2),
+        "both cleanup listing calls must run through the slow wrapper"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn timed_out_final_worktree_listing_keeps_the_branch_with_a_clear_reason() {
+    if cleanup_query_probe_child(
+        "cli_dispatch::timed_out_final_worktree_listing_keeps_the_branch_with_a_clear_reason",
+        11,
+        "worktree:list",
+    ) {
+        return;
+    }
+    let repo = CleanupRepo::new();
+    tsk_tui::dispatch::SystemDispatchHost
+        .remove_git_worktree(&repo.project, &repo.worktree)
+        .unwrap();
+    let result = tsk_tui::dispatch::SystemDispatchHost
+        .delete_merged_branch_with_reason(&repo.project, "tsk/t1-clean", "base")
+        .unwrap();
+    let tsk_tui::dispatch::BranchDeletion::Kept(reason) = result else {
+        panic!("timed-out listing must not delete the branch");
+    };
+    assert_eq!(
+        reason,
+        tsk_tui::dispatch::BranchRetentionReason::WorktreeListingTimedOut
+    );
+    assert!(reason
+        .message(Some("base"))
+        .contains("worktree listing timed out; branch retained"));
+    repo.git(&["show-ref", "--verify", "refs/heads/tsk/t1-clean"]);
 }

@@ -16,9 +16,8 @@ use crate::domain::{Dispatch, DomainState, HumanStatus, Task, TaskScope};
 /// instead of hanging a `tsk clean`.
 const CLEANUP_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Dedicated timeout for cleanup's heavier queries: the full untracked-file status and the
-/// merge-base ancestry checks, both of which can legitimately exceed git_base's 250ms metadata
-/// deadline on an ordinary repo.
+/// Dedicated timeout for cleanup's worktree listings, full untracked-file status and
+/// ancestry checks, which can exceed the short board metadata deadline.
 fn cleanup_query(project: &Path, args: &[&str]) -> Result<std::process::Output, String> {
     crate::git_base::git_process_output_timeout(project, args, CLEANUP_QUERY_TIMEOUT)
 }
@@ -83,6 +82,7 @@ pub enum BranchRetentionReason {
     /// The worktree is already removed; a slow ancestry check must not block on it, but
     /// deleting the branch without a confirmed merge is never safe either.
     AncestryCheckTimedOut,
+    WorktreeListingTimedOut,
 }
 
 impl BranchRetentionReason {
@@ -100,6 +100,7 @@ impl BranchRetentionReason {
             Self::AncestryCheckTimedOut => {
                 "ancestry check timed out after the worktree was removed; branch retained".into()
             }
+            Self::WorktreeListingTimedOut => "worktree listing timed out; branch retained".into(),
         }
     }
 }
@@ -619,8 +620,15 @@ impl DispatchHost for SystemDispatchHost {
         base: &str,
     ) -> Result<BranchDeletion, String> {
         let reference = format!("refs/heads/{branch}");
-        let listed =
-            crate::git_base::git_process_output(project, &["worktree", "list", "--porcelain"])?;
+        let listed = match cleanup_query(project, &["worktree", "list", "--porcelain"]) {
+            Ok(output) => output,
+            Err(error) if error == "git timed out" => {
+                return Ok(BranchDeletion::Kept(
+                    BranchRetentionReason::WorktreeListingTimedOut,
+                ));
+            }
+            Err(error) => return Err(error),
+        };
         if !listed.status.success() {
             return Err(command_failure("git worktree list", &listed));
         }
@@ -781,8 +789,8 @@ fn canonical_cleanup_path(path: &Path) -> Result<PathBuf, String> {
 /// nor be the recorded target, so they are skipped instead of failing the whole listing:
 /// one stale entry must not disable cleanup offers for unrelated tasks.
 fn git_worktree_paths(project: &Path) -> Result<Vec<PathBuf>, String> {
-    let listed =
-        crate::git_base::git_process_output(project, &["worktree", "list", "--porcelain"])?;
+    let listed = cleanup_query(project, &["worktree", "list", "--porcelain"])
+        .map_err(|error| cleanup_inspection_error("worktree listing", error))?;
     if !listed.status.success() {
         return Err(command_failure("git worktree list", &listed));
     }
