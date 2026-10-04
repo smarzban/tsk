@@ -1593,7 +1593,7 @@ fn apply_board_intent(
             if !changed {
                 return Ok(IntentOutcome::None);
             }
-            model.sync_form_assignee(&target.ids, domain.tasks());
+            model.pending_form_assignee_sync = Some(target.ids.clone());
             let subject = match target.ids.as_slice() {
                 [id] => domain
                     .get(*id)

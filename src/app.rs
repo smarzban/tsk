@@ -1000,6 +1000,9 @@ fn board_keyboard_intent(
                 | BoardInputMode::Search
                 | BoardInputMode::QuickAdd
         );
+        // A list picker's Esc is its own cancel: clearing marks underneath would leave the
+        // picker open, still bound to the set it captured.
+        let surface_owns_escape = mode == BoardInputMode::ListPicker;
         if !text_entry_owns_capital_m
             && mode != BoardInputMode::SaveRecovery
             && key.code == KeyCode::Char('M')
@@ -1010,6 +1013,7 @@ fn board_keyboard_intent(
             return Some(BoardIntent::ToggleMarkMode);
         }
         if mode != BoardInputMode::SaveRecovery
+            && !surface_owns_escape
             && key.code == KeyCode::Esc
             && key.modifiers.is_empty()
         {
@@ -1130,6 +1134,7 @@ pub fn apply_board_intent_with_save_recovery(
                     model.release_task_edit_save();
                     model.finish_pending_assignee_assignment();
                     model.sync_from_domain(domain);
+                    model.finish_form_assignee_sync(true);
                     model.end_save_recovery(SaveResolution::Retried);
                     if !model.has_saved_task() {
                         model.set_message("saved");
@@ -1144,6 +1149,7 @@ pub fn apply_board_intent_with_save_recovery(
                 *domain = recovery.cancel().expect("pending recovery has a baseline");
                 model.sync_from_domain(domain);
                 model.finish_pending_assignee_assignment();
+                model.finish_form_assignee_sync(false);
                 let cancelled_quick_add = model.end_save_recovery(SaveResolution::Cancelled);
                 if !cancelled_quick_add {
                     model.set_message("save cancelled");
@@ -1248,6 +1254,7 @@ pub fn apply_board_intent_with_save_recovery(
         model.finish_pending_assignee_assignment();
     }
     model.sync_from_domain(domain);
+    model.finish_form_assignee_sync(true);
     Ok(IntentOutcome::Persisted)
 }
 
@@ -2071,6 +2078,7 @@ fn run_board_dispatch(
             ));
             record_notice_dismissals_without_blocking_persist(store, domain);
         }
+        Err(DispatchError::NoAssignee) => model.set_message(dispatch::BOARD_NO_ASSIGNEE),
         Err(error) => model.set_message(error.to_string()),
     }
 }
@@ -8421,12 +8429,16 @@ mod quick_assign_tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::layout::Rect;
 
-    use super::{apply_intent, handle_board_intent_with_host, BoardIntent, DomainState};
+    use super::{
+        apply_board_intent_with_save_recovery, apply_intent, board_keyboard_intent,
+        handle_board_intent_with_host, BoardIntent, BoardSaveContext, DomainState,
+    };
     use crate::agents::AgentProfiles;
-    use crate::dispatch::{CreatedWorktree, DispatchHost, NO_ASSIGNEE};
+    use crate::dispatch::{CreatedWorktree, DispatchHost, BOARD_NO_ASSIGNEE, NO_ASSIGNEE};
     use crate::domain::{ProvenanceOrigin, TaskScope, UndoEntry};
     use crate::save_recovery::SaveRecovery;
     use crate::store::TaskStore;
+    use crate::ui::board::IntentOutcome;
     use crate::ui::board::{board_hit_map, BoardInputMode, BoardModel, ListPickerKind};
     use crate::ui::input::map_key;
     use crate::ui::mouse::{left_click, map_board_mouse};
@@ -8517,6 +8529,7 @@ mod quick_assign_tests {
         store: TaskStore,
         assignee_on_disk_at_launch: Rc<RefCell<Vec<Option<String>>>>,
         launched: usize,
+        fail_launch: Option<String>,
     }
 
     impl DispatchHost for FakeHost {
@@ -8543,6 +8556,9 @@ mod quick_assign_tests {
                     .map(|task| task.assignee.clone()),
             );
             self.launched += 1;
+            if let Some(error) = self.fail_launch.clone() {
+                return Err(error);
+            }
             Ok(CreatedWorktree {
                 path: "/tmp/tsk-quick-assign-worktree".into(),
                 branch: branch.into(),
@@ -8565,6 +8581,7 @@ mod quick_assign_tests {
             store: TaskStore::new(&temp.dir),
             assignee_on_disk_at_launch: Rc::default(),
             launched: 0,
+            fail_launch: None,
         }
     }
 
@@ -8746,8 +8763,12 @@ mod quick_assign_tests {
             &mut host,
         );
         assert!(!model.list_picker_open());
-        assert_eq!(model.message(), Some(NO_ASSIGNEE));
-        assert!(NO_ASSIGNEE.contains('@'));
+        assert_eq!(model.message(), Some(BOARD_NO_ASSIGNEE));
+        assert!(BOARD_NO_ASSIGNEE.contains('@'));
+        assert!(
+            !NO_ASSIGNEE.contains('@'),
+            "the CLI refusal names the CLI route, not a board key"
+        );
 
         apply_intent(
             &mut domain,
@@ -8882,5 +8903,308 @@ mod quick_assign_tests {
         select(&mut domain, &mut model, ids[0]);
         apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
         assert!(!frame_text(&model, area).contains("+ assign"));
+    }
+
+    /// One intent through the real save boundary; `ok` decides whether the write lands.
+    fn save(
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        recovery: &mut SaveRecovery<DomainState>,
+        intent: BoardIntent,
+        ok: bool,
+    ) -> IntentOutcome {
+        let baseline = domain.clone();
+        apply_board_intent_with_save_recovery(
+            domain,
+            model,
+            recovery,
+            BoardSaveContext {
+                baseline,
+                intent,
+                snapshot: None,
+            },
+            |_| {
+                if ok {
+                    Ok(())
+                } else {
+                    Err("injected save failure".into())
+                }
+            },
+        )
+        .expect("board save")
+    }
+
+    /// Open the task page, assign through `@` (first profile) at the save boundary, then edit
+    /// the title and save the whole session with Shift+Enter.
+    fn assign_on_page_then_edit_title(assign_saves: bool) -> (DomainState, uuid::Uuid, Temp) {
+        let temp = Temp::new("page-edit", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["page task"]);
+        select(&mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        let mut recovery = SaveRecovery::new();
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAssigneePicker,
+            None,
+        )
+        .expect("open picker");
+        save(
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardIntent::ConfirmListPicker,
+            assign_saves,
+        );
+        if !assign_saves {
+            assert!(recovery.is_pending());
+            save(
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                BoardIntent::CancelSave,
+                true,
+            );
+            assert_eq!(domain.get(ids[0]).expect("task").assignee, None);
+        }
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None)
+            .expect("edit title");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText(" edited".into()),
+            None,
+        )
+        .expect("type");
+        save(
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardIntent::ConfirmEditNext,
+            true,
+        );
+        assert!(!recovery.is_pending());
+        assert_eq!(
+            domain.get(ids[0]).expect("task").title,
+            "page task edited",
+            "the title edit saved"
+        );
+        (domain, ids[0], temp)
+    }
+
+    #[test]
+    fn a_page_assignment_survives_a_later_title_edit() {
+        let (domain, id, _temp) = assign_on_page_then_edit_title(true);
+        assert_eq!(
+            domain.get(id).expect("task").assignee.as_deref(),
+            Some("builder")
+        );
+    }
+
+    #[test]
+    fn a_cancelled_assignment_save_is_not_reapplied_by_a_later_edit() {
+        let (domain, id, _temp) = assign_on_page_then_edit_title(false);
+        assert_eq!(domain.get(id).expect("task").assignee, None);
+    }
+
+    #[test]
+    fn esc_closes_the_picker_with_marks_active_and_changes_nothing() {
+        let temp = Temp::new("marks-esc", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None)
+            .expect("mark mode");
+        for id in &ids {
+            select(&mut domain, &mut model, *id);
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        }
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAssigneePicker,
+            None,
+        )
+        .expect("open");
+        let esc = board_keyboard_intent(
+            &model,
+            model.input_mode(),
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        )
+        .expect("Esc maps");
+        assert_eq!(esc, BoardIntent::CancelListPicker);
+        apply_intent(&mut domain, &mut model, esc, None).expect("cancel");
+        assert!(!model.list_picker_open());
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+        assert_eq!(
+            model.marked_ids().len(),
+            2,
+            "cancel leaves the set as it was"
+        );
+        let enter = board_keyboard_intent(
+            &model,
+            model.input_mode(),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        assert_ne!(enter, Some(BoardIntent::ConfirmListPicker));
+        for id in &ids {
+            assert_eq!(domain.get(*id).expect("task").assignee, None);
+        }
+    }
+
+    #[test]
+    fn a_failed_launch_after_picking_leaves_the_task_assigned_only() {
+        let temp = Temp::new("launch-fails", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["will not launch"]);
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        host.fail_launch = Some("herdr is down".into());
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Dispatch,
+            &mut host,
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            &mut host,
+        );
+        assert_eq!(host.launched, 1);
+        assert_eq!(model.message(), Some("herdr is down"));
+        let disk = temp.store.load().expect("reload");
+        let saved = disk.get(ids[0]).expect("saved task");
+        assert_eq!(saved.assignee.as_deref(), Some("builder"));
+        assert!(saved.dispatch.is_none());
+        let task = domain.get(ids[0]).expect("task");
+        assert_eq!(task.assignee.as_deref(), Some("builder"));
+        assert!(task.dispatch.is_none());
+        assert!(matches!(domain.last_undo(), Some(UndoEntry::Assign { .. })));
+        apply_intent(&mut domain, &mut model, BoardIntent::Undo, None).expect("undo");
+        assert_eq!(domain.get(ids[0]).expect("task").assignee, None);
+        assert!(
+            domain.last_undo().is_none(),
+            "the assignment was the only entry"
+        );
+    }
+
+    fn click_picker_row(model: &BoardModel, label: &str) -> BoardIntent {
+        let area = Rect::new(0, 0, 80, 24);
+        let hits = board_hit_map(area, model);
+        let index = model
+            .visible_list_picker_options()
+            .iter()
+            .position(|(_, option)| option.label == label)
+            .expect("option painted");
+        let hit = hits
+            .regions
+            .iter()
+            .find(|hit| hit.target == QueueHitTarget::ListPickerOption(index))
+            .expect("picker row hit");
+        map_board_mouse(model, &hits, left_click(hit.area.x, hit.area.y)).expect("click intent")
+    }
+
+    #[test]
+    fn clicking_a_profile_in_the_ctrl_g_picker_dispatches_and_none_does_not() {
+        let temp = Temp::new("click", &["builder", "reviewer"]);
+        let (mut domain, mut model, ids) = board(&temp, &["click none", "click profile"]);
+        let mut host = fake_host(&temp);
+
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Dispatch,
+            &mut host,
+        );
+        let none = click_picker_row(&model, "none");
+        assert!(matches!(none, BoardIntent::SelectListOption(_)));
+        handle(&temp, &mut domain, &mut model, none, &mut host);
+        assert_eq!(host.launched, 0);
+        assert_eq!(domain.get(ids[0]).expect("task").assignee, None);
+
+        select(&mut domain, &mut model, ids[1]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Dispatch,
+            &mut host,
+        );
+        let reviewer = click_picker_row(&model, "@reviewer");
+        handle(&temp, &mut domain, &mut model, reviewer, &mut host);
+        assert_eq!(host.launched, 1);
+        let task = domain.get(ids[1]).expect("task");
+        assert_eq!(task.assignee.as_deref(), Some("reviewer"));
+        assert!(task.dispatch.is_some());
+    }
+
+    #[test]
+    fn palette_set_assignee_opens_the_picker_without_changing_anything() {
+        let temp = Temp::new("palette", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["palette task"]);
+        select(&mut domain, &mut model, ids[0]);
+        let before = domain.get(ids[0]).expect("task").clone();
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenCommandPalette,
+            None,
+        )
+        .expect("palette");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::CommandQueryInsertText("set assignee".into()),
+            None,
+        )
+        .expect("filter");
+        assert_eq!(
+            model
+                .visible_commands()
+                .first()
+                .map(|command| command.label.as_str()),
+            Some("set assignee")
+        );
+        apply_intent(&mut domain, &mut model, BoardIntent::ConfirmCommand, None)
+            .expect("run command");
+        assert_eq!(model.list_picker_kind(), Some(ListPickerKind::Assignee));
+        assert_eq!(model.input_mode(), BoardInputMode::ListPicker);
+        assert!(!model.board_form_open(), "no edit form opens");
+        assert_eq!(domain.get(ids[0]).expect("task"), &before);
+    }
+
+    #[test]
+    fn plus_assign_is_a_click_target_in_the_wide_split() {
+        let area = Rect::new(0, 0, 120, 30);
+        let temp = Temp::new("wide", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["wide task"]);
+        select(&mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+        let text = frame_text(&model, area);
+        assert!(text.contains("+ assign"), "{text}");
+        let hits = board_hit_map(area, &model);
+        let hit = hits
+            .regions
+            .iter()
+            .find(|hit| hit.target == QueueHitTarget::FormAssignee)
+            .expect("+ assign is a click target in the split");
+        let row: String = text
+            .lines()
+            .nth(usize::from(hit.area.y))
+            .expect("hit row")
+            .chars()
+            .skip(usize::from(hit.area.x))
+            .take(usize::from(hit.area.width))
+            .collect();
+        assert_eq!(row, "+ assign", "the hit covers the painted control");
+        assert_eq!(
+            map_board_mouse(&model, &hits, left_click(hit.area.x, hit.area.y)),
+            Some(BoardIntent::OpenAssigneePicker)
+        );
     }
 }

@@ -10,7 +10,9 @@ use uuid::Uuid;
 use crate::agents::{AgentProfiles, RenderContext};
 use crate::domain::{Dispatch, DomainState, HumanStatus, Task, TaskScope};
 
-pub const NO_ASSIGNEE: &str = "no agent assigned: press @ or add a profile to agents.toml";
+pub const NO_ASSIGNEE: &str = "no agent assigned, use tsk edit T<n> --assignee <name>";
+/// The board's wording of the same refusal: there `@` assigns, and with no profile it opens nothing.
+pub const BOARD_NO_ASSIGNEE: &str = "no agent assigned: press @ or add a profile to agents.toml";
 pub const NOT_IN_HERDR: &str = "dispatch works inside herdr for now";
 pub const NEEDS_GIT_PROJECT: &str = "dispatch needs a project in a git repo";
 pub const UNSUPPORTED_PLATFORM: &str = "dispatch needs herdr on macOS or Linux";

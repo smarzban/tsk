@@ -848,6 +848,9 @@ pub struct BoardModel {
     pub(super) task_edit_save: Option<TaskEditSave>,
     /// Palette assignee targets, retained until Enter applies them as one batch.
     pub(super) pending_assignee_targets: Option<Vec<Uuid>>,
+    /// Tasks a quick-picker assignment changed, waiting for its save to land before an open
+    /// task form bound to one of them adopts the new assignee. Cancel drops it unapplied.
+    pub(super) pending_form_assignee_sync: Option<Vec<Uuid>>,
     /// The app save boundary holds task-form release across its inner reducer sync.
     pub(super) hold_task_edit_save: bool,
     /// Last board action feedback or empty-selection chrome message.
@@ -987,6 +990,7 @@ impl BoardModel {
             quick_add_save: None,
             task_edit_save: None,
             pending_assignee_targets: None,
+            pending_form_assignee_sync: None,
             hold_task_edit_save: false,
             message: None,
             update_notice: None,
@@ -2384,13 +2388,22 @@ impl BoardModel {
         picker.assignee_target
     }
 
-    /// After an assignment persisted, bring an open task form bound to one of `ids` up to
-    /// date, unless its own assignee draft was already changed. Otherwise a later save of
-    /// that form would write its stale draft over the new assignee.
-    pub(super) fn sync_form_assignee(&mut self, ids: &[Uuid], tasks: &[Task]) {
+    /// Resolve a quick-picker assignment at the persistence boundary. Once it is on disk
+    /// (`saved`), an open task form bound to one of its tasks adopts the new assignee, unless
+    /// its own assignee draft was already changed; otherwise a later save of that form would
+    /// write its stale draft over the assignment. A cancelled save leaves the form alone.
+    /// Call after `sync_from_domain`, so the bound task is current.
+    pub fn finish_form_assignee_sync(&mut self, saved: bool) {
+        let Some(ids) = self.pending_form_assignee_sync.take() else {
+            return;
+        };
+        if !saved {
+            return;
+        }
         let Some(form) = self.form.as_mut() else {
             return;
         };
+        let tasks = &self.tasks;
         let Some(id) = form.task_id().filter(|id| ids.contains(id)) else {
             return;
         };
