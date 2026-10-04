@@ -658,10 +658,16 @@ fn build_task_page_overlay<'a>(
     } else {
         bound_task.and_then(|task| task.assignee.as_deref())
     };
+    // View mode offers the quick picker on an unassigned task: a clickable `+ assign` in the
+    // assignee slot, but only when a profile exists to choose. The peek never paints it.
     let assignee_segment = shown_assignee
         .map(|assignee| format!("@{}", terminal_text(assignee)))
         .or_else(|| {
             (capture_form || (form.is_task() && form.editing)).then(|| "assignee".to_string())
+        })
+        .or_else(|| {
+            (bound_task.is_some_and(|task| !task.is_notice()) && !model.agent_names.is_empty())
+                .then(|| "+ assign".to_string())
         });
     let meta_assignee_x = assignee_segment.as_ref().map(|_| 0);
     let meta_assignee_width = assignee_segment
@@ -1126,6 +1132,7 @@ impl OverlayPayloads {
         if model.input_mode() == BoardInputMode::ListPicker {
             let title = match model.list_picker_kind() {
                 Some(crate::ui::board::ListPickerKind::ProjectsView) => "projects View",
+                Some(crate::ui::board::ListPickerKind::Assignee) => "assignee",
                 _ => "thread filter",
             };
             return Some(QueueOverlay::ScopeDropdown {

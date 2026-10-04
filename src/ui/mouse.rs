@@ -866,6 +866,8 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::FormAssignee) if model.task_editing() => {
                 Some(BoardIntent::OpenFormDropdown(CaptureField::Assignee))
             }
+            // View mode: `@name` or `+ assign` opens the quick assignee picker.
+            Some(QueueHitTarget::FormAssignee) => Some(BoardIntent::OpenAssigneePicker),
             // Step clicks always select. In view mode this remains read-only; the reducer opens
             // the inline editor only when the task edit session is already active.
             Some(QueueHitTarget::Step(index)) => Some(BoardIntent::SelectStep(index)),

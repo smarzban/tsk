@@ -289,7 +289,7 @@ fn dispatch_refusals_print_stable_codes_and_persist_nothing() {
     assert_eq!(output.code, 1);
     assert_eq!(
         output.stderr,
-        "tsk dispatch: no-assignee: no agent assigned, use !a name\n"
+        "tsk dispatch: no-assignee: no agent assigned, use tsk edit T<n> --assignee <name>\n"
     );
     assert_eq!(fs::read(dir.join("tsk.json")).expect("after"), before);
 

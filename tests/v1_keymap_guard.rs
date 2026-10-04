@@ -37,6 +37,7 @@ fn normal_mode_keymap_equals_the_readme_and_queue_board_v1_set() {
         (KeyCode::Esc, BoardIntent::CloseLayer, false),
         (KeyCode::Char('s'), BoardIntent::PrimaryVerb, true),
         (KeyCode::Char('g'), BoardIntent::Dispatch, true),
+        (KeyCode::Char('@'), BoardIntent::OpenAssigneePicker, false),
         (KeyCode::Char('d'), BoardIntent::Complete, true),
         (
             KeyCode::Char('n'),

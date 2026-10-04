@@ -21,12 +21,15 @@ The page opens in view mode.
 | --- | --- |
 | Edit title, or the selected step | `ctrl+e` |
 | Edit notes | `ctrl+e`, then `Tab` |
-| Dispatch to the assigned agent; press twice to relaunch | `ctrl+g` |
+| Dispatch to the assigned agent; press twice to relaunch. Unassigned: pick an agent, then dispatch | `ctrl+g` |
+| Assign: pick an agent profile or **none** | `@` |
 | Move through editable fields | `Tab` / `Shift+Tab`, after starting an edit |
 | Save the task edit | `Shift+Enter` |
 | Cancel the current field | `Esc` or `ctrl+c` |
 
-Clicking Title, Notes, Scope, Assignee, or Thread does not start an edit from view mode. Start editing first; then click the field you want.
+Clicking Title, Notes, Scope, or Thread does not start an edit from view mode. Start editing first; then click the field you want.
+
+In view mode the footer's assignee is a quick control: click `@name` to open the assignee picker. An unassigned task shows `+ assign` there when `agents.toml` defines at least one profile; with no profiles the slot stays empty. Board rows and the peek never show `+ assign`. During an edit session, `@` and the click open the Assignee field's own list instead, so the edit's draft stays in charge.
 
 In view mode, `Tab` selects steps and **+ step**. It does not cycle task fields. Status shortcuts remain available on the task page; use `ctrl+e`, then `Tab` to reach Notes.
 
