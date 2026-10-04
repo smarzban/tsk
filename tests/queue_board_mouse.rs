@@ -3804,6 +3804,7 @@ fn peek_attribution_is_copyable_but_not_a_task_click_target() {
 fn cleanup_card(model: &mut BoardModel, id: uuid::Uuid, dirty: bool) {
     model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
         merge_check: None,
+        check_failed: false,
         number: 1,
         task_id: id,
         worktree: "/tmp/tsk-mouse-cleanup".into(),

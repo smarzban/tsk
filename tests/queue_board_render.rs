@@ -6019,6 +6019,7 @@ fn unmerged_cleanup_card_explains_squash_retention_without_clipping_the_hint() {
     let mut model = BoardModel::from_domain(&domain, None);
     model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
         merge_check: None,
+        check_failed: false,
         number: 1,
         task_id: id,
         worktree: "/tmp/worktree".into(),
@@ -6065,6 +6066,7 @@ fn cleanup_card_exposes_cached_ref_warning_and_missing_base_without_a_squash_hin
         let mut model = BoardModel::from_domain(&domain, None);
         model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
             merge_check: None,
+            check_failed: false,
             number: 1,
             task_id: id,
             worktree: "/tmp/worktree".into(),
@@ -6097,6 +6099,7 @@ fn bulk_cleanup_model() -> BoardModel {
     let mut model = BoardModel::from_domain(&domain, None);
     let row = |number: u64, dirty: bool, merged: bool| CleanupRow {
         merge_check: None,
+        check_failed: false,
         number,
         task_id: Uuid::from_u128(u128::from(number)),
         worktree: format!("/tmp/tsk-t{number}-bulk"),

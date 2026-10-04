@@ -2054,6 +2054,7 @@ fn cleanup_row(
 ) -> CleanupRow {
     CleanupRow {
         merge_check,
+        check_failed: false,
         task_id: id,
         number: preview.number,
         worktree: preview.record.worktree,
@@ -2275,7 +2276,7 @@ pub fn bulk_cleanup_and_complete_with_host(
         if row.dirty {
             outcome.dirty.push(row.number);
         } else {
-            let refs = if row.checking() {
+            let refs = if row.merge_unconfirmed() {
                 dispatch::CleanupRefs::Unconfirmed
             } else {
                 dispatch::CleanupRefs::Cached
@@ -2372,8 +2373,9 @@ pub fn cleanup_and_complete_with_host(
     };
     let target = row.task_id;
     // The card refreshed the base off the event loop; never fetch here. A check that is still
-    // running (its queued `y` ran out of time) confirms nothing, so the branch stays.
-    let refs = if row.checking() {
+    // running (its queued `y` ran out of time) or that failed confirms nothing, so the branch
+    // stays.
+    let refs = if row.merge_unconfirmed() {
         dispatch::CleanupRefs::Unconfirmed
     } else {
         dispatch::CleanupRefs::Cached
@@ -9873,6 +9875,7 @@ mod queued_cleanup_tests {
             branch_merged: merged,
             base_available: true,
             warning: None,
+            confirmed: true,
         }
     }
 
@@ -10026,6 +10029,36 @@ mod queued_cleanup_tests {
         assert!(model.input_target_mut().cleanup_prompt().is_none());
         assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
         assert_eq!((host.removed, host.deleted), (1, 1));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn a_check_that_failed_keeps_the_branch_even_when_cached_refs_later_read_merged() {
+        let (dir, store, mut domain, id) = setup("failed-check");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut host = CheckHost::new(false);
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            .expect("offer");
+        // The ancestry query timed out: the check lands, but it confirmed nothing.
+        host.check.complete(MergeVerdict {
+            branch_merged: false,
+            base_available: false,
+            warning: Some("ancestry check timed out".into()),
+            confirmed: false,
+        });
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert!(!model.cleanup_prompt().unwrap().checking());
+        // The transient failure clears: the refs on disk now read as merged.
+        host.cached_merged = true;
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
+        assert_eq!((host.removed, host.deleted), (1, 0), "branch kept");
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
 
@@ -10191,6 +10224,7 @@ mod bulk_cleanup_tests {
                     branch_merged: merged,
                     base_available: true,
                     warning: None,
+                    confirmed: true,
                 });
             }
             self.cached_merged = merged;
@@ -10467,6 +10501,28 @@ mod bulk_cleanup_tests {
             disk.last_undo(),
             Some(UndoEntry::Batch { entries }) if entries.len() == 3
         ));
+    }
+
+    #[test]
+    fn a_bulk_row_whose_check_failed_keeps_its_branch_on_y() {
+        let mut board = marked_board("failed-check");
+        let mut host = host();
+        press(&mut board, BoardIntent::Complete, &mut host);
+        for check in host.checks.values() {
+            check.complete(MergeVerdict {
+                branch_merged: false,
+                base_available: false,
+                warning: Some("ancestry check timed out".into()),
+                confirmed: false,
+            });
+        }
+        tick(&mut board, &mut host);
+        assert!(!board.model.cleanup_prompt().unwrap().checking());
+        host.cached_merged = true;
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        assert!(statuses(&board).iter().all(|status| *status == HumanStatus::Done));
+        assert_eq!(host.removed, vec!["w-clean".to_string()]);
+        assert!(host.deleted.is_empty(), "a failed check never confirms a merge");
     }
 
     #[test]

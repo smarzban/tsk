@@ -78,6 +78,9 @@ pub struct MergeVerdict {
     pub branch_merged: bool,
     pub base_available: bool,
     pub warning: Option<String>,
+    /// False when the ancestry check itself errored or timed out: nothing was confirmed, so a
+    /// cleanup must keep the branch even if the refs on disk later read as merged.
+    pub confirmed: bool,
 }
 
 /// A board cleanup card's merged check running off the event loop. The host completes it
@@ -508,6 +511,7 @@ impl DispatchHost for SystemDispatchHost {
                     branch_merged: false,
                     base_available: false,
                     warning: Some(reason),
+                    confirmed: false,
                 },
             });
         });
@@ -829,6 +833,7 @@ fn system_inspect_cleanup(
         branch_merged,
         base_available,
         warning,
+        ..
     } = merge_verdict(project, dispatch, fetch_failure)?;
     let (workspace_exists, workspace_matches) = if in_herdr {
         let listed = Command::new("herdr")
@@ -934,6 +939,7 @@ fn merge_verdict(
         branch_merged,
         base_available,
         warning,
+        confirmed: true,
     })
 }
 

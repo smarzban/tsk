@@ -259,6 +259,7 @@ fn cleanup_popup_maps_explicit_choices_and_paints_the_guardrail_state() {
     let (_, mut model, id) = board_with_task("clean me", HumanStatus::Started);
     model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
         merge_check: None,
+        check_failed: false,
         number: 1,
         task_id: id,
         worktree: "/tmp/tsk-t1-clean-me".into(),
@@ -570,6 +571,7 @@ fn cleanup_card_opens_from_cached_refs_and_a_background_check_fills_merged_statu
         branch_merged: true,
         base_available: true,
         warning: None,
+        confirmed: true,
     });
     assert!(model.poll_cleanup_check());
     assert!(!model.cleanup_prompt().unwrap().checking());
@@ -587,6 +589,7 @@ fn cleanup_card_opens_from_cached_refs_and_a_background_check_fills_merged_statu
         branch_merged: true,
         base_available: true,
         warning: None,
+        confirmed: true,
     });
     assert!(!model.poll_cleanup_check());
     assert!(model.cleanup_prompt().is_none());

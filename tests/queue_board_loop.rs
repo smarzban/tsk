@@ -693,6 +693,7 @@ fn board_frame_paints_a_cleanup_verdict_that_landed_while_idle() {
     let check = MergeCheck::default();
     model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
         merge_check: Some(check.clone()),
+        check_failed: false,
         number: 1,
         task_id: uuid::Uuid::new_v4(),
         worktree: "/tmp/tsk-frame-check".into(),
@@ -708,6 +709,7 @@ fn board_frame_paints_a_cleanup_verdict_that_landed_while_idle() {
         branch_merged: true,
         base_available: true,
         warning: None,
+        confirmed: true,
     });
     let mut painted = String::new();
     board_frame(

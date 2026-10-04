@@ -58,7 +58,7 @@ fn identifiers_list<'a>(identifiers: impl IntoIterator<Item = &'a String>) -> St
 fn cleanup_branch_action(row: &CleanupRow) -> &'static str {
     if row.checking() {
         "delete branch if merged"
-    } else if row.base_available && row.branch_merged {
+    } else if row.base_available && row.branch_merged && !row.check_failed {
         "delete branch"
     } else {
         "keep branch"

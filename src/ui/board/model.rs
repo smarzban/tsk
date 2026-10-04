@@ -1061,11 +1061,19 @@ pub struct CleanupRow {
     /// The background fetch and ancestry recheck still running; the card shows `checking…`
     /// in place of the cached merged status until it lands.
     pub merge_check: Option<crate::dispatch::MergeCheck>,
+    /// The background check landed without confirming anything (its ancestry query errored
+    /// or timed out): the branch stays, whatever the refs on disk say later.
+    pub check_failed: bool,
 }
 
 impl CleanupRow {
     pub fn checking(&self) -> bool {
         self.merge_check.is_some()
+    }
+
+    /// No completed check vouches for the merged status: cleanup keeps the branch.
+    pub fn merge_unconfirmed(&self) -> bool {
+        self.checking() || self.check_failed
     }
 
     /// `y` removes this worktree. A dirty worktree is never cleaned.
@@ -1316,6 +1324,7 @@ impl BoardModel {
                 continue;
             };
             row.merge_check = None;
+            row.check_failed = !verdict.confirmed;
             row.branch_merged = verdict.branch_merged;
             row.base_available = verdict.base_available;
             row.warning = verdict.warning;
