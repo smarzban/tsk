@@ -21,6 +21,7 @@ the GitHub release notes verbatim.
 
 ### Fixed
 
+- A project reached through a symlinked path, such as `/tmp/repo` and `/private/tmp/repo` on macOS, is one project: the board's project selector, the Projects index, and the task page's project chooser list it once, and the board, quick add, `tsk add`, and `tsk list` (with or without `-p`) launched from the other spelling use the project already on the board instead of starting a second one.
 - The verb legend on an assigned task shows dispatch as `ctrl+g dispatch`, matching its chord, instead of a bare `g`.
 - With tasks marked, `Esc` in the thread or view picker closes the picker instead of clearing the marks behind it and leaving it open.
 - The task page's project chooser lists options top to bottom, so `↓` moves the highlight down instead of up.

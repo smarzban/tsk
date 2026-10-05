@@ -1381,7 +1381,12 @@ fn apply_board_intent(
                 BoardLocation::Desk | BoardLocation::Projects => 0,
                 BoardLocation::Project(path) | BoardLocation::ArchivedProject(path) => options
                     .iter()
-                    .position(|option| option == &ProjectScopeOption::Project(path.clone()))
+                    .position(|option| match option {
+                        ProjectScopeOption::Project(option) => {
+                            paths_equivalent(&option.to_string_lossy(), &path.to_string_lossy())
+                        }
+                        ProjectScopeOption::Home => false,
+                    })
                     .unwrap_or(0),
             };
             model.close_popup();

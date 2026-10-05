@@ -432,7 +432,8 @@ fn query_projects_index(
     let mut paths: Vec<String> = Vec::new();
     for task in &live {
         if let TaskScope::Project { path } = &task.scope {
-            if !paths.contains(path) {
+            // Aliases of one directory are one row; counts already match by equivalence.
+            if !paths.iter().any(|known| identities.equivalent(known, path)) {
                 paths.push(path.clone());
             }
         }
