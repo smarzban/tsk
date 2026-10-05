@@ -3379,6 +3379,9 @@ fn golden_scenes() -> Vec<GoldenScene> {
 
     let (filter_picker_rows, filtered_board_rows) = filter_golden_rows();
     let filtered_long_rows = filter_long_golden_rows();
+    let mut long_message_model = long_filter_model();
+    long_message_model.set_message("moved T3 to started");
+    let filtered_long_message_rows = board_rows(&long_message_model, 40, 24);
 
     vec![
         GoldenScene {
@@ -3394,6 +3397,11 @@ fn golden_scenes() -> Vec<GoldenScene> {
         GoldenScene {
             name: "board_filtered_long_40x24",
             rows: filtered_long_rows,
+            width: 40,
+        },
+        GoldenScene {
+            name: "board_filtered_long_message_40x24",
+            rows: filtered_long_message_rows,
             width: 40,
         },
         GoldenScene {
@@ -3925,13 +3933,13 @@ fn all_golden_frames_pass_no_color_sgr_scan() {
         scanned += 1;
     }
     assert_eq!(
-        scanned, 19,
-        "expected the nineteen board surface goldens (board, board_marked, \
+        scanned, 20,
+        "expected the twenty board surface goldens (board, board_marked, \
          board_default_split_78, board_search, board_search_pinned, board_search_empty, \
          accordion, palette, help, done_drawer, inbox, done_drawer_archived, \
          projects_index_50x20, projects_index_110x30, projects_preview_split_110x30, \
          projects_preview_rail_110x30, filter_picker_40x24, board_filtered_40x24, \
-         board_filtered_long_40x24) in {dir:?}"
+         board_filtered_long_40x24, board_filtered_long_message_40x24) in {dir:?}"
     );
 }
 
@@ -6508,4 +6516,159 @@ fn overview_assignee_view_lists_assigned_work_across_projects_with_the_bullseye(
         !board.contains("Prototype the queue-style board UI"),
         "unassigned work is not in the view:\n{board}"
     );
+}
+
+/// Many filtered rows so the 40-column list overflows its viewport.
+fn long_filter_overflow_model() -> BoardModel {
+    let tasks: Vec<Task> = (0..24u128)
+        .map(|index| {
+            let mut task = task(
+                9000 + index,
+                &format!("row {index}"),
+                HumanStatus::Ready,
+                project("/repos/tsk"),
+                600 + index as u64,
+            );
+            task.number = Some(100 + index as u64);
+            task.thread = Some("release-coordination".to_string());
+            task.assignee = Some("integration-agent".to_string());
+            task
+        })
+        .collect();
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from("/repos/tsk")));
+    for intent in [
+        BoardIntent::SelectNavTab(NavTab::ProjectBoard),
+        BoardIntent::OpenThreadFilterPicker,
+        BoardIntent::ListPickerNext,
+        BoardIntent::ConfirmListPicker,
+        BoardIntent::OpenThreadFilterPicker,
+        BoardIntent::ListPickerTabNext,
+        BoardIntent::ListPickerNext,
+        BoardIntent::ConfirmListPicker,
+    ] {
+        apply_intent(&mut domain, &mut model, intent, None).expect("filter");
+    }
+    assert_eq!(
+        model.board_filter().label(),
+        "#release-coordination @integration-agent"
+    );
+    model
+}
+
+/// The rule row's index: the list viewport ends right above it.
+fn rule_row_index(rows: &[String]) -> usize {
+    rows.iter()
+        .rposition(|row| !row.trim().is_empty() && row.trim().chars().all(|ch| ch == '─'))
+        .expect("rule row")
+}
+
+#[test]
+fn wrapped_filter_footer_keeps_the_list_height_through_messages_and_the_palette() {
+    let mut model = long_filter_overflow_model();
+    let mut domain = DomainState::new();
+    let idle = board_rows(&model, 40, 24);
+    let rule = rule_row_index(&idle);
+    assert!(
+        idle[rule + 1].contains("#release-coordination")
+            && idle[rule + 2].contains("@integration-agent"),
+        "the wrapped context sits under the rule:\n{}",
+        idle.join("\n")
+    );
+
+    // Mouse-select the bottom painted task row; the list stops following the cursor.
+    let hits = tsk_tui::ui::board::board_hit_map(Rect::new(0, 0, 40, 24), &model);
+    let bottom = hits
+        .regions
+        .iter()
+        .filter(|hit| matches!(hit.target, FilterHitTarget::Task(_)))
+        .max_by_key(|hit| hit.area.y)
+        .expect("task rows")
+        .clone();
+    let FilterHitTarget::Task(bottom_id) = bottom.target else {
+        unreachable!()
+    };
+    let click = map_board_mouse(&model, &hits, left_click(bottom.area.x + 2, bottom.area.y))
+        .expect("row click");
+    apply_intent(&mut domain, &mut model, click, None).expect("select bottom row");
+    assert_eq!(model.selected_id(), Some(bottom_id));
+    let selected = board_rows(&model, 40, 24);
+    let selected_row = selected
+        .iter()
+        .position(|row| row.starts_with('▸'))
+        .expect("selected row painted");
+    assert_eq!(rule_row_index(&selected), rule);
+
+    // A status message takes the status row; the list keeps its height and the selection.
+    model.set_message("moved T123 to ready");
+    let with_message = board_rows(&model, 40, 24);
+    assert_eq!(
+        rule_row_index(&with_message),
+        rule,
+        "message moved the list:\n{}",
+        with_message.join("\n")
+    );
+    assert!(with_message[rule_row_index(&with_message) + 2].contains("moved T123 to ready"));
+    assert_eq!(
+        with_message.iter().position(|row| row.starts_with('▸')),
+        Some(selected_row),
+        "the selected bottom row stays put"
+    );
+
+    // The palette over the board leaves the list height unchanged as well.
+    model.clear_message();
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenCommandPalette,
+        None,
+    )
+    .expect("palette");
+    let with_palette = board_rows(&model, 40, 24);
+    assert_eq!(
+        rule_row_index(&with_palette),
+        rule,
+        "palette moved the list:\n{}",
+        with_palette.join("\n")
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close");
+    let after = board_rows(&model, 40, 24);
+    assert_eq!(rule_row_index(&after), rule);
+    assert_eq!(
+        after.iter().position(|row| row.starts_with('▸')),
+        Some(selected_row),
+        "the selected bottom row is still visible after the palette:\n{}",
+        after.join("\n")
+    );
+}
+
+#[test]
+fn projects_index_reserves_the_longest_path_so_the_cursor_never_resizes_the_list() {
+    let long = "/repos/an/unusually/deep/checkout/of/the/release-coordination-service";
+    let tasks = vec![
+        task(9101, "short", HumanStatus::Ready, project("/repos/a"), 60),
+        task(9102, "deep", HumanStatus::Ready, project(long), 120),
+    ];
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from("/repos/a")));
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::SelectNavTab(NavTab::Projects),
+        None,
+    )
+    .expect("projects");
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        let rows = board_rows(&model, 40, 24);
+        let rule = rule_row_index(&rows);
+        let footer = rows[rule + 1..rows.len() - 1].join("\n");
+        seen.push((rule, footer));
+        apply_intent(&mut domain, &mut model, BoardIntent::SelectNext, None).expect("move");
+    }
+    assert_eq!(seen[0].0, seen[1].0, "the list height follows no cursor");
+    let both = format!("{}\n{}", seen[0].1, seen[1].1);
+    assert!(both.contains("/repos/a"), "{both}");
+    assert!(both.contains("release-coordination-service"), "{both}");
+    assert!(!both.contains('…'), "the long path wraps:\n{both}");
 }

@@ -1501,22 +1501,29 @@ fn paint_footer(
         } else {
             let mut idle = idle_context(model);
             // A wrapped idle context fills the rows reserved above the status line; its
-            // last row keeps the status line's hint.
-            if context_extra > 0 {
+            // last row keeps the status line's hint. A status message takes the status row
+            // and leaves the reserved rows blank, so the list never changes height with it.
+            if context_extra > 0 && model.status_message.is_none() {
                 let mut rows = idle_context_rows(&idle, width);
-                let rest = rows.split_off((context_extra as usize).min(rows.len()));
+                let reserved = context_extra as usize;
+                // Rows sit bottom-aligned on the status row: a context shorter than the
+                // reservation (another index row's longer path set it) leaves blanks above.
+                let last = rows.pop().unwrap_or_default();
+                let overflow = rows.len().saturating_sub(reserved);
+                let rest: Vec<String> = rows.drain(rows.len() - overflow..).collect();
+                let lead = reserved - rows.len();
                 for (index, text) in rows.into_iter().enumerate() {
                     put_line(
                         frame,
                         surface,
-                        row + index as u16,
+                        row + (lead + index) as u16,
                         width,
                         paint_bounded_line(&text, width, style_dim()),
                     );
                 }
-                // Normally one row remains. Only a frame too short to reserve more joins
-                // the leftovers onto the status line, which bounds them.
-                idle = rest.concat();
+                // Only a frame too short to reserve every row joins the leftovers onto the
+                // status line, which bounds them.
+                idle = rest.concat() + &last;
             }
             let row = row + context_extra;
             let (line, undo_hit) = paint_status_line(
@@ -5138,18 +5145,40 @@ fn paint_bottom_input_message(
 }
 
 /// Rows beyond the status row that an idle context needs to wrap rather than truncate.
-/// Messages, input slots, task pages, and a lone row keep today's single status line.
+///
+/// The reservation depends only on the context itself, never on transient state: a status
+/// message, the palette, Help, a picker, or a confirmation card leaves the list height
+/// unchanged. Only surfaces that already own the bottom rows keep the single status line:
+/// the task page and its editors size their content against the standard footer, and a
+/// bottom input slot (search, quick-add) reserves its own rows.
 fn idle_context_extra_rows(model: &QueueFrameModel<'_>, geo: &TierGeometry) -> u16 {
-    // Board surfaces only: the task page and editors size their own content against the
-    // standard footer, and opening a picker or Help must not move the board under it.
-    let board_surface = matches!(
+    let owns_bottom = matches!(
         model.overlay,
-        QueueOverlay::None | QueueOverlay::ScopeDropdown { .. } | QueueOverlay::Help { .. }
-    );
-    if !board_surface || geo.status_row.is_none() || model.status_message.is_some() {
+        QueueOverlay::TaskPage { .. }
+            | QueueOverlay::EditTitle { .. }
+            | QueueOverlay::EditNotes { .. }
+    ) || bottom_input_slot(&model.overlay).is_some();
+    if owns_bottom || geo.status_row.is_none() {
         return 0;
     }
-    let rows = idle_context_rows(&idle_context(model), geo.row_width).len() as u16;
+    let rows = if model.projects_index && !model.has_update_notice {
+        // The index names the cursor row's path; reserve for the longest so moving the
+        // cursor never resizes the list under it.
+        (0..model.projects.len().max(1))
+            .map(|cursor| {
+                let mut context = model
+                    .projects
+                    .get(cursor)
+                    .map(|row| format!(" {}", row.path))
+                    .unwrap_or_default();
+                push_pinned_search(model, &mut context);
+                idle_context_rows(&context, geo.row_width).len()
+            })
+            .max()
+            .unwrap_or(1) as u16
+    } else {
+        idle_context_rows(&idle_context(model), geo.row_width).len() as u16
+    };
     rows.saturating_sub(1)
         .min(geo.viewport_height.saturating_sub(1))
 }
@@ -5172,11 +5201,16 @@ fn idle_context(model: &QueueFrameModel<'_>) -> String {
     } else {
         model.context.clone()
     };
+    push_pinned_search(model, &mut context);
+    context
+}
+
+/// A pinned board query rides the idle context (` · /query`).
+fn push_pinned_search(model: &QueueFrameModel<'_>, context: &mut String) {
     if model.search_pinned && !model.search_query.trim().is_empty() {
         context.push_str(" · /");
         context.push_str(model.search_query.trim());
     }
-    context
 }
 
 /// The projects index's idle status: the selected row's stored path, so same-named
