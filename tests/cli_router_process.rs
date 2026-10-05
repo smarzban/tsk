@@ -42,6 +42,25 @@ fn wait_with_output_before_deadline(mut child: Child, description: &str) -> Outp
     }
 }
 
+/// Spawns a binary that this process just wrote. Another test thread may fork while the
+/// copy's write descriptor is still open; the forked child holds it until its own exec,
+/// and executing the file meanwhile fails with ETXTBSY. The window is brief, so retry.
+#[cfg(unix)]
+fn spawn_fresh_copy(command: &mut Command) -> std::io::Result<Child> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match command.spawn() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(20));
+            }
+            result => return result,
+        }
+    }
+}
+
 #[test]
 fn top_level_help_names_subcommands_and_their_help() {
     let output = wait_with_output_before_deadline(
@@ -99,21 +118,20 @@ fn update_directs_a_homebrew_binary_to_brew_without_a_path_lookup() {
     std::fs::create_dir_all(executable.parent().expect("Homebrew binary parent"))
         .expect("create Homebrew test directory");
     std::fs::copy(binary(), &executable).expect("copy tsk into Homebrew Cellar");
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
             .expect("make copied binary executable");
     }
+    let mut command = Command::new(&executable);
+    command
+        .arg("update")
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let output = wait_with_output_before_deadline(
-        Command::new(&executable)
-            .arg("update")
-            .env_clear()
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn Homebrew update"),
+        spawn_fresh_copy(&mut command).expect("spawn Homebrew update"),
         "Homebrew update guidance",
     );
 
