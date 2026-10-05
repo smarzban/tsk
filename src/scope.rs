@@ -297,6 +297,67 @@ mod tests {
     }
 
     #[test]
+    fn invocation_adopts_the_stored_spelling_of_an_aliased_project() {
+        let root = std::env::temp_dir().join(format!(
+            "tsk-project-adopt-{}-{}",
+            std::process::id(),
+            TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let project = root.join("project");
+        let other = root.join("other");
+        let alias = root.join("alias");
+        fs::create_dir_all(&project).expect("project directory");
+        fs::create_dir(&other).expect("other directory");
+        symlink(&project, &alias).expect("stored alias");
+        let stored = alias.to_string_lossy().into_owned();
+        let mut domain = DomainState::new();
+        domain
+            .create(
+                "stored fixture",
+                None,
+                TaskScope::Project {
+                    path: stored.clone(),
+                },
+                crate::domain::ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create stored project fixture");
+
+        let mut snapshot = InvocationSnapshot {
+            default_scope: TaskScope::Project {
+                path: project.to_string_lossy().into_owned(),
+            },
+            this_repo: Some(project.clone()),
+            title_prefill: None,
+            provenance: crate::domain::ProvenanceOrigin::Capture,
+        };
+        adopt_stored_identity(&mut snapshot, &domain);
+        assert_eq!(
+            snapshot.default_scope,
+            TaskScope::Project {
+                path: stored.clone()
+            }
+        );
+        assert_eq!(snapshot.this_repo, Some(PathBuf::from(&stored)));
+
+        let mut fresh = InvocationSnapshot {
+            default_scope: TaskScope::Project {
+                path: other.to_string_lossy().into_owned(),
+            },
+            this_repo: Some(other.clone()),
+            title_prefill: None,
+            provenance: crate::domain::ProvenanceOrigin::Capture,
+        };
+        let before = fresh.clone();
+        adopt_stored_identity(&mut fresh, &domain);
+        assert_eq!(
+            fresh, before,
+            "a project with no stored alias keeps its spelling"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn bare_project_name_dedupes_equivalent_stored_and_invocation_aliases() {
         let root = std::env::temp_dir().join(format!(
             "tsk-project-bare-alias-{}-{}",
@@ -409,6 +470,30 @@ pub fn resolve_project_path(
         [path] => Ok(path.clone()),
         [] => Err(ProjectResolveError::Unknown),
         _ => Err(ProjectResolveError::Ambiguous(matches)),
+    }
+}
+
+/// Rewrite an invocation's project spellings to the stored identity they alias.
+///
+/// The invocation path comes from the process or pane cwd, which the OS reports resolved
+/// (`/private/tmp/repo` on macOS), while stored tasks keep the spelling they were added
+/// with (`/tmp/repo`). When a stored project is equivalent, its spelling replaces the
+/// invocation's, so the board, its dropdowns, and new captures see one project. A path
+/// with no stored equivalent is left as-is: a new project keeps the invocation spelling.
+pub fn adopt_stored_identity(snapshot: &mut InvocationSnapshot, domain: &DomainState) {
+    let stored = ProjectCandidates {
+        stored: stored_project_paths(domain),
+        invocation: BTreeSet::new(),
+    };
+    if let TaskScope::Project { path } = &mut snapshot.default_scope {
+        if let Some(stored) = stored.preferred_equivalent(path) {
+            *path = stored;
+        }
+    }
+    if let Some(repo) = snapshot.this_repo.as_mut() {
+        if let Some(stored) = stored.preferred_equivalent(&repo.to_string_lossy()) {
+            *repo = PathBuf::from(stored);
+        }
     }
 }
 

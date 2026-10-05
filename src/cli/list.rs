@@ -280,7 +280,11 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
             path: resolve_permissive_project_path(project, &domain, Some(&snapshot_from_env())),
         },
         None if input.global => TaskScope::Global,
-        None => snapshot_from_env().default_scope,
+        None => {
+            let mut snapshot = snapshot_from_env();
+            crate::scope::adopt_stored_identity(&mut snapshot, &domain);
+            snapshot.default_scope
+        }
     });
     let view = if input.deleted {
         ListView::Deleted

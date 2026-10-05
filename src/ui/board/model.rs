@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::context::InvocationSnapshot;
 use crate::domain::{DomainState, HumanStatus, Task, TaskScope};
-use crate::scope::{archived_path_contains, paths_equivalent};
+use crate::scope::{archived_path_contains, paths_equivalent, PathIdentityCache};
 use crate::ui::capture::CaptureField;
 use crate::ui::edit::{seeded_draft, EditBuffer};
 use crate::ui::input::{
@@ -756,8 +756,17 @@ fn board_form_scope_options(
     archived: &BTreeSet<String>,
 ) -> Vec<TaskScope> {
     let mut options = Vec::new();
+    // Aliases of one directory (`/tmp/x` and `/private/tmp/x`) are one choice; the first
+    // spelling pushed wins, so the form's own scope keeps its exact value.
+    let identities = PathIdentityCache::default();
     let push = |scope: TaskScope, options: &mut Vec<TaskScope>| {
-        if !options.contains(&scope) {
+        let known = options.iter().any(|option| match (option, &scope) {
+            (TaskScope::Project { path: known }, TaskScope::Project { path }) => {
+                identities.equivalent(known, path)
+            }
+            (known, scope) => known == scope,
+        });
+        if !known {
             options.push(scope);
         }
     };
@@ -2377,8 +2386,15 @@ impl BoardModel {
     /// resolved invocation repository and current selection: no path is ever invented.
     pub fn project_options(&self) -> Vec<ProjectScopeOption> {
         let mut paths: Vec<PathBuf> = Vec::new();
+        // Aliases of one directory (`/tmp/x` and `/private/tmp/x`) are one option; the
+        // first spelling pushed wins.
+        let identities = PathIdentityCache::default();
         let push = |path: PathBuf, paths: &mut Vec<PathBuf>| {
-            if !paths.contains(&path) {
+            let spelling = path.to_string_lossy();
+            if !paths
+                .iter()
+                .any(|known| identities.equivalent(&known.to_string_lossy(), &spelling))
+            {
                 paths.push(path);
             }
         };
@@ -5028,6 +5044,62 @@ mod tests {
             .visible_list_picker_options()
             .iter()
             .any(|(_, option)| option.label == "#nav"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// T152: `/tmp/x` and `/private/tmp/x` (any symlink alias) are one project in the board
+    /// selector and the task page's project dropdown, even when the store holds both.
+    #[cfg(unix)]
+    #[test]
+    fn project_dropdowns_list_symlinked_aliases_once() {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "tsk-t152-alias-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let real = root.join("alpha");
+        let alias = root.join("link").join("alpha");
+        fs::create_dir_all(&real).expect("real");
+        fs::create_dir_all(root.join("link")).expect("link parent");
+        symlink(&real, &alias).expect("alias");
+        let alias_path = alias.to_string_lossy().into_owned();
+        let real_path = real.to_string_lossy().into_owned();
+        let mut domain = DomainState::new();
+        let stored = create(&mut domain, "stored", project(&alias_path));
+        create(&mut domain, "legacy twin", project(&real_path));
+
+        let model = BoardModel::from_domain(&domain, Some(real.clone()));
+        let projects = model
+            .project_options()
+            .into_iter()
+            .filter(|option| matches!(option, ProjectScopeOption::Project(_)))
+            .count();
+        assert_eq!(projects, 1, "selector lists one alpha");
+
+        let task = domain.get(stored).expect("stored task").clone();
+        let form = BoardForm::task(
+            &task,
+            Some(&real),
+            domain.tasks(),
+            CaptureField::Title,
+            &BTreeSet::new(),
+            &[],
+        );
+        let scopes: Vec<&TaskScope> = form
+            .scope_options
+            .iter()
+            .filter(|scope| matches!(scope, TaskScope::Project { .. }))
+            .collect();
+        assert_eq!(
+            scopes,
+            vec![&project(&alias_path)],
+            "the task keeps its own spelling"
+        );
+        assert_eq!(form.scope_selected, 0);
         let _ = fs::remove_dir_all(root);
     }
 

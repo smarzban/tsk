@@ -10,7 +10,7 @@ use crate::context::snapshot_from_env;
 use crate::domain::{
     normalize_thread, thread_refusal_message, DomainState, ProvenanceOrigin, TaskScope,
 };
-use crate::scope::{resolve_flag_scope, resolve_project_path};
+use crate::scope::{adopt_stored_identity, resolve_flag_scope, resolve_project_path};
 use crate::store::{default_state_dir, TaskStore};
 
 /// A flag-add failure after parsing and before presenting an output.
@@ -159,6 +159,8 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
     let base = if input.clear_base { None } else { input.base };
     store
         .locked_transition_if_changed(|domain| {
+            let mut snapshot = snapshot.clone();
+            adopt_stored_identity(&mut snapshot, domain);
             let scope = match resolve_flag_scope(project.as_deref(), global, domain, &snapshot) {
                 Ok(scope) => scope,
                 Err(error) => {
@@ -273,6 +275,8 @@ pub fn run_plan(
     let snapshot = snapshot_from_env();
     store
         .locked_transition_if_changed(|domain| {
+            let mut snapshot = snapshot.clone();
+            adopt_stored_identity(&mut snapshot, domain);
             let (resolved, resolution_failures) =
                 resolve_plan_items(valid, domain, &snapshot, &profiles);
             failed.extend(resolution_failures);
