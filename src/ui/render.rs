@@ -405,7 +405,8 @@ pub enum QueueOverlay<'a> {
     },
     /// Launch card: the two-choice archived-project modal.
     LaunchCard { name: &'a str },
-    /// Dispatched worktree cleanup confirmation: the cursor task or a marked set.
+    /// Dispatched worktree cleanup confirmation (the cursor task or a marked set), and the bulk
+    /// dispatch card, which shares its layout.
     CleanupConfirm {
         title: CleanupTitle,
         lines: Vec<CleanupCardLine>,
@@ -546,6 +547,10 @@ pub struct QueueFrameModel<'a> {
     pub context: String,
     /// Whether `context` is a release-update notice rather than a board lens.
     pub has_update_notice: bool,
+    /// The other idle context a status message swaps with `context` (the update notice
+    /// or the lens context). The footer reserves the taller of the two, so a message never
+    /// resizes the list.
+    pub reserve_context: Option<String>,
     /// Optional status-line notice; replaces the default counts when set.
     pub status_message: Option<&'a str>,
     /// Column offset of the delete-notice `ctrl+u undo` control inside `status_message`, when
@@ -619,12 +624,17 @@ pub enum BoardSurface {
     ThreadView,
 }
 
-/// The project picker's tab row: which list is active and how many entries the
-/// archived one carries.
+/// A picker's tab row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PickerTabsPaint {
-    pub archived_active: bool,
-    pub archived_count: usize,
+pub enum PickerTabsPaint {
+    /// The project picker: which list is active and how many entries the archived one
+    /// carries.
+    Project {
+        archived_active: bool,
+        archived_count: usize,
+    },
+    /// The Filter / View list picker's `threads · @assignees` tabs.
+    Filter { assignees_active: bool },
 }
 
 /// Logical control under a painted rectangle (rebuilt every frame).
@@ -668,6 +678,8 @@ pub enum QueueHitTarget {
     ListPickerOption(usize),
     /// One painted tab of the project picker's tab row.
     PickerTab(crate::ui::board::PickerTab),
+    /// One painted tab of the Filter / View list picker's tab row.
+    ListPickerTab(crate::ui::board::FilterTab),
     /// One choice row of the launch card (0 = unarchive, 1 = keep archived).
     LaunchOption(usize),
     /// One footer choice of the cleanup card, by legend index.
@@ -954,7 +966,7 @@ pub fn draw_queue_footer(
     if geo.row_width == 0 || geo.height == 0 {
         return hits;
     }
-    paint_footer(frame, model, geo, surface, &mut hits, hint, true);
+    paint_footer(frame, model, geo, surface, &mut hits, hint, true, 0);
     hits.translate_and_clip(surface);
     hits
 }
@@ -1220,9 +1232,23 @@ fn draw_queue_frame_impl(
         && selector_chip_wraps(model, selector_geo.row_width)
         && selector_geo.viewport_height > 0
     {
-        // A wrapped control gets one blank row between it and the tabs.
-        selector_geo.viewport_top = selector_geo.viewport_top.saturating_add(2);
-        selector_geo.viewport_height = selector_geo.viewport_height.saturating_sub(2);
+        // A wrapped control gets one blank row between it and the tabs, then as many rows
+        // as its label wraps to (a thread and an assignee may each take one).
+        let rows = selector_chip_rows(model, selector_geo.row_width).len() as u16;
+        let reserve = rows
+            .saturating_add(1)
+            .min(selector_geo.viewport_height.saturating_sub(1).max(2));
+        selector_geo.viewport_top = selector_geo.viewport_top.saturating_add(reserve);
+        selector_geo.viewport_height = selector_geo.viewport_height.saturating_sub(reserve);
+    }
+    let mut context_extra = 0;
+    if footer {
+        // An idle status context that wraps takes its extra rows from the list's bottom.
+        let extra = idle_context_extra_rows(model, &selector_geo);
+        context_extra = extra;
+        selector_geo.viewport_height = selector_geo.viewport_height.saturating_sub(extra);
+        selector_geo.rule_row = selector_geo.rule_row.map(|row| row.saturating_sub(extra));
+        selector_geo.status_row = selector_geo.status_row.map(|row| row.saturating_sub(extra));
     }
     let geo = &selector_geo;
     let mut hits = QueueHitMap::default();
@@ -1249,9 +1275,14 @@ fn draw_queue_frame_impl(
                     hits.push(target, Rect::new(x, row, w, 1));
                 }
                 if selector_chip_wraps(model, width) {
-                    let chip_row = row.saturating_add(2);
-                    if chip_row < geo.rule_row.unwrap_or(geo.height) {
-                        let (chip, x, chip_width) = paint_selector_chip(model, width);
+                    let limit = geo.viewport_top.min(geo.rule_row.unwrap_or(geo.height));
+                    for (index, (chip, x, chip_width)) in
+                        paint_selector_chip(model, width).into_iter().enumerate()
+                    {
+                        let chip_row = row.saturating_add(2 + index as u16);
+                        if chip_row >= limit {
+                            break;
+                        }
                         put_line(frame, surface, chip_row, width, chip);
                         hits.push(
                             QueueHitTarget::NavChip,
@@ -1372,7 +1403,16 @@ fn draw_queue_frame_impl(
     }
 
     if footer {
-        paint_footer(frame, model, geo, surface, &mut hits, None, false);
+        paint_footer(
+            frame,
+            model,
+            geo,
+            surface,
+            &mut hits,
+            None,
+            false,
+            context_extra,
+        );
     }
 
     if let Some((project_name, bold)) = project_header {
@@ -1387,6 +1427,7 @@ fn draw_queue_frame_impl(
 
 /// Rule, status and verb rows. `shared` marks the wide footer, which also owns the palette
 /// query row its column can no longer paint.
+#[allow(clippy::too_many_arguments)]
 fn paint_footer(
     frame: &mut Frame<'_>,
     model: &QueueFrameModel<'_>,
@@ -1395,6 +1436,8 @@ fn paint_footer(
     hits: &mut QueueHitMap,
     hint: Option<StatusHint<'_>>,
     shared: bool,
+    // Rows reserved above the status row for a wrapped idle context.
+    context_extra: u16,
 ) {
     let width = geo.row_width;
     let footer_top = [geo.rule_row, geo.status_row, geo.verb_row]
@@ -1461,7 +1504,33 @@ fn paint_footer(
                 _ => {}
             }
         } else {
-            let idle = idle_context(model);
+            let mut idle = idle_context(model);
+            // A wrapped idle context fills the rows reserved above the status line; its
+            // last row keeps the status line's hint. A status message takes the status row
+            // and leaves the reserved rows blank, so the list never changes height with it.
+            if context_extra > 0 && model.status_message.is_none() {
+                let mut rows = idle_context_rows(&idle, width);
+                let reserved = context_extra as usize;
+                // Rows sit bottom-aligned on the status row: a context shorter than the
+                // reservation (another index row's longer path set it) leaves blanks above.
+                let last = rows.pop().unwrap_or_default();
+                let overflow = rows.len().saturating_sub(reserved);
+                let rest: Vec<String> = rows.drain(rows.len() - overflow..).collect();
+                let lead = reserved - rows.len();
+                for (index, text) in rows.into_iter().enumerate() {
+                    put_line(
+                        frame,
+                        surface,
+                        row + (lead + index) as u16,
+                        width,
+                        paint_bounded_line(&text, width, style_dim()),
+                    );
+                }
+                // Only a frame too short to reserve every row joins the leftovers onto the
+                // status line, which bounds them.
+                idle = rest.concat() + &last;
+            }
+            let row = row + context_extra;
             let (line, undo_hit) = paint_status_line(
                 model.status_message,
                 model.status_undo_offset,
@@ -2357,6 +2426,38 @@ const PROJECT_PICKER_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "ctrl+f",
         label: "archive",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "close",
+    },
+];
+
+/// The tabbed Filter / View picker's legend: `tab` flips `threads · @assignees`.
+const FILTER_PICKER_FOOTER: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "tab",
+        label: "switch",
+    },
+    VerbEntry {
+        key: "↑↓",
+        label: "move",
+    },
+    VerbEntry {
+        key: "enter",
+        label: "pick",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "close",
+    },
+];
+
+/// Narrow cards keep the seat that is not guessable (`tab switch`) beside the way out.
+const FILTER_PICKER_FOOTER_COMPACT: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "tab",
+        label: "switch",
     },
     VerbEntry {
         key: "esc",
@@ -3558,6 +3659,8 @@ pub enum CleanupFooter {
     Running,
     /// The run finished with something kept: Esc closes the card.
     Finished,
+    /// The bulk dispatch card launching this many tasks.
+    Dispatch(usize),
 }
 
 impl CleanupFooter {
@@ -3570,6 +3673,15 @@ impl CleanupFooter {
             (Self::Dirty, true) => SHORT_DIRTY_CLEANUP_FOOTER,
             (Self::Running, _) => RUNNING_CLEANUP_FOOTER,
             (Self::Finished, _) => FINISHED_CLEANUP_FOOTER,
+            (Self::Dispatch(_), _) => SHORT_DISPATCH_FOOTER,
+        }
+    }
+
+    /// The `y` label when it carries a count (`dispatch 3`).
+    fn counted_label(self) -> Option<String> {
+        match self {
+            Self::Dispatch(count) => Some(format!("dispatch {count}")),
+            _ => None,
         }
     }
 }
@@ -3583,6 +3695,16 @@ pub(crate) const FINISHED_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[VerbEntry {
     key: "esc",
     label: "close",
 }];
+const SHORT_DISPATCH_FOOTER: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "y",
+        label: "dispatch",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "cancel",
+    },
+];
 
 pub(crate) const DIRTY_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
@@ -3739,14 +3861,24 @@ fn paint_cleanup_card(
     let card_w = modal_card_width(geo, bounds, 24);
     // Room inside the side borders for the legend; the title keeps its rule and `[x]`.
     let inner = usize::from(card_w.saturating_sub(2));
-    let legend = {
-        let full = card.footer.legend(false);
-        if legend_width(full) <= inner {
+    let counted = card.footer.counted_label();
+    let legend: Vec<VerbEntry<'_>> = {
+        let full = match counted.as_deref() {
+            // The counted entry replaces the first (`y`) label of the short legend.
+            Some(label) => {
+                let mut entries = card.footer.legend(true).to_vec();
+                entries[0].label = label;
+                entries
+            }
+            None => card.footer.legend(false).to_vec(),
+        };
+        if legend_width(&full) <= inner {
             full
         } else {
-            card.footer.legend(true)
+            card.footer.legend(true).to_vec()
         }
     };
+    let legend = legend.as_slice();
     // Room for the title beside its rule and `[x]`, keeping three cells for a scroll marker.
     let title_budget = inner.saturating_sub(9);
     let fits = |title: &str| display_width(title) + 3 <= title_budget;
@@ -3930,12 +4062,25 @@ fn paint_scope_dropdown(
                     .map(|option| display_width(option) + 2)
                     .max()
                     .unwrap_or(0)
+                    // The Filter tab row (` threads · @assignees `) is never clipped.
+                    .max(if matches!(tabs, Some(PickerTabsPaint::Filter { .. })) {
+                        22
+                    } else {
+                        0
+                    })
                     .min(u16::MAX as usize) as u16
             } else {
                 0
             },
             legend: match tabs {
-                Some(tabs) if tabs.archived_active => ARCHIVED_TAB_FOOTER,
+                Some(PickerTabsPaint::Filter { .. }) if legend_fits(geo, FILTER_PICKER_FOOTER) => {
+                    FILTER_PICKER_FOOTER
+                }
+                Some(PickerTabsPaint::Filter { .. }) => FILTER_PICKER_FOOTER_COMPACT,
+                Some(PickerTabsPaint::Project {
+                    archived_active: true,
+                    ..
+                }) => ARCHIVED_TAB_FOOTER,
                 // Keyed on the painted width, not the tier: a tall-but-narrow frame and a
                 // wide-but-short one both get the largest legend their card can hold.
                 Some(_) if legend_fits(geo, PROJECT_PICKER_FOOTER) => PROJECT_PICKER_FOOTER,
@@ -3950,14 +4095,32 @@ fn paint_scope_dropdown(
     if content.width == 0 || content.height == 0 {
         return;
     }
-    // The picker's tab row: `projects · archived (n)`, active bold, inactive dim.
+    // The picker's tab row (`projects · archived (n)` or `threads · @assignees`), active
+    // bold, inactive dim.
     if let Some(tabs) = tabs {
         let y = content.y;
-        let main = " projects ";
-        let archived = format!(" archived ({}) ", tabs.archived_count);
-        let main_w = display_width(main) as u16;
-        let archived_w = display_width(&archived) as u16;
-        let (main_style, archived_style) = if tabs.archived_active {
+        let (left, right, right_active, left_hit, right_hit) = match tabs {
+            PickerTabsPaint::Project {
+                archived_active,
+                archived_count,
+            } => (
+                " projects ".to_string(),
+                format!(" archived ({archived_count}) "),
+                archived_active,
+                QueueHitTarget::PickerTab(crate::ui::board::PickerTab::Main),
+                QueueHitTarget::PickerTab(crate::ui::board::PickerTab::Archived),
+            ),
+            PickerTabsPaint::Filter { assignees_active } => (
+                " threads ".to_string(),
+                " @assignees ".to_string(),
+                assignees_active,
+                QueueHitTarget::ListPickerTab(crate::ui::board::FilterTab::Threads),
+                QueueHitTarget::ListPickerTab(crate::ui::board::FilterTab::Assignees),
+            ),
+        };
+        let left_w = display_width(&left) as u16;
+        let right_w = display_width(&right) as u16;
+        let (left_style, right_style) = if right_active {
             (style_dim(), style_bold())
         } else {
             (style_bold(), style_dim())
@@ -3967,18 +4130,15 @@ fn paint_scope_dropdown(
             surface,
             Rect::new(content.x, y, content.width, 1),
             Line::from(vec![
-                Span::styled(main.to_string(), main_style),
+                Span::styled(left, left_style),
                 Span::styled("·".to_string(), style_dim()),
-                Span::styled(archived, archived_style),
+                Span::styled(right, right_style),
             ]),
         );
+        hits.push(left_hit, Rect::new(content.x, y, left_w, 1));
         hits.push(
-            QueueHitTarget::PickerTab(crate::ui::board::PickerTab::Main),
-            Rect::new(content.x, y, main_w, 1),
-        );
-        hits.push(
-            QueueHitTarget::PickerTab(crate::ui::board::PickerTab::Archived),
-            Rect::new(content.x.saturating_add(main_w + 1), y, archived_w, 1),
+            right_hit,
+            Rect::new(content.x.saturating_add(left_w + 1), y, right_w, 1),
         );
     }
     // AC-37: a dim rule row sits directly under the picker's tabs row, like the
@@ -4001,7 +4161,7 @@ fn paint_scope_dropdown(
             surface,
             Rect::new(content.x, y, content.width, 1),
             paint_bounded_line(
-                if tabs.is_some() {
+                if matches!(tabs, Some(PickerTabsPaint::Project { .. })) {
                     "  no archived projects"
                 } else {
                     "  no matching options"
@@ -4034,7 +4194,8 @@ fn paint_scope_dropdown(
         );
         // `j` remains the source index after windowing, so a click selects the same option
         // Up/Down plus Enter would confirm rather than its position within this paint slice.
-        if tabs.is_none() && title_override.is_some() {
+        // Every searchable list picker names itself; only the project picker does not.
+        if title_override.is_some() {
             hits.push(QueueHitTarget::ListPickerOption(j), rect);
         } else {
             hits.push(QueueHitTarget::ProjectOption(j), rect);
@@ -5035,6 +5196,61 @@ fn paint_bottom_input_message(
     );
 }
 
+/// Rows beyond the status row that an idle context needs to wrap rather than truncate.
+///
+/// The reservation depends only on the context itself, never on transient state: a status
+/// message, the palette, Help, a picker, or a confirmation card leaves the list height
+/// unchanged. Only surfaces that already own the bottom rows keep the single status line:
+/// the task page and its editors size their content against the standard footer, and a
+/// bottom input slot (search, quick-add) reserves its own rows.
+fn idle_context_extra_rows(model: &QueueFrameModel<'_>, geo: &TierGeometry) -> u16 {
+    let owns_bottom = matches!(
+        model.overlay,
+        QueueOverlay::TaskPage { .. }
+            | QueueOverlay::EditTitle { .. }
+            | QueueOverlay::EditNotes { .. }
+    ) || bottom_input_slot(&model.overlay).is_some();
+    if owns_bottom || geo.status_row.is_none() {
+        return 0;
+    }
+    let rows = if model.projects_index && !model.has_update_notice {
+        // The index names the cursor row's path; reserve for the longest so moving the
+        // cursor never resizes the list under it.
+        (0..model.projects.len().max(1))
+            .map(|cursor| {
+                let mut context = model
+                    .projects
+                    .get(cursor)
+                    .map(|row| format!(" {}", row.path))
+                    .unwrap_or_default();
+                push_pinned_search(model, &mut context);
+                idle_context_rows(&context, geo.row_width).len()
+            })
+            .max()
+            .unwrap_or(1) as u16
+    } else {
+        idle_context_rows(&idle_context(model), geo.row_width).len() as u16
+    };
+    let reserve = model.reserve_context.as_ref().map_or(0, |context| {
+        let mut context = context.clone();
+        push_pinned_search(model, &mut context);
+        idle_context_rows(&context, geo.row_width).len() as u16
+    });
+    rows.max(reserve)
+        .saturating_sub(1)
+        .min(geo.viewport_height.saturating_sub(1))
+}
+
+/// The idle context wrapped at the row width, each row led by the status line's one-cell
+/// indent.
+fn idle_context_rows(idle: &str, width: u16) -> Vec<String> {
+    let room = (width as usize).saturating_sub(1).max(1);
+    wrapped_rows(idle.trim_start(), room)
+        .into_iter()
+        .map(|row| format!(" {row}"))
+        .collect()
+}
+
 fn idle_context(model: &QueueFrameModel<'_>) -> String {
     let mut context = if model.projects_index && !model.has_update_notice {
         // The index's status row names the selected project's full path; rows carry
@@ -5043,11 +5259,16 @@ fn idle_context(model: &QueueFrameModel<'_>) -> String {
     } else {
         model.context.clone()
     };
+    push_pinned_search(model, &mut context);
+    context
+}
+
+/// A pinned board query rides the idle context (` · /query`).
+fn push_pinned_search(model: &QueueFrameModel<'_>, context: &mut String) {
     if model.search_pinned && !model.search_query.trim().is_empty() {
         context.push_str(" · /");
         context.push_str(model.search_query.trim());
     }
-    context
 }
 
 /// The projects index's idle status: the selected row's stored path, so same-named
@@ -5253,18 +5474,42 @@ fn paint_selector_row(
     (bound_line(Line::from(spans), width), hits)
 }
 
-fn paint_selector_chip(model: &QueueFrameModel<'_>, width: u16) -> (Line<'static>, u16, u16) {
+/// The wrapped control's text rows, never truncated: the label wraps at word boundaries
+/// (`#thread` and `@assignee` land on their own rows when both do not fit) and the
+/// chevron closes the last row.
+fn selector_chip_rows(model: &QueueFrameModel<'_>, width: u16) -> Vec<String> {
     let Some(chip) = model.nav.chip.as_ref() else {
-        return (Line::from(""), 0, 0);
+        return Vec::new();
     };
-    let chip_text = present_line(&format!(" {} \u{25be} ", chip.label), width as usize);
-    let chip_width = display_width(&chip_text).min(width as usize);
-    let x = (width as usize).saturating_sub(chip_width) as u16;
-    let line = Line::from(vec![
-        Span::styled(" ".repeat(x as usize), style_plain()),
-        Span::styled(chip_text, style_dim()),
-    ]);
-    (line, x, chip_width.max(1) as u16)
+    let room = (width as usize).saturating_sub(4).max(1);
+    let rows = wrapped_rows(&chip.label, room);
+    let last = rows.len().saturating_sub(1);
+    rows.into_iter()
+        .enumerate()
+        .map(|(index, row)| {
+            if index == last {
+                format!(" {row} \u{25be} ")
+            } else {
+                format!(" {row}   ")
+            }
+        })
+        .collect()
+}
+
+/// One right-aligned line per wrapped control row, with its x and width for hits.
+fn paint_selector_chip(model: &QueueFrameModel<'_>, width: u16) -> Vec<(Line<'static>, u16, u16)> {
+    selector_chip_rows(model, width)
+        .into_iter()
+        .map(|chip_text| {
+            let chip_width = display_width(&chip_text).min(width as usize);
+            let x = (width as usize).saturating_sub(chip_width) as u16;
+            let line = Line::from(vec![
+                Span::styled(" ".repeat(x as usize), style_plain()),
+                Span::styled(chip_text, style_dim()),
+            ]);
+            (line, x, chip_width.max(1) as u16)
+        })
+        .collect()
 }
 
 /// Verb bar: ` key label · key label …`, trimmed to `budget` entries.
@@ -5524,6 +5769,7 @@ mod tests {
             summary: None,
             context: " projects".to_string(),
             has_update_notice: false,
+            reserve_context: None,
             status_message: None,
             status_undo_offset: None,
             status_undo_width: None,
@@ -5583,6 +5829,7 @@ mod tests {
             summary: None,
             context: " desk".to_string(),
             has_update_notice: false,
+            reserve_context: None,
             status_message: None,
             status_undo_offset: None,
             status_undo_width: None,
@@ -5707,6 +5954,7 @@ mod tests {
             summary: None,
             context: " projects".to_string(),
             has_update_notice: false,
+            reserve_context: None,
             status_message: None,
             status_undo_offset: None,
             status_undo_width: None,

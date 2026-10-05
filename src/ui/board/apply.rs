@@ -182,6 +182,7 @@ pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> boo
                 | BoardIntent::PrimaryVerb
                 | BoardIntent::Dispatch
                 | BoardIntent::DispatchAgain
+                | BoardIntent::ConfirmDispatch
                 | BoardIntent::ConfirmCleanup
                 | BoardIntent::KeepCleanup
                 | BoardIntent::ToggleBlock
@@ -1647,6 +1648,16 @@ fn apply_board_intent(
             model.move_list_picker(false);
             return Ok(IntentOutcome::None);
         }
+        BoardIntent::ListPickerTabNext | BoardIntent::ListPickerTabPrev => {
+            if !model.switch_list_picker_tab(None) {
+                model.move_list_picker(intent == BoardIntent::ListPickerTabNext);
+            }
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::SelectListPickerTab(tab) => {
+            model.switch_list_picker_tab(Some(tab));
+            return Ok(IntentOutcome::None);
+        }
         BoardIntent::ListPickerQueryInsert(character) => {
             model.list_picker_query_insert(character);
             return Ok(IntentOutcome::None);
@@ -1766,7 +1777,9 @@ fn apply_board_intent(
                     .is_some_and(|(_, option)| {
                         matches!(
                             &option.value,
-                            ListPickerValue::ProjectsOverview | ListPickerValue::ProjectsThread(_)
+                            ListPickerValue::ProjectsOverview
+                                | ListPickerValue::ProjectsThread(_)
+                                | ListPickerValue::ProjectsAssignee(_)
                         )
                     });
             if drops_project_preview
@@ -1784,7 +1797,9 @@ fn apply_board_intent(
                 model.reanchor_selection(previous, &previous_visible);
                 if matches!(
                     value,
-                    ListPickerValue::ProjectsOverview | ListPickerValue::ProjectsThread(_)
+                    ListPickerValue::ProjectsOverview
+                        | ListPickerValue::ProjectsThread(_)
+                        | ListPickerValue::ProjectsAssignee(_)
                 ) {
                     model.wide_stage = WideStage::FullBoard;
                     model.stage_origin = None;
@@ -1995,6 +2010,15 @@ fn apply_board_intent(
         }
         BoardIntent::CancelCleanup => {
             model.cancel_cleanup_card();
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::ConfirmDispatch => {
+            // Launches and their saves are owned by the application boundary.
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::CancelDispatch => {
+            // The card keeps the marks: Esc returns to the same marked set.
+            model.close_popup();
             return Ok(IntentOutcome::None);
         }
         BoardIntent::CleanupScrollUp | BoardIntent::CleanupScrollDown => {

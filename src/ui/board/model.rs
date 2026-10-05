@@ -21,7 +21,8 @@ use crate::ui::input::{
 use crate::ui::mouse::BoardPopup;
 pub use crate::ui::queue::BoardTab;
 use crate::ui::queue::{
-    self, visible_task_ids, BoardLens, NavTab, ProjectRow, QueueView, SectionKind, ThreadFilter,
+    self, visible_task_ids, AssigneeFilter, BoardFilter, BoardLens, NavTab, ProjectRow, QueueView,
+    SectionKind, ThreadFilter,
 };
 use crate::ui::selection;
 use crate::ui::terminal_text;
@@ -99,6 +100,8 @@ pub enum BoardInputMode {
     CleanupConfirm,
     /// A dirty worktree can only be kept and completed, or cancelled.
     CleanupDirtyConfirm,
+    /// The bulk dispatch card over a marked set is awaiting y/Esc.
+    DispatchConfirm,
     /// The task page is open in view mode: the full-page surface shows the bound task and
     /// no field owns the cursor. Verbs act on the task; `e`/`n`/Tab enter field edits. A
     /// click does NOT: field regions are inert in this state, and only move focus once one
@@ -202,13 +205,22 @@ impl BoardLocation {
     }
 }
 
-/// The projects index's View control: the project overview (default) or one
-/// cross-project thread's flat task board.
+/// The projects index's View control: the project overview (default), one
+/// cross-project thread's flat task board, or one assignee's.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ProjectsView {
     #[default]
     Overview,
     Thread(String),
+    Assignee(String),
+}
+
+/// The two tabs of the Filter picker (`t` on a project board) and the overview's View
+/// picker (`v`): `threads · @assignees`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterTab {
+    Threads,
+    Assignees,
 }
 
 /// Which searchable list picker is open.
@@ -239,8 +251,13 @@ pub enum ListPickerValue {
     ThreadAll,
     ThreadNamed(String),
     ThreadWithout,
+    /// Assignees tab of the project board's Filter picker.
+    AssigneeFilterAll,
+    AssigneeFilterNamed(String),
+    AssigneeFilterUnassigned,
     ProjectsOverview,
     ProjectsThread(String),
+    ProjectsAssignee(String),
     /// Assign this exact profile name, or clear the assignee with `None`.
     Assignee(Option<String>),
     /// Set this exact branch name, or clear the explicit base with `None`.
@@ -283,6 +300,18 @@ pub(super) struct ListPickerState {
     pub return_mode: BoardInputMode,
     pub assignee_target: Option<AssigneePickerTarget>,
     pub base_target: Option<BasePickerTarget>,
+    /// Source index of the option the board currently applies (painted `✓`).
+    pub active: Option<usize>,
+    /// The tabbed filter pickers keep the inactive tab here; `None` for single lists.
+    pub tabs: Option<ListPickerTabs>,
+}
+
+/// The inactive tab of a tabbed list picker, swapped in by `Tab`.
+#[derive(Debug, Clone)]
+pub(super) struct ListPickerTabs {
+    pub active_tab: FilterTab,
+    pub other_options: Vec<ListPickerOption>,
+    pub other_active: Option<usize>,
 }
 /// The immutable value a board form carries for its whole lifetime.
 ///
@@ -905,9 +934,9 @@ pub struct BoardModel {
     pub(super) wide_stage: WideStage,
     /// Stage `Enter` (or a row double-click) left for the full task page; `Esc` returns there.
     pub(super) stage_origin: Option<WideStage>,
-    /// The project board's session thread filter. It narrows every status section and
-    /// is cleared whenever the selected project changes.
-    pub(super) thread_filter: ThreadFilter,
+    /// The project board's session filter (thread AND assignee). It narrows every status
+    /// section and is cleared whenever the selected project changes.
+    pub(super) filter: BoardFilter,
     /// The projects index's View: the project overview, or one cross-project thread.
     pub(super) projects_view: ProjectsView,
     /// The active lens's content-search query. Session-only.
@@ -1018,6 +1047,11 @@ pub struct BoardModel {
     pub(super) cleanup_run: Option<CleanupRun>,
     /// Quit waits here while a cleanup run finishes its git and Herdr steps, up to this bound.
     pub(super) quit_after_cleanup: Option<Instant>,
+    /// Bulk dispatch card over the marked set while it owns input.
+    pub(super) dispatch_prompt: Option<DispatchPrompt>,
+    /// A bulk dispatch whose launches are still landing. One slot shared by the outer board and
+    /// its project preview, so dropping or rebinding the preview never loses a running batch.
+    pub(super) bulk_dispatch: SharedBulkDispatch,
     /// Whether the armed delete originated from a non-empty marked set.
     pub(super) pending_delete_bulk: bool,
     /// Open project-picker or save-recovery presentation.
@@ -1140,6 +1174,142 @@ pub struct BulkCleanup {
     /// marked done.
     pub refused: Vec<(String, String)>,
 }
+
+/// Session-only bulk dispatch confirmation for a marked set, checked when `ctrl+g` opened it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchPrompt {
+    /// The tasks `y` launches, in board order.
+    pub launch: Vec<crate::dispatch::EligibleDispatch>,
+    /// Marked tasks the card skips: the board identifier and the single-task refusal.
+    pub skipped: Vec<(String, String)>,
+    /// The git-repository check of the listed tasks, running off the event loop; rows show
+    /// `checking…` until it lands.
+    pub git_checks: Option<crate::dispatch::GitChecks>,
+    /// First visible card row; the painter clamps it to the rows that fit.
+    pub scroll: usize,
+}
+
+impl DispatchPrompt {
+    pub fn checking(&self) -> bool {
+        self.git_checks.is_some()
+    }
+}
+
+/// A launch recorded on its task whose save has not been confirmed yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingLaunch {
+    pub task_id: Uuid,
+    pub identifier: String,
+    pub assignee: String,
+    pub record: crate::domain::Dispatch,
+    pub naming: Option<crate::dispatch::AgentNaming>,
+    /// The human status kept instead of `started`, when it changed after `y`.
+    pub kept_status: Option<String>,
+}
+
+/// A bulk dispatch in flight. Launches run off the event loop; each outcome is recorded and
+/// saved as it lands, like a single dispatch.
+#[derive(Debug, Clone)]
+pub struct BulkDispatchRun {
+    pub batch: crate::dispatch::LaunchBatch,
+    /// Every task `y` confirmed, including any a recheck refused before launching.
+    pub total: usize,
+    /// Board identifiers of launched tasks whose record is saved, with their assignee.
+    pub launched: Vec<(String, String)>,
+    /// Saved launches whose task kept a status the human set after `y`.
+    pub kept_status: Vec<(String, String)>,
+    /// Recorded launches waiting on a save (a failed one is in save recovery).
+    pub pending: Vec<PendingLaunch>,
+    /// Launched agents whose record was discarded (a cancelled save): identifier, workspace.
+    pub unrecorded: Vec<(String, String)>,
+    /// Board identifiers of tasks whose launch or record failed, with the reason.
+    pub failed: Vec<(String, String)>,
+    /// Fetch fallbacks reported by launches (cached refs used).
+    pub warnings: Vec<String>,
+}
+
+impl BulkDispatchRun {
+    pub fn new(batch: crate::dispatch::LaunchBatch, total: usize) -> Self {
+        Self {
+            batch,
+            total,
+            launched: Vec::new(),
+            kept_status: Vec::new(),
+            pending: Vec::new(),
+            unrecorded: Vec::new(),
+            failed: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    /// Every launch has landed and its record is saved or reported.
+    pub fn settled(&self) -> bool {
+        self.batch.finished() && self.pending.is_empty()
+    }
+
+    /// The status row while launches land, and the outcome once all have.
+    pub fn message(&self) -> String {
+        let total = self.total;
+        let settled =
+            self.launched.len() + self.failed.len() + self.unrecorded.len() + self.pending.len();
+        let mut parts = Vec::new();
+        if settled < total {
+            parts.push(format!("dispatching {}/{total}…", settled + 1));
+        }
+        if !self.launched.is_empty() {
+            let launched = self
+                .launched
+                .iter()
+                .map(|(identifier, assignee)| format!("{identifier} to @{assignee}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            parts.push(format!("dispatched {launched}"));
+        }
+        for (identifier, status) in &self.kept_status {
+            parts.push(format!("{identifier} kept {status} (changed meanwhile)"));
+        }
+        if !self.unrecorded.is_empty() {
+            let unrecorded = self
+                .unrecorded
+                .iter()
+                .map(|(identifier, workspace)| {
+                    format!("{identifier} (agent running in workspace {workspace})")
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            parts.push(format!("launched but not recorded: {unrecorded}"));
+        }
+        for (identifier, reason) in &self.failed {
+            parts.push(format!("{identifier} failed: {reason}"));
+        }
+        let mut warnings = self.warnings.clone();
+        warnings.dedup();
+        parts.extend(warnings);
+        parts.join(" · ")
+    }
+}
+
+/// The refusal when no marked task can be dispatched: one shared reason, or each task's own.
+pub fn nothing_to_dispatch(skipped: &[(String, String)]) -> String {
+    let shared = skipped
+        .first()
+        .filter(|(_, first)| skipped.iter().all(|(_, reason)| reason == first));
+    match shared {
+        Some((_, reason)) => format!("nothing to dispatch: {reason}"),
+        None => format!(
+            "nothing to dispatch: {}",
+            skipped
+                .iter()
+                .map(|(identifier, reason)| format!("{identifier} {reason}"))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        ),
+    }
+}
+
+/// The running bulk dispatch slot, shared between a board and its project preview.
+#[derive(Debug, Clone, Default)]
+pub struct SharedBulkDispatch(std::rc::Rc<std::cell::RefCell<Option<BulkDispatchRun>>>);
 
 /// Session-only cleanup confirmation: one row for the cursor task, or one per live dispatch
 /// in a marked set.
@@ -1378,7 +1548,7 @@ impl BoardModel {
             selected_project: this_repo,
             wide_stage: WideStage::FullBoard,
             stage_origin: None,
-            thread_filter: ThreadFilter::All,
+            filter: BoardFilter::default(),
             projects_view: ProjectsView::Overview,
             search_query: String::new(),
             search_pinned: false,
@@ -1427,6 +1597,8 @@ impl BoardModel {
             cleanup_prompt: None,
             cleanup_run: None,
             quit_after_cleanup: None,
+            dispatch_prompt: None,
+            bulk_dispatch: SharedBulkDispatch::default(),
             pending_delete_bulk: false,
             popup: BoardPopup::None,
             project_picker: None,
@@ -1470,10 +1642,14 @@ impl BoardModel {
 
     pub fn close_popup(&mut self) {
         if self.popup != BoardPopup::SaveRecovery {
-            let cleanup = self.popup == BoardPopup::CleanupConfirm;
+            let cleanup = matches!(
+                self.popup,
+                BoardPopup::CleanupConfirm | BoardPopup::DispatchConfirm
+            );
             self.popup = BoardPopup::None;
             self.project_picker = None;
             self.cleanup_prompt = None;
+            self.dispatch_prompt = None;
             if cleanup {
                 self.clear_message();
             }
@@ -1600,6 +1776,90 @@ impl BoardModel {
             .is_some_and(|deadline| !self.cleanup_running() || Instant::now() >= deadline)
     }
 
+    /// Open the bulk dispatch card. It keeps the marks, so `Esc` returns to the same set.
+    pub fn begin_dispatch_prompt(&mut self, prompt: DispatchPrompt) {
+        self.cleanup_max_scroll.set(usize::MAX);
+        self.close_help();
+        self.close_command_surface();
+        self.clear_dispatch_again();
+        self.dispatch_prompt = Some(prompt);
+        self.popup = BoardPopup::DispatchConfirm;
+        self.clear_message();
+    }
+
+    pub fn dispatch_prompt(&self) -> Option<&DispatchPrompt> {
+        self.dispatch_prompt.as_ref()
+    }
+
+    /// Close the card and take what it would launch.
+    pub fn take_dispatch_prompt(&mut self) -> Option<DispatchPrompt> {
+        let prompt = self.dispatch_prompt.take()?;
+        self.close_popup();
+        Some(prompt)
+    }
+
+    /// Hand the running batch to the board and its project preview (one shared slot).
+    pub fn begin_bulk_dispatch(&mut self, run: BulkDispatchRun) {
+        *self.bulk_dispatch.0.borrow_mut() = Some(run);
+    }
+
+    /// Take the running batch out to land outcomes; put it back unless it has settled.
+    pub fn take_bulk_dispatch(&mut self) -> Option<BulkDispatchRun> {
+        self.bulk_dispatch.0.borrow_mut().take()
+    }
+
+    /// A bulk dispatch started on this board or its project preview is still landing.
+    pub fn bulk_dispatch_running(&self) -> bool {
+        self.bulk_dispatch.0.borrow().is_some()
+    }
+
+    /// The running batch's status line, if one is landing.
+    pub fn bulk_dispatch_message(&self) -> Option<String> {
+        self.bulk_dispatch
+            .0
+            .borrow()
+            .as_ref()
+            .map(BulkDispatchRun::message)
+    }
+
+    /// Apply a landed git check to the open bulk dispatch card (this board's or its project
+    /// preview's): tasks outside a git repository move to the skipped rows. A card left with
+    /// nothing to launch closes with the refusal, keeping the marks. True when anything changed.
+    pub fn poll_dispatch_checks(&mut self) -> bool {
+        let nested = self
+            .right_seat
+            .as_deref_mut()
+            .is_some_and(BoardModel::poll_dispatch_checks);
+        let Some(prompt) = self.dispatch_prompt.as_mut() else {
+            return nested;
+        };
+        let Some(results) = prompt.git_checks.as_ref().and_then(|checks| checks.take()) else {
+            return nested;
+        };
+        prompt.git_checks = None;
+        let (launch, outside): (Vec<_>, Vec<_>) = std::mem::take(&mut prompt.launch)
+            .into_iter()
+            .partition(|eligible| results.get(eligible.project()).copied().unwrap_or(false));
+        prompt.launch = launch;
+        for eligible in outside {
+            prompt.skipped.push((
+                format!("T{}", eligible.number),
+                "not a project in a git repo".into(),
+            ));
+        }
+        prompt.skipped.sort_by_key(|(identifier, _)| {
+            identifier
+                .strip_prefix('T')
+                .and_then(|number| number.parse::<u64>().ok())
+        });
+        if prompt.launch.is_empty() {
+            let message = nothing_to_dispatch(&prompt.skipped);
+            self.close_popup();
+            self.set_message(message);
+        }
+        true
+    }
+
     pub fn cleanup_prompt_mut(&mut self) -> Option<&mut CleanupPrompt> {
         self.cleanup_prompt.as_mut()
     }
@@ -1717,16 +1977,19 @@ impl BoardModel {
         self.right_seat.as_deref_mut()
     }
 
-    /// Scroll the cleanup card one row; the painter records how far it may go.
+    /// Scroll the cleanup or bulk dispatch card one row; the painter records how far it may go.
     pub fn scroll_cleanup(&mut self, down: bool) {
         let horizon = self.cleanup_max_scroll.get();
-        if let Some(prompt) = self.cleanup_prompt.as_mut() {
-            prompt.scroll = if down {
-                prompt.scroll.saturating_add(1).min(horizon)
-            } else {
-                prompt.scroll.saturating_sub(1)
-            };
-        }
+        let scroll = match (self.cleanup_prompt.as_mut(), self.dispatch_prompt.as_mut()) {
+            (Some(prompt), _) => &mut prompt.scroll,
+            (None, Some(prompt)) => &mut prompt.scroll,
+            (None, None) => return,
+        };
+        *scroll = if down {
+            scroll.saturating_add(1).min(horizon)
+        } else {
+            scroll.saturating_sub(1)
+        };
     }
 
     pub fn arm_dispatch_again(&mut self, id: Uuid) {
@@ -1762,6 +2025,13 @@ impl BoardModel {
             self.suspended_delete_notice_count = self.delete_notice_count.take();
         }
         self.set_message(format!("save failed: {error} · Retry or Cancel"));
+    }
+
+    /// Show a failed background save (a bulk dispatch landing) on this board without making it
+    /// the owner: Retry or Cancel end it as a proxy, never closing this board's form.
+    pub fn begin_proxy_save_recovery(&mut self, error: &str) {
+        self.begin_save_recovery(error);
+        self.save_recovery_proxy = true;
     }
 
     /// End save recovery only after Retry succeeds or Cancel restores the baseline.
@@ -2259,6 +2529,7 @@ impl BoardModel {
         right.preview_seat = true;
         right.selection_id = None;
         right.update_notice = self.update_notice.clone();
+        right.bulk_dispatch = self.bulk_dispatch.clone();
         right.seed_selection();
         self.right_seat = Some(Box::new(right));
         true
@@ -2329,10 +2600,10 @@ impl BoardModel {
             // Equivalent spellings are the same stored project identity. Do not rewrite the
             // selected path merely because a host supplied an alias. The transition still
             // clears its local thread filter.
-            self.thread_filter = ThreadFilter::All;
+            self.filter = BoardFilter::default();
             return;
         }
-        self.thread_filter = ThreadFilter::All;
+        self.filter = BoardFilter::default();
         let preview_transition = self.right_seat.is_some()
             || matches!(self.board_location, BoardLocation::Projects)
             || matches!(target, BoardLocation::Projects);
@@ -2790,7 +3061,7 @@ impl BoardModel {
                 self.this_repo.as_deref(),
                 self.effective_lens(),
                 self.drawer_open,
-                &self.thread_filter,
+                &self.filter,
             )
         } else {
             queue::query_board_search(
@@ -2799,7 +3070,7 @@ impl BoardModel {
                 self.this_repo.as_deref(),
                 self.effective_lens(),
                 self.drawer_open,
-                &self.thread_filter,
+                &self.filter,
                 &self.search_query,
             )
         };
@@ -2822,13 +3093,26 @@ impl BoardModel {
     pub(super) fn effective_lens(&self) -> BoardLens<'_> {
         match (&self.board_location, &self.projects_view) {
             (BoardLocation::Projects, ProjectsView::Thread(name)) => BoardLens::ThreadView(name),
+            (BoardLocation::Projects, ProjectsView::Assignee(name)) => {
+                BoardLens::AssigneeView(name)
+            }
             (location, _) => location.lens(),
         }
     }
 
     /// The thread filter active on slot 2's board.
     pub fn thread_filter(&self) -> &ThreadFilter {
-        &self.thread_filter
+        &self.filter.thread
+    }
+
+    /// The assignee filter active on slot 2's board.
+    pub fn assignee_filter(&self) -> &AssigneeFilter {
+        &self.filter.assignee
+    }
+
+    /// The combined (thread AND assignee) filter active on slot 2's board.
+    pub fn board_filter(&self) -> &BoardFilter {
+        &self.filter
     }
 
     /// The projects index's current View control.
@@ -2896,18 +3180,18 @@ impl BoardModel {
         true
     }
 
-    /// Open the project board's searchable thread filter picker (bare `t`).
+    /// Open the project board's tabbed Filter picker (bare `t`): the threads tab first,
+    /// then `@assignees`. Each tab marks its active choice.
     pub(super) fn open_thread_filter_picker(&mut self) {
-        if !matches!(self.board_location, BoardLocation::Project(_)) {
+        let BoardLocation::Project(path) = &self.board_location else {
             return;
-        }
-        let scope: Option<String> = match &self.board_location {
-            BoardLocation::Project(path) => Some(path.to_string_lossy().into_owned()),
-            _ => None,
         };
-        let in_project = |task: &Task| matches!(&task.scope, TaskScope::Project { path } if scope.as_deref().is_some_and(|scope| paths_equivalent(path, scope)));
+        let scope = path.to_string_lossy().into_owned();
+        let in_project = |task: &Task| matches!(&task.scope, TaskScope::Project { path } if paths_equivalent(path, &scope));
         let mut threads: BTreeMap<String, usize> = BTreeMap::new();
+        let mut assignees: BTreeMap<String, usize> = BTreeMap::new();
         let mut unthreaded = 0usize;
+        let mut unassigned = 0usize;
         let mut open = 0usize;
         for task in &self.tasks {
             if task.soft_deleted
@@ -2923,9 +3207,13 @@ impl BoardModel {
                 Some(name) => *threads.entry(name.to_ascii_lowercase()).or_default() += 1,
                 None => unthreaded += 1,
             }
+            match task.assignee.as_deref() {
+                Some(name) => *assignees.entry(name.to_ascii_lowercase()).or_default() += 1,
+                None => unassigned += 1,
+            }
         }
         let mut options = vec![ListPickerOption {
-            label: "All tasks".to_string(),
+            label: "all".to_string(),
             count: Some(open),
             value: ListPickerValue::ThreadAll,
         }];
@@ -2941,34 +3229,86 @@ impl BoardModel {
             count: Some(unthreaded),
             value: ListPickerValue::ThreadWithout,
         });
-        let selected = options
+        let thread_active = options.iter().position(|option| match &option.value {
+            ListPickerValue::ThreadAll => self.filter.thread == ThreadFilter::All,
+            ListPickerValue::ThreadNamed(name) => {
+                self.filter.thread == ThreadFilter::Named(name.clone())
+            }
+            ListPickerValue::ThreadWithout => self.filter.thread == ThreadFilter::Without,
+            _ => false,
+        });
+
+        let mut assignee_options = vec![ListPickerOption {
+            label: "all".to_string(),
+            count: Some(open),
+            value: ListPickerValue::AssigneeFilterAll,
+        }];
+        assignee_options.extend(self.assignee_view_names(&mut assignees).into_iter().map(
+            |(name, count)| ListPickerOption {
+                label: format!("@{name}"),
+                count: Some(count),
+                value: ListPickerValue::AssigneeFilterNamed(name),
+            },
+        ));
+        assignee_options.push(ListPickerOption {
+            label: "unassigned".to_string(),
+            count: Some(unassigned),
+            value: ListPickerValue::AssigneeFilterUnassigned,
+        });
+        let assignee_active = assignee_options
             .iter()
             .position(|option| match &option.value {
-                ListPickerValue::ThreadAll => self.thread_filter == ThreadFilter::All,
-                ListPickerValue::ThreadNamed(name) => {
-                    self.thread_filter == ThreadFilter::Named(name.clone())
+                ListPickerValue::AssigneeFilterAll => self.filter.assignee == AssigneeFilter::All,
+                ListPickerValue::AssigneeFilterNamed(name) => {
+                    self.filter.assignee == AssigneeFilter::Named(name.clone())
                 }
-                ListPickerValue::ThreadWithout => self.thread_filter == ThreadFilter::Without,
+                ListPickerValue::AssigneeFilterUnassigned => {
+                    self.filter.assignee == AssigneeFilter::Unassigned
+                }
                 _ => false,
-            })
-            .unwrap_or(0);
+            });
         self.list_picker = Some(ListPickerState {
             kind: ListPickerKind::ThreadFilter,
             options,
-            selected,
+            selected: thread_active.unwrap_or(0),
             query: String::new(),
             return_mode: BoardInputMode::Normal,
             assignee_target: None,
             base_target: None,
+            active: thread_active,
+            tabs: Some(ListPickerTabs {
+                active_tab: FilterTab::Threads,
+                other_options: assignee_options,
+                other_active: assignee_active,
+            }),
         });
     }
 
-    /// Open the projects index's searchable View picker (bare `v`).
+    /// The assignee names a filter tab lists: every defined profile in `config.toml` order,
+    /// then names still on tasks whose profile was removed (sorted). `counts` holds the
+    /// lowercased assignee counts of the tasks in view; profiles without tasks count zero.
+    fn assignee_view_names(&self, counts: &mut BTreeMap<String, usize>) -> Vec<(String, usize)> {
+        let mut names: Vec<(String, usize)> = self
+            .agent_names
+            .iter()
+            .map(|name| {
+                let count = counts.remove(&name.to_ascii_lowercase()).unwrap_or(0);
+                (name.clone(), count)
+            })
+            .collect();
+        names.extend(std::mem::take(counts));
+        names
+    }
+
+    /// Open the projects index's tabbed View picker (bare `v`): `Overview` and the
+    /// cross-project threads, then one `@name` view per assignee. One view applies at a
+    /// time, so only one tab carries the active mark.
     pub(super) fn open_projects_view_picker(&mut self) {
         if !matches!(self.board_location, BoardLocation::Projects) {
             return;
         }
         let mut threads: BTreeMap<String, usize> = BTreeMap::new();
+        let mut assignees: BTreeMap<String, usize> = BTreeMap::new();
         for task in &self.tasks {
             if task.soft_deleted
                 || task.archived
@@ -2979,6 +3319,9 @@ impl BoardModel {
             }
             if let Some(name) = task.thread.as_deref() {
                 *threads.entry(name.to_ascii_lowercase()).or_default() += 1;
+            }
+            if let Some(name) = task.assignee.as_deref() {
+                *assignees.entry(name.to_ascii_lowercase()).or_default() += 1;
             }
         }
         let mut options = vec![ListPickerOption {
@@ -2993,25 +3336,99 @@ impl BoardModel {
             count: Some(count),
             value: ListPickerValue::ProjectsThread(name),
         }));
-        let selected = options
-            .iter()
-            .position(|option| match (&option.value, &self.projects_view) {
-                (ListPickerValue::ProjectsOverview, ProjectsView::Overview) => true,
-                (ListPickerValue::ProjectsThread(name), ProjectsView::Thread(active)) => {
-                    name == active
-                }
-                _ => false,
+        let assignee_options: Vec<ListPickerOption> = self
+            .assignee_view_names(&mut assignees)
+            .into_iter()
+            .map(|(name, count)| ListPickerOption {
+                label: format!("@{name}"),
+                count: Some(count),
+                value: ListPickerValue::ProjectsAssignee(name),
             })
-            .unwrap_or(0);
+            .collect();
+        let active_in = |options: &[ListPickerOption]| {
+            options
+                .iter()
+                .position(|option| match (&option.value, &self.projects_view) {
+                    (ListPickerValue::ProjectsOverview, ProjectsView::Overview) => true,
+                    (ListPickerValue::ProjectsThread(name), ProjectsView::Thread(active))
+                    | (ListPickerValue::ProjectsAssignee(name), ProjectsView::Assignee(active)) => {
+                        name == active
+                    }
+                    _ => false,
+                })
+        };
+        let thread_active = active_in(&options);
+        let assignee_active = active_in(&assignee_options);
+        // An `@name` view reopens on its own tab, so Enter right away keeps it.
+        let (tab, options, active, other_options, other_active) =
+            if matches!(self.projects_view, ProjectsView::Assignee(_)) {
+                (
+                    FilterTab::Assignees,
+                    assignee_options,
+                    assignee_active,
+                    options,
+                    thread_active,
+                )
+            } else {
+                (
+                    FilterTab::Threads,
+                    options,
+                    thread_active,
+                    assignee_options,
+                    assignee_active,
+                )
+            };
         self.list_picker = Some(ListPickerState {
             kind: ListPickerKind::ProjectsView,
             options,
-            selected,
+            selected: active.unwrap_or(0),
             query: String::new(),
             return_mode: BoardInputMode::Normal,
             assignee_target: None,
             base_target: None,
+            active,
+            tabs: Some(ListPickerTabs {
+                active_tab: tab,
+                other_options,
+                other_active,
+            }),
         });
+    }
+
+    /// The open picker's active tab, for tabbed pickers.
+    pub fn list_picker_tab(&self) -> Option<FilterTab> {
+        self.list_picker
+            .as_ref()
+            .and_then(|picker| picker.tabs.as_ref())
+            .map(|tabs| tabs.active_tab)
+    }
+
+    /// Source index of the option the board currently applies in the open picker's tab.
+    pub fn list_picker_active(&self) -> Option<usize> {
+        self.list_picker.as_ref().and_then(|picker| picker.active)
+    }
+
+    /// Show `target` (or the other tab when `None`) in a tabbed picker. The query clears and
+    /// the cursor lands on that tab's active choice. Returns false for an untabbed picker.
+    pub(super) fn switch_list_picker_tab(&mut self, target: Option<FilterTab>) -> bool {
+        let Some(picker) = self.list_picker.as_mut() else {
+            return false;
+        };
+        let Some(tabs) = picker.tabs.as_mut() else {
+            return false;
+        };
+        if target.is_some_and(|tab| tab == tabs.active_tab) {
+            return true;
+        }
+        tabs.active_tab = match tabs.active_tab {
+            FilterTab::Threads => FilterTab::Assignees,
+            FilterTab::Assignees => FilterTab::Threads,
+        };
+        std::mem::swap(&mut picker.options, &mut tabs.other_options);
+        std::mem::swap(&mut picker.active, &mut tabs.other_active);
+        picker.query.clear();
+        picker.selected = picker.active.unwrap_or(0);
+        true
     }
 
     /// Open the assignee picker over `ids`: every defined profile, then **none** last.
@@ -3056,6 +3473,8 @@ impl BoardModel {
                 dispatch_after,
             }),
             base_target: None,
+            active: None,
+            tabs: None,
         });
         self.input_mode = BoardInputMode::ListPicker;
     }
@@ -3144,6 +3563,8 @@ impl BoardModel {
                 // user moves it to. Without one, the refresh selects the current base.
                 selection_pending: cached.is_err(),
             }),
+            active: None,
+            tabs: None,
         });
         self.input_mode = BoardInputMode::ListPicker;
         if fresh {
@@ -3489,15 +3910,27 @@ impl BoardModel {
         let kind = self.list_picker.as_ref()?.kind;
         let applied = match (kind, &value) {
             (ListPickerKind::ThreadFilter, ListPickerValue::ThreadAll) => {
-                self.thread_filter = ThreadFilter::All;
+                self.filter.thread = ThreadFilter::All;
                 true
             }
             (ListPickerKind::ThreadFilter, ListPickerValue::ThreadNamed(name)) => {
-                self.thread_filter = ThreadFilter::Named(name.clone());
+                self.filter.thread = ThreadFilter::Named(name.clone());
                 true
             }
             (ListPickerKind::ThreadFilter, ListPickerValue::ThreadWithout) => {
-                self.thread_filter = ThreadFilter::Without;
+                self.filter.thread = ThreadFilter::Without;
+                true
+            }
+            (ListPickerKind::ThreadFilter, ListPickerValue::AssigneeFilterAll) => {
+                self.filter.assignee = AssigneeFilter::All;
+                true
+            }
+            (ListPickerKind::ThreadFilter, ListPickerValue::AssigneeFilterNamed(name)) => {
+                self.filter.assignee = AssigneeFilter::Named(name.clone());
+                true
+            }
+            (ListPickerKind::ThreadFilter, ListPickerValue::AssigneeFilterUnassigned) => {
+                self.filter.assignee = AssigneeFilter::Unassigned;
                 true
             }
             (ListPickerKind::ProjectsView, ListPickerValue::ProjectsOverview) => {
@@ -3509,6 +3942,13 @@ impl BoardModel {
             }
             (ListPickerKind::ProjectsView, ListPickerValue::ProjectsThread(name)) => {
                 self.projects_view = ProjectsView::Thread(name.clone());
+                self.search_query.clear();
+                self.search_pinned = false;
+                self.projects_selected = 0;
+                true
+            }
+            (ListPickerKind::ProjectsView, ListPickerValue::ProjectsAssignee(name)) => {
+                self.projects_view = ProjectsView::Assignee(name.clone());
                 self.search_query.clear();
                 self.search_pinned = false;
                 self.projects_selected = 0;
@@ -3890,6 +4330,7 @@ impl BoardModel {
                 BoardInputMode::CleanupDirtyConfirm
             }
             BoardPopup::CleanupConfirm => BoardInputMode::CleanupConfirm,
+            BoardPopup::DispatchConfirm => BoardInputMode::DispatchConfirm,
             _ if self.project_picker.is_some() => BoardInputMode::ProjectPicker,
             _ if self.focused_surface() == FocusedSurface::Board
                 && self.input_mode == BoardInputMode::TaskPage =>
@@ -4952,6 +5393,7 @@ pub(super) fn project_scope_option_label(option: &ProjectScopeOption) -> String 
 mod tests {
     use super::*;
     use crate::domain::ProvenanceOrigin;
+    use crate::ui::input::BoardIntent;
 
     fn run_row(number: u64, state: CleanupRowState) -> CleanupRunRow {
         CleanupRunRow {
@@ -5110,6 +5552,8 @@ mod tests {
                 current: None,
                 selection_pending: true,
             }),
+            active: None,
+            tabs: None,
         }
     }
 
@@ -5397,7 +5841,7 @@ mod tests {
         create(&mut domain, "task-b", project(REPO_B));
 
         let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(REPO_A)));
-        model.thread_filter = ThreadFilter::Named("release".to_string());
+        model.filter.thread = ThreadFilter::Named("release".to_string());
         model.set_selected_project(Some(PathBuf::from(REPO_B)));
         assert_eq!(
             model.thread_filter(),
@@ -5406,7 +5850,7 @@ mod tests {
         );
 
         // Same project again: the filter survives.
-        model.thread_filter = ThreadFilter::Without;
+        model.filter.thread = ThreadFilter::Without;
         model.set_selected_project(Some(PathBuf::from(REPO_B)));
         assert_eq!(model.thread_filter(), &ThreadFilter::Without);
     }
@@ -5472,7 +5916,7 @@ mod tests {
             .collect();
         assert_eq!(
             labels,
-            vec!["All tasks", "#nav", "Without a thread"],
+            vec!["all", "#nav", "Without a thread"],
             "another project's thread must not offer itself here"
         );
         assert_eq!(model.list_picker_kind(), Some(ListPickerKind::ThreadFilter));
@@ -5695,6 +6139,339 @@ mod tests {
         );
         assert_eq!(model.projects_view(), &ProjectsView::Overview);
         assert!(!model.project_rows().is_empty());
+    }
+
+    fn labels(model: &BoardModel) -> Vec<String> {
+        model
+            .visible_list_picker_options()
+            .into_iter()
+            .map(|(_, option)| option.label)
+            .collect()
+    }
+
+    fn assign(domain: &mut DomainState, id: Uuid, name: &str) {
+        domain.assign(id, Some(name.to_string())).expect("assign");
+    }
+
+    fn thread(domain: &mut DomainState, id: Uuid, title: &str, scope: TaskScope, name: &str) {
+        domain
+            .edit(id, title, None, scope, Some(name.to_string()))
+            .expect("thread");
+    }
+
+    #[test]
+    fn filter_picker_tab_switches_between_threads_and_assignees() {
+        let mut domain = DomainState::new();
+        let a = create(&mut domain, "a1", project(REPO_A));
+        thread(&mut domain, a, "a1", project(REPO_A), "nav");
+        assign(&mut domain, a, "claude");
+        // A removed profile still on a task is listed so its tasks can be found.
+        let gone = create(&mut domain, "a2", project(REPO_A));
+        assign(&mut domain, gone, "retired");
+        create(&mut domain, "a3", project(REPO_A));
+        let other = create(&mut domain, "b1", project(REPO_B));
+        assign(&mut domain, other, "elsewhere");
+
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(REPO_A)));
+        model.agent_names = vec!["claude".to_string(), "pi".to_string()];
+        model.open_thread_filter_picker();
+        assert_eq!(model.list_picker_tab(), Some(FilterTab::Threads));
+        assert_eq!(labels(&model), vec!["all", "#nav", "Without a thread"]);
+        assert_eq!(model.list_picker_active(), Some(0), "all is marked");
+
+        model.list_picker_query_insert('n');
+        assert!(model.switch_list_picker_tab(None));
+        assert_eq!(model.list_picker_tab(), Some(FilterTab::Assignees));
+        assert_eq!(model.list_picker_query(), Some(""), "the query is per tab");
+        assert_eq!(
+            labels(&model),
+            vec!["all", "@claude", "@pi", "@retired", "unassigned"],
+            "profiles in config order, then removed names, then unassigned"
+        );
+        let counts: Vec<Option<usize>> = model
+            .visible_list_picker_options()
+            .into_iter()
+            .map(|(_, option)| option.count)
+            .collect();
+        assert_eq!(counts, vec![Some(3), Some(1), Some(0), Some(1), Some(1)]);
+
+        // Typing filters the current tab only.
+        model.list_picker_query_insert_text("un");
+        assert_eq!(labels(&model), vec!["unassigned"]);
+
+        assert!(model.switch_list_picker_tab(None));
+        assert_eq!(model.list_picker_tab(), Some(FilterTab::Threads));
+        assert_eq!(labels(&model), vec!["all", "#nav", "Without a thread"]);
+    }
+
+    #[test]
+    fn thread_and_assignee_filters_combine_and_all_clears_one_tab_only() {
+        let mut domain = DomainState::new();
+        let both = create(&mut domain, "both", project(REPO_A));
+        thread(&mut domain, both, "both", project(REPO_A), "release");
+        assign(&mut domain, both, "claude");
+        let thread_only = create(&mut domain, "thread only", project(REPO_A));
+        thread(
+            &mut domain,
+            thread_only,
+            "thread only",
+            project(REPO_A),
+            "release",
+        );
+        let assignee_only = create(&mut domain, "assignee only", project(REPO_A));
+        assign(&mut domain, assignee_only, "claude");
+
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(REPO_A)));
+        model.agent_names = vec!["claude".to_string()];
+        let tasks = |model: &BoardModel| -> BTreeSet<Uuid> {
+            model
+                .visible_ids()
+                .into_iter()
+                .filter(|id| *id != queue::INBOX_HEADER_ROW_ID)
+                .collect()
+        };
+
+        model.open_thread_filter_picker();
+        model.move_list_picker(true); // #release
+        assert_eq!(
+            model.confirm_list_picker(),
+            Some(ListPickerValue::ThreadNamed("release".to_string()))
+        );
+        model.open_thread_filter_picker();
+        model.switch_list_picker_tab(Some(FilterTab::Assignees));
+        model.move_list_picker(true); // @claude
+        assert_eq!(
+            model.confirm_list_picker(),
+            Some(ListPickerValue::AssigneeFilterNamed("claude".to_string()))
+        );
+        assert_eq!(tasks(&model), BTreeSet::from([both]), "thread AND assignee");
+        assert_eq!(model.board_filter().label(), "#release @claude");
+
+        // Reopening marks the active choice in each tab.
+        model.open_thread_filter_picker();
+        assert_eq!(model.list_picker_active(), Some(1));
+        assert_eq!(model.list_picker_selected(), 1);
+        model.switch_list_picker_tab(None);
+        assert_eq!(model.list_picker_active(), Some(1));
+
+        // `all` on the assignees tab clears only the assignee choice.
+        model.move_list_picker(false);
+        assert_eq!(
+            model.confirm_list_picker(),
+            Some(ListPickerValue::AssigneeFilterAll)
+        );
+        assert_eq!(
+            model.thread_filter(),
+            &ThreadFilter::Named("release".into())
+        );
+        assert_eq!(tasks(&model), BTreeSet::from([both, thread_only]));
+        assert_eq!(model.board_filter().label(), "#release");
+
+        // And `all` on the threads tab clears only the thread choice.
+        model.open_thread_filter_picker();
+        model.switch_list_picker_tab(Some(FilterTab::Assignees));
+        model.move_list_picker(true);
+        model.confirm_list_picker();
+        model.open_thread_filter_picker();
+        model.move_list_picker(false);
+        assert_eq!(
+            model.confirm_list_picker(),
+            Some(ListPickerValue::ThreadAll)
+        );
+        assert_eq!(
+            model.assignee_filter(),
+            &AssigneeFilter::Named("claude".into())
+        );
+        assert_eq!(tasks(&model), BTreeSet::from([both, assignee_only]));
+        assert_eq!(model.board_filter().label(), "@claude");
+    }
+
+    #[test]
+    fn unassigned_and_removed_profile_filters_narrow_the_board() {
+        let mut domain = DomainState::new();
+        let retired = create(&mut domain, "retired", project(REPO_A));
+        assign(&mut domain, retired, "retired");
+        let free = create(&mut domain, "free", project(REPO_A));
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(REPO_A)));
+        let tasks = |model: &BoardModel| -> Vec<Uuid> {
+            model
+                .visible_ids()
+                .into_iter()
+                .filter(|id| *id != queue::INBOX_HEADER_ROW_ID)
+                .collect()
+        };
+
+        model.open_thread_filter_picker();
+        model.switch_list_picker_tab(None);
+        assert_eq!(labels(&model), vec!["all", "@retired", "unassigned"]);
+        model.move_list_picker(false); // unassigned
+        assert_eq!(
+            model.confirm_list_picker(),
+            Some(ListPickerValue::AssigneeFilterUnassigned)
+        );
+        assert_eq!(tasks(&model), vec![free]);
+        assert_eq!(model.board_filter().label(), "unassigned");
+
+        model.open_thread_filter_picker();
+        model.switch_list_picker_tab(None);
+        // The cursor reopens on the active `unassigned`; one up is @retired.
+        model.move_list_picker(false);
+        assert_eq!(
+            model.confirm_list_picker(),
+            Some(ListPickerValue::AssigneeFilterNamed("retired".to_string()))
+        );
+        assert_eq!(tasks(&model), vec![retired]);
+    }
+
+    #[test]
+    fn switching_projects_clears_the_assignee_filter_too() {
+        let domain = DomainState::new();
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(REPO_A)));
+        model.filter.assignee = AssigneeFilter::Named("claude".to_string());
+        model.switch_location(BoardLocation::Project(PathBuf::from(REPO_B)));
+        assert!(model.board_filter().is_all());
+    }
+
+    #[test]
+    fn projects_view_picker_offers_assignee_views_across_projects() {
+        let mut domain = DomainState::new();
+        let a = create(&mut domain, "a1", project(REPO_A));
+        assign(&mut domain, a, "claude");
+        let b = create(&mut domain, "b1", project(REPO_B));
+        assign(&mut domain, b, "claude");
+        let desk = create(&mut domain, "desk", TaskScope::Global);
+        assign(&mut domain, desk, "claude");
+        let done = create(&mut domain, "done", project(REPO_A));
+        assign(&mut domain, done, "claude");
+        domain.set_status(done, HumanStatus::Done).expect("done");
+        let mine = create(&mut domain, "pi task", project(REPO_A));
+        assign(&mut domain, mine, "pi");
+        create(&mut domain, "unassigned", project(REPO_A));
+
+        let mut model = BoardModel::from_domain(&domain, None);
+        model.agent_names = vec!["claude".to_string(), "pi".to_string()];
+        model.board_location = BoardLocation::Projects;
+        model.open_projects_view_picker();
+        assert_eq!(model.list_picker_tab(), Some(FilterTab::Threads));
+        assert_eq!(labels(&model), vec!["Overview"]);
+        model.switch_list_picker_tab(None);
+        assert_eq!(
+            labels(&model),
+            vec!["@claude", "@pi"],
+            "no unassigned view on the overview"
+        );
+        assert_eq!(
+            model.list_picker_active(),
+            None,
+            "Overview is on the other tab"
+        );
+        assert_eq!(
+            model.confirm_list_picker(),
+            Some(ListPickerValue::ProjectsAssignee("claude".to_string()))
+        );
+        assert_eq!(
+            model.projects_view(),
+            &ProjectsView::Assignee("claude".to_string())
+        );
+        let view = model.queue_view();
+        let shown: BTreeSet<Uuid> = view
+            .sections
+            .iter()
+            .flat_map(|section| section.task_ids.iter().copied())
+            .collect();
+        assert_eq!(
+            shown,
+            BTreeSet::from([a, b, desk]),
+            "every scope, assignee only, done stays in the closed drawer"
+        );
+        assert!(view
+            .sections
+            .iter()
+            .all(|section| section.project_label.is_none()));
+
+        // The drawer behaves as in the thread view: opening it lists the done task.
+        model.drawer_open = true;
+        assert!(model
+            .queue_view()
+            .sections
+            .iter()
+            .any(|section| section.kind == SectionKind::Done && section.task_ids == [done]));
+
+        // An `@name` view reopens on its own tab with its row marked.
+        model.open_projects_view_picker();
+        assert_eq!(model.list_picker_tab(), Some(FilterTab::Assignees));
+        assert_eq!(model.list_picker_active(), Some(0));
+        model.switch_list_picker_tab(None);
+        assert_eq!(
+            model.confirm_list_picker(),
+            Some(ListPickerValue::ProjectsOverview)
+        );
+        assert_eq!(model.projects_view(), &ProjectsView::Overview);
+    }
+
+    #[test]
+    fn tab_in_an_untabbed_picker_still_moves_its_selection() {
+        let mut domain = DomainState::new();
+        let id = create(&mut domain, "a1", project(REPO_A));
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(REPO_A)));
+        model.agent_names = vec!["claude".to_string(), "pi".to_string()];
+        model.open_assignee_picker(vec![id], None, false);
+        assert_eq!(model.list_picker_tab(), None);
+        crate::ui::board::apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ListPickerTabNext,
+            None,
+        )
+        .expect("tab");
+        assert_eq!(model.list_picker_selected(), 1, "Tab moves to @pi");
+        crate::ui::board::apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ListPickerTabPrev,
+            None,
+        )
+        .expect("shift+tab");
+        assert_eq!(model.list_picker_selected(), 0);
+    }
+
+    #[test]
+    fn filter_change_clears_marks_and_reanchors_on_a_painted_row() {
+        let mut domain = DomainState::new();
+        let kept = create(&mut domain, "kept", project(REPO_A));
+        assign(&mut domain, kept, "claude");
+        let hidden = create(&mut domain, "hidden", project(REPO_A));
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(REPO_A)));
+        model.agent_names = vec!["claude".to_string()];
+        model.retarget_selection(Some(hidden), SelectionRetarget::Reanchor);
+        assert!(model.mark_selected());
+        assert_eq!(model.marked_count(), 1);
+
+        crate::ui::board::apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenThreadFilterPicker,
+            None,
+        )
+        .expect("open");
+        for intent in [
+            BoardIntent::ListPickerTabNext,
+            BoardIntent::ListPickerNext,
+            BoardIntent::ConfirmListPicker,
+        ] {
+            crate::ui::board::apply_intent(&mut domain, &mut model, intent, None).expect("filter");
+        }
+        assert_eq!(
+            model.assignee_filter(),
+            &AssigneeFilter::Named("claude".into())
+        );
+        assert_eq!(model.marked_count(), 0, "a filter change clears marks");
+        let selected = model.selection_id.expect("selection");
+        assert!(
+            model.visible_ids().contains(&selected),
+            "selection rests on a painted row"
+        );
+        assert_ne!(selected, hidden);
     }
 
     #[test]

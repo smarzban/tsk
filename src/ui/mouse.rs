@@ -36,6 +36,8 @@ pub enum BoardPopup {
     LaunchCard,
     /// Cleanup confirmation for one cursor-pinned dispatch.
     CleanupConfirm,
+    /// Bulk dispatch confirmation for a marked set.
+    DispatchConfirm,
 }
 
 /// Labeled capture hit region.
@@ -706,7 +708,9 @@ fn wheel_board_intent(model: &BoardModel, kind: MouseEventKind) -> Option<BoardI
             MouseEventKind::ScrollDown => Some(BoardIntent::HelpScrollDown),
             _ => None,
         },
-        BoardInputMode::CleanupConfirm | BoardInputMode::CleanupDirtyConfirm => match kind {
+        BoardInputMode::CleanupConfirm
+        | BoardInputMode::CleanupDirtyConfirm
+        | BoardInputMode::DispatchConfirm => match kind {
             MouseEventKind::ScrollUp => Some(BoardIntent::CleanupScrollUp),
             MouseEventKind::ScrollDown => Some(BoardIntent::CleanupScrollDown),
             _ => None,
@@ -953,6 +957,14 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::CleanupOption(0)) => Some(BoardIntent::KeepCleanup),
             _ => None,
         },
+        // `[x]` and `esc cancel` cancel, `y dispatch` launches.
+        BoardInputMode::DispatchConfirm => match hit_at(hits, pos) {
+            Some(QueueHitTarget::ModalClose | QueueHitTarget::CleanupOption(1)) => {
+                Some(BoardIntent::CancelDispatch)
+            }
+            Some(QueueHitTarget::CleanupOption(0)) => Some(BoardIntent::ConfirmDispatch),
+            _ => None,
+        },
         BoardInputMode::LaunchCard => match hit_at(hits, pos) {
             Some(QueueHitTarget::LaunchOption(0)) => Some(BoardIntent::LaunchUnarchive),
             Some(QueueHitTarget::LaunchOption(1)) => Some(BoardIntent::LaunchKeepArchived),
@@ -962,6 +974,7 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::ListPickerOption(index)) => {
                 Some(BoardIntent::SelectListOption(index))
             }
+            Some(QueueHitTarget::ListPickerTab(tab)) => Some(BoardIntent::SelectListPickerTab(tab)),
             Some(QueueHitTarget::ModalChrome) => None,
             Some(QueueHitTarget::ModalClose) => Some(BoardIntent::CancelListPicker),
             _ => Some(BoardIntent::CancelListPicker),

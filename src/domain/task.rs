@@ -772,9 +772,22 @@ impl DomainState {
 
     /// Record one successful launch and set human status to started as one mutation.
     /// Dispatch is external and deliberately creates no undo entry.
-    pub fn record_dispatch(&mut self, id: Uuid, mut dispatch: Dispatch) -> Result<(), DomainError> {
+    pub fn record_dispatch(&mut self, id: Uuid, dispatch: Dispatch) -> Result<(), DomainError> {
+        self.record_dispatch_with_status(id, dispatch, true)
+    }
+
+    /// Record a dispatch, and start the task only when `start` is set: a bulk launch landing
+    /// after the human changed the task's status records the agent but keeps that status.
+    pub fn record_dispatch_with_status(
+        &mut self,
+        id: Uuid,
+        mut dispatch: Dispatch,
+        start: bool,
+    ) -> Result<(), DomainError> {
         let task = self.task_mut(id)?;
-        task.status = HumanStatus::Started;
+        if start {
+            task.status = HumanStatus::Started;
+        }
         dispatch.cleaned = false;
         let at = dispatch.at;
         task.dispatch = Some(dispatch);

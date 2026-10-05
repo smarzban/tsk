@@ -35,8 +35,8 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 | Expand / collapse its archived group | `g` |
 | Desk / selected project / projects | `1` / `2` / `3` |
 | Project picker | `p` |
-| Project thread filter | `t` |
-| Cross-project view selector | `v` on Projects |
+| Project Filter (threads · @assignees) | `t` |
+| Cross-project view selector (threads · @assignees) | `v` on Projects |
 | Search current board rows | `/` |
 | Command palette | `:` |
 | All shortcuts | `?` |
@@ -50,7 +50,7 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 
 `Shift+M` enters or leaves multi-select while the board owns input. While it is active, `Space`, shifted arrows, and a plain task click change marks instead of opening a task. Removing the last mark leaves the mode active. `Shift+M` again from the board, `Esc`, a task action, or a lens change leaves it and clears the set. Text entry keeps `Shift+M` as a capital `M`; `Esc` leaves multi-select before cancelling that surface, except in a thread, view, or assignee picker, where it closes the picker first.
 
-When tasks are marked, the status, delete, and archive shortcuts act on that set; without marks they act on the cursor. `@` assigns the marked set too. `Enter`, `ctrl+e`, and `ctrl+g` remain cursor-only. Dispatch clears the marks and launches only the cursored task. On an existing dispatch, the first `ctrl+g` asks and the second relaunches. `ctrl+d` on the cursor task with a live worktree offers its cleanup; on a marked set that holds live dispatches it offers one card for the whole set. `y` completes and cleans in the background, `n` completes without cleanup, and `Esc` cancels (a bulk card keeps the marks). After `y`, `Esc` hides the card while cleanup continues, or closes a finished one. When nothing listed can be cleaned (uncommitted changes) there is no `y` choice. `ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Bulk block and review toggles send every target to blocked or review unless all targets already have that status, in which case they all return to ready. `ctrl+n` and `ctrl+o` can send done tasks directly to ready or open. One `ctrl+u` reverses an entire marked completion or deletion.
+When tasks are marked, the status, delete, and archive shortcuts act on that set; without marks they act on the cursor. `@` assigns the marked set too. `Enter` and `ctrl+e` remain cursor-only. `ctrl+g` on a marked set opens one card listing the tasks it will launch and the ones it skips; `y` launches them all, `Esc` cancels and keeps the marks. Without marks, `ctrl+g` dispatches the cursor task; on an existing dispatch, the first `ctrl+g` asks and the second relaunches. `ctrl+d` on the cursor task with a live worktree offers its cleanup; on a marked set that holds live dispatches it offers one card for the whole set. `y` completes and cleans in the background, `n` completes without cleanup, and `Esc` cancels (a bulk card keeps the marks). After `y`, `Esc` hides the card while cleanup continues, or closes a finished one. When nothing listed can be cleaned (uncommitted changes) there is no `y` choice. `ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Bulk block and review toggles send every target to blocked or review unless all targets already have that status, in which case they all return to ready. `ctrl+n` and `ctrl+o` can send done tasks directly to ready or open. One `ctrl+u` reverses an entire marked completion or deletion.
 
 ## Task page
 
@@ -116,7 +116,7 @@ In Herdr quick capture, `Shift+Enter` saves and closes the popup. `Esc` closes a
 | Project picker | Arrows or `j`/`k` select; `Tab` or `←`/`→` switch tabs; `Enter` opens; `?` opens Help; `Esc` or `q` closes |
 | Project archive | `ctrl+f` archives; on archived tab, `ctrl+f` or `ctrl+u` restores |
 | Archived project view | `ctrl+u` restores; `Esc`, `p`, or `1`–`3` leaves |
-| Thread/view selector | Type or paste to filter; arrows or `Tab` select; `Enter` chooses; `Esc` closes |
+| Filter/view selector | `Tab` switches `threads · @assignees`; type or paste to filter the current tab; arrows select; `Enter` chooses; `Esc` closes |
 | Assignee picker | Type to filter; arrows or `Tab` select; `Enter` applies; `Esc` closes with no change |
 | Base picker | Open from palette **set base**, task footer `⎇`, or edit **Base** field; type to filter; arrows or `Tab` select; `Enter` applies; `Esc` closes with no change. No dedicated key |
 | Board search | Type or paste; `Backspace` edits; `Enter` pins; `Esc` clears and closes |

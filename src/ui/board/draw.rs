@@ -14,7 +14,6 @@ use crate::ui::edit::{
 };
 use crate::ui::input::help_card_lines_for_query;
 use crate::ui::mouse::BoardPopup;
-use crate::ui::queue::ThreadFilter;
 use crate::ui::render::{
     self, BoardSurface, FormDropdown, NavChipKind, NavChipPaint, NavPaint, PaletteCommandRow,
     QueueFrameModel, QueueOverlay, VerbEntry,
@@ -26,7 +25,7 @@ use super::chrome::{notice_framed, row_width, BULK_DELETE_NOTICE_UNDO, DELETE_NO
 use super::commands::CommandSurface;
 use super::model::{
     project_option_label, project_scope_option_label, BoardForm, BoardInputMode, BoardLocation,
-    BoardModel, CleanupPrompt, CleanupRow, CleanupRowState, CleanupRun, PickerTab,
+    BoardModel, CleanupPrompt, CleanupRow, CleanupRowState, CleanupRun, DispatchPrompt, PickerTab,
     ProjectScopeOption, ProjectsView,
 };
 use crate::ui::render::{CleanupCardLine, CleanupFooter, CleanupTitle};
@@ -301,6 +300,56 @@ pub(crate) fn cleanup_run_overlay<'a>(
         } else {
             CleanupFooter::Running
         },
+        scroll: prompt.scroll,
+    }
+}
+
+/// The bulk dispatch card: one row per task `y` launches (assignee and base), then the skipped
+/// tasks with the single-task refusal. `default_branch` names a repository's remote default.
+pub(crate) fn dispatch_overlay<'a>(
+    prompt: &DispatchPrompt,
+    default_branch: impl Fn(&Path) -> String,
+) -> QueueOverlay<'a> {
+    let count = prompt.launch.len();
+    let noun = if count == 1 { "task" } else { "tasks" };
+    let title = CleanupTitle {
+        full: format!("Dispatch {count} {noun}?"),
+        short: format!("Dispatch {count}?"),
+        bare: "Dispatch".into(),
+        question: format!("Dispatch {count} {noun}?"),
+    };
+    let mut lines = Vec::new();
+    for eligible in &prompt.launch {
+        let base = match eligible.base() {
+            Some(base) => format!("from {base}"),
+            None => match default_branch(eligible.project()) {
+                default if default == "default" => "from default".to_string(),
+                default => format!("from default ({default})"),
+            },
+        };
+        let checking = if prompt.checking() {
+            "  checking…"
+        } else {
+            ""
+        };
+        lines.push(CleanupCardLine::Field {
+            label: format!("T{}", eligible.number),
+            value: format!("@{}  {base}{checking}", eligible.assignee),
+        });
+    }
+    if !prompt.skipped.is_empty() {
+        lines.push(CleanupCardLine::Text("skipped".into()));
+        for (identifier, reason) in &prompt.skipped {
+            lines.push(CleanupCardLine::Field {
+                label: identifier.clone(),
+                value: reason.clone(),
+            });
+        }
+    }
+    QueueOverlay::CleanupConfirm {
+        title,
+        lines,
+        footer: CleanupFooter::Dispatch(count),
         scroll: prompt.scroll,
     }
 }
@@ -1213,6 +1262,17 @@ fn status_idle(model: &BoardModel, surface: BoardSurface, has_message: bool) -> 
     footer_context(model, surface)
 }
 
+/// The idle context `status_idle` swaps in or out when a status message comes and goes
+/// while an update notice is pending, so the footer can reserve rows for both.
+fn status_reserve(model: &BoardModel, surface: BoardSurface, has_message: bool) -> Option<String> {
+    let notice = model.update_notice()?;
+    Some(if has_message {
+        format!(" {notice}")
+    } else {
+        footer_context(model, surface)
+    })
+}
+
 fn footer_context(model: &BoardModel, surface: BoardSurface) -> String {
     match surface {
         BoardSurface::Desk => " desk".to_string(),
@@ -1225,8 +1285,8 @@ fn footer_context(model: &BoardModel, surface: BoardSurface) -> String {
             let mut context = format!(" {name}");
             if model.focus_is_archived() {
                 context.push_str(" · archived");
-            } else if model.thread_filter() != &ThreadFilter::All {
-                context.push_str(&format!(" · {}", model.thread_filter().label()));
+            } else if !model.board_filter().is_all() {
+                context.push_str(&format!(" · {}", model.board_filter().label()));
             }
             context
         }
@@ -1250,7 +1310,7 @@ fn nav_paint(model: &BoardModel) -> NavPaint {
     };
     let chip = match (&model.board_location, model.projects_view()) {
         (BoardLocation::Project(_), _) => Some(NavChipPaint {
-            label: model.thread_filter().label(),
+            label: model.board_filter().label(),
             kind: NavChipKind::ThreadFilter,
         }),
         (BoardLocation::Projects, ProjectsView::Overview) => Some(NavChipPaint {
@@ -1259,6 +1319,10 @@ fn nav_paint(model: &BoardModel) -> NavPaint {
         }),
         (BoardLocation::Projects, ProjectsView::Thread(name)) => Some(NavChipPaint {
             label: format!("#{name}"),
+            kind: NavChipKind::ProjectsView,
+        }),
+        (BoardLocation::Projects, ProjectsView::Assignee(name)) => Some(NavChipPaint {
+            label: format!("@{name}"),
             kind: NavChipKind::ProjectsView,
         }),
         _ => None,
@@ -1276,7 +1340,8 @@ fn board_surface(model: &BoardModel) -> BoardSurface {
     match model.effective_lens() {
         crate::ui::queue::BoardLens::Desk => BoardSurface::Desk,
         crate::ui::queue::BoardLens::Projects => BoardSurface::Projects,
-        crate::ui::queue::BoardLens::ThreadView(_) => BoardSurface::ThreadView,
+        crate::ui::queue::BoardLens::ThreadView(_)
+        | crate::ui::queue::BoardLens::AssigneeView(_) => BoardSurface::ThreadView,
         crate::ui::queue::BoardLens::Project(_)
         | crate::ui::queue::BoardLens::ArchivedProject(_) => BoardSurface::Project,
     }
@@ -1393,17 +1458,23 @@ impl OverlayPayloads {
         } else {
             Vec::new()
         };
+        let active = model.list_picker_active();
         let list_picker_options = model
             .visible_list_picker_options()
             .into_iter()
-            .map(|(_, option)| {
+            .map(|(index, option)| {
                 if option.value == super::model::ListPickerValue::Unavailable {
                     format!("({})", option.label)
                 } else {
-                    match option.count {
+                    let mut row = match option.count {
                         Some(count) => format!("{}  {count}", option.label),
                         None => option.label,
+                    };
+                    // The tabbed filter pickers mark the choice the board applies.
+                    if active == Some(index) {
+                        row.push_str("  \u{2713}");
                     }
+                    row
                 }
             })
             .collect();
@@ -1430,10 +1501,12 @@ impl OverlayPayloads {
                 .unwrap_or(&path.to_string_lossy())
                 .to_string()
         });
-        let scope_tabs = model.picker_tab().map(|tab| render::PickerTabsPaint {
-            archived_active: tab == PickerTab::Archived,
-            archived_count: model.archived_project_options().len(),
-        });
+        let scope_tabs = model
+            .picker_tab()
+            .map(|tab| render::PickerTabsPaint::Project {
+                archived_active: tab == PickerTab::Archived,
+                archived_count: model.archived_project_options().len(),
+            });
         Self {
             help_lines,
             palette_commands,
@@ -1546,6 +1619,11 @@ impl OverlayPayloads {
                 None => cleanup_overlay(prompt, home_dir().as_deref()),
             });
         }
+        if let Some(prompt) = model.dispatch_prompt() {
+            return Some(dispatch_overlay(prompt, |project| {
+                model.default_branch_name(project)
+            }));
+        }
         if let Some(name) = self.launch_card_name.as_deref() {
             return Some(QueueOverlay::LaunchCard { name });
         }
@@ -1554,14 +1632,18 @@ impl OverlayPayloads {
                 Some(crate::ui::board::ListPickerKind::ProjectsView) => "projects View",
                 Some(crate::ui::board::ListPickerKind::Assignee) => "assignee",
                 Some(crate::ui::board::ListPickerKind::Base) => "base",
-                _ => "thread filter",
+                _ => "Filter",
             };
             return Some(QueueOverlay::ScopeDropdown {
                 options: &self.list_picker_options,
                 selected: self
                     .list_picker_selected
                     .min(self.list_picker_options.len().saturating_sub(1)),
-                tabs: None,
+                tabs: model
+                    .list_picker_tab()
+                    .map(|tab| render::PickerTabsPaint::Filter {
+                        assignees_active: tab == crate::ui::board::FilterTab::Assignees,
+                    }),
                 title: Some(title),
                 query: self.list_picker_query.as_deref(),
             });
@@ -1616,7 +1698,10 @@ fn status_row_content(model: &BoardModel) -> (Option<String>, Option<usize>, Opt
         (None, Some(msg)) => Some(msg.to_string()),
         (None, None) if editing_on_page => Some("editing…".to_string()),
         // Under a bulk cleanup card, Esc cancels the card and keeps the marks.
-        (None, None) if model.mark_mode_active() && model.cleanup_prompt().is_some() => {
+        (None, None)
+            if model.mark_mode_active()
+                && (model.cleanup_prompt().is_some() || model.dispatch_prompt().is_some()) =>
+        {
             Some(format!("multi-select · {} selected", model.marked_count()))
         }
         (None, None) if model.mark_mode_active() && model.marked_count() > 0 => Some(format!(
@@ -1777,6 +1862,7 @@ fn draw_board_hits(frame: &mut Frame, model: &BoardModel) -> render::QueueHitMap
         search_pinned: model.search_pinned(),
         summary: None,
         context: status_idle(model, surface, status_owned.is_some()),
+        reserve_context: status_reserve(model, surface, status_owned.is_some()),
         has_update_notice: model.update_notice().is_some(),
         status_message: status_owned.as_deref(),
         status_undo_offset,
@@ -1956,6 +2042,7 @@ fn draw_wide_board(
         search_pinned: model.search_pinned(),
         summary: None,
         context: status_idle(model, surface, status_owned.is_some()),
+        reserve_context: status_reserve(model, surface, status_owned.is_some()),
         has_update_notice: model.update_notice().is_some(),
         status_message: status_owned.as_deref(),
         status_undo_offset,
@@ -2202,6 +2289,7 @@ fn draw_projects_wide_board(
         search_pinned: model.search_pinned(),
         summary: None,
         context: status_idle(model, BoardSurface::Projects, outer_status.0.is_some()),
+        reserve_context: status_reserve(model, BoardSurface::Projects, outer_status.0.is_some()),
         has_update_notice: model.update_notice().is_some(),
         status_message: outer_status.0.as_deref(),
         status_undo_offset: outer_status.1,
@@ -2237,6 +2325,7 @@ fn draw_projects_wide_board(
             search_pinned: right.search_pinned(),
             summary: None,
             context: status_idle(right, BoardSurface::Project, status.0.is_some()),
+            reserve_context: status_reserve(right, BoardSurface::Project, status.0.is_some()),
             has_update_notice: right.update_notice().is_some(),
             status_message: status.0.as_deref(),
             status_undo_offset: status.1,
