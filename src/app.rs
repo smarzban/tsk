@@ -2085,6 +2085,7 @@ pub fn offer_cleanup_prompt_with_host(
             .and_then(|()| domain.complete_after_cleanup(id))
             .map_err(|error| CleanupError::Store(error.to_string()))?;
         return Ok(CleanupOffer::MissingConverged(CleanupResult {
+            remote: None,
             warning: preview.inspection.warning,
             branch_reason: Some(dispatch::BranchRetentionReason::MissingWorktree),
             number: preview.number,
@@ -2127,6 +2128,7 @@ fn cleanup_row(
     CleanupRow {
         merge_check,
         check_failed: false,
+        unreachable_remote: preview.inspection.unreachable_remote.clone(),
         inspected: Some(preview.record.clone()),
         task_id: id,
         number: preview.number,
@@ -2364,11 +2366,7 @@ pub fn bulk_cleanup_and_complete_with_host(
                 .cleaned
                 .push((row.number, Err(CleanupError::DispatchChanged)));
         } else {
-            let refs = if row.merge_unconfirmed() {
-                dispatch::CleanupRefs::Unconfirmed
-            } else {
-                dispatch::CleanupRefs::Cached
-            };
+            let refs = row.cleanup_refs();
             let result = dispatch::clean_with_host_refs(domain, row.task_id, in_herdr, refs, host);
             outcome.cleaned.push((row.number, result));
         }
@@ -2481,13 +2479,9 @@ pub fn cleanup_and_complete_with_host(
     };
     let target = row.task_id;
     // The card refreshed the base off the event loop; never fetch here. A check that is still
-    // running (its queued `y` ran out of time) or that failed confirms nothing, so the branch
-    // stays.
-    let refs = if row.merge_unconfirmed() {
-        dispatch::CleanupRefs::Unconfirmed
-    } else {
-        dispatch::CleanupRefs::Cached
-    };
+    // running (its queued `y` ran out of time), that failed, or that could not reach the
+    // remote confirms nothing, so the branch stays.
+    let refs = row.cleanup_refs();
     let current = cleanup_row_current(domain, row);
     let cleanup = clean.then(|| {
         if current {
@@ -9875,6 +9869,7 @@ mod queued_cleanup_tests {
                 self.fresh.set(true);
             }
             Ok(CleanupInspection {
+                unreachable_remote: None,
                 worktree_exists: true,
                 dirty: false,
                 branch_merged: self.cached_merged,
@@ -9986,6 +9981,7 @@ mod queued_cleanup_tests {
 
     fn verdict(merged: bool) -> MergeVerdict {
         MergeVerdict {
+            unreachable_remote: None,
             branch_merged: merged,
             base_available: true,
             warning: None,
@@ -10397,6 +10393,7 @@ mod queued_cleanup_tests {
             .expect("offer");
         // The ancestry query timed out: the check lands, but it confirmed nothing.
         host.check.complete(MergeVerdict {
+            unreachable_remote: None,
             branch_merged: false,
             base_available: false,
             warning: Some("ancestry check timed out".into()),
@@ -10415,6 +10412,41 @@ mod queued_cleanup_tests {
         );
         assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
         assert_eq!((host.removed, host.deleted), (1, 0), "branch kept");
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn an_offline_check_keeps_the_branch_although_cached_refs_read_merged() {
+        let (dir, store, mut domain, id) = setup("offline-check");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut host = CheckHost::new(true);
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            .expect("offer");
+        // The fetch failed: the refs on disk read as merged, but the remote may have been
+        // force-pushed since.
+        host.check.complete(MergeVerdict {
+            unreachable_remote: Some("origin".into()),
+            branch_merged: true,
+            base_available: true,
+            warning: Some("fetch failed: offline; merged status not confirmed".into()),
+            confirmed: true,
+        });
+        tick(&store, &mut domain, &mut model, &mut host);
+        let row = &model.cleanup_prompt().unwrap().rows[0];
+        assert!(!row.checking() && !row.branch_deletable());
+        assert_eq!(row.cleanup_refs(), crate::dispatch::CleanupRefs::Offline);
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
+        assert_eq!((host.removed, host.deleted), (1, 0), "branch kept");
+        assert!(model
+            .message()
+            .is_some_and(|message| message.contains("branch kept")));
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
 
@@ -10685,6 +10717,7 @@ mod bulk_cleanup_tests {
             _: bool,
         ) -> Result<CleanupInspection, String> {
             Ok(CleanupInspection {
+                unreachable_remote: None,
                 worktree_exists: !self.missing.contains(&record.worktree),
                 dirty: self.dirty.contains(&record.worktree),
                 branch_merged: self.cached_merged,
@@ -10722,6 +10755,7 @@ mod bulk_cleanup_tests {
         fn land_all(&mut self, merged: bool) {
             for check in self.checks.values() {
                 check.complete(MergeVerdict {
+                    unreachable_remote: None,
                     branch_merged: merged,
                     base_available: true,
                     warning: None,
@@ -11011,6 +11045,7 @@ mod bulk_cleanup_tests {
         press(&mut board, BoardIntent::Complete, &mut host);
         for check in host.checks.values() {
             check.complete(MergeVerdict {
+                unreachable_remote: None,
                 branch_merged: false,
                 base_available: false,
                 warning: Some("ancestry check timed out".into()),
@@ -11028,6 +11063,34 @@ mod bulk_cleanup_tests {
         assert!(
             host.deleted.is_empty(),
             "a failed check never confirms a merge"
+        );
+    }
+
+    #[test]
+    fn a_bulk_row_whose_check_was_offline_keeps_its_branch_on_y() {
+        let mut board = marked_board("offline-check");
+        let mut host = host();
+        host.cached_merged = true;
+        press(&mut board, BoardIntent::Complete, &mut host);
+        for check in host.checks.values() {
+            check.complete(MergeVerdict {
+                unreachable_remote: Some("origin".into()),
+                branch_merged: true,
+                base_available: true,
+                warning: Some("fetch failed: offline; merged status not confirmed".into()),
+                confirmed: true,
+            });
+        }
+        tick(&mut board, &mut host);
+        assert!(!board.model.cleanup_prompt().unwrap().checking());
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Done));
+        assert_eq!(host.removed, vec!["w-clean".to_string()]);
+        assert!(
+            host.deleted.is_empty(),
+            "an unreachable remote never confirms a merge"
         );
     }
 
