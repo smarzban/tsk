@@ -1940,6 +1940,27 @@ fn dispatch_board_intent(
     quick_capture: bool,
 ) -> io::Result<bool> {
     let intent_for_preview = intent.clone();
+    // A palette Retry or Cancel is the same answer as the key: resolve it on the board whose
+    // palette chose it, then route it like the key below.
+    let palette_recovery = matches!(
+        intent,
+        BoardIntent::ConfirmCommand | BoardIntent::SelectCommand(_)
+    ) && board_intent_target_mut(model, route.target)
+        .selected_command_for(&intent)
+        .is_some_and(|command| {
+            matches!(
+                command.intent,
+                BoardIntent::RetrySave | BoardIntent::CancelSave
+            )
+        });
+    let intent = if palette_recovery {
+        match resolve_board_command(board_intent_target_mut(model, route.target), intent) {
+            Some(resolved) => resolved,
+            None => return Ok(false),
+        }
+    } else {
+        intent
+    };
     // Quit belongs to the whole application, even when a focused preview supplied it.
     // Its guard must see both the outer parked form and the nested preview's draft.
     // Retry and Cancel resolve the failed save on whichever board owns it, so they start from
@@ -10272,6 +10293,94 @@ mod queued_cleanup_tests {
         assert!(!seat.owns_save_recovery() && !seat.shows_save_recovery_proxy());
         assert_eq!(seat.task_form_title(), Some("queued edited"));
         std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    /// The outer board's save failed while the pane was narrow, then the pane widened so the
+    /// focused preview shows a proxy of the banner. Answer from that preview's palette.
+    fn palette_answer_reaches_the_outer_owner(answer: BoardIntent, expected: &str) {
+        let (dir, store, mut domain, _id) = setup("palette-recovery");
+        let mut model = BoardModel::from_domain(&domain, None);
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("projects overview");
+        for _ in 0..2 {
+            apply_intent(&mut domain, &mut model, BoardIntent::StageRight, None)
+                .expect("stage right");
+        }
+        let narrow = ratatui::layout::Rect::new(0, 0, 60, 24);
+        let wide = ratatui::layout::Rect::new(0, 0, 160, 40);
+        super::sync_frame_presentation(narrow, &model);
+        assert!(!model.project_right_seat_focused());
+        let mut recovery = SaveRecovery::new();
+        recovery.fail(domain.clone(), domain.clone(), "disk full");
+        model.begin_save_recovery("disk full");
+        assert!(model.owns_save_recovery());
+
+        super::sync_frame_presentation(wide, &model);
+        assert!(model.project_right_seat_focused());
+        let mut host = CheckHost::new(false);
+        finish_queued_cleanup_with_host(
+            &store,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            false,
+            true,
+            &mut host,
+        )
+        .expect("loop step");
+        assert!(model.right_seat().unwrap().shows_save_recovery_proxy());
+
+        let seat = model.input_target_mut();
+        apply_intent(&mut domain, seat, BoardIntent::OpenCommandPalette, None).expect("palette");
+        let index = seat
+            .visible_commands()
+            .iter()
+            .position(|command| command.intent == answer)
+            .expect("recovery command offered");
+        let intent = if answer == BoardIntent::RetrySave {
+            for _ in 0..index {
+                apply_intent(&mut domain, seat, BoardIntent::CommandNext, None).expect("move");
+            }
+            BoardIntent::ConfirmCommand
+        } else {
+            BoardIntent::SelectCommand(index)
+        };
+        super::dispatch_board_intent(
+            &store,
+            &mut domain,
+            &mut model,
+            super::BoardDispatchRoute {
+                area: wide,
+                target: super::BoardIntentTarget::Focused,
+            },
+            intent,
+            &mut recovery,
+            false,
+        )
+        .expect("answer");
+        assert!(!recovery.is_pending());
+        assert!(
+            !model.owns_save_recovery(),
+            "the outer owner is resolved, not left for a stale-banner sweep"
+        );
+        assert_eq!(model.message(), Some(expected));
+        assert!(!model.right_seat().unwrap().shows_save_recovery_proxy());
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn palette_retry_on_a_focused_proxy_resolves_the_outer_owner() {
+        palette_answer_reaches_the_outer_owner(BoardIntent::RetrySave, "saved");
+    }
+
+    #[test]
+    fn palette_cancel_on_a_focused_proxy_resolves_the_outer_owner() {
+        palette_answer_reaches_the_outer_owner(BoardIntent::CancelSave, "save cancelled");
     }
 
     #[test]
