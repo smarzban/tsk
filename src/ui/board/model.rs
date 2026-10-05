@@ -1709,6 +1709,13 @@ impl BoardModel {
         self.set_message(format!("save failed: {error} · Retry or Cancel"));
     }
 
+    /// Show a failed background save (a bulk dispatch landing) on this board without making it
+    /// the owner: Retry or Cancel end it as a proxy, never closing this board's form.
+    pub fn begin_proxy_save_recovery(&mut self, error: &str) {
+        self.begin_save_recovery(error);
+        self.save_recovery_proxy = true;
+    }
+
     /// End save recovery only after Retry succeeds or Cancel restores the baseline.
     ///
     /// A successful Retry makes the suspended deletion durable, so its recovery notice comes

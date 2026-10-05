@@ -1388,9 +1388,31 @@ impl EligibleDispatch {
         &self.project
     }
 
-    /// The task's human status when it was checked.
-    pub fn status(&self) -> HumanStatus {
-        self.task.status
+    /// Whether a human changed `current`'s status (or archived, deleted, restored it) since this
+    /// check, judged from its history rather than the value: blocking and unblocking again
+    /// counts. History rewritten under the snapshot (an undo) counts too.
+    pub fn status_touched_since(&self, current: &Task) -> bool {
+        use crate::domain::TaskEventKind as Kind;
+        let before = &self.task.history;
+        let Some(added) = current
+            .history
+            .get(before.len()..)
+            .filter(|_| current.history.starts_with(before))
+        else {
+            return true;
+        };
+        added.iter().any(|event| {
+            matches!(
+                event.kind,
+                Kind::StatusSet
+                    | Kind::Completed
+                    | Kind::Reopened
+                    | Kind::SoftDeleted
+                    | Kind::Restored
+                    | Kind::Archived
+                    | Kind::Unarchived
+            )
+        })
     }
 }
 
@@ -1625,6 +1647,8 @@ pub fn launch_bulk_job(
     job: &EligibleDispatch,
     host: &mut impl DispatchHost,
 ) -> Result<Launched, DispatchError> {
+    #[cfg(test)]
+    thread_probe::record(&job.project);
     if host.is_git_repo(&job.project) != Ok(true) {
         return Err(DispatchError::NeedsGitProject);
     }
@@ -1691,10 +1715,39 @@ fn check_git_projects(
     projects
         .into_iter()
         .map(|project| {
+            #[cfg(test)]
+            thread_probe::record(&project);
             let git = host.is_git_repo(&project) == Ok(true);
             (project, git)
         })
         .collect()
+}
+
+/// Which thread ran each bulk git check and launch, by project path, so tests can prove the
+/// system host's work leaves the board thread.
+#[cfg(test)]
+pub(crate) mod thread_probe {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use std::thread::ThreadId;
+
+    static RUNS: Mutex<Vec<(PathBuf, ThreadId)>> = Mutex::new(Vec::new());
+
+    pub(crate) fn record(project: &Path) {
+        RUNS.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push((project.to_path_buf(), std::thread::current().id()));
+    }
+
+    /// The threads that ran work for `project`.
+    pub(crate) fn threads(project: &Path) -> Vec<ThreadId> {
+        RUNS.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|(path, _)| path == project)
+            .map(|(_, thread)| *thread)
+            .collect()
+    }
 }
 
 /// Record a launch on its task: the dispatch record and `started`, in one domain change.

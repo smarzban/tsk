@@ -2795,7 +2795,7 @@ pub fn land_bulk_dispatch_with_host(
                 }
                 Some(task) if task.soft_deleted => Some("deleted"),
                 Some(task) if task.archived => Some("archived"),
-                Some(task) if task.status != job.status() => Some(status_word(task.status)),
+                Some(task) if job.status_touched_since(task) => Some(status_word(task.status)),
                 Some(_) => None,
             };
             let task_id = job.id;
@@ -2816,9 +2816,12 @@ pub fn land_bulk_dispatch_with_host(
             if let Err(error) = store.reload_merge_save(domain) {
                 let working = std::mem::take(domain);
                 save_recovery.fail(baseline, working, error.to_string());
-                model
-                    .input_target_mut()
-                    .begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+                // No board's form or draft caused this save, so none owns its recovery: the
+                // banner is a proxy on the outer board and the input target, and Retry or
+                // Cancel ends it without touching any open form.
+                let error = save_recovery.error().unwrap_or("save failed").to_string();
+                model.begin_proxy_save_recovery(&error);
+                model.present_save_recovery(Some(&error));
                 model.begin_bulk_dispatch(run);
                 return Ok(());
             }
@@ -2838,6 +2841,22 @@ pub fn land_bulk_dispatch_with_host(
         model.input_target_mut().set_message(message);
     }
     Ok(())
+}
+
+/// Load the save baseline for a mutating intent. While a bulk dispatch is landing, a store that
+/// cannot be read refuses the intent on the status row (`None`, nothing changed) instead of
+/// ending the board: exiting would kill launches whose records are still to be saved.
+fn load_baseline(store: &TaskStore, model: &mut BoardModel) -> io::Result<Option<DomainState>> {
+    match store.load() {
+        Ok(baseline) => Ok(Some(baseline)),
+        Err(error) if model.bulk_dispatch_running() => {
+            model.set_message(format!(
+                "can't read the task store: {error} · nothing changed · {BULK_DISPATCH_RUNNING}"
+            ));
+            Ok(None)
+        }
+        Err(error) => Err(io::Error::other(error.to_string())),
+    }
 }
 
 /// The board loop's background work before each paint, on the board thread: landed branch
@@ -2981,12 +3000,24 @@ fn handle_board_intent_with_host(
         return Ok(true);
     }
 
+    // A running batch refuses another dispatch before anything reads the store.
+    if matches!(
+        intent,
+        BoardIntent::Dispatch | BoardIntent::DispatchAgain | BoardIntent::ConfirmDispatch
+    ) && !save_recovery.is_pending()
+        && model.bulk_dispatch_running()
+    {
+        model.set_message(format!("{BULK_DISPATCH_RUNNING} · wait for it to finish"));
+        return Ok(false);
+    }
+
     let baseline = if save_recovery.is_pending() || !board_intent_may_persist(model, &intent) {
         DomainState::new()
     } else {
-        store
-            .load()
-            .map_err(|error| io::Error::other(error.to_string()))?
+        match load_baseline(store, model)? {
+            Some(baseline) => baseline,
+            None => return Ok(false),
+        }
     };
 
     // Do not reload while a failed save is unresolved, because only navigation plus Retry/Cancel
@@ -3195,9 +3226,9 @@ fn handle_board_intent_with_host(
                     .get(*target)
                     .is_some_and(|task| task.assignee.is_some())
         }) {
-            let baseline = store
-                .load()
-                .map_err(|error| io::Error::other(error.to_string()))?;
+            let Some(baseline) = load_baseline(store, model)? else {
+                return Ok(false);
+            };
             run_board_dispatch(
                 store,
                 domain,
@@ -11118,11 +11149,9 @@ mod quick_assign_tests {
             );
         }
 
-        /// A batch started in the Projects preview outlives that preview: rebinding it to
-        /// another project or dropping it leaves the batch landing on the outer board.
-        #[test]
-        fn a_bulk_dispatch_started_in_the_project_preview_outlives_it() {
-            let temp = Temp::new("bulk-preview", &["builder"]);
+        /// A Projects overview whose preview seat (on `/repos/app`) has two assigned tasks marked.
+        fn preview_board(label: &str) -> (Temp, DomainState, BoardModel, [uuid::Uuid; 2]) {
+            let temp = Temp::new(label, &["builder"]);
             let mut domain = DomainState::new();
             let mut create = |title: &str, path: &str| {
                 let id = domain
@@ -11163,6 +11192,14 @@ mod quick_assign_tests {
             );
             seat.set_agent_profiles(&temp.profiles());
             marked(&mut domain, seat, &temp, &ids);
+            (temp, domain, model, ids)
+        }
+
+        /// A batch started in the Projects preview outlives that preview: rebinding it to
+        /// another project or dropping it leaves the batch landing on the outer board.
+        #[test]
+        fn a_bulk_dispatch_started_in_the_project_preview_outlives_it() {
+            let (temp, mut domain, mut model, ids) = preview_board("bulk-preview");
             let mut host = deferred(&temp);
             let mut recovery = SaveRecovery::new();
             let mut names = Vec::new();
@@ -11202,6 +11239,351 @@ mod quick_assign_tests {
             assert!(model
                 .message()
                 .is_some_and(|message| message.starts_with("dispatched")));
+        }
+        /// Wait for a background result, failing rather than hanging.
+        fn eventually<T>(mut poll: impl FnMut() -> Option<T>) -> T {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                if let Some(value) = poll() {
+                    return value;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "background work never landed"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+
+        /// A landing whose save fails while the human has a task edit open (a typed title,
+        /// then the assignee field) never takes that form over: Retry and Cancel both leave the
+        /// form, its focus, and its draft exactly as they were.
+        #[test]
+        fn a_landing_save_failure_never_closes_an_open_task_edit() {
+            for retry in [true, false] {
+                let (temp, mut domain, mut model, ids) = two_marked("bulk-open-form");
+                let mut host = deferred(&temp);
+                let mut recovery = SaveRecovery::new();
+                let mut names = Vec::new();
+                for intent in [BoardIntent::Dispatch, BoardIntent::ConfirmDispatch] {
+                    step(
+                        &temp,
+                        &mut domain,
+                        &mut model,
+                        intent,
+                        &mut recovery,
+                        &mut host,
+                        &mut names,
+                    );
+                }
+                select(&mut domain, &mut model, ids[1]);
+                for intent in [
+                    BoardIntent::OpenTaskPage,
+                    BoardIntent::BeginEditTitle,
+                    BoardIntent::EditInsertText(" draft".into()),
+                    BoardIntent::BeginEditAssignee,
+                ] {
+                    apply_intent(&mut domain, &mut model, intent, None).expect("edit");
+                }
+                let mode = model.input_mode();
+                assert_eq!(
+                    model.form_focus(),
+                    Some(crate::ui::capture::CaptureField::Assignee)
+                );
+                assert!(model.task_session_dirty());
+
+                host.land_next();
+                std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o555))
+                    .expect("make the state dir read-only");
+                land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+                std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o755))
+                    .expect("restore the state dir");
+                assert!(recovery.is_pending());
+                assert_eq!(model.input_mode(), BoardInputMode::SaveRecovery);
+                let answer = if retry {
+                    BoardIntent::RetrySave
+                } else {
+                    BoardIntent::CancelSave
+                };
+                step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    answer,
+                    &mut recovery,
+                    &mut host,
+                    &mut names,
+                );
+                assert!(!recovery.is_pending());
+
+                assert_eq!(
+                    model.input_mode(),
+                    mode,
+                    "retry {retry}: the field stays open"
+                );
+                assert_eq!(
+                    model.form_focus(),
+                    Some(crate::ui::capture::CaptureField::Assignee),
+                    "retry {retry}"
+                );
+                assert!(
+                    model.task_session_dirty(),
+                    "retry {retry}: the draft survives"
+                );
+                apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None)
+                    .expect("back to the title");
+                assert_eq!(model.edit_buffer(), "second job draft", "retry {retry}");
+                assert_eq!(
+                    saved(&temp, ids[0]).dispatch.is_some(),
+                    retry,
+                    "retry {retry}: the landing's record follows the answer"
+                );
+            }
+        }
+
+        /// With launches outstanding, a store that cannot be read refuses a mutating key on the
+        /// status row and a second dispatch is refused before any read: the board never exits,
+        /// and the launches still land once the store is back.
+        #[test]
+        fn an_unreadable_store_during_a_batch_never_exits_the_board() {
+            let (temp, mut domain, mut model, ids) = two_marked("bulk-unreadable");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            for intent in [BoardIntent::Dispatch, BoardIntent::ConfirmDispatch] {
+                step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    intent,
+                    &mut recovery,
+                    &mut host,
+                    &mut names,
+                );
+            }
+            select(&mut domain, &mut model, ids[0]);
+            let file = temp.dir.join("tsk.json");
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000))
+                .expect("make the store unreadable");
+            assert!(!step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::SetStatus(HumanStatus::Blocked),
+                &mut recovery,
+                &mut host,
+                &mut names,
+            ));
+            assert!(
+                model
+                    .message()
+                    .is_some_and(|message| message.starts_with("can't read the task store")
+                        && message.contains("nothing changed")),
+                "{:?}",
+                model.message()
+            );
+            assert!(!step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::Dispatch,
+                &mut recovery,
+                &mut host,
+                &mut names,
+            ));
+            assert!(model
+                .message()
+                .is_some_and(|message| message.contains("wait for it to finish")));
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))
+                .expect("restore the store");
+
+            host.land_next();
+            host.land_next();
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+            for id in &ids {
+                assert_eq!(saved(&temp, *id).status, HumanStatus::Started);
+            }
+        }
+
+        /// Blocking and unblocking a task while its launch is in flight leaves the value where
+        /// it was, but it is still a newer human decision: the landing records the agent and
+        /// keeps ready.
+        #[test]
+        fn a_status_round_trip_during_the_launch_still_keeps_the_humans_status() {
+            let (temp, mut domain, mut model, ids) = two_marked("bulk-aba");
+            let mut other = temp.store.load().expect("load");
+            other.set_status(ids[0], HumanStatus::Ready).expect("ready");
+            temp.store.reload_merge_save(&mut other).expect("save");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            for intent in [BoardIntent::Dispatch, BoardIntent::ConfirmDispatch] {
+                step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    intent,
+                    &mut recovery,
+                    &mut host,
+                    &mut names,
+                );
+            }
+            for status in [HumanStatus::Blocked, HumanStatus::Ready] {
+                let mut other = temp.store.load().expect("load");
+                other.set_status(ids[0], status).expect("status");
+                temp.store.reload_merge_save(&mut other).expect("save");
+            }
+            host.land_next();
+            host.land_next();
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+
+            let first = saved(&temp, ids[0]);
+            assert_eq!(
+                first.status,
+                HumanStatus::Ready,
+                "the round trip is respected"
+            );
+            assert!(first.dispatch.is_some());
+            assert_eq!(saved(&temp, ids[1]).status, HumanStatus::Started);
+            let one = number(&domain, ids[0]);
+            assert!(
+                model
+                    .message()
+                    .is_some_and(|message| message
+                        .contains(&format!("{one} kept ready (changed meanwhile)"))),
+                "{:?}",
+                model.message()
+            );
+        }
+
+        /// The system host's git checks and launches run on a thread of their own, never the
+        /// board thread (they would freeze the board on slow git or Herdr).
+        #[test]
+        fn the_system_host_checks_and_launches_off_the_board_thread() {
+            use crate::dispatch::{thread_probe, DispatchError, SystemDispatchHost};
+            let temp = Temp::new("bulk-system", &["builder"]);
+            let project = temp.dir.join("not-a-repo");
+            std::fs::create_dir_all(&project).expect("project dir");
+            let mut domain = DomainState::new();
+            let id = domain
+                .create(
+                    "system host",
+                    None,
+                    TaskScope::Project {
+                        path: project.to_string_lossy().into(),
+                    },
+                    ProvenanceOrigin::Manual,
+                    None,
+                )
+                .expect("task");
+            domain.assign(id, Some("builder".into())).expect("assign");
+            temp.store.reload_merge_save(&mut domain).expect("number the task");
+            let eligible = crate::dispatch::check_task(&domain, id, &temp.profiles(), true)
+                .expect("eligible before the git check");
+            let board_thread = std::thread::current().id();
+            let mut host = SystemDispatchHost;
+
+            let checks = host.begin_git_checks(vec![project.clone()]);
+            let results = eventually(|| checks.take());
+            assert_eq!(results.get(&project), Some(&false));
+
+            let batch = host.begin_launches(vec![eligible]);
+            let landed = eventually(|| {
+                let landed = batch.take_landed();
+                (!landed.is_empty()).then_some(landed)
+            });
+            assert!(matches!(landed[0].1, Err(DispatchError::NeedsGitProject)));
+
+            let threads = thread_probe::threads(&project);
+            assert_eq!(threads.len(), 2, "one git check and one launch ran");
+            assert!(
+                threads.iter().all(|thread| *thread != board_thread),
+                "the system host ran bulk work on the board thread"
+            );
+        }
+
+        /// The board frame delivers a landed git check to the card: a set outside any git
+        /// repository closes with the refusal, with no direct poll by the test.
+        #[test]
+        fn the_board_frame_delivers_the_cards_git_check() {
+            let (temp, mut domain, mut model, _ids) = two_marked("bulk-frame");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::Dispatch,
+                &mut recovery,
+                &mut host,
+                &mut Vec::new(),
+            );
+            let (checks, _) = host.checks.take().expect("checks started");
+            checks.finish(
+                [(std::path::PathBuf::from(PROJECT), false)]
+                    .into_iter()
+                    .collect(),
+            );
+            super::super::board_frame(&mut model, |_| Ok(()), |_| Ok(false), false).expect("frame");
+            assert!(model.dispatch_prompt().is_none());
+            assert_eq!(
+                model.message(),
+                Some("nothing to dispatch: not a project in a git repo")
+            );
+        }
+
+        /// The board loop's background step delivers the git check to a card opened in the
+        /// Projects preview, from the outer board.
+        #[test]
+        fn the_background_step_delivers_a_preview_cards_git_check() {
+            let (temp, mut domain, mut model, ids) = preview_board("bulk-preview-check");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            step(
+                &temp,
+                &mut domain,
+                model.preview_seat_mut().expect("seat"),
+                BoardIntent::Dispatch,
+                &mut recovery,
+                &mut host,
+                &mut Vec::new(),
+            );
+            let seat_prompt = |model: &mut BoardModel| {
+                model
+                    .preview_seat_mut()
+                    .expect("seat")
+                    .dispatch_prompt()
+                    .cloned()
+                    .expect("card")
+            };
+            assert!(seat_prompt(&mut model).checking());
+            let (checks, _) = host.checks.take().expect("checks started");
+            checks.finish(
+                [(std::path::PathBuf::from("/repos/app"), true)]
+                    .into_iter()
+                    .collect(),
+            );
+            super::super::board_background_step(
+                &temp.store,
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                false,
+                true,
+                &mut host,
+                &mut |_| {},
+            )
+            .expect("background step");
+            let prompt = seat_prompt(&mut model);
+            assert!(!prompt.checking(), "the check reached the preview's card");
+            assert_eq!(
+                prompt
+                    .launch
+                    .iter()
+                    .map(|eligible| eligible.id)
+                    .collect::<Vec<_>>(),
+                ids
+            );
         }
     }
 }
