@@ -546,6 +546,10 @@ pub struct QueueFrameModel<'a> {
     pub context: String,
     /// Whether `context` is a release-update notice rather than a board lens.
     pub has_update_notice: bool,
+    /// The other idle context a status message swaps with `context` (the update notice
+    /// or the lens context). The footer reserves the taller of the two, so a message never
+    /// resizes the list.
+    pub reserve_context: Option<String>,
     /// Optional status-line notice; replaces the default counts when set.
     pub status_message: Option<&'a str>,
     /// Column offset of the delete-notice `ctrl+u undo` control inside `status_message`, when
@@ -5179,7 +5183,13 @@ fn idle_context_extra_rows(model: &QueueFrameModel<'_>, geo: &TierGeometry) -> u
     } else {
         idle_context_rows(&idle_context(model), geo.row_width).len() as u16
     };
-    rows.saturating_sub(1)
+    let reserve = model.reserve_context.as_ref().map_or(0, |context| {
+        let mut context = context.clone();
+        push_pinned_search(model, &mut context);
+        idle_context_rows(&context, geo.row_width).len() as u16
+    });
+    rows.max(reserve)
+        .saturating_sub(1)
         .min(geo.viewport_height.saturating_sub(1))
 }
 
@@ -5711,6 +5721,7 @@ mod tests {
             summary: None,
             context: " projects".to_string(),
             has_update_notice: false,
+            reserve_context: None,
             status_message: None,
             status_undo_offset: None,
             status_undo_width: None,
@@ -5770,6 +5781,7 @@ mod tests {
             summary: None,
             context: " desk".to_string(),
             has_update_notice: false,
+            reserve_context: None,
             status_message: None,
             status_undo_offset: None,
             status_undo_width: None,
@@ -5894,6 +5906,7 @@ mod tests {
             summary: None,
             context: " projects".to_string(),
             has_update_notice: false,
+            reserve_context: None,
             status_message: None,
             status_undo_offset: None,
             status_undo_width: None,

@@ -391,6 +391,7 @@ fn fixture_model_on_tab<'a>(
         summary: None,
         context: " desk".to_string(),
         has_update_notice: false,
+        reserve_context: None,
         status_message: None,
         status_undo_offset: None,
         status_undo_width: None,
@@ -6671,4 +6672,34 @@ fn projects_index_reserves_the_longest_path_so_the_cursor_never_resizes_the_list
     assert!(both.contains("/repos/a"), "{both}");
     assert!(both.contains("release-coordination-service"), "{both}");
     assert!(!both.contains('…'), "the long path wraps:\n{both}");
+}
+
+#[test]
+fn a_pending_update_notice_and_long_filters_keep_the_list_height_through_a_message() {
+    let mut model = long_filter_overflow_model();
+    model.set_update_notice(Some("tsk v9.9.9 available, run tsk update".to_string()));
+    let idle = board_rows(&model, 40, 24);
+    let rule = rule_row_index(&idle);
+    assert!(
+        idle[rule + 1..].join("\n").contains("v9.9.9 available"),
+        "the notice owns the idle footer:\n{}",
+        idle.join("\n")
+    );
+    let selected = idle.iter().position(|row| row.starts_with('▸'));
+
+    model.set_message("moved T100 to ready");
+    let with_message = board_rows(&model, 40, 24);
+    assert_eq!(
+        rule_row_index(&with_message),
+        rule,
+        "the message resized the list:\n{}",
+        with_message.join("\n")
+    );
+    assert_eq!(
+        with_message.iter().position(|row| row.starts_with('▸')),
+        selected
+    );
+    assert!(with_message[rule + 1..]
+        .join("\n")
+        .contains("moved T100 to ready"));
 }

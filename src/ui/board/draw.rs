@@ -1095,6 +1095,17 @@ fn status_idle(model: &BoardModel, surface: BoardSurface, has_message: bool) -> 
     footer_context(model, surface)
 }
 
+/// The idle context `status_idle` swaps in or out when a status message comes and goes
+/// while an update notice is pending, so the footer can reserve rows for both.
+fn status_reserve(model: &BoardModel, surface: BoardSurface, has_message: bool) -> Option<String> {
+    let notice = model.update_notice()?;
+    Some(if has_message {
+        format!(" {notice}")
+    } else {
+        footer_context(model, surface)
+    })
+}
+
 fn footer_context(model: &BoardModel, surface: BoardSurface) -> String {
     match surface {
         BoardSurface::Desk => " desk".to_string(),
@@ -1673,6 +1684,7 @@ fn draw_board_hits(frame: &mut Frame, model: &BoardModel) -> render::QueueHitMap
         search_pinned: model.search_pinned(),
         summary: None,
         context: status_idle(model, surface, status_owned.is_some()),
+        reserve_context: status_reserve(model, surface, status_owned.is_some()),
         has_update_notice: model.update_notice().is_some(),
         status_message: status_owned.as_deref(),
         status_undo_offset,
@@ -1852,6 +1864,7 @@ fn draw_wide_board(
         search_pinned: model.search_pinned(),
         summary: None,
         context: status_idle(model, surface, status_owned.is_some()),
+        reserve_context: status_reserve(model, surface, status_owned.is_some()),
         has_update_notice: model.update_notice().is_some(),
         status_message: status_owned.as_deref(),
         status_undo_offset,
@@ -2098,6 +2111,7 @@ fn draw_projects_wide_board(
         search_pinned: model.search_pinned(),
         summary: None,
         context: status_idle(model, BoardSurface::Projects, outer_status.0.is_some()),
+        reserve_context: status_reserve(model, BoardSurface::Projects, outer_status.0.is_some()),
         has_update_notice: model.update_notice().is_some(),
         status_message: outer_status.0.as_deref(),
         status_undo_offset: outer_status.1,
@@ -2133,6 +2147,7 @@ fn draw_projects_wide_board(
             search_pinned: right.search_pinned(),
             summary: None,
             context: status_idle(right, BoardSurface::Project, status.0.is_some()),
+            reserve_context: status_reserve(right, BoardSurface::Project, status.0.is_some()),
             has_update_notice: right.update_notice().is_some(),
             status_message: status.0.as_deref(),
             status_undo_offset: status.1,
