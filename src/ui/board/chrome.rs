@@ -186,8 +186,7 @@ fn fit_chrome_row(parts: &[ChromeRowPart<'_>], width: usize) -> String {
     let mut kept = fit(width);
 
     let marker = separator + row_width(CHROME_ROW_OMITTED);
-    let marked =
-        kept < parts.len() && floors.first().is_some_and(|floor| floor + marker <= width);
+    let marked = kept < parts.len() && floors.first().is_some_and(|floor| floor + marker <= width);
     let room = if marked { width - marker } else { width };
     if marked {
         kept = fit(room);
