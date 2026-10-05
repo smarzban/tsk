@@ -695,7 +695,8 @@ fn cleanup_confirmed_during_a_background_check_waits_for_that_one_fetch() {
     assert!(confirmed
         .warning
         .unwrap()
-        .contains("merged status computed from cached refs"));
+        .contains("merged status not confirmed"));
+    assert_eq!(confirmed.unreachable_remote.as_deref(), Some("origin"));
     let verdict = loop {
         if let Some(verdict) = check.take() {
             break verdict;
@@ -703,8 +704,10 @@ fn cleanup_confirmed_during_a_background_check_waits_for_that_one_fetch() {
         assert!(std::time::Instant::now() < deadline, "check did not land");
         std::thread::sleep(std::time::Duration::from_millis(5));
     };
-    assert!(verdict.branch_merged);
-    assert!(verdict.warning.unwrap().contains("cached refs"));
+    // The refs on disk still read as merged, but nothing fetched could confirm it.
+    assert!(verdict.branch_merged && verdict.confirmed);
+    assert_eq!(verdict.unreachable_remote.as_deref(), Some("origin"));
+    assert!(verdict.warning.unwrap().contains("fetch failed"));
 }
 
 #[test]
@@ -786,6 +789,7 @@ fn a_background_merge_check_sees_a_remote_merge_the_cached_refs_miss() {
     };
     assert!(verdict.branch_merged && verdict.base_available);
     assert_eq!(verdict.warning, None);
+    assert_eq!(verdict.unreachable_remote, None);
 }
 
 #[cfg(unix)]

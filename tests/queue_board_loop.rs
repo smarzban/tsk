@@ -694,6 +694,7 @@ fn board_frame_paints_a_cleanup_verdict_that_landed_while_idle() {
     model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
         merge_check: Some(check.clone()),
         check_failed: false,
+        unreachable_remote: None,
         inspected: None,
         number: 1,
         task_id: uuid::Uuid::new_v4(),
@@ -707,6 +708,7 @@ fn board_frame_paints_a_cleanup_verdict_that_landed_while_idle() {
         base_available: true,
     }));
     check.complete(MergeVerdict {
+        unreachable_remote: None,
         branch_merged: true,
         base_available: true,
         warning: None,

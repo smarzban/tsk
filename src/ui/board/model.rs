@@ -1069,6 +1069,9 @@ pub struct CleanupRow {
     /// The background check landed without confirming anything (its ancestry query errored
     /// or timed out): the branch stays, whatever the refs on disk say later.
     pub check_failed: bool,
+    /// The background check could not fetch this remote: the refs on disk confirm nothing,
+    /// so the card says `not confirmed (offline)` and the branch stays.
+    pub unreachable_remote: Option<String>,
 }
 
 impl CleanupRow {
@@ -1079,6 +1082,27 @@ impl CleanupRow {
     /// No completed check vouches for the merged status: cleanup keeps the branch.
     pub fn merge_unconfirmed(&self) -> bool {
         self.checking() || self.check_failed
+    }
+
+    /// `y` deletes the branch: a completed check confirmed the merge into an available base.
+    pub fn branch_deletable(&self) -> bool {
+        !self.merge_unconfirmed()
+            && self.unreachable_remote.is_none()
+            && self.base_available
+            && self.branch_merged
+    }
+
+    /// The ref policy `y` cleans this row with: the card already refreshed the base off the
+    /// event loop, so cleanup never fetches; an unfinished, failed or offline check keeps
+    /// the branch.
+    pub fn cleanup_refs(&self) -> crate::dispatch::CleanupRefs {
+        if self.merge_unconfirmed() {
+            crate::dispatch::CleanupRefs::Unconfirmed
+        } else if self.unreachable_remote.is_some() {
+            crate::dispatch::CleanupRefs::Offline
+        } else {
+            crate::dispatch::CleanupRefs::Cached
+        }
     }
 
     /// `y` removes this worktree. A dirty worktree is never cleaned.
@@ -1333,6 +1357,7 @@ impl BoardModel {
             };
             row.merge_check = None;
             row.check_failed = !verdict.confirmed;
+            row.unreachable_remote = verdict.unreachable_remote;
             row.branch_merged = verdict.branch_merged;
             row.base_available = verdict.base_available;
             row.warning = verdict.warning;
