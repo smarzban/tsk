@@ -12,7 +12,7 @@ use ratatui::Terminal;
 use tsk_tui::agents::AgentProfiles;
 use tsk_tui::app::{
     confirm_cleanup_with_host, offer_cleanup_prompt_with_host, poll_cleanup_runs,
-    resolve_dispatch_again, start_cleanup_run, CleanupOffer,
+    resolve_dispatch_again, CleanupOffer,
 };
 use tsk_tui::context::InvocationSnapshot;
 use tsk_tui::dispatch::{
@@ -425,13 +425,13 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
         screen.contains("stays open") && !screen.contains("close  "),
         "a dirty card never claims the pane closes:\n{screen}"
     );
-    let (plan, run) = confirm_cleanup_with_host(&mut domain, &mut model, true, true, &mut host)
+    let run = confirm_cleanup_with_host(&mut domain, &mut model, true, true, &mut host)
         .expect("completion")
         .expect("card")
         .run
         .expect("y plans the card's rows");
     assert!(
-        plan.is_empty(),
+        run.plan.is_empty(),
         "a dirty worktree is never handed to the worker"
     );
     assert!(matches!(
@@ -617,11 +617,12 @@ fn a_confirmed_card_reports_each_row_and_esc_closes_it_once_finished() {
     let (mut domain, mut model, id, dir) = dispatched_board_for_merge_check("progress");
     let mut host = merge_check_host(true, true);
     offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host).expect("offer");
-    let (_, mut run) = confirm_cleanup_with_host(&mut domain, &mut model, true, true, &mut host)
+    let mut run = confirm_cleanup_with_host(&mut domain, &mut model, true, true, &mut host)
         .expect("completion")
         .expect("card")
         .run
         .expect("y plans a run");
+    run.started = true;
     run.rows[0].state = CleanupRowState::Removing;
     model.begin_cleanup_run(run);
     let screen = rendered_board(&model, 100, 30);
@@ -630,11 +631,12 @@ fn a_confirmed_card_reports_each_row_and_esc_closes_it_once_finished() {
     assert!(screen.contains("esc hide, keep cleaning"), "{screen}");
     assert!(!screen.contains("y done + clean up"), "{screen}");
 
-    let run = model.cleanup_run_mut().expect("run");
+    let mut run = model.cleanup_run_mut().expect("run");
     run.rows[0].state = CleanupRowState::Cleaned {
         branch_kept: Some(("not merged".into(), "not merged into main".into())),
     };
     run.settled = true;
+    drop(run);
     let screen = rendered_board(&model, 100, 30);
     assert!(screen.contains("Done T1 · cleanup finished"), "{screen}");
     assert!(screen.contains("✓ cleaned · branch kept"), "{screen}");
@@ -656,11 +658,12 @@ fn cleanup_completed_while_still_checking_never_deletes_on_the_cached_verdict() 
     let mut host = merge_check_host(true, false);
     offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host).expect("offer");
     assert!(model.cleanup_prompt().unwrap().checking());
-    let (plan, _) = confirm_cleanup_with_host(&mut domain, &mut model, true, true, &mut host)
+    let plan = confirm_cleanup_with_host(&mut domain, &mut model, true, true, &mut host)
         .expect("completion")
         .expect("card")
         .run
-        .expect("y plans the clean row");
+        .expect("y plans the clean row")
+        .plan;
     let job = CleanupJob::new(plan.len());
     tsk_tui::dispatch::run_cleanup_job(&job, &plan, true, &mut host);
     let (slots, settled) = job.snapshot().expect("job idle");
@@ -933,21 +936,28 @@ fn successful_popup_cleanup_saves_completion_first_and_undo_reverses_only_status
         offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host).unwrap(),
         CleanupOffer::Prompted
     );
-    let (plan, run) = confirm_cleanup_with_host(&mut domain, &mut model, true, true, &mut host)
+    let run = confirm_cleanup_with_host(&mut domain, &mut model, true, true, &mut host)
         .unwrap()
         .unwrap()
         .run
         .expect("y plans a run");
-    assert_eq!(plan[0].number, 1);
+    assert_eq!(run.plan[0].number, 1);
     // Completion is durable before the worker touches anything; the cleaned marker lands
     // in its own save when the loop applies the finished row.
     store
         .reload_merge_save(&mut domain)
         .expect("completion saves first");
     assert_eq!(host.removed, 0);
-    start_cleanup_run(&mut model, plan, run, true, &mut host);
+    model.begin_cleanup_run(run);
     let mut recovery = tsk_tui::save_recovery::SaveRecovery::new();
-    poll_cleanup_runs(&store, &mut domain, &mut model, &mut recovery);
+    poll_cleanup_runs(
+        &store,
+        &mut domain,
+        &mut model,
+        &mut recovery,
+        true,
+        &mut host,
+    );
     assert!(!recovery.is_pending());
     assert_eq!(host.removed, 1);
     let task = domain.get(id).unwrap();

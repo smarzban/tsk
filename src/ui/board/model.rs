@@ -1044,9 +1044,13 @@ pub struct BoardModel {
     pub(super) cleanup_prompt: Option<CleanupPrompt>,
     /// A confirmed cleanup whose host work runs off the event loop. Outlives its card: Esc
     /// hides the card and the status row reports progress until the run finishes.
-    pub(super) cleanup_run: Option<CleanupRun>,
+    pub(super) cleanup_run: SharedCleanupRun,
     /// Quit waits here while a cleanup run finishes its git and Herdr steps, up to this bound.
     pub(super) quit_after_cleanup: Option<Instant>,
+    /// The status row while a hidden cleanup runs (`cleaning 2 of 5…`, `finishing
+    /// cleanup…`). Its own slot, under any action message: another action never erases it
+    /// and it never outlives the run.
+    pub(super) cleanup_status: Option<String>,
     /// Bulk dispatch card over the marked set while it owns input.
     pub(super) dispatch_prompt: Option<DispatchPrompt>,
     /// A bulk dispatch whose launches are still landing. One slot shared by the outer board and
@@ -1318,9 +1322,6 @@ pub struct CleanupPrompt {
     pub rows: Vec<CleanupRow>,
     /// `Some` for a marked set; `None` for the single cursor card.
     pub bulk: Option<BulkCleanup>,
-    /// `y` pressed while checking: the event loop finishes the cleanup when every verdict
-    /// lands, or at this deadline with each unconfirmed branch retained.
-    pub confirm_deadline: Option<Instant>,
     /// First visible card row; the painter clamps it to the rows that fit.
     pub scroll: usize,
 }
@@ -1330,17 +1331,12 @@ impl CleanupPrompt {
         Self {
             rows: vec![row],
             bulk: None,
-            confirm_deadline: None,
             scroll: 0,
         }
     }
 
     pub fn checking(&self) -> bool {
         self.rows.iter().any(CleanupRow::checking)
-    }
-
-    pub fn confirm_queued(&self) -> bool {
-        self.confirm_deadline.is_some()
     }
 
     /// Whether `y` is offered: at least one listed worktree can be removed.
@@ -1353,15 +1349,26 @@ impl CleanupPrompt {
 /// row cut off here is never marked cleaned, and its dispatch converges on the next cleanup.
 pub const QUIT_CLEANUP_BOUND: Duration = Duration::from_secs(30);
 
+/// The status row while quit waits on a running cleanup.
+pub const FINISHING_CLEANUP: &str = "finishing cleanup…";
+
 /// How long a clean cleanup outcome stays on the status row.
 pub const CLEANUP_SUMMARY_TTL: Duration = Duration::from_secs(4);
 
 /// Longest status-row summary a cleanup names tasks in; past it, only counts.
 const CLEANUP_SUMMARY_WIDTH: usize = 72;
 
+/// The running cleanup, shared between a board and its project preview: dropping or rebinding
+/// the preview never loses the worker's handle, its cleaned markers, or the busy and quit
+/// guards.
+#[derive(Debug, Clone, Default)]
+pub struct SharedCleanupRun(std::rc::Rc<std::cell::RefCell<Option<CleanupRun>>>);
+
 /// What one row of a confirmed cleanup shows on its card.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CleanupRowState {
+    /// Its merged check is still running: the worker starts once every check lands.
+    Checking,
     Queued,
     Removing,
     /// Removed. `branch_kept` holds the short and full reason the branch stayed, if it did.
@@ -1417,11 +1424,45 @@ pub struct CleanupRun {
     pub refused: Vec<(String, String)>,
     /// The job reported every row's git and Herdr work done.
     pub settled: bool,
+    /// The card rows the worker will clean, in job-slot order, with their merged checks.
+    /// Completion is saved at `y`; the worker starts once every check lands or at
+    /// `start_deadline`, cleaning each row with the refs its check confirmed.
+    pub waiting: Vec<CleanupRow>,
+    /// One plan row per job slot; refs are filled in when the worker starts.
+    pub plan: Vec<crate::dispatch::CleanupPlanRow>,
+    pub start_deadline: Instant,
+    pub started: bool,
 }
 
 impl CleanupRun {
     pub fn finished(&self) -> bool {
-        self.settled && self.rows.iter().all(|row| row.state.landed())
+        self.started && self.settled && self.rows.iter().all(|row| row.state.landed())
+    }
+
+    /// Apply landed merged checks to the rows still waiting. True when the worker may start:
+    /// every check landed, or the bound passed (unconfirmed rows then keep their branch).
+    pub fn poll_checks(&mut self) -> bool {
+        for (slot, row) in self.waiting.iter_mut().enumerate() {
+            let Some(verdict) = row.merge_check.as_ref().and_then(|check| check.take()) else {
+                continue;
+            };
+            row.merge_check = None;
+            row.check_failed = !verdict.confirmed;
+            row.unreachable_remote = verdict.unreachable_remote;
+            row.branch_merged = verdict.branch_merged;
+            row.base_available = verdict.base_available;
+            row.warning = verdict.warning;
+            if let Some(run_row) = self
+                .rows
+                .iter_mut()
+                .find(|run_row| run_row.slot == Some(slot))
+            {
+                if run_row.state == CleanupRowState::Checking {
+                    run_row.state = CleanupRowState::Queued;
+                }
+            }
+        }
+        !self.waiting.iter().any(CleanupRow::checking) || Instant::now() >= self.start_deadline
     }
 
     /// Rows the worker handles, and how many of them have landed.
@@ -1432,6 +1473,9 @@ impl CleanupRun {
     }
 
     pub fn progress_message(&self) -> String {
+        if !self.started {
+            return "cleanup waits for merge checks…".into();
+        }
         let (landed, total) = self.progress();
         format!("cleaning {} of {total}…", (landed + 1).min(total.max(1)))
     }
@@ -1454,7 +1498,7 @@ impl CleanupRun {
                 CleanupRowState::Kept { short, .. } => {
                     format!("done T{} · kept ({short})", row.number)
                 }
-                CleanupRowState::Queued | CleanupRowState::Removing => {
+                CleanupRowState::Checking | CleanupRowState::Queued | CleanupRowState::Removing => {
                     format!("done T{}", row.number)
                 }
             };
@@ -1595,8 +1639,9 @@ impl BoardModel {
             pending_delete: None,
             pending_dispatch_again: None,
             cleanup_prompt: None,
-            cleanup_run: None,
+            cleanup_run: SharedCleanupRun::default(),
             quit_after_cleanup: None,
+            cleanup_status: None,
             dispatch_prompt: None,
             bulk_dispatch: SharedBulkDispatch::default(),
             pending_delete_bulk: false,
@@ -1674,12 +1719,12 @@ impl BoardModel {
         self.cleanup_prompt.as_ref()
     }
 
-    pub fn cleanup_run(&self) -> Option<&CleanupRun> {
-        self.cleanup_run.as_ref()
+    pub fn cleanup_run(&self) -> Option<std::cell::Ref<'_, CleanupRun>> {
+        std::cell::Ref::filter_map(self.cleanup_run.0.borrow(), Option::as_ref).ok()
     }
 
-    pub fn cleanup_run_mut(&mut self) -> Option<&mut CleanupRun> {
-        self.cleanup_run.as_mut()
+    pub fn cleanup_run_mut(&self) -> Option<std::cell::RefMut<'_, CleanupRun>> {
+        std::cell::RefMut::filter_map(self.cleanup_run.0.borrow_mut(), Option::as_mut).ok()
     }
 
     /// Show a confirmed cleanup's progress on the card that confirmed it.
@@ -1688,54 +1733,49 @@ impl BoardModel {
             prompt.scroll = 0;
         }
         self.cleanup_max_scroll.set(usize::MAX);
-        self.cleanup_run = Some(run);
+        *self.cleanup_run.0.borrow_mut() = Some(run);
     }
 
-    /// Whether the cleanup card is on screen over this board.
+    /// Whether this board shows the running cleanup's card.
     pub fn cleanup_card_open(&self) -> bool {
-        self.popup == BoardPopup::CleanupConfirm && self.cleanup_prompt.is_some()
+        self.popup == BoardPopup::CleanupConfirm
+            && self.cleanup_prompt.is_some()
+            && self.cleanup_running()
     }
 
-    /// This board or its project preview holds a cleanup run.
+    /// A confirmed cleanup is running on this board or its project preview (one shared slot).
     pub fn cleanup_running(&self) -> bool {
-        self.cleanup_run.is_some()
-            || self
-                .right_seat
-                .as_deref()
-                .is_some_and(|seat| seat.cleanup_run.is_some())
+        self.cleanup_run.0.borrow().is_some()
     }
 
     /// Drop a finished run and its card. Returns the status-row summary to post.
     pub fn finish_cleanup_run(&mut self) -> Option<(String, bool)> {
-        let run = self.cleanup_run.take()?;
+        let run = self.cleanup_run.0.borrow_mut().take()?;
         if self.popup == BoardPopup::CleanupConfirm {
             self.close_popup();
         }
+        if let Some(seat) = self.right_seat.as_deref_mut() {
+            if seat.popup == BoardPopup::CleanupConfirm {
+                seat.close_popup();
+            }
+        }
+        self.cleanup_status = None;
         Some(run.summary())
     }
 
     /// Esc or `[x]` on the cleanup card. Before `y` it cancels; while the run works it hides
-    /// the card and the status row takes over; once the run finished it closes with the
-    /// summary.
+    /// the card (completion stays saved, cleanup continues, the status row reports it); once
+    /// the run finished it closes with the summary.
     pub fn cancel_cleanup_card(&mut self) {
-        match self.cleanup_run.as_ref().map(CleanupRun::finished) {
+        let finished = self.cleanup_run().map(|run| run.finished());
+        match finished {
             None => self.close_popup(),
             Some(true) => {
                 if let Some((summary, clean)) = self.finish_cleanup_run() {
                     self.post_cleanup_summary(summary, clean);
                 }
             }
-            Some(false) => {
-                let progress = self
-                    .cleanup_run
-                    .as_ref()
-                    .map(CleanupRun::progress_message)
-                    .unwrap_or_default();
-                self.close_popup();
-                if self.quit_after_cleanup.is_none() {
-                    self.set_message(progress);
-                }
-            }
+            Some(false) => self.close_popup(),
         }
     }
 
@@ -1749,21 +1789,28 @@ impl BoardModel {
         }
     }
 
+    /// Point the hidden-cleanup status slot at `status` (`None` clears it).
+    pub fn set_cleanup_status(&mut self, status: Option<String>) {
+        self.cleanup_status = status;
+    }
+
     /// Quit with a cleanup still running: hide its card and wait, visibly and bounded, for
     /// its git and Herdr steps to land.
     pub fn begin_quit_after_cleanup(&mut self) {
         if self.quit_after_cleanup.is_none() {
             self.quit_after_cleanup = Some(Instant::now() + QUIT_CLEANUP_BOUND);
         }
-        if self.cleanup_run.is_some() && self.popup == BoardPopup::CleanupConfirm {
+        if self.popup == BoardPopup::CleanupConfirm {
             self.close_popup();
         }
         if let Some(seat) = self.right_seat.as_deref_mut() {
-            if seat.cleanup_run.is_some() && seat.popup == BoardPopup::CleanupConfirm {
+            if seat.popup == BoardPopup::CleanupConfirm {
                 seat.close_popup();
+                seat.clear_message();
             }
         }
-        self.set_message("finishing cleanup…");
+        self.clear_message();
+        self.cleanup_status = Some(FINISHING_CLEANUP.into());
     }
 
     pub fn quitting_after_cleanup(&self) -> bool {
@@ -1864,32 +1911,6 @@ impl BoardModel {
         self.cleanup_prompt.as_mut()
     }
 
-    /// `y` while the card's merged check runs: queue the confirmation instead of waiting on
-    /// the network here. True while it stays queued; false once it should run now (no check
-    /// running, or the queued confirmation's bound has passed).
-    pub fn queue_cleanup_confirm(&mut self) -> bool {
-        let Some(prompt) = self
-            .cleanup_prompt
-            .as_mut()
-            .filter(|prompt| prompt.checking())
-        else {
-            return false;
-        };
-        let deadline = *prompt
-            .confirm_deadline
-            .get_or_insert_with(|| Instant::now() + crate::dispatch::MERGE_CHECK_TIMEOUT);
-        Instant::now() < deadline
-    }
-
-    /// A queued `y` whose check has landed, or whose bound has passed: the event loop runs it.
-    pub fn cleanup_confirm_due(&self) -> bool {
-        self.cleanup_prompt.as_ref().is_some_and(|prompt| {
-            prompt
-                .confirm_deadline
-                .is_some_and(|deadline| !prompt.checking() || Instant::now() >= deadline)
-        })
-    }
-
     /// Apply a finished background merged check to the open cleanup card (this board's or its
     /// project preview's). A check whose card was closed is dropped with it, so a late result
     /// never reaches another prompt.
@@ -1963,13 +1984,6 @@ impl BoardModel {
     pub fn end_proxy_save_recovery(&mut self) {
         self.save_recovery_proxy = false;
         self.end_save_recovery(SaveResolution::Retried);
-    }
-
-    /// Whether a queued `y` waits in this board's retained project preview, focused or parked.
-    pub fn preview_cleanup_confirm_due(&self) -> bool {
-        self.right_seat
-            .as_deref()
-            .is_some_and(BoardModel::cleanup_confirm_due)
     }
 
     /// The retained project preview, whether or not it currently owns input.
@@ -2530,6 +2544,7 @@ impl BoardModel {
         right.selection_id = None;
         right.update_notice = self.update_notice.clone();
         right.bulk_dispatch = self.bulk_dispatch.clone();
+        right.cleanup_run = self.cleanup_run.clone();
         right.seed_selection();
         self.right_seat = Some(Box::new(right));
         true
@@ -4974,9 +4989,9 @@ impl BoardModel {
             .as_deref()
             .filter(|_| self.project_right_seat_focused())
         {
-            return right.message();
+            return right.message().or(self.cleanup_status.as_deref());
         }
-        self.message.as_deref()
+        self.message.as_deref().or(self.cleanup_status.as_deref())
     }
 
     pub fn update_notice(&self) -> Option<&str> {
@@ -5423,6 +5438,10 @@ mod tests {
             bulk,
             refused: Vec::new(),
             settled: true,
+            waiting: Vec::new(),
+            plan: Vec::new(),
+            start_deadline: Instant::now(),
+            started: true,
         }
     }
 
@@ -5515,7 +5534,7 @@ mod tests {
         let mut model = BoardModel::from_tasks(Vec::new(), None);
         let mut unfinished = run(vec![run_row(1, CleanupRowState::Removing)], None);
         unfinished.settled = false;
-        model.cleanup_run = Some(unfinished);
+        model.begin_cleanup_run(unfinished);
         model.begin_quit_after_cleanup();
         assert_eq!(model.message(), Some("finishing cleanup…"));
         assert!(!model.quit_after_cleanup_due());
@@ -5525,7 +5544,7 @@ mod tests {
             "bounded: a stuck host never pins the board"
         );
         model.quit_after_cleanup = Some(Instant::now() + QUIT_CLEANUP_BOUND);
-        model.cleanup_run = None;
+        model.finish_cleanup_run();
         assert!(model.quit_after_cleanup_due());
     }
 

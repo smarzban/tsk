@@ -72,9 +72,8 @@ pub(crate) fn cleanup_overlay<'a>(prompt: &CleanupPrompt, home: Option<&str>) ->
         (true, false) => CleanupFooter::Single,
         (true, true) => CleanupFooter::Bulk,
     };
-    let queued = prompt.confirm_queued() && prompt.checking();
     let (title, lines) = match (&prompt.bulk, prompt.rows.first()) {
-        (None, Some(row)) => single_cleanup_lines(row, queued, home),
+        (None, Some(row)) => single_cleanup_lines(row, home),
         (Some(bulk), _) => {
             let total =
                 prompt.rows.len() + bulk.refused.len() + bulk.missing.len() + bulk.plain.len();
@@ -96,11 +95,6 @@ pub(crate) fn cleanup_overlay<'a>(prompt: &CleanupPrompt, home: Option<&str>) ->
                 }
             };
             let mut lines = Vec::new();
-            if queued {
-                lines.push(CleanupCardLine::Text(
-                    "Cleaning up once the checks finish.".into(),
-                ));
-            }
             for row in &prompt.rows {
                 let (verdict, actions) = if row.dirty {
                     (
@@ -245,6 +239,7 @@ pub(crate) fn cleanup_run_overlay<'a>(
     let mut lines = Vec::new();
     for row in &run.rows {
         let (status, detail) = match &row.state {
+            CleanupRowState::Checking => ("checking merge…".to_string(), None),
             CleanupRowState::Queued => ("waiting".to_string(), None),
             CleanupRowState::Removing => ("removing worktree…".to_string(), None),
             CleanupRowState::Cleaned { branch_kept: None } => {
@@ -356,7 +351,6 @@ pub(crate) fn dispatch_overlay<'a>(
 
 fn single_cleanup_lines(
     row: &CleanupRow,
-    queued: bool,
     home: Option<&str>,
 ) -> (CleanupTitle, Vec<CleanupCardLine>) {
     let number = row.number;
@@ -390,11 +384,6 @@ fn single_cleanup_lines(
         format!("Not merged into {base} (squash-merged? delete it by hand)")
     };
     let mut lines = vec![CleanupCardLine::Text(headline)];
-    if queued && !row.dirty {
-        lines.push(CleanupCardLine::Text(
-            "Cleaning up once the check finishes.".into(),
-        ));
-    }
     if let Some(warning) = &row.warning {
         lines.push(CleanupCardLine::Text(warning.clone()));
     }
@@ -1615,7 +1604,7 @@ impl OverlayPayloads {
         }
         if let Some(prompt) = model.cleanup_prompt() {
             return Some(match model.cleanup_run() {
-                Some(run) => cleanup_run_overlay(prompt, run),
+                Some(run) => cleanup_run_overlay(prompt, &run),
                 None => cleanup_overlay(prompt, home_dir().as_deref()),
             });
         }
