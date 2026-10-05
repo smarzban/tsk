@@ -12096,6 +12096,101 @@ mod queued_cleanup_tests {
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
 
+    fn focus_project_preview(domain: &mut DomainState, model: &mut BoardModel) {
+        apply_intent(domain, model, BoardIntent::SelectNavTab(NavTab::Projects), None)
+            .expect("projects overview");
+        for _ in 0..2 {
+            apply_intent(domain, model, BoardIntent::StageRight, None).expect("stage right");
+        }
+        assert!(model.project_right_seat_focused());
+    }
+
+    #[test]
+    fn a_cleanup_confirmed_in_the_project_preview_outlives_dropping_and_rebinding_it() {
+        let (dir, store, mut domain, id) = setup("preview-drop");
+        let mut model = BoardModel::from_domain(&domain, None);
+        focus_project_preview(&mut domain, &mut model);
+        let mut host = CheckHost::new(false);
+        offer_cleanup_prompt_with_host(&mut domain, model.input_target_mut(), id, true, &mut host)
+            .expect("offer");
+        press(
+            &store,
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        press(
+            &store,
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::CancelCleanup,
+            &mut host,
+        );
+        // Leave the overview (the preview is dropped), then come back (a new preview binds).
+        model.drop_project_preview();
+        assert!(model.right_seat().is_none());
+        assert!(model.cleanup_running(), "the run is not the preview's to lose");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Desk),
+            None,
+        )
+        .expect("tasks");
+        focus_project_preview(&mut domain, &mut model);
+        assert!(model.input_target_mut().cleanup_running());
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert_eq!(model.message(), Some("cleanup waits for merge checks…"));
+
+        host.check.complete(verdict(true));
+        host.cached_merged = true;
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert_eq!((host.removed, host.deleted), (1, 1));
+        let disk = store.load().expect("load");
+        assert!(
+            disk.get(id).unwrap().dispatch.as_ref().unwrap().cleaned,
+            "the cleaned marker still lands"
+        );
+        assert!(!model.cleanup_running());
+        assert_eq!(model.message(), Some("done T1 · cleaned"));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn quit_waits_for_a_cleanup_whose_preview_was_dropped() {
+        let (dir, store, mut domain, id) = setup("preview-quit");
+        let mut model = BoardModel::from_domain(&domain, None);
+        focus_project_preview(&mut domain, &mut model);
+        let mut host = CheckHost::new(false);
+        offer_cleanup_prompt_with_host(&mut domain, model.input_target_mut(), id, true, &mut host)
+            .expect("offer");
+        press(
+            &store,
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        model.drop_project_preview();
+        let mut recovery = SaveRecovery::new();
+        let quit = handle_board_intent_with_host(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::Quit,
+            &mut recovery,
+            false,
+            true,
+            &mut host,
+            &mut |_| {},
+        )
+        .expect("quit");
+        assert!(!quit);
+        assert!(!model.quit_after_cleanup_due());
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
     /// A preview task-page edit whose save fails, then the frame narrows so the preview parks.
     /// Returns the persistent recovery, with the visible board showing it.
     #[cfg(unix)]
@@ -12621,7 +12716,7 @@ mod bulk_cleanup_tests {
         offer_bulk_cleanup_prompt_with_host, BulkCleanupOffer,
     };
     use crate::dispatch::{
-        clean_planned_with_host, run_cleanup_job, CleanupInspection, CleanupJob, CleanupPlanRow,
+        run_cleanup_job, run_cleanup_row, CleanupInspection, CleanupJob, CleanupPlanRow,
         CreatedWorktree, DispatchHost, MergeCheck, MergeVerdict,
     };
     use crate::domain::{
@@ -12733,14 +12828,7 @@ mod bulk_cleanup_tests {
         /// The worker finishes row `index`; the job settles once every row is done.
         fn release(&mut self, index: usize) {
             let (job, plan) = self.held.clone().expect("held job");
-            job.start(index);
-            // The real worker's guard, right before the host work.
-            let result = if job.row_current(index, &plan[index]) {
-                clean_planned_with_host(&plan[index], true, self)
-            } else {
-                Err(crate::dispatch::CleanupError::DispatchChanged)
-            };
-            job.finish(index, result);
+            run_cleanup_row(&job, index, &plan[index], true, self);
             let (slots, _) = job.snapshot().expect("job idle");
             if slots
                 .iter()
@@ -13034,6 +13122,10 @@ mod bulk_cleanup_tests {
         assert!(!cleaned(&board, 0) && !cleaned(&board, 1));
         assert!(board.model.marked_ids().is_empty());
         assert_eq!(board.model.message(), Some("done 3 · worktrees kept"));
+        assert!(
+            board.model.message_is_sticky(),
+            "kept worktrees are something kept: the outcome stays"
+        );
         let disk = board.store.load().expect("load");
         assert!(matches!(
             disk.last_undo(),
@@ -13475,5 +13567,115 @@ mod bulk_cleanup_tests {
             super::CleanupOffer::Busy
         );
         assert_ne!(board.domain.get(id).unwrap().status, HumanStatus::Done);
+    }
+
+    #[test]
+    fn a_row_relaunched_after_y_is_skipped_right_before_its_host_work() {
+        let (mut board, mut host) = slow_board("rebound");
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        let (clean, dirty) = (slot(&board, 0), slot(&board, 1));
+        // Another process relaunches T1 after `y`, before the worker reaches it.
+        let mut other = board.store.load().expect("load");
+        let mut relaunched = dispatched("clean");
+        relaunched.herdr_workspace_id = "w-clean-2".into();
+        relaunched.at = SystemTime::now() + std::time::Duration::from_secs(1);
+        other
+            .record_dispatch(board.ids[0], relaunched.clone())
+            .expect("relaunch");
+        board.store.reload_merge_save(&mut other).expect("save");
+        // This board relaunches T2 itself; its own domain has the new record.
+        let mut again = dispatched("dirty");
+        again.at = SystemTime::now() + std::time::Duration::from_secs(1);
+        board
+            .domain
+            .record_dispatch(board.ids[1], again.clone())
+            .expect("relaunch here");
+        tick(&mut board, &mut host);
+        host.release(clean);
+        host.release(dirty);
+        tick(&mut board, &mut host);
+        assert!(
+            host.removed.is_empty(),
+            "neither relaunch loses its worktree: {:?}",
+            host.removed
+        );
+        assert!(board.model.cleanup_run().is_some_and(|run| run
+            .rows
+            .iter()
+            .all(|row| matches!(&row.state, CleanupRowState::Kept { short, .. }
+                if short == "dispatch changed"))));
+        assert!(!cleaned(&board, 1));
+    }
+
+    #[test]
+    fn hidden_progress_owns_its_status_slot_and_ends_with_the_run() {
+        let (mut board, mut host) = slow_board("status");
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        tick(&mut board, &mut host);
+        assert_eq!(board.model.message(), Some("cleaning 1 of 2…"));
+        // Another action's feedback covers it, then gives the slot back.
+        board.model.set_message("marked");
+        assert_eq!(board.model.message(), Some("marked"));
+        board.model.clear_message();
+        assert_eq!(board.model.message(), Some("cleaning 1 of 2…"));
+        tick(&mut board, &mut host);
+        assert_eq!(board.model.message(), Some("cleaning 1 of 2…"));
+        let (first, second) = (slot(&board, 0), slot(&board, 1));
+        host.release(first);
+        host.release(second);
+        tick(&mut board, &mut host);
+        assert_eq!(board.model.message(), Some("done 3 · cleaned 2"));
+        assert!(!board.model.message_is_sticky());
+        // When the clean summary goes, the finished run's progress does not come back.
+        board.model.clear_message();
+        assert_eq!(board.model.message(), None);
+    }
+
+    #[test]
+    fn ctrl_d_in_the_project_preview_respects_a_cleanup_running_on_the_outer_board() {
+        let (mut board, mut host) = slow_board("outer-busy");
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        let id = board
+            .domain
+            .create(
+                "another",
+                None,
+                TaskScope::Project {
+                    path: PROJECT.into(),
+                },
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create");
+        board
+            .domain
+            .record_dispatch(id, dispatched("another"))
+            .expect("dispatch");
+        board.model.sync_from_domain(&board.domain);
+        apply_intent(
+            &mut board.domain,
+            &mut board.model,
+            BoardIntent::SelectNavTab(crate::ui::queue::NavTab::Projects),
+            None,
+        )
+        .expect("projects overview");
+        for _ in 0..2 {
+            apply_intent(&mut board.domain, &mut board.model, BoardIntent::StageRight, None)
+                .expect("stage right");
+        }
+        assert!(board.model.project_right_seat_focused());
+        assert_eq!(
+            super::offer_cleanup_prompt_with_host(
+                &mut board.domain,
+                board.model.input_target_mut(),
+                id,
+                true,
+                &mut host
+            )
+            .expect("offer"),
+            super::CleanupOffer::Busy
+        );
     }
 }

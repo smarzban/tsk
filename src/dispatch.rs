@@ -1619,23 +1619,30 @@ pub fn run_cleanup_job(
 ) -> Vec<PathBuf> {
     let mut trash = Vec::new();
     for (index, row) in plan.iter().enumerate() {
-        job.start(index);
-        // Checked right before the host work, not only when `y` planned the row: the board
-        // stays interactive meanwhile, so the task may have been relaunched since.
-        let result = if job.row_current(index, row) {
-            clean_planned_with_host(row, in_herdr, host)
-        } else {
-            Err(CleanupError::DispatchChanged)
-        };
-        if let Ok(CleanupResult {
-            trash: Some(path), ..
-        }) = &result
-        {
-            trash.push(path.clone());
-        }
-        job.finish(index, result);
+        trash.extend(run_cleanup_row(job, index, row, in_herdr, host));
     }
     job.settle();
+    trash
+}
+
+/// One row of [`run_cleanup_job`]: returns its parked trash, if it was removed.
+pub fn run_cleanup_row(
+    job: &CleanupJob,
+    index: usize,
+    row: &CleanupPlanRow,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Option<PathBuf> {
+    job.start(index);
+    // Checked right before the host work, not only when `y` planned the row: the board
+    // stays interactive meanwhile, so the task may have been relaunched since.
+    let result = if job.row_current(index, row) {
+        clean_planned_with_host(row, in_herdr, host)
+    } else {
+        Err(CleanupError::DispatchChanged)
+    };
+    let trash = result.as_ref().ok().and_then(|result| result.trash.clone());
+    job.finish(index, result);
     trash
 }
 
@@ -3046,6 +3053,93 @@ mod tests {
             "a stash whose removal never happened goes back"
         );
         assert_eq!(fs::read_dir(&repo.trash).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_restore_that_meets_a_rebuilt_entry_keeps_the_stash_and_the_sweep_never_deletes_it() {
+        let repo = StashRepo::new("collision");
+        let stash = stash_ignored_entries(&repo.worktree, &repo.trash)
+            .expect("no rollback")
+            .expect("stash");
+        // A build recreates target/ while removal is refused.
+        fs::create_dir_all(repo.worktree.join("target")).expect("rebuild");
+        fs::write(repo.worktree.join("target/new"), "new").expect("new output");
+        let kept = SystemDispatchHost
+            .restore_ignored(stash.clone())
+            .expect_err("target/ could not go back");
+        assert!(kept.contains(&stash.dir.display().to_string()), "{kept}");
+        assert!(stash.dir.join("items/target/debug/deps/big").exists());
+        assert!(stash.dir.join(STASH_KEEP).exists());
+        assert!(repo.worktree.join("src/build.log").exists(), "the rest went back");
+        assert_eq!(fs::read(repo.worktree.join("target/new")).unwrap(), b"new");
+
+        sweep_trash(&repo.trash, Duration::ZERO);
+        assert!(
+            stash.dir.join("items/target/debug/deps/big").exists(),
+            "a kept stash outlives every sweep"
+        );
+        assert_eq!(kept_stashes(&repo.trash.parent().unwrap()), vec![stash.dir]);
+    }
+
+    #[test]
+    fn the_sweep_keeps_an_unremoved_stash_it_cannot_put_back() {
+        let repo = StashRepo::new("sweep-collision");
+        // A crash between parking and removal, then a rebuild before the next open.
+        let stash = stash_ignored_entries(&repo.worktree, &repo.trash)
+            .expect("no rollback")
+            .expect("stash");
+        fs::create_dir_all(repo.worktree.join("target")).expect("rebuild");
+        sweep_trash(&repo.trash, Duration::ZERO);
+        assert!(stash.dir.join("items/target/debug/deps/big").exists());
+        assert!(stash.dir.join(STASH_KEEP).exists());
+        assert!(repo.worktree.join("src/build.log").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_that_fails_midway_puts_back_what_moved_and_removes_in_place() {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = StashRepo::new("rename-fails");
+        // `zz/` is read-only: its ignored file cannot be renamed out after target/ moved.
+        fs::create_dir_all(repo.worktree.join("zz")).expect("zz");
+        fs::write(repo.worktree.join("zz/late.log"), "late").expect("late");
+        fs::write(repo.worktree.join("zz/.keep"), "").expect("keep");
+        repo.git(&["-C", repo.worktree.to_str().unwrap(), "add", "zz/.keep"]);
+        let mode = |mode| fs::Permissions::from_mode(mode);
+        fs::set_permissions(repo.worktree.join("zz"), mode(0o555)).expect("read-only");
+        let stashed = stash_ignored_entries(&repo.worktree, &repo.trash);
+        fs::set_permissions(repo.worktree.join("zz"), mode(0o755)).expect("writable");
+        assert_eq!(stashed, Ok(None));
+        assert!(repo.worktree.join("target/debug/deps/big").exists());
+        assert!(repo.worktree.join("zz/late.log").exists());
+        assert_eq!(kept_stashes(repo.trash.parent().unwrap()), Vec::<PathBuf>::new());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restoration_never_follows_a_symlinked_parent_out_of_the_worktree() {
+        let repo = StashRepo::new("symlink");
+        let stash = stash_ignored_entries(&repo.worktree, &repo.trash)
+            .expect("no rollback")
+            .expect("stash");
+        // The checkout swaps src/ for a link to a directory outside the worktree.
+        let outside = repo.root.join("outside");
+        fs::create_dir_all(&outside).expect("outside");
+        fs::remove_dir_all(repo.worktree.join("src")).expect("drop src");
+        std::os::unix::fs::symlink(&outside, repo.worktree.join("src")).expect("link");
+        let kept = SystemDispatchHost
+            .restore_ignored(stash.clone())
+            .expect_err("src/build.log must not land outside");
+        assert!(kept.contains("kept in"), "{kept}");
+        assert!(!outside.join("build.log").exists());
+        assert!(stash.dir.join("items/src/build.log").exists());
+        assert!(stash.dir.join(STASH_KEEP).exists());
+        assert!(repo.worktree.join("target/debug/deps/big").exists());
+
+        // The sweep is no way around it either.
+        sweep_trash(&repo.trash, Duration::ZERO);
+        assert!(!outside.join("build.log").exists());
+        assert!(stash.dir.join("items/src/build.log").exists());
     }
 
     #[test]
