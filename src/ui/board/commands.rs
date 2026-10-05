@@ -94,13 +94,22 @@ impl BoardModel {
                 command("set assignee", BoardIntent::OpenAssigneePicker),
                 command("set base", BoardIntent::OpenBasePicker),
             ]);
+            // With marks, dispatch opens the bulk card for the set; dispatch again stays
+            // cursor-only.
+            let marked = self.mark_mode_active() && self.marked_count() > 0;
+            if marked {
+                commands.push(command(
+                    format!("dispatch {} marked", self.marked_count()),
+                    BoardIntent::Dispatch,
+                ));
+            }
             if let Some(task) = self
                 .selected_id()
                 .and_then(|id| self.tasks.iter().find(|task| task.id == id))
             {
                 if task.dispatch.is_some() {
                     commands.push(command("dispatch again", BoardIntent::DispatchAgain));
-                } else if let Some(assignee) = task.assignee.as_deref() {
+                } else if let (false, Some(assignee)) = (marked, task.assignee.as_deref()) {
                     commands.push(command(
                         format!("dispatch to @{assignee}"),
                         BoardIntent::Dispatch,

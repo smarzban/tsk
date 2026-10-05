@@ -405,7 +405,8 @@ pub enum QueueOverlay<'a> {
     },
     /// Launch card: the two-choice archived-project modal.
     LaunchCard { name: &'a str },
-    /// Dispatched worktree cleanup confirmation: the cursor task or a marked set.
+    /// Dispatched worktree cleanup confirmation (the cursor task or a marked set), and the bulk
+    /// dispatch card, which shares its layout.
     CleanupConfirm {
         title: CleanupTitle,
         lines: Vec<CleanupCardLine>,
@@ -3554,6 +3555,8 @@ pub enum CleanupFooter {
     Bulk,
     /// Nothing on the card can be cleaned: done-without-cleanup or cancel.
     Dirty,
+    /// The bulk dispatch card launching this many tasks.
+    Dispatch(usize),
 }
 
 impl CleanupFooter {
@@ -3564,9 +3567,29 @@ impl CleanupFooter {
             (Self::Dirty, false) => DIRTY_CLEANUP_FOOTER,
             (Self::Single | Self::Bulk, true) => SHORT_CLEANUP_FOOTER,
             (Self::Dirty, true) => SHORT_DIRTY_CLEANUP_FOOTER,
+            (Self::Dispatch(_), _) => SHORT_DISPATCH_FOOTER,
+        }
+    }
+
+    /// The `y` label when it carries a count (`dispatch 3`).
+    fn counted_label(self) -> Option<String> {
+        match self {
+            Self::Dispatch(count) => Some(format!("dispatch {count}")),
+            _ => None,
         }
     }
 }
+
+const SHORT_DISPATCH_FOOTER: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "y",
+        label: "dispatch",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "cancel",
+    },
+];
 
 pub(crate) const DIRTY_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
@@ -3723,14 +3746,24 @@ fn paint_cleanup_card(
     let card_w = modal_card_width(geo, bounds, 24);
     // Room inside the side borders for the legend; the title keeps its rule and `[x]`.
     let inner = usize::from(card_w.saturating_sub(2));
-    let legend = {
-        let full = card.footer.legend(false);
-        if legend_width(full) <= inner {
+    let counted = card.footer.counted_label();
+    let legend: Vec<VerbEntry<'_>> = {
+        let full = match counted.as_deref() {
+            // The counted entry replaces the first (`y`) label of the short legend.
+            Some(label) => {
+                let mut entries = card.footer.legend(true).to_vec();
+                entries[0].label = label;
+                entries
+            }
+            None => card.footer.legend(false).to_vec(),
+        };
+        if legend_width(&full) <= inner {
             full
         } else {
-            card.footer.legend(true)
+            card.footer.legend(true).to_vec()
         }
     };
+    let legend = legend.as_slice();
     // Room for the title beside its rule and `[x]`, keeping three cells for a scroll marker.
     let title_budget = inner.saturating_sub(9);
     let fits = |title: &str| display_width(title) + 3 <= title_budget;

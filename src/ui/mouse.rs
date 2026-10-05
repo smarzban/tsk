@@ -36,6 +36,8 @@ pub enum BoardPopup {
     LaunchCard,
     /// Cleanup confirmation for one cursor-pinned dispatch.
     CleanupConfirm,
+    /// Bulk dispatch confirmation for a marked set.
+    DispatchConfirm,
 }
 
 /// Labeled capture hit region.
@@ -706,7 +708,9 @@ fn wheel_board_intent(model: &BoardModel, kind: MouseEventKind) -> Option<BoardI
             MouseEventKind::ScrollDown => Some(BoardIntent::HelpScrollDown),
             _ => None,
         },
-        BoardInputMode::CleanupConfirm | BoardInputMode::CleanupDirtyConfirm => match kind {
+        BoardInputMode::CleanupConfirm
+        | BoardInputMode::CleanupDirtyConfirm
+        | BoardInputMode::DispatchConfirm => match kind {
             MouseEventKind::ScrollUp => Some(BoardIntent::CleanupScrollUp),
             MouseEventKind::ScrollDown => Some(BoardIntent::CleanupScrollDown),
             _ => None,
@@ -940,6 +944,14 @@ pub fn map_board_mouse(
                 Some(BoardIntent::CancelCleanup)
             }
             Some(QueueHitTarget::CleanupOption(0)) => Some(BoardIntent::KeepCleanup),
+            _ => None,
+        },
+        // `[x]` and `esc cancel` cancel, `y dispatch` launches.
+        BoardInputMode::DispatchConfirm => match hit_at(hits, pos) {
+            Some(QueueHitTarget::ModalClose | QueueHitTarget::CleanupOption(1)) => {
+                Some(BoardIntent::CancelDispatch)
+            }
+            Some(QueueHitTarget::CleanupOption(0)) => Some(BoardIntent::ConfirmDispatch),
             _ => None,
         },
         BoardInputMode::LaunchCard => match hit_at(hits, pos) {

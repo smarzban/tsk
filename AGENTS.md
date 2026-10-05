@@ -258,13 +258,16 @@ migration or design work they imply. What the behaviour *is* lives in the docs
   knowledge of any harness's flags. A malformed `config.toml` never blocks the board or CLI work
   that does not assign.
 - Dispatch is its own verb (ADR-0004 in `docs/specs/adr/`, local-only), never a side effect of
-  `started`: cursor-only, not undoable, sets `started` in the same save as the record. Outside
-  `HERDR_ENV=1` it refuses. The dispatch record stays on the task through every later status
+  `started`: not undoable, sets `started` in the same save as the record. Without marks it is
+  cursor-only; a marked set gets one confirm card, then every listed task takes the single-task
+  path (check, launch, commit in `src/dispatch.rs`) off the event loop and is saved as it lands.
+  Quit and further dispatches wait for a running batch, or launched agents lose their record.
+  Relaunch (`dispatch again`) stays cursor-only. Outside `HERDR_ENV=1` it refuses. The dispatch record stays on the task through every later status
   change; `◉` is derived only from `record present && status == started`, never from agent or
   pane state.
 - Cleanup never deletes uncommitted work or an unmerged branch, and only removes the recorded
   worktree (registered with git, matching the herdr entry's path, never the project root). A
-  missing worktree converges to `cleaned`. Bulk done and CLI `status done` never prompt.
+  missing worktree converges to `cleaned`. CLI `status done` never prompts.
 - Every git and herdr call goes through the `DispatchHost` seam so tests use a fake host; changes
   to the real host need a live herdr smoke against a throwaway repo under `/tmp`, never this one.
 
