@@ -3554,6 +3554,10 @@ pub enum CleanupFooter {
     Bulk,
     /// Nothing on the card can be cleaned: done-without-cleanup or cancel.
     Dirty,
+    /// `y` confirmed and the run is working: Esc hides the card, cleanup continues.
+    Running,
+    /// The run finished with something kept: Esc closes the card.
+    Finished,
 }
 
 impl CleanupFooter {
@@ -3564,9 +3568,21 @@ impl CleanupFooter {
             (Self::Dirty, false) => DIRTY_CLEANUP_FOOTER,
             (Self::Single | Self::Bulk, true) => SHORT_CLEANUP_FOOTER,
             (Self::Dirty, true) => SHORT_DIRTY_CLEANUP_FOOTER,
+            (Self::Running, _) => RUNNING_CLEANUP_FOOTER,
+            (Self::Finished, _) => FINISHED_CLEANUP_FOOTER,
         }
     }
 }
+
+pub(crate) const RUNNING_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[VerbEntry {
+    key: "esc",
+    label: "hide, keep cleaning",
+}];
+
+pub(crate) const FINISHED_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[VerbEntry {
+    key: "esc",
+    label: "close",
+}];
 
 pub(crate) const DIRTY_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {

@@ -1897,6 +1897,7 @@ mod tests {
             branch: BranchCleanup::Kept,
             workspace_removed: true,
             base: Some("origin/main".into()),
+            trash: None,
         };
         let human = cleaned(result.clone(), false);
         assert_eq!(

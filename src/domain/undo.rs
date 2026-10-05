@@ -84,6 +84,39 @@ impl UndoEntry {
             .collect()
     }
 
+    /// Point every leaf that expects `id` at `from` to expect `to` instead.
+    pub(crate) fn retarget(&mut self, id: Uuid, from: Uuid, to: Uuid) {
+        match self {
+            UndoEntry::Batch { entries } => {
+                for entry in entries {
+                    entry.retarget(id, from, to);
+                }
+            }
+            UndoEntry::SoftDelete {
+                id: target,
+                expected_revision,
+            }
+            | UndoEntry::Complete {
+                id: target,
+                expected_revision,
+            }
+            | UndoEntry::Assign {
+                id: target,
+                expected_revision,
+                ..
+            }
+            | UndoEntry::SetBase {
+                id: target,
+                expected_revision,
+                ..
+            } => {
+                if *target == id && *expected_revision == from {
+                    *expected_revision = to;
+                }
+            }
+        }
+    }
+
     fn reverse(self, state: &mut DomainState) -> Result<(), DomainError> {
         match self {
             UndoEntry::SoftDelete { id, .. } => state.restore(id),

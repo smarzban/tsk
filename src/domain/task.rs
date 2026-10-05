@@ -791,6 +791,20 @@ impl DomainState {
         Ok(())
     }
 
+    /// [`Self::record_dispatch_cleaned`] for a cleanup that landed after its task's completion
+    /// was saved (the board cleans off the event loop). Cleaned is host bookkeeping, not a user
+    /// action: undo entries that expected the pre-cleanup revision follow it, so undo still
+    /// reverses the completion.
+    pub fn record_dispatch_cleaned_keeping_undo(&mut self, id: Uuid) -> Result<(), DomainError> {
+        let before = self.task_mut(id)?.revision;
+        self.record_dispatch_cleaned(id)?;
+        let after = self.task_mut(id)?.revision;
+        for entry in &mut self.undo_stack {
+            entry.retarget(id, before, after);
+        }
+        Ok(())
+    }
+
     /// Edit title, notes, scope, and thread together. Title uses the same non-empty trim rule as create.
     pub fn edit(
         &mut self,
@@ -1276,6 +1290,18 @@ impl DomainState {
 
     fn merge_undo_entries(&mut self, other: &DomainState) {
         for incoming in &other.undo_stack {
+            // An entry expecting the very revision this local copy mutated from can never
+            // succeed after this save (the local revision wins the merge). Unioning it back
+            // would bury a live local entry, such as a completion whose cleaned marker landed
+            // after it, under a stale one.
+            let superseded = incoming.targets().into_iter().any(|(id, expected)| {
+                self.get(id).is_some_and(|task| {
+                    task.merge_base_revision == Some(expected) && task.revision != expected
+                })
+            });
+            if superseded {
+                continue;
+            }
             let incoming_leaves = incoming.leaf_entries();
             let already_present = incoming_leaves.iter().all(|incoming_leaf| {
                 self.undo_stack.iter().any(|existing| {

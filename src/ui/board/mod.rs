@@ -12,6 +12,6 @@ pub use commands::{resolve_board_command, BoardCommand, CommandSurface};
 pub use draw::{board_hit_map, board_verb_items, draw_board};
 pub use model::{
     project_option_label, BoardInputMode, BoardModel, BoardTab, BulkCleanup, CleanupPrompt,
-    CleanupRow, IntentOutcome, ListPickerKind, PickerTab, ProjectScopeOption, ProjectsView,
-    SaveResolution, BOARD_TITLE, REFRESHING_BRANCHES,
+    CleanupRow, CleanupRowState, CleanupRun, CleanupRunRow, IntentOutcome, ListPickerKind,
+    PickerTab, ProjectScopeOption, ProjectsView, SaveResolution, BOARD_TITLE, REFRESHING_BRANCHES,
 };

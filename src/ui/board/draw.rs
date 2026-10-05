@@ -26,7 +26,8 @@ use super::chrome::{notice_framed, row_width, BULK_DELETE_NOTICE_UNDO, DELETE_NO
 use super::commands::CommandSurface;
 use super::model::{
     project_option_label, project_scope_option_label, BoardForm, BoardInputMode, BoardLocation,
-    BoardModel, CleanupPrompt, CleanupRow, PickerTab, ProjectScopeOption, ProjectsView,
+    BoardModel, CleanupPrompt, CleanupRow, CleanupRowState, CleanupRun, PickerTab,
+    ProjectScopeOption, ProjectsView,
 };
 use crate::ui::render::{CleanupCardLine, CleanupFooter, CleanupTitle};
 
@@ -184,6 +185,122 @@ pub(crate) fn cleanup_overlay<'a>(prompt: &CleanupPrompt, home: Option<&str>) ->
         title,
         lines,
         footer,
+        scroll: prompt.scroll,
+    }
+}
+
+/// A confirmed card: what happened to each row so far, as it lands.
+pub(crate) fn cleanup_run_overlay<'a>(
+    prompt: &CleanupPrompt,
+    run: &CleanupRun,
+) -> QueueOverlay<'a> {
+    let finished = run.finished();
+    let (landed, total) = run.progress();
+    let title = match (run.bulk, run.rows.first()) {
+        (None, Some(row)) => {
+            let (full, short) = if finished {
+                (
+                    format!("Done T{} · cleanup finished", row.number),
+                    format!("T{} · finished", row.number),
+                )
+            } else {
+                (
+                    format!("Done T{} · cleaning up", row.number),
+                    format!("T{} · cleaning up", row.number),
+                )
+            };
+            CleanupTitle {
+                full,
+                short,
+                bare: format!("Done T{}", row.number),
+                question: if finished {
+                    "Cleanup finished."
+                } else {
+                    "Cleaning up…"
+                }
+                .into(),
+            }
+        }
+        (bulk, _) => {
+            let done = bulk.map_or(run.rows.len(), |(done, _)| done);
+            let current = (landed + 1).min(total.max(1));
+            let (progress, question) = if finished {
+                (
+                    "cleanup finished".to_string(),
+                    "Cleanup finished.".to_string(),
+                )
+            } else {
+                (
+                    format!("cleaning {current} of {total}"),
+                    format!("Cleaning {current} of {total}…"),
+                )
+            };
+            CleanupTitle {
+                full: format!("Done {done} tasks · {progress}"),
+                short: format!("Done {done} · {progress}"),
+                bare: format!("Done {done} tasks"),
+                question,
+            }
+        }
+    };
+    let mut lines = Vec::new();
+    for row in &run.rows {
+        let (status, detail) = match &row.state {
+            CleanupRowState::Queued => ("waiting".to_string(), None),
+            CleanupRowState::Removing => ("removing worktree…".to_string(), None),
+            CleanupRowState::Cleaned { branch_kept: None } => {
+                ("✓ cleaned · branch deleted".to_string(), None)
+            }
+            CleanupRowState::Cleaned {
+                branch_kept: Some((_, full)),
+            } => ("✓ cleaned · branch kept".to_string(), Some(full.clone())),
+            CleanupRowState::Kept { full, .. } => (format!("kept: {full}"), None),
+        };
+        lines.push(CleanupCardLine::Field {
+            label: format!("T{}", row.number),
+            value: status,
+        });
+        if let Some(detail) = detail {
+            lines.push(CleanupCardLine::Field {
+                label: String::new(),
+                value: detail,
+            });
+        }
+    }
+    for (identifier, reason) in &run.refused {
+        lines.push(CleanupCardLine::Field {
+            label: identifier.clone(),
+            value: format!("kept: can't inspect: {reason}"),
+        });
+    }
+    if let Some(bulk) = &prompt.bulk {
+        if !bulk.missing.is_empty() {
+            let noun = if bulk.missing.len() == 1 {
+                "worktree"
+            } else {
+                "worktrees"
+            };
+            lines.push(CleanupCardLine::Text(format!(
+                "+ {} {noun} already gone, marked cleaned",
+                identifiers_list(bulk.missing.iter().map(|(_, identifier, _)| identifier))
+            )));
+        }
+        if !bulk.plain.is_empty() {
+            let verb = if bulk.plain.len() == 1 { "has" } else { "have" };
+            lines.push(CleanupCardLine::Text(format!(
+                "+ {} {verb} no dispatch, just marked done",
+                identifiers_list(&bulk.plain)
+            )));
+        }
+    }
+    QueueOverlay::CleanupConfirm {
+        title,
+        lines,
+        footer: if finished {
+            CleanupFooter::Finished
+        } else {
+            CleanupFooter::Running
+        },
         scroll: prompt.scroll,
     }
 }
@@ -1424,7 +1541,10 @@ impl OverlayPayloads {
             });
         }
         if let Some(prompt) = model.cleanup_prompt() {
-            return Some(cleanup_overlay(prompt, home_dir().as_deref()));
+            return Some(match model.cleanup_run() {
+                Some(run) => cleanup_run_overlay(prompt, run),
+                None => cleanup_overlay(prompt, home_dir().as_deref()),
+            });
         }
         if let Some(name) = self.launch_card_name.as_deref() {
             return Some(QueueOverlay::LaunchCard { name });

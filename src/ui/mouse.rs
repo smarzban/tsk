@@ -927,6 +927,17 @@ pub fn map_board_mouse(
         },
         BoardInputMode::SaveRecovery => None,
         // `[x]` is Esc; the footer choices dispatch like their keys. The dirty card has no `y`.
+        // A confirmed card only reports its run: every choice it shows is Esc.
+        BoardInputMode::CleanupConfirm | BoardInputMode::CleanupDirtyConfirm
+            if model.cleanup_run().is_some() =>
+        {
+            match hit_at(hits, pos) {
+                Some(QueueHitTarget::ModalClose | QueueHitTarget::CleanupOption(_)) => {
+                    Some(BoardIntent::CancelCleanup)
+                }
+                _ => None,
+            }
+        }
         BoardInputMode::CleanupConfirm => match hit_at(hits, pos) {
             Some(QueueHitTarget::ModalClose | QueueHitTarget::CleanupOption(2)) => {
                 Some(BoardIntent::CancelCleanup)

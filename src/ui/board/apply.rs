@@ -1994,7 +1994,7 @@ fn apply_board_intent(
             return Ok(IntentOutcome::None);
         }
         BoardIntent::CancelCleanup => {
-            model.close_popup();
+            model.cancel_cleanup_card();
             return Ok(IntentOutcome::None);
         }
         BoardIntent::CleanupScrollUp | BoardIntent::CleanupScrollDown => {

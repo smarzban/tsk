@@ -1013,6 +1013,11 @@ pub struct BoardModel {
     pub(super) pending_dispatch_again: Option<Uuid>,
     /// Cursor-pinned dispatch cleanup details while the confirmation modal owns input.
     pub(super) cleanup_prompt: Option<CleanupPrompt>,
+    /// A confirmed cleanup whose host work runs off the event loop. Outlives its card: Esc
+    /// hides the card and the status row reports progress until the run finishes.
+    pub(super) cleanup_run: Option<CleanupRun>,
+    /// Quit waits here while a cleanup run finishes its git and Herdr steps, up to this bound.
+    pub(super) quit_after_cleanup: Option<Instant>,
     /// Whether the armed delete originated from a non-empty marked set.
     pub(super) pending_delete_bulk: bool,
     /// Open project-picker or save-recovery presentation.
@@ -1174,6 +1179,179 @@ impl CleanupPrompt {
     }
 }
 
+/// Longest a quit waits for a running cleanup's git and Herdr steps before exiting anyway. A
+/// row cut off here is never marked cleaned, and its dispatch converges on the next cleanup.
+pub const QUIT_CLEANUP_BOUND: Duration = Duration::from_secs(30);
+
+/// How long a clean cleanup outcome stays on the status row.
+pub const CLEANUP_SUMMARY_TTL: Duration = Duration::from_secs(4);
+
+/// Longest status-row summary a cleanup names tasks in; past it, only counts.
+const CLEANUP_SUMMARY_WIDTH: usize = 72;
+
+/// What one row of a confirmed cleanup shows on its card.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CleanupRowState {
+    Queued,
+    Removing,
+    /// Removed. `branch_kept` holds the short and full reason the branch stayed, if it did.
+    Cleaned {
+        branch_kept: Option<(String, String)>,
+    },
+    /// Left in place, with a short reason for the status row and a full one for the card.
+    Kept {
+        short: String,
+        full: String,
+    },
+}
+
+impl CleanupRowState {
+    pub fn landed(&self) -> bool {
+        matches!(self, Self::Cleaned { .. } | Self::Kept { .. })
+    }
+
+    /// Anything the user should not miss: a kept worktree or a kept branch.
+    fn exception(&self) -> bool {
+        matches!(
+            self,
+            Self::Kept { .. }
+                | Self::Cleaned {
+                    branch_kept: Some(_)
+                }
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupRunRow {
+    pub task_id: Uuid,
+    pub number: u64,
+    /// This row's slot in the job; `None` for a row kept before any host work (dirty, or
+    /// changed since the card opened).
+    pub slot: Option<usize>,
+    /// The dispatch the card inspected: the cleaned marker lands only while it is current.
+    pub inspected: Option<crate::domain::Dispatch>,
+    pub state: CleanupRowState,
+}
+
+/// A confirmed cleanup: completion is already saved, and the host work runs off the event
+/// loop while the board keeps painting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupRun {
+    pub job: crate::dispatch::CleanupJob,
+    pub rows: Vec<CleanupRunRow>,
+    /// A marked set's card: how many tasks it completed and how many worktrees were
+    /// already gone. `None` for the single cursor card.
+    pub bulk: Option<(usize, usize)>,
+    /// A marked set's dispatched targets the card could not inspect: identifier and reason.
+    pub refused: Vec<(String, String)>,
+    /// The job reported every row's git and Herdr work done.
+    pub settled: bool,
+}
+
+impl CleanupRun {
+    pub fn finished(&self) -> bool {
+        self.settled && self.rows.iter().all(|row| row.state.landed())
+    }
+
+    /// Rows the worker handles, and how many of them have landed.
+    pub fn progress(&self) -> (usize, usize) {
+        let worked = self.rows.iter().filter(|row| row.slot.is_some());
+        let total = worked.clone().count();
+        (worked.filter(|row| row.state.landed()).count(), total)
+    }
+
+    pub fn progress_message(&self) -> String {
+        let (landed, total) = self.progress();
+        format!("cleaning {} of {total}…", (landed + 1).min(total.max(1)))
+    }
+
+    /// The status-row outcome: counts, naming only the tasks that kept something. The bool
+    /// is true when nothing was kept, so the line may expire on its own.
+    pub fn summary(&self) -> (String, bool) {
+        let clean = self.refused.is_empty() && !self.rows.iter().any(|row| row.state.exception());
+        let Some((done, missing)) = self.bulk else {
+            let Some(row) = self.rows.first() else {
+                return ("done".into(), true);
+            };
+            let text = match &row.state {
+                CleanupRowState::Cleaned { branch_kept: None } => {
+                    format!("done T{} · cleaned", row.number)
+                }
+                CleanupRowState::Cleaned {
+                    branch_kept: Some((short, _)),
+                } => format!("done T{} · cleaned · branch kept ({short})", row.number),
+                CleanupRowState::Kept { short, .. } => {
+                    format!("done T{} · kept ({short})", row.number)
+                }
+                CleanupRowState::Queued | CleanupRowState::Removing => {
+                    format!("done T{}", row.number)
+                }
+            };
+            return (text, clean);
+        };
+        let cleaned = self
+            .rows
+            .iter()
+            .filter(|row| matches!(row.state, CleanupRowState::Cleaned { .. }))
+            .count();
+        let kept = self
+            .rows
+            .iter()
+            .filter_map(|row| match &row.state {
+                CleanupRowState::Kept { short, .. } => Some(format!("T{} ({short})", row.number)),
+                _ => None,
+            })
+            .chain(
+                self.refused
+                    .iter()
+                    .map(|(identifier, _)| format!("{identifier} (can't inspect)")),
+            )
+            .collect::<Vec<_>>();
+        let branches = self
+            .rows
+            .iter()
+            .filter_map(|row| match &row.state {
+                CleanupRowState::Cleaned {
+                    branch_kept: Some((short, _)),
+                } => Some(format!("T{} ({short})", row.number)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let build = |named: bool| {
+            let mut parts = vec![format!("done {done}")];
+            if cleaned > 0 {
+                parts.push(format!("cleaned {cleaned}"));
+            }
+            if !kept.is_empty() {
+                parts.push(if named {
+                    format!("kept {}", kept.join(", "))
+                } else {
+                    format!("kept {}", kept.len())
+                });
+            }
+            if !branches.is_empty() {
+                parts.push(if named {
+                    format!("branch kept {}", branches.join(", "))
+                } else {
+                    format!("branch kept {}", branches.len())
+                });
+            }
+            if missing > 0 {
+                parts.push(format!("{missing} already gone"));
+            }
+            parts.join(" · ")
+        };
+        let named = build(true);
+        let text = if named.chars().count() <= CLEANUP_SUMMARY_WIDTH {
+            named
+        } else {
+            build(false)
+        };
+        (text, clean)
+    }
+}
+
 /// How an unresolved failed save ended.
 ///
 /// The two outcomes differ in exactly one way the chrome row cares about: Retry makes the
@@ -1247,6 +1425,8 @@ impl BoardModel {
             pending_delete: None,
             pending_dispatch_again: None,
             cleanup_prompt: None,
+            cleanup_run: None,
+            quit_after_cleanup: None,
             pending_delete_bulk: false,
             popup: BoardPopup::None,
             project_picker: None,
@@ -1316,6 +1496,108 @@ impl BoardModel {
 
     pub fn cleanup_prompt(&self) -> Option<&CleanupPrompt> {
         self.cleanup_prompt.as_ref()
+    }
+
+    pub fn cleanup_run(&self) -> Option<&CleanupRun> {
+        self.cleanup_run.as_ref()
+    }
+
+    pub fn cleanup_run_mut(&mut self) -> Option<&mut CleanupRun> {
+        self.cleanup_run.as_mut()
+    }
+
+    /// Show a confirmed cleanup's progress on the card that confirmed it.
+    pub fn begin_cleanup_run(&mut self, run: CleanupRun) {
+        if let Some(prompt) = self.cleanup_prompt.as_mut() {
+            prompt.scroll = 0;
+        }
+        self.cleanup_max_scroll.set(usize::MAX);
+        self.cleanup_run = Some(run);
+    }
+
+    /// Whether the cleanup card is on screen over this board.
+    pub fn cleanup_card_open(&self) -> bool {
+        self.popup == BoardPopup::CleanupConfirm && self.cleanup_prompt.is_some()
+    }
+
+    /// This board or its project preview holds a cleanup run.
+    pub fn cleanup_running(&self) -> bool {
+        self.cleanup_run.is_some()
+            || self
+                .right_seat
+                .as_deref()
+                .is_some_and(|seat| seat.cleanup_run.is_some())
+    }
+
+    /// Drop a finished run and its card. Returns the status-row summary to post.
+    pub fn finish_cleanup_run(&mut self) -> Option<(String, bool)> {
+        let run = self.cleanup_run.take()?;
+        if self.popup == BoardPopup::CleanupConfirm {
+            self.close_popup();
+        }
+        Some(run.summary())
+    }
+
+    /// Esc or `[x]` on the cleanup card. Before `y` it cancels; while the run works it hides
+    /// the card and the status row takes over; once the run finished it closes with the
+    /// summary.
+    pub fn cancel_cleanup_card(&mut self) {
+        match self.cleanup_run.as_ref().map(CleanupRun::finished) {
+            None => self.close_popup(),
+            Some(true) => {
+                if let Some((summary, clean)) = self.finish_cleanup_run() {
+                    self.post_cleanup_summary(summary, clean);
+                }
+            }
+            Some(false) => {
+                let progress = self
+                    .cleanup_run
+                    .as_ref()
+                    .map(CleanupRun::progress_message)
+                    .unwrap_or_default();
+                self.close_popup();
+                if self.quit_after_cleanup.is_none() {
+                    self.set_message(progress);
+                }
+            }
+        }
+    }
+
+    /// A cleanup outcome on the status row: a clean one expires on its own, one that kept
+    /// anything stays until the next action so it is not missed.
+    pub fn post_cleanup_summary(&mut self, summary: String, clean: bool) {
+        if clean {
+            self.set_ephemeral_message(summary, CLEANUP_SUMMARY_TTL);
+        } else {
+            self.set_message(summary);
+        }
+    }
+
+    /// Quit with a cleanup still running: hide its card and wait, visibly and bounded, for
+    /// its git and Herdr steps to land.
+    pub fn begin_quit_after_cleanup(&mut self) {
+        if self.quit_after_cleanup.is_none() {
+            self.quit_after_cleanup = Some(Instant::now() + QUIT_CLEANUP_BOUND);
+        }
+        if self.cleanup_run.is_some() && self.popup == BoardPopup::CleanupConfirm {
+            self.close_popup();
+        }
+        if let Some(seat) = self.right_seat.as_deref_mut() {
+            if seat.cleanup_run.is_some() && seat.popup == BoardPopup::CleanupConfirm {
+                seat.close_popup();
+            }
+        }
+        self.set_message("finishing cleanup…");
+    }
+
+    pub fn quitting_after_cleanup(&self) -> bool {
+        self.quit_after_cleanup.is_some()
+    }
+
+    /// A quit that waited on cleanup may exit: the run finished, or its bound passed.
+    pub fn quit_after_cleanup_due(&self) -> bool {
+        self.quit_after_cleanup
+            .is_some_and(|deadline| !self.cleanup_running() || Instant::now() >= deadline)
     }
 
     pub fn cleanup_prompt_mut(&mut self) -> Option<&mut CleanupPrompt> {
@@ -4290,6 +4572,16 @@ impl BoardModel {
         self.message_expires_at = Some(Instant::now() + ttl);
     }
 
+    /// The status line stays until the next action rather than expiring on its own.
+    pub fn message_is_sticky(&self) -> bool {
+        let board = self
+            .right_seat
+            .as_deref()
+            .filter(|_| self.project_right_seat_focused())
+            .unwrap_or(self);
+        board.message.is_some() && board.message_expires_at.is_none()
+    }
+
     pub fn clear_message(&mut self) {
         if self.project_right_seat_focused() {
             self.input_target_mut().clear_message();
@@ -4660,6 +4952,140 @@ pub(super) fn project_scope_option_label(option: &ProjectScopeOption) -> String 
 mod tests {
     use super::*;
     use crate::domain::ProvenanceOrigin;
+
+    fn run_row(number: u64, state: CleanupRowState) -> CleanupRunRow {
+        CleanupRunRow {
+            task_id: Uuid::new_v4(),
+            number,
+            slot: Some(0),
+            inspected: None,
+            state,
+        }
+    }
+
+    fn cleaned() -> CleanupRowState {
+        CleanupRowState::Cleaned { branch_kept: None }
+    }
+
+    fn kept(short: &str) -> CleanupRowState {
+        CleanupRowState::Kept {
+            short: short.into(),
+            full: short.into(),
+        }
+    }
+
+    fn run(rows: Vec<CleanupRunRow>, bulk: Option<(usize, usize)>) -> CleanupRun {
+        CleanupRun {
+            job: crate::dispatch::CleanupJob::new(0),
+            rows,
+            bulk,
+            refused: Vec::new(),
+            settled: true,
+        }
+    }
+
+    #[test]
+    fn cleanup_summaries_count_and_name_only_what_was_kept() {
+        let all = run(
+            (160..165)
+                .map(|number| run_row(number, cleaned()))
+                .collect(),
+            Some((5, 0)),
+        );
+        assert_eq!(all.summary(), ("done 5 · cleaned 5".to_string(), true));
+
+        let mut rows: Vec<_> = (160..164)
+            .map(|number| run_row(number, cleaned()))
+            .collect();
+        rows.push(run_row(164, kept("uncommitted changes")));
+        assert_eq!(
+            run(rows, Some((5, 0))).summary(),
+            (
+                "done 5 · cleaned 4 · kept T164 (uncommitted changes)".to_string(),
+                false
+            )
+        );
+        let branch = run(
+            vec![
+                run_row(156, cleaned()),
+                run_row(
+                    157,
+                    CleanupRowState::Cleaned {
+                        branch_kept: Some(("not merged".into(), "not merged into main".into())),
+                    },
+                ),
+            ],
+            Some((2, 0)),
+        );
+        assert_eq!(
+            branch.summary(),
+            (
+                "done 2 · cleaned 2 · branch kept T157 (not merged)".to_string(),
+                false
+            )
+        );
+
+        // Past the width, counts only: never wider than the status row.
+        let many = run(
+            (1..=4)
+                .map(|number| run_row(number, kept("uncommitted changes")))
+                .chain([run_row(5, cleaned())])
+                .collect(),
+            Some((6, 1)),
+        );
+        let (text, clean) = many.summary();
+        assert_eq!(text, "done 6 · cleaned 1 · kept 4 · 1 already gone");
+        assert!(!clean);
+
+        assert_eq!(
+            run(vec![run_row(5, cleaned())], None).summary(),
+            ("done T5 · cleaned".to_string(), true)
+        );
+        assert_eq!(
+            run(vec![run_row(5, kept("uncommitted changes"))], None).summary(),
+            ("done T5 · kept (uncommitted changes)".to_string(), false)
+        );
+    }
+
+    #[test]
+    fn a_clean_cleanup_summary_expires_and_one_that_kept_anything_stays() {
+        let mut model = BoardModel::from_tasks(Vec::new(), None);
+        model.post_cleanup_summary("done 5 · cleaned 5".into(), true);
+        assert!(!model.message_is_sticky());
+        model.message_expires_at = Some(Instant::now());
+        model.expire_ephemeral_message();
+        assert_eq!(model.message(), None);
+
+        model.post_cleanup_summary(
+            "done 5 · cleaned 4 · kept T164 (uncommitted changes)".into(),
+            false,
+        );
+        model.expire_ephemeral_message();
+        assert_eq!(
+            model.message(),
+            Some("done 5 · cleaned 4 · kept T164 (uncommitted changes)")
+        );
+        assert!(model.message_is_sticky());
+    }
+
+    #[test]
+    fn a_quit_waiting_on_cleanup_is_due_once_the_run_ends_or_its_bound_passes() {
+        let mut model = BoardModel::from_tasks(Vec::new(), None);
+        let mut unfinished = run(vec![run_row(1, CleanupRowState::Removing)], None);
+        unfinished.settled = false;
+        model.cleanup_run = Some(unfinished);
+        model.begin_quit_after_cleanup();
+        assert_eq!(model.message(), Some("finishing cleanup…"));
+        assert!(!model.quit_after_cleanup_due());
+        model.quit_after_cleanup = Some(Instant::now());
+        assert!(
+            model.quit_after_cleanup_due(),
+            "bounded: a stuck host never pins the board"
+        );
+        model.quit_after_cleanup = Some(Instant::now() + QUIT_CLEANUP_BOUND);
+        model.cleanup_run = None;
+        assert!(model.quit_after_cleanup_due());
+    }
 
     fn loading_picker(request: Uuid, ids: Vec<Uuid>) -> ListPickerState {
         ListPickerState {

@@ -21,7 +21,8 @@ use crate::save_recovery::SaveRecovery;
 use crate::store::{default_state_dir, StoreSignature, TaskStore};
 use crate::ui::board::{
     apply_intent, board_intent_may_persist, draw_board, resolve_board_command, BoardInputMode,
-    BoardModel, BulkCleanup, CleanupPrompt, CleanupRow, IntentOutcome, SaveResolution,
+    BoardModel, BulkCleanup, CleanupPrompt, CleanupRow, CleanupRowState, CleanupRun, CleanupRunRow,
+    IntentOutcome, SaveResolution,
 };
 use crate::ui::capture::{CaptureField, TITLE_REQUIRED_MESSAGE};
 use crate::ui::input::{
@@ -298,6 +299,9 @@ fn run_capture() -> Result<(), Box<dyn Error>> {
 fn run_board() -> Result<(), Box<dyn Error>> {
     let (store, domain, model) = load_board()?;
     crate::git_base::remember_fetches_in(store.path());
+    crate::dispatch::remember_trash_in(store.path());
+    // Off the event loop: trash a quit left mid-delete can be gigabytes.
+    drop(crate::dispatch::spawn_trash_sweep(store.path()));
     run_board_loop(store, domain, model, false)
 }
 
@@ -353,6 +357,9 @@ fn run_board_loop(
                 dispatch::running_inside_herdr(),
                 &mut SystemDispatchHost,
             )?;
+            if model.quit_after_cleanup_due() {
+                break;
+            }
             // Settle, paint, then wait. The wait is only the Frame Scheduler's idle floor.
             // All three are one call so the frame is painted before the wait can time out into
             // the `continue` below.
@@ -2042,10 +2049,17 @@ pub fn resolve_dispatch_again(
     }
 }
 
+/// `ctrl+d` on a live dispatch while a confirmed cleanup still runs.
+pub const CLEANUP_BUSY: &str = "cleanup still running; try again when it finishes";
+
+// Returned once per `ctrl+d`; boxing the converged result would buy nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CleanupOffer {
     None,
     Prompted,
+    /// A confirmed cleanup still runs: nothing opens and nothing completes.
+    Busy,
     MissingConverged(CleanupResult),
 }
 
@@ -2073,6 +2087,9 @@ pub fn offer_cleanup_prompt_with_host(
     if record.cleaned {
         return Ok(CleanupOffer::None);
     }
+    if model.cleanup_running() {
+        return Ok(CleanupOffer::Busy);
+    }
     // Decide on the background check before the snapshot, as the base picker does: a fetch
     // that lands between the two then still has a check to fill the card, rather than a
     // fresh answer sitting over pre-fetch ancestry with nothing left to refresh it.
@@ -2097,6 +2114,7 @@ pub fn offer_cleanup_prompt_with_host(
             worktree: WorktreeCleanup::Missing,
             branch: BranchCleanup::Kept,
             workspace_removed: false,
+            trash: None,
         }));
     }
     model.begin_cleanup_prompt(CleanupPrompt::single(cleanup_row(id, preview, merge_check)));
@@ -2165,6 +2183,8 @@ pub enum BulkCleanupOffer {
     None,
     /// The card is open over the marked set, which stays marked until `y` or `n`.
     Prompted,
+    /// A confirmed cleanup still runs: nothing opens and nothing completes.
+    Busy,
     /// Every live dispatch's worktree was already gone: they converged to cleaned and the
     /// whole set completed in this transaction, still one undo entry. The caller saves.
     MissingConverged { done: usize, missing: usize },
@@ -2200,6 +2220,9 @@ pub fn offer_bulk_cleanup_prompt_with_host(
     };
     if !targets.iter().any(|id| domain.get(*id).is_some_and(&live)) {
         return Ok(BulkCleanupOffer::None);
+    }
+    if model.cleanup_running() {
+        return Ok(BulkCleanupOffer::Busy);
     }
     let mut rows = Vec::new();
     let mut bulk = BulkCleanup {
@@ -2247,71 +2270,285 @@ pub fn offer_bulk_cleanup_prompt_with_host(
     Ok(BulkCleanupOffer::Prompted)
 }
 
-/// What a bulk card's `y` or `n` did, for the status line.
+/// What a cleanup card's `y` or `n` did to the domain, before its one save.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BulkCleanupOutcome {
-    pub done: usize,
-    /// Per cleanable row that was attempted (`y` only): its number and outcome.
-    pub cleaned: Vec<(u64, Result<CleanupResult, CleanupError>)>,
-    /// Rows `y` kept because their worktree has uncommitted changes.
-    pub dirty: Vec<u64>,
-    /// Worktrees already gone, converged to cleaned.
-    pub missing: usize,
+pub struct CleanupConfirmed {
+    /// `y`: the rows the worker removes once completion is saved, and the run that reports
+    /// them on the card. Its job is a placeholder until [`start_cleanup_run`].
+    pub run: Option<(Vec<dispatch::CleanupPlanRow>, CleanupRun)>,
+    /// `n`: the status-row outcome.
+    pub message: Option<String>,
 }
 
-impl BulkCleanupOutcome {
-    pub fn message(&self) -> String {
-        let mut parts = vec![format!("done {}", self.done)];
-        let removed = self
-            .cleaned
+/// Apply a cleanup card's choice to the domain: complete the card's task, or the whole marked
+/// set as one batch and one undo entry, and converge worktrees that were already gone. With
+/// `y`, also plan each cleanable row for the worker; host work starts only after the save
+/// ([`start_cleanup_run`]), so the event loop never waits on a removal. A row kept here
+/// (uncommitted changes, changed since the card opened) never stops the others.
+pub fn confirm_cleanup_with_host(
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    clean: bool,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<Option<CleanupConfirmed>, DomainError> {
+    let Some(prompt) = model.cleanup_prompt().cloned() else {
+        return Ok(None);
+    };
+    let targets = match &prompt.bulk {
+        // A target another actor removed since the card opened is dropped before any host
+        // work, so a refused batch can never follow a cleanup.
+        Some(bulk) => bulk
+            .targets
             .iter()
-            .filter_map(|(number, result)| result.as_ref().ok().map(|result| (*number, result)))
-            .collect::<Vec<_>>();
-        let list = |numbers: &mut dyn Iterator<Item = u64>| {
-            numbers
-                .map(|number| format!("T{number}"))
-                .collect::<Vec<_>>()
-                .join(", ")
+            .copied()
+            .filter(|id| domain.get(*id).is_some())
+            .collect::<Vec<_>>(),
+        None => match prompt.rows.first() {
+            Some(row) => vec![row.task_id],
+            None => return Ok(None),
+        },
+    };
+    let mut plan = Vec::new();
+    let mut rows = Vec::new();
+    for row in prompt
+        .rows
+        .iter()
+        .filter(|row| clean && targets.contains(&row.task_id))
+    {
+        let kept = |error: CleanupError| CleanupRowState::Kept {
+            short: error.short().into(),
+            full: error.to_string(),
         };
-        if !removed.is_empty() {
-            parts.push(format!(
-                "cleaned {}",
-                list(&mut removed.iter().map(|(number, _)| *number))
-            ));
-            let deleted = removed
-                .iter()
-                .filter(|(_, result)| result.branch == BranchCleanup::Removed)
-                .map(|(number, _)| *number)
-                .collect::<Vec<_>>();
-            let kept = removed
-                .iter()
-                .filter(|(_, result)| result.branch == BranchCleanup::Kept)
-                .map(|(number, _)| *number)
-                .collect::<Vec<_>>();
-            if !deleted.is_empty() {
-                parts.push(format!("branch deleted {}", list(&mut deleted.into_iter())));
+        // The card refreshed the base off the event loop; never fetch here. A check that is
+        // still running, failed, or could not reach the remote confirms nothing, so the
+        // branch stays.
+        let state = if row.dirty {
+            Some(kept(CleanupError::DirtyWorktree))
+        } else if !cleanup_row_current(domain, row) {
+            Some(kept(CleanupError::DispatchChanged))
+        } else {
+            match dispatch::cleanup_plan(domain, row.task_id, row.cleanup_refs()) {
+                Ok(planned) => {
+                    plan.push(planned);
+                    None
+                }
+                Err(error) => Some(kept(error)),
             }
-            if !kept.is_empty() {
-                parts.push(format!("branch kept {}", list(&mut kept.into_iter())));
+        };
+        rows.push(CleanupRunRow {
+            task_id: row.task_id,
+            number: row.number,
+            slot: state.is_none().then(|| plan.len() - 1),
+            inspected: row.inspected.clone(),
+            state: state.unwrap_or(CleanupRowState::Queued),
+        });
+    }
+    let mut missing = 0;
+    if let Some(bulk) = &prompt.bulk {
+        for (id, _, inspected) in &bulk.missing {
+            // The card's snapshot may be stale: another board can have relaunched this task
+            // since. Converge only the dispatch that was inspected, and only while its
+            // worktree is still gone; a relaunched or reappeared worktree is left live.
+            let same_dispatch = domain
+                .get(*id)
+                .and_then(|task| task.dispatch.as_ref())
+                .is_some_and(|record| record == inspected);
+            let still_missing = same_dispatch
+                && dispatch::inspect_cleanup_cached_with_host(domain, *id, in_herdr, host)
+                    .is_ok_and(|preview| !preview.inspection.worktree_exists);
+            if still_missing {
+                domain.record_dispatch_cleaned(*id)?;
+                missing += 1;
             }
-        } else if self.cleaned.is_empty() && self.dirty.is_empty() {
-            parts.push("worktrees kept".into());
         }
-        if !self.dirty.is_empty() {
-            parts.push(format!(
-                "kept {} (uncommitted changes)",
-                list(&mut self.dirty.iter().copied())
-            ));
+    }
+    let done = targets
+        .iter()
+        .filter(|id| {
+            domain
+                .get(**id)
+                .is_some_and(|task| task.status != HumanStatus::Done)
+        })
+        .count();
+    if prompt.bulk.is_some() {
+        domain.complete_batch_after_cleanup(&targets)?;
+        model.clear_marks();
+    } else {
+        domain.complete_after_cleanup(targets[0])?;
+    }
+    if !clean {
+        model.close_popup();
+        let message = match prompt.bulk {
+            Some(_) if missing > 0 => {
+                format!("done {done} · worktrees kept · {missing} already gone")
+            }
+            Some(_) => format!("done {done} · worktrees kept"),
+            None => format!(
+                "done T{} · worktree kept",
+                prompt.rows.first().map_or(0, |row| row.number)
+            ),
+        };
+        return Ok(Some(CleanupConfirmed {
+            run: None,
+            message: Some(message),
+        }));
+    }
+    let refused = prompt
+        .bulk
+        .as_ref()
+        .map(|bulk| bulk.refused.clone())
+        .unwrap_or_default();
+    let run = CleanupRun {
+        job: dispatch::CleanupJob::default(),
+        rows,
+        bulk: prompt.bulk.as_ref().map(|_| (done, missing)),
+        refused,
+        settled: false,
+    };
+    Ok(Some(CleanupConfirmed {
+        run: Some((plan, run)),
+        message: None,
+    }))
+}
+
+/// Hand a confirmed cleanup's plan to the host's worker and show its progress on the card.
+pub fn start_cleanup_run(
+    model: &mut BoardModel,
+    plan: Vec<dispatch::CleanupPlanRow>,
+    mut run: CleanupRun,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) {
+    run.job = if plan.is_empty() {
+        dispatch::CleanupJob::new(0)
+    } else {
+        host.begin_cleanup(plan, in_herdr)
+    };
+    model.begin_cleanup_run(run);
+}
+
+/// What one poll of a board's cleanup run changed.
+#[derive(Debug, Default)]
+struct CleanupPoll {
+    /// A dispatch was marked cleaned: the domain needs a save.
+    mutated: bool,
+    /// Status-row lines to post on the visible board, in order: (text, expires).
+    posts: Vec<(String, bool)>,
+}
+
+/// Apply every landed row of `board`'s cleanup run: mark its dispatch cleaned while it is
+/// still the one the card inspected, then update the card. A finished run posts its summary
+/// and goes, unless its card is open with something kept: then the card shows why until Esc.
+fn poll_cleanup_run_on(
+    domain: &mut DomainState,
+    board: &mut BoardModel,
+    baseline: &mut Option<DomainState>,
+) -> CleanupPoll {
+    let mut poll = CleanupPoll::default();
+    let card_open = board.cleanup_card_open();
+    let quitting = board.quitting_after_cleanup();
+    let Some(run) = board.cleanup_run_mut() else {
+        return poll;
+    };
+    let Some((slots, settled)) = run.job.snapshot() else {
+        return poll;
+    };
+    let mut progressed = false;
+    for row in &mut run.rows {
+        if row.state.landed() {
+            continue;
         }
-        if self.missing > 0 {
-            parts.push(format!("{} already gone", plural(self.missing, "worktree")));
-        }
-        for (number, result) in &self.cleaned {
-            if let Err(error) = result {
-                parts.push(format!("T{number} cleanup refused: {error}"));
+        let Some(slot) = row.slot.and_then(|index| slots.get(index)) else {
+            continue;
+        };
+        match slot {
+            dispatch::CleanupSlot::Queued => {}
+            dispatch::CleanupSlot::Running => {
+                if row.state == CleanupRowState::Queued {
+                    row.state = CleanupRowState::Removing;
+                    progressed = true;
+                }
+            }
+            dispatch::CleanupSlot::Done(Ok(result)) => {
+                let current = row.inspected.is_some()
+                    && domain
+                        .get(row.task_id)
+                        .and_then(|task| task.dispatch.as_ref())
+                        == row.inspected.as_ref();
+                if current {
+                    // The pre-mutation state, for save recovery; taken only when a row lands.
+                    baseline.get_or_insert_with(|| domain.clone());
+                    if domain
+                        .record_dispatch_cleaned_keeping_undo(row.task_id)
+                        .is_ok()
+                    {
+                        poll.mutated = true;
+                    }
+                }
+                row.state = CleanupRowState::Cleaned {
+                    branch_kept: result.branch_reason.map(|reason| {
+                        (
+                            reason.short().to_string(),
+                            reason.message(result.base.as_deref(), result.remote.as_deref()),
+                        )
+                    }),
+                };
+                progressed = true;
+            }
+            dispatch::CleanupSlot::Done(Err(error)) => {
+                row.state = CleanupRowState::Kept {
+                    short: error.short().into(),
+                    full: error.to_string(),
+                };
+                progressed = true;
             }
         }
-        parts.join(" · ")
+    }
+    run.settled = settled;
+    if run.finished() {
+        let clean = run.summary().1;
+        if !card_open || clean {
+            if let Some(summary) = board.finish_cleanup_run() {
+                poll.posts.push(summary);
+            }
+        }
+    } else if progressed && !card_open && !quitting {
+        poll.posts.push((run.progress_message(), false));
+    }
+    poll
+}
+
+/// One board-loop step for running cleanups (this board's, and its project preview's, which
+/// may be parked): apply landed rows, save the cleaned markers, and report on the visible
+/// board's status row. Waits for an unresolved failed save, like every other background step.
+pub fn poll_cleanup_runs(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    save_recovery: &mut SaveRecovery<DomainState>,
+) {
+    if save_recovery.is_pending() || !model.cleanup_running() {
+        return;
+    }
+    let mut baseline = None;
+    let mut poll = poll_cleanup_run_on(domain, model, &mut baseline);
+    if let Some(seat) = model.preview_seat_mut() {
+        let seat_poll = poll_cleanup_run_on(domain, seat, &mut baseline);
+        poll.mutated |= seat_poll.mutated;
+        poll.posts.extend(seat_poll.posts);
+    }
+    if poll.mutated {
+        if let Err(error) = store.reload_merge_save(domain) {
+            let working = std::mem::take(domain);
+            save_recovery.fail(baseline.unwrap_or_default(), working, error.to_string());
+            model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+            return;
+        }
+        model.sync_from_domain(domain);
+    }
+    for (text, clean) in poll.posts {
+        model.post_cleanup_summary(text, clean);
     }
 }
 
@@ -2321,84 +2558,6 @@ fn plural(count: usize, noun: &str) -> String {
     } else {
         format!("{count} {noun}s")
     }
-}
-
-/// Apply a bulk card's choice: with `y`, clean every cleanable row (its own refs: a row whose
-/// check never landed keeps its branch), then converge already-missing worktrees and complete
-/// the whole set as one batch, one undo entry. A refusal on one row never stops the others.
-pub fn bulk_cleanup_and_complete_with_host(
-    domain: &mut DomainState,
-    model: &mut BoardModel,
-    clean: bool,
-    in_herdr: bool,
-    host: &mut impl DispatchHost,
-) -> Result<Option<BulkCleanupOutcome>, DomainError> {
-    let Some(prompt) = model
-        .cleanup_prompt()
-        .filter(|prompt| prompt.bulk.is_some())
-    else {
-        return Ok(None);
-    };
-    let bulk = prompt.bulk.clone().expect("bulk card");
-    let rows = prompt.rows.clone();
-    // A target another actor removed since the card opened is dropped before any host work,
-    // so a refused batch can never follow a cleanup.
-    let targets = bulk
-        .targets
-        .iter()
-        .copied()
-        .filter(|id| domain.get(*id).is_some())
-        .collect::<Vec<_>>();
-    let mut outcome = BulkCleanupOutcome {
-        done: 0,
-        cleaned: Vec::new(),
-        dirty: Vec::new(),
-        missing: 0,
-    };
-    for row in rows.iter().filter(|row| targets.contains(&row.task_id)) {
-        if !clean {
-            continue;
-        }
-        if row.dirty {
-            outcome.dirty.push(row.number);
-        } else if !cleanup_row_current(domain, row) {
-            outcome
-                .cleaned
-                .push((row.number, Err(CleanupError::DispatchChanged)));
-        } else {
-            let refs = row.cleanup_refs();
-            let result = dispatch::clean_with_host_refs(domain, row.task_id, in_herdr, refs, host);
-            outcome.cleaned.push((row.number, result));
-        }
-    }
-    for (id, _, inspected) in &bulk.missing {
-        // The card's snapshot may be stale: another board can have relaunched this task since.
-        // Converge only the dispatch that was inspected, and only while its worktree is still
-        // gone; a relaunched or reappeared worktree is left live.
-        let same_dispatch = domain
-            .get(*id)
-            .and_then(|task| task.dispatch.as_ref())
-            .is_some_and(|record| record == inspected);
-        let still_missing = same_dispatch
-            && dispatch::inspect_cleanup_cached_with_host(domain, *id, in_herdr, host)
-                .is_ok_and(|preview| !preview.inspection.worktree_exists);
-        if still_missing {
-            domain.record_dispatch_cleaned(*id)?;
-            outcome.missing += 1;
-        }
-    }
-    outcome.done = targets
-        .iter()
-        .filter(|id| {
-            domain
-                .get(**id)
-                .is_some_and(|task| task.status != HumanStatus::Done)
-        })
-        .count();
-    domain.complete_batch_after_cleanup(&targets)?;
-    model.close_popup();
-    model.clear_marks();
-    Ok(Some(outcome))
 }
 
 /// One board-loop step for cleanup cards: apply landed merged checks (this board's card or
@@ -2414,6 +2573,11 @@ pub fn finish_queued_cleanup_with_host(
     host: &mut impl DispatchHost,
 ) -> io::Result<()> {
     model.poll_cleanup_check();
+    model.present_save_recovery(save_recovery.error());
+    if save_recovery.is_pending() {
+        return Ok(());
+    }
+    poll_cleanup_runs(store, domain, model, save_recovery);
     model.present_save_recovery(save_recovery.error());
     if save_recovery.is_pending() {
         return Ok(());
@@ -2460,39 +2624,6 @@ pub fn finish_queued_cleanup_with_host(
     }
     model.present_save_recovery(save_recovery.error());
     Ok(())
-}
-
-/// Apply one cleanup-modal completion choice. Completion is attempted even when cleanup refuses.
-pub fn cleanup_and_complete_with_host(
-    domain: &mut DomainState,
-    model: &mut BoardModel,
-    clean: bool,
-    in_herdr: bool,
-    host: &mut impl DispatchHost,
-) -> Result<Option<Result<CleanupResult, CleanupError>>, DomainError> {
-    let Some(row) = model
-        .cleanup_prompt()
-        .filter(|prompt| prompt.bulk.is_none())
-        .and_then(|prompt| prompt.rows.first())
-    else {
-        return Ok(None);
-    };
-    let target = row.task_id;
-    // The card refreshed the base off the event loop; never fetch here. A check that is still
-    // running (its queued `y` ran out of time), that failed, or that could not reach the
-    // remote confirms nothing, so the branch stays.
-    let refs = row.cleanup_refs();
-    let current = cleanup_row_current(domain, row);
-    let cleanup = clean.then(|| {
-        if current {
-            dispatch::clean_with_host_refs(domain, target, in_herdr, refs, host)
-        } else {
-            Err(CleanupError::DispatchChanged)
-        }
-    });
-    domain.complete_after_cleanup(target)?;
-    model.close_popup();
-    Ok(cleanup)
 }
 
 /// The board's `ctrl+g` path: launch `target` through the real host and save its record.
@@ -2652,6 +2783,12 @@ fn handle_board_intent_with_host(
     {
         return Ok(false);
     }
+    // A running cleanup finishes its git and Herdr steps before the board exits (bounded), so
+    // no removed worktree is left without its cleaned marker. The run loop exits once due.
+    if quit_requested && model.cleanup_running() {
+        model.begin_quit_after_cleanup();
+        return Ok(false);
+    }
 
     // Quick capture: Esc on the expanded draft is the top-level cancel. The board's
     // collapse-to-line fallback would strand the popup on a retained one-line draft, so
@@ -2701,6 +2838,10 @@ fn handle_board_intent_with_host(
                 record_notice_dismissals_without_blocking_persist(store, domain);
                 return Ok(false);
             }
+            Ok(BulkCleanupOffer::Busy) => {
+                model.set_message(CLEANUP_BUSY);
+                return Ok(false);
+            }
             Ok(BulkCleanupOffer::None) => {}
             Err(error) => {
                 model.set_message(board_rejection_message(&error));
@@ -2728,6 +2869,10 @@ fn handle_board_intent_with_host(
                     record_notice_dismissals_without_blocking_persist(store, domain);
                     return Ok(false);
                 }
+                Ok(CleanupOffer::Busy) => {
+                    model.set_message(CLEANUP_BUSY);
+                    return Ok(false);
+                }
                 Ok(CleanupOffer::None) => {}
                 Err(error) => model.set_message(error.to_string()),
             }
@@ -2739,69 +2884,44 @@ fn handle_board_intent_with_host(
         BoardIntent::ConfirmCleanup | BoardIntent::KeepCleanup
     ) && !save_recovery.is_pending()
     {
+        // The card already confirmed: it now reports the run, and only Esc acts on it.
+        if model.cleanup_run().is_some() {
+            return Ok(false);
+        }
         let clean = intent == BoardIntent::ConfirmCleanup;
         if clean && model.queue_cleanup_confirm() {
             return Ok(false);
         }
-        if model
-            .cleanup_prompt()
-            .is_some_and(|prompt| prompt.bulk.is_some())
-        {
-            let outcome =
-                match bulk_cleanup_and_complete_with_host(domain, model, clean, in_herdr, host) {
-                    Ok(outcome) => outcome,
-                    Err(error) => {
-                        model.close_popup();
-                        model.set_message(board_rejection_message(&error));
-                        return Ok(false);
-                    }
-                };
-            if let Err(error) = store.reload_merge_save(domain) {
-                let working = std::mem::take(domain);
-                save_recovery.fail(baseline, working, error.to_string());
-                model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
-                return Ok(false);
-            }
-            model.sync_from_domain(domain);
-            if let Some(outcome) = outcome {
-                model.set_message(outcome.message());
-            }
-            record_notice_dismissals_without_blocking_persist(store, domain);
-            return Ok(false);
-        }
-        let result = cleanup_and_complete_with_host(domain, model, clean, in_herdr, host);
-        let cleanup = match result {
-            Ok(cleanup) => cleanup,
+        let confirmed = match confirm_cleanup_with_host(domain, model, clean, in_herdr, host) {
+            Ok(confirmed) => confirmed,
             Err(error) => {
                 model.close_popup();
                 model.set_message(board_rejection_message(&error));
                 return Ok(false);
             }
         };
+        // Completion is durable before any worktree is touched.
         if let Err(error) = store.reload_merge_save(domain) {
+            model.close_popup();
             let working = std::mem::take(domain);
             save_recovery.fail(baseline, working, error.to_string());
             model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
             return Ok(false);
         }
         model.sync_from_domain(domain);
-        match cleanup {
-            Some(Ok(result)) => {
-                let worktree = match result.worktree {
-                    WorktreeCleanup::Removed => "removed",
-                    WorktreeCleanup::Missing => "missing",
-                };
-                let branch = match result.branch {
-                    BranchCleanup::Removed => "removed",
-                    BranchCleanup::Kept => "kept",
-                };
-                model.set_message(format!(
-                    "done T{} · worktree {worktree} · branch {branch}",
-                    result.number
-                ));
+        match confirmed {
+            Some(CleanupConfirmed {
+                run: Some((plan, run)),
+                ..
+            }) => {
+                start_cleanup_run(model, plan, run, in_herdr, host);
+                poll_cleanup_runs(store, domain, model, save_recovery);
             }
-            Some(Err(error)) => model.set_message(format!("done · cleanup refused: {error}")),
-            None => model.set_message("done · worktree kept"),
+            Some(CleanupConfirmed {
+                message: Some(message),
+                ..
+            }) => model.post_cleanup_summary(message, true),
+            _ => {}
         }
         record_notice_dismissals_without_blocking_persist(store, domain);
         return Ok(false);
@@ -9809,7 +9929,7 @@ mod queued_cleanup_tests {
     use crate::domain::{Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope};
     use crate::save_recovery::SaveRecovery;
     use crate::store::TaskStore;
-    use crate::ui::board::{apply_intent, BoardModel};
+    use crate::ui::board::{apply_intent, BoardModel, CleanupRun};
     use crate::ui::input::BoardIntent;
     use crate::ui::queue::NavTab;
 
@@ -10056,9 +10176,18 @@ mod queued_cleanup_tests {
             host.deleted, 0,
             "cached ancestry says merged, but no check confirmed it"
         );
+        // A kept branch is not missed: the card stays on its outcome until Esc.
+        assert!(model.cleanup_run().is_some_and(CleanupRun::finished));
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::CancelCleanup,
+            &mut host,
+        );
         assert!(model
             .message()
-            .is_some_and(|message| message.contains("branch kept")));
+            .is_some_and(|message| message.contains("branch kept (merge unconfirmed)")));
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
 
@@ -10444,9 +10573,16 @@ mod queued_cleanup_tests {
         );
         assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
         assert_eq!((host.removed, host.deleted), (1, 0), "branch kept");
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::CancelCleanup,
+            &mut host,
+        );
         assert!(model
             .message()
-            .is_some_and(|message| message.contains("branch kept")));
+            .is_some_and(|message| message.contains("branch kept (offline)")));
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
 
@@ -10487,9 +10623,16 @@ mod queued_cleanup_tests {
             "the new launch is untouched"
         );
         assert_eq!(domain.get(id).unwrap().dispatch.as_ref(), Some(&relaunched));
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::CancelCleanup,
+            &mut host,
+        );
         assert!(model
             .message()
-            .is_some_and(|message| message.contains("changed since the card opened")));
+            .is_some_and(|message| message.contains("kept (dispatch changed)")));
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
 
@@ -10664,14 +10807,15 @@ mod bulk_cleanup_tests {
         offer_bulk_cleanup_prompt_with_host, BulkCleanupOffer,
     };
     use crate::dispatch::{
-        CleanupInspection, CreatedWorktree, DispatchHost, MergeCheck, MergeVerdict,
+        clean_planned_with_host, run_cleanup_job, CleanupInspection, CleanupJob, CleanupPlanRow,
+        CreatedWorktree, DispatchHost, MergeCheck, MergeVerdict,
     };
     use crate::domain::{
         Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope, UndoEntry,
     };
     use crate::save_recovery::SaveRecovery;
     use crate::store::TaskStore;
-    use crate::ui::board::{apply_intent, BoardInputMode, BoardModel};
+    use crate::ui::board::{apply_intent, BoardInputMode, BoardModel, CleanupRowState, CleanupRun};
     use crate::ui::input::BoardIntent;
     use crate::ui::mouse::BoardPopup;
 
@@ -10687,6 +10831,11 @@ mod bulk_cleanup_tests {
         checks: HashMap<String, MergeCheck>,
         removed: Vec<String>,
         deleted: Vec<String>,
+        /// Workspaces whose removal fails.
+        fail: HashSet<String>,
+        /// A slow host: `y` hands the plan over and the test lands each row by hand.
+        hold: bool,
+        held: Option<(CleanupJob, Vec<CleanupPlanRow>)>,
     }
 
     impl DispatchHost for BulkHost {
@@ -10736,12 +10885,24 @@ mod bulk_cleanup_tests {
             )
         }
         fn remove_herdr_worktree(&mut self, workspace_id: &str) -> Result<(), String> {
+            if self.fail.contains(workspace_id) {
+                return Err(format!("herdr could not remove {workspace_id}"));
+            }
             self.removed.push(workspace_id.to_string());
             Ok(())
         }
         fn delete_branch(&mut self, _: &Path, branch: &str) -> Result<(), String> {
             self.deleted.push(branch.to_string());
             Ok(())
+        }
+        fn begin_cleanup(&mut self, plan: Vec<CleanupPlanRow>, in_herdr: bool) -> CleanupJob {
+            let job = CleanupJob::new(plan.len());
+            if self.hold {
+                self.held = Some((job.clone(), plan));
+            } else {
+                run_cleanup_job(&job, &plan, in_herdr, self);
+            }
+            job
         }
         fn root_pane(&mut self, _: &str) -> Result<String, String> {
             Err("not used".into())
@@ -10752,6 +10913,26 @@ mod bulk_cleanup_tests {
     }
 
     impl BulkHost {
+        /// The worker picks up row `index` without finishing it.
+        fn start(&self, index: usize) {
+            self.held.as_ref().expect("held job").0.start(index);
+        }
+
+        /// The worker finishes row `index`; the job settles once every row is done.
+        fn release(&mut self, index: usize) {
+            let (job, plan) = self.held.clone().expect("held job");
+            job.start(index);
+            let result = clean_planned_with_host(&plan[index], true, self);
+            job.finish(index, result);
+            let (slots, _) = job.snapshot().expect("job idle");
+            if slots
+                .iter()
+                .all(|slot| matches!(slot, crate::dispatch::CleanupSlot::Done(_)))
+            {
+                job.settle();
+            }
+        }
+
         fn land_all(&mut self, merged: bool) {
             for check in self.checks.values() {
                 check.complete(MergeVerdict {
@@ -10979,6 +11160,9 @@ mod bulk_cleanup_tests {
         tick(&mut board, &mut host);
         assert!(!board.model.cleanup_prompt().unwrap().checking());
         press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        // The dirty row is kept, so the finished card stays on its rows until Esc.
+        assert!(board.model.cleanup_run().is_some_and(CleanupRun::finished));
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
         assert!(board.model.cleanup_prompt().is_none());
         assert!(statuses(&board)
             .iter()
@@ -10990,13 +11174,16 @@ mod bulk_cleanup_tests {
         assert!(board.model.marked_ids().is_empty());
         let message = board.model.message().unwrap_or_default().to_string();
         assert!(message.contains("done 3"), "{message}");
-        assert!(message.contains("cleaned T1"), "{message}");
+        assert!(message.contains("cleaned 1"), "{message}");
         assert!(
             message.contains("kept T2 (uncommitted changes)"),
             "{message}"
         );
 
-        let disk = board.store.load().expect("one save persisted everything");
+        let disk = board
+            .store
+            .load()
+            .expect("completion and cleaned markers persisted");
         assert!(disk
             .tasks()
             .iter()
@@ -11224,11 +11411,9 @@ mod bulk_cleanup_tests {
             .clone()
             .unwrap();
         assert_eq!(record, relaunched);
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
         let message = board.model.message().unwrap_or_default().to_string();
-        assert!(
-            message.contains("T1 cleanup refused: changed since the card opened"),
-            "{message}"
-        );
+        assert!(message.contains("T1 (dispatch changed)"), "{message}");
     }
 
     #[test]
@@ -11261,5 +11446,214 @@ mod bulk_cleanup_tests {
         assert!(statuses(&board)
             .iter()
             .all(|status| *status == HumanStatus::Done));
+    }
+
+    fn slow_board(label: &str) -> (Board, BulkHost) {
+        let mut board = marked_board(label);
+        let mut host = BulkHost {
+            hold: true,
+            ..BulkHost::default()
+        };
+        press(&mut board, BoardIntent::Complete, &mut host);
+        host.land_all(true);
+        tick(&mut board, &mut host);
+        (board, host)
+    }
+
+    fn disk_statuses(board: &Board) -> Vec<HumanStatus> {
+        let disk = board.store.load().expect("load");
+        board
+            .ids
+            .iter()
+            .map(|id| disk.get(*id).unwrap().status)
+            .collect()
+    }
+
+    /// The card's row state for `board.ids[index]`.
+    fn row_state(board: &Board, index: usize) -> CleanupRowState {
+        board
+            .model
+            .cleanup_run()
+            .expect("run")
+            .rows
+            .iter()
+            .find(|row| row.task_id == board.ids[index])
+            .expect("row")
+            .state
+            .clone()
+    }
+
+    /// The job slot the worker handles `board.ids[index]` in.
+    fn slot(board: &Board, index: usize) -> usize {
+        board
+            .model
+            .cleanup_run()
+            .expect("run")
+            .rows
+            .iter()
+            .find(|row| row.task_id == board.ids[index])
+            .and_then(|row| row.slot)
+            .expect("worker row")
+    }
+
+    #[test]
+    fn y_returns_before_any_removal_and_rows_land_through_the_loop() {
+        let (mut board, mut host) = slow_board("slow");
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        // The board is interactive again with nothing removed: completion is durable first.
+        assert!(host.removed.is_empty());
+        assert!(disk_statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Done));
+        assert!(board.model.cleanup_card_open(), "the card stays to report");
+        assert_eq!(row_state(&board, 0), CleanupRowState::Queued);
+        assert_eq!(row_state(&board, 1), CleanupRowState::Queued);
+        let (first, second) = (slot(&board, 0), slot(&board, 1));
+        // Idle frames never wait on the worker.
+        tick(&mut board, &mut host);
+        tick(&mut board, &mut host);
+        host.start(first);
+        tick(&mut board, &mut host);
+        assert_eq!(row_state(&board, 0), CleanupRowState::Removing);
+        host.release(first);
+        tick(&mut board, &mut host);
+        assert_eq!(
+            row_state(&board, 0),
+            CleanupRowState::Cleaned { branch_kept: None }
+        );
+        assert!(cleaned(&board, 0));
+        let disk = board.store.load().expect("load");
+        assert!(
+            disk.get(board.ids[0])
+                .unwrap()
+                .dispatch
+                .as_ref()
+                .unwrap()
+                .cleaned,
+            "each landed row saves its cleaned marker"
+        );
+        assert!(!cleaned(&board, 1));
+        // Esc hides the card; cleanup continues and the status row reports it.
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        assert!(!board.model.cleanup_card_open());
+        assert!(board.model.cleanup_run().is_some());
+        assert_eq!(board.model.message(), Some("cleaning 2 of 2…"));
+        host.release(second);
+        tick(&mut board, &mut host);
+        assert!(board.model.cleanup_run().is_none());
+        assert!(cleaned(&board, 1));
+        assert_eq!(board.model.message(), Some("done 3 · cleaned 2"));
+        assert_eq!(host.removed.len(), 2);
+        // Cleaned markers landed after completion, and one undo still reopens the set.
+        press(&mut board, BoardIntent::Undo, &mut host);
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Open));
+        assert!(cleaned(&board, 0) && cleaned(&board, 1));
+    }
+
+    #[test]
+    fn a_failed_row_never_stops_the_others_and_the_card_shows_why() {
+        let mut board = marked_board("fail");
+        let mut host = BulkHost {
+            fail: HashSet::from(["w-clean".to_string()]),
+            ..BulkHost::default()
+        };
+        press(&mut board, BoardIntent::Complete, &mut host);
+        host.land_all(true);
+        tick(&mut board, &mut host);
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        assert_eq!(host.removed, vec!["w-dirty".to_string()]);
+        assert!(!cleaned(&board, 0) && cleaned(&board, 1));
+        let state = row_state(&board, 0);
+        assert!(
+            matches!(&state, CleanupRowState::Kept { short, full }
+                if short == "removal failed" && full.contains("could not remove w-clean")),
+            "{state:?}"
+        );
+        assert!(board.model.cleanup_card_open(), "a kept row is not missed");
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        assert_eq!(
+            board.model.message(),
+            Some("done 3 · cleaned 1 · kept T1 (removal failed)")
+        );
+        // Sticky: still there after the ephemeral window would have passed.
+        assert!(board.model.message_is_sticky());
+    }
+
+    #[test]
+    fn quit_mid_cleanup_waits_for_the_git_and_herdr_steps() {
+        let (mut board, mut host) = slow_board("quit");
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        let mut recovery = SaveRecovery::new();
+        let quit = handle_board_intent_with_host(
+            &board.store,
+            &mut board.domain,
+            &mut board.model,
+            BoardIntent::Quit,
+            &mut recovery,
+            false,
+            true,
+            &mut host,
+            &mut |_| {},
+        )
+        .expect("quit");
+        assert!(!quit, "the board stays up while cleanup finishes");
+        assert!(board.model.quitting_after_cleanup());
+        assert!(!board.model.cleanup_card_open());
+        assert_eq!(board.model.message(), Some("finishing cleanup…"));
+        assert!(!board.model.quit_after_cleanup_due());
+        let (first, second) = (slot(&board, 0), slot(&board, 1));
+        host.release(first);
+        tick(&mut board, &mut host);
+        assert!(!board.model.quit_after_cleanup_due());
+        assert_eq!(board.model.message(), Some("finishing cleanup…"));
+        host.release(second);
+        tick(&mut board, &mut host);
+        assert!(board.model.quit_after_cleanup_due());
+        let disk = board.store.load().expect("load");
+        assert!(board.ids[..2].iter().all(|id| disk
+            .get(*id)
+            .unwrap()
+            .dispatch
+            .as_ref()
+            .unwrap()
+            .cleaned));
+    }
+
+    #[test]
+    fn ctrl_d_on_another_dispatch_while_cleanup_runs_is_refused() {
+        let (mut board, mut host) = slow_board("busy");
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        let id = board
+            .domain
+            .create(
+                "another",
+                None,
+                TaskScope::Project {
+                    path: PROJECT.into(),
+                },
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create");
+        board
+            .domain
+            .record_dispatch(id, dispatched("another"))
+            .expect("dispatch");
+        board.model.sync_from_domain(&board.domain);
+        assert_eq!(
+            super::offer_cleanup_prompt_with_host(
+                &mut board.domain,
+                &mut board.model,
+                id,
+                true,
+                &mut host
+            )
+            .expect("offer"),
+            super::CleanupOffer::Busy
+        );
+        assert_ne!(board.domain.get(id).unwrap().status, HumanStatus::Done);
     }
 }
