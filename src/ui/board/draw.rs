@@ -212,9 +212,14 @@ pub(crate) fn dispatch_overlay<'a>(
                 default => format!("from default ({default})"),
             },
         };
+        let checking = if prompt.checking() {
+            "  checking…"
+        } else {
+            ""
+        };
         lines.push(CleanupCardLine::Field {
             label: format!("T{}", eligible.number),
-            value: format!("@{}  {base}", eligible.assignee),
+            value: format!("@{}  {base}{checking}", eligible.assignee),
         });
     }
     if !prompt.skipped.is_empty() {

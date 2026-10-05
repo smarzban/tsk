@@ -465,10 +465,20 @@ pub trait DispatchHost {
     {
         let batch = LaunchBatch::new(jobs.len());
         for job in jobs {
-            let outcome = launch_with_host(&job, None, self);
+            let outcome = launch_bulk_job(&job, self);
             batch.land(job, outcome);
         }
         batch
+    }
+    /// Check which `projects` are git repositories, off the event loop where the host can. The
+    /// default answers before returning (test hosts).
+    fn begin_git_checks(&mut self, projects: Vec<PathBuf>) -> GitChecks
+    where
+        Self: Sized,
+    {
+        let checks = GitChecks::default();
+        checks.finish(check_git_projects(projects, self));
+        checks
     }
 }
 
@@ -785,21 +795,16 @@ impl DispatchHost for SystemDispatchHost {
     }
 
     fn begin_launches(&mut self, jobs: Vec<EligibleDispatch>) -> LaunchBatch {
-        let batch = LaunchBatch::new(jobs.len());
-        let landing = batch.clone();
-        // One thread, launches in order: tasks in one repository share its fetch window.
+        spawn_launches(jobs, || SystemDispatchHost)
+    }
+
+    fn begin_git_checks(&mut self, projects: Vec<PathBuf>) -> GitChecks {
+        let checks = GitChecks::default();
+        let finishing = checks.clone();
         std::thread::spawn(move || {
-            let mut host = SystemDispatchHost;
-            for job in jobs {
-                // A panicking launch must still land, or the board waits on it forever.
-                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    launch_with_host(&job, None, &mut host)
-                }))
-                .unwrap_or_else(|_| Err(DispatchError::Herdr("launch failed unexpectedly".into())));
-                landing.land(job, outcome);
-            }
+            finishing.finish(check_git_projects(projects, &mut SystemDispatchHost));
         });
-        batch
+        checks
     }
 }
 
@@ -1382,6 +1387,11 @@ impl EligibleDispatch {
     pub fn project(&self) -> &Path {
         &self.project
     }
+
+    /// The task's human status when it was checked.
+    pub fn status(&self) -> HumanStatus {
+        self.task.status
+    }
 }
 
 /// What one launch produced before it is recorded on the task.
@@ -1401,6 +1411,31 @@ pub fn check_with_host(
     again: bool,
     in_herdr: bool,
     host: &mut impl DispatchHost,
+) -> Result<EligibleDispatch, DispatchError> {
+    check_inner(state, id, profiles, again, in_herdr, &mut |project| {
+        host.is_git_repo(project) == Ok(true)
+    })
+}
+
+/// The same checks from task state alone, leaving out the git-repository check: the bulk card
+/// runs that one off the event loop ([`DispatchHost::begin_git_checks`]), and each bulk launch
+/// repeats it before creating anything ([`launch_bulk_job`]).
+pub fn check_task(
+    state: &DomainState,
+    id: Uuid,
+    profiles: &AgentProfiles,
+    in_herdr: bool,
+) -> Result<EligibleDispatch, DispatchError> {
+    check_inner(state, id, profiles, false, in_herdr, &mut |_| true)
+}
+
+fn check_inner(
+    state: &DomainState,
+    id: Uuid,
+    profiles: &AgentProfiles,
+    again: bool,
+    in_herdr: bool,
+    is_git_repo: &mut dyn FnMut(&Path) -> bool,
 ) -> Result<EligibleDispatch, DispatchError> {
     let task = state.get(id).cloned().ok_or(DispatchError::UnknownTask)?;
     let number = task.number.ok_or(DispatchError::UnknownTask)?;
@@ -1426,9 +1461,8 @@ pub fn check_with_host(
         TaskScope::Project { path } => PathBuf::from(path),
         TaskScope::Global => return Err(DispatchError::NeedsGitProject),
     };
-    match host.is_git_repo(&project) {
-        Ok(true) => {}
-        Ok(false) | Err(_) => return Err(DispatchError::NeedsGitProject),
+    if !is_git_repo(&project) {
+        return Err(DispatchError::NeedsGitProject);
     }
     let profile = profiles
         .get(&assignee)
@@ -1585,14 +1619,102 @@ pub fn launch_with_host(
     })
 }
 
+/// One bulk launch: confirm the repository first (the card checked it off the event loop, but
+/// nothing on disk is frozen), then launch exactly as a single dispatch does.
+pub fn launch_bulk_job(
+    job: &EligibleDispatch,
+    host: &mut impl DispatchHost,
+) -> Result<Launched, DispatchError> {
+    if host.is_git_repo(&job.project) != Ok(true) {
+        return Err(DispatchError::NeedsGitProject);
+    }
+    launch_with_host(job, None, host)
+}
+
+/// Run `jobs` in order on one new thread with the host `make_host` builds there, landing each
+/// outcome on the returned batch. Launches in one repository then share its fetch window. A
+/// panicking launch still lands, as a failure, or the board would wait on it forever.
+pub fn spawn_launches<H: DispatchHost>(
+    jobs: Vec<EligibleDispatch>,
+    make_host: impl FnOnce() -> H + Send + 'static,
+) -> LaunchBatch {
+    let batch = LaunchBatch::new(jobs.len());
+    let landing = batch.clone();
+    std::thread::spawn(move || {
+        let mut host = make_host();
+        for job in jobs {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                launch_bulk_job(&job, &mut host)
+            }))
+            .unwrap_or_else(|_| Err(DispatchError::Herdr("launch failed unexpectedly".into())));
+            landing.land(job, outcome);
+        }
+    });
+    batch
+}
+
+/// Which of a bulk card's repositories are git repositories, filled in off the event loop.
+#[derive(Debug, Clone, Default)]
+pub struct GitChecks(
+    std::sync::Arc<std::sync::Mutex<Option<std::collections::HashMap<PathBuf, bool>>>>,
+);
+
+impl PartialEq for GitChecks {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for GitChecks {}
+
+impl GitChecks {
+    pub fn finish(&self, results: std::collections::HashMap<PathBuf, bool>) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(results);
+    }
+
+    /// The results once every repository was checked.
+    pub fn take(&self) -> Option<std::collections::HashMap<PathBuf, bool>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+}
+
+fn check_git_projects(
+    projects: Vec<PathBuf>,
+    host: &mut impl DispatchHost,
+) -> std::collections::HashMap<PathBuf, bool> {
+    projects
+        .into_iter()
+        .map(|project| {
+            let git = host.is_git_repo(&project) == Ok(true);
+            (project, git)
+        })
+        .collect()
+}
+
 /// Record a launch on its task: the dispatch record and `started`, in one domain change.
 pub fn commit_launch(
     state: &mut DomainState,
     eligible: EligibleDispatch,
     launched: Launched,
 ) -> Result<DispatchResult, DispatchError> {
+    commit_launch_with_status(state, eligible, launched, true)
+}
+
+/// [`commit_launch`], starting the task only when `start` is set.
+pub fn commit_launch_with_status(
+    state: &mut DomainState,
+    eligible: EligibleDispatch,
+    launched: Launched,
+    start: bool,
+) -> Result<DispatchResult, DispatchError> {
     state
-        .record_dispatch(eligible.id, launched.record.clone())
+        .record_dispatch_with_status(eligible.id, launched.record.clone(), start)
         .map_err(|error| DispatchError::Store(error.to_string()))?;
     Ok(DispatchResult {
         warning: launched.warning,

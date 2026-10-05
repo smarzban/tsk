@@ -196,6 +196,7 @@ pub fn board_frame(
 ) -> io::Result<FramePoll> {
     model.poll_base_picker_results();
     model.poll_cleanup_check();
+    model.poll_dispatch_checks();
     paint(model)?;
     if wait(board_poll_duration(active_animations))? {
         Ok(FramePoll::Event)
@@ -338,8 +339,7 @@ fn run_board_loop(
         loop {
             // Apply completed branch discovery and cleanup checks only on the board thread,
             // before painting.
-            model.poll_base_picker_results();
-            finish_queued_cleanup_with_host(
+            board_background_step(
                 &store,
                 &mut domain,
                 &mut model,
@@ -347,12 +347,6 @@ fn run_board_loop(
                 quick_capture,
                 dispatch::running_inside_herdr(),
                 &mut SystemDispatchHost,
-            )?;
-            land_bulk_dispatch_with_host(
-                &store,
-                &mut domain,
-                &mut model,
-                &mut save_recovery,
                 &mut |naming| drop(dispatch::spawn_agent_naming(naming)),
             )?;
             // Settle, paint, then wait. The wait is only the Frame Scheduler's idle floor.
@@ -2593,21 +2587,21 @@ fn bulk_dispatch_skip_reason(error: &DispatchError) -> String {
     }
 }
 
-/// Check every marked task with the single-task rules, then return the ones that pass (in
-/// board order) and the skipped ones with their reason.
+/// Check every marked task with the single-task rules from task state alone (the git check runs
+/// off the event loop), then return the ones that pass, in board order, and the skipped ones
+/// with their reason.
 fn check_marked_dispatches(
     domain: &DomainState,
     ids: impl IntoIterator<Item = uuid::Uuid>,
     profiles: &AgentProfiles,
     in_herdr: bool,
-    host: &mut impl DispatchHost,
 ) -> (Vec<dispatch::EligibleDispatch>, Vec<(String, String)>) {
     let mut ids = ids.into_iter().collect::<Vec<_>>();
     ids.sort_by_key(|id| domain.get(*id).and_then(|task| task.number));
     let mut launch = Vec::new();
     let mut skipped = Vec::new();
     for id in ids {
-        match dispatch::check_with_host(domain, id, profiles, false, in_herdr, host) {
+        match dispatch::check_task(domain, id, profiles, in_herdr) {
             Ok(eligible) => launch.push(eligible),
             Err(error) => {
                 let identifier = domain
@@ -2621,27 +2615,10 @@ fn check_marked_dispatches(
     (launch, skipped)
 }
 
-/// The refusal when no marked task can be dispatched: one shared reason, or each task's own.
-fn nothing_to_dispatch(skipped: &[(String, String)]) -> String {
-    let shared = skipped
-        .first()
-        .filter(|(_, first)| skipped.iter().all(|(_, reason)| reason == first));
-    match shared {
-        Some((_, reason)) => format!("nothing to dispatch: {reason}"),
-        None => format!(
-            "nothing to dispatch: {}",
-            skipped
-                .iter()
-                .map(|(identifier, reason)| format!("{identifier} {reason}"))
-                .collect::<Vec<_>>()
-                .join(" · ")
-        ),
-    }
-}
-
-/// `ctrl+g` on a marked set: one card listing what `y` launches and what it skips. Nothing
-/// launches and the marks stay until `y`. With nothing eligible there is no card, only the
-/// refusal.
+/// `ctrl+g` on a marked set: one card listing what `y` launches and what it skips. It opens at
+/// once; the git-repository check runs off the event loop and its rows show `checking…` until
+/// it lands. Nothing launches and the marks stay until `y`. With nothing eligible there is no
+/// card, only the refusal.
 pub fn open_bulk_dispatch_card(
     domain: &DomainState,
     model: &mut BoardModel,
@@ -2651,22 +2628,32 @@ pub fn open_bulk_dispatch_card(
 ) {
     model.clear_dispatch_again();
     let marked = model.marked_ids().iter().copied().collect::<Vec<_>>();
-    let (launch, skipped) = check_marked_dispatches(domain, marked, profiles, in_herdr, host);
+    let (launch, skipped) = check_marked_dispatches(domain, marked, profiles, in_herdr);
     if launch.is_empty() {
-        model.set_message(nothing_to_dispatch(&skipped));
+        model.set_message(crate::ui::board::nothing_to_dispatch(&skipped));
         return;
     }
+    let mut projects = launch
+        .iter()
+        .map(|eligible| eligible.project().to_path_buf())
+        .collect::<Vec<_>>();
+    projects.sort();
+    projects.dedup();
+    let git_checks = host.begin_git_checks(projects);
     model.begin_dispatch_prompt(crate::ui::board::DispatchPrompt {
         launch,
         skipped,
+        git_checks: Some(git_checks),
         scroll: 0,
     });
+    // A host that checked inline has its answer now.
+    model.poll_dispatch_checks();
 }
 
 /// `y` on the bulk dispatch card: recheck each listed task against the refreshed board (another
 /// board or the CLI may have dispatched or changed it), clear the marks, and start the
-/// launches through the host. Outcomes are recorded as they land
-/// ([`land_bulk_dispatch_with_host`]).
+/// launches through the host. Each launch confirms its repository before creating anything.
+/// Outcomes are recorded as they land ([`land_bulk_dispatch_with_host`]).
 #[allow(clippy::too_many_arguments)]
 fn start_bulk_dispatch(
     store: &TaskStore,
@@ -2693,32 +2680,57 @@ fn start_bulk_dispatch(
         prompt.launch.iter().map(|eligible| eligible.id),
         &profiles,
         in_herdr,
-        host,
     );
     model.clear_marks();
     if jobs.is_empty() {
-        model.set_message(nothing_to_dispatch(&failed));
+        model.set_message(crate::ui::board::nothing_to_dispatch(&failed));
         return Ok(());
     }
-    let batch = host.begin_launches(jobs);
-    let run = crate::ui::board::BulkDispatchRun {
-        batch,
-        total,
-        launched: Vec::new(),
-        failed,
-        warnings: Vec::new(),
-    };
+    let mut run = crate::ui::board::BulkDispatchRun::new(host.begin_launches(jobs), total);
+    run.failed = failed;
     model.set_message(run.message());
     model.begin_bulk_dispatch(run);
     // A host that launched inline has every outcome ready now.
     land_bulk_dispatch_with_host(store, domain, model, save_recovery, name_agent)
 }
 
-/// Record landed bulk launches (this board's or its project preview's), one save per poll, like
-/// a single dispatch: the record and `started`. A launch whose task vanished or was dispatched
-/// elsewhere meanwhile is reported, never recorded over. Waits while a save failure is
-/// unresolved; landed outcomes stay queued until it is. `run_board_loop` calls this every
-/// iteration.
+fn status_word(status: HumanStatus) -> &'static str {
+    match status {
+        HumanStatus::Open => "open",
+        HumanStatus::Ready => "ready",
+        HumanStatus::Started => "started",
+        HumanStatus::Blocked => "blocked",
+        HumanStatus::Review => "review",
+        HumanStatus::Done => "done",
+    }
+}
+
+/// A launch whose record is durable: count it and name its agent.
+fn settle_saved_launch(
+    run: &mut crate::ui::board::BulkDispatchRun,
+    pending: crate::ui::board::PendingLaunch,
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
+) {
+    if let Some(kept) = pending.kept_status {
+        run.kept_status.push((pending.identifier.clone(), kept));
+    }
+    run.launched.push((pending.identifier, pending.assignee));
+    if let Some(naming) = pending.naming {
+        name_agent(naming);
+    }
+}
+
+/// Record the bulk launches that landed, one save per poll, like a single dispatch: the record
+/// and `started`. Polled every board-loop iteration, wherever the batch was started: the outer
+/// board and its project preview share it, so navigation never drops it.
+///
+/// - A launch whose task vanished or was dispatched elsewhere meanwhile is reported, never
+///   recorded over. A task whose status the human changed after `y` (or archived or deleted)
+///   gets its record but keeps that status, and the outcome says so.
+/// - Outcomes stay on the batch while a save failure is unresolved. A failed read or save goes
+///   to save recovery holding the recorded launches; a later poll settles them: kept if Retry
+///   saved them, reported as launched but not recorded (with the workspace whose agent is
+///   running) if Cancel discarded them. Agents are named only once their record is saved.
 pub fn land_bulk_dispatch_with_host(
     store: &TaskStore,
     domain: &mut DomainState,
@@ -2729,33 +2741,30 @@ pub fn land_bulk_dispatch_with_host(
     if save_recovery.is_pending() {
         return Ok(());
     }
-    let preview = model.bulk_dispatch().is_none();
-    if preview
-        && model
-            .preview_seat_mut()
-            .is_none_or(|seat| seat.bulk_dispatch().is_none())
-    {
+    let Some(mut run) = model.take_bulk_dispatch() else {
         return Ok(());
-    }
-    let parked = preview && !model.project_right_seat_focused();
-    let board = if preview {
-        model.preview_seat_mut().expect("preview run")
-    } else {
-        &mut *model
     };
-    let run = board.bulk_dispatch_mut().expect("bulk run");
-    let landed = run.batch.take_landed();
-    let finished = run.batch.finished();
-    if landed.is_empty() && !finished {
-        return Ok(());
+    let before = run.message();
+    // A failed save left these recorded; recovery has resolved it since.
+    for pending in std::mem::take(&mut run.pending) {
+        let saved = domain
+            .get(pending.task_id)
+            .and_then(|task| task.dispatch.as_ref())
+            == Some(&pending.record);
+        if saved {
+            settle_saved_launch(&mut run, pending, name_agent);
+        } else {
+            run.unrecorded
+                .push((pending.identifier, pending.record.herdr_workspace_id));
+        }
     }
-    let mut namings = Vec::new();
-    let mut save = None;
+    let landed = run.batch.take_landed();
     if !landed.is_empty() {
-        let baseline = store
-            .load()
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        domain.merge_tasks_from_disk(&baseline);
+        // Best effort: a store that cannot be read fails the save below, into recovery.
+        if let Ok(disk) = store.load() {
+            domain.merge_tasks_from_disk(&disk);
+        }
+        let baseline = domain.clone();
         for (job, outcome) in landed {
             let identifier = format!("T{}", job.number);
             let launched = match outcome {
@@ -2766,56 +2775,96 @@ pub fn land_bulk_dispatch_with_host(
                 }
             };
             let worktree = launched.record.worktree.clone();
-            match domain.get(job.id) {
-                None => run.failed.push((
+            run.warnings.extend(launched.warning.clone());
+            let kept_status = match domain.get(job.id) {
+                None => {
+                    run.failed.push((
+                        identifier,
+                        format!("launched in {worktree}, but the task is gone"),
+                    ));
+                    continue;
+                }
+                Some(task) if task.dispatch.is_some() => {
+                    run.failed.push((
+                        identifier,
+                        format!(
+                            "launched in {worktree}, but it was dispatched elsewhere meanwhile"
+                        ),
+                    ));
+                    continue;
+                }
+                Some(task) if task.soft_deleted => Some("deleted"),
+                Some(task) if task.archived => Some("archived"),
+                Some(task) if task.status != job.status() => Some(status_word(task.status)),
+                Some(_) => None,
+            };
+            let task_id = job.id;
+            match dispatch::commit_launch_with_status(domain, job, launched, kept_status.is_none())
+            {
+                Ok(result) => run.pending.push(crate::ui::board::PendingLaunch {
+                    task_id,
                     identifier,
-                    format!("launched in {worktree}, but the task is gone"),
-                )),
-                Some(task) if task.dispatch.is_some() => run.failed.push((
-                    identifier,
-                    format!("launched in {worktree}, but it was dispatched elsewhere meanwhile"),
-                )),
-                Some(_) => match dispatch::commit_launch(domain, job, launched) {
-                    Ok(result) => {
-                        run.launched.push((identifier, result.assignee));
-                        run.warnings.extend(result.warning);
-                        namings.extend(result.naming);
-                    }
-                    Err(error) => run.failed.push((identifier, error.to_string())),
-                },
+                    assignee: result.assignee,
+                    record: result.record,
+                    naming: result.naming,
+                    kept_status: kept_status.map(str::to_string),
+                }),
+                Err(error) => run.failed.push((identifier, error.to_string())),
             }
         }
-        save = Some(baseline);
+        if !run.pending.is_empty() {
+            if let Err(error) = store.reload_merge_save(domain) {
+                let working = std::mem::take(domain);
+                save_recovery.fail(baseline, working, error.to_string());
+                model
+                    .input_target_mut()
+                    .begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+                model.begin_bulk_dispatch(run);
+                return Ok(());
+            }
+            model.sync_from_domain(domain);
+            for pending in std::mem::take(&mut run.pending) {
+                settle_saved_launch(&mut run, pending, name_agent);
+            }
+            record_notice_dismissals_without_blocking_persist(store, domain);
+        }
     }
     let message = run.message();
-    if finished {
-        board.end_bulk_dispatch();
+    let settled = run.settled();
+    if !settled {
+        model.begin_bulk_dispatch(run);
     }
-    if let Some(baseline) = save {
-        if let Err(error) = store.reload_merge_save(domain) {
-            let working = std::mem::take(domain);
-            save_recovery.fail(baseline, working, error.to_string());
-            board.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
-            model.present_save_recovery(save_recovery.error());
-            return Ok(());
-        }
-        model.sync_from_domain(domain);
-        for naming in namings {
-            name_agent(naming);
-        }
-        record_notice_dismissals_without_blocking_persist(store, domain);
-    }
-    if parked {
-        model.set_message(message);
-    } else {
-        let board = if preview {
-            model.preview_seat_mut().expect("preview run")
-        } else {
-            &mut *model
-        };
-        board.set_message(message);
+    if message != before || settled {
+        model.input_target_mut().set_message(message);
     }
     Ok(())
+}
+
+/// The board loop's background work before each paint, on the board thread: landed branch
+/// lookups, queued cleanups, and bulk dispatch outcomes.
+#[allow(clippy::too_many_arguments)]
+fn board_background_step(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    save_recovery: &mut SaveRecovery<DomainState>,
+    quick_capture: bool,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
+) -> io::Result<()> {
+    model.poll_base_picker_results();
+    model.poll_dispatch_checks();
+    finish_queued_cleanup_with_host(
+        store,
+        domain,
+        model,
+        save_recovery,
+        quick_capture,
+        in_herdr,
+        host,
+    )?;
+    land_bulk_dispatch_with_host(store, domain, model, save_recovery, name_agent)
 }
 
 /// `ctrl+g` on an unassigned task with profiles defined: open the assignee picker for that one
@@ -10076,500 +10125,1084 @@ mod quick_assign_tests {
         );
     }
 
+    /// Bulk dispatch (`ctrl+g` on a marked set). Dispatch refuses on Windows before any card.
     #[cfg(unix)]
-    /// Mark `ids` on the board after saving them.
-    fn marked(domain: &mut DomainState, model: &mut BoardModel, temp: &Temp, ids: &[uuid::Uuid]) {
-        temp.store.reload_merge_save(domain).expect("save");
-        model.sync_from_domain(domain);
-        apply_intent(domain, model, BoardIntent::ToggleMarkMode, None).expect("mark mode");
-        for id in ids {
-            select(domain, model, *id);
-            apply_intent(domain, model, BoardIntent::MarkToggle, None).expect("mark");
+    mod bulk_dispatch {
+        use super::*;
+        use crate::dispatch::{AgentNaming, EligibleDispatch, GitChecks, LaunchBatch};
+        use crate::domain::{Dispatch, HumanStatus};
+        use std::os::unix::fs::PermissionsExt;
+
+        /// Mark `ids` on the board after saving them.
+        fn marked(
+            domain: &mut DomainState,
+            model: &mut BoardModel,
+            temp: &Temp,
+            ids: &[uuid::Uuid],
+        ) {
+            temp.store.reload_merge_save(domain).expect("save");
+            model.sync_from_domain(domain);
+            apply_intent(domain, model, BoardIntent::ToggleMarkMode, None).expect("mark mode");
+            for id in ids {
+                select(domain, model, *id);
+                apply_intent(domain, model, BoardIntent::MarkToggle, None).expect("mark");
+            }
         }
-    }
 
-    #[cfg(unix)]
-    fn assign(domain: &mut DomainState, id: uuid::Uuid) {
-        domain
-            .assign(id, Some("builder".into()))
-            .expect("assign builder");
-    }
+        fn assign(domain: &mut DomainState, id: uuid::Uuid) {
+            domain
+                .assign(id, Some("builder".into()))
+                .expect("assign builder");
+        }
 
-    #[cfg(unix)]
-    fn desk_task(domain: &mut DomainState, title: &str) -> uuid::Uuid {
-        domain
-            .create(
-                title,
-                None,
-                TaskScope::Global,
-                ProvenanceOrigin::Manual,
-                None,
+        fn number(domain: &DomainState, id: uuid::Uuid) -> String {
+            format!(
+                "T{}",
+                domain.get(id).and_then(|task| task.number).expect("number")
             )
-            .expect("desk task")
-    }
-
-    #[cfg(unix)]
-    fn number(domain: &DomainState, id: uuid::Uuid) -> String {
-        format!(
-            "T{}",
-            domain.get(id).and_then(|task| task.number).expect("number")
-        )
-    }
-
-    #[cfg(unix)]
-    fn already_dispatched(domain: &mut DomainState, id: uuid::Uuid) {
-        domain
-            .record_dispatch(
-                id,
-                crate::domain::Dispatch {
-                    argv: vec!["true".into()],
-                    worktree: "/tmp/tsk-bulk-dispatch-earlier".into(),
-                    branch: "tsk/earlier".into(),
-                    base: Some("main".into()),
-                    base_ref: None,
-                    base_commit: None,
-                    base_remote: None,
-                    herdr_workspace_id: "w0".into(),
-                    at: std::time::SystemTime::now(),
-                    cleaned: false,
-                },
-            )
-            .expect("earlier dispatch");
-    }
-
-    /// Eligible, unassigned, already dispatched, and a desk task: `ctrl+g` opens one card that
-    /// launches only the first and names why it skips each other one. Nothing launches and the
-    /// marks stay while it is up. Without the bulk route `ctrl+g` cleared the marks and launched
-    /// the cursor task.
-    #[cfg(unix)]
-    #[test]
-    fn ctrl_g_on_a_mixed_marked_set_opens_one_card_listing_launches_and_skips() {
-        let temp = Temp::new("bulk-card", &["builder"]);
-        let (mut domain, mut model, ids) =
-            board(&temp, &["ready to go", "nobody yet", "launched before"]);
-        assign(&mut domain, ids[0]);
-        assign(&mut domain, ids[2]);
-        temp.store.reload_merge_save(&mut domain).expect("save");
-        already_dispatched(&mut domain, ids[2]);
-        let desk = desk_task(&mut domain, "desk errand");
-        assign(&mut domain, desk);
-        marked(&mut domain, &mut model, &temp, &ids);
-        let mut host = fake_host(&temp);
-        // The desk task is not painted in this project's lens, so it cannot be marked here; the
-        // card's check skips it with the single-task refusal wherever it is marked.
-        let (launch, skipped) =
-            super::check_marked_dispatches(&domain, [desk], &temp.profiles(), true, &mut host);
-        assert!(launch.is_empty());
-        assert_eq!(
-            skipped,
-            [(
-                number(&domain, desk),
-                "not a project in a git repo".to_string()
-            )]
-        );
-
-        let ctrl_g = key(&model, KeyCode::Char('g'), KeyModifiers::CONTROL);
-        assert_eq!(ctrl_g, BoardIntent::Dispatch);
-        handle(&temp, &mut domain, &mut model, ctrl_g, &mut host);
-
-        assert_eq!(host.launched, 0, "nothing launches before y");
-        assert_eq!(model.input_mode(), BoardInputMode::DispatchConfirm);
-        assert_eq!(model.marked_count(), 3, "the card keeps the marks");
-        let prompt = model.dispatch_prompt().expect("bulk card");
-        assert_eq!(
-            prompt
-                .launch
-                .iter()
-                .map(|eligible| eligible.id)
-                .collect::<Vec<_>>(),
-            [ids[0]]
-        );
-        assert_eq!(
-            prompt.skipped,
-            [
-                (number(&domain, ids[1]), "unassigned".to_string()),
-                (
-                    number(&domain, ids[2]),
-                    "already dispatched (use dispatch again)".to_string()
-                ),
-            ]
-        );
-
-        let first = number(&domain, ids[0]);
-        let painted = frame_text(&model, Rect::new(0, 0, 80, 30));
-        for text in [
-            "Dispatch 1 task?".to_string(),
-            format!("{first}  @builder  from default"),
-            "skipped".to_string(),
-            "unassigned".to_string(),
-            "already dispatched (use dispatch again)".to_string(),
-            "y dispatch 1 · esc cancel".to_string(),
-        ] {
-            assert!(painted.contains(&text), "missing {text:?}:\n{painted}");
         }
-        let narrow = frame_text(&model, Rect::new(0, 0, 40, 30));
-        for text in [
-            "@builder",
-            "from default",
-            "unassigned",
-            "dispatch again)",
-            "y dispatch 1",
-        ] {
-            assert!(narrow.contains(text), "40 columns lost {text:?}:\n{narrow}");
+
+        fn earlier_dispatch() -> Dispatch {
+            Dispatch {
+                argv: vec!["true".into()],
+                worktree: "/tmp/tsk-bulk-dispatch-earlier".into(),
+                branch: "tsk/earlier".into(),
+                base: Some("main".into()),
+                base_ref: None,
+                base_commit: None,
+                base_remote: None,
+                herdr_workspace_id: "w0".into(),
+                at: std::time::SystemTime::now(),
+                cleaned: false,
+            }
         }
-    }
 
-    /// `y` launches each eligible task through the single-task path, saves each record with
-    /// `started`, and clears the marks; `[x]` and the footer are clickable like the keys.
-    #[cfg(unix)]
-    #[test]
-    fn y_on_the_bulk_card_launches_only_the_eligible_tasks() {
-        let temp = Temp::new("bulk-y", &["builder"]);
-        let (mut domain, mut model, ids) = board(&temp, &["first job", "second job", "idle"]);
-        assign(&mut domain, ids[0]);
-        assign(&mut domain, ids[1]);
-        marked(&mut domain, &mut model, &temp, &ids);
-        let mut host = fake_host(&temp);
-        handle(
-            &temp,
-            &mut domain,
-            &mut model,
-            BoardIntent::Dispatch,
-            &mut host,
-        );
-
-        let hits = board_hit_map(Rect::new(0, 0, 80, 30), &model);
-        let footer = |index: usize| {
-            let hit = hits
-                .regions
-                .iter()
-                .find(|hit| hit.target == QueueHitTarget::CleanupOption(index))
-                .expect("footer entry is clickable");
-            map_board_mouse(&model, &hits, left_click(hit.area.x, hit.area.y))
-        };
-        assert_eq!(footer(0), Some(BoardIntent::ConfirmDispatch));
-        assert_eq!(footer(1), Some(BoardIntent::CancelDispatch));
-        let close = hits
-            .regions
-            .iter()
-            .find(|hit| hit.target == QueueHitTarget::ModalClose)
-            .expect("[x]");
-        assert_eq!(
-            map_board_mouse(&model, &hits, left_click(close.area.x, close.area.y)),
-            Some(BoardIntent::CancelDispatch)
-        );
-
-        let y = key(&model, KeyCode::Char('y'), KeyModifiers::NONE);
-        assert_eq!(y, BoardIntent::ConfirmDispatch);
-        handle(&temp, &mut domain, &mut model, y, &mut host);
-
-        assert_eq!(host.launched, 2, "only the eligible tasks launch");
-        let disk = temp.store.load().expect("reload");
-        for id in &ids[..2] {
-            let saved = disk.get(*id).expect("saved");
-            assert!(saved.dispatch.is_some(), "each launch is recorded");
-            assert_eq!(saved.status, crate::domain::HumanStatus::Started);
+        /// Two assigned tasks, marked, on a saved board.
+        fn two_marked(label: &str) -> (Temp, DomainState, BoardModel, Vec<uuid::Uuid>) {
+            let temp = Temp::new(label, &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["first job", "second job"]);
+            assign(&mut domain, ids[0]);
+            assign(&mut domain, ids[1]);
+            marked(&mut domain, &mut model, &temp, &ids);
+            (temp, domain, model, ids)
         }
-        assert!(disk.get(ids[2]).expect("saved").dispatch.is_none());
-        assert_eq!(model.marked_count(), 0, "marks clear once the run starts");
-        assert_eq!(model.input_mode(), BoardInputMode::Normal);
-        assert!(model.bulk_dispatch().is_none(), "the run is finished");
-        let message = model.message().expect("outcome").to_string();
-        let (first, second) = (number(&domain, ids[0]), number(&domain, ids[1]));
-        assert_eq!(
-            message,
-            format!("dispatched {first} to @builder, {second} to @builder")
-        );
-    }
 
-    /// A launch that fails is reported and does not stop the others.
-    #[cfg(unix)]
-    #[test]
-    fn one_failed_launch_in_a_bulk_dispatch_does_not_stop_the_others() {
-        let temp = Temp::new("bulk-fail", &["builder"]);
-        let (mut domain, mut model, ids) = board(&temp, &["breaks here", "goes fine"]);
-        assign(&mut domain, ids[0]);
-        assign(&mut domain, ids[1]);
-        marked(&mut domain, &mut model, &temp, &ids);
-        let mut host = fake_host(&temp);
-        host.fail_branch = Some("breaks".into());
-        handle(
-            &temp,
-            &mut domain,
-            &mut model,
-            BoardIntent::Dispatch,
-            &mut host,
-        );
-        handle(
-            &temp,
-            &mut domain,
-            &mut model,
-            BoardIntent::ConfirmDispatch,
-            &mut host,
-        );
-
-        assert_eq!(host.launched, 2);
-        let disk = temp.store.load().expect("reload");
-        assert!(disk.get(ids[0]).expect("saved").dispatch.is_none());
-        assert!(disk.get(ids[1]).expect("saved").dispatch.is_some());
-        let message = model.message().expect("outcome");
-        let (failed, launched) = (number(&domain, ids[0]), number(&domain, ids[1]));
-        assert!(
-            message.contains(&format!("dispatched {launched} to @builder"))
-                && message.contains(&format!("{failed} failed: herdr refused")),
-            "{message}"
-        );
-    }
-
-    /// Esc closes the card, launches nothing, and keeps the marked set.
-    #[cfg(unix)]
-    #[test]
-    fn esc_on_the_bulk_dispatch_card_changes_nothing_and_keeps_marks() {
-        let temp = Temp::new("bulk-esc", &["builder"]);
-        let (mut domain, mut model, ids) = board(&temp, &["one", "two"]);
-        assign(&mut domain, ids[0]);
-        assign(&mut domain, ids[1]);
-        marked(&mut domain, &mut model, &temp, &ids);
-        let before = temp.store.load().expect("load");
-        let mut host = fake_host(&temp);
-        handle(
-            &temp,
-            &mut domain,
-            &mut model,
-            BoardIntent::Dispatch,
-            &mut host,
-        );
-        let esc = super::board_keyboard_intent(
-            &model,
-            model.input_mode(),
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-        );
-        assert_eq!(esc, Some(BoardIntent::CancelDispatch));
-        handle(
-            &temp,
-            &mut domain,
-            &mut model,
-            BoardIntent::CancelDispatch,
-            &mut host,
-        );
-
-        assert_eq!(host.launched, 0);
-        assert!(model.dispatch_prompt().is_none());
-        assert_eq!(model.input_mode(), BoardInputMode::Normal);
-        assert_eq!(model.marked_count(), 2, "Esc keeps the marked set");
-        assert_eq!(temp.store.load().expect("load").tasks(), before.tasks());
-    }
-
-    /// A set with nothing eligible refuses on the status row, with no card and no launch.
-    #[cfg(unix)]
-    #[test]
-    fn a_marked_set_with_nothing_eligible_refuses_without_a_card() {
-        let temp = Temp::new("bulk-none", &["builder"]);
-        let (mut domain, mut model, ids) = board(&temp, &["nobody", "nobody either"]);
-        marked(&mut domain, &mut model, &temp, &ids);
-        let mut host = fake_host(&temp);
-        handle(
-            &temp,
-            &mut domain,
-            &mut model,
-            BoardIntent::Dispatch,
-            &mut host,
-        );
-
-        assert_eq!(host.launched, 0);
-        assert!(model.dispatch_prompt().is_none());
-        assert_eq!(model.input_mode(), BoardInputMode::Normal);
-        assert_eq!(model.message(), Some("nothing to dispatch: unassigned"));
-        assert!(
-            model.list_picker_kind().is_none(),
-            "no assignee picker inside a bulk flow"
-        );
-    }
-
-    /// The palette's dispatch entry targets the marked set too; dispatch again stays
-    /// cursor-only.
-    #[cfg(unix)]
-    #[test]
-    fn the_palette_dispatches_the_marked_set() {
-        let temp = Temp::new("bulk-palette", &["builder"]);
-        let (mut domain, mut model, ids) = board(&temp, &["one", "two"]);
-        assign(&mut domain, ids[0]);
-        assign(&mut domain, ids[1]);
-        marked(&mut domain, &mut model, &temp, &ids);
-        let labels = model
-            .available_commands()
-            .into_iter()
-            .map(|command| (command.label, command.intent))
-            .collect::<Vec<_>>();
-        assert!(labels.contains(&("dispatch 2 marked".to_string(), BoardIntent::Dispatch)));
-        assert!(!labels
-            .iter()
-            .any(|(label, _)| label.starts_with("dispatch to @")));
-        let mut host = fake_host(&temp);
-        apply_intent(
-            &mut domain,
-            &mut model,
-            BoardIntent::OpenCommandPalette,
-            None,
-        )
-        .expect("palette");
-        let index = model
-            .visible_commands()
-            .iter()
-            .position(|command| command.label == "dispatch 2 marked")
-            .expect("listed");
-        handle(
-            &temp,
-            &mut domain,
-            &mut model,
-            BoardIntent::SelectCommand(index),
-            &mut host,
-        );
-        assert_eq!(model.input_mode(), BoardInputMode::DispatchConfirm);
-        assert_eq!(model.dispatch_prompt().expect("card").launch.len(), 2);
-    }
-
-    #[cfg(unix)]
-    /// A host that leaves its launches pending until the test lands them, like the system host's
-    /// background thread.
-    struct DeferredHost {
-        inner: FakeHost,
-        batch: Option<(
-            crate::dispatch::LaunchBatch,
-            Vec<crate::dispatch::EligibleDispatch>,
-        )>,
-    }
-
-    #[cfg(unix)]
-    impl DispatchHost for DeferredHost {
-        fn is_git_repo(&mut self, project: &Path) -> Result<bool, String> {
-            self.inner.is_git_repo(project)
-        }
-        fn resolve_base(&mut self, project: &Path) -> Result<String, String> {
-            self.inner.resolve_base(project)
-        }
-        fn create_worktree(
-            &mut self,
-            project: &Path,
-            branch: &str,
-            base: Option<&str>,
-            label: &str,
-        ) -> Result<CreatedWorktree, String> {
-            self.inner.create_worktree(project, branch, base, label)
-        }
-        fn root_pane(&mut self, workspace: &str) -> Result<String, String> {
-            self.inner.root_pane(workspace)
-        }
-        fn run_in_pane(&mut self, pane: &str, command: &str) -> Result<(), String> {
-            self.inner.run_in_pane(pane, command)
-        }
-        fn begin_launches(
-            &mut self,
-            jobs: Vec<crate::dispatch::EligibleDispatch>,
-        ) -> crate::dispatch::LaunchBatch {
-            let batch = crate::dispatch::LaunchBatch::new(jobs.len());
-            self.batch = Some((batch.clone(), jobs));
-            batch
-        }
-    }
-
-    /// While launches land off the event loop the status row counts them, a second dispatch and
-    /// quit refuse (a quit would orphan launched agents), and each landing is saved on its own.
-    #[cfg(unix)]
-    #[test]
-    fn a_running_bulk_dispatch_reports_progress_and_holds_quit_until_it_lands() {
-        let temp = Temp::new("bulk-deferred", &["builder"]);
-        let (mut domain, mut model, ids) = board(&temp, &["one", "two"]);
-        assign(&mut domain, ids[0]);
-        assign(&mut domain, ids[1]);
-        marked(&mut domain, &mut model, &temp, &ids);
-        let mut host = DeferredHost {
-            inner: fake_host(&temp),
-            batch: None,
-        };
-        let mut recovery = SaveRecovery::new();
-        let mut step = |domain: &mut DomainState,
-                        model: &mut BoardModel,
-                        intent: BoardIntent,
-                        host: &mut DeferredHost| {
+        fn step(
+            temp: &Temp,
+            domain: &mut DomainState,
+            model: &mut BoardModel,
+            intent: BoardIntent,
+            recovery: &mut SaveRecovery<DomainState>,
+            host: &mut impl DispatchHost,
+            names: &mut Vec<AgentNaming>,
+        ) -> bool {
             handle_board_intent_with_host(
                 &temp.store,
                 domain,
                 model,
                 intent,
-                &mut recovery,
+                recovery,
                 false,
                 true,
                 host,
-                &mut |_| {},
+                &mut |naming| names.push(naming),
             )
             .expect("board intent")
-        };
-        step(&mut domain, &mut model, BoardIntent::Dispatch, &mut host);
-        step(
-            &mut domain,
-            &mut model,
-            BoardIntent::ConfirmDispatch,
-            &mut host,
-        );
-        assert_eq!(model.message(), Some("dispatching 1/2…"));
-        assert!(model.bulk_dispatch_running());
+        }
 
-        assert!(!step(&mut domain, &mut model, BoardIntent::Quit, &mut host));
-        assert!(model
-            .message()
-            .is_some_and(|message| message.contains("quit when it finishes")));
-        step(&mut domain, &mut model, BoardIntent::Dispatch, &mut host);
-        assert!(model
-            .message()
-            .is_some_and(|message| message.contains("wait for it to finish")));
+        fn land(
+            temp: &Temp,
+            domain: &mut DomainState,
+            model: &mut BoardModel,
+            recovery: &mut SaveRecovery<DomainState>,
+            names: &mut Vec<AgentNaming>,
+        ) {
+            super::super::land_bulk_dispatch_with_host(
+                &temp.store,
+                domain,
+                model,
+                recovery,
+                &mut |naming| names.push(naming),
+            )
+            .expect("landing never fails the board loop");
+        }
 
-        let (batch, jobs) = host.batch.take().expect("launches started");
-        let mut jobs = jobs.into_iter();
-        let job = jobs.next().expect("first");
-        let first = crate::dispatch::launch_with_host(&job, None, &mut host.inner);
-        batch.land(job, first);
-        let mut recovery = SaveRecovery::new();
-        super::land_bulk_dispatch_with_host(
-            &temp.store,
-            &mut domain,
-            &mut model,
-            &mut recovery,
-            &mut |_| {},
-        )
-        .expect("land");
-        let (one, two) = (number(&domain, ids[0]), number(&domain, ids[1]));
-        assert_eq!(
-            model.message(),
-            Some(format!("dispatching 2/2… · dispatched {one} to @builder").as_str())
-        );
-        assert!(
+        fn saved(temp: &Temp, id: uuid::Uuid) -> crate::domain::Task {
             temp.store
                 .load()
                 .expect("load")
-                .get(ids[0])
-                .expect("saved")
-                .dispatch
-                .is_some(),
-            "the first landing is saved before the second lands"
-        );
+                .get(id)
+                .expect("saved task")
+                .clone()
+        }
 
-        let job = jobs.next().expect("second");
-        let second = crate::dispatch::launch_with_host(&job, None, &mut host.inner);
-        batch.land(job, second);
-        super::land_bulk_dispatch_with_host(
-            &temp.store,
-            &mut domain,
-            &mut model,
-            &mut recovery,
-            &mut |_| {},
-        )
-        .expect("land");
-        assert!(!model.bulk_dispatch_running());
-        assert_eq!(
-            model.message(),
-            Some(format!("dispatched {one} to @builder, {two} to @builder").as_str())
-        );
+        /// A host that leaves launches and git checks pending until the test lands them, like
+        /// the system host's background threads. It counts git checks made on the board thread.
+        struct DeferredHost {
+            inner: FakeHost,
+            batch: Option<(LaunchBatch, Vec<EligibleDispatch>)>,
+            checks: Option<(GitChecks, Vec<std::path::PathBuf>)>,
+            git_calls: usize,
+        }
+
+        fn deferred(temp: &Temp) -> DeferredHost {
+            DeferredHost {
+                inner: fake_host(temp),
+                batch: None,
+                checks: None,
+                git_calls: 0,
+            }
+        }
+
+        impl DispatchHost for DeferredHost {
+            fn is_git_repo(&mut self, project: &Path) -> Result<bool, String> {
+                self.git_calls += 1;
+                self.inner.is_git_repo(project)
+            }
+            fn resolve_base(&mut self, project: &Path) -> Result<String, String> {
+                self.inner.resolve_base(project)
+            }
+            fn create_worktree(
+                &mut self,
+                project: &Path,
+                branch: &str,
+                base: Option<&str>,
+                label: &str,
+            ) -> Result<CreatedWorktree, String> {
+                self.inner.create_worktree(project, branch, base, label)
+            }
+            fn root_pane(&mut self, workspace: &str) -> Result<String, String> {
+                self.inner.root_pane(workspace)
+            }
+            fn run_in_pane(&mut self, pane: &str, command: &str) -> Result<(), String> {
+                self.inner.run_in_pane(pane, command)
+            }
+            fn begin_launches(&mut self, jobs: Vec<EligibleDispatch>) -> LaunchBatch {
+                let batch = LaunchBatch::new(jobs.len());
+                self.batch = Some((batch.clone(), jobs));
+                batch
+            }
+            fn begin_git_checks(&mut self, projects: Vec<std::path::PathBuf>) -> GitChecks {
+                let checks = GitChecks::default();
+                self.checks = Some((checks.clone(), projects));
+                checks
+            }
+        }
+
+        impl DeferredHost {
+            /// Launch the next pending job through the real launch path and land its outcome.
+            fn land_next(&mut self) {
+                let (batch, jobs) = self.batch.as_mut().expect("launches started");
+                let job = jobs.remove(0);
+                let outcome = crate::dispatch::launch_bulk_job(&job, &mut self.inner);
+                batch.land(job, outcome);
+            }
+
+            fn batch(&self) -> &LaunchBatch {
+                &self.batch.as_ref().expect("launches started").0
+            }
+        }
+
+        /// Eligible, unassigned, already dispatched, and a desk task: `ctrl+g` opens one card
+        /// that launches only the first and names why it skips each other one. Nothing launches
+        /// and the marks stay while it is up. Without the bulk route `ctrl+g` cleared the marks
+        /// and launched the cursor task.
+        #[test]
+        fn ctrl_g_on_a_mixed_marked_set_opens_one_card_listing_launches_and_skips() {
+            let temp = Temp::new("bulk-card", &["builder"]);
+            let (mut domain, mut model, ids) =
+                board(&temp, &["ready to go", "nobody yet", "launched before"]);
+            assign(&mut domain, ids[0]);
+            assign(&mut domain, ids[2]);
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            domain
+                .record_dispatch(ids[2], earlier_dispatch())
+                .expect("earlier dispatch");
+            let desk = domain
+                .create(
+                    "desk errand",
+                    None,
+                    TaskScope::Global,
+                    ProvenanceOrigin::Manual,
+                    None,
+                )
+                .expect("desk task");
+            assign(&mut domain, desk);
+            marked(&mut domain, &mut model, &temp, &ids);
+            // The desk task is not painted in this project's lens, so it cannot be marked here;
+            // the card's check skips it with the single-task refusal wherever it is marked.
+            let (launch, skipped) =
+                super::super::check_marked_dispatches(&domain, [desk], &temp.profiles(), true);
+            assert!(launch.is_empty());
+            assert_eq!(
+                skipped,
+                [(
+                    number(&domain, desk),
+                    "not a project in a git repo".to_string()
+                )]
+            );
+            let mut host = fake_host(&temp);
+
+            let ctrl_g = key(&model, KeyCode::Char('g'), KeyModifiers::CONTROL);
+            assert_eq!(ctrl_g, BoardIntent::Dispatch);
+            handle(&temp, &mut domain, &mut model, ctrl_g, &mut host);
+
+            assert_eq!(host.launched, 0, "nothing launches before y");
+            assert_eq!(model.input_mode(), BoardInputMode::DispatchConfirm);
+            assert_eq!(model.marked_count(), 3, "the card keeps the marks");
+            let prompt = model.dispatch_prompt().expect("bulk card");
+            assert_eq!(
+                prompt
+                    .launch
+                    .iter()
+                    .map(|eligible| eligible.id)
+                    .collect::<Vec<_>>(),
+                [ids[0]]
+            );
+            assert_eq!(
+                prompt.skipped,
+                [
+                    (number(&domain, ids[1]), "unassigned".to_string()),
+                    (
+                        number(&domain, ids[2]),
+                        "already dispatched (use dispatch again)".to_string()
+                    ),
+                ]
+            );
+
+            let first = number(&domain, ids[0]);
+            let painted = frame_text(&model, Rect::new(0, 0, 80, 30));
+            for text in [
+                "Dispatch 1 task?".to_string(),
+                format!("{first}  @builder  from default"),
+                "skipped".to_string(),
+                "unassigned".to_string(),
+                "already dispatched (use dispatch again)".to_string(),
+                "y dispatch 1 · esc cancel".to_string(),
+            ] {
+                assert!(painted.contains(&text), "missing {text:?}:\n{painted}");
+            }
+            assert!(!painted.contains("checking…"), "{painted}");
+            let narrow = frame_text(&model, Rect::new(0, 0, 40, 30));
+            for text in [
+                "@builder",
+                "from default",
+                "unassigned",
+                "dispatch again)",
+                "y dispatch 1",
+            ] {
+                assert!(narrow.contains(text), "40 columns lost {text:?}:\n{narrow}");
+            }
+        }
+
+        /// The card opens at once without a git call on the board thread, and its rows say
+        /// `checking…` until the off-loop check lands.
+        #[test]
+        fn the_bulk_card_checks_git_off_the_event_loop() {
+            let (temp, mut domain, mut model, ids) = two_marked("bulk-git");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::Dispatch,
+                &mut recovery,
+                &mut host,
+                &mut Vec::new(),
+            );
+            assert!(model
+                .dispatch_prompt()
+                .expect("card opens at once")
+                .checking());
+            assert_eq!(host.git_calls, 0, "no git call on the board thread");
+            let painted = frame_text(&model, Rect::new(0, 0, 80, 30));
+            assert!(painted.contains("from default  checking…"), "{painted}");
+
+            let (checks, projects) = host.checks.take().expect("checks started");
+            assert_eq!(
+                projects,
+                [std::path::PathBuf::from(PROJECT)],
+                "one check per repo"
+            );
+            checks.finish(
+                [(std::path::PathBuf::from(PROJECT), true)]
+                    .into_iter()
+                    .collect(),
+            );
+            assert!(model.poll_dispatch_checks());
+            let prompt = model.dispatch_prompt().expect("card stays");
+            assert!(!prompt.checking());
+            assert_eq!(
+                prompt
+                    .launch
+                    .iter()
+                    .map(|eligible| eligible.id)
+                    .collect::<Vec<_>>(),
+                ids
+            );
+            let painted = frame_text(&model, Rect::new(0, 0, 80, 30));
+            assert!(!painted.contains("checking…"), "{painted}");
+        }
+
+        /// When the git check leaves nothing to launch, the card closes with the refusal and
+        /// keeps the marks.
+        #[test]
+        fn a_bulk_card_whose_repos_are_not_git_closes_with_the_refusal() {
+            let (temp, mut domain, mut model, _ids) = two_marked("bulk-git-none");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::Dispatch,
+                &mut recovery,
+                &mut host,
+                &mut Vec::new(),
+            );
+            let (checks, _) = host.checks.take().expect("checks started");
+            checks.finish(
+                [(std::path::PathBuf::from(PROJECT), false)]
+                    .into_iter()
+                    .collect(),
+            );
+            model.poll_dispatch_checks();
+            assert!(model.dispatch_prompt().is_none());
+            assert_eq!(model.input_mode(), BoardInputMode::Normal);
+            assert_eq!(
+                model.message(),
+                Some("nothing to dispatch: not a project in a git repo")
+            );
+            assert_eq!(model.marked_count(), 2);
+        }
+
+        /// `y` launches each eligible task through the single-task path, saves each record with
+        /// `started`, names each agent only after its record is saved, and clears the marks;
+        /// `[x]` and the footer are clickable like the keys.
+        #[test]
+        fn y_on_the_bulk_card_launches_only_the_eligible_tasks() {
+            let temp = Temp::new("bulk-y", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["first job", "second job", "idle"]);
+            assign(&mut domain, ids[0]);
+            assign(&mut domain, ids[1]);
+            marked(&mut domain, &mut model, &temp, &ids);
+            let mut host = fake_host(&temp);
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::Dispatch,
+                &mut host,
+            );
+
+            let hits = board_hit_map(Rect::new(0, 0, 80, 30), &model);
+            let footer = |index: usize| {
+                let hit = hits
+                    .regions
+                    .iter()
+                    .find(|hit| hit.target == QueueHitTarget::CleanupOption(index))
+                    .expect("footer entry is clickable");
+                map_board_mouse(&model, &hits, left_click(hit.area.x, hit.area.y))
+            };
+            assert_eq!(footer(0), Some(BoardIntent::ConfirmDispatch));
+            assert_eq!(footer(1), Some(BoardIntent::CancelDispatch));
+            let close = hits
+                .regions
+                .iter()
+                .find(|hit| hit.target == QueueHitTarget::ModalClose)
+                .expect("[x]");
+            assert_eq!(
+                map_board_mouse(&model, &hits, left_click(close.area.x, close.area.y)),
+                Some(BoardIntent::CancelDispatch)
+            );
+
+            let y = key(&model, KeyCode::Char('y'), KeyModifiers::NONE);
+            assert_eq!(y, BoardIntent::ConfirmDispatch);
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            step(
+                &temp,
+                &mut domain,
+                &mut model,
+                y,
+                &mut recovery,
+                &mut host,
+                &mut names,
+            );
+
+            assert_eq!(host.launched, 2, "only the eligible tasks launch");
+            for id in &ids[..2] {
+                let saved = saved(&temp, *id);
+                assert!(saved.dispatch.is_some(), "each launch is recorded");
+                assert_eq!(saved.status, HumanStatus::Started);
+            }
+            assert!(saved(&temp, ids[2]).dispatch.is_none());
+            let (first, second) = (number(&domain, ids[0]), number(&domain, ids[1]));
+            assert_eq!(
+                names
+                    .iter()
+                    .map(|naming| naming.name.as_str())
+                    .collect::<Vec<_>>(),
+                [
+                    format!("{}-builder", first.to_lowercase()),
+                    format!("{}-builder", second.to_lowercase())
+                ],
+                "each saved launch names its agent"
+            );
+            assert_eq!(model.marked_count(), 0, "marks clear once the run starts");
+            assert_eq!(model.input_mode(), BoardInputMode::Normal);
+            assert!(!model.bulk_dispatch_running(), "the run is finished");
+            assert_eq!(
+                model.message(),
+                Some(format!("dispatched {first} to @builder, {second} to @builder").as_str())
+            );
+        }
+
+        /// A launch that fails is reported, names no agent, and does not stop the others.
+        #[test]
+        fn one_failed_launch_in_a_bulk_dispatch_does_not_stop_the_others() {
+            let temp = Temp::new("bulk-fail", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["breaks here", "goes fine"]);
+            assign(&mut domain, ids[0]);
+            assign(&mut domain, ids[1]);
+            marked(&mut domain, &mut model, &temp, &ids);
+            let mut host = fake_host(&temp);
+            host.fail_branch = Some("breaks".into());
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            for intent in [BoardIntent::Dispatch, BoardIntent::ConfirmDispatch] {
+                step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    intent,
+                    &mut recovery,
+                    &mut host,
+                    &mut names,
+                );
+            }
+
+            assert_eq!(host.launched, 2);
+            assert!(saved(&temp, ids[0]).dispatch.is_none());
+            assert!(saved(&temp, ids[1]).dispatch.is_some());
+            let (failed, launched) = (number(&domain, ids[0]), number(&domain, ids[1]));
+            assert_eq!(names.len(), 1, "no name for the failed launch");
+            assert_eq!(
+                names[0].name,
+                format!("{}-builder", launched.to_lowercase())
+            );
+            let message = model.message().expect("outcome");
+            assert!(
+                message.contains(&format!("dispatched {launched} to @builder"))
+                    && message.contains(&format!("{failed} failed: herdr refused")),
+                "{message}"
+            );
+        }
+
+        /// Esc closes the card, launches nothing, and keeps the marked set.
+        #[test]
+        fn esc_on_the_bulk_dispatch_card_changes_nothing_and_keeps_marks() {
+            let (temp, mut domain, mut model, _ids) = two_marked("bulk-esc");
+            let before = temp.store.load().expect("load");
+            let mut host = fake_host(&temp);
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::Dispatch,
+                &mut host,
+            );
+            let esc = super::super::board_keyboard_intent(
+                &model,
+                model.input_mode(),
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            );
+            assert_eq!(esc, Some(BoardIntent::CancelDispatch));
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::CancelDispatch,
+                &mut host,
+            );
+
+            assert_eq!(host.launched, 0);
+            assert!(model.dispatch_prompt().is_none());
+            assert_eq!(model.input_mode(), BoardInputMode::Normal);
+            assert_eq!(model.marked_count(), 2, "Esc keeps the marked set");
+            assert_eq!(temp.store.load().expect("load").tasks(), before.tasks());
+        }
+
+        /// A set with nothing eligible refuses on the status row, with no card and no launch.
+        #[test]
+        fn a_marked_set_with_nothing_eligible_refuses_without_a_card() {
+            let temp = Temp::new("bulk-none", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["nobody", "nobody either"]);
+            marked(&mut domain, &mut model, &temp, &ids);
+            let mut host = fake_host(&temp);
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::Dispatch,
+                &mut host,
+            );
+
+            assert_eq!(host.launched, 0);
+            assert!(model.dispatch_prompt().is_none());
+            assert_eq!(model.input_mode(), BoardInputMode::Normal);
+            assert_eq!(model.message(), Some("nothing to dispatch: unassigned"));
+            assert!(
+                model.list_picker_kind().is_none(),
+                "no assignee picker inside a bulk flow"
+            );
+        }
+
+        /// The palette's dispatch entry targets the marked set too; dispatch again stays
+        /// cursor-only.
+        #[test]
+        fn the_palette_dispatches_the_marked_set() {
+            let (temp, mut domain, mut model, _ids) = two_marked("bulk-palette");
+            let labels = model
+                .available_commands()
+                .into_iter()
+                .map(|command| (command.label, command.intent))
+                .collect::<Vec<_>>();
+            assert!(labels.contains(&("dispatch 2 marked".to_string(), BoardIntent::Dispatch)));
+            assert!(!labels
+                .iter()
+                .any(|(label, _)| label.starts_with("dispatch to @")));
+            let mut host = fake_host(&temp);
+            apply_intent(
+                &mut domain,
+                &mut model,
+                BoardIntent::OpenCommandPalette,
+                None,
+            )
+            .expect("palette");
+            let index = model
+                .visible_commands()
+                .iter()
+                .position(|command| command.label == "dispatch 2 marked")
+                .expect("listed");
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::SelectCommand(index),
+                &mut host,
+            );
+            assert_eq!(model.input_mode(), BoardInputMode::DispatchConfirm);
+            assert_eq!(model.dispatch_prompt().expect("card").launch.len(), 2);
+        }
+
+        /// While launches land off the event loop the status row counts them, a second dispatch
+        /// and quit refuse (a quit would orphan launched agents), and each landing is saved on
+        /// its own.
+        #[test]
+        fn a_running_bulk_dispatch_reports_progress_and_holds_quit_until_it_lands() {
+            let (temp, mut domain, mut model, ids) = two_marked("bulk-deferred");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            for intent in [BoardIntent::Dispatch, BoardIntent::ConfirmDispatch] {
+                step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    intent,
+                    &mut recovery,
+                    &mut host,
+                    &mut names,
+                );
+            }
+            assert_eq!(model.message(), Some("dispatching 1/2…"));
+            assert!(model.bulk_dispatch_running());
+
+            assert!(!step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::Quit,
+                &mut recovery,
+                &mut host,
+                &mut names,
+            ));
+            assert!(model
+                .message()
+                .is_some_and(|message| message.contains("quit when it finishes")));
+            step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::Dispatch,
+                &mut recovery,
+                &mut host,
+                &mut names,
+            );
+            assert!(model
+                .message()
+                .is_some_and(|message| message.contains("wait for it to finish")));
+
+            host.land_next();
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+            let (one, two) = (number(&domain, ids[0]), number(&domain, ids[1]));
+            assert_eq!(
+                model.message(),
+                Some(format!("dispatching 2/2… · dispatched {one} to @builder").as_str())
+            );
+            assert!(
+                saved(&temp, ids[0]).dispatch.is_some(),
+                "the first landing is saved before the second lands"
+            );
+
+            host.land_next();
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+            assert!(!model.bulk_dispatch_running());
+            assert_eq!(
+                model.message(),
+                Some(format!("dispatched {one} to @builder, {two} to @builder").as_str())
+            );
+        }
+
+        /// The production handoff: the launch runs on its own thread (`spawn_launches`, which
+        /// the system host uses), `y` returns while it is held, and the board loop's background
+        /// step records it once it lands, with no direct call to the landing helper.
+        #[test]
+        fn the_board_loop_records_launches_from_the_launch_thread() {
+            struct HeldHost {
+                release: std::sync::mpsc::Receiver<()>,
+            }
+            impl DispatchHost for HeldHost {
+                fn is_git_repo(&mut self, _: &Path) -> Result<bool, String> {
+                    Ok(true)
+                }
+                fn resolve_base(&mut self, _: &Path) -> Result<String, String> {
+                    Ok("main".into())
+                }
+                fn create_worktree(
+                    &mut self,
+                    _: &Path,
+                    branch: &str,
+                    _: Option<&str>,
+                    _: &str,
+                ) -> Result<CreatedWorktree, String> {
+                    self.release.recv().expect("released");
+                    Ok(CreatedWorktree {
+                        path: format!("/tmp/{branch}").into(),
+                        branch: branch.into(),
+                        workspace_id: "w9".into(),
+                        root_pane_id: "w9:p1".into(),
+                    })
+                }
+                fn root_pane(&mut self, _: &str) -> Result<String, String> {
+                    Ok("w9:p1".into())
+                }
+                fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
+                    Ok(())
+                }
+            }
+            /// Board-thread host whose launches go to the thread like the system host's.
+            struct ThreadedHost {
+                release: Option<std::sync::mpsc::Receiver<()>>,
+            }
+            impl DispatchHost for ThreadedHost {
+                fn is_git_repo(&mut self, _: &Path) -> Result<bool, String> {
+                    Ok(true)
+                }
+                fn create_worktree(
+                    &mut self,
+                    _: &Path,
+                    _: &str,
+                    _: Option<&str>,
+                    _: &str,
+                ) -> Result<CreatedWorktree, String> {
+                    panic!("launches never run on the board thread")
+                }
+                fn root_pane(&mut self, _: &str) -> Result<String, String> {
+                    unreachable!()
+                }
+                fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
+                    unreachable!()
+                }
+                fn begin_launches(&mut self, jobs: Vec<EligibleDispatch>) -> LaunchBatch {
+                    let release = self.release.take().expect("one batch");
+                    crate::dispatch::spawn_launches(jobs, move || HeldHost { release })
+                }
+            }
+
+            let (temp, mut domain, mut model, ids) = two_marked("bulk-thread");
+            let (release, held) = std::sync::mpsc::channel();
+            let mut host = ThreadedHost {
+                release: Some(held),
+            };
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            for intent in [BoardIntent::Dispatch, BoardIntent::ConfirmDispatch] {
+                step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    intent,
+                    &mut recovery,
+                    &mut host,
+                    &mut names,
+                );
+            }
+            assert_eq!(model.message(), Some("dispatching 1/2…"), "y returned");
+            release.send(()).expect("release first");
+            release.send(()).expect("release second");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while model.bulk_dispatch_running() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "launches never landed"
+                );
+                super::super::board_background_step(
+                    &temp.store,
+                    &mut domain,
+                    &mut model,
+                    &mut recovery,
+                    false,
+                    true,
+                    &mut host,
+                    &mut |naming| names.push(naming),
+                )
+                .expect("background step");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            for id in &ids {
+                assert_eq!(saved(&temp, *id).status, HumanStatus::Started);
+            }
+            assert_eq!(names.len(), 2);
+        }
+
+        /// The store cannot be read when a launch lands: the board stays up, the launch goes to
+        /// save recovery, a later landing waits on the batch, and Retry saves both and shows the
+        /// batch outcome.
+        #[test]
+        fn a_store_failure_while_launches_land_goes_to_recovery_and_retry_keeps_them() {
+            let (temp, mut domain, mut model, ids) = two_marked("bulk-read-fail");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            for intent in [BoardIntent::Dispatch, BoardIntent::ConfirmDispatch] {
+                step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    intent,
+                    &mut recovery,
+                    &mut host,
+                    &mut names,
+                );
+            }
+            host.land_next();
+            let file = temp.dir.join("tsk.json");
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000))
+                .expect("make the store unreadable");
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+            assert!(recovery.is_pending(), "the failure goes to save recovery");
+            assert_eq!(model.input_mode(), BoardInputMode::SaveRecovery);
+            assert!(
+                names.is_empty(),
+                "no agent is named before its record is saved"
+            );
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))
+                .expect("restore the store");
+
+            // The second landing waits on the batch while recovery is unresolved.
+            host.land_next();
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+            assert_eq!(host.batch().taken(), 1, "the second outcome stays queued");
+
+            step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::RetrySave,
+                &mut recovery,
+                &mut host,
+                &mut names,
+            );
+            assert!(!recovery.is_pending());
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+            for id in &ids {
+                let saved = saved(&temp, *id);
+                assert!(saved.dispatch.is_some());
+                assert_eq!(saved.status, HumanStatus::Started);
+            }
+            assert_eq!(names.len(), 2);
+            let (one, two) = (number(&domain, ids[0]), number(&domain, ids[1]));
+            assert!(!model.bulk_dispatch_running());
+            assert_eq!(
+                model.message(),
+                Some(format!("dispatched {one} to @builder, {two} to @builder").as_str()),
+                "the batch outcome survives Retry"
+            );
+        }
+
+        /// Cancel on a failed landing save discards the record, so the outcome says the agent
+        /// launched without one and where it runs, never that it was dispatched.
+        #[test]
+        fn cancelling_a_failed_landing_save_reports_the_launch_as_not_recorded() {
+            let (temp, mut domain, mut model, ids) = two_marked("bulk-cancel");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            for intent in [BoardIntent::Dispatch, BoardIntent::ConfirmDispatch] {
+                step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    intent,
+                    &mut recovery,
+                    &mut host,
+                    &mut names,
+                );
+            }
+            host.land_next();
+            std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o555))
+                .expect("make the state dir read-only");
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+            std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o755))
+                .expect("restore the state dir");
+            assert!(recovery.is_pending());
+            step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::CancelSave,
+                &mut recovery,
+                &mut host,
+                &mut names,
+            );
+            assert!(!recovery.is_pending());
+
+            host.land_next();
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+            let (one, two) = (number(&domain, ids[0]), number(&domain, ids[1]));
+            assert!(
+                saved(&temp, ids[0]).dispatch.is_none(),
+                "the record was discarded"
+            );
+            assert!(saved(&temp, ids[1]).dispatch.is_some());
+            assert_eq!(
+                model.message(),
+                Some(
+                    format!(
+                        "dispatched {two} to @builder · launched but not recorded: {one} \
+                         (agent running in workspace w1)"
+                    )
+                    .as_str()
+                )
+            );
+            assert_eq!(names.len(), 1, "only the recorded launch names its agent");
+        }
+
+        /// A task dispatched elsewhere between `y` and its landing keeps that record; a task
+        /// dispatched elsewhere while the card was open is not launched again.
+        #[test]
+        fn launches_never_overwrite_a_dispatch_made_meanwhile() {
+            let (temp, mut domain, mut model, ids) = two_marked("bulk-meanwhile");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::Dispatch,
+                &mut recovery,
+                &mut host,
+                &mut names,
+            );
+            // Another board dispatches the second task while the card is open.
+            let mut other = temp.store.load().expect("load");
+            other
+                .record_dispatch(ids[1], earlier_dispatch())
+                .expect("dispatch elsewhere");
+            temp.store
+                .reload_merge_save(&mut other)
+                .expect("save elsewhere");
+            step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::ConfirmDispatch,
+                &mut recovery,
+                &mut host,
+                &mut names,
+            );
+            assert_eq!(
+                host.batch.as_ref().expect("started").1.len(),
+                1,
+                "the recheck at y drops it"
+            );
+            // And the first one while its launch is in flight.
+            let mut other = temp.store.load().expect("load");
+            other
+                .record_dispatch(ids[0], earlier_dispatch())
+                .expect("dispatch elsewhere");
+            temp.store
+                .reload_merge_save(&mut other)
+                .expect("save elsewhere");
+            host.land_next();
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+
+            for id in &ids {
+                assert_eq!(
+                    saved(&temp, *id).dispatch.expect("record").worktree,
+                    "/tmp/tsk-bulk-dispatch-earlier",
+                    "the earlier record stays"
+                );
+            }
+            let (one, two) = (number(&domain, ids[0]), number(&domain, ids[1]));
+            let message = model.message().expect("outcome");
+            assert!(
+                message.contains(&format!("{one} failed: launched in"))
+                    && message.contains("dispatched elsewhere meanwhile")
+                    && message.contains(&format!(
+                        "{two} failed: already dispatched (use dispatch again)"
+                    )),
+                "{message}"
+            );
+            assert!(names.is_empty());
+        }
+
+        /// A task the human marked done while its launch was in flight gets the record but
+        /// keeps done, and the outcome says so.
+        #[test]
+        fn a_landing_keeps_a_status_the_human_changed_meanwhile() {
+            let (temp, mut domain, mut model, ids) = two_marked("bulk-done-meanwhile");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            for intent in [BoardIntent::Dispatch, BoardIntent::ConfirmDispatch] {
+                step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    intent,
+                    &mut recovery,
+                    &mut host,
+                    &mut names,
+                );
+            }
+            let mut other = temp.store.load().expect("load");
+            other
+                .set_status(ids[0], HumanStatus::Done)
+                .expect("done elsewhere");
+            temp.store
+                .reload_merge_save(&mut other)
+                .expect("save elsewhere");
+            host.land_next();
+            host.land_next();
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+
+            let first = saved(&temp, ids[0]);
+            assert_eq!(first.status, HumanStatus::Done, "the human's status wins");
+            assert!(
+                first.dispatch.is_some(),
+                "the running agent is still recorded"
+            );
+            assert_eq!(saved(&temp, ids[1]).status, HumanStatus::Started);
+            let one = number(&domain, ids[0]);
+            assert!(
+                model.message().is_some_and(
+                    |message| message.contains(&format!("{one} kept done (changed meanwhile)"))
+                ),
+                "{:?}",
+                model.message()
+            );
+        }
+
+        /// A batch started in the Projects preview outlives that preview: rebinding it to
+        /// another project or dropping it leaves the batch landing on the outer board.
+        #[test]
+        fn a_bulk_dispatch_started_in_the_project_preview_outlives_it() {
+            let temp = Temp::new("bulk-preview", &["builder"]);
+            let mut domain = DomainState::new();
+            let mut create = |title: &str, path: &str| {
+                let id = domain
+                    .create(
+                        title,
+                        None,
+                        TaskScope::Project { path: path.into() },
+                        ProvenanceOrigin::Manual,
+                        None,
+                    )
+                    .expect("create");
+                domain.assign(id, Some("builder".into())).expect("assign");
+                id
+            };
+            let ids = [
+                create("preview one", "/repos/app"),
+                create("preview two", "/repos/app"),
+            ];
+            create("elsewhere", "/repos/zzz");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            let mut model = BoardModel::from_domain(&domain, None);
+            model.set_agent_profiles(&temp.profiles());
+            apply_intent(
+                &mut domain,
+                &mut model,
+                BoardIntent::SelectNavTab(crate::ui::queue::NavTab::Projects),
+                None,
+            )
+            .expect("projects");
+            for _ in 0..2 {
+                apply_intent(&mut domain, &mut model, BoardIntent::StageRight, None)
+                    .expect("stage right");
+            }
+            let seat = model.preview_seat_mut().expect("preview seat");
+            assert_eq!(
+                seat.active_project().map(|path| path.to_path_buf()),
+                Some(std::path::PathBuf::from("/repos/app"))
+            );
+            seat.set_agent_profiles(&temp.profiles());
+            marked(&mut domain, seat, &temp, &ids);
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            for intent in [BoardIntent::Dispatch, BoardIntent::ConfirmDispatch] {
+                step(
+                    &temp,
+                    &mut domain,
+                    model.preview_seat_mut().expect("seat"),
+                    intent,
+                    &mut recovery,
+                    &mut host,
+                    &mut names,
+                );
+            }
+            assert!(model.bulk_dispatch_running());
+
+            // Back to the index, onto the other project: the preview is rebound, then dropped.
+            apply_intent(&mut domain, &mut model, BoardIntent::StageLeft, None)
+                .expect("stage left");
+            apply_intent(&mut domain, &mut model, BoardIntent::SelectNext, None)
+                .expect("next project");
+            model.bind_project_preview();
+            model.drop_project_preview();
+            assert!(model.right_seat().is_none());
+            assert!(
+                model.bulk_dispatch_running(),
+                "the outer board keeps the batch"
+            );
+
+            host.land_next();
+            host.land_next();
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+            for id in ids {
+                assert!(saved(&temp, id).dispatch.is_some());
+            }
+            assert!(!model.bulk_dispatch_running());
+            assert!(model
+                .message()
+                .is_some_and(|message| message.starts_with("dispatched")));
+        }
     }
 }
 

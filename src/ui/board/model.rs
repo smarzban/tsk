@@ -1008,8 +1008,9 @@ pub struct BoardModel {
     pub(super) cleanup_prompt: Option<CleanupPrompt>,
     /// Bulk dispatch card over the marked set while it owns input.
     pub(super) dispatch_prompt: Option<DispatchPrompt>,
-    /// A bulk dispatch whose launches are still landing.
-    pub(super) bulk_dispatch: Option<BulkDispatchRun>,
+    /// A bulk dispatch whose launches are still landing. One slot shared by the outer board and
+    /// its project preview, so dropping or rebinding the preview never loses a running batch.
+    pub(super) bulk_dispatch: SharedBulkDispatch,
     /// Whether the armed delete originated from a non-empty marked set.
     pub(super) pending_delete_bulk: bool,
     /// Open project-picker or save-recovery presentation.
@@ -1140,8 +1141,29 @@ pub struct DispatchPrompt {
     pub launch: Vec<crate::dispatch::EligibleDispatch>,
     /// Marked tasks the card skips: the board identifier and the single-task refusal.
     pub skipped: Vec<(String, String)>,
+    /// The git-repository check of the listed tasks, running off the event loop; rows show
+    /// `checking…` until it lands.
+    pub git_checks: Option<crate::dispatch::GitChecks>,
     /// First visible card row; the painter clamps it to the rows that fit.
     pub scroll: usize,
+}
+
+impl DispatchPrompt {
+    pub fn checking(&self) -> bool {
+        self.git_checks.is_some()
+    }
+}
+
+/// A launch recorded on its task whose save has not been confirmed yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingLaunch {
+    pub task_id: Uuid,
+    pub identifier: String,
+    pub assignee: String,
+    pub record: crate::domain::Dispatch,
+    pub naming: Option<crate::dispatch::AgentNaming>,
+    /// The human status kept instead of `started`, when it changed after `y`.
+    pub kept_status: Option<String>,
 }
 
 /// A bulk dispatch in flight. Launches run off the event loop; each outcome is recorded and
@@ -1151,8 +1173,14 @@ pub struct BulkDispatchRun {
     pub batch: crate::dispatch::LaunchBatch,
     /// Every task `y` confirmed, including any a recheck refused before launching.
     pub total: usize,
-    /// Board identifiers of launched tasks, with their assignee.
+    /// Board identifiers of launched tasks whose record is saved, with their assignee.
     pub launched: Vec<(String, String)>,
+    /// Saved launches whose task kept a status the human set after `y`.
+    pub kept_status: Vec<(String, String)>,
+    /// Recorded launches waiting on a save (a failed one is in save recovery).
+    pub pending: Vec<PendingLaunch>,
+    /// Launched agents whose record was discarded (a cancelled save): identifier, workspace.
+    pub unrecorded: Vec<(String, String)>,
     /// Board identifiers of tasks whose launch or record failed, with the reason.
     pub failed: Vec<(String, String)>,
     /// Fetch fallbacks reported by launches (cached refs used).
@@ -1160,10 +1188,29 @@ pub struct BulkDispatchRun {
 }
 
 impl BulkDispatchRun {
+    pub fn new(batch: crate::dispatch::LaunchBatch, total: usize) -> Self {
+        Self {
+            batch,
+            total,
+            launched: Vec::new(),
+            kept_status: Vec::new(),
+            pending: Vec::new(),
+            unrecorded: Vec::new(),
+            failed: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    /// Every launch has landed and its record is saved or reported.
+    pub fn settled(&self) -> bool {
+        self.batch.finished() && self.pending.is_empty()
+    }
+
     /// The status row while launches land, and the outcome once all have.
     pub fn message(&self) -> String {
         let total = self.total;
-        let settled = self.launched.len() + self.failed.len();
+        let settled =
+            self.launched.len() + self.failed.len() + self.unrecorded.len() + self.pending.len();
         let mut parts = Vec::new();
         if settled < total {
             parts.push(format!("dispatching {}/{total}…", settled + 1));
@@ -1177,6 +1224,20 @@ impl BulkDispatchRun {
                 .join(", ");
             parts.push(format!("dispatched {launched}"));
         }
+        for (identifier, status) in &self.kept_status {
+            parts.push(format!("{identifier} kept {status} (changed meanwhile)"));
+        }
+        if !self.unrecorded.is_empty() {
+            let unrecorded = self
+                .unrecorded
+                .iter()
+                .map(|(identifier, workspace)| {
+                    format!("{identifier} (agent running in workspace {workspace})")
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            parts.push(format!("launched but not recorded: {unrecorded}"));
+        }
         for (identifier, reason) in &self.failed {
             parts.push(format!("{identifier} failed: {reason}"));
         }
@@ -1186,6 +1247,28 @@ impl BulkDispatchRun {
         parts.join(" · ")
     }
 }
+
+/// The refusal when no marked task can be dispatched: one shared reason, or each task's own.
+pub fn nothing_to_dispatch(skipped: &[(String, String)]) -> String {
+    let shared = skipped
+        .first()
+        .filter(|(_, first)| skipped.iter().all(|(_, reason)| reason == first));
+    match shared {
+        Some((_, reason)) => format!("nothing to dispatch: {reason}"),
+        None => format!(
+            "nothing to dispatch: {}",
+            skipped
+                .iter()
+                .map(|(identifier, reason)| format!("{identifier} {reason}"))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        ),
+    }
+}
+
+/// The running bulk dispatch slot, shared between a board and its project preview.
+#[derive(Debug, Clone, Default)]
+pub struct SharedBulkDispatch(std::rc::Rc<std::cell::RefCell<Option<BulkDispatchRun>>>);
 
 /// Session-only cleanup confirmation: one row for the cursor task, or one per live dispatch
 /// in a marked set.
@@ -1299,7 +1382,7 @@ impl BoardModel {
             pending_dispatch_again: None,
             cleanup_prompt: None,
             dispatch_prompt: None,
-            bulk_dispatch: None,
+            bulk_dispatch: SharedBulkDispatch::default(),
             pending_delete_bulk: false,
             popup: BoardPopup::None,
             project_picker: None,
@@ -1397,29 +1480,66 @@ impl BoardModel {
         Some(prompt)
     }
 
-    pub fn bulk_dispatch(&self) -> Option<&BulkDispatchRun> {
-        self.bulk_dispatch.as_ref()
-    }
-
-    pub fn bulk_dispatch_mut(&mut self) -> Option<&mut BulkDispatchRun> {
-        self.bulk_dispatch.as_mut()
-    }
-
+    /// Hand the running batch to the board and its project preview (one shared slot).
     pub fn begin_bulk_dispatch(&mut self, run: BulkDispatchRun) {
-        self.bulk_dispatch = Some(run);
+        *self.bulk_dispatch.0.borrow_mut() = Some(run);
     }
 
-    pub fn end_bulk_dispatch(&mut self) -> Option<BulkDispatchRun> {
-        self.bulk_dispatch.take()
+    /// Take the running batch out to land outcomes; put it back unless it has settled.
+    pub fn take_bulk_dispatch(&mut self) -> Option<BulkDispatchRun> {
+        self.bulk_dispatch.0.borrow_mut().take()
     }
 
-    /// A bulk dispatch on this board or its project preview is still landing.
+    /// A bulk dispatch started on this board or its project preview is still landing.
     pub fn bulk_dispatch_running(&self) -> bool {
-        self.bulk_dispatch.is_some()
-            || self
-                .right_seat
-                .as_deref()
-                .is_some_and(BoardModel::bulk_dispatch_running)
+        self.bulk_dispatch.0.borrow().is_some()
+    }
+
+    /// The running batch's status line, if one is landing.
+    pub fn bulk_dispatch_message(&self) -> Option<String> {
+        self.bulk_dispatch
+            .0
+            .borrow()
+            .as_ref()
+            .map(BulkDispatchRun::message)
+    }
+
+    /// Apply a landed git check to the open bulk dispatch card (this board's or its project
+    /// preview's): tasks outside a git repository move to the skipped rows. A card left with
+    /// nothing to launch closes with the refusal, keeping the marks. True when anything changed.
+    pub fn poll_dispatch_checks(&mut self) -> bool {
+        let nested = self
+            .right_seat
+            .as_deref_mut()
+            .is_some_and(BoardModel::poll_dispatch_checks);
+        let Some(prompt) = self.dispatch_prompt.as_mut() else {
+            return nested;
+        };
+        let Some(results) = prompt.git_checks.as_ref().and_then(|checks| checks.take()) else {
+            return nested;
+        };
+        prompt.git_checks = None;
+        let (launch, outside): (Vec<_>, Vec<_>) = std::mem::take(&mut prompt.launch)
+            .into_iter()
+            .partition(|eligible| results.get(eligible.project()).copied().unwrap_or(false));
+        prompt.launch = launch;
+        for eligible in outside {
+            prompt.skipped.push((
+                format!("T{}", eligible.number),
+                "not a project in a git repo".into(),
+            ));
+        }
+        prompt.skipped.sort_by_key(|(identifier, _)| {
+            identifier
+                .strip_prefix('T')
+                .and_then(|number| number.parse::<u64>().ok())
+        });
+        if prompt.launch.is_empty() {
+            let message = nothing_to_dispatch(&prompt.skipped);
+            self.close_popup();
+            self.set_message(message);
+        }
+        true
     }
 
     pub fn cleanup_prompt_mut(&mut self) -> Option<&mut CleanupPrompt> {
@@ -2079,6 +2199,7 @@ impl BoardModel {
         right.preview_seat = true;
         right.selection_id = None;
         right.update_notice = self.update_notice.clone();
+        right.bulk_dispatch = self.bulk_dispatch.clone();
         right.seed_selection();
         self.right_seat = Some(Box::new(right));
         true
