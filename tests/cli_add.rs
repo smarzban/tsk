@@ -61,6 +61,7 @@ fn write_agents(dir: &std::path::Path) {
 }
 
 fn init_git_project(path: &std::path::Path) {
+    tsk_tui::git_base::stretch_default_deadlines_for_tests();
     std::fs::create_dir_all(path).expect("create project");
     for args in [
         &["init", "-q", "-b", "main"][..],

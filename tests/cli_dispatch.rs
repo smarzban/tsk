@@ -1,5 +1,8 @@
 //! Dispatch CLI: routing, parsing, stable refusal codes, and persistence.
 
+#[cfg(unix)]
+#[path = "support/stub.rs"]
+mod stub;
 use std::fs;
 use std::io::Cursor;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -447,6 +450,7 @@ struct CleanupRepo {
 
 impl CleanupRepo {
     fn new() -> Self {
+        tsk_tui::git_base::stretch_default_deadlines_for_tests();
         let root = std::env::temp_dir().join(format!(
             "tsk-cli-clean-git-{}-{}",
             std::process::id(),
@@ -947,12 +951,10 @@ fn cleanup_advanced_merged_branch_has_truthful_reason() {
 #[cfg(unix)]
 #[test]
 fn cleanup_git_status_is_bounded_even_when_fsmonitor_stalls() {
-    use std::os::unix::fs::PermissionsExt;
     let repo = CleanupRepo::new();
     let hook = repo.root.join("slow-fsmonitor");
     // Longer than cleanup's ~10s deadline, so the deadline (not the hook) ends the wait.
-    fs::write(&hook, "#!/bin/sh\nsleep 13\nprintf 'token\\0'\n").unwrap();
-    fs::set_permissions(&hook, fs::Permissions::from_mode(0o700)).unwrap();
+    stub::write_stub(&hook, "#!/bin/sh\nsleep 13\nprintf 'token\\0'\n", 0o700);
     repo.git(&["config", "core.fsmonitor", hook.to_str().unwrap()]);
     let (mut state, id) = repo.state("base", None);
     let start = std::time::Instant::now();
@@ -988,12 +990,10 @@ fn cleanup_git_status_is_bounded_even_when_fsmonitor_stalls() {
 #[cfg(unix)]
 #[test]
 fn cleanup_status_tolerates_a_slow_but_finishing_filesystem_watcher() {
-    use std::os::unix::fs::PermissionsExt;
     let repo = CleanupRepo::new();
     let hook = repo.root.join("slow-fsmonitor-ok");
     // Longer than git_base's 250ms metadata default, well under cleanup's ~10s deadline.
-    fs::write(&hook, "#!/bin/sh\nsleep 1\nprintf 'token\\0'\n").unwrap();
-    fs::set_permissions(&hook, fs::Permissions::from_mode(0o700)).unwrap();
+    stub::write_stub(&hook, "#!/bin/sh\nsleep 1\nprintf 'token\\0'\n", 0o700);
     repo.git(&["config", "core.fsmonitor", hook.to_str().unwrap()]);
     let (state, id) = repo.state("base", None);
     let record = state.get(id).unwrap().dispatch.as_ref().unwrap();
@@ -1023,7 +1023,6 @@ fn ancestry_probe_child(name: &str, sleep_secs: u64) -> bool {
 
 #[cfg(unix)]
 fn cleanup_query_probe_child(name: &str, sleep_secs: u64, pattern: &str) -> bool {
-    use std::os::unix::fs::PermissionsExt;
     if std::env::var("TSK_CLEANUP_ANCESTRY_CHILD").ok().as_deref() == Some(name) {
         return false;
     }
@@ -1040,8 +1039,7 @@ fn cleanup_query_probe_child(name: &str, sleep_secs: u64, pattern: &str) -> bool
     ));
     fs::create_dir_all(&dir).unwrap();
     let script = dir.join("git");
-    fs::write(&script, format!("#!/bin/sh\ncase \"$3:$4\" in {pattern}) sleep {sleep_secs};; esac\nexec \"{}\" \"$@\"\n", real_git.trim())).unwrap();
-    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    stub::write_stub(&script, format!("#!/bin/sh\ncase \"$3:$4\" in {pattern}) sleep {sleep_secs};; esac\nexec \"{}\" \"$@\"\n", real_git.trim()), 0o700);
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", name, "--nocapture"])
         .env("TSK_CLEANUP_ANCESTRY_CHILD", name)

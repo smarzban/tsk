@@ -50,6 +50,61 @@ fn refresh_explicit_remote(project: &Path, base: &str) -> Option<(String, Result
 const LOCAL_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 pub(crate) const NETWORK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Test suites run real Git on loaded machines, where a 250ms metadata query or a 5s local
+/// fetch can overrun and silently flip a ref check. Tests stretch the two default deadlines
+/// above: unit tests always, integration suites through `stretch_default_deadlines_for_tests`,
+/// and the debug binary they spawn through `STRETCH_DEADLINES_ENV`. A release binary reads
+/// neither, so its limits are the constants. Caller-chosen deadlines
+/// (`git_process_output_timeout`) are never stretched.
+#[doc(hidden)]
+pub const TEST_DEADLINE_SCALE: u32 = 20;
+#[doc(hidden)]
+pub const STRETCH_DEADLINES_ENV: &str = "TSK_TEST_STRETCH_GIT_DEADLINES";
+static DEFAULT_DEADLINE_SCALE: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(if cfg!(test) { TEST_DEADLINE_SCALE } else { 1 });
+thread_local! {
+    static EXACT_FETCH_DEADLINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Test hook: stretch the default Git deadlines for this whole process.
+#[doc(hidden)]
+pub fn stretch_default_deadlines_for_tests() {
+    DEFAULT_DEADLINE_SCALE.store(TEST_DEADLINE_SCALE, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Test hook: a test asserting that the fetch deadline fires keeps the shipped value on its
+/// own thread, whatever parallel tests stretched.
+#[doc(hidden)]
+pub fn exact_fetch_deadline_on_this_thread() {
+    EXACT_FETCH_DEADLINE.with(|exact| exact.set(true));
+}
+
+fn deadline_scale() -> u32 {
+    let scale = DEFAULT_DEADLINE_SCALE.load(std::sync::atomic::Ordering::Relaxed);
+    // `cfg!` short-circuits: a release binary never reads the variable.
+    if cfg!(debug_assertions) && stretched_by_env() {
+        scale.max(TEST_DEADLINE_SCALE)
+    } else {
+        scale
+    }
+}
+
+fn stretched_by_env() -> bool {
+    static STRETCHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *STRETCHED.get_or_init(|| std::env::var_os(STRETCH_DEADLINES_ENV).is_some())
+}
+
+fn local_deadline() -> std::time::Duration {
+    LOCAL_TIMEOUT * deadline_scale()
+}
+
+fn fetch_deadline() -> std::time::Duration {
+    if EXACT_FETCH_DEADLINE.with(std::cell::Cell::get) {
+        return NETWORK_TIMEOUT;
+    }
+    NETWORK_TIMEOUT * deadline_scale()
+}
+
 /// A file rather than a pipe: a verbose Git process cannot block while we poll its
 /// deadline, nor can a descendant holding stdout open stall a reader-thread join.
 struct Capture {
@@ -190,7 +245,7 @@ fn run_git_env(
 
 /// Bounded, noninteractive local query, retaining output and nonzero status.
 pub fn git_process_output(project: &Path, args: &[&str]) -> Result<std::process::Output, String> {
-    git_process_output_timeout(project, args, LOCAL_TIMEOUT)
+    run_git(project, args, local_deadline(), true)
 }
 
 /// Captured Git work with a caller-selected finite deadline. Worktree operations
@@ -216,7 +271,7 @@ pub fn git_output(project: &Path, args: &[&str]) -> Result<String, String> {
 
 /// Bounded local status query, retaining nonzero status for ancestry/ref checks.
 pub fn git_status(project: &Path, args: &[&str]) -> Result<std::process::ExitStatus, String> {
-    run_git(project, args, LOCAL_TIMEOUT, false).map(|output| output.status)
+    run_git(project, args, local_deadline(), false).map(|output| output.status)
 }
 
 fn branch_ref(project: &Path, base: &str) -> Result<String, String> {
@@ -261,7 +316,7 @@ fn bounded_git(project: &Path, args: &[&str]) -> Result<(), String> {
 }
 
 fn bounded_git_env(project: &Path, args: &[&str], envs: &[(&str, &str)]) -> Result<(), String> {
-    let output = run_git_env(project, args, envs, NETWORK_TIMEOUT, false).map_err(|reason| {
+    let output = run_git_env(project, args, envs, fetch_deadline(), false).map_err(|reason| {
         if reason == "git timed out" {
             "fetch timed out".into()
         } else {
@@ -1081,18 +1136,16 @@ mod tests {
     /// call after the first `ok_calls`.
     #[cfg(unix)]
     fn counted_upload_pack(repos: &Repos, ok_calls: usize) -> std::path::PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let counter = repos.root.join("upload-count");
         let wrapper = repos.root.join("upload-pack");
-        std::fs::write(
+        crate::test_stub::write_stub(
             &wrapper,
             format!(
                 "#!/bin/sh\nprintf 'x\\n' >> '{counter}'\nif [ $(wc -l < '{counter}') -gt {ok_calls} ]; then exit 1; fi\nexec git-upload-pack \"$@\"\n",
                 counter = counter.display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+            0o700,
+        );
         git(
             &repos.local,
             &[

@@ -1,6 +1,8 @@
 #![cfg(unix)]
 #[path = "support/setup_host.rs"]
 mod fixture;
+#[path = "support/stub.rs"]
+mod stub;
 use fixture::Host;
 use std::{
     fs,

@@ -4,8 +4,11 @@
 #![cfg(unix)]
 
 use std::fs;
-
 use std::os::unix::fs::PermissionsExt;
+
+#[path = "support/stub.rs"]
+mod stub;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -41,7 +44,7 @@ impl Launcher {
         ));
         fs::create_dir_all(root.join("state")).expect("temp root");
         let stub = root.join("herdr");
-        fs::write(
+        stub::write_stub(
             &stub,
             r#"#!/bin/sh
 printf '%s\n' "$*" >> "$STUB_ROOT/calls.log"
@@ -71,11 +74,8 @@ elif [ "$1" = plugin ] && [ "$2" = pane ] && [ "$3" = open ]; then
   printf '%s' "${HERDR_PLUGIN_CONTEXT_JSON:-}" > "$STUB_ROOT/open-context.json"
 fi
 "#,
-        )
-        .expect("stub");
-        let mut permissions = fs::metadata(&stub).expect("stub metadata").permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&stub, permissions).expect("stub executable");
+            0o755,
+        );
         Self { root }
     }
 

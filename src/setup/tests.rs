@@ -590,3 +590,74 @@ fn old_herdr_is_refused_before_any_write_with_an_actionable_message() {
         );
     }
 }
+#[cfg(unix)]
+#[test]
+fn setup_lock_is_released_while_a_forked_child_still_shares_it() {
+    use std::os::unix::process::CommandExt;
+    // The injected fork shares every open descriptor of its process for a second: run it in
+    // a child test process so sibling tests' files never leak into it.
+    const CHILD: &str = "TSK_SETUP_LOCK_FORK_CHILD";
+    if env::var_os(CHILD).is_none() {
+        let output = Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "setup::tests::setup_lock_is_released_while_a_forked_child_still_shares_it",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let temp = Temp::new();
+    let config = temp.0.join("config.toml");
+    let registry = RefCell::new(BTreeMap::<String, PathBuf>::new());
+    let forks = RefCell::new(Vec::new());
+    let mut host = |args: &[&str], _: &Path| -> io::Result<String> {
+        if args == ["--version"] {
+            return Ok("herdr 0.9.0\n".into());
+        }
+        if args.starts_with(&["config", "check"]) {
+            // Another thread forks while the lock is held, and its child sits between fork
+            // and exec, as a loaded runner can leave it, past the end of this setup.
+            forks.borrow_mut().push(std::thread::spawn(|| {
+                let mut command = Command::new("true");
+                // SAFETY: the closure only sleeps, which is async-signal-safe.
+                unsafe {
+                    command.pre_exec(|| {
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        Ok(())
+                    });
+                }
+                command.status().unwrap();
+            }));
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        if args.starts_with(&["plugin", "link"]) {
+            registry
+                .borrow_mut()
+                .insert("herdr-tsk".into(), args[2].into());
+        }
+        Ok(serde_json::json!({"result":{"plugins":registry.borrow().iter().map(|(id,root)|serde_json::json!({"plugin_id":id,"plugin_root":root})).collect::<Vec<_>>()}}).to_string())
+    };
+    for version in ["0.5.0", "0.5.1"] {
+        run_at(
+            &config,
+            version,
+            &mut io::Cursor::new(""),
+            &mut Vec::new(),
+            false,
+            &mut host,
+        )
+        .unwrap();
+    }
+    for fork in forks.take() {
+        fork.join().unwrap();
+    }
+}
