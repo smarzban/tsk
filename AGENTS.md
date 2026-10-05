@@ -267,7 +267,7 @@ migration or design work they imply. What the behaviour *is* lives in the docs
   pane state.
 - Cleanup never deletes uncommitted work or an unmerged branch, and only removes the recorded
   worktree (registered with git, matching the herdr entry's path, never the project root). A
-  missing worktree converges to `cleaned`. Bulk done and CLI `status done` never prompt.
+  missing worktree converges to `cleaned`. CLI `status done` never prompts.
 - Every git and herdr call goes through the `DispatchHost` seam so tests use a fake host; changes
   to the real host need a live herdr smoke against a throwaway repo under `/tmp`, never this one.
 

@@ -10082,7 +10082,8 @@ mod quick_assign_tests {
         );
     }
 
-    /// A marked set on one board: `assigned` tasks get `builder`, the rest stay unassigned.
+    #[cfg(unix)]
+    /// Mark `ids` on the board after saving them.
     fn marked(domain: &mut DomainState, model: &mut BoardModel, temp: &Temp, ids: &[uuid::Uuid]) {
         temp.store.reload_merge_save(domain).expect("save");
         model.sync_from_domain(domain);
@@ -10093,12 +10094,14 @@ mod quick_assign_tests {
         }
     }
 
+    #[cfg(unix)]
     fn assign(domain: &mut DomainState, id: uuid::Uuid) {
         domain
             .assign(id, Some("builder".into()))
             .expect("assign builder");
     }
 
+    #[cfg(unix)]
     fn desk_task(domain: &mut DomainState, title: &str) -> uuid::Uuid {
         domain
             .create(
@@ -10111,6 +10114,7 @@ mod quick_assign_tests {
             .expect("desk task")
     }
 
+    #[cfg(unix)]
     fn number(domain: &DomainState, id: uuid::Uuid) -> String {
         format!(
             "T{}",
@@ -10118,6 +10122,7 @@ mod quick_assign_tests {
         )
     }
 
+    #[cfg(unix)]
     fn already_dispatched(domain: &mut DomainState, id: uuid::Uuid) {
         domain
             .record_dispatch(
@@ -10430,6 +10435,7 @@ mod quick_assign_tests {
         assert_eq!(model.dispatch_prompt().expect("card").launch.len(), 2);
     }
 
+    #[cfg(unix)]
     /// A host that leaves its launches pending until the test lands them, like the system host's
     /// background thread.
     struct DeferredHost {
@@ -10440,6 +10446,7 @@ mod quick_assign_tests {
         )>,
     }
 
+    #[cfg(unix)]
     impl DispatchHost for DeferredHost {
         fn is_git_repo(&mut self, project: &Path) -> Result<bool, String> {
             self.inner.is_git_repo(project)

@@ -771,7 +771,11 @@ impl DispatchHost for SystemDispatchHost {
         std::thread::spawn(move || {
             let mut host = SystemDispatchHost;
             for job in jobs {
-                let outcome = launch_with_host(&job, None, &mut host);
+                // A panicking launch must still land, or the board waits on it forever.
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    launch_with_host(&job, None, &mut host)
+                }))
+                .unwrap_or_else(|_| Err(DispatchError::Herdr("launch failed unexpectedly".into())));
                 landing.land(job, outcome);
             }
         });
