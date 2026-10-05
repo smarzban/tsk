@@ -418,14 +418,14 @@ test("projects overview opens a live project preview and keeps its task seat", a
   await expect(page.locator("[data-preview-task]")).not.toHaveCount(0);
   await page.keyboard.press("t");
   await expect(
-    page.locator('[role="dialog"][aria-label="project thread filter"]'),
+    page.locator('[role="dialog"][aria-label="project filter"]'),
   ).toBeVisible();
   await page
     .locator("[data-preview-filter-option]")
     .filter({ hasText: "#release" })
     .click();
   await expect(
-    page.locator('[role="dialog"][aria-label="project thread filter"]'),
+    page.locator('[role="dialog"][aria-label="project filter"]'),
   ).toHaveCount(0);
   await expect(page.locator("[data-preview-task]")).toHaveCount(2);
   await expect(

@@ -14,7 +14,7 @@ use tsk_tui::domain::{
     TaskScope,
 };
 use tsk_tui::ui::input::map_key;
-use tsk_tui::ui::queue::{self, BoardLens, NavTab, QueueView, ThreadFilter};
+use tsk_tui::ui::queue::{self, BoardFilter, BoardLens, NavTab, QueueView};
 use tsk_tui::ui::render::{
     assert_buffer_mono, assert_no_color_sgr, draw_queue_frame, BottomInputSlot, NavChipPaint,
     NavPaint, PaletteCommandRow, QueueFrameModel, QueueOverlay, VerbEntry,
@@ -344,7 +344,7 @@ fn fixture_view(tasks: &[Task], drawer_open: bool) -> QueueView {
         Some(Path::new("/repos/tsk")),
         BoardLens::Desk,
         drawer_open,
-        &ThreadFilter::All,
+        &BoardFilter::default(),
     )
 }
 
@@ -355,7 +355,7 @@ fn fixture_view_projects(tasks: &[Task], drawer_open: bool) -> QueueView {
         Some(Path::new("/repos/tsk")),
         BoardLens::Project(Path::new("/repos/tsk")),
         drawer_open,
-        &ThreadFilter::All,
+        &BoardFilter::default(),
     )
 }
 
@@ -391,6 +391,7 @@ fn fixture_model_on_tab<'a>(
         summary: None,
         context: " desk".to_string(),
         has_update_notice: false,
+        reserve_context: None,
         status_message: None,
         status_undo_offset: None,
         status_undo_width: None,
@@ -3075,6 +3076,115 @@ struct GoldenScene {
     width: u16,
 }
 
+/// The project board's Filter picker on its `@assignees` tab, and the board it leaves
+/// behind with both a thread and an assignee applied, at the 40-column floor.
+fn filter_golden_rows() -> (Vec<String>, Vec<String>) {
+    let mut tasks = fixture_tasks();
+    for task in &mut tasks {
+        match task.id.as_u128() {
+            1 => task.assignee = Some("claude".to_string()),
+            10 => {
+                task.assignee = Some("claude".to_string());
+                task.thread = Some("release".to_string());
+            }
+            11 => task.thread = Some("release".to_string()),
+            _ => {}
+        }
+    }
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from("/repos/tsk")));
+    let mut apply = |model: &mut BoardModel, intent: BoardIntent| {
+        apply_intent(&mut domain, model, intent, None).expect("filter golden intent");
+    };
+    apply(&mut model, BoardIntent::SelectNavTab(NavTab::ProjectBoard));
+    apply(&mut model, BoardIntent::OpenThreadFilterPicker);
+    apply(&mut model, BoardIntent::ListPickerNext);
+    apply(&mut model, BoardIntent::ConfirmListPicker);
+    apply(&mut model, BoardIntent::OpenThreadFilterPicker);
+    apply(&mut model, BoardIntent::ListPickerTabNext);
+    apply(&mut model, BoardIntent::ListPickerNext);
+    let picker = board_rows(&model, 40, 24);
+    apply(&mut model, BoardIntent::ConfirmListPicker);
+    let board = board_rows(&model, 40, 24);
+    (picker, board)
+}
+
+/// Both filters active with long names at 40 columns: the chip and the footer wrap, so
+/// neither the thread nor the assignee choice is ever cut off.
+fn filter_long_golden_rows() -> Vec<String> {
+    let model = long_filter_model();
+    board_rows(&model, 40, 24)
+}
+
+fn long_filter_model() -> BoardModel {
+    let mut tasks = fixture_tasks();
+    for task in &mut tasks {
+        match task.id.as_u128() {
+            10 => {
+                task.assignee = Some("integration-agent".to_string());
+                task.thread = Some("release-coordination".to_string());
+            }
+            11 => task.thread = Some("release-coordination".to_string()),
+            _ => {}
+        }
+    }
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from("/repos/tsk")));
+    for intent in [
+        BoardIntent::SelectNavTab(NavTab::ProjectBoard),
+        BoardIntent::OpenThreadFilterPicker,
+        BoardIntent::ListPickerNext,
+        BoardIntent::ConfirmListPicker,
+        BoardIntent::OpenThreadFilterPicker,
+        BoardIntent::ListPickerTabNext,
+        BoardIntent::ListPickerNext,
+        BoardIntent::ConfirmListPicker,
+    ] {
+        apply_intent(&mut domain, &mut model, intent, None).expect("long filter intent");
+    }
+    model
+}
+
+#[test]
+fn long_combined_filter_wraps_chip_and_footer_without_losing_either_choice() {
+    let model = long_filter_model();
+    assert_eq!(
+        model.board_filter().label(),
+        "#release-coordination @integration-agent"
+    );
+    for (width, height) in [(40, 24), (40, 12), (50, 20)] {
+        let rows = board_rows(&model, width, height);
+        let text = rows.join("\n");
+        // The verb bar (last row) trims its own entries; every other row must not.
+        let above_verbs = rows[..rows.len() - 1].join("\n");
+        assert!(
+            !above_verbs.contains('…'),
+            "{width}x{height} truncated:\n{text}"
+        );
+        let top: String = rows[..5].join("\n");
+        assert!(
+            top.contains("#release-coordination"),
+            "chip thread:\n{text}"
+        );
+        assert!(
+            top.contains("@integration-agent ▾"),
+            "chip assignee:\n{text}"
+        );
+        let footer = rows[rows.len() - 4..].join("\n");
+        assert!(footer.contains("#release-coordination"), "footer:\n{text}");
+        assert!(footer.contains("@integration-agent"), "footer:\n{text}");
+        assert!(text.contains("board UI"), "the list keeps a row:\n{text}");
+    }
+    // Every wrapped chip row opens the picker.
+    let hits = tsk_tui::ui::board::board_hit_map(Rect::new(0, 0, 40, 24), &model);
+    let chips: Vec<_> = hits
+        .regions
+        .iter()
+        .filter(|hit| hit.target == FilterHitTarget::NavChip)
+        .collect();
+    assert_eq!(chips.len(), 2, "one hit per wrapped chip row");
+}
+
 fn golden_scenes() -> Vec<GoldenScene> {
     let tasks = fixture_tasks();
 
@@ -3268,7 +3378,33 @@ fn golden_scenes() -> Vec<GoldenScene> {
     archived_model.archived_collapsed = false;
     let (archived_rows, _) = paint(80, 24, &archived_model);
 
+    let (filter_picker_rows, filtered_board_rows) = filter_golden_rows();
+    let filtered_long_rows = filter_long_golden_rows();
+    let mut long_message_model = long_filter_model();
+    long_message_model.set_message("moved T3 to started");
+    let filtered_long_message_rows = board_rows(&long_message_model, 40, 24);
+
     vec![
+        GoldenScene {
+            name: "filter_picker_40x24",
+            rows: filter_picker_rows,
+            width: 40,
+        },
+        GoldenScene {
+            name: "board_filtered_40x24",
+            rows: filtered_board_rows,
+            width: 40,
+        },
+        GoldenScene {
+            name: "board_filtered_long_40x24",
+            rows: filtered_long_rows,
+            width: 40,
+        },
+        GoldenScene {
+            name: "board_filtered_long_message_40x24",
+            rows: filtered_long_message_rows,
+            width: 40,
+        },
         GoldenScene {
             name: "board",
             rows: base_rows,
@@ -3798,12 +3934,13 @@ fn all_golden_frames_pass_no_color_sgr_scan() {
         scanned += 1;
     }
     assert_eq!(
-        scanned, 16,
-        "expected the sixteen board surface goldens (board, board_marked, \
+        scanned, 20,
+        "expected the twenty board surface goldens (board, board_marked, \
          board_default_split_78, board_search, board_search_pinned, board_search_empty, \
          accordion, palette, help, done_drawer, inbox, done_drawer_archived, \
          projects_index_50x20, projects_index_110x30, projects_preview_split_110x30, \
-         projects_preview_rail_110x30) in {dir:?}"
+         projects_preview_rail_110x30, filter_picker_40x24, board_filtered_40x24, \
+         board_filtered_long_40x24, board_filtered_long_message_40x24) in {dir:?}"
     );
 }
 
@@ -5181,8 +5318,8 @@ fn project_picker_main_tab_advertises_archive_without_leaking_to_thread_picker()
     .expect("thread picker");
     let threads = board_rows(&model, 80, 24).join("\n");
     assert!(
-        threads.contains("↑↓ move \u{b7} enter choose \u{b7} esc close"),
-        "thread picker must keep its ordinary footer:\n{threads}"
+        threads.contains("tab switch \u{b7} ↑↓ move \u{b7} enter pick \u{b7} esc close"),
+        "the Filter picker advertises its tab switch:\n{threads}"
     );
     assert!(
         !threads.contains("ctrl+f archive"),
@@ -5561,12 +5698,13 @@ fn real_thread_picker_paints_query_and_options() {
     )
     .expect("open picker");
     let rows = board_rows(&model, 162, 43).join("\n");
+    assert!(rows.contains("Filter"), "picker title missing:\n{rows}");
     assert!(
-        rows.contains("thread filter"),
-        "picker title missing:\n{rows}"
+        rows.contains("threads \u{b7} @assignees"),
+        "picker tabs missing:\n{rows}"
     );
     assert!(
-        rows.contains("All tasks"),
+        rows.contains("▸ all  1  ✓"),
         "picker options missing:\n{rows}"
     );
     assert!(rows.contains("#release"), "thread option missing:\n{rows}");
@@ -6263,4 +6401,305 @@ fn a_scrolling_bulk_cleanup_card_at_forty_columns_never_cuts_its_counts() {
     let wide = board_rows(&large_bulk_cleanup_model(10, false), 80, 24).join("\n");
     assert!(wide.contains("Done 10 tasks · clean up 9 of 10?"), "{wide}");
     assert!(!wide.contains("worktrees?"), "{wide}");
+}
+
+use tsk_tui::ui::mouse::{left_click, map_board_mouse};
+use tsk_tui::ui::render::QueueHitTarget as FilterHitTarget;
+
+fn filter_hit(model: &BoardModel, target: FilterHitTarget) -> Rect {
+    tsk_tui::ui::board::board_hit_map(Rect::new(0, 0, 80, 24), model)
+        .regions
+        .iter()
+        .find(|hit| hit.target == target)
+        .unwrap_or_else(|| panic!("{target:?} must be painted"))
+        .area
+}
+
+#[test]
+fn filter_picker_tabs_and_options_are_clickable() {
+    let mut tasks = fixture_tasks();
+    tasks[0].assignee = Some("claude".to_string());
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from("/repos/tsk")));
+    for intent in [
+        BoardIntent::SelectNavTab(NavTab::ProjectBoard),
+        BoardIntent::OpenThreadFilterPicker,
+    ] {
+        apply_intent(&mut domain, &mut model, intent, None).expect("open filter");
+    }
+    let tab = filter_hit(
+        &model,
+        FilterHitTarget::ListPickerTab(tsk_tui::ui::board::FilterTab::Assignees),
+    );
+    let intent = map_board_mouse(&model, &board_hit_map_80(&model), left_click(tab.x, tab.y))
+        .expect("tab click");
+    apply_intent(&mut domain, &mut model, intent, None).expect("switch tab");
+    assert_eq!(
+        model.list_picker_tab(),
+        Some(tsk_tui::ui::board::FilterTab::Assignees)
+    );
+    let rows = board_rows(&model, 80, 24).join("\n");
+    assert!(rows.contains("@claude  1"), "assignees tab:\n{rows}");
+    assert!(rows.contains("all  3  ✓"), "active mark:\n{rows}");
+
+    // A row click inside the tabbed picker applies, never falls through to close.
+    let option = filter_hit(&model, FilterHitTarget::ListPickerOption(1));
+    let intent = map_board_mouse(
+        &model,
+        &board_hit_map_80(&model),
+        left_click(option.x + 2, option.y),
+    )
+    .expect("option click");
+    apply_intent(&mut domain, &mut model, intent, None).expect("apply");
+    assert!(!model.list_picker_open());
+    assert_eq!(
+        model.assignee_filter(),
+        &queue::AssigneeFilter::Named("claude".into())
+    );
+    let board = board_rows(&model, 80, 24).join("\n");
+    assert!(board.contains("@claude ▾"), "chip:\n{board}");
+    assert!(board.contains(" tsk · @claude"), "footer context:\n{board}");
+}
+
+fn board_hit_map_80(model: &BoardModel) -> tsk_tui::ui::render::QueueHitMap {
+    tsk_tui::ui::board::board_hit_map(Rect::new(0, 0, 80, 24), model)
+}
+
+#[test]
+fn overview_assignee_view_lists_assigned_work_across_projects_with_the_bullseye() {
+    let mut tasks = fixture_tasks();
+    for task in &mut tasks {
+        match task.id.as_u128() {
+            // Started on /repos/tsk and dispatched.
+            1 => {
+                task.assignee = Some("claude".to_string());
+                task.dispatch = Some(Dispatch {
+                    argv: vec!["agent".into()],
+                    worktree: "/tmp/tsk-t1".into(),
+                    branch: "tsk/t1".into(),
+                    base: None,
+                    base_commit: None,
+                    base_remote: None,
+                    base_ref: None,
+                    herdr_workspace_id: "workspace-1".into(),
+                    at: at_secs_ago(30),
+                    cleaned: false,
+                });
+            }
+            // Blocked on /repos/herdr, the desk, and a done task.
+            20 | 30 | 40 => task.assignee = Some("claude".to_string()),
+            _ => {}
+        }
+    }
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from("/repos/tsk")));
+    for intent in [
+        BoardIntent::SelectNavTab(NavTab::Projects),
+        BoardIntent::OpenProjectsViewPicker,
+        BoardIntent::ListPickerTabNext,
+        BoardIntent::ConfirmListPicker,
+    ] {
+        apply_intent(&mut domain, &mut model, intent, None).expect("assignee view");
+    }
+    let board = board_rows(&model, 80, 24).join("\n");
+    assert!(board.contains("@claude ▾"), "chip:\n{board}");
+    assert!(
+        board.contains("◉ T1 Smoke-test worktree dispatch"),
+        "{board}"
+    );
+    assert!(board.contains("Wire dispatch cleanup receipts"), "{board}");
+    assert!(board.contains("Global backlog note"), "{board}");
+    assert!(
+        !board.contains("Ship the queue board milestone"),
+        "done stays in the closed drawer:\n{board}"
+    );
+    assert!(
+        !board.contains("Prototype the queue-style board UI"),
+        "unassigned work is not in the view:\n{board}"
+    );
+}
+
+/// Many filtered rows so the 40-column list overflows its viewport.
+fn long_filter_overflow_model() -> BoardModel {
+    let tasks: Vec<Task> = (0..24u128)
+        .map(|index| {
+            let mut task = task(
+                9000 + index,
+                &format!("row {index}"),
+                HumanStatus::Ready,
+                project("/repos/tsk"),
+                600 + index as u64,
+            );
+            task.number = Some(100 + index as u64);
+            task.thread = Some("release-coordination".to_string());
+            task.assignee = Some("integration-agent".to_string());
+            task
+        })
+        .collect();
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from("/repos/tsk")));
+    for intent in [
+        BoardIntent::SelectNavTab(NavTab::ProjectBoard),
+        BoardIntent::OpenThreadFilterPicker,
+        BoardIntent::ListPickerNext,
+        BoardIntent::ConfirmListPicker,
+        BoardIntent::OpenThreadFilterPicker,
+        BoardIntent::ListPickerTabNext,
+        BoardIntent::ListPickerNext,
+        BoardIntent::ConfirmListPicker,
+    ] {
+        apply_intent(&mut domain, &mut model, intent, None).expect("filter");
+    }
+    assert_eq!(
+        model.board_filter().label(),
+        "#release-coordination @integration-agent"
+    );
+    model
+}
+
+/// The rule row's index: the list viewport ends right above it.
+fn rule_row_index(rows: &[String]) -> usize {
+    rows.iter()
+        .rposition(|row| !row.trim().is_empty() && row.trim().chars().all(|ch| ch == '─'))
+        .expect("rule row")
+}
+
+#[test]
+fn wrapped_filter_footer_keeps_the_list_height_through_messages_and_the_palette() {
+    let mut model = long_filter_overflow_model();
+    let mut domain = DomainState::new();
+    let idle = board_rows(&model, 40, 24);
+    let rule = rule_row_index(&idle);
+    assert!(
+        idle[rule + 1].contains("#release-coordination")
+            && idle[rule + 2].contains("@integration-agent"),
+        "the wrapped context sits under the rule:\n{}",
+        idle.join("\n")
+    );
+
+    // Mouse-select the bottom painted task row; the list stops following the cursor.
+    let hits = tsk_tui::ui::board::board_hit_map(Rect::new(0, 0, 40, 24), &model);
+    let bottom = hits
+        .regions
+        .iter()
+        .filter(|hit| matches!(hit.target, FilterHitTarget::Task(_)))
+        .max_by_key(|hit| hit.area.y)
+        .expect("task rows")
+        .clone();
+    let FilterHitTarget::Task(bottom_id) = bottom.target else {
+        unreachable!()
+    };
+    let click = map_board_mouse(&model, &hits, left_click(bottom.area.x + 2, bottom.area.y))
+        .expect("row click");
+    apply_intent(&mut domain, &mut model, click, None).expect("select bottom row");
+    assert_eq!(model.selected_id(), Some(bottom_id));
+    let selected = board_rows(&model, 40, 24);
+    let selected_row = selected
+        .iter()
+        .position(|row| row.starts_with('▸'))
+        .expect("selected row painted");
+    assert_eq!(rule_row_index(&selected), rule);
+
+    // A status message takes the status row; the list keeps its height and the selection.
+    model.set_message("moved T123 to ready");
+    let with_message = board_rows(&model, 40, 24);
+    assert_eq!(
+        rule_row_index(&with_message),
+        rule,
+        "message moved the list:\n{}",
+        with_message.join("\n")
+    );
+    assert!(with_message[rule_row_index(&with_message) + 2].contains("moved T123 to ready"));
+    assert_eq!(
+        with_message.iter().position(|row| row.starts_with('▸')),
+        Some(selected_row),
+        "the selected bottom row stays put"
+    );
+
+    // The palette over the board leaves the list height unchanged as well.
+    model.clear_message();
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenCommandPalette,
+        None,
+    )
+    .expect("palette");
+    let with_palette = board_rows(&model, 40, 24);
+    assert_eq!(
+        rule_row_index(&with_palette),
+        rule,
+        "palette moved the list:\n{}",
+        with_palette.join("\n")
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close");
+    let after = board_rows(&model, 40, 24);
+    assert_eq!(rule_row_index(&after), rule);
+    assert_eq!(
+        after.iter().position(|row| row.starts_with('▸')),
+        Some(selected_row),
+        "the selected bottom row is still visible after the palette:\n{}",
+        after.join("\n")
+    );
+}
+
+#[test]
+fn projects_index_reserves_the_longest_path_so_the_cursor_never_resizes_the_list() {
+    let long = "/repos/an/unusually/deep/checkout/of/the/release-coordination-service";
+    let tasks = vec![
+        task(9101, "short", HumanStatus::Ready, project("/repos/a"), 60),
+        task(9102, "deep", HumanStatus::Ready, project(long), 120),
+    ];
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from("/repos/a")));
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::SelectNavTab(NavTab::Projects),
+        None,
+    )
+    .expect("projects");
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        let rows = board_rows(&model, 40, 24);
+        let rule = rule_row_index(&rows);
+        let footer = rows[rule + 1..rows.len() - 1].join("\n");
+        seen.push((rule, footer));
+        apply_intent(&mut domain, &mut model, BoardIntent::SelectNext, None).expect("move");
+    }
+    assert_eq!(seen[0].0, seen[1].0, "the list height follows no cursor");
+    let both = format!("{}\n{}", seen[0].1, seen[1].1);
+    assert!(both.contains("/repos/a"), "{both}");
+    assert!(both.contains("release-coordination-service"), "{both}");
+    assert!(!both.contains('…'), "the long path wraps:\n{both}");
+}
+
+#[test]
+fn a_pending_update_notice_and_long_filters_keep_the_list_height_through_a_message() {
+    let mut model = long_filter_overflow_model();
+    model.set_update_notice(Some("tsk v9.9.9 available, run tsk update".to_string()));
+    let idle = board_rows(&model, 40, 24);
+    let rule = rule_row_index(&idle);
+    assert!(
+        idle[rule + 1..].join("\n").contains("v9.9.9 available"),
+        "the notice owns the idle footer:\n{}",
+        idle.join("\n")
+    );
+    let selected = idle.iter().position(|row| row.starts_with('▸'));
+
+    model.set_message("moved T100 to ready");
+    let with_message = board_rows(&model, 40, 24);
+    assert_eq!(
+        rule_row_index(&with_message),
+        rule,
+        "the message resized the list:\n{}",
+        with_message.join("\n")
+    );
+    assert_eq!(
+        with_message.iter().position(|row| row.starts_with('▸')),
+        selected
+    );
+    assert!(with_message[rule + 1..]
+        .join("\n")
+        .contains("moved T100 to ready"));
 }

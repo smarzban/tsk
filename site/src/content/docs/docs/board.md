@@ -46,22 +46,26 @@ The right preview names the selected project in its top row, in the space used b
 
 ## Search
 
-Press `/` on any board tab to search the rows that tab currently shows. On the Projects overview it matches project names or paths. On the desk, a project board, or a cross-project thread view it matches tasks by title, notes, step text, thread, assignee, or task number such as `T12`, case-insensitively. Every whitespace-separated word must match somewhere in the same task.
+Press `/` on any board tab to search the rows that tab currently shows. On the Projects overview it matches project names or paths. On the desk, a project board, or a cross-project thread view it matches tasks by title, notes, step text, thread, assignee (with or without its `@`), or task number such as `T12`, case-insensitively. Every whitespace-separated word must match somewhere in the same task.
 
-Typing or pasting filters immediately. Empty sections disappear and section counts show only matches. Search combines with a project thread filter; the done drawer is searched only while it is open. In the wide Projects preview, `/` searches the right project board when that seat has focus.
+Typing or pasting filters immediately. Empty sections disappear and section counts show only matches. Search combines with a project board's thread and assignee filter; the done drawer is searched only while it is open. In the wide Projects preview, `/` searches the right project board when that seat has focus.
 
 Press `Enter` to pin the query and return to board keys. Navigation, task actions, the done drawer, and a second `Enter` then act on the filtered rows; the query remains in the footer. Press `Esc` while typing to clear and close search, or press it once on a pinned board to clear the query before normal `Esc` behavior resumes. Changing tab, project, or Projects view also clears it.
 
-## Threads
+## Threads and assignees filter
 
-A thread groups related tasks within a project, such as `release` or `login-fix`.
+A thread groups related tasks within a project, such as `release` or `login-fix`. An [assignee](#assignees) names the agent profile a task belongs to. Both narrow a board through one picker with two tabs, `threads · @assignees`.
 
 | Where | Action |
 | --- | --- |
-| Project board | Press `t` or click the filter to choose a thread |
-| Projects overview | Press `v` or click **Overview** to view a thread across projects |
+| Project board | Press `t` or click the filter to open **Filter**; choose a thread, an assignee, or both |
+| Projects overview | Press `v` or click **Overview** to view one thread or one assignee across projects |
 
-Type to filter the choices. Use arrows or `Tab` to select, `Enter` to choose, and `Esc` to close. `j` and `k` are search text in these selectors.
+On a project board the threads tab lists `all`, the project's threads, then **Without a thread**; the `@assignees` tab lists `all`, every profile in `config.toml` as `@name`, any name still on tasks whose profile was removed, then `unassigned`. The two choices combine: `#release` plus `@claude` shows only release tasks assigned to claude, and the filter control reads `#release @claude`. `all` clears only its own tab's choice, and `✓` marks the active choice in each tab. The choice is for this session only, clears when you switch projects, and search (`/`) narrows inside it.
+
+On the Projects overview the threads tab offers **Overview** and each thread; the `@assignees` tab offers one `@name` view per assignee (there is no `unassigned` view). An `@name` view lists that assignee's tasks from every project and the desk, grouped by status like a thread view, with done tasks in the drawer. One view applies at a time.
+
+The picker opens on the threads tab (an `@name` overview view reopens on its own tab). `Tab` or a click switches tabs and clears the typed filter. Type to filter the current tab, use arrows to select, `Enter` to choose, and `Esc` to close without a change. `j` and `k` are search text in these selectors.
 
 Assign threads when [capturing](/docs/capture/#title-tokens) or [editing a task](/docs/task-page/#scope-thread-and-assignee).
 
@@ -91,7 +95,7 @@ On a task with a dispatch record, the first `ctrl+g` names its worktree and asks
 
 Status glyphs are `◌` open, `○` ready, `●` started, `■` blocked, `▲` review, and `✓` done. A started task with a live dispatch uses `◉` instead of `●`; changing its human status or cleaning the dispatch restores the normal glyph.
 
-On your desk, **ON DECK** contains only desk tasks. On a project board, it contains that project's ready and open tasks. Ready tasks are the picked queue; open tasks are the untriaged inbox below it. Ready tasks sort by oldest pick first, open tasks by oldest capture first, and notice tasks lead within each group. The **inbox** group starts expanded; press `Enter` on its heading or `g` while the done drawer is closed to fold or unfold it. With the drawer open and archived tasks available, `g` addresses its archived group; otherwise it addresses the inbox. Use the thread filter to narrow the tasks.
+On your desk, **ON DECK** contains only desk tasks. On a project board, it contains that project's ready and open tasks. Ready tasks are the picked queue; open tasks are the untriaged inbox below it. Ready tasks sort by oldest pick first, open tasks by oldest capture first, and notice tasks lead within each group. The **inbox** group starts expanded; press `Enter` on its heading or `g` while the done drawer is closed to fold or unfold it. With the drawer open and archived tasks available, `g` addresses its archived group; otherwise it addresses the inbox. Use the thread and assignee filter to narrow the tasks.
 
 Sections hold their order while you work: NEEDS YOU, IN MOTION, DONE, and the drawer's ARCHIVED group keep the most recent status change on top, while ON DECK lists ready and inbox backlogs oldest first. (`N` tasks lead each group until you clear them.) Editing a task or ticking a step never moves it; setting a status moves it to the top of its new section.
 
