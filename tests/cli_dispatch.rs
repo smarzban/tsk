@@ -277,6 +277,7 @@ fn clean_cli_help_and_success_report_each_removed_resource() {
 
     let mut host = FakeHost {
         inspection: Some(CleanupInspection {
+            unreachable_remote: None,
             warning: None,
             base_available: true,
             worktree_exists: true,
@@ -535,6 +536,37 @@ impl CleanupRepo {
         (state, id)
     }
 
+    /// `origin/main` cached locally at the task's start, with `origin` unreachable.
+    fn offline_remote_base(&self) {
+        self.git(&[
+            "remote",
+            "add",
+            "origin",
+            self.root.join("missing.git").to_str().unwrap(),
+        ]);
+        self.git(&["update-ref", "refs/remotes/origin/main", "main"]);
+    }
+
+    fn commit_in_worktree(&self, message: &str) {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&self.worktree)
+            .args([
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                message,
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+    }
+
     fn clean(&self, base: &str, remote: Option<&str>) -> tsk_tui::dispatch::CleanupResult {
         let (mut state, id) = self.state(base, remote);
         tsk_tui::dispatch::clean_with_host(
@@ -597,51 +629,119 @@ fn cleanup_removes_clean_worktree_when_fetch_prunes_base() {
 }
 
 #[test]
-fn cleanup_offline_warning_reaches_human_and_json() {
+fn cleanup_offline_keeps_the_branch_and_says_why_in_human_and_json() {
     for merged in [true, false] {
         let repo = CleanupRepo::new();
-        repo.git(&[
-            "remote",
-            "add",
-            "origin",
-            repo.root.join("missing.git").to_str().unwrap(),
-        ]);
-        repo.git(&["update-ref", "refs/remotes/origin/main", "main"]);
+        repo.offline_remote_base();
         if !merged {
-            let output = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&repo.worktree)
-                .args([
-                    "-c",
-                    "user.email=t@t",
-                    "-c",
-                    "user.name=t",
-                    "commit",
-                    "-q",
-                    "--allow-empty",
-                    "-m",
-                    "unmerged",
-                ])
-                .output()
-                .unwrap();
-            assert!(output.status.success());
+            repo.commit_in_worktree("unmerged");
         }
         let result = repo.clean("origin/main", Some("origin"));
+        // Cached ancestry says merged, but the remote may have dropped the task commits since:
+        // only the clean worktree goes.
+        assert_eq!(result.worktree, WorktreeCleanup::Removed);
+        assert!(!repo.worktree.exists());
+        assert_eq!(result.branch, tsk_tui::dispatch::BranchCleanup::Kept);
+        assert_eq!(
+            result.branch_reason,
+            Some(tsk_tui::dispatch::BranchRetentionReason::RemoteUnreachable)
+        );
+        assert!(!repo.git(&["branch", "--list", "tsk/t1-clean"]).is_empty());
         let human = tsk_tui::cli::presenter::cleaned(result.clone(), false);
         assert!(
             human
                 .stdout
-                .contains("merged status computed from cached refs because fetch failed"),
+                .contains("(kept, could not reach origin to confirm the merge)"),
+            "{}",
+            human.stdout
+        );
+        assert!(
+            human.stdout.contains("warning: fetch failed (offline"),
             "{}",
             human.stdout
         );
         let json = tsk_tui::cli::presenter::cleaned(result, true);
         let value: serde_json::Value = serde_json::from_str(&json.stdout).unwrap();
+        assert_eq!(value["branch"]["outcome"], "kept");
+        assert_eq!(
+            value["branch"]["reason"],
+            "could not reach origin to confirm the merge"
+        );
         assert!(value["warning"]
             .as_str()
             .unwrap()
-            .contains("merged status computed from cached refs because fetch failed"));
+            .contains("merged status not confirmed"));
     }
+}
+
+#[test]
+fn status_done_clean_keeps_the_branch_when_the_remote_is_unreachable() {
+    let repo = CleanupRepo::new();
+    repo.offline_remote_base();
+    let (state, _) = repo.state("origin/main", Some("origin"));
+    let dir = repo.root.join("state");
+    TaskStore::new(dir.clone()).save(&state).unwrap();
+    let output = run_with(
+        [
+            "tsk",
+            "status",
+            "T1",
+            "done",
+            "--clean",
+            "--state-dir",
+            dir.to_str().unwrap(),
+        ],
+        Cursor::new(Vec::<u8>::new()),
+        true,
+    );
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    assert!(
+        output
+            .stdout
+            .contains("(kept, could not reach origin to confirm the merge)"),
+        "{}",
+        output.stdout
+    );
+    assert!(!repo.worktree.exists());
+    assert!(!repo.git(&["branch", "--list", "tsk/t1-clean"]).is_empty());
+}
+
+#[test]
+fn cleanup_inside_the_fetch_window_trusts_the_fresh_refs() {
+    let repo = CleanupRepo::new();
+    let remote = repo.root.join("remote.git");
+    let status = std::process::Command::new("git")
+        .args(["init", "--bare", "-q"])
+        .arg(&remote)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    repo.git(&["remote", "add", "origin", remote.to_str().unwrap()]);
+    repo.git(&["push", "-q", "origin", "main"]);
+    tsk_tui::git_base::fetch_remote(&repo.project, "origin").unwrap();
+    // The remote vanishes after a successful fetch: inside the window cleanup never fetches,
+    // so the fresh refs confirm the merge and the branch goes.
+    fs::remove_dir_all(&remote).unwrap();
+    let result = repo.clean("origin/main", Some("origin"));
+    assert_eq!(result.warning, None);
+    assert_eq!(result.branch, tsk_tui::dispatch::BranchCleanup::Removed);
+    assert!(repo.git(&["branch", "--list", "tsk/t1-clean"]).is_empty());
+}
+
+#[test]
+fn cleanup_with_a_local_only_base_deletes_a_merged_branch_offline() {
+    let repo = CleanupRepo::new();
+    // A remote that cannot be reached is irrelevant: the local base has no upstream.
+    repo.git(&[
+        "remote",
+        "add",
+        "origin",
+        repo.root.join("missing.git").to_str().unwrap(),
+    ]);
+    let result = repo.clean("base", None);
+    assert_eq!(result.warning, None);
+    assert_eq!(result.branch, tsk_tui::dispatch::BranchCleanup::Removed);
+    assert!(!repo.worktree.exists());
 }
 
 #[test]
@@ -1116,7 +1216,7 @@ fn timed_out_final_worktree_listing_keeps_the_branch_with_a_clear_reason() {
         tsk_tui::dispatch::BranchRetentionReason::WorktreeListingTimedOut
     );
     assert!(reason
-        .message(Some("base"))
+        .message(Some("base"), None)
         .contains("worktree listing timed out; branch retained"));
     repo.git(&["show-ref", "--verify", "refs/heads/tsk/t1-clean"]);
 }

@@ -42,8 +42,11 @@ pub const UNSUPPORTED_PLATFORM: &str = "dispatch needs herdr on macOS or Linux";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CleanupInspection {
-    /// Ancestry uses cached refs when the bounded fetch fails.
+    /// The bounded fetch failed: why, for the caller to show.
     pub warning: Option<String>,
+    /// The recorded base's remote could not be fetched (outside the fetch window), so the
+    /// refs on disk may predate a force-push or reset: merged status is unconfirmed.
+    pub unreachable_remote: Option<String>,
     /// Separate from ancestry: a vanished base must not block worktree removal.
     pub base_available: bool,
     pub worktree_exists: bool,
@@ -70,6 +73,9 @@ pub enum CleanupRefs {
     Cached,
     /// The card's refresh never finished: remove a clean worktree, never the branch.
     Unconfirmed,
+    /// The card's refresh could not fetch the recorded base: the cached refs may be stale,
+    /// so remove a clean worktree, never the branch.
+    Offline,
 }
 
 /// The base-dependent half of a cleanup inspection, recomputed after a background fetch.
@@ -81,6 +87,9 @@ pub struct MergeVerdict {
     /// False when the ancestry check itself errored or timed out: nothing was confirmed, so a
     /// cleanup must keep the branch even if the refs on disk later read as merged.
     pub confirmed: bool,
+    /// The fetch before the ancestry check failed: the named remote's refs on disk may be
+    /// stale, so the merge is unconfirmed and cleanup keeps the branch.
+    pub unreachable_remote: Option<String>,
 }
 
 /// A board cleanup card's merged check running off the event loop. The host completes it
@@ -140,10 +149,13 @@ pub enum BranchRetentionReason {
     /// A board `y` queued behind the background merged check outlived its bound: without a
     /// completed check the merge is unconfirmed, so the branch stays.
     MergeCheckUnfinished,
+    /// The recorded base's remote could not be fetched: cached refs may predate a
+    /// force-push or reset that dropped the task's commits, so the merge is unconfirmed.
+    RemoteUnreachable,
 }
 
 impl BranchRetentionReason {
-    pub fn message(self, base: Option<&str>) -> String {
+    pub fn message(self, base: Option<&str>, remote: Option<&str>) -> String {
         match self {
             Self::NotMerged => format!("not merged into {}; squash-merged? delete by hand", base.unwrap_or("recorded base")),
             Self::BaseUnavailable => "base no longer available; branch retained".into(),
@@ -161,6 +173,10 @@ impl BranchRetentionReason {
             Self::MergeCheckUnfinished => {
                 "merged check did not finish; branch retained".into()
             }
+            Self::RemoteUnreachable => format!(
+                "could not reach {} to confirm the merge",
+                remote.unwrap_or("the remote")
+            ),
         }
     }
 }
@@ -184,6 +200,8 @@ pub struct CleanupPreview {
 pub struct CleanupResult {
     pub warning: Option<String>,
     pub branch_reason: Option<BranchRetentionReason>,
+    /// The remote a [`BranchRetentionReason::RemoteUnreachable`] names.
+    pub remote: Option<String>,
     pub number: u64,
     pub title: String,
     pub worktree_path: String,
@@ -591,13 +609,15 @@ impl DispatchHost for SystemDispatchHost {
         let (project, dispatch) = (project.to_path_buf(), dispatch.clone());
         std::thread::spawn(move || {
             let fetched = crate::git_base::fetch_remote(&project, &remote);
-            job.complete(match merge_verdict(&project, &dispatch, fetched.err()) {
+            let failure = fetched.err().map(|reason| (remote, reason));
+            job.complete(match merge_verdict(&project, &dispatch, failure) {
                 Ok(verdict) => verdict,
                 Err(reason) => MergeVerdict {
                     branch_merged: false,
                     base_available: false,
                     warning: Some(reason),
                     confirmed: false,
+                    unreachable_remote: None,
                 },
             });
         });
@@ -868,6 +888,7 @@ fn system_inspect_cleanup(
     let project_path = canonical_cleanup_path(project)?;
     let Ok(worktree_path) = canonical_cleanup_path(worktree) else {
         return Ok(CleanupInspection {
+            unreachable_remote: None,
             warning: None,
             base_available: false,
             worktree_exists: worktree.exists(),
@@ -882,6 +903,7 @@ fn system_inspect_cleanup(
     // project root itself is never a removal target, present or not.
     if project_path == worktree_path {
         return Ok(CleanupInspection {
+            unreachable_remote: None,
             warning: None,
             base_available: false,
             worktree_exists: worktree.exists(),
@@ -893,6 +915,7 @@ fn system_inspect_cleanup(
     }
     if !worktree.exists() {
         return Ok(CleanupInspection {
+            unreachable_remote: None,
             warning: None,
             base_available: false,
             worktree_exists: false,
@@ -907,6 +930,7 @@ fn system_inspect_cleanup(
         .any(|listed| listed == &worktree_path);
     if !registered {
         return Ok(CleanupInspection {
+            unreachable_remote: None,
             warning: None,
             base_available: false,
             worktree_exists: true,
@@ -928,8 +952,11 @@ fn system_inspect_cleanup(
         return Err(command_failure("git status", &status));
     }
     let fetch_failure = if fetch {
-        cleanup_base_remote(project, dispatch)
-            .and_then(|remote| crate::git_base::fetch_remote(project, &remote).err())
+        cleanup_base_remote(project, dispatch).and_then(|remote| {
+            crate::git_base::fetch_remote(project, &remote)
+                .err()
+                .map(|reason| (remote, reason))
+        })
     } else {
         None
     };
@@ -937,6 +964,7 @@ fn system_inspect_cleanup(
         branch_merged,
         base_available,
         warning,
+        unreachable_remote,
         ..
     } = merge_verdict(project, dispatch, fetch_failure)?;
     let (workspace_exists, workspace_matches) = if in_herdr {
@@ -969,6 +997,7 @@ fn system_inspect_cleanup(
     };
     Ok(CleanupInspection {
         warning,
+        unreachable_remote,
         base_available,
         worktree_exists: true,
         dirty: !status.stdout.is_empty(),
@@ -994,11 +1023,11 @@ fn cleanup_base_remote(project: &Path, dispatch: &Dispatch) -> Option<String> {
 }
 
 /// Ancestry against the recorded base from the refs on disk now. `fetch_failure` is the
-/// reason the preceding fetch failed, reported as cached-ref provenance.
+/// remote whose preceding fetch failed and why: the refs on disk then confirm nothing.
 fn merge_verdict(
     project: &Path,
     dispatch: &Dispatch,
-    fetch_failure: Option<String>,
+    fetch_failure: Option<(String, String)>,
 ) -> Result<MergeVerdict, String> {
     let mut base_available = false;
     let branch_merged = if let Some(base) =
@@ -1032,18 +1061,23 @@ fn merge_verdict(
     } else {
         false
     };
-    let warning = fetch_failure.map(|reason| {
-        if base_available {
-            format!("merged status computed from cached refs because fetch failed: {reason}")
-        } else {
-            format!("fetch failed: {reason}; merged status unavailable because recorded base no longer available")
+    let (unreachable_remote, warning) = match fetch_failure {
+        Some((remote, reason)) => {
+            let warning = if base_available {
+                format!("{reason}; merged status not confirmed, branch kept")
+            } else {
+                format!("fetch failed: {reason}; merged status unavailable because recorded base no longer available")
+            };
+            (Some(remote), Some(warning))
         }
-    });
+        None => (None, None),
+    };
     Ok(MergeVerdict {
         branch_merged,
         base_available,
         warning,
         confirmed: true,
+        unreachable_remote,
     })
 }
 
@@ -1239,6 +1273,8 @@ pub fn clean_with_host_refs(
             BranchDeletion::Kept(BranchRetentionReason::NoRecordedBase)
         } else if refs == CleanupRefs::Unconfirmed {
             BranchDeletion::Kept(BranchRetentionReason::MergeCheckUnfinished)
+        } else if refs == CleanupRefs::Offline || preview.inspection.unreachable_remote.is_some() {
+            BranchDeletion::Kept(BranchRetentionReason::RemoteUnreachable)
         } else if !preview.inspection.base_available {
             BranchDeletion::Kept(BranchRetentionReason::BaseUnavailable)
         } else if preview.inspection.branch_merged {
@@ -1270,9 +1306,19 @@ pub fn clean_with_host_refs(
     state
         .record_dispatch_cleaned(id)
         .map_err(|error| CleanupError::Store(error.to_string()))?;
+    let remote = (branch_reason == Some(BranchRetentionReason::RemoteUnreachable))
+        .then(|| {
+            preview
+                .inspection
+                .unreachable_remote
+                .clone()
+                .or_else(|| cleanup_base_remote(&preview.project, &preview.record))
+        })
+        .flatten();
     Ok(CleanupResult {
         warning: preview.inspection.warning,
         branch_reason,
+        remote,
         number: preview.number,
         title: preview.title,
         worktree_path: preview.record.worktree,
@@ -2467,6 +2513,7 @@ mod tests {
             (
                 "dirty",
                 CleanupInspection {
+                    unreachable_remote: None,
                     warning: None,
                     base_available: true,
                     worktree_exists: true,
@@ -2482,6 +2529,7 @@ mod tests {
             (
                 "unmerged",
                 CleanupInspection {
+                    unreachable_remote: None,
                     warning: None,
                     base_available: true,
                     worktree_exists: true,
@@ -2497,6 +2545,7 @@ mod tests {
             (
                 "merged",
                 CleanupInspection {
+                    unreachable_remote: None,
                     warning: None,
                     base_available: true,
                     worktree_exists: true,
@@ -2512,6 +2561,7 @@ mod tests {
             (
                 "missing",
                 CleanupInspection {
+                    unreachable_remote: None,
                     warning: None,
                     base_available: true,
                     worktree_exists: false,
@@ -2577,6 +2627,7 @@ mod tests {
         let before = state.clone();
         let mut host = FakeHost {
             cleanup: Some(CleanupInspection {
+                unreachable_remote: None,
                 warning: None,
                 base_available: true,
                 worktree_exists: true,
@@ -2635,6 +2686,7 @@ mod tests {
             .expect("legacy dispatch");
         let mut cleanup = FakeHost {
             cleanup: Some(CleanupInspection {
+                unreachable_remote: None,
                 warning: None,
                 base_available: true,
                 worktree_exists: true,
@@ -2705,6 +2757,7 @@ mod tests {
             run_with_host(&mut state, id, &profiles, false, true, &mut launch).expect("dispatch");
             let mut clean = FakeHost {
                 cleanup: Some(CleanupInspection {
+                    unreachable_remote: None,
                     warning: None,
                     base_available: true,
                     worktree_exists: false,
@@ -3043,6 +3096,7 @@ mod tests {
 
         let mut clean = FakeHost {
             cleanup: Some(CleanupInspection {
+                unreachable_remote: None,
                 warning: None,
                 base_available: true,
                 worktree_exists: false,
