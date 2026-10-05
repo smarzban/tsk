@@ -11477,7 +11477,9 @@ mod quick_assign_tests {
                 )
                 .expect("task");
             domain.assign(id, Some("builder".into())).expect("assign");
-            temp.store.reload_merge_save(&mut domain).expect("number the task");
+            temp.store
+                .reload_merge_save(&mut domain)
+                .expect("number the task");
             let eligible = crate::dispatch::check_task(&domain, id, &temp.profiles(), true)
                 .expect("eligible before the git check");
             let board_thread = std::thread::current().id();

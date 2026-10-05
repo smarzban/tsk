@@ -1739,7 +1739,8 @@ pub(crate) mod thread_probe {
             .push((project.to_path_buf(), std::thread::current().id()));
     }
 
-    /// The threads that ran work for `project`.
+    /// The threads that ran work for `project` (read by the unix-only bulk dispatch tests).
+    #[cfg(unix)]
     pub(crate) fn threads(project: &Path) -> Vec<ThreadId> {
         RUNS.lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
