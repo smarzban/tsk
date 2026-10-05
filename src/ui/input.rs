@@ -261,6 +261,12 @@ pub enum BoardIntent {
     /// Move the open list picker's selection.
     ListPickerNext,
     ListPickerPrev,
+    /// List picker `Tab` / `shift+Tab`: flip the Filter / View picker's
+    /// `threads · @assignees` tabs; a picker without tabs moves its selection instead.
+    ListPickerTabNext,
+    ListPickerTabPrev,
+    /// Mouse route onto the Filter / View picker's painted tab row.
+    SelectListPickerTab(crate::ui::board::FilterTab),
     /// Apply the highlighted list-picker option.
     ConfirmListPicker,
     /// Close the list picker without applying anything.
@@ -1069,6 +1075,12 @@ fn help_bindings() -> Vec<HelpBinding> {
         help_binding(
             HelpGroup::SurfaceControls,
             "tab",
+            "switch tabs (Filter / View picker)",
+            "assignee tab filter view",
+        ),
+        help_binding(
+            HelpGroup::SurfaceControls,
+            "tab",
             "next option (list picker / palette)",
             "select move",
         ),
@@ -1810,6 +1822,9 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::OpenAssigneePicker
         | BoardIntent::ListPickerNext
         | BoardIntent::ListPickerPrev
+        | BoardIntent::ListPickerTabNext
+        | BoardIntent::ListPickerTabPrev
+        | BoardIntent::SelectListPickerTab(_)
         | BoardIntent::ConfirmListPicker
         | BoardIntent::CancelListPicker
         | BoardIntent::SelectListOption(_)
@@ -2113,8 +2128,8 @@ fn map_list_picker(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Down => Some(BoardIntent::ListPickerNext),
         KeyCode::Up => Some(BoardIntent::ListPickerPrev),
         KeyCode::Backspace => Some(BoardIntent::ListPickerQueryBackspace),
-        KeyCode::Tab => Some(BoardIntent::ListPickerNext),
-        KeyCode::BackTab => Some(BoardIntent::ListPickerPrev),
+        KeyCode::Tab => Some(BoardIntent::ListPickerTabNext),
+        KeyCode::BackTab => Some(BoardIntent::ListPickerTabPrev),
         KeyCode::Char(character) if !character.is_control() => {
             Some(BoardIntent::ListPickerQueryInsert(character))
         }

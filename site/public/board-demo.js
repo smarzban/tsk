@@ -377,6 +377,11 @@ import { parseCapture } from "./capture.js";
     searchQuery: "",
     searchPinned: false,
     threadFilter: null,
+    // The project board's assignee choice: null all, "" unassigned, or a name.
+    assigneeFilter: null,
+    // The Filter / View picker's open tab: "threads" or "assignees".
+    filterTab: "threads",
+    // null Overview, a thread name, or "@name" for an assignee view.
     projectView: null,
     filterI: 0,
     collapsed: new Set(),
@@ -423,6 +428,7 @@ import { parseCapture } from "./capture.js";
     pendingDelete: null,
     pendingDeleteBulk: false,
     threadFilter: null,
+    assigneeFilter: null,
     peekId: null,
     drawer: false,
     archivedOpen: false,
@@ -660,8 +666,9 @@ import { parseCapture } from "./capture.js";
 
   function previewMatchesThread(task) {
     return (
-      preview.threadFilter === null ||
-      (task.thread || "") === preview.threadFilter
+      (preview.threadFilter === null ||
+        (task.thread || "") === preview.threadFilter) &&
+      matchesAssignee(task, preview.assigneeFilter)
     );
   }
 
@@ -741,6 +748,18 @@ import { parseCapture } from "./capture.js";
         !task.archived &&
         task.status !== "done",
     );
+    return state.filterTab === "assignees"
+      ? markActive(assigneeOptions(tasks, true), preview.assigneeFilter)
+      : markActive(previewThreadOptions(), preview.threadFilter);
+  }
+
+  function previewThreadOptions() {
+    const tasks = state.tasks.filter(
+      (task) =>
+        task.project === preview.project &&
+        !task.archived &&
+        task.status !== "done",
+    );
     const names = [
       ...new Set(tasks.map((task) => task.thread).filter(Boolean)),
     ].sort(
@@ -750,7 +769,7 @@ import { parseCapture } from "./capture.js";
         a.localeCompare(b),
     );
     return [
-      { value: null, label: `All tasks  ${tasks.length}` },
+      { value: null, label: `all  ${tasks.length}` },
       ...names.map((name) => ({
         value: name,
         label: `#${name}  ${tasks.filter((task) => task.thread === name).length}`,
@@ -763,43 +782,105 @@ import { parseCapture } from "./capture.js";
   }
 
   function previewFilterLabel() {
-    return preview.threadFilter === null
-      ? "all"
-      : preview.threadFilter === ""
-        ? "without a thread"
-        : `#${preview.threadFilter}`;
+    return filterLabel(preview.threadFilter, preview.assigneeFilter);
+  }
+
+  // The Filter / View picker's `threads · @assignees` tabs, shared by both seats.
+  function filterLabel(thread, assignee) {
+    const parts = [
+      thread === null
+        ? null
+        : thread === ""
+          ? "without a thread"
+          : `#${thread}`,
+      assignee === null
+        ? null
+        : assignee === ""
+          ? "unassigned"
+          : `@${assignee}`,
+    ].filter(Boolean);
+    return parts.length ? parts.join(" ") : "all";
+  }
+
+  function matchesAssignee(task, assignee) {
+    return assignee === null || (task.assignee || "") === assignee;
+  }
+
+  // `all`, every assignee on the tasks, then `unassigned`; the overview lists names only.
+  function assigneeOptions(tasks, board) {
+    const names = [
+      ...new Set(tasks.map((task) => task.assignee).filter(Boolean)),
+    ].sort((a, b) => a.localeCompare(b));
+    const count = (name) =>
+      tasks.filter((task) => (task.assignee || "") === name).length;
+    return [
+      ...(board ? [{ value: null, label: `all  ${tasks.length}` }] : []),
+      ...names.map((name) => ({
+        value: board ? name : `@${name}`,
+        label: `@${name}  ${count(name)}`,
+      })),
+      ...(board ? [{ value: "", label: `unassigned  ${count("")}` }] : []),
+    ];
+  }
+
+  function markActive(options, value) {
+    return options.map((option) =>
+      option.value === value
+        ? { ...option, label: `${option.label}  ✓`, active: true }
+        : option,
+    );
+  }
+
+  function activeFilterIndex(options) {
+    return Math.max(
+      0,
+      options.findIndex((option) => option.active),
+    );
+  }
+
+  function switchFilterTab(tab) {
+    state.filterTab =
+      tab || (state.filterTab === "threads" ? "assignees" : "threads");
+    state.filterI = activeFilterIndex(
+      state.overlay === "preview-filter"
+        ? previewFilterOptions()
+        : filterOptions(),
+    );
+  }
+
+  function renderFilterTabs() {
+    const tab = (name, label) =>
+      `<button type="button" class="tsk-filter-tab ${state.filterTab === name ? "is-on" : "dim"}" data-filter-tab="${name}">${label}</button>`;
+    return `<div class="tsk-filter-tabs">${tab("threads", "threads")}<span class="dim">·</span>${tab("assignees", "@assignees")}</div>`;
   }
 
   function openPreviewFilter() {
     if (!projectsPreviewFocused() || previewHasUnsavedWork()) return;
     state.overlay = "preview-filter";
-    state.filterI = Math.max(
-      0,
-      previewFilterOptions().findIndex(
-        (option) => option.value === preview.threadFilter,
-      ),
-    );
+    state.filterTab = "threads";
+    state.filterI = activeFilterIndex(previewFilterOptions());
   }
 
   function choosePreviewFilter(index) {
     const option = previewFilterOptions()[index];
     if (!option) return;
     clearMarks(preview);
-    preview.threadFilter = option.value;
+    if (state.filterTab === "assignees") preview.assigneeFilter = option.value;
+    else preview.threadFilter = option.value;
     preview.peekId = null;
     ensurePreviewSelection();
     state.overlay = null;
   }
 
   function renderPreviewFilter() {
-    return `<div class="tsk-box" role="dialog" aria-label="project thread filter"><div class="tsk-box-top"><span class="tsk-box-title">project thread</span><button type="button" class="tsk-box-close" data-close="1">[x]</button></div><div class="tsk-box-body">${previewFilterOptions()
+    return `<div class="tsk-box" role="dialog" aria-label="project filter"><div class="tsk-box-top"><span class="tsk-box-title">project Filter</span><button type="button" class="tsk-box-close" data-close="1">[x]</button></div>${renderFilterTabs()}<div class="tsk-box-body">${previewFilterOptions()
       .map(
         (option, index) =>
           `<div class="tsk-pal-row" data-preview-filter-option="${index}"><span class="${index === state.filterI ? "sel-text" : ""}">${index === state.filterI ? "▸" : " "} ${esc(option.label)}</span></div>`,
       )
       .join(
         "",
-      )}</div><div class="tsk-box-foot">↑↓ move · enter choose · esc close</div></div>`;
+      )}</div><div class="tsk-box-foot">tab switch · ↑↓ move · enter pick · esc close</div></div>`;
   }
 
   function previewSelectableIds(rows = previewRows()) {
@@ -881,6 +962,18 @@ import { parseCapture } from "./capture.js";
         t.status !== "done" &&
         (!project || t.project === project),
     );
+    if (state.filterTab === "assignees")
+      return markActive(
+        assigneeOptions(tasks, Boolean(project)),
+        project ? state.assigneeFilter : state.projectView,
+      );
+    return markActive(
+      threadOptions(tasks, project),
+      project ? state.threadFilter : state.projectView,
+    );
+  }
+
+  function threadOptions(tasks, project) {
     const names = [...new Set(tasks.map((t) => t.thread).filter(Boolean))].sort(
       (a, b) =>
         tasks.filter((t) => t.thread === b).length -
@@ -889,7 +982,7 @@ import { parseCapture } from "./capture.js";
     return [
       {
         value: null,
-        label: project ? `All tasks  ${tasks.length}` : "Overview",
+        label: project ? `all  ${tasks.length}` : "Overview",
       },
       ...names.map((name) => ({
         value: name,
@@ -908,17 +1001,20 @@ import { parseCapture } from "./capture.js";
   function openFilter() {
     if (steps.dirty || steps.editor || previewHasUnsavedWork()) return;
     state.overlay = "filter";
-    const value = state.focusProject ? state.threadFilter : state.projectView;
-    state.filterI = Math.max(
-      0,
-      filterOptions().findIndex((o) => o.value === value),
-    );
+    // An `@name` view reopens on its own tab.
+    state.filterTab =
+      !state.focusProject && state.projectView?.startsWith("@")
+        ? "assignees"
+        : "threads";
+    state.filterI = activeFilterIndex(filterOptions());
   }
   function chooseFilter(index) {
     const option = filterOptions()[index];
     if (!option) return;
     clearMarks();
-    if (state.focusProject) state.threadFilter = option.value;
+    if (state.focusProject && state.filterTab === "assignees")
+      state.assigneeFilter = option.value;
+    else if (state.focusProject) state.threadFilter = option.value;
     else {
       state.projectView = option.value;
       state.searchQuery = "";
@@ -930,22 +1026,26 @@ import { parseCapture } from "./capture.js";
     if (state.tab === "projects") dropProjectPreview();
   }
   function renderFilter() {
-    const title = state.focusProject ? "thread filter" : "projects View";
-    return `<div class="tsk-box" role="dialog" aria-label="${title}"><div class="tsk-box-top"><span class="tsk-box-title">${title}</span><button type="button" class="tsk-box-close" data-close="1">[x]</button></div><div class="tsk-box-body">${filterOptions()
+    const title = state.focusProject ? "Filter" : "projects View";
+    return `<div class="tsk-box" role="dialog" aria-label="${title}"><div class="tsk-box-top"><span class="tsk-box-title">${title}</span><button type="button" class="tsk-box-close" data-close="1">[x]</button></div>${renderFilterTabs()}<div class="tsk-box-body">${filterOptions()
       .map(
         (o, i) =>
           `<div class="tsk-pal-row" data-filter-option="${i}"><span class="${i === state.filterI ? "sel-text" : ""}">${i === state.filterI ? "▸" : " "} ${esc(o.label)}</span></div>`,
       )
       .join(
         "",
-      )}</div><div class="tsk-box-foot">↑↓ move · enter choose · esc close</div></div>`;
+      )}</div><div class="tsk-box-foot">tab switch · ↑↓ move · enter pick · esc close</div></div>`;
   }
   const matchesThread = (t) =>
     state.focusProject
-      ? state.threadFilter === null || (t.thread || "") === state.threadFilter
+      ? (state.threadFilter === null ||
+          (t.thread || "") === state.threadFilter) &&
+        matchesAssignee(t, state.assigneeFilter)
       : state.tab !== "projects" ||
         state.projectView === null ||
-        t.thread === state.projectView;
+        (state.projectView.startsWith("@")
+          ? t.assignee === state.projectView.slice(1)
+          : t.thread === state.projectView);
   function visibleTasks() {
     // Hidden (archived) tasks leave every working view. The closed drawer keeps
     // its unfiltered count; opening it brings done tasks into content search.
@@ -1439,6 +1539,7 @@ import { parseCapture } from "./capture.js";
     clearMarks();
     clearMarks(preview);
     state.threadFilter = null;
+    state.assigneeFilter = null;
     state.tab = tab;
     state.focusProject = tab === "project" ? state.selectedProject : null;
     state.searchQuery = "";
@@ -1460,6 +1561,7 @@ import { parseCapture } from "./capture.js";
       return;
     }
     state.threadFilter = null;
+    state.assigneeFilter = null;
     state.selectedProject = name;
     state.focusProject = name;
     state.tab = "project";
@@ -1489,6 +1591,7 @@ import { parseCapture } from "./capture.js";
     preview.pendingDelete = null;
     preview.pendingDeleteBulk = false;
     preview.threadFilter = null;
+    preview.assigneeFilter = null;
     preview.peekId = null;
     preview.drawer = false;
     preview.archivedOpen = false;
@@ -1592,6 +1695,8 @@ import { parseCapture } from "./capture.js";
   function resetDemo() {
     state.tasks = seed();
     state.threadFilter = null;
+    state.assigneeFilter = null;
+    state.filterTab = "threads";
     state.projectView = null;
     state.filterI = 0;
     state.tab = "desk";
@@ -2544,15 +2649,13 @@ import { parseCapture } from "./capture.js";
       return `<span class="tsk-tab-group ${on ? "is-on" : ""}"><button type="button" class="tsk-tab ${on ? "is-on" : ""}" data-tab="${tab}">${esc(text)}</button>${tab === "project" ? `<button class="tsk-tab-arrow" data-chip="1" aria-label="choose project">▾</button>` : ""}</span>`;
     }).join(`<span class="dim"> · </span>`);
     const filter = state.focusProject
-      ? state.threadFilter === null
-        ? "all"
-        : state.threadFilter === ""
-          ? "without a thread"
-          : `#${state.threadFilter}`
+      ? filterLabel(state.threadFilter, state.assigneeFilter)
       : state.tab === "projects"
         ? state.projectView === null
           ? "Overview"
-          : `#${state.projectView}`
+          : state.projectView.startsWith("@")
+            ? state.projectView
+            : `#${state.projectView}`
         : null;
     const control =
       filter === null
@@ -2737,7 +2840,7 @@ import { parseCapture } from "./capture.js";
         : state.tab === "desk"
           ? "desk"
           : state.focusProject
-            ? `${state.focusProject}${state.threadFilter ? ` · #${state.threadFilter}` : ""}`
+            ? `${state.focusProject}${filterLabel(state.threadFilter, state.assigneeFilter) === "all" ? "" : ` · ${filterLabel(state.threadFilter, state.assigneeFilter)}`}`
             : state.tab;
     const scopedContext =
       owner.searchPinned && owner.searchQuery.trim()
@@ -3685,6 +3788,7 @@ import { parseCapture } from "./capture.js";
     if (state.overlay === "preview-filter") {
       e.preventDefault();
       if (e.key === "Escape") state.overlay = null;
+      else if (e.key === "Tab") switchFilterTab();
       else if (e.key === "Enter") choosePreviewFilter(state.filterI);
       else if (["ArrowDown", "j"].includes(e.key))
         state.filterI = Math.min(
@@ -3699,6 +3803,7 @@ import { parseCapture } from "./capture.js";
     if (state.overlay === "filter") {
       e.preventDefault();
       if (e.key === "Escape") state.overlay = null;
+      else if (e.key === "Tab") switchFilterTab();
       else if (e.key === "Enter") chooseFilter(state.filterI);
       else if (["ArrowDown", "j"].includes(e.key))
         state.filterI = Math.min(filterOptions().length - 1, state.filterI + 1);
@@ -4073,6 +4178,15 @@ import { parseCapture } from "./capture.js";
       choosePreviewFilter(
         Number(previewFilterOption.dataset.previewFilterOption),
       );
+      render();
+      return;
+    }
+    const filterTab = e.target.closest("[data-filter-tab]");
+    if (
+      filterTab &&
+      (state.overlay === "filter" || state.overlay === "preview-filter")
+    ) {
+      switchFilterTab(filterTab.dataset.filterTab);
       render();
       return;
     }

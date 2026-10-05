@@ -37,9 +37,7 @@ test("project navigation, counted views and selection match the app", async ({
   );
   await expect(page.locator("[data-filter]")).toHaveText("all ▾");
   await page.locator("[data-filter]").click();
-  await expect(
-    page.getByRole("dialog", { name: "thread filter" }),
-  ).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Filter" })).toBeVisible();
   await page.getByText("Without a thread 4", { exact: false }).click();
   await expect(page.locator("[data-task]")).toHaveCount(4);
   await page.locator('[data-tab="projects"]').click();
@@ -141,4 +139,35 @@ test("project counts, thread labels and counted menu order match the app", async
   await expect(page.locator("[data-filter-option]").nth(3)).toContainText(
     "#api  2",
   );
+});
+
+test("the Filter picker's threads and @assignees tabs combine like the app", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:4180/");
+  await page.locator('[data-tab="project"]').click();
+  await page.locator("[data-filter]").click();
+  const picker = page.getByRole("dialog", { name: "Filter" });
+  await expect(picker.locator(".tsk-filter-tab.is-on")).toHaveText("threads");
+  await expect(page.locator("[data-filter-option]").first()).toContainText(
+    "all",
+  );
+  await expect(page.locator("[data-filter-option]").first()).toContainText("✓");
+  await page.locator("#board-demo").focus();
+  await page.keyboard.press("Tab");
+  await expect(picker.locator(".tsk-filter-tab.is-on")).toHaveText(
+    "@assignees",
+  );
+  await page
+    .locator("[data-filter-option]")
+    .filter({ hasText: "unassigned" })
+    .click();
+  await expect(page.locator("[data-filter]")).toHaveText("unassigned ▾");
+  await page.locator("[data-filter]").click();
+  await page.locator('[data-filter-tab="threads"]').click();
+  await page
+    .locator("[data-filter-option]")
+    .filter({ hasText: "#auth" })
+    .click();
+  await expect(page.locator("[data-filter]")).toHaveText("#auth unassigned ▾");
 });

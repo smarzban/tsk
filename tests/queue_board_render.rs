@@ -14,7 +14,7 @@ use tsk_tui::domain::{
     TaskScope,
 };
 use tsk_tui::ui::input::map_key;
-use tsk_tui::ui::queue::{self, BoardLens, NavTab, QueueView, ThreadFilter};
+use tsk_tui::ui::queue::{self, BoardFilter, BoardLens, NavTab, QueueView};
 use tsk_tui::ui::render::{
     assert_buffer_mono, assert_no_color_sgr, draw_queue_frame, BottomInputSlot, NavChipPaint,
     NavPaint, PaletteCommandRow, QueueFrameModel, QueueOverlay, VerbEntry,
@@ -344,7 +344,7 @@ fn fixture_view(tasks: &[Task], drawer_open: bool) -> QueueView {
         Some(Path::new("/repos/tsk")),
         BoardLens::Desk,
         drawer_open,
-        &ThreadFilter::All,
+        &BoardFilter::default(),
     )
 }
 
@@ -355,7 +355,7 @@ fn fixture_view_projects(tasks: &[Task], drawer_open: bool) -> QueueView {
         Some(Path::new("/repos/tsk")),
         BoardLens::Project(Path::new("/repos/tsk")),
         drawer_open,
-        &ThreadFilter::All,
+        &BoardFilter::default(),
     )
 }
 
@@ -3075,6 +3075,39 @@ struct GoldenScene {
     width: u16,
 }
 
+/// The project board's Filter picker on its `@assignees` tab, and the board it leaves
+/// behind with both a thread and an assignee applied, at the 40-column floor.
+fn filter_golden_rows() -> (Vec<String>, Vec<String>) {
+    let mut tasks = fixture_tasks();
+    for task in &mut tasks {
+        match task.id.as_u128() {
+            1 => task.assignee = Some("claude".to_string()),
+            10 => {
+                task.assignee = Some("claude".to_string());
+                task.thread = Some("release".to_string());
+            }
+            11 => task.thread = Some("release".to_string()),
+            _ => {}
+        }
+    }
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from("/repos/tsk")));
+    let mut apply = |model: &mut BoardModel, intent: BoardIntent| {
+        apply_intent(&mut domain, model, intent, None).expect("filter golden intent");
+    };
+    apply(&mut model, BoardIntent::SelectNavTab(NavTab::ProjectBoard));
+    apply(&mut model, BoardIntent::OpenThreadFilterPicker);
+    apply(&mut model, BoardIntent::ListPickerNext);
+    apply(&mut model, BoardIntent::ConfirmListPicker);
+    apply(&mut model, BoardIntent::OpenThreadFilterPicker);
+    apply(&mut model, BoardIntent::ListPickerTabNext);
+    apply(&mut model, BoardIntent::ListPickerNext);
+    let picker = board_rows(&model, 40, 24);
+    apply(&mut model, BoardIntent::ConfirmListPicker);
+    let board = board_rows(&model, 40, 24);
+    (picker, board)
+}
+
 fn golden_scenes() -> Vec<GoldenScene> {
     let tasks = fixture_tasks();
 
@@ -3268,7 +3301,19 @@ fn golden_scenes() -> Vec<GoldenScene> {
     archived_model.archived_collapsed = false;
     let (archived_rows, _) = paint(80, 24, &archived_model);
 
+    let (filter_picker_rows, filtered_board_rows) = filter_golden_rows();
+
     vec![
+        GoldenScene {
+            name: "filter_picker_40x24",
+            rows: filter_picker_rows,
+            width: 40,
+        },
+        GoldenScene {
+            name: "board_filtered_40x24",
+            rows: filtered_board_rows,
+            width: 40,
+        },
         GoldenScene {
             name: "board",
             rows: base_rows,
@@ -3798,12 +3843,12 @@ fn all_golden_frames_pass_no_color_sgr_scan() {
         scanned += 1;
     }
     assert_eq!(
-        scanned, 16,
-        "expected the sixteen board surface goldens (board, board_marked, \
+        scanned, 18,
+        "expected the eighteen board surface goldens (board, board_marked, \
          board_default_split_78, board_search, board_search_pinned, board_search_empty, \
          accordion, palette, help, done_drawer, inbox, done_drawer_archived, \
          projects_index_50x20, projects_index_110x30, projects_preview_split_110x30, \
-         projects_preview_rail_110x30) in {dir:?}"
+         projects_preview_rail_110x30, filter_picker_40x24, board_filtered_40x24) in {dir:?}"
     );
 }
 
@@ -5181,8 +5226,8 @@ fn project_picker_main_tab_advertises_archive_without_leaking_to_thread_picker()
     .expect("thread picker");
     let threads = board_rows(&model, 80, 24).join("\n");
     assert!(
-        threads.contains("↑↓ move \u{b7} enter choose \u{b7} esc close"),
-        "thread picker must keep its ordinary footer:\n{threads}"
+        threads.contains("tab switch \u{b7} ↑↓ move \u{b7} enter pick \u{b7} esc close"),
+        "the Filter picker advertises its tab switch:\n{threads}"
     );
     assert!(
         !threads.contains("ctrl+f archive"),
@@ -5561,14 +5606,12 @@ fn real_thread_picker_paints_query_and_options() {
     )
     .expect("open picker");
     let rows = board_rows(&model, 162, 43).join("\n");
+    assert!(rows.contains("Filter"), "picker title missing:\n{rows}");
     assert!(
-        rows.contains("thread filter"),
-        "picker title missing:\n{rows}"
+        rows.contains("threads \u{b7} @assignees"),
+        "picker tabs missing:\n{rows}"
     );
-    assert!(
-        rows.contains("All tasks"),
-        "picker options missing:\n{rows}"
-    );
+    assert!(rows.contains("all"), "picker options missing:\n{rows}");
     assert!(rows.contains("#release"), "thread option missing:\n{rows}");
 }
 
@@ -6250,4 +6293,120 @@ fn a_scrolling_bulk_cleanup_card_at_forty_columns_never_cuts_its_counts() {
     let wide = board_rows(&large_bulk_cleanup_model(10, false), 80, 24).join("\n");
     assert!(wide.contains("Done 10 tasks · clean up 9 of 10?"), "{wide}");
     assert!(!wide.contains("worktrees?"), "{wide}");
+}
+
+use tsk_tui::ui::mouse::{left_click, map_board_mouse};
+use tsk_tui::ui::render::QueueHitTarget as FilterHitTarget;
+
+fn filter_hit(model: &BoardModel, target: FilterHitTarget) -> Rect {
+    tsk_tui::ui::board::board_hit_map(Rect::new(0, 0, 80, 24), model)
+        .regions
+        .iter()
+        .find(|hit| hit.target == target)
+        .unwrap_or_else(|| panic!("{target:?} must be painted"))
+        .area
+}
+
+#[test]
+fn filter_picker_tabs_and_options_are_clickable() {
+    let mut tasks = fixture_tasks();
+    tasks[0].assignee = Some("claude".to_string());
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from("/repos/tsk")));
+    for intent in [
+        BoardIntent::SelectNavTab(NavTab::ProjectBoard),
+        BoardIntent::OpenThreadFilterPicker,
+    ] {
+        apply_intent(&mut domain, &mut model, intent, None).expect("open filter");
+    }
+    let tab = filter_hit(
+        &model,
+        FilterHitTarget::ListPickerTab(tsk_tui::ui::board::FilterTab::Assignees),
+    );
+    let intent = map_board_mouse(&model, &board_hit_map_80(&model), left_click(tab.x, tab.y))
+        .expect("tab click");
+    apply_intent(&mut domain, &mut model, intent, None).expect("switch tab");
+    assert_eq!(
+        model.list_picker_tab(),
+        Some(tsk_tui::ui::board::FilterTab::Assignees)
+    );
+    let rows = board_rows(&model, 80, 24).join("\n");
+    assert!(rows.contains("@claude  1"), "assignees tab:\n{rows}");
+    assert!(rows.contains("all  3  ✓"), "active mark:\n{rows}");
+
+    // A row click inside the tabbed picker applies, never falls through to close.
+    let option = filter_hit(&model, FilterHitTarget::ListPickerOption(1));
+    let intent = map_board_mouse(
+        &model,
+        &board_hit_map_80(&model),
+        left_click(option.x + 2, option.y),
+    )
+    .expect("option click");
+    apply_intent(&mut domain, &mut model, intent, None).expect("apply");
+    assert!(!model.list_picker_open());
+    assert_eq!(
+        model.assignee_filter(),
+        &queue::AssigneeFilter::Named("claude".into())
+    );
+    let board = board_rows(&model, 80, 24).join("\n");
+    assert!(board.contains("@claude ▾"), "chip:\n{board}");
+    assert!(board.contains(" tsk · @claude"), "footer context:\n{board}");
+}
+
+fn board_hit_map_80(model: &BoardModel) -> tsk_tui::ui::render::QueueHitMap {
+    tsk_tui::ui::board::board_hit_map(Rect::new(0, 0, 80, 24), model)
+}
+
+#[test]
+fn overview_assignee_view_lists_assigned_work_across_projects_with_the_bullseye() {
+    let mut tasks = fixture_tasks();
+    for task in &mut tasks {
+        match task.id.as_u128() {
+            // Started on /repos/tsk and dispatched.
+            1 => {
+                task.assignee = Some("claude".to_string());
+                task.dispatch = Some(Dispatch {
+                    argv: vec!["agent".into()],
+                    worktree: "/tmp/tsk-t1".into(),
+                    branch: "tsk/t1".into(),
+                    base: None,
+                    base_commit: None,
+                    base_remote: None,
+                    base_ref: None,
+                    herdr_workspace_id: "workspace-1".into(),
+                    at: at_secs_ago(30),
+                    cleaned: false,
+                });
+            }
+            // Blocked on /repos/herdr, the desk, and a done task.
+            20 | 30 | 40 => task.assignee = Some("claude".to_string()),
+            _ => {}
+        }
+    }
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from("/repos/tsk")));
+    for intent in [
+        BoardIntent::SelectNavTab(NavTab::Projects),
+        BoardIntent::OpenProjectsViewPicker,
+        BoardIntent::ListPickerTabNext,
+        BoardIntent::ConfirmListPicker,
+    ] {
+        apply_intent(&mut domain, &mut model, intent, None).expect("assignee view");
+    }
+    let board = board_rows(&model, 80, 24).join("\n");
+    assert!(board.contains("@claude ▾"), "chip:\n{board}");
+    assert!(
+        board.contains("◉ T1 Smoke-test worktree dispatch"),
+        "{board}"
+    );
+    assert!(board.contains("Wire dispatch cleanup receipts"), "{board}");
+    assert!(board.contains("Global backlog note"), "{board}");
+    assert!(
+        !board.contains("Ship the queue board milestone"),
+        "done stays in the closed drawer:\n{board}"
+    );
+    assert!(
+        !board.contains("Prototype the queue-style board UI"),
+        "unassigned work is not in the view:\n{board}"
+    );
 }

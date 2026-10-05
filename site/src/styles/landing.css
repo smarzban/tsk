@@ -888,6 +888,28 @@ html[data-theme="light"] .pane {
   color: var(--dim);
 }
 
+/* The Filter / View picker's `threads · @assignees` tab row. */
+.tsk-filter-tabs {
+  display: flex;
+  gap: 1ch;
+  padding: 0.3rem 1ch 0.2rem;
+  border-bottom: 1px solid var(--dim);
+}
+
+.tsk-filter-tab {
+  appearance: none;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  padding: 0 1ch;
+  cursor: pointer;
+}
+
+.tsk-filter-tab.is-on {
+  font-weight: 700;
+}
+
 .tsk-pal-row {
   padding: 0.05rem 1ch;
   white-space: pre;

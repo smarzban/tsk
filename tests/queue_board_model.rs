@@ -16,8 +16,8 @@ use tsk_tui::store::TaskStore;
 use tsk_tui::ui::board::{apply_intent, draw_board, BoardModel, ProjectScopeOption};
 use tsk_tui::ui::input::BoardIntent;
 use tsk_tui::ui::queue::{
-    query_board, query_lens, BoardLens, ProjectRow, QueueView, SectionKind, ThreadFilter,
-    INBOX_HEADER_ROW_ID,
+    query_board, query_lens, BoardFilter, BoardLens, ProjectRow, QueueView, SectionKind,
+    ThreadFilter, INBOX_HEADER_ROW_ID,
 };
 use uuid::Uuid;
 
@@ -575,7 +575,7 @@ fn project_deck_lists_tasks_flat_with_thread_filter_across_statuses() {
         Some(Path::new(THIS_REPO)),
         BoardLens::Project(Path::new(THIS_REPO)),
         true,
-        &ThreadFilter::All,
+        &BoardFilter::default(),
     );
     let deck = on_deck(&view);
     assert_eq!(
@@ -591,7 +591,7 @@ fn project_deck_lists_tasks_flat_with_thread_filter_across_statuses() {
         Some(Path::new(THIS_REPO)),
         BoardLens::Project(Path::new(THIS_REPO)),
         true,
-        &ThreadFilter::Named("release".to_string()),
+        &BoardFilter::thread(ThreadFilter::Named("release".to_string())),
     );
     assert_eq!(
         section_ids(&filtered, SectionKind::InMotion),
@@ -632,7 +632,7 @@ fn project_deck_orders_ready_tasks_oldest_first_across_threads() {
         Some(Path::new(THIS_REPO)),
         BoardLens::Project(Path::new(THIS_REPO)),
         false,
-        &ThreadFilter::All,
+        &BoardFilter::default(),
     );
     let deck = on_deck(&view);
     assert_eq!(
@@ -668,7 +668,7 @@ fn without_a_thread_filter_keeps_only_unthreaded_tasks() {
         Some(Path::new(THIS_REPO)),
         BoardLens::Project(Path::new(THIS_REPO)),
         false,
-        &ThreadFilter::Without,
+        &BoardFilter::thread(ThreadFilter::Without),
     );
     assert_eq!(
         section_ids(&view, SectionKind::OnDeck),
@@ -704,7 +704,7 @@ fn same_thread_name_joins_only_in_the_global_view_not_the_local_filter() {
         Some(Path::new(THIS_REPO)),
         BoardLens::Project(Path::new(THIS_REPO)),
         false,
-        &ThreadFilter::Named("release".to_string()),
+        &BoardFilter::thread(ThreadFilter::Named("release".to_string())),
     );
     assert_eq!(
         section_ids(&local, SectionKind::OnDeck),
@@ -718,7 +718,7 @@ fn same_thread_name_joins_only_in_the_global_view_not_the_local_filter() {
         None,
         BoardLens::ThreadView("release"),
         false,
-        &ThreadFilter::All,
+        &BoardFilter::default(),
     );
     assert_eq!(
         section_ids(&view, SectionKind::OnDeck),
@@ -778,7 +778,7 @@ fn thread_view_covers_needs_you_motion_deck_and_drawer() {
         None,
         BoardLens::ThreadView("release"),
         true,
-        &ThreadFilter::All,
+        &BoardFilter::default(),
     );
     assert_eq!(
         section_ids(&view, SectionKind::NeedsYou),
@@ -841,7 +841,7 @@ fn projects_index_rows_carry_open_work_counts() {
         Some(Path::new(THIS_REPO)),
         BoardLens::Projects,
         false,
-        &ThreadFilter::All,
+        &BoardFilter::default(),
     );
     assert_eq!(view.sections, Vec::new(), "the index never lists tasks");
     assert_eq!(view.projects.len(), 1);

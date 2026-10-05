@@ -619,12 +619,17 @@ pub enum BoardSurface {
     ThreadView,
 }
 
-/// The project picker's tab row: which list is active and how many entries the
-/// archived one carries.
+/// A picker's tab row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PickerTabsPaint {
-    pub archived_active: bool,
-    pub archived_count: usize,
+pub enum PickerTabsPaint {
+    /// The project picker: which list is active and how many entries the archived one
+    /// carries.
+    Project {
+        archived_active: bool,
+        archived_count: usize,
+    },
+    /// The Filter / View list picker's `threads · @assignees` tabs.
+    Filter { assignees_active: bool },
 }
 
 /// Logical control under a painted rectangle (rebuilt every frame).
@@ -668,6 +673,8 @@ pub enum QueueHitTarget {
     ListPickerOption(usize),
     /// One painted tab of the project picker's tab row.
     PickerTab(crate::ui::board::PickerTab),
+    /// One painted tab of the Filter / View list picker's tab row.
+    ListPickerTab(crate::ui::board::FilterTab),
     /// One choice row of the launch card (0 = unarchive, 1 = keep archived).
     LaunchOption(usize),
     /// One footer choice of the cleanup card, by legend index.
@@ -2364,6 +2371,38 @@ const PROJECT_PICKER_FOOTER: &[VerbEntry<'static>] = &[
     },
 ];
 
+/// The tabbed Filter / View picker's legend: `tab` flips `threads · @assignees`.
+const FILTER_PICKER_FOOTER: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "tab",
+        label: "switch",
+    },
+    VerbEntry {
+        key: "↑↓",
+        label: "move",
+    },
+    VerbEntry {
+        key: "enter",
+        label: "pick",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "close",
+    },
+];
+
+/// Narrow cards keep the seat that is not guessable (`tab switch`) beside the way out.
+const FILTER_PICKER_FOOTER_COMPACT: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "tab",
+        label: "switch",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "close",
+    },
+];
+
 const SCOPE_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "↑↓",
@@ -3914,12 +3953,25 @@ fn paint_scope_dropdown(
                     .map(|option| display_width(option) + 2)
                     .max()
                     .unwrap_or(0)
+                    // The Filter tab row (` threads · @assignees `) is never clipped.
+                    .max(if matches!(tabs, Some(PickerTabsPaint::Filter { .. })) {
+                        22
+                    } else {
+                        0
+                    })
                     .min(u16::MAX as usize) as u16
             } else {
                 0
             },
             legend: match tabs {
-                Some(tabs) if tabs.archived_active => ARCHIVED_TAB_FOOTER,
+                Some(PickerTabsPaint::Filter { .. }) if legend_fits(geo, FILTER_PICKER_FOOTER) => {
+                    FILTER_PICKER_FOOTER
+                }
+                Some(PickerTabsPaint::Filter { .. }) => FILTER_PICKER_FOOTER_COMPACT,
+                Some(PickerTabsPaint::Project {
+                    archived_active: true,
+                    ..
+                }) => ARCHIVED_TAB_FOOTER,
                 // Keyed on the painted width, not the tier: a tall-but-narrow frame and a
                 // wide-but-short one both get the largest legend their card can hold.
                 Some(_) if legend_fits(geo, PROJECT_PICKER_FOOTER) => PROJECT_PICKER_FOOTER,
@@ -3934,14 +3986,32 @@ fn paint_scope_dropdown(
     if content.width == 0 || content.height == 0 {
         return;
     }
-    // The picker's tab row: `projects · archived (n)`, active bold, inactive dim.
+    // The picker's tab row (`projects · archived (n)` or `threads · @assignees`), active
+    // bold, inactive dim.
     if let Some(tabs) = tabs {
         let y = content.y;
-        let main = " projects ";
-        let archived = format!(" archived ({}) ", tabs.archived_count);
-        let main_w = display_width(main) as u16;
-        let archived_w = display_width(&archived) as u16;
-        let (main_style, archived_style) = if tabs.archived_active {
+        let (left, right, right_active, left_hit, right_hit) = match tabs {
+            PickerTabsPaint::Project {
+                archived_active,
+                archived_count,
+            } => (
+                " projects ".to_string(),
+                format!(" archived ({archived_count}) "),
+                archived_active,
+                QueueHitTarget::PickerTab(crate::ui::board::PickerTab::Main),
+                QueueHitTarget::PickerTab(crate::ui::board::PickerTab::Archived),
+            ),
+            PickerTabsPaint::Filter { assignees_active } => (
+                " threads ".to_string(),
+                " @assignees ".to_string(),
+                assignees_active,
+                QueueHitTarget::ListPickerTab(crate::ui::board::FilterTab::Threads),
+                QueueHitTarget::ListPickerTab(crate::ui::board::FilterTab::Assignees),
+            ),
+        };
+        let left_w = display_width(&left) as u16;
+        let right_w = display_width(&right) as u16;
+        let (left_style, right_style) = if right_active {
             (style_dim(), style_bold())
         } else {
             (style_bold(), style_dim())
@@ -3951,18 +4021,15 @@ fn paint_scope_dropdown(
             surface,
             Rect::new(content.x, y, content.width, 1),
             Line::from(vec![
-                Span::styled(main.to_string(), main_style),
+                Span::styled(left, left_style),
                 Span::styled("·".to_string(), style_dim()),
-                Span::styled(archived, archived_style),
+                Span::styled(right, right_style),
             ]),
         );
+        hits.push(left_hit, Rect::new(content.x, y, left_w, 1));
         hits.push(
-            QueueHitTarget::PickerTab(crate::ui::board::PickerTab::Main),
-            Rect::new(content.x, y, main_w, 1),
-        );
-        hits.push(
-            QueueHitTarget::PickerTab(crate::ui::board::PickerTab::Archived),
-            Rect::new(content.x.saturating_add(main_w + 1), y, archived_w, 1),
+            right_hit,
+            Rect::new(content.x.saturating_add(left_w + 1), y, right_w, 1),
         );
     }
     // AC-37: a dim rule row sits directly under the picker's tabs row, like the
@@ -3985,7 +4052,7 @@ fn paint_scope_dropdown(
             surface,
             Rect::new(content.x, y, content.width, 1),
             paint_bounded_line(
-                if tabs.is_some() {
+                if matches!(tabs, Some(PickerTabsPaint::Project { .. })) {
                     "  no archived projects"
                 } else {
                     "  no matching options"
@@ -4018,7 +4085,8 @@ fn paint_scope_dropdown(
         );
         // `j` remains the source index after windowing, so a click selects the same option
         // Up/Down plus Enter would confirm rather than its position within this paint slice.
-        if tabs.is_none() && title_override.is_some() {
+        // Every searchable list picker names itself; only the project picker does not.
+        if title_override.is_some() {
             hits.push(QueueHitTarget::ListPickerOption(j), rect);
         } else {
             hits.push(QueueHitTarget::ProjectOption(j), rect);

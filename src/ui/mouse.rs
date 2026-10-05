@@ -951,6 +951,7 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::ListPickerOption(index)) => {
                 Some(BoardIntent::SelectListOption(index))
             }
+            Some(QueueHitTarget::ListPickerTab(tab)) => Some(BoardIntent::SelectListPickerTab(tab)),
             Some(QueueHitTarget::ModalChrome) => None,
             Some(QueueHitTarget::ModalClose) => Some(BoardIntent::CancelListPicker),
             _ => Some(BoardIntent::CancelListPicker),

@@ -14,7 +14,6 @@ use crate::ui::edit::{
 };
 use crate::ui::input::help_card_lines_for_query;
 use crate::ui::mouse::BoardPopup;
-use crate::ui::queue::ThreadFilter;
 use crate::ui::render::{
     self, BoardSurface, FormDropdown, NavChipKind, NavChipPaint, NavPaint, PaletteCommandRow,
     QueueFrameModel, QueueOverlay, VerbEntry,
@@ -1104,8 +1103,8 @@ fn footer_context(model: &BoardModel, surface: BoardSurface) -> String {
             let mut context = format!(" {name}");
             if model.focus_is_archived() {
                 context.push_str(" · archived");
-            } else if model.thread_filter() != &ThreadFilter::All {
-                context.push_str(&format!(" · {}", model.thread_filter().label()));
+            } else if !model.board_filter().is_all() {
+                context.push_str(&format!(" · {}", model.board_filter().label()));
             }
             context
         }
@@ -1129,7 +1128,7 @@ fn nav_paint(model: &BoardModel) -> NavPaint {
     };
     let chip = match (&model.board_location, model.projects_view()) {
         (BoardLocation::Project(_), _) => Some(NavChipPaint {
-            label: model.thread_filter().label(),
+            label: model.board_filter().label(),
             kind: NavChipKind::ThreadFilter,
         }),
         (BoardLocation::Projects, ProjectsView::Overview) => Some(NavChipPaint {
@@ -1138,6 +1137,10 @@ fn nav_paint(model: &BoardModel) -> NavPaint {
         }),
         (BoardLocation::Projects, ProjectsView::Thread(name)) => Some(NavChipPaint {
             label: format!("#{name}"),
+            kind: NavChipKind::ProjectsView,
+        }),
+        (BoardLocation::Projects, ProjectsView::Assignee(name)) => Some(NavChipPaint {
+            label: format!("@{name}"),
             kind: NavChipKind::ProjectsView,
         }),
         _ => None,
@@ -1155,7 +1158,8 @@ fn board_surface(model: &BoardModel) -> BoardSurface {
     match model.effective_lens() {
         crate::ui::queue::BoardLens::Desk => BoardSurface::Desk,
         crate::ui::queue::BoardLens::Projects => BoardSurface::Projects,
-        crate::ui::queue::BoardLens::ThreadView(_) => BoardSurface::ThreadView,
+        crate::ui::queue::BoardLens::ThreadView(_)
+        | crate::ui::queue::BoardLens::AssigneeView(_) => BoardSurface::ThreadView,
         crate::ui::queue::BoardLens::Project(_)
         | crate::ui::queue::BoardLens::ArchivedProject(_) => BoardSurface::Project,
     }
@@ -1272,17 +1276,23 @@ impl OverlayPayloads {
         } else {
             Vec::new()
         };
+        let active = model.list_picker_active();
         let list_picker_options = model
             .visible_list_picker_options()
             .into_iter()
-            .map(|(_, option)| {
+            .map(|(index, option)| {
                 if option.value == super::model::ListPickerValue::Unavailable {
                     format!("({})", option.label)
                 } else {
-                    match option.count {
+                    let mut row = match option.count {
                         Some(count) => format!("{}  {count}", option.label),
                         None => option.label,
+                    };
+                    // The tabbed filter pickers mark the choice the board applies.
+                    if active == Some(index) {
+                        row.push_str("  \u{2713}");
                     }
+                    row
                 }
             })
             .collect();
@@ -1309,10 +1319,12 @@ impl OverlayPayloads {
                 .unwrap_or(&path.to_string_lossy())
                 .to_string()
         });
-        let scope_tabs = model.picker_tab().map(|tab| render::PickerTabsPaint {
-            archived_active: tab == PickerTab::Archived,
-            archived_count: model.archived_project_options().len(),
-        });
+        let scope_tabs = model
+            .picker_tab()
+            .map(|tab| render::PickerTabsPaint::Project {
+                archived_active: tab == PickerTab::Archived,
+                archived_count: model.archived_project_options().len(),
+            });
         Self {
             help_lines,
             palette_commands,
@@ -1430,14 +1442,18 @@ impl OverlayPayloads {
                 Some(crate::ui::board::ListPickerKind::ProjectsView) => "projects View",
                 Some(crate::ui::board::ListPickerKind::Assignee) => "assignee",
                 Some(crate::ui::board::ListPickerKind::Base) => "base",
-                _ => "thread filter",
+                _ => "Filter",
             };
             return Some(QueueOverlay::ScopeDropdown {
                 options: &self.list_picker_options,
                 selected: self
                     .list_picker_selected
                     .min(self.list_picker_options.len().saturating_sub(1)),
-                tabs: None,
+                tabs: model
+                    .list_picker_tab()
+                    .map(|tab| render::PickerTabsPaint::Filter {
+                        assignees_active: tab == crate::ui::board::FilterTab::Assignees,
+                    }),
                 title: Some(title),
                 query: self.list_picker_query.as_deref(),
             });

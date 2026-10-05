@@ -35,8 +35,8 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 | Expand / collapse its archived group | `g` |
 | Desk / selected project / projects | `1` / `2` / `3` |
 | Project picker | `p` |
-| Project thread filter | `t` |
-| Cross-project view selector | `v` on Projects |
+| Project Filter (threads · @assignees) | `t` |
+| Cross-project view selector (threads · @assignees) | `v` on Projects |
 | Search current board rows | `/` |
 | Command palette | `:` |
 | All shortcuts | `?` |
@@ -116,7 +116,7 @@ In Herdr quick capture, `Shift+Enter` saves and closes the popup. `Esc` closes a
 | Project picker | Arrows or `j`/`k` select; `Tab` or `←`/`→` switch tabs; `Enter` opens; `?` opens Help; `Esc` or `q` closes |
 | Project archive | `ctrl+f` archives; on archived tab, `ctrl+f` or `ctrl+u` restores |
 | Archived project view | `ctrl+u` restores; `Esc`, `p`, or `1`–`3` leaves |
-| Thread/view selector | Type or paste to filter; arrows or `Tab` select; `Enter` chooses; `Esc` closes |
+| Filter/view selector | `Tab` switches `threads · @assignees`; type or paste to filter the current tab; arrows select; `Enter` chooses; `Esc` closes |
 | Assignee picker | Type to filter; arrows or `Tab` select; `Enter` applies; `Esc` closes with no change |
 | Base picker | Open from palette **set base**, task footer `⎇`, or edit **Base** field; type to filter; arrows or `Tab` select; `Enter` applies; `Esc` closes with no change. No dedicated key |
 | Board search | Type or paste; `Backspace` edits; `Enter` pins; `Esc` clears and closes |
