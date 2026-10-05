@@ -26,8 +26,237 @@ use super::chrome::{notice_framed, row_width, BULK_DELETE_NOTICE_UNDO, DELETE_NO
 use super::commands::CommandSurface;
 use super::model::{
     project_option_label, project_scope_option_label, BoardForm, BoardInputMode, BoardLocation,
-    BoardModel, PickerTab, ProjectScopeOption, ProjectsView,
+    BoardModel, CleanupPrompt, CleanupRow, PickerTab, ProjectScopeOption, ProjectsView,
 };
+use crate::ui::render::{CleanupCardLine, CleanupFooter, CleanupTitle};
+
+fn home_dir() -> Option<String> {
+    std::env::var("HOME").ok().filter(|home| !home.is_empty())
+}
+
+/// Show a path under the home directory as `~/…`.
+pub(crate) fn tilde_path(path: &str, home: Option<&str>) -> String {
+    let Some(home) = home.map(|home| home.trim_end_matches('/')) else {
+        return path.to_string();
+    };
+    match path.strip_prefix(home) {
+        Some("") => "~".to_string(),
+        Some(rest) if rest.starts_with('/') && !home.is_empty() => format!("~{rest}"),
+        _ => path.to_string(),
+    }
+}
+
+fn identifiers_list<'a>(identifiers: impl IntoIterator<Item = &'a String>) -> String {
+    identifiers
+        .into_iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The branch half of what `y` will do for one row.
+fn cleanup_branch_action(row: &CleanupRow) -> &'static str {
+    if row.checking() {
+        "delete branch if merged"
+    } else if row.base_available && row.branch_merged && !row.check_failed {
+        "delete branch"
+    } else {
+        "keep branch"
+    }
+}
+
+/// The cleanup card's semantic body. Both cards say what `y` will do, never what happened.
+pub(crate) fn cleanup_overlay<'a>(prompt: &CleanupPrompt, home: Option<&str>) -> QueueOverlay<'a> {
+    let footer = match (prompt.can_clean_any(), prompt.bulk.is_some()) {
+        (false, _) => CleanupFooter::Dirty,
+        (true, false) => CleanupFooter::Single,
+        (true, true) => CleanupFooter::Bulk,
+    };
+    let queued = prompt.confirm_queued() && prompt.checking();
+    let (title, lines) = match (&prompt.bulk, prompt.rows.first()) {
+        (None, Some(row)) => single_cleanup_lines(row, queued, home),
+        (Some(bulk), _) => {
+            let total =
+                prompt.rows.len() + bulk.refused.len() + bulk.missing.len() + bulk.plain.len();
+            let dispatched = prompt.rows.len() + bulk.refused.len();
+            let cleanable = prompt.rows.iter().filter(|row| row.cleanable()).count();
+            let title = if cleanable == 0 {
+                CleanupTitle {
+                    full: format!("Done {total} tasks · can't clean up"),
+                    short: format!("Done {total} · can't clean up"),
+                    bare: format!("Done {total} tasks"),
+                    question: "Can't clean up any worktree.".into(),
+                }
+            } else {
+                CleanupTitle {
+                    full: format!("Done {total} tasks · clean up {cleanable} of {dispatched}?"),
+                    short: format!("Done {total} · clean {cleanable} of {dispatched}?"),
+                    bare: format!("Done {total} tasks"),
+                    question: format!("Clean up {cleanable} of {dispatched} worktrees?"),
+                }
+            };
+            let mut lines = Vec::new();
+            if queued {
+                lines.push(CleanupCardLine::Text(
+                    "Cleaning up once the checks finish.".into(),
+                ));
+            }
+            for row in &prompt.rows {
+                let (verdict, actions) = if row.dirty {
+                    (
+                        "uncommitted changes".to_string(),
+                        "keep everything".to_string(),
+                    )
+                } else {
+                    let verdict = if row.checking() {
+                        "checking…".to_string()
+                    } else if !row.base_available {
+                        format!("base {} unavailable", row.base)
+                    } else if row.branch_merged {
+                        "merged ✓".to_string()
+                    } else {
+                        format!("not merged into {}", row.base)
+                    };
+                    let mut actions = vec![cleanup_branch_action(row), "remove worktree"];
+                    if row.workspace_exists {
+                        actions.push("close pane");
+                    }
+                    (verdict, actions.join(" · "))
+                };
+                lines.push(CleanupCardLine::Field {
+                    label: format!("T{}", row.number),
+                    value: verdict,
+                });
+                lines.push(CleanupCardLine::Field {
+                    label: String::new(),
+                    value: actions,
+                });
+                if let Some(warning) = &row.warning {
+                    lines.push(CleanupCardLine::Field {
+                        label: String::new(),
+                        value: warning.clone(),
+                    });
+                }
+            }
+            for (identifier, reason) in &bulk.refused {
+                lines.push(CleanupCardLine::Field {
+                    label: identifier.clone(),
+                    value: format!("can't inspect: {reason}"),
+                });
+                lines.push(CleanupCardLine::Field {
+                    label: String::new(),
+                    value: "keep everything".into(),
+                });
+            }
+            if !bulk.missing.is_empty() {
+                let noun = if bulk.missing.len() == 1 {
+                    "worktree"
+                } else {
+                    "worktrees"
+                };
+                lines.push(CleanupCardLine::Text(format!(
+                    "+ {} {noun} already gone, marked cleaned",
+                    identifiers_list(bulk.missing.iter().map(|(_, identifier, _)| identifier))
+                )));
+            }
+            if !bulk.plain.is_empty() {
+                let verb = if bulk.plain.len() == 1 { "has" } else { "have" };
+                lines.push(CleanupCardLine::Text(format!(
+                    "+ {} {verb} no dispatch, just marked done",
+                    identifiers_list(&bulk.plain)
+                )));
+            }
+            (title, lines)
+        }
+        (None, None) => (
+            CleanupTitle {
+                full: String::new(),
+                short: String::new(),
+                bare: String::new(),
+                question: String::new(),
+            },
+            Vec::new(),
+        ),
+    };
+    QueueOverlay::CleanupConfirm {
+        title,
+        lines,
+        footer,
+        scroll: prompt.scroll,
+    }
+}
+
+fn single_cleanup_lines(
+    row: &CleanupRow,
+    queued: bool,
+    home: Option<&str>,
+) -> (CleanupTitle, Vec<CleanupCardLine>) {
+    let number = row.number;
+    let base = &row.base;
+    let title = if row.dirty {
+        CleanupTitle {
+            full: format!("Done T{number} · can't clean up"),
+            short: format!("T{number} · can't clean up"),
+            bare: format!("Done T{number}"),
+            question: "Can't clean up.".into(),
+        }
+    } else {
+        CleanupTitle {
+            full: format!("Done T{number} · clean up?"),
+            short: format!("T{number} · clean up?"),
+            bare: format!("Done T{number}"),
+            question: "Clean up?".into(),
+        }
+    };
+    let headline = if row.dirty {
+        "Worktree has uncommitted changes, so it stays.".to_string()
+    } else if row.checking() {
+        format!("Checking merge into {base}…")
+    } else if !row.base_available {
+        format!("Base {base} is unavailable, so the branch stays.")
+    } else if row.branch_merged {
+        format!("Merged into {base} ✓")
+    } else {
+        format!("Not merged into {base} (squash-merged? delete it by hand)")
+    };
+    let mut lines = vec![CleanupCardLine::Text(headline)];
+    if queued && !row.dirty {
+        lines.push(CleanupCardLine::Text(
+            "Cleaning up once the check finishes.".into(),
+        ));
+    }
+    if let Some(warning) = &row.warning {
+        lines.push(CleanupCardLine::Text(warning.clone()));
+    }
+    lines.push(CleanupCardLine::Blank);
+    let field = |label: &str, value: String| CleanupCardLine::Field {
+        label: label.to_string(),
+        value,
+    };
+    let worktree = tilde_path(&row.worktree, home);
+    if row.dirty {
+        lines.push(field("keep branch", row.branch.clone()));
+        lines.push(field("keep worktree", worktree));
+        lines.push(field(
+            "agent pane",
+            if row.workspace_exists {
+                "stays open"
+            } else {
+                "already closed"
+            }
+            .into(),
+        ));
+    } else {
+        lines.push(field(cleanup_branch_action(row), row.branch.clone()));
+        lines.push(field("remove worktree", worktree));
+        if row.workspace_exists {
+            lines.push(field("close", "agent pane".into()));
+        } else {
+            lines.push(field("agent pane", "already closed".into()));
+        }
+    }
+    (title, lines)
+}
 
 /// Verb bar for the base board list.
 ///
@@ -1191,18 +1420,7 @@ impl OverlayPayloads {
             });
         }
         if let Some(prompt) = model.cleanup_prompt() {
-            return Some(QueueOverlay::CleanupConfirm {
-                worktree: &prompt.worktree,
-                branch: &prompt.branch,
-                base: &prompt.base,
-                dirty: prompt.dirty,
-                branch_merged: prompt.branch_merged,
-                checking: prompt.checking(),
-                confirm_queued: prompt.confirm_queued(),
-                workspace_exists: prompt.workspace_exists,
-                warning: prompt.warning.as_deref(),
-                base_available: prompt.base_available,
-            });
+            return Some(cleanup_overlay(prompt, home_dir().as_deref()));
         }
         if let Some(name) = self.launch_card_name.as_deref() {
             return Some(QueueOverlay::LaunchCard { name });
@@ -1273,6 +1491,10 @@ fn status_row_content(model: &BoardModel) -> (Option<String>, Option<usize>, Opt
         (Some(notice), None) => Some(notice.to_string()),
         (None, Some(msg)) => Some(msg.to_string()),
         (None, None) if editing_on_page => Some("editing…".to_string()),
+        // Under a bulk cleanup card, Esc cancels the card and keeps the marks.
+        (None, None) if model.mark_mode_active() && model.cleanup_prompt().is_some() => {
+            Some(format!("multi-select · {} selected", model.marked_count()))
+        }
         (None, None) if model.mark_mode_active() && model.marked_count() > 0 => Some(format!(
             "multi-select · {} selected · esc clears",
             model.marked_count()
@@ -1378,6 +1600,9 @@ fn draw_board_impl(frame: &mut Frame, model: &BoardModel) -> render::QueueHitMap
     // clamps with it so the offset never runs past the last page.
     if let Some(max_scroll) = hits.help_max_scroll {
         model.help_max_scroll.set(max_scroll);
+    }
+    if let Some(max_scroll) = hits.cleanup_max_scroll {
+        model.cleanup_max_scroll.set(max_scroll);
     }
     hits
 }
@@ -1663,6 +1888,7 @@ fn draw_wide_board(
             hits.regions.append(&mut board_hits.regions);
             hits.copyable.append(&mut board_hits.copyable);
             hits.help_max_scroll = hits.help_max_scroll.or(board_hits.help_max_scroll);
+            hits.cleanup_max_scroll = hits.cleanup_max_scroll.or(board_hits.cleanup_max_scroll);
             if let Some((scroll, max_scroll)) = painted_list_scroll {
                 model.list_scroll.set(scroll);
                 model.list_max_scroll.set(max_scroll);
@@ -1933,6 +2159,7 @@ fn draw_projects_wide_board(
         hits.regions.append(&mut board_hits.regions);
         hits.copyable.append(&mut board_hits.copyable);
         hits.help_max_scroll = hits.help_max_scroll.or(board_hits.help_max_scroll);
+        hits.cleanup_max_scroll = hits.cleanup_max_scroll.or(board_hits.cleanup_max_scroll);
     }
     if responsive.rule.width > 0 {
         let rule = column_rect(responsive.rule);
@@ -1981,6 +2208,7 @@ fn draw_projects_wide_board(
         hits.regions.append(&mut right_hits.regions);
         hits.copyable.append(&mut right_hits.copyable);
         hits.help_max_scroll = hits.help_max_scroll.or(right_hits.help_max_scroll);
+        hits.cleanup_max_scroll = hits.cleanup_max_scroll.or(right_hits.cleanup_max_scroll);
         if let Some(right) = right {
             if let Some((scroll, max_scroll)) = painted_list_scroll {
                 right.list_scroll.set(scroll);
@@ -1988,6 +2216,9 @@ fn draw_projects_wide_board(
             }
             if let Some(max_scroll) = right_hits.help_max_scroll {
                 right.help_max_scroll.set(max_scroll);
+            }
+            if let Some(max_scroll) = right_hits.cleanup_max_scroll {
+                right.cleanup_max_scroll.set(max_scroll);
             }
         }
     }

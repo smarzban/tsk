@@ -21,7 +21,7 @@ use crate::save_recovery::SaveRecovery;
 use crate::store::{default_state_dir, StoreSignature, TaskStore};
 use crate::ui::board::{
     apply_intent, board_intent_may_persist, draw_board, resolve_board_command, BoardInputMode,
-    BoardModel, CleanupPrompt, IntentOutcome, SaveResolution,
+    BoardModel, BulkCleanup, CleanupPrompt, CleanupRow, IntentOutcome, SaveResolution,
 };
 use crate::ui::capture::{CaptureField, TITLE_REQUIRED_MESSAGE};
 use crate::ui::input::{
@@ -1014,10 +1014,17 @@ fn board_keyboard_intent(
                 | BoardInputMode::ListPicker
                 | BoardInputMode::Search
                 | BoardInputMode::QuickAdd
+                | BoardInputMode::CleanupConfirm
+                | BoardInputMode::CleanupDirtyConfirm
         );
-        // A list picker's Esc is its own cancel: clearing marks underneath would leave the
-        // picker open, still bound to the set it captured.
-        let surface_owns_escape = mode == BoardInputMode::ListPicker;
+        // A list picker's or bulk cleanup card's Esc is its own cancel: clearing marks
+        // underneath would leave it open, still bound to the set it captured.
+        let surface_owns_escape = matches!(
+            mode,
+            BoardInputMode::ListPicker
+                | BoardInputMode::CleanupConfirm
+                | BoardInputMode::CleanupDirtyConfirm
+        );
         if !text_entry_owns_capital_m
             && mode != BoardInputMode::SaveRecovery
             && key.code == KeyCode::Char('M')
@@ -1119,6 +1126,62 @@ fn board_keyboard_intent(
     }
 }
 
+/// Resolve a failed save on the board that owns it, which need not be the board the user
+/// answered from: a project preview parked by a narrowing frame keeps its held form and
+/// drafts while the visible board shows a proxy of its banner (and the reverse after the
+/// frame widens). Owners unwind their session; proxies only take the banner down.
+fn resolve_save_recovery(model: &mut BoardModel, domain: &DomainState, resolution: SaveResolution) {
+    let seat_owns = model
+        .preview_seat_mut()
+        .is_some_and(|seat| seat.owns_save_recovery());
+    // A board answering with no other owner in sight owns it, as before proxies existed.
+    let outer_owns =
+        model.owns_save_recovery() || (!seat_owns && !model.shows_save_recovery_proxy());
+    let retried = resolution == SaveResolution::Retried;
+    let before_sync = |board: &mut BoardModel| {
+        if retried {
+            board.release_task_edit_save();
+            board.finish_pending_assignee_assignment();
+        }
+    };
+    let after_sync = |board: &mut BoardModel| {
+        if !retried {
+            board.finish_pending_assignee_assignment();
+        }
+        board.finish_form_assignee_sync(retried);
+        board.finish_form_base_sync(retried);
+        let cancelled_quick_add = board.end_save_recovery(resolution);
+        if retried && !board.has_saved_task() {
+            board.set_message("saved");
+        } else if !retried && !cancelled_quick_add {
+            board.set_message("save cancelled");
+        }
+    };
+    let proxy_message = if retried { "saved" } else { "save cancelled" };
+    if outer_owns {
+        before_sync(model);
+    }
+    if seat_owns {
+        before_sync(model.preview_seat_mut().expect("seat owns recovery"));
+    }
+    // The outer sync carries the preview seat with it.
+    model.sync_from_domain(domain);
+    if outer_owns {
+        after_sync(model);
+    } else if model.shows_save_recovery_proxy() {
+        model.end_proxy_save_recovery();
+        model.set_message(proxy_message);
+    }
+    if let Some(seat) = model.preview_seat_mut() {
+        if seat_owns {
+            after_sync(seat);
+        } else if seat.shows_save_recovery_proxy() {
+            seat.end_proxy_save_recovery();
+            seat.set_message(proxy_message);
+        }
+    }
+}
+
 pub fn apply_board_intent_with_save_recovery(
     domain: &mut DomainState,
     model: &mut BoardModel,
@@ -1147,15 +1210,7 @@ pub fn apply_board_intent_with_save_recovery(
                 model.close_command_surface();
                 if let Some(working) = recovery.retry(|working| persist(working)) {
                     *domain = working;
-                    model.release_task_edit_save();
-                    model.finish_pending_assignee_assignment();
-                    model.sync_from_domain(domain);
-                    model.finish_form_assignee_sync(true);
-                    model.finish_form_base_sync(true);
-                    model.end_save_recovery(SaveResolution::Retried);
-                    if !model.has_saved_task() {
-                        model.set_message("saved");
-                    }
+                    resolve_save_recovery(model, domain, SaveResolution::Retried);
                     return Ok(IntentOutcome::Persisted);
                 }
                 model.begin_save_recovery(recovery.error().unwrap_or("save failed"));
@@ -1164,14 +1219,7 @@ pub fn apply_board_intent_with_save_recovery(
             BoardIntent::CancelSave => {
                 model.close_command_surface();
                 *domain = recovery.cancel().expect("pending recovery has a baseline");
-                model.sync_from_domain(domain);
-                model.finish_pending_assignee_assignment();
-                model.finish_form_assignee_sync(false);
-                model.finish_form_base_sync(false);
-                let cancelled_quick_add = model.end_save_recovery(SaveResolution::Cancelled);
-                if !cancelled_quick_add {
-                    model.set_message("save cancelled");
-                }
+                resolve_save_recovery(model, domain, SaveResolution::Cancelled);
                 return Ok(IntentOutcome::None);
             }
             // Navigation and presentation state mutate nothing.
@@ -1892,9 +1940,35 @@ fn dispatch_board_intent(
     quick_capture: bool,
 ) -> io::Result<bool> {
     let intent_for_preview = intent.clone();
+    // A palette Retry or Cancel is the same answer as the key: resolve it on the board whose
+    // palette chose it, then route it like the key below.
+    let palette_recovery = matches!(
+        intent,
+        BoardIntent::ConfirmCommand | BoardIntent::SelectCommand(_)
+    ) && board_intent_target_mut(model, route.target)
+        .selected_command_for(&intent)
+        .is_some_and(|command| {
+            matches!(
+                command.intent,
+                BoardIntent::RetrySave | BoardIntent::CancelSave
+            )
+        });
+    let intent = if palette_recovery {
+        match resolve_board_command(board_intent_target_mut(model, route.target), intent) {
+            Some(resolved) => resolved,
+            None => return Ok(false),
+        }
+    } else {
+        intent
+    };
     // Quit belongs to the whole application, even when a focused preview supplied it.
     // Its guard must see both the outer parked form and the nested preview's draft.
-    let target = if intent == BoardIntent::Quit {
+    // Retry and Cancel resolve the failed save on whichever board owns it, so they start from
+    // the outer board, which reaches its preview seat whether or not that seat has focus.
+    let target = if matches!(
+        intent,
+        BoardIntent::Quit | BoardIntent::RetrySave | BoardIntent::CancelSave
+    ) {
         BoardIntentTarget::Outer
     } else {
         route.target
@@ -1997,15 +2071,7 @@ pub fn offer_cleanup_prompt_with_host(
     // Decide on the background check before the snapshot, as the base picker does: a fetch
     // that lands between the two then still has a check to fill the card, rather than a
     // fresh answer sitting over pre-fetch ancestry with nothing left to refresh it.
-    let merge_check = match (
-        &task.scope,
-        record.base.is_some() || record.base_ref.is_some(),
-    ) {
-        (crate::domain::TaskScope::Project { path }, true) => {
-            host.begin_merge_check(std::path::Path::new(path), record)
-        }
-        _ => None,
-    };
+    let merge_check = begin_cleanup_merge_check(task, record, host);
     // Cached refs only: the card opens at once and the background check fills merged status.
     let preview = dispatch::inspect_cleanup_cached_with_host(domain, id, in_herdr, host)?;
     if !preview.inspection.worktree_exists {
@@ -2027,10 +2093,38 @@ pub fn offer_cleanup_prompt_with_host(
             workspace_removed: false,
         }));
     }
-    model.begin_cleanup_prompt(CleanupPrompt {
+    model.begin_cleanup_prompt(CleanupPrompt::single(cleanup_row(id, preview, merge_check)));
+    Ok(CleanupOffer::Prompted)
+}
+
+/// Start a dispatched task's background merged check, when it has a recorded base to check.
+fn begin_cleanup_merge_check(
+    task: &crate::domain::Task,
+    record: &crate::domain::Dispatch,
+    host: &mut impl DispatchHost,
+) -> Option<dispatch::MergeCheck> {
+    match (
+        &task.scope,
+        record.base.is_some() || record.base_ref.is_some(),
+    ) {
+        (crate::domain::TaskScope::Project { path }, true) => {
+            host.begin_merge_check(std::path::Path::new(path), record)
+        }
+        _ => None,
+    }
+}
+
+fn cleanup_row(
+    id: uuid::Uuid,
+    preview: dispatch::CleanupPreview,
+    merge_check: Option<dispatch::MergeCheck>,
+) -> CleanupRow {
+    CleanupRow {
         merge_check,
-        confirm_deadline: None,
+        check_failed: false,
+        inspected: Some(preview.record.clone()),
         task_id: id,
+        number: preview.number,
         worktree: preview.record.worktree,
         branch: preview.record.branch,
         base: preview
@@ -2043,8 +2137,265 @@ pub fn offer_cleanup_prompt_with_host(
         base_available: preview.inspection.base_available,
         warning: preview.inspection.warning,
         workspace_exists: preview.inspection.workspace_exists,
+    }
+}
+
+/// Whether `row`'s task still carries the dispatch its card inspected. Another board or the
+/// CLI may have cleaned or relaunched it while the card was open; cleanup then must not touch
+/// the new worktree or agent.
+fn cleanup_row_current(domain: &DomainState, row: &CleanupRow) -> bool {
+    row.inspected.is_some()
+        && domain
+            .get(row.task_id)
+            .and_then(|task| task.dispatch.as_ref())
+            == row.inspected.as_ref()
+}
+
+/// What a bulk `ctrl+d` on a marked set did before the reducer's plain batch completion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BulkCleanupOffer {
+    /// No target has a live dispatch: complete the set as before, no card.
+    None,
+    /// The card is open over the marked set, which stays marked until `y` or `n`.
+    Prompted,
+    /// Every live dispatch's worktree was already gone: they converged to cleaned and the
+    /// whole set completed in this transaction, still one undo entry. The caller saves.
+    MissingConverged { done: usize, missing: usize },
+}
+
+/// Bulk `ctrl+d`: when the marked set holds tasks with a live dispatch, open one card listing
+/// each of them (cached refs plus a background merged check per task). Tasks without one are
+/// listed as just marked done. Nothing is mutated while the card is open.
+pub fn offer_bulk_cleanup_prompt_with_host(
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<BulkCleanupOffer, DomainError> {
+    if !model.bulk_verb_active() || model.focus_is_archived() {
+        return Ok(BulkCleanupOffer::None);
+    }
+    // The tasks this verb would newly complete, in the reducer's target order.
+    let targets = model
+        .marked_ids()
+        .iter()
+        .copied()
+        .filter(|id| {
+            domain
+                .get(*id)
+                .is_some_and(|task| task.status != HumanStatus::Done)
+        })
+        .collect::<Vec<_>>();
+    let live = |task: &crate::domain::Task| {
+        !task.archived
+            && matches!(task.scope, crate::domain::TaskScope::Project { .. })
+            && task.dispatch.as_ref().is_some_and(|record| !record.cleaned)
+    };
+    if !targets.iter().any(|id| domain.get(*id).is_some_and(&live)) {
+        return Ok(BulkCleanupOffer::None);
+    }
+    let mut rows = Vec::new();
+    let mut bulk = BulkCleanup {
+        targets: targets.clone(),
+        ..BulkCleanup::default()
+    };
+    for &id in &targets {
+        let task = domain.get(id).expect("targets exist");
+        let identifier = task
+            .board_identifier()
+            .unwrap_or_else(|| "new task".to_string());
+        let Some(record) = task.dispatch.as_ref().filter(|_| live(task)) else {
+            bulk.plain.push(identifier);
+            continue;
+        };
+        // Check before the snapshot, as the single card does, so a fetch landing between the
+        // two still has a check left to refresh the row.
+        let merge_check = begin_cleanup_merge_check(task, record, host);
+        match dispatch::inspect_cleanup_cached_with_host(domain, id, in_herdr, host) {
+            Ok(preview) if !preview.inspection.worktree_exists => {
+                bulk.missing.push((id, identifier, preview.record));
+            }
+            Ok(preview) => rows.push(cleanup_row(id, preview, merge_check)),
+            Err(error) => bulk.refused.push((identifier, error.to_string())),
+        }
+    }
+    if rows.is_empty() && bulk.refused.is_empty() {
+        let missing = bulk.missing.len();
+        for (id, _, _) in &bulk.missing {
+            domain.record_dispatch_cleaned(*id)?;
+        }
+        domain.complete_batch_after_cleanup(&targets)?;
+        model.clear_marks();
+        return Ok(BulkCleanupOffer::MissingConverged {
+            done: targets.len(),
+            missing,
+        });
+    }
+    model.begin_cleanup_prompt(CleanupPrompt {
+        rows,
+        bulk: Some(bulk),
+        confirm_deadline: None,
+        scroll: 0,
     });
-    Ok(CleanupOffer::Prompted)
+    Ok(BulkCleanupOffer::Prompted)
+}
+
+/// What a bulk card's `y` or `n` did, for the status line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BulkCleanupOutcome {
+    pub done: usize,
+    /// Per cleanable row that was attempted (`y` only): its number and outcome.
+    pub cleaned: Vec<(u64, Result<CleanupResult, CleanupError>)>,
+    /// Rows `y` kept because their worktree has uncommitted changes.
+    pub dirty: Vec<u64>,
+    /// Worktrees already gone, converged to cleaned.
+    pub missing: usize,
+}
+
+impl BulkCleanupOutcome {
+    pub fn message(&self) -> String {
+        let mut parts = vec![format!("done {}", self.done)];
+        let removed = self
+            .cleaned
+            .iter()
+            .filter_map(|(number, result)| result.as_ref().ok().map(|result| (*number, result)))
+            .collect::<Vec<_>>();
+        let list = |numbers: &mut dyn Iterator<Item = u64>| {
+            numbers
+                .map(|number| format!("T{number}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        if !removed.is_empty() {
+            parts.push(format!(
+                "cleaned {}",
+                list(&mut removed.iter().map(|(number, _)| *number))
+            ));
+            let deleted = removed
+                .iter()
+                .filter(|(_, result)| result.branch == BranchCleanup::Removed)
+                .map(|(number, _)| *number)
+                .collect::<Vec<_>>();
+            let kept = removed
+                .iter()
+                .filter(|(_, result)| result.branch == BranchCleanup::Kept)
+                .map(|(number, _)| *number)
+                .collect::<Vec<_>>();
+            if !deleted.is_empty() {
+                parts.push(format!("branch deleted {}", list(&mut deleted.into_iter())));
+            }
+            if !kept.is_empty() {
+                parts.push(format!("branch kept {}", list(&mut kept.into_iter())));
+            }
+        } else if self.cleaned.is_empty() && self.dirty.is_empty() {
+            parts.push("worktrees kept".into());
+        }
+        if !self.dirty.is_empty() {
+            parts.push(format!(
+                "kept {} (uncommitted changes)",
+                list(&mut self.dirty.iter().copied())
+            ));
+        }
+        if self.missing > 0 {
+            parts.push(format!("{} already gone", plural(self.missing, "worktree")));
+        }
+        for (number, result) in &self.cleaned {
+            if let Err(error) = result {
+                parts.push(format!("T{number} cleanup refused: {error}"));
+            }
+        }
+        parts.join(" · ")
+    }
+}
+
+fn plural(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
+/// Apply a bulk card's choice: with `y`, clean every cleanable row (its own refs: a row whose
+/// check never landed keeps its branch), then converge already-missing worktrees and complete
+/// the whole set as one batch, one undo entry. A refusal on one row never stops the others.
+pub fn bulk_cleanup_and_complete_with_host(
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    clean: bool,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<Option<BulkCleanupOutcome>, DomainError> {
+    let Some(prompt) = model
+        .cleanup_prompt()
+        .filter(|prompt| prompt.bulk.is_some())
+    else {
+        return Ok(None);
+    };
+    let bulk = prompt.bulk.clone().expect("bulk card");
+    let rows = prompt.rows.clone();
+    // A target another actor removed since the card opened is dropped before any host work,
+    // so a refused batch can never follow a cleanup.
+    let targets = bulk
+        .targets
+        .iter()
+        .copied()
+        .filter(|id| domain.get(*id).is_some())
+        .collect::<Vec<_>>();
+    let mut outcome = BulkCleanupOutcome {
+        done: 0,
+        cleaned: Vec::new(),
+        dirty: Vec::new(),
+        missing: 0,
+    };
+    for row in rows.iter().filter(|row| targets.contains(&row.task_id)) {
+        if !clean {
+            continue;
+        }
+        if row.dirty {
+            outcome.dirty.push(row.number);
+        } else if !cleanup_row_current(domain, row) {
+            outcome
+                .cleaned
+                .push((row.number, Err(CleanupError::DispatchChanged)));
+        } else {
+            let refs = if row.merge_unconfirmed() {
+                dispatch::CleanupRefs::Unconfirmed
+            } else {
+                dispatch::CleanupRefs::Cached
+            };
+            let result = dispatch::clean_with_host_refs(domain, row.task_id, in_herdr, refs, host);
+            outcome.cleaned.push((row.number, result));
+        }
+    }
+    for (id, _, inspected) in &bulk.missing {
+        // The card's snapshot may be stale: another board can have relaunched this task since.
+        // Converge only the dispatch that was inspected, and only while its worktree is still
+        // gone; a relaunched or reappeared worktree is left live.
+        let same_dispatch = domain
+            .get(*id)
+            .and_then(|task| task.dispatch.as_ref())
+            .is_some_and(|record| record == inspected);
+        let still_missing = same_dispatch
+            && dispatch::inspect_cleanup_cached_with_host(domain, *id, in_herdr, host)
+                .is_ok_and(|preview| !preview.inspection.worktree_exists);
+        if still_missing {
+            domain.record_dispatch_cleaned(*id)?;
+            outcome.missing += 1;
+        }
+    }
+    outcome.done = targets
+        .iter()
+        .filter(|id| {
+            domain
+                .get(**id)
+                .is_some_and(|task| task.status != HumanStatus::Done)
+        })
+        .count();
+    domain.complete_batch_after_cleanup(&targets)?;
+    model.close_popup();
+    model.clear_marks();
+    Ok(Some(outcome))
 }
 
 /// One board-loop step for cleanup cards: apply landed merged checks (this board's card or
@@ -2060,20 +2411,29 @@ pub fn finish_queued_cleanup_with_host(
     host: &mut impl DispatchHost,
 ) -> io::Result<()> {
     model.poll_cleanup_check();
+    model.present_save_recovery(save_recovery.error());
     if save_recovery.is_pending() {
         return Ok(());
     }
-    let target = if model.cleanup_confirm_due() {
-        BoardIntentTarget::Outer
-    } else if model.input_target_mut().cleanup_confirm_due() {
-        BoardIntentTarget::Focused
+    // A project preview keeps its card while parked (the frame narrowed under it), so its
+    // queued `y` is finished whether or not the preview owns input right now.
+    let preview = if model.cleanup_confirm_due() {
+        false
+    } else if model.preview_cleanup_confirm_due() {
+        true
     } else {
         return Ok(());
+    };
+    let parked = preview && !model.project_right_seat_focused();
+    let target = if preview {
+        model.preview_seat_mut().expect("due preview card")
+    } else {
+        &mut *model
     };
     handle_board_intent_with_host(
         store,
         domain,
-        board_intent_target_mut(model, target),
+        target,
         BoardIntent::ConfirmCleanup,
         save_recovery,
         quick_capture,
@@ -2081,7 +2441,21 @@ pub fn finish_queued_cleanup_with_host(
         host,
         &mut |_| {},
     )?;
-    sync_focused_project_preview(model, domain, save_recovery);
+    if preview && !save_recovery.is_pending() {
+        model.sync_from_domain(domain);
+    }
+    if parked {
+        // The parked preview is not painted: its outcome belongs on the visible board.
+        let seat = model.preview_seat_mut().expect("parked preview");
+        let message = seat.message().map(str::to_owned);
+        if !save_recovery.is_pending() {
+            seat.clear_message();
+        }
+        if let Some(message) = message.filter(|_| !save_recovery.is_pending()) {
+            model.set_message(message);
+        }
+    }
+    model.present_save_recovery(save_recovery.error());
     Ok(())
 }
 
@@ -2093,19 +2467,30 @@ pub fn cleanup_and_complete_with_host(
     in_herdr: bool,
     host: &mut impl DispatchHost,
 ) -> Result<Option<Result<CleanupResult, CleanupError>>, DomainError> {
-    let Some(prompt) = model.cleanup_prompt() else {
+    let Some(row) = model
+        .cleanup_prompt()
+        .filter(|prompt| prompt.bulk.is_none())
+        .and_then(|prompt| prompt.rows.first())
+    else {
         return Ok(None);
     };
-    let target = prompt.task_id;
+    let target = row.task_id;
     // The card refreshed the base off the event loop; never fetch here. A check that is still
-    // running (its queued `y` ran out of time) confirms nothing, so the branch stays.
-    let refs = if prompt.checking() {
+    // running (its queued `y` ran out of time) or that failed confirms nothing, so the branch
+    // stays.
+    let refs = if row.merge_unconfirmed() {
         dispatch::CleanupRefs::Unconfirmed
     } else {
         dispatch::CleanupRefs::Cached
     };
-    let cleanup =
-        clean.then(|| dispatch::clean_with_host_refs(domain, target, in_herdr, refs, host));
+    let current = cleanup_row_current(domain, row);
+    let cleanup = clean.then(|| {
+        if current {
+            dispatch::clean_with_host_refs(domain, target, in_herdr, refs, host)
+        } else {
+            Err(CleanupError::DispatchChanged)
+        }
+    });
     domain.complete_after_cleanup(target)?;
     model.close_popup();
     Ok(cleanup)
@@ -2299,6 +2684,32 @@ fn handle_board_intent_with_host(
         refresh_before_mutation(&intent, &baseline, domain, model);
     }
 
+    if intent == BoardIntent::Complete && !save_recovery.is_pending() && model.bulk_verb_active() {
+        match offer_bulk_cleanup_prompt_with_host(domain, model, in_herdr, host) {
+            Ok(BulkCleanupOffer::Prompted) => return Ok(false),
+            Ok(BulkCleanupOffer::MissingConverged { done, missing }) => {
+                if let Err(error) = store.reload_merge_save(domain) {
+                    let working = std::mem::take(domain);
+                    save_recovery.fail(baseline, working, error.to_string());
+                    model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+                    return Ok(false);
+                }
+                model.sync_from_domain(domain);
+                model.set_message(format!(
+                    "done {done} · {} already gone",
+                    plural(missing, "worktree")
+                ));
+                record_notice_dismissals_without_blocking_persist(store, domain);
+                return Ok(false);
+            }
+            Ok(BulkCleanupOffer::None) => {}
+            Err(error) => {
+                model.set_message(board_rejection_message(&error));
+                return Ok(false);
+            }
+        }
+    }
+
     if intent == BoardIntent::Complete && !save_recovery.is_pending() {
         if let Some(target) = model.selected_id() {
             match offer_cleanup_prompt_with_host(domain, model, target, in_herdr, host) {
@@ -2331,6 +2742,32 @@ fn handle_board_intent_with_host(
     {
         let clean = intent == BoardIntent::ConfirmCleanup;
         if clean && model.queue_cleanup_confirm() {
+            return Ok(false);
+        }
+        if model
+            .cleanup_prompt()
+            .is_some_and(|prompt| prompt.bulk.is_some())
+        {
+            let outcome =
+                match bulk_cleanup_and_complete_with_host(domain, model, clean, in_herdr, host) {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        model.close_popup();
+                        model.set_message(board_rejection_message(&error));
+                        return Ok(false);
+                    }
+                };
+            if let Err(error) = store.reload_merge_save(domain) {
+                let working = std::mem::take(domain);
+                save_recovery.fail(baseline, working, error.to_string());
+                model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+                return Ok(false);
+            }
+            model.sync_from_domain(domain);
+            if let Some(outcome) = outcome {
+                model.set_message(outcome.message());
+            }
+            record_notice_dismissals_without_blocking_persist(store, domain);
             return Ok(false);
         }
         let result = cleanup_and_complete_with_host(domain, model, clean, in_herdr, host);
@@ -9547,6 +9984,7 @@ mod queued_cleanup_tests {
             branch_merged: merged,
             base_available: true,
             warning: None,
+            confirmed: true,
         }
     }
 
@@ -9703,6 +10141,464 @@ mod queued_cleanup_tests {
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
 
+    /// A preview task-page edit whose save fails, then the frame narrows so the preview parks.
+    /// Returns the persistent recovery, with the visible board showing it.
+    #[cfg(unix)]
+    fn parked_preview_with_a_failed_task_edit(
+        dir: &Path,
+        store: &TaskStore,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+    ) -> SaveRecovery<DomainState> {
+        use std::os::unix::fs::PermissionsExt;
+        apply_intent(
+            domain,
+            model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("projects overview");
+        for _ in 0..2 {
+            apply_intent(domain, model, BoardIntent::StageRight, None).expect("stage right");
+        }
+        assert!(model.project_right_seat_focused());
+        let seat = model.input_target_mut();
+        apply_intent(domain, seat, BoardIntent::OpenTaskPage, None).expect("task page");
+        apply_intent(domain, seat, BoardIntent::BeginEditTitle, None).expect("edit title");
+        apply_intent(
+            domain,
+            seat,
+            BoardIntent::EditInsertText(" edited".into()),
+            None,
+        )
+        .expect("type");
+        let mut recovery = SaveRecovery::new();
+        let mut host = CheckHost::new(false);
+        let permissions = std::fs::Permissions::from_mode;
+        std::fs::set_permissions(dir, permissions(0o555)).expect("read-only state dir");
+        let saved = handle_board_intent_with_host(
+            store,
+            domain,
+            model.input_target_mut(),
+            BoardIntent::ConfirmEdit,
+            &mut recovery,
+            false,
+            true,
+            &mut host,
+            &mut |_| {},
+        );
+        std::fs::set_permissions(dir, permissions(0o755)).expect("writable again");
+        saved.expect("confirm");
+        assert!(recovery.is_pending(), "the preview's save failed");
+        let seat = model.right_seat().expect("seat");
+        assert!(seat.owns_save_recovery() && seat.task_edit_save_held());
+
+        super::sync_frame_presentation(ratatui::layout::Rect::new(0, 0, 60, 24), model);
+        assert!(!model.project_right_seat_focused());
+        finish_queued_cleanup_with_host(
+            store,
+            domain,
+            model,
+            &mut recovery,
+            false,
+            true,
+            &mut host,
+        )
+        .expect("loop step");
+        assert_eq!(
+            model.input_mode(),
+            crate::ui::board::BoardInputMode::SaveRecovery
+        );
+        recovery
+    }
+
+    /// Answer from the visible board through the event loop's own dispatch boundary.
+    #[cfg(unix)]
+    fn answer_recovery(
+        store: &TaskStore,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        recovery: &mut SaveRecovery<DomainState>,
+        intent: BoardIntent,
+    ) {
+        super::dispatch_board_intent(
+            store,
+            domain,
+            model,
+            super::BoardDispatchRoute {
+                area: ratatui::layout::Rect::new(0, 0, 60, 24),
+                target: super::BoardIntentTarget::Focused,
+            },
+            intent,
+            recovery,
+            false,
+        )
+        .expect("answer");
+        let mut host = CheckHost::new(false);
+        finish_queued_cleanup_with_host(store, domain, model, recovery, false, true, &mut host)
+            .expect("loop step");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancel_on_the_visible_board_unwinds_a_parked_previews_failed_task_edit() {
+        let (dir, store, mut domain, id) = setup("parked-cancel");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut recovery =
+            parked_preview_with_a_failed_task_edit(&dir, &store, &mut domain, &mut model);
+        answer_recovery(
+            &store,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardIntent::CancelSave,
+        );
+        assert!(!recovery.is_pending());
+        assert_eq!(model.input_mode(), crate::ui::board::BoardInputMode::Normal);
+        assert_eq!(model.message(), Some("save cancelled"));
+        let seat = model.right_seat().expect("seat");
+        assert!(!seat.task_edit_save_held(), "the hold is released");
+        assert!(!seat.owns_save_recovery() && !seat.shows_save_recovery_proxy());
+        assert_eq!(
+            seat.task_form_title(),
+            Some("queued"),
+            "the cancelled draft is gone"
+        );
+        assert_eq!(store.load().unwrap().get(id).unwrap().title, "queued");
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retry_on_the_visible_board_lands_and_releases_a_parked_previews_failed_task_edit() {
+        let (dir, store, mut domain, id) = setup("parked-retry");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut recovery =
+            parked_preview_with_a_failed_task_edit(&dir, &store, &mut domain, &mut model);
+        answer_recovery(
+            &store,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardIntent::RetrySave,
+        );
+        assert!(!recovery.is_pending());
+        assert_eq!(model.input_mode(), crate::ui::board::BoardInputMode::Normal);
+        assert_eq!(
+            store.load().unwrap().get(id).unwrap().title,
+            "queued edited"
+        );
+        let seat = model.right_seat().expect("seat");
+        assert!(!seat.task_edit_save_held(), "the hold is released");
+        assert!(!seat.owns_save_recovery() && !seat.shows_save_recovery_proxy());
+        assert_eq!(seat.task_form_title(), Some("queued edited"));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    /// The outer board's save failed while the pane was narrow, then the pane widened so the
+    /// focused preview shows a proxy of the banner. Answer from that preview's palette.
+    fn palette_answer_reaches_the_outer_owner(answer: BoardIntent, expected: &str) {
+        let (dir, store, mut domain, _id) = setup("palette-recovery");
+        let mut model = BoardModel::from_domain(&domain, None);
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("projects overview");
+        for _ in 0..2 {
+            apply_intent(&mut domain, &mut model, BoardIntent::StageRight, None)
+                .expect("stage right");
+        }
+        let narrow = ratatui::layout::Rect::new(0, 0, 60, 24);
+        let wide = ratatui::layout::Rect::new(0, 0, 160, 40);
+        super::sync_frame_presentation(narrow, &model);
+        assert!(!model.project_right_seat_focused());
+        let mut recovery = SaveRecovery::new();
+        recovery.fail(domain.clone(), domain.clone(), "disk full");
+        model.begin_save_recovery("disk full");
+        assert!(model.owns_save_recovery());
+
+        super::sync_frame_presentation(wide, &model);
+        assert!(model.project_right_seat_focused());
+        let mut host = CheckHost::new(false);
+        finish_queued_cleanup_with_host(
+            &store,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            false,
+            true,
+            &mut host,
+        )
+        .expect("loop step");
+        assert!(model.right_seat().unwrap().shows_save_recovery_proxy());
+
+        let seat = model.input_target_mut();
+        apply_intent(&mut domain, seat, BoardIntent::OpenCommandPalette, None).expect("palette");
+        let index = seat
+            .visible_commands()
+            .iter()
+            .position(|command| command.intent == answer)
+            .expect("recovery command offered");
+        let intent = if answer == BoardIntent::RetrySave {
+            for _ in 0..index {
+                apply_intent(&mut domain, seat, BoardIntent::CommandNext, None).expect("move");
+            }
+            BoardIntent::ConfirmCommand
+        } else {
+            BoardIntent::SelectCommand(index)
+        };
+        super::dispatch_board_intent(
+            &store,
+            &mut domain,
+            &mut model,
+            super::BoardDispatchRoute {
+                area: wide,
+                target: super::BoardIntentTarget::Focused,
+            },
+            intent,
+            &mut recovery,
+            false,
+        )
+        .expect("answer");
+        assert!(!recovery.is_pending());
+        assert!(
+            !model.owns_save_recovery(),
+            "the outer owner is resolved, not left for a stale-banner sweep"
+        );
+        assert_eq!(model.message(), Some(expected));
+        assert!(!model.right_seat().unwrap().shows_save_recovery_proxy());
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn palette_retry_on_a_focused_proxy_resolves_the_outer_owner() {
+        palette_answer_reaches_the_outer_owner(BoardIntent::RetrySave, "saved");
+    }
+
+    #[test]
+    fn palette_cancel_on_a_focused_proxy_resolves_the_outer_owner() {
+        palette_answer_reaches_the_outer_owner(BoardIntent::CancelSave, "save cancelled");
+    }
+
+    #[test]
+    fn a_check_that_failed_keeps_the_branch_even_when_cached_refs_later_read_merged() {
+        let (dir, store, mut domain, id) = setup("failed-check");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut host = CheckHost::new(false);
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            .expect("offer");
+        // The ancestry query timed out: the check lands, but it confirmed nothing.
+        host.check.complete(MergeVerdict {
+            branch_merged: false,
+            base_available: false,
+            warning: Some("ancestry check timed out".into()),
+            confirmed: false,
+        });
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert!(!model.cleanup_prompt().unwrap().checking());
+        // The transient failure clears: the refs on disk now read as merged.
+        host.cached_merged = true;
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
+        assert_eq!((host.removed, host.deleted), (1, 0), "branch kept");
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn y_on_a_card_whose_dispatch_was_relaunched_meanwhile_leaves_the_new_one_alone() {
+        let (dir, store, mut domain, id) = setup("relaunched");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut host = CheckHost::new(true);
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            .expect("offer");
+        host.check.complete(verdict(true));
+        tick(&store, &mut domain, &mut model, &mut host);
+
+        // The CLI cleans and relaunches the task while the card is open.
+        let mut other = store.load().expect("load");
+        other.record_dispatch_cleaned(id).expect("cleaned");
+        store.reload_merge_save(&mut other).expect("save cleaned");
+        let mut other = store.load().expect("load");
+        let mut relaunched = other.get(id).unwrap().dispatch.clone().unwrap();
+        relaunched.cleaned = false;
+        relaunched.herdr_workspace_id = "w2".into();
+        relaunched.at = SystemTime::now() + std::time::Duration::from_secs(1);
+        other
+            .record_dispatch(id, relaunched.clone())
+            .expect("relaunch");
+        store.reload_merge_save(&mut other).expect("save");
+
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        assert_eq!(
+            (host.removed, host.deleted),
+            (0, 0),
+            "the new launch is untouched"
+        );
+        assert_eq!(domain.get(id).unwrap().dispatch.as_ref(), Some(&relaunched));
+        assert!(model
+            .message()
+            .is_some_and(|message| message.contains("changed since the card opened")));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn a_queued_y_in_a_preview_parked_by_a_narrowing_frame_still_finishes_on_time() {
+        let (dir, store, mut domain, id) = setup("parked");
+        let mut model = BoardModel::from_domain(&domain, None);
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("projects overview");
+        for _ in 0..2 {
+            apply_intent(&mut domain, &mut model, BoardIntent::StageRight, None)
+                .expect("stage right");
+        }
+        assert!(model.project_right_seat_focused());
+        let mut host = CheckHost::new(false);
+        offer_cleanup_prompt_with_host(&mut domain, model.input_target_mut(), id, true, &mut host)
+            .expect("offer");
+        press(
+            &store,
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        // The terminal narrows before the check lands: the preview parks and input returns
+        // to the outer index, but the queued `y` still belongs to the preview's card.
+        super::sync_frame_presentation(ratatui::layout::Rect::new(0, 0, 60, 24), &model);
+        assert!(!model.project_right_seat_focused());
+        host.check.complete(verdict(true));
+        host.cached_merged = true;
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
+        assert_eq!((host.removed, host.deleted), (1, 1));
+        assert!(model
+            .preview_seat_mut()
+            .is_none_or(|seat| seat.cleanup_prompt().is_none()));
+        assert!(
+            model
+                .message()
+                .is_some_and(|message| message.starts_with("done T")),
+            "the outcome shows on the visible board: {:?}",
+            model.message()
+        );
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_parked_preview_whose_queued_cleanup_fails_to_save_shows_recovery_on_the_visible_board() {
+        use crate::ui::board::BoardInputMode;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, store, mut domain, id) = setup("parked-save");
+        let mut model = BoardModel::from_domain(&domain, None);
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("projects overview");
+        for _ in 0..2 {
+            apply_intent(&mut domain, &mut model, BoardIntent::StageRight, None)
+                .expect("stage right");
+        }
+        let mut host = CheckHost::new(false);
+        offer_cleanup_prompt_with_host(&mut domain, model.input_target_mut(), id, true, &mut host)
+            .expect("offer");
+        press(
+            &store,
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        super::sync_frame_presentation(ratatui::layout::Rect::new(0, 0, 60, 24), &model);
+        assert!(!model.project_right_seat_focused());
+
+        // The save under the parked preview fails.
+        let permissions = |mode| std::fs::Permissions::from_mode(mode);
+        std::fs::set_permissions(&dir, permissions(0o555)).expect("read-only state dir");
+        host.check.complete(verdict(true));
+        host.cached_merged = true;
+        let mut recovery = SaveRecovery::new();
+        let finished = finish_queued_cleanup_with_host(
+            &store,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            false,
+            true,
+            &mut host,
+        );
+        std::fs::set_permissions(&dir, permissions(0o755)).expect("writable again");
+        finished.expect("loop step");
+        assert!(recovery.is_pending(), "the save failed");
+        assert_eq!(model.input_mode(), BoardInputMode::SaveRecovery);
+        assert!(model
+            .message()
+            .is_some_and(|message| message.contains("save failed")));
+        assert_eq!(
+            super::board_keyboard_intent(
+                &model,
+                model.input_mode(),
+                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)
+            ),
+            Some(BoardIntent::RetrySave)
+        );
+
+        handle_board_intent_with_host(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::RetrySave,
+            &mut recovery,
+            false,
+            true,
+            &mut host,
+            &mut |_| {},
+        )
+        .expect("retry");
+        assert!(!recovery.is_pending());
+        finish_queued_cleanup_with_host(
+            &store,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            false,
+            true,
+            &mut host,
+        )
+        .expect("loop step");
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+        assert!(model
+            .right_seat()
+            .is_some_and(|seat| seat.popup() != crate::ui::mouse::BoardPopup::SaveRecovery));
+        let disk = store.load().expect("load");
+        assert_eq!(disk.get(id).unwrap().status, HumanStatus::Done);
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
     #[test]
     fn a_fetch_landing_during_the_card_snapshot_still_leaves_a_check_to_refresh_it() {
         let (dir, _store, mut domain, id) = setup("interleave");
@@ -9716,5 +10612,586 @@ mod queued_cleanup_tests {
             "pre-fetch ancestry is never shown as a final verdict"
         );
         std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+}
+
+#[cfg(test)]
+mod bulk_cleanup_tests {
+    use std::collections::{HashMap, HashSet};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Instant, SystemTime};
+
+    use super::{
+        finish_queued_cleanup_with_host, handle_board_intent_with_host,
+        offer_bulk_cleanup_prompt_with_host, BulkCleanupOffer,
+    };
+    use crate::dispatch::{
+        CleanupInspection, CreatedWorktree, DispatchHost, MergeCheck, MergeVerdict,
+    };
+    use crate::domain::{
+        Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope, UndoEntry,
+    };
+    use crate::save_recovery::SaveRecovery;
+    use crate::store::TaskStore;
+    use crate::ui::board::{apply_intent, BoardInputMode, BoardModel};
+    use crate::ui::input::BoardIntent;
+    use crate::ui::mouse::BoardPopup;
+
+    const PROJECT: &str = "/repos/bulk";
+
+    /// Per-worktree fake: which are dirty or gone, one merged check per worktree, and a log of
+    /// what was removed. The fetching inspection is never allowed on the board's thread.
+    #[derive(Default)]
+    struct BulkHost {
+        dirty: HashSet<String>,
+        missing: HashSet<String>,
+        cached_merged: bool,
+        checks: HashMap<String, MergeCheck>,
+        removed: Vec<String>,
+        deleted: Vec<String>,
+    }
+
+    impl DispatchHost for BulkHost {
+        fn is_git_repo(&mut self, _: &Path) -> Result<bool, String> {
+            Ok(true)
+        }
+        fn create_worktree(
+            &mut self,
+            _: &Path,
+            _: &str,
+            _: Option<&str>,
+            _: &str,
+        ) -> Result<CreatedWorktree, String> {
+            Err("not used".into())
+        }
+        fn inspect_cleanup(
+            &mut self,
+            _: &Path,
+            _: &Dispatch,
+            _: bool,
+        ) -> Result<CleanupInspection, String> {
+            panic!("the board must not fetch on its own thread")
+        }
+        fn inspect_cleanup_cached(
+            &mut self,
+            _: &Path,
+            record: &Dispatch,
+            _: bool,
+        ) -> Result<CleanupInspection, String> {
+            Ok(CleanupInspection {
+                worktree_exists: !self.missing.contains(&record.worktree),
+                dirty: self.dirty.contains(&record.worktree),
+                branch_merged: self.cached_merged,
+                workspace_exists: true,
+                target_matches: true,
+                warning: None,
+                base_available: true,
+            })
+        }
+        fn begin_merge_check(&mut self, _: &Path, record: &Dispatch) -> Option<MergeCheck> {
+            Some(
+                self.checks
+                    .entry(record.worktree.clone())
+                    .or_default()
+                    .clone(),
+            )
+        }
+        fn remove_herdr_worktree(&mut self, workspace_id: &str) -> Result<(), String> {
+            self.removed.push(workspace_id.to_string());
+            Ok(())
+        }
+        fn delete_branch(&mut self, _: &Path, branch: &str) -> Result<(), String> {
+            self.deleted.push(branch.to_string());
+            Ok(())
+        }
+        fn root_pane(&mut self, _: &str) -> Result<String, String> {
+            Err("not used".into())
+        }
+        fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
+            Err("not used".into())
+        }
+    }
+
+    impl BulkHost {
+        fn land_all(&mut self, merged: bool) {
+            for check in self.checks.values() {
+                check.complete(MergeVerdict {
+                    branch_merged: merged,
+                    base_available: true,
+                    warning: None,
+                    confirmed: true,
+                });
+            }
+            self.cached_merged = merged;
+        }
+    }
+
+    struct Board {
+        dir: PathBuf,
+        store: TaskStore,
+        domain: DomainState,
+        model: BoardModel,
+        /// clean (dispatched), dirty (dispatched), plain (no dispatch)
+        ids: [uuid::Uuid; 3],
+    }
+
+    impl Drop for Board {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn dispatched(label: &str) -> Dispatch {
+        Dispatch {
+            argv: vec!["agent".into()],
+            worktree: format!("/tmp/tsk-bulk-{label}"),
+            branch: format!("tsk/{label}"),
+            base: Some("origin/main".into()),
+            base_commit: None,
+            base_remote: Some("origin".into()),
+            base_ref: Some("refs/remotes/origin/main".into()),
+            herdr_workspace_id: format!("w-{label}"),
+            at: SystemTime::now(),
+            cleaned: false,
+        }
+    }
+
+    /// A marked set of three: a clean dispatch, a dirty dispatch, and an undispatched task.
+    fn marked_board(label: &str) -> Board {
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "tsk-bulk-cleanup-{label}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("state dir");
+        let store = TaskStore::new(&dir);
+        let mut domain = DomainState::new();
+        let mut create = |title: &str| {
+            let id = domain
+                .create(
+                    title,
+                    None,
+                    TaskScope::Project {
+                        path: PROJECT.into(),
+                    },
+                    ProvenanceOrigin::Manual,
+                    None,
+                )
+                .expect("create");
+            domain.set_status(id, HumanStatus::Started).expect("start");
+            id
+        };
+        let ids = [create("clean"), create("dirty"), create("plain")];
+        domain
+            .record_dispatch(ids[0], dispatched("clean"))
+            .expect("dispatch");
+        domain
+            .record_dispatch(ids[1], dispatched("dirty"))
+            .expect("dispatch");
+        store.reload_merge_save(&mut domain).expect("save");
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(PROJECT)));
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None)
+            .expect("mark mode");
+        for id in ids {
+            let index = model
+                .visible_ids()
+                .iter()
+                .position(|visible| *visible == id)
+                .expect("visible");
+            apply_intent(
+                &mut domain,
+                &mut model,
+                BoardIntent::SelectIndex(index),
+                None,
+            )
+            .expect("select");
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        }
+        assert!(model.bulk_verb_active());
+        Board {
+            dir,
+            store,
+            domain,
+            model,
+            ids,
+        }
+    }
+
+    fn host() -> BulkHost {
+        BulkHost {
+            dirty: HashSet::from(["/tmp/tsk-bulk-dirty".to_string()]),
+            ..BulkHost::default()
+        }
+    }
+
+    fn press(board: &mut Board, intent: BoardIntent, host: &mut BulkHost) {
+        let mut recovery = SaveRecovery::new();
+        handle_board_intent_with_host(
+            &board.store,
+            &mut board.domain,
+            &mut board.model,
+            intent,
+            &mut recovery,
+            false,
+            true,
+            host,
+            &mut |_| {},
+        )
+        .expect("intent");
+        assert!(!recovery.is_pending());
+    }
+
+    fn tick(board: &mut Board, host: &mut BulkHost) {
+        let mut recovery = SaveRecovery::new();
+        finish_queued_cleanup_with_host(
+            &board.store,
+            &mut board.domain,
+            &mut board.model,
+            &mut recovery,
+            false,
+            true,
+            host,
+        )
+        .expect("loop step");
+    }
+
+    fn statuses(board: &Board) -> Vec<HumanStatus> {
+        board
+            .ids
+            .iter()
+            .map(|id| board.domain.get(*id).unwrap().status)
+            .collect()
+    }
+
+    fn cleaned(board: &Board, index: usize) -> bool {
+        board
+            .domain
+            .get(board.ids[index])
+            .unwrap()
+            .dispatch
+            .as_ref()
+            .unwrap()
+            .cleaned
+    }
+
+    #[test]
+    fn bulk_done_on_a_set_with_live_dispatches_opens_one_card_and_keeps_marks() {
+        let mut board = marked_board("open");
+        let mut host = host();
+        press(&mut board, BoardIntent::Complete, &mut host);
+        let prompt = board.model.cleanup_prompt().expect("bulk card");
+        assert_eq!(prompt.rows.len(), 2, "one row per live dispatch");
+        assert!(prompt.checking(), "each verdict starts as checking");
+        let bulk = prompt.bulk.as_ref().expect("bulk");
+        assert_eq!(bulk.targets.len(), 3);
+        assert_eq!(bulk.plain.len(), 1);
+        assert_eq!(board.model.input_mode(), BoardInputMode::CleanupConfirm);
+        assert_eq!(
+            board.model.marked_ids().len(),
+            3,
+            "marks survive while the card is up"
+        );
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Started));
+        assert!(host.removed.is_empty());
+    }
+
+    #[test]
+    fn esc_on_the_bulk_card_changes_nothing_and_keeps_the_marked_set() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut board = marked_board("esc");
+        let mut host = host();
+        press(&mut board, BoardIntent::Complete, &mut host);
+        let key = |code| {
+            super::board_keyboard_intent(
+                &board.model,
+                board.model.input_mode(),
+                KeyEvent::new(code, KeyModifiers::NONE),
+            )
+        };
+        // The card owns Esc and `M`: mark mode must not clear the set out from under it.
+        assert_eq!(key(KeyCode::Esc), Some(BoardIntent::CancelCleanup));
+        assert_eq!(key(KeyCode::Char('M')), None);
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        assert!(board.model.cleanup_prompt().is_none());
+        assert_eq!(board.model.popup(), BoardPopup::None);
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Started));
+        assert!(host.removed.is_empty() && host.deleted.is_empty());
+        assert_eq!(board.model.marked_ids().len(), 3);
+        assert!(board.model.bulk_verb_active());
+        let disk = board.store.load().expect("load");
+        assert!(disk
+            .tasks()
+            .iter()
+            .all(|task| task.status == HumanStatus::Started));
+    }
+
+    #[test]
+    fn y_cleans_every_clean_worktree_keeps_dirty_ones_and_completes_the_set_as_one_undo() {
+        let mut board = marked_board("yes");
+        let mut host = host();
+        press(&mut board, BoardIntent::Complete, &mut host);
+        host.land_all(true);
+        tick(&mut board, &mut host);
+        assert!(!board.model.cleanup_prompt().unwrap().checking());
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        assert!(board.model.cleanup_prompt().is_none());
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Done));
+        assert_eq!(host.removed, vec!["w-clean".to_string()]);
+        assert_eq!(host.deleted, vec!["tsk/clean".to_string()]);
+        assert!(cleaned(&board, 0));
+        assert!(!cleaned(&board, 1), "a dirty worktree is never cleaned");
+        assert!(board.model.marked_ids().is_empty());
+        let message = board.model.message().unwrap_or_default().to_string();
+        assert!(message.contains("done 3"), "{message}");
+        assert!(message.contains("cleaned T1"), "{message}");
+        assert!(
+            message.contains("kept T2 (uncommitted changes)"),
+            "{message}"
+        );
+
+        let disk = board.store.load().expect("one save persisted everything");
+        assert!(disk
+            .tasks()
+            .iter()
+            .all(|task| task.status == HumanStatus::Done));
+        assert!(matches!(
+            disk.last_undo(),
+            Some(UndoEntry::Batch { entries }) if entries.len() == 3
+        ));
+        press(&mut board, BoardIntent::Undo, &mut host);
+        assert!(
+            statuses(&board)
+                .iter()
+                .all(|status| *status == HumanStatus::Open),
+            "one undo reopens the whole set"
+        );
+        assert!(
+            cleaned(&board, 0),
+            "undo reverses only completion, not cleanup"
+        );
+    }
+
+    #[test]
+    fn n_completes_the_whole_set_and_keeps_every_worktree() {
+        let mut board = marked_board("no");
+        let mut host = host();
+        press(&mut board, BoardIntent::Complete, &mut host);
+        press(&mut board, BoardIntent::KeepCleanup, &mut host);
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Done));
+        assert!(host.removed.is_empty() && host.deleted.is_empty());
+        assert!(!cleaned(&board, 0) && !cleaned(&board, 1));
+        assert!(board.model.marked_ids().is_empty());
+        assert_eq!(board.model.message(), Some("done 3 · worktrees kept"));
+        let disk = board.store.load().expect("load");
+        assert!(matches!(
+            disk.last_undo(),
+            Some(UndoEntry::Batch { entries }) if entries.len() == 3
+        ));
+    }
+
+    #[test]
+    fn a_bulk_row_whose_check_failed_keeps_its_branch_on_y() {
+        let mut board = marked_board("failed-check");
+        let mut host = host();
+        press(&mut board, BoardIntent::Complete, &mut host);
+        for check in host.checks.values() {
+            check.complete(MergeVerdict {
+                branch_merged: false,
+                base_available: false,
+                warning: Some("ancestry check timed out".into()),
+                confirmed: false,
+            });
+        }
+        tick(&mut board, &mut host);
+        assert!(!board.model.cleanup_prompt().unwrap().checking());
+        host.cached_merged = true;
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Done));
+        assert_eq!(host.removed, vec!["w-clean".to_string()]);
+        assert!(
+            host.deleted.is_empty(),
+            "a failed check never confirms a merge"
+        );
+    }
+
+    #[test]
+    fn a_queued_bulk_y_waits_for_every_check_and_keeps_unconfirmed_branches_at_its_bound() {
+        let mut board = marked_board("queued");
+        let mut host = host();
+        host.cached_merged = true;
+        press(&mut board, BoardIntent::Complete, &mut host);
+        let pressed = Instant::now();
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        assert!(pressed.elapsed() < std::time::Duration::from_millis(500));
+        assert!(board.model.cleanup_prompt().unwrap().confirm_queued());
+        tick(&mut board, &mut host);
+        assert!(board.model.cleanup_prompt().is_some(), "no verdict yet");
+        board.model.cleanup_prompt_mut().unwrap().confirm_deadline = Some(Instant::now());
+        tick(&mut board, &mut host);
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Done));
+        assert_eq!(host.removed, vec!["w-clean".to_string()]);
+        assert!(
+            host.deleted.is_empty(),
+            "cached refs say merged, but no check confirmed it"
+        );
+    }
+
+    #[test]
+    fn a_set_whose_only_dispatches_lost_their_worktrees_converges_without_a_card() {
+        let mut board = marked_board("missing");
+        let mut host = host();
+        host.missing = HashSet::from([
+            "/tmp/tsk-bulk-clean".to_string(),
+            "/tmp/tsk-bulk-dirty".to_string(),
+        ]);
+        press(&mut board, BoardIntent::Complete, &mut host);
+        assert!(board.model.cleanup_prompt().is_none());
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Done));
+        assert!(cleaned(&board, 0) && cleaned(&board, 1));
+        let disk = board.store.load().expect("load");
+        assert!(matches!(
+            disk.last_undo(),
+            Some(UndoEntry::Batch { entries }) if entries.len() == 3
+        ));
+    }
+
+    #[test]
+    fn a_missing_worktree_relaunched_while_the_card_is_open_is_not_marked_cleaned() {
+        let mut board = marked_board("relaunched");
+        let mut host = host();
+        host.missing = HashSet::from(["/tmp/tsk-bulk-clean".to_string()]);
+        press(&mut board, BoardIntent::Complete, &mut host);
+        let bulk = board.model.cleanup_prompt().unwrap().bulk.clone().unwrap();
+        assert_eq!(bulk.missing.len(), 1, "T1 opens as already gone");
+
+        // Another board relaunches T1 before this card is answered: a fresh worktree and a
+        // fresh, live dispatch record land on disk.
+        let mut other = board.store.load().expect("load");
+        let mut relaunched = dispatched("clean");
+        relaunched.at = SystemTime::now() + std::time::Duration::from_secs(1);
+        other
+            .record_dispatch(board.ids[0], relaunched.clone())
+            .expect("relaunch");
+        board
+            .store
+            .reload_merge_save(&mut other)
+            .expect("save relaunch");
+        host.missing.clear();
+
+        press(&mut board, BoardIntent::KeepCleanup, &mut host);
+        let record = board
+            .domain
+            .get(board.ids[0])
+            .unwrap()
+            .dispatch
+            .clone()
+            .unwrap();
+        assert_eq!(record, relaunched, "the relaunched dispatch stays live");
+        assert!(!record.cleaned);
+        let disk = board.store.load().expect("load");
+        assert!(
+            !disk
+                .get(board.ids[0])
+                .unwrap()
+                .dispatch
+                .as_ref()
+                .unwrap()
+                .cleaned
+        );
+    }
+
+    #[test]
+    fn a_bulk_row_relaunched_while_the_card_is_open_is_skipped_not_cleaned() {
+        let mut board = marked_board("row-relaunched");
+        let mut host = host();
+        host.cached_merged = true;
+        press(&mut board, BoardIntent::Complete, &mut host);
+        host.land_all(true);
+        tick(&mut board, &mut host);
+
+        let mut other = board.store.load().expect("load");
+        other
+            .record_dispatch_cleaned(board.ids[0])
+            .expect("cleaned");
+        board
+            .store
+            .reload_merge_save(&mut other)
+            .expect("save cleaned");
+        let mut other = board.store.load().expect("load");
+        let mut relaunched = dispatched("clean");
+        relaunched.herdr_workspace_id = "w-clean-2".into();
+        relaunched.at = SystemTime::now() + std::time::Duration::from_secs(1);
+        other
+            .record_dispatch(board.ids[0], relaunched.clone())
+            .expect("relaunch");
+        board.store.reload_merge_save(&mut other).expect("save");
+
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        assert!(
+            host.removed.is_empty() && host.deleted.is_empty(),
+            "{:?}",
+            host.removed
+        );
+        let record = board
+            .domain
+            .get(board.ids[0])
+            .unwrap()
+            .dispatch
+            .clone()
+            .unwrap();
+        assert_eq!(record, relaunched);
+        let message = board.model.message().unwrap_or_default().to_string();
+        assert!(
+            message.contains("T1 cleanup refused: changed since the card opened"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn bulk_done_without_a_live_dispatch_keeps_the_plain_batch() {
+        let mut board = marked_board("plain");
+        for index in [0, 1] {
+            board
+                .domain
+                .record_dispatch_cleaned(board.ids[index])
+                .expect("cleaned");
+        }
+        board
+            .store
+            .reload_merge_save(&mut board.domain)
+            .expect("save");
+        board.model.sync_from_domain(&board.domain);
+        let mut host = host();
+        assert_eq!(
+            offer_bulk_cleanup_prompt_with_host(
+                &mut board.domain,
+                &mut board.model,
+                true,
+                &mut host
+            )
+            .expect("offer"),
+            BulkCleanupOffer::None
+        );
+        press(&mut board, BoardIntent::Complete, &mut host);
+        assert!(board.model.cleanup_prompt().is_none());
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Done));
     }
 }

@@ -6005,7 +6005,7 @@ fn peek_project_label_wraps_all_content_below_notes() {
 
 #[test]
 fn unmerged_cleanup_card_explains_squash_retention_without_clipping_the_hint() {
-    use tsk_tui::ui::board::CleanupPrompt;
+    use tsk_tui::ui::board::{CleanupPrompt, CleanupRow};
     let mut domain = DomainState::new();
     let id = domain
         .create(
@@ -6017,9 +6017,11 @@ fn unmerged_cleanup_card_explains_squash_retention_without_clipping_the_hint() {
         )
         .unwrap();
     let mut model = BoardModel::from_domain(&domain, None);
-    model.begin_cleanup_prompt(CleanupPrompt {
+    model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
         merge_check: None,
-        confirm_deadline: None,
+        check_failed: false,
+        inspected: None,
+        number: 1,
         task_id: id,
         worktree: "/tmp/worktree".into(),
         branch: "tsk/t1-cleanup".into(),
@@ -6029,19 +6031,21 @@ fn unmerged_cleanup_card_explains_squash_retention_without_clipping_the_hint() {
         base_available: true,
         warning: None,
         workspace_exists: true,
-    });
+    }));
     for width in [40, 80] {
         let rows = board_rows(&model, width, 24);
         let painted = rows.join("\n");
         assert!(painted.contains("squash-merged?"), "{width}: {painted}");
-        assert!(painted.contains("delete by hand"), "{width}: {painted}");
-        assert!(painted.contains("base origin/main"), "{width}: {painted}");
+        assert!(painted.contains("delete it by"), "{width}: {painted}");
+        assert!(painted.contains("hand)"), "{width}: {painted}");
+        assert!(painted.contains("origin/main"), "{width}: {painted}");
+        assert!(painted.contains("keep branch"), "{width}: {painted}");
     }
 }
 
 #[test]
 fn cleanup_card_exposes_cached_ref_warning_and_missing_base_without_a_squash_hint() {
-    use tsk_tui::ui::board::CleanupPrompt;
+    use tsk_tui::ui::board::{CleanupPrompt, CleanupRow};
     let mut domain = DomainState::new();
     let id = domain
         .create(
@@ -6061,9 +6065,11 @@ fn cleanup_card_exposes_cached_ref_warning_and_missing_base_without_a_squash_hin
         (false, false, None),
     ] {
         let mut model = BoardModel::from_domain(&domain, None);
-        model.begin_cleanup_prompt(CleanupPrompt {
+        model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
             merge_check: None,
-            confirm_deadline: None,
+            check_failed: false,
+            inspected: None,
+            number: 1,
             task_id: id,
             worktree: "/tmp/worktree".into(),
             branch: "tsk/t1-cleanup".into(),
@@ -6073,7 +6079,7 @@ fn cleanup_card_exposes_cached_ref_warning_and_missing_base_without_a_squash_hin
             base_available: available,
             warning: warning.map(str::to_owned),
             workspace_exists: true,
-        });
+        }));
         for width in [40, 80] {
             let painted = board_rows(&model, width, 24).join("\n");
             assert!(!painted.contains("squash-merged?"), "{width}: {painted}");
@@ -6087,4 +6093,161 @@ fn cleanup_card_exposes_cached_ref_warning_and_missing_base_without_a_squash_hin
             );
         }
     }
+}
+
+fn bulk_cleanup_model() -> BoardModel {
+    use tsk_tui::ui::board::{BulkCleanup, CleanupPrompt, CleanupRow};
+    let domain = DomainState::new();
+    let mut model = BoardModel::from_domain(&domain, None);
+    let row = |number: u64, dirty: bool, merged: bool| CleanupRow {
+        merge_check: None,
+        check_failed: false,
+        inspected: None,
+        number,
+        task_id: Uuid::from_u128(u128::from(number)),
+        worktree: format!("/tmp/tsk-t{number}-bulk"),
+        branch: format!("tsk/t{number}-bulk"),
+        base: "origin/dispatch".into(),
+        dirty,
+        branch_merged: merged,
+        base_available: true,
+        warning: None,
+        workspace_exists: true,
+    };
+    model.begin_cleanup_prompt(CleanupPrompt {
+        rows: vec![
+            row(148, false, true),
+            row(157, false, false),
+            row(164, true, false),
+        ],
+        bulk: Some(BulkCleanup {
+            targets: (1..=4).map(Uuid::from_u128).collect(),
+            plain: vec!["T101".into()],
+            missing: Vec::new(),
+            refused: Vec::new(),
+        }),
+        confirm_deadline: None,
+        scroll: 0,
+    });
+    model
+}
+
+#[test]
+fn bulk_cleanup_card_lists_each_dispatch_without_paths_and_wraps_at_forty_columns() {
+    let model = bulk_cleanup_model();
+    let painted = board_rows(&model, 80, 30).join("\n");
+    for text in [
+        "Done 4 tasks · clean up 2 of 3?",
+        "T148  merged ✓",
+        "delete branch · remove worktree · close pane",
+        "T157  not merged into origin/dispatch",
+        "keep branch · remove worktree · close pane",
+        "T164  uncommitted changes",
+        "keep everything",
+        "+ T101 has no dispatch, just marked done",
+        "y done all + clean up · n done only · esc cancel",
+    ] {
+        assert!(painted.contains(text), "missing {text:?}:\n{painted}");
+    }
+    assert!(
+        !painted.contains("/tmp/tsk-t148"),
+        "bulk rows omit paths:\n{painted}"
+    );
+    assert!(
+        !painted.contains("tsk/t148"),
+        "bulk rows omit branches:\n{painted}"
+    );
+
+    let narrow = board_rows(&model, 40, 30).join("\n");
+    for text in [
+        "merged ✓",
+        "close pane",
+        "keep everything",
+        "marked done",
+        "y clean up",
+    ] {
+        assert!(narrow.contains(text), "40 columns lost {text:?}:\n{narrow}");
+    }
+}
+
+#[test]
+fn a_bulk_cleanup_card_taller_than_the_frame_scrolls_like_help() {
+    let mut model = bulk_cleanup_model();
+    let first = board_rows(&model, 60, 8).join("\n");
+    assert!(first.contains("▼"), "more rows below:\n{first}");
+    assert!(first.contains("T148"), "{first}");
+    for _ in 0..20 {
+        model.scroll_cleanup(true);
+    }
+    let last = board_rows(&model, 60, 8).join("\n");
+    assert!(last.contains("▲") && !last.contains("▼"), "{last}");
+    assert!(last.contains("marked done"), "{last}");
+}
+
+fn large_bulk_cleanup_model(count: u64, dirty: bool) -> BoardModel {
+    use tsk_tui::ui::board::{BulkCleanup, CleanupPrompt, CleanupRow};
+    let domain = DomainState::new();
+    let mut model = BoardModel::from_domain(&domain, None);
+    let rows = (1..=count)
+        .map(|number| CleanupRow {
+            merge_check: None,
+            check_failed: false,
+            inspected: None,
+            number,
+            task_id: Uuid::from_u128(u128::from(number)),
+            worktree: format!("/tmp/tsk-t{number}-bulk"),
+            branch: format!("tsk/t{number}-bulk"),
+            base: "origin/dispatch".into(),
+            // All dirty, or every row but the last clean.
+            dirty: dirty || number == count,
+            branch_merged: true,
+            base_available: true,
+            warning: None,
+            workspace_exists: true,
+        })
+        .collect();
+    model.begin_cleanup_prompt(CleanupPrompt {
+        rows,
+        bulk: Some(BulkCleanup {
+            targets: (1..=count)
+                .map(|n| Uuid::from_u128(u128::from(n)))
+                .collect(),
+            ..BulkCleanup::default()
+        }),
+        confirm_deadline: None,
+        scroll: 0,
+    });
+    model
+}
+
+#[test]
+fn a_scrolling_bulk_cleanup_card_at_forty_columns_never_cuts_its_counts() {
+    for (count, dirty, question) in [
+        (10, false, "Clean up 9 of 10 worktrees?"),
+        (12, true, "Can't clean up any worktree."),
+    ] {
+        let model = large_bulk_cleanup_model(count, dirty);
+        let rows = board_rows(&model, 40, 24);
+        let painted = rows.join("\n");
+        let title = rows
+            .iter()
+            .find(|row| row.contains("[x]"))
+            .unwrap_or_else(|| panic!("card title row:\n{painted}"));
+        assert!(!title.contains('…'), "title cut: {title}\n{painted}");
+        assert!(title.contains(&format!("Done {count} tasks")), "{title}");
+        assert!(title.contains('▼'), "the card scrolls: {title}");
+        let body = rows
+            .iter()
+            .map(|row| row.trim_matches(|c: char| c == ' ' || c == '│'))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            body.contains(question),
+            "the counts move into the body:\n{painted}"
+        );
+    }
+    // Where the full title fits, the counts stay in the title and the body is unchanged.
+    let wide = board_rows(&large_bulk_cleanup_model(10, false), 80, 24).join("\n");
+    assert!(wide.contains("Done 10 tasks · clean up 9 of 10?"), "{wide}");
+    assert!(!wide.contains("worktrees?"), "{wide}");
 }

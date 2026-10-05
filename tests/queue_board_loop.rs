@@ -687,13 +687,15 @@ fn idle_merge_converts_a_read_only_focus_whose_project_was_unarchived() {
 #[test]
 fn board_frame_paints_a_cleanup_verdict_that_landed_while_idle() {
     use tsk_tui::dispatch::{MergeCheck, MergeVerdict};
-    use tsk_tui::ui::board::CleanupPrompt;
+    use tsk_tui::ui::board::{CleanupPrompt, CleanupRow};
     let domain = DomainState::new();
     let mut model = BoardModel::from_domain(&domain, None);
     let check = MergeCheck::default();
-    model.begin_cleanup_prompt(CleanupPrompt {
+    model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
         merge_check: Some(check.clone()),
-        confirm_deadline: None,
+        check_failed: false,
+        inspected: None,
+        number: 1,
         task_id: uuid::Uuid::new_v4(),
         worktree: "/tmp/tsk-frame-check".into(),
         branch: "tsk/t1-frame".into(),
@@ -703,11 +705,12 @@ fn board_frame_paints_a_cleanup_verdict_that_landed_while_idle() {
         workspace_exists: true,
         warning: None,
         base_available: true,
-    });
+    }));
     check.complete(MergeVerdict {
         branch_merged: true,
         base_available: true,
         warning: None,
+        confirmed: true,
     });
     let mut painted = String::new();
     board_frame(
@@ -727,6 +730,6 @@ fn board_frame_paints_a_cleanup_verdict_that_landed_while_idle() {
     )
     .expect("frame");
     assert!(!model.cleanup_prompt().unwrap().checking());
-    assert!(painted.contains("merged ✓"), "{painted}");
-    assert!(!painted.contains("checking…"), "{painted}");
+    assert!(painted.contains("Merged into origin/main ✓"), "{painted}");
+    assert!(!painted.contains("Checking merge"), "{painted}");
 }

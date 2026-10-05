@@ -144,6 +144,15 @@ impl BoardModel {
     }
 
     /// The command a confirmation would invoke.
+    /// The command a palette `ConfirmCommand` or `SelectCommand` would run, without running it.
+    pub fn selected_command_for(&self, intent: &BoardIntent) -> Option<BoardCommand> {
+        match intent {
+            BoardIntent::ConfirmCommand => self.selected_command(),
+            BoardIntent::SelectCommand(index) => self.visible_commands().get(*index).cloned(),
+            _ => None,
+        }
+    }
+
     pub fn selected_command(&self) -> Option<BoardCommand> {
         let index = self.command_selected()?;
         self.visible_commands().get(index).cloned()

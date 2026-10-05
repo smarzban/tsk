@@ -706,6 +706,11 @@ fn wheel_board_intent(model: &BoardModel, kind: MouseEventKind) -> Option<BoardI
             MouseEventKind::ScrollDown => Some(BoardIntent::HelpScrollDown),
             _ => None,
         },
+        BoardInputMode::CleanupConfirm | BoardInputMode::CleanupDirtyConfirm => match kind {
+            MouseEventKind::ScrollUp => Some(BoardIntent::CleanupScrollUp),
+            MouseEventKind::ScrollDown => Some(BoardIntent::CleanupScrollDown),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -920,9 +925,23 @@ pub fn map_board_mouse(
             }
             _ => None,
         },
-        BoardInputMode::SaveRecovery
-        | BoardInputMode::CleanupConfirm
-        | BoardInputMode::CleanupDirtyConfirm => None,
+        BoardInputMode::SaveRecovery => None,
+        // `[x]` is Esc; the footer choices dispatch like their keys. The dirty card has no `y`.
+        BoardInputMode::CleanupConfirm => match hit_at(hits, pos) {
+            Some(QueueHitTarget::ModalClose | QueueHitTarget::CleanupOption(2)) => {
+                Some(BoardIntent::CancelCleanup)
+            }
+            Some(QueueHitTarget::CleanupOption(0)) => Some(BoardIntent::ConfirmCleanup),
+            Some(QueueHitTarget::CleanupOption(1)) => Some(BoardIntent::KeepCleanup),
+            _ => None,
+        },
+        BoardInputMode::CleanupDirtyConfirm => match hit_at(hits, pos) {
+            Some(QueueHitTarget::ModalClose | QueueHitTarget::CleanupOption(1)) => {
+                Some(BoardIntent::CancelCleanup)
+            }
+            Some(QueueHitTarget::CleanupOption(0)) => Some(BoardIntent::KeepCleanup),
+            _ => None,
+        },
         BoardInputMode::LaunchCard => match hit_at(hits, pos) {
             Some(QueueHitTarget::LaunchOption(0)) => Some(BoardIntent::LaunchUnarchive),
             Some(QueueHitTarget::LaunchOption(1)) => Some(BoardIntent::LaunchKeepArchived),

@@ -947,6 +947,10 @@ pub struct BoardModel {
     pub(super) help_scroll: usize,
     /// Furthest help scroll the last painted card could show (renderer-recorded).
     pub(super) help_max_scroll: Cell<usize>,
+    /// This board's SaveRecovery popup only mirrors a failed save another board owns.
+    pub(super) save_recovery_proxy: bool,
+    /// Furthest cleanup-card scroll the last painted card could show (renderer-recorded).
+    pub(super) cleanup_max_scroll: Cell<usize>,
     /// Underlying surface to restore after Help closes.
     pub(super) help_return_mode: BoardInputMode,
     /// Underlying board mode to restore after the search input closes or pins.
@@ -1043,10 +1047,11 @@ pub struct BoardModel {
     pub(super) frame_wide: Cell<bool>,
 }
 
-/// Session-only cleanup confirmation details, captured before the modal opens.
+/// One dispatched task on a cleanup card, captured before the modal opens.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CleanupPrompt {
+pub struct CleanupRow {
     pub task_id: Uuid,
+    pub number: u64,
     pub worktree: String,
     pub branch: String,
     pub base: String,
@@ -1058,18 +1063,81 @@ pub struct CleanupPrompt {
     /// The background fetch and ancestry recheck still running; the card shows `checking…`
     /// in place of the cached merged status until it lands.
     pub merge_check: Option<crate::dispatch::MergeCheck>,
-    /// `y` pressed while checking: the event loop finishes the cleanup when the verdict lands,
-    /// or at this deadline with the branch retained.
-    pub confirm_deadline: Option<Instant>,
+    /// The dispatch record the card inspected. Cleanup touches the task only while this is
+    /// still its record; `None` (a card built without one) never cleans.
+    pub inspected: Option<crate::domain::Dispatch>,
+    /// The background check landed without confirming anything (its ancestry query errored
+    /// or timed out): the branch stays, whatever the refs on disk say later.
+    pub check_failed: bool,
 }
 
-impl CleanupPrompt {
+impl CleanupRow {
     pub fn checking(&self) -> bool {
         self.merge_check.is_some()
     }
 
+    /// No completed check vouches for the merged status: cleanup keeps the branch.
+    pub fn merge_unconfirmed(&self) -> bool {
+        self.checking() || self.check_failed
+    }
+
+    /// `y` removes this worktree. A dirty worktree is never cleaned.
+    pub fn cleanable(&self) -> bool {
+        !self.dirty
+    }
+}
+
+/// The marked set behind a bulk cleanup card: every target completes in one save.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BulkCleanup {
+    /// The whole marked set, in mark order, including tasks without a live dispatch.
+    pub targets: Vec<Uuid>,
+    /// Board identifiers (`T12`) of targets with no live dispatch: marked done, nothing to clean.
+    pub plain: Vec<String>,
+    /// Targets whose recorded worktree was already gone, with the dispatch record inspected:
+    /// on `y` or `n` they converge to cleaned only if that same record is still current and
+    /// its worktree is still gone.
+    pub missing: Vec<(Uuid, String, crate::domain::Dispatch)>,
+    /// Dispatched targets whose worktree could not be inspected, with the reason: kept, still
+    /// marked done.
+    pub refused: Vec<(String, String)>,
+}
+
+/// Session-only cleanup confirmation: one row for the cursor task, or one per live dispatch
+/// in a marked set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupPrompt {
+    pub rows: Vec<CleanupRow>,
+    /// `Some` for a marked set; `None` for the single cursor card.
+    pub bulk: Option<BulkCleanup>,
+    /// `y` pressed while checking: the event loop finishes the cleanup when every verdict
+    /// lands, or at this deadline with each unconfirmed branch retained.
+    pub confirm_deadline: Option<Instant>,
+    /// First visible card row; the painter clamps it to the rows that fit.
+    pub scroll: usize,
+}
+
+impl CleanupPrompt {
+    pub fn single(row: CleanupRow) -> Self {
+        Self {
+            rows: vec![row],
+            bulk: None,
+            confirm_deadline: None,
+            scroll: 0,
+        }
+    }
+
+    pub fn checking(&self) -> bool {
+        self.rows.iter().any(CleanupRow::checking)
+    }
+
     pub fn confirm_queued(&self) -> bool {
         self.confirm_deadline.is_some()
+    }
+
+    /// Whether `y` is offered: at least one listed worktree can be removed.
+    pub fn can_clean_any(&self) -> bool {
+        self.rows.iter().any(CleanupRow::cleanable)
     }
 }
 
@@ -1123,6 +1191,8 @@ impl BoardModel {
             help_query: String::new(),
             help_scroll: 0,
             help_max_scroll: Cell::new(usize::MAX),
+            cleanup_max_scroll: Cell::new(usize::MAX),
+            save_recovery_proxy: false,
             help_return_mode: BoardInputMode::Normal,
             search_return_mode: BoardInputMode::Normal,
             input_mode: BoardInputMode::Normal,
@@ -1197,8 +1267,13 @@ impl BoardModel {
         }
     }
 
+    /// Open a cleanup card. The single card is cursor-only and clears marks; a bulk card keeps
+    /// them, so `Esc` returns to the same marked set.
     pub fn begin_cleanup_prompt(&mut self, prompt: CleanupPrompt) {
-        self.clear_marks();
+        if prompt.bulk.is_none() {
+            self.clear_marks();
+        }
+        self.cleanup_max_scroll.set(usize::MAX);
         self.close_help();
         self.close_command_surface();
         self.cleanup_prompt = Some(prompt);
@@ -1251,14 +1326,91 @@ impl BoardModel {
         let Some(prompt) = self.cleanup_prompt.as_mut() else {
             return nested;
         };
-        let Some(verdict) = prompt.merge_check.as_ref().and_then(|check| check.take()) else {
-            return nested;
-        };
-        prompt.merge_check = None;
-        prompt.branch_merged = verdict.branch_merged;
-        prompt.base_available = verdict.base_available;
-        prompt.warning = verdict.warning;
-        true
+        let mut landed = false;
+        for row in &mut prompt.rows {
+            let Some(verdict) = row.merge_check.as_ref().and_then(|check| check.take()) else {
+                continue;
+            };
+            row.merge_check = None;
+            row.check_failed = !verdict.confirmed;
+            row.branch_merged = verdict.branch_merged;
+            row.base_available = verdict.base_available;
+            row.warning = verdict.warning;
+            landed = true;
+        }
+        landed || nested
+    }
+
+    /// Make an unresolved failed save visible and reachable on whichever board owns input, and
+    /// take a resolved one down from both boards. A queued cleanup can finish (and fail its
+    /// save) inside a project preview that a narrowing frame has parked, and the frame can
+    /// widen or narrow again before the user answers Retry or Cancel.
+    ///
+    /// The board that failed keeps owning the recovery (its held form, its drafts); a board
+    /// that only shows it for input is a proxy, and Retry or Cancel resolve the owner.
+    pub fn present_save_recovery(&mut self, pending: Option<&str>) {
+        match pending {
+            Some(error) => {
+                let target = self.input_target_mut();
+                if target.popup != BoardPopup::SaveRecovery {
+                    target.begin_save_recovery(error);
+                    target.save_recovery_proxy = true;
+                }
+            }
+            None => {
+                self.drop_stale_save_recovery();
+                if let Some(right) = self.right_seat.as_deref_mut() {
+                    right.drop_stale_save_recovery();
+                }
+            }
+        }
+    }
+
+    fn drop_stale_save_recovery(&mut self) {
+        if self.popup == BoardPopup::SaveRecovery {
+            self.end_proxy_save_recovery();
+            self.clear_message();
+        }
+    }
+
+    /// Whether this board holds the failed save itself, not just a proxy of its banner.
+    pub fn owns_save_recovery(&self) -> bool {
+        self.popup == BoardPopup::SaveRecovery && !self.save_recovery_proxy
+    }
+
+    pub fn shows_save_recovery_proxy(&self) -> bool {
+        self.popup == BoardPopup::SaveRecovery && self.save_recovery_proxy
+    }
+
+    /// Take down a proxied recovery banner. Nothing failed on this board, so its own state
+    /// (drafts, a durable delete notice) is restored as it was.
+    pub fn end_proxy_save_recovery(&mut self) {
+        self.save_recovery_proxy = false;
+        self.end_save_recovery(SaveResolution::Retried);
+    }
+
+    /// Whether a queued `y` waits in this board's retained project preview, focused or parked.
+    pub fn preview_cleanup_confirm_due(&self) -> bool {
+        self.right_seat
+            .as_deref()
+            .is_some_and(BoardModel::cleanup_confirm_due)
+    }
+
+    /// The retained project preview, whether or not it currently owns input.
+    pub(crate) fn preview_seat_mut(&mut self) -> Option<&mut BoardModel> {
+        self.right_seat.as_deref_mut()
+    }
+
+    /// Scroll the cleanup card one row; the painter records how far it may go.
+    pub fn scroll_cleanup(&mut self, down: bool) {
+        let horizon = self.cleanup_max_scroll.get();
+        if let Some(prompt) = self.cleanup_prompt.as_mut() {
+            prompt.scroll = if down {
+                prompt.scroll.saturating_add(1).min(horizon)
+            } else {
+                prompt.scroll.saturating_sub(1)
+            };
+        }
     }
 
     pub fn arm_dispatch_again(&mut self, id: Uuid) {
@@ -1316,6 +1468,7 @@ impl BoardModel {
         if self.popup == BoardPopup::SaveRecovery {
             self.popup = BoardPopup::None;
         }
+        self.save_recovery_proxy = false;
         let armed = (self.delete_notice.take(), self.delete_notice_count.take());
         let suspended = (
             self.suspended_delete_notice.take(),
@@ -3395,7 +3548,7 @@ impl BoardModel {
                 if self
                     .cleanup_prompt
                     .as_ref()
-                    .is_some_and(|prompt| prompt.dirty) =>
+                    .is_some_and(|prompt| !prompt.can_clean_any()) =>
             {
                 BoardInputMode::CleanupDirtyConfirm
             }
@@ -3594,6 +3747,19 @@ impl BoardModel {
     /// Hold a task form through the reducer's pre-persist sync.
     pub fn hold_task_edit_save(&mut self) {
         self.hold_task_edit_save = true;
+    }
+
+    /// Whether a task form is held through an unresolved save.
+    pub fn task_edit_save_held(&self) -> bool {
+        self.hold_task_edit_save
+    }
+
+    /// The task page form's title draft, if a task form is open.
+    pub fn task_form_title(&self) -> Option<&str> {
+        self.form
+            .as_ref()
+            .filter(|form| form.is_task())
+            .map(|form| form.title.value())
     }
 
     /// Release a held form only after Retry or the initial persistence succeeds.

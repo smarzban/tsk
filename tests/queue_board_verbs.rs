@@ -24,7 +24,7 @@ use tsk_tui::domain::{
 use tsk_tui::store::TaskStore;
 use tsk_tui::ui::board::{
     apply_intent, board_hit_map, board_intent_may_persist, board_verb_items, draw_board,
-    resolve_board_command, BoardInputMode, BoardModel, CleanupPrompt, CommandSurface,
+    resolve_board_command, BoardInputMode, BoardModel, CleanupPrompt, CleanupRow, CommandSurface,
     IntentOutcome, ListPickerKind, ProjectScopeOption, REFRESHING_BRANCHES,
 };
 use tsk_tui::ui::capture::CaptureField;
@@ -257,9 +257,11 @@ fn dispatch_key_and_palette_route_to_the_cursor_only_verb() {
 #[test]
 fn cleanup_popup_maps_explicit_choices_and_paints_the_guardrail_state() {
     let (_, mut model, id) = board_with_task("clean me", HumanStatus::Started);
-    model.begin_cleanup_prompt(CleanupPrompt {
+    model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
         merge_check: None,
-        confirm_deadline: None,
+        check_failed: false,
+        inspected: None,
+        number: 1,
         task_id: id,
         worktree: "/tmp/tsk-t1-clean-me".into(),
         branch: "tsk/t1-clean-me".into(),
@@ -269,7 +271,7 @@ fn cleanup_popup_maps_explicit_choices_and_paints_the_guardrail_state() {
         workspace_exists: true,
         warning: None,
         base_available: true,
-    });
+    }));
     assert_eq!(model.input_mode(), BoardInputMode::CleanupConfirm);
     assert_eq!(
         map_key(BoardInputMode::CleanupConfirm, press(KeyCode::Char('y'))),
@@ -283,14 +285,30 @@ fn cleanup_popup_maps_explicit_choices_and_paints_the_guardrail_state() {
         map_key(BoardInputMode::CleanupConfirm, press(KeyCode::Esc)),
         Some(BoardIntent::CancelCleanup)
     );
+    for mode in [
+        BoardInputMode::CleanupConfirm,
+        BoardInputMode::CleanupDirtyConfirm,
+    ] {
+        assert_eq!(
+            map_key(mode, press(KeyCode::Down)),
+            Some(BoardIntent::CleanupScrollDown)
+        );
+        assert_eq!(
+            map_key(mode, press(KeyCode::Up)),
+            Some(BoardIntent::CleanupScrollUp)
+        );
+    }
     let screen = rendered_board(&model, 100, 30);
     for text in [
-        "Clean dispatch?",
-        "/tmp/tsk-t1-clean-me",
+        "Done T1 · clean up?",
+        "Not merged into origin/main",
+        "keep branch",
         "tsk/t1-clean-me",
-        "base origin/main · not merged",
-        "agent pane will close",
-        "y clean + done",
+        "remove worktree",
+        "/tmp/tsk-t1-clean-me",
+        "close",
+        "agent pane",
+        "y done + clean up",
         "n done only",
         "esc cancel",
     ] {
@@ -357,7 +375,7 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
     );
     assert_eq!(
         host.inspections, 0,
-        "bulk done never inspects one cursor worktree"
+        "with marks active the single cursor offer stands aside for the bulk card"
     );
 
     let first_index = model
@@ -397,8 +415,13 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
         "dirty worktrees do not offer cleanup"
     );
     let screen = rendered_board(&model, 100, 30);
-    assert!(!screen.contains("y clean + done"), "{screen}");
-    assert!(screen.contains("n done only"), "{screen}");
+    assert!(!screen.contains("y done + clean up"), "{screen}");
+    assert!(screen.contains("n mark done, keep everything"), "{screen}");
+    assert!(screen.contains("can't clean up"), "{screen}");
+    assert!(
+        screen.contains("stays open") && !screen.contains("close  "),
+        "a dirty card never claims the pane closes:\n{screen}"
+    );
     let result = cleanup_and_complete_with_host(&mut domain, &mut model, true, true, &mut host)
         .expect("completion")
         .expect("cleanup attempted");
@@ -539,7 +562,7 @@ fn cleanup_card_opens_from_cached_refs_and_a_background_check_fills_merged_statu
     assert!(model.cleanup_prompt().unwrap().checking());
     let screen = rendered_board(&model, 100, 30);
     assert!(
-        screen.contains("base origin/main · checking…"),
+        screen.contains("Checking merge into origin/main…"),
         "card paints before the fetch lands:\n{screen}"
     );
     assert!(!screen.contains("squash-merged"), "{screen}");
@@ -549,11 +572,13 @@ fn cleanup_card_opens_from_cached_refs_and_a_background_check_fills_merged_statu
         branch_merged: true,
         base_available: true,
         warning: None,
+        confirmed: true,
     });
     assert!(model.poll_cleanup_check());
     assert!(!model.cleanup_prompt().unwrap().checking());
     let screen = rendered_board(&model, 100, 30);
-    assert!(screen.contains("base origin/main · merged ✓"), "{screen}");
+    assert!(screen.contains("Merged into origin/main ✓"), "{screen}");
+    assert!(screen.contains("delete branch"), "{screen}");
 
     // Esc drops the check with its card; a late verdict reaches no other prompt.
     apply_intent(&mut domain, &mut model, BoardIntent::CancelCleanup, None).expect("cancel");
@@ -565,6 +590,7 @@ fn cleanup_card_opens_from_cached_refs_and_a_background_check_fills_merged_statu
         branch_merged: true,
         base_available: true,
         warning: None,
+        confirmed: true,
     });
     assert!(!model.poll_cleanup_check());
     assert!(model.cleanup_prompt().is_none());

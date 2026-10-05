@@ -322,6 +322,9 @@ pub enum BoardIntent {
     ConfirmCleanup,
     KeepCleanup,
     CancelCleanup,
+    /// Scroll a cleanup card whose rows outgrow the frame.
+    CleanupScrollUp,
+    CleanupScrollDown,
     /// `ctrl+b` — toggle blocked ↔ ready. Reducer lands in.
     ToggleBlock,
     /// `ctrl+r` — toggle review ↔ ready. Reducer lands in.
@@ -1837,6 +1840,8 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::ConfirmCleanup
         | BoardIntent::KeepCleanup
         | BoardIntent::CancelCleanup
+        | BoardIntent::CleanupScrollUp
+        | BoardIntent::CleanupScrollDown
         | BoardIntent::ToggleBlock
         | BoardIntent::ToggleReview
         | BoardIntent::HelpQueryInsert(_)
@@ -1987,8 +1992,7 @@ fn map_task_page(key: KeyEvent) -> Option<BoardIntent> {
     }
 }
 
-/// Launch card: `y` unarchives, `n`/`Esc` keep archived. No `Enter` default (gate F-1):
-/// the choice must be explicit.
+/// Cleanup card with nothing cleanable: no `y`, and no `Enter` default.
 fn map_cleanup_dirty_confirm(key: KeyEvent) -> Option<BoardIntent> {
     if key
         .modifiers
@@ -1999,6 +2003,14 @@ fn map_cleanup_dirty_confirm(key: KeyEvent) -> Option<BoardIntent> {
     match key.code {
         KeyCode::Char('n') => Some(BoardIntent::KeepCleanup),
         KeyCode::Esc => Some(BoardIntent::CancelCleanup),
+        code => map_cleanup_scroll(code),
+    }
+}
+
+fn map_cleanup_scroll(code: KeyCode) -> Option<BoardIntent> {
+    match code {
+        KeyCode::Up | KeyCode::PageUp => Some(BoardIntent::CleanupScrollUp),
+        KeyCode::Down | KeyCode::PageDown => Some(BoardIntent::CleanupScrollDown),
         _ => None,
     }
 }
@@ -2014,7 +2026,7 @@ fn map_cleanup_confirm(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Char('y') => Some(BoardIntent::ConfirmCleanup),
         KeyCode::Char('n') => Some(BoardIntent::KeepCleanup),
         KeyCode::Esc => Some(BoardIntent::CancelCleanup),
-        _ => None,
+        code => map_cleanup_scroll(code),
     }
 }
 

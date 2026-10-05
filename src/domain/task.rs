@@ -566,6 +566,23 @@ impl DomainState {
         Ok(())
     }
 
+    /// [`Self::complete_batch`] after cleanup mutated some of the same tasks in this unsaved
+    /// transaction: each cleanup revision keeps its original durable merge base, and the
+    /// completion of the whole set stays the one undoable part.
+    pub fn complete_batch_after_cleanup(&mut self, ids: &[Uuid]) -> Result<(), DomainError> {
+        let merge_bases = ids
+            .iter()
+            .filter_map(|id| self.get(*id).map(|task| (*id, task.merge_base_revision)))
+            .collect::<Vec<_>>();
+        self.complete_batch(ids)?;
+        for (id, merge_base) in merge_bases {
+            if merge_base.is_some() {
+                self.task_mut(id)?.merge_base_revision = merge_base;
+            }
+        }
+        Ok(())
+    }
+
     /// Reopen a `done` task to `open` (inbox).
     pub fn reopen(&mut self, id: Uuid) -> Result<(), DomainError> {
         self.apply_status(id, HumanStatus::Open, TaskEventKind::Reopened)

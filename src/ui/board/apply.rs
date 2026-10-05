@@ -1992,6 +1992,10 @@ fn apply_board_intent(
             model.close_popup();
             return Ok(IntentOutcome::None);
         }
+        BoardIntent::CleanupScrollUp | BoardIntent::CleanupScrollDown => {
+            model.scroll_cleanup(intent == BoardIntent::CleanupScrollDown);
+            return Ok(IntentOutcome::None);
+        }
         BoardIntent::PrimaryVerb => {
             model.close_popup();
             // Status verbs always act on tasks, even with a step selected: Enter owns steps.
