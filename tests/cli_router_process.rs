@@ -8,6 +8,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tsk_tui::domain::{DomainState, ProvenanceOrigin, TaskScope};
 use tsk_tui::store::TaskStore;
 
+#[cfg(unix)]
+#[path = "support/spawn.rs"]
+mod spawn;
+
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn binary() -> String {
@@ -99,21 +103,20 @@ fn update_directs_a_homebrew_binary_to_brew_without_a_path_lookup() {
     std::fs::create_dir_all(executable.parent().expect("Homebrew binary parent"))
         .expect("create Homebrew test directory");
     std::fs::copy(binary(), &executable).expect("copy tsk into Homebrew Cellar");
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
             .expect("make copied binary executable");
     }
+    let mut command = Command::new(&executable);
+    command
+        .arg("update")
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let output = wait_with_output_before_deadline(
-        Command::new(&executable)
-            .arg("update")
-            .env_clear()
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn Homebrew update"),
+        spawn::spawn_fresh_copy(&mut command).expect("spawn Homebrew update"),
         "Homebrew update guidance",
     );
 
