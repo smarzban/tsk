@@ -1034,7 +1034,7 @@ pub fn cleaned(result: CleanupResult, json: bool) -> CliOutput {
     };
     let branch_reason = result
         .branch_reason
-        .map(|reason| reason.message(result.base.as_deref()));
+        .map(|reason| reason.message(result.base.as_deref(), result.remote.as_deref()));
     let stdout = if json {
         format!(
             "{}\n",
@@ -1885,6 +1885,7 @@ mod tests {
     #[test]
     fn clean_output_names_every_resource_in_human_and_json_forms() {
         let result = CleanupResult {
+            remote: None,
             warning: None,
             branch_reason: Some(crate::dispatch::BranchRetentionReason::NotMerged),
             number: 12,

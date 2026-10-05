@@ -3805,6 +3805,7 @@ fn cleanup_card(model: &mut BoardModel, id: uuid::Uuid, dirty: bool) {
     model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
         merge_check: None,
         check_failed: false,
+        unreachable_remote: None,
         inspected: None,
         number: 1,
         task_id: id,

@@ -57,7 +57,7 @@ fn identifiers_list<'a>(identifiers: impl IntoIterator<Item = &'a String>) -> St
 fn cleanup_branch_action(row: &CleanupRow) -> &'static str {
     if row.checking() {
         "delete branch if merged"
-    } else if row.base_available && row.branch_merged && !row.check_failed {
+    } else if row.branch_deletable() {
         "delete branch"
     } else {
         "keep branch"
@@ -109,6 +109,8 @@ pub(crate) fn cleanup_overlay<'a>(prompt: &CleanupPrompt, home: Option<&str>) ->
                 } else {
                     let verdict = if row.checking() {
                         "checking…".to_string()
+                    } else if row.unreachable_remote.is_some() {
+                        "not confirmed (offline)".to_string()
                     } else if !row.base_available {
                         format!("base {} unavailable", row.base)
                     } else if row.branch_merged {
@@ -211,6 +213,8 @@ fn single_cleanup_lines(
         "Worktree has uncommitted changes, so it stays.".to_string()
     } else if row.checking() {
         format!("Checking merge into {base}…")
+    } else if row.unreachable_remote.is_some() {
+        format!("Merge into {base} not confirmed (offline), so the branch stays.")
     } else if !row.base_available {
         format!("Base {base} is unavailable, so the branch stays.")
     } else if row.branch_merged {

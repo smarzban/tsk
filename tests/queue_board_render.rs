@@ -6066,6 +6066,7 @@ fn unmerged_cleanup_card_explains_squash_retention_without_clipping_the_hint() {
     model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
         merge_check: None,
         check_failed: false,
+        unreachable_remote: None,
         inspected: None,
         number: 1,
         task_id: id,
@@ -6090,7 +6091,7 @@ fn unmerged_cleanup_card_explains_squash_retention_without_clipping_the_hint() {
 }
 
 #[test]
-fn cleanup_card_exposes_cached_ref_warning_and_missing_base_without_a_squash_hint() {
+fn cleanup_card_exposes_an_offline_check_and_missing_base_without_a_squash_hint() {
     use tsk_tui::ui::board::{CleanupPrompt, CleanupRow};
     let mut domain = DomainState::new();
     let id = domain
@@ -6102,18 +6103,12 @@ fn cleanup_card_exposes_cached_ref_warning_and_missing_base_without_a_squash_hin
             None,
         )
         .unwrap();
-    for (available, merged, warning) in [
-        (
-            true,
-            true,
-            Some("fetch failed; merged status computed from cached refs"),
-        ),
-        (false, false, None),
-    ] {
+    for (available, merged, offline) in [(true, true, true), (false, false, false)] {
         let mut model = BoardModel::from_domain(&domain, None);
         model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
             merge_check: None,
             check_failed: false,
+            unreachable_remote: offline.then(|| "origin".into()),
             inspected: None,
             number: 1,
             task_id: id,
@@ -6123,22 +6118,38 @@ fn cleanup_card_exposes_cached_ref_warning_and_missing_base_without_a_squash_hin
             dirty: false,
             branch_merged: merged,
             base_available: available,
-            warning: warning.map(str::to_owned),
+            warning: offline.then(|| "fetch failed: offline; merged status not confirmed".into()),
             workspace_exists: true,
         }));
         for width in [40, 80] {
             let painted = board_rows(&model, width, 24).join("\n");
             assert!(!painted.contains("squash-merged?"), "{width}: {painted}");
-            assert!(
-                painted.contains(if available {
-                    "cached refs"
-                } else {
-                    "unavailable"
-                }),
-                "{width}: {painted}"
-            );
+            assert!(painted.contains("keep branch"), "{width}: {painted}");
+            assert!(!painted.contains("delete branch"), "{width}: {painted}");
+            if offline {
+                // Cached refs read merged, but the card never claims it.
+                assert!(painted.contains("not confirmed"), "{width}: {painted}");
+                assert!(painted.contains("(offline)"), "{width}: {painted}");
+                assert!(!painted.contains("✓"), "{width}: {painted}");
+                assert!(painted.contains("fetch failed"), "{width}: {painted}");
+            } else {
+                assert!(painted.contains("unavailable"), "{width}: {painted}");
+            }
         }
     }
+}
+
+#[test]
+fn bulk_cleanup_card_marks_an_offline_row_not_confirmed_and_keeps_its_branch() {
+    let mut model = bulk_cleanup_model();
+    let before = board_rows(&model, 80, 30).join("\n");
+    assert!(before.contains("merged ✓") && before.contains("delete branch"));
+    // T148 is the merged row: its check could not reach the remote.
+    model.cleanup_prompt_mut().unwrap().rows[0].unreachable_remote = Some("origin".into());
+    let painted = board_rows(&model, 80, 30).join("\n");
+    assert!(painted.contains("not confirmed (offline)"), "{painted}");
+    assert!(!painted.contains("merged ✓"), "{painted}");
+    assert!(!painted.contains("delete branch"), "{painted}");
 }
 
 fn bulk_cleanup_model() -> BoardModel {
@@ -6148,6 +6159,7 @@ fn bulk_cleanup_model() -> BoardModel {
     let row = |number: u64, dirty: bool, merged: bool| CleanupRow {
         merge_check: None,
         check_failed: false,
+        unreachable_remote: None,
         inspected: None,
         number,
         task_id: Uuid::from_u128(u128::from(number)),
@@ -6238,6 +6250,7 @@ fn large_bulk_cleanup_model(count: u64, dirty: bool) -> BoardModel {
         .map(|number| CleanupRow {
             merge_check: None,
             check_failed: false,
+            unreachable_remote: None,
             inspected: None,
             number,
             task_id: Uuid::from_u128(u128::from(number)),
