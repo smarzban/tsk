@@ -260,6 +260,7 @@ fn cleanup_popup_maps_explicit_choices_and_paints_the_guardrail_state() {
     model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
         merge_check: None,
         check_failed: false,
+        unreachable_remote: None,
         inspected: None,
         number: 1,
         task_id: id,
@@ -358,6 +359,7 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
     mark_tasks(&mut domain, &mut model, &[first, second]);
     let mut host = CleanupHost {
         inspection: Some(CleanupInspection {
+            unreachable_remote: None,
             worktree_exists: true,
             dirty: true,
             branch_merged: false,
@@ -534,6 +536,7 @@ fn dispatched_board_for_merge_check(label: &str) -> (DomainState, BoardModel, uu
 
 fn merge_check_host(cached_merged: bool, fetched_merged: bool) -> MergeCheckHost {
     let inspection = |branch_merged| CleanupInspection {
+        unreachable_remote: None,
         worktree_exists: true,
         dirty: false,
         branch_merged,
@@ -569,6 +572,7 @@ fn cleanup_card_opens_from_cached_refs_and_a_background_check_fills_merged_statu
     assert!(!model.poll_cleanup_check(), "nothing to apply yet");
 
     host.check.complete(MergeVerdict {
+        unreachable_remote: None,
         branch_merged: true,
         base_available: true,
         warning: None,
@@ -587,6 +591,7 @@ fn cleanup_card_opens_from_cached_refs_and_a_background_check_fills_merged_statu
     let stale = host.check.clone();
     apply_intent(&mut domain, &mut model, BoardIntent::CancelCleanup, None).expect("cancel");
     stale.complete(MergeVerdict {
+        unreachable_remote: None,
         branch_merged: true,
         base_available: true,
         warning: None,
@@ -655,6 +660,7 @@ fn missing_worktree_converges_cleaned_and_done_in_one_board_save_without_a_popup
     model.sync_from_domain(&domain);
     let mut host = CleanupHost {
         inspection: Some(CleanupInspection {
+            unreachable_remote: None,
             worktree_exists: false,
             dirty: false,
             branch_merged: false,
@@ -731,6 +737,7 @@ fn cleanup_offer_skips_done_and_archived_tasks_without_inspection_or_mutation() 
         let before = serde_json::to_value(&domain).unwrap();
         let mut host = CleanupHost {
             inspection: Some(CleanupInspection {
+                unreachable_remote: None,
                 worktree_exists: true,
                 dirty: false,
                 branch_merged: true,
@@ -790,6 +797,7 @@ fn cleanup_offer_defers_to_the_archived_project_read_only_refusal() {
     let before = serde_json::to_value(&domain).unwrap();
     let mut host = CleanupHost {
         inspection: Some(CleanupInspection {
+            unreachable_remote: None,
             worktree_exists: true,
             dirty: false,
             branch_merged: true,
@@ -855,6 +863,7 @@ fn successful_popup_cleanup_and_completion_save_once_and_undo_only_status() {
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
     let mut host = CleanupHost {
         inspection: Some(CleanupInspection {
+            unreachable_remote: None,
             worktree_exists: true,
             dirty: false,
             branch_merged: false,
