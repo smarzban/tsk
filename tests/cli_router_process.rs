@@ -8,6 +8,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tsk_tui::domain::{DomainState, ProvenanceOrigin, TaskScope};
 use tsk_tui::store::TaskStore;
 
+#[cfg(unix)]
+#[path = "support/spawn.rs"]
+mod spawn;
+
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn binary() -> String {
@@ -39,25 +43,6 @@ fn wait_with_output_before_deadline(mut child: Child, description: &str) -> Outp
             panic!("{description} kept a TUI open");
         }
         thread::sleep(Duration::from_millis(10));
-    }
-}
-
-/// Spawns a binary that this process just wrote. Another test thread may fork while the
-/// copy's write descriptor is still open; the forked child holds it until its own exec,
-/// and executing the file meanwhile fails with ETXTBSY. The window is brief, so retry.
-#[cfg(unix)]
-fn spawn_fresh_copy(command: &mut Command) -> std::io::Result<Child> {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match command.spawn() {
-            Err(error)
-                if error.kind() == std::io::ErrorKind::ExecutableFileBusy
-                    && Instant::now() < deadline =>
-            {
-                thread::sleep(Duration::from_millis(20));
-            }
-            result => return result,
-        }
     }
 }
 
@@ -131,7 +116,7 @@ fn update_directs_a_homebrew_binary_to_brew_without_a_path_lookup() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let output = wait_with_output_before_deadline(
-        spawn_fresh_copy(&mut command).expect("spawn Homebrew update"),
+        spawn::spawn_fresh_copy(&mut command).expect("spawn Homebrew update"),
         "Homebrew update guidance",
     );
 
