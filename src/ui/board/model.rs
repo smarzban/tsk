@@ -99,6 +99,8 @@ pub enum BoardInputMode {
     CleanupConfirm,
     /// A dirty worktree can only be kept and completed, or cancelled.
     CleanupDirtyConfirm,
+    /// The bulk dispatch card over a marked set is awaiting y/Esc.
+    DispatchConfirm,
     /// The task page is open in view mode: the full-page surface shows the bound task and
     /// no field owns the cursor. Verbs act on the task; `e`/`n`/Tab enter field edits. A
     /// click does NOT: field regions are inert in this state, and only move focus once one
@@ -1004,6 +1006,10 @@ pub struct BoardModel {
     pub(super) pending_dispatch_again: Option<Uuid>,
     /// Cursor-pinned dispatch cleanup details while the confirmation modal owns input.
     pub(super) cleanup_prompt: Option<CleanupPrompt>,
+    /// Bulk dispatch card over the marked set while it owns input.
+    pub(super) dispatch_prompt: Option<DispatchPrompt>,
+    /// A bulk dispatch whose launches are still landing.
+    pub(super) bulk_dispatch: Option<BulkDispatchRun>,
     /// Whether the armed delete originated from a non-empty marked set.
     pub(super) pending_delete_bulk: bool,
     /// Open project-picker or save-recovery presentation.
@@ -1101,6 +1107,60 @@ pub struct BulkCleanup {
     /// Dispatched targets whose worktree could not be inspected, with the reason: kept, still
     /// marked done.
     pub refused: Vec<(String, String)>,
+}
+
+/// Session-only bulk dispatch confirmation for a marked set, checked when `ctrl+g` opened it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchPrompt {
+    /// The tasks `y` launches, in board order.
+    pub launch: Vec<crate::dispatch::EligibleDispatch>,
+    /// Marked tasks the card skips: the board identifier and the single-task refusal.
+    pub skipped: Vec<(String, String)>,
+    /// First visible card row; the painter clamps it to the rows that fit.
+    pub scroll: usize,
+}
+
+/// A bulk dispatch in flight. Launches run off the event loop; each outcome is recorded and
+/// saved as it lands, like a single dispatch.
+#[derive(Debug, Clone)]
+pub struct BulkDispatchRun {
+    pub batch: crate::dispatch::LaunchBatch,
+    /// Every task `y` confirmed, including any a recheck refused before launching.
+    pub total: usize,
+    /// Board identifiers of launched tasks, with their assignee.
+    pub launched: Vec<(String, String)>,
+    /// Board identifiers of tasks whose launch or record failed, with the reason.
+    pub failed: Vec<(String, String)>,
+    /// Fetch fallbacks reported by launches (cached refs used).
+    pub warnings: Vec<String>,
+}
+
+impl BulkDispatchRun {
+    /// The status row while launches land, and the outcome once all have.
+    pub fn message(&self) -> String {
+        let total = self.total;
+        let settled = self.launched.len() + self.failed.len();
+        let mut parts = Vec::new();
+        if settled < total {
+            parts.push(format!("dispatching {}/{total}…", settled + 1));
+        }
+        if !self.launched.is_empty() {
+            let launched = self
+                .launched
+                .iter()
+                .map(|(identifier, assignee)| format!("{identifier} to @{assignee}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            parts.push(format!("dispatched {launched}"));
+        }
+        for (identifier, reason) in &self.failed {
+            parts.push(format!("{identifier} failed: {reason}"));
+        }
+        let mut warnings = self.warnings.clone();
+        warnings.dedup();
+        parts.extend(warnings);
+        parts.join(" · ")
+    }
 }
 
 /// Session-only cleanup confirmation: one row for the cursor task, or one per live dispatch
@@ -1214,6 +1274,8 @@ impl BoardModel {
             pending_delete: None,
             pending_dispatch_again: None,
             cleanup_prompt: None,
+            dispatch_prompt: None,
+            bulk_dispatch: None,
             pending_delete_bulk: false,
             popup: BoardPopup::None,
             project_picker: None,
@@ -1257,10 +1319,14 @@ impl BoardModel {
 
     pub fn close_popup(&mut self) {
         if self.popup != BoardPopup::SaveRecovery {
-            let cleanup = self.popup == BoardPopup::CleanupConfirm;
+            let cleanup = matches!(
+                self.popup,
+                BoardPopup::CleanupConfirm | BoardPopup::DispatchConfirm
+            );
             self.popup = BoardPopup::None;
             self.project_picker = None;
             self.cleanup_prompt = None;
+            self.dispatch_prompt = None;
             if cleanup {
                 self.clear_message();
             }
@@ -1283,6 +1349,53 @@ impl BoardModel {
 
     pub fn cleanup_prompt(&self) -> Option<&CleanupPrompt> {
         self.cleanup_prompt.as_ref()
+    }
+
+    /// Open the bulk dispatch card. It keeps the marks, so `Esc` returns to the same set.
+    pub fn begin_dispatch_prompt(&mut self, prompt: DispatchPrompt) {
+        self.cleanup_max_scroll.set(usize::MAX);
+        self.close_help();
+        self.close_command_surface();
+        self.clear_dispatch_again();
+        self.dispatch_prompt = Some(prompt);
+        self.popup = BoardPopup::DispatchConfirm;
+        self.clear_message();
+    }
+
+    pub fn dispatch_prompt(&self) -> Option<&DispatchPrompt> {
+        self.dispatch_prompt.as_ref()
+    }
+
+    /// Close the card and take what it would launch.
+    pub fn take_dispatch_prompt(&mut self) -> Option<DispatchPrompt> {
+        let prompt = self.dispatch_prompt.take()?;
+        self.close_popup();
+        Some(prompt)
+    }
+
+    pub fn bulk_dispatch(&self) -> Option<&BulkDispatchRun> {
+        self.bulk_dispatch.as_ref()
+    }
+
+    pub fn bulk_dispatch_mut(&mut self) -> Option<&mut BulkDispatchRun> {
+        self.bulk_dispatch.as_mut()
+    }
+
+    pub fn begin_bulk_dispatch(&mut self, run: BulkDispatchRun) {
+        self.bulk_dispatch = Some(run);
+    }
+
+    pub fn end_bulk_dispatch(&mut self) -> Option<BulkDispatchRun> {
+        self.bulk_dispatch.take()
+    }
+
+    /// A bulk dispatch on this board or its project preview is still landing.
+    pub fn bulk_dispatch_running(&self) -> bool {
+        self.bulk_dispatch.is_some()
+            || self
+                .right_seat
+                .as_deref()
+                .is_some_and(BoardModel::bulk_dispatch_running)
     }
 
     pub fn cleanup_prompt_mut(&mut self) -> Option<&mut CleanupPrompt> {
@@ -1401,16 +1514,19 @@ impl BoardModel {
         self.right_seat.as_deref_mut()
     }
 
-    /// Scroll the cleanup card one row; the painter records how far it may go.
+    /// Scroll the cleanup or bulk dispatch card one row; the painter records how far it may go.
     pub fn scroll_cleanup(&mut self, down: bool) {
         let horizon = self.cleanup_max_scroll.get();
-        if let Some(prompt) = self.cleanup_prompt.as_mut() {
-            prompt.scroll = if down {
-                prompt.scroll.saturating_add(1).min(horizon)
-            } else {
-                prompt.scroll.saturating_sub(1)
-            };
-        }
+        let scroll = match (self.cleanup_prompt.as_mut(), self.dispatch_prompt.as_mut()) {
+            (Some(prompt), _) => &mut prompt.scroll,
+            (None, Some(prompt)) => &mut prompt.scroll,
+            (None, None) => return,
+        };
+        *scroll = if down {
+            scroll.saturating_add(1).min(horizon)
+        } else {
+            scroll.saturating_sub(1)
+        };
     }
 
     pub fn arm_dispatch_again(&mut self, id: Uuid) {
@@ -3553,6 +3669,7 @@ impl BoardModel {
                 BoardInputMode::CleanupDirtyConfirm
             }
             BoardPopup::CleanupConfirm => BoardInputMode::CleanupConfirm,
+            BoardPopup::DispatchConfirm => BoardInputMode::DispatchConfirm,
             _ if self.project_picker.is_some() => BoardInputMode::ProjectPicker,
             _ if self.focused_surface() == FocusedSurface::Board
                 && self.input_mode == BoardInputMode::TaskPage =>

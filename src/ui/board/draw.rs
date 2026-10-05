@@ -26,7 +26,8 @@ use super::chrome::{notice_framed, row_width, BULK_DELETE_NOTICE_UNDO, DELETE_NO
 use super::commands::CommandSurface;
 use super::model::{
     project_option_label, project_scope_option_label, BoardForm, BoardInputMode, BoardLocation,
-    BoardModel, CleanupPrompt, CleanupRow, PickerTab, ProjectScopeOption, ProjectsView,
+    BoardModel, CleanupPrompt, CleanupRow, DispatchPrompt, PickerTab, ProjectScopeOption,
+    ProjectsView,
 };
 use crate::ui::render::{CleanupCardLine, CleanupFooter, CleanupTitle};
 
@@ -182,6 +183,51 @@ pub(crate) fn cleanup_overlay<'a>(prompt: &CleanupPrompt, home: Option<&str>) ->
         title,
         lines,
         footer,
+        scroll: prompt.scroll,
+    }
+}
+
+/// The bulk dispatch card: one row per task `y` launches (assignee and base), then the skipped
+/// tasks with the single-task refusal. `default_branch` names a repository's remote default.
+pub(crate) fn dispatch_overlay<'a>(
+    prompt: &DispatchPrompt,
+    default_branch: impl Fn(&Path) -> String,
+) -> QueueOverlay<'a> {
+    let count = prompt.launch.len();
+    let noun = if count == 1 { "task" } else { "tasks" };
+    let title = CleanupTitle {
+        full: format!("Dispatch {count} {noun}?"),
+        short: format!("Dispatch {count}?"),
+        bare: "Dispatch".into(),
+        question: format!("Dispatch {count} {noun}?"),
+    };
+    let mut lines = Vec::new();
+    for eligible in &prompt.launch {
+        let base = match eligible.base() {
+            Some(base) => format!("from {base}"),
+            None => match default_branch(eligible.project()) {
+                default if default == "default" => "from default".to_string(),
+                default => format!("from default ({default})"),
+            },
+        };
+        lines.push(CleanupCardLine::Field {
+            label: format!("T{}", eligible.number),
+            value: format!("@{}  {base}", eligible.assignee),
+        });
+    }
+    if !prompt.skipped.is_empty() {
+        lines.push(CleanupCardLine::Text("skipped".into()));
+        for (identifier, reason) in &prompt.skipped {
+            lines.push(CleanupCardLine::Field {
+                label: identifier.clone(),
+                value: reason.clone(),
+            });
+        }
+    }
+    QueueOverlay::CleanupConfirm {
+        title,
+        lines,
+        footer: CleanupFooter::Dispatch(count),
         scroll: prompt.scroll,
     }
 }
@@ -1422,6 +1468,11 @@ impl OverlayPayloads {
         if let Some(prompt) = model.cleanup_prompt() {
             return Some(cleanup_overlay(prompt, home_dir().as_deref()));
         }
+        if let Some(prompt) = model.dispatch_prompt() {
+            return Some(dispatch_overlay(prompt, |project| {
+                model.default_branch_name(project)
+            }));
+        }
         if let Some(name) = self.launch_card_name.as_deref() {
             return Some(QueueOverlay::LaunchCard { name });
         }
@@ -1492,7 +1543,10 @@ fn status_row_content(model: &BoardModel) -> (Option<String>, Option<usize>, Opt
         (None, Some(msg)) => Some(msg.to_string()),
         (None, None) if editing_on_page => Some("editing…".to_string()),
         // Under a bulk cleanup card, Esc cancels the card and keeps the marks.
-        (None, None) if model.mark_mode_active() && model.cleanup_prompt().is_some() => {
+        (None, None)
+            if model.mark_mode_active()
+                && (model.cleanup_prompt().is_some() || model.dispatch_prompt().is_some()) =>
+        {
             Some(format!("multi-select · {} selected", model.marked_count()))
         }
         (None, None) if model.mark_mode_active() && model.marked_count() > 0 => Some(format!(
