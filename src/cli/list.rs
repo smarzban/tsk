@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::cli::parser::{parse_task_address, TaskAddress};
 use crate::context::snapshot_from_env;
 use crate::domain::{normalize_thread, thread_refusal_message, HumanStatus, TaskScope};
-use crate::scope::resolve_permissive_project_path;
+use crate::scope::{resolve_permissive_project_path, PathIdentityCache};
 use crate::store::{default_state_dir, TaskStore};
 
 /// Parsed `list` input.
@@ -280,11 +280,7 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
             path: resolve_permissive_project_path(project, &domain, Some(&snapshot_from_env())),
         },
         None if input.global => TaskScope::Global,
-        None => {
-            let mut snapshot = snapshot_from_env();
-            crate::scope::adopt_stored_identity(&mut snapshot, &domain);
-            snapshot.default_scope
-        }
+        None => snapshot_from_env().default_scope,
     });
     let view = if input.deleted {
         ListView::Deleted
@@ -305,11 +301,16 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
             input.all,
         );
     }
+    let identities = PathIdentityCache::default();
     let mut rows = domain
         .tasks()
         .iter()
         .filter(|task| !task.is_notice())
-        .filter(|task| scope.as_ref().is_none_or(|scope| task.scope == *scope))
+        .filter(|task| {
+            scope
+                .as_ref()
+                .is_none_or(|scope| in_scope(task, scope, &identities))
+        })
         .filter(|task| {
             input
                 .thread
@@ -384,16 +385,19 @@ fn deleted_rows(
     let trash = store
         .load_trash()
         .map_err(|error| ListError::Store(error.to_string()))?;
-    let in_scope = |task: &crate::domain::Task| {
+    let identities = PathIdentityCache::default();
+    let in_view = |task: &crate::domain::Task| {
         !task.is_notice()
-            && scope.as_ref().is_none_or(|scope| task.scope == *scope)
+            && scope
+                .as_ref()
+                .is_none_or(|scope| in_scope(task, scope, &identities))
             && thread.is_none_or(|thread| task.thread.as_deref() == Some(thread))
             && assignee.is_none_or(|assignee| task.assignee.as_deref() == Some(assignee))
     };
     let mut dated: Vec<(std::time::SystemTime, ListRow)> = domain
         .tasks()
         .iter()
-        .filter(|task| task.soft_deleted && in_scope(task))
+        .filter(|task| task.soft_deleted && in_view(task))
         .map(|task| {
             (
                 task.soft_deleted_at().unwrap_or(task.updated_at),
@@ -405,7 +409,7 @@ fn deleted_rows(
         domain.tasks().iter().map(|task| task.id).collect();
     for line in trash {
         // A task in both places is listed once, from the live copy.
-        if live_ids.contains(&line.task.id) || !in_scope(&line.task) {
+        if live_ids.contains(&line.task.id) || !in_view(&line.task) {
             continue;
         }
         dated.push((line.deleted_at, row_for(&line.task)));
@@ -457,5 +461,16 @@ fn status_group_rank(status: HumanStatus) -> u8 {
         HumanStatus::Blocked => 3,
         HumanStatus::Review => 4,
         HumanStatus::Done => 5,
+    }
+}
+
+/// Whether a task sits in a filter scope. Project paths match by directory identity, so
+/// `/tmp/x` and `/private/tmp/x` (any symlink alias) list the same tasks.
+fn in_scope(task: &crate::domain::Task, scope: &TaskScope, identities: &PathIdentityCache) -> bool {
+    match (&task.scope, scope) {
+        (TaskScope::Project { path }, TaskScope::Project { path: filter }) => {
+            identities.equivalent(path, filter)
+        }
+        (task_scope, scope) => task_scope == scope,
     }
 }

@@ -1564,8 +1564,13 @@ impl BoardModel {
     /// directory remains selected in project slot 2 and Desk remains quick-add's default.
     pub fn from_domain_for_snapshot(state: &DomainState, snapshot: &InvocationSnapshot) -> Self {
         let start_in_project = matches!(snapshot.default_scope, TaskScope::Project { .. });
-        let mut model =
-            Self::from_domain_with_start(state, snapshot.this_repo.clone(), start_in_project);
+        // The board navigates and offers the stored identity of an aliased launch repo
+        // (`/tmp/x` for `/private/tmp/x`); the snapshot keeps the launch spelling for `!p`.
+        let this_repo = snapshot.this_repo.clone().map(|repo| {
+            crate::scope::stored_spelling(state, &repo.to_string_lossy())
+                .map_or(repo, PathBuf::from)
+        });
+        let mut model = Self::from_domain_with_start(state, this_repo, start_in_project);
         model.session_default_scope = Some(snapshot.default_scope.clone());
         model
     }
@@ -2386,16 +2391,25 @@ impl BoardModel {
     /// resolved invocation repository and current selection: no path is ever invented.
     pub fn project_options(&self) -> Vec<ProjectScopeOption> {
         let mut paths: Vec<PathBuf> = Vec::new();
-        // Aliases of one directory (`/tmp/x` and `/private/tmp/x`) are one option; the
+        // Aliases of one directory (`/tmp/x` and `/private/tmp/x`) are one option. The
+        // spelling the board is on wins, so the selector can highlight it; otherwise the
         // first spelling pushed wins.
         let identities = PathIdentityCache::default();
+        let current = match &self.board_location {
+            BoardLocation::Project(path) | BoardLocation::ArchivedProject(path) => {
+                Some(path.as_path())
+            }
+            BoardLocation::Desk | BoardLocation::Projects => None,
+        };
         let push = |path: PathBuf, paths: &mut Vec<PathBuf>| {
             let spelling = path.to_string_lossy();
-            if !paths
+            match paths
                 .iter()
-                .any(|known| identities.equivalent(&known.to_string_lossy(), &spelling))
+                .position(|known| identities.equivalent(&known.to_string_lossy(), &spelling))
             {
-                paths.push(path);
+                Some(index) if current == Some(path.as_path()) => paths[index] = path,
+                Some(_) => {}
+                None => paths.push(path),
             }
         };
         if let Some(repo) = self.this_repo.clone() {
@@ -5044,6 +5058,58 @@ mod tests {
             .visible_list_picker_options()
             .iter()
             .any(|(_, option)| option.label == "#nav"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// T152 review F-3: when the board sits on the alias spelling that dedupe would drop,
+    /// the selector keeps that spelling and highlights it instead of falling back to Home.
+    #[cfg(unix)]
+    #[test]
+    fn project_selector_keeps_and_highlights_the_current_alias_spelling() {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "tsk-t152-highlight-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let real = root.join("alpha");
+        let alias = root.join("link").join("alpha");
+        fs::create_dir_all(&real).expect("real");
+        fs::create_dir_all(root.join("link")).expect("link parent");
+        symlink(&real, &alias).expect("alias");
+        let mut domain = DomainState::new();
+        // `root/alpha` sorts before `root/link/alpha`, so plain first-wins keeps `real`.
+        create(&mut domain, "twin", project(&real.to_string_lossy()));
+        create(&mut domain, "current", project(&alias.to_string_lossy()));
+        let mut model = BoardModel::from_domain(&domain, None);
+        model.board_location = BoardLocation::Project(alias.clone());
+
+        crate::ui::board::apply_intent(
+            &mut domain,
+            &mut model,
+            crate::ui::input::BoardIntent::OpenProjectSelector,
+            None,
+        )
+        .expect("open selector");
+        let picker = model.project_picker.as_ref().expect("selector open");
+        let projects: Vec<&ProjectScopeOption> = picker
+            .options
+            .iter()
+            .filter(|option| matches!(option, ProjectScopeOption::Project(_)))
+            .collect();
+        assert_eq!(projects, vec![&ProjectScopeOption::Project(alias.clone())]);
+        assert_eq!(
+            picker.options[picker.selected],
+            ProjectScopeOption::Project(alias)
+        );
+
+        model.project_picker = None;
+        model.board_location = BoardLocation::Projects;
+        let rows = model.project_rows();
+        assert_eq!(rows.len(), 1, "the Projects index lists the twin once");
         let _ = fs::remove_dir_all(root);
     }
 

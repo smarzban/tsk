@@ -80,9 +80,10 @@ pub fn resolve_mode<S: AsRef<str>>(args: impl IntoIterator<Item = S>) -> AppMode
     resolve_mode_from(env::var(MODE_ENV).ok().as_deref(), args)
 }
 
-/// The invocation snapshot, with any project path that aliases a stored project
-/// (`/private/tmp/repo` for `/tmp/repo`) rewritten to the stored spelling.
-fn load_snapshot(state: &DomainState) -> InvocationSnapshot {
+/// The invocation snapshot, its default destination rewritten to the stored project it
+/// aliases (`/tmp/repo` for a launch from `/private/tmp/repo`). Board open, the quick-capture
+/// popup, and the board's quick add all take their snapshot from here.
+pub fn load_snapshot(state: &DomainState) -> InvocationSnapshot {
     let raw = RawHostContext::from_env();
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut snapshot = build_snapshot(&raw, cwd);
