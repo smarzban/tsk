@@ -10,7 +10,9 @@ use std::time::Duration;
 
 use tsk_tui::agents::{AgentProfiles, STARTER_CONFIG};
 use tsk_tui::announcements;
-use tsk_tui::app::{load_board, load_board_for_quick_capture, load_board_model};
+use tsk_tui::app::{
+    load_board, load_board_for_quick_capture, load_board_model, load_snapshot, seed_quick_capture,
+};
 use tsk_tui::context::{build_snapshot, RawHostContext, CONTEXT_JSON_ENV};
 use tsk_tui::delivery;
 use tsk_tui::domain::{DomainState, HumanStatus, ProvenanceOrigin, Task, TaskScope};
@@ -406,4 +408,84 @@ fn completing_a_guide_on_the_real_board_records_its_dismissal() {
         delivery::load(&state_dir).guides,
         [dismissed].into_iter().collect::<BTreeSet<_>>()
     );
+}
+
+/// T152: launched from `work/alpha` while the store knows the same repository as the
+/// symlink `links/beta`, the board opens on the stored project, lists it once, and both
+/// the board's quick add and the capture popup default to the stored spelling.
+#[test]
+fn board_and_capture_from_an_aliased_launch_repo_use_the_stored_project() {
+    let _lock = env_lock();
+    suppress_background_fetch();
+    let env = StateDirEnv::set("alias-board");
+    let root = env.dir.parent().unwrap().to_path_buf();
+    let real = root.join("work").join("alpha");
+    fs::create_dir_all(real.join(".git")).expect("git marker");
+    fs::create_dir_all(root.join("links")).expect("links directory");
+    let alias = root.join("links").join("beta");
+    std::os::unix::fs::symlink(&real, &alias).expect("alias");
+    let stored = TaskScope::Project {
+        path: alias.to_string_lossy().into_owned(),
+    };
+    let mut seed = DomainState::new();
+    seed.create(
+        "seeded",
+        None,
+        stored.clone(),
+        ProvenanceOrigin::Manual,
+        None,
+    )
+    .expect("seed task");
+    TaskStore::new(&env.dir).save(&seed).expect("save seed");
+    let _context = ContextEnv::set(&real);
+
+    let (_store, mut state, mut model) = load_board().expect("full board open");
+    assert_eq!(model.selected_project(), Some(alias.as_path()));
+    assert_eq!(
+        model
+            .project_options()
+            .iter()
+            .filter(|option| matches!(option, tsk_tui::ui::board::ProjectScopeOption::Project(_)))
+            .count(),
+        1
+    );
+    // From the desk tab, quick add takes the launch default rather than the open project.
+    apply_intent(
+        &mut state,
+        &mut model,
+        BoardIntent::SelectNavTab(NavTab::Desk),
+        None,
+    )
+    .expect("desk tab");
+    let snapshot = load_snapshot(&state);
+    apply_intent(
+        &mut state,
+        &mut model,
+        BoardIntent::OpenCapture,
+        Some(&snapshot),
+    )
+    .expect("open quick add");
+    apply_intent(
+        &mut state,
+        &mut model,
+        BoardIntent::QuickAddInsertText("board capture".into()),
+        None,
+    )
+    .expect("type title");
+    assert_eq!(
+        apply_intent(&mut state, &mut model, BoardIntent::QuickAddSave, None)
+            .expect("save quick add"),
+        IntentOutcome::Persist
+    );
+    let saved = state
+        .tasks()
+        .iter()
+        .find(|task| task.title == "board capture")
+        .expect("saved task");
+    assert_eq!(saved.scope, stored);
+
+    let (_store, mut state, mut model) = load_board_for_quick_capture().expect("capture open");
+    let snapshot = load_snapshot(&state);
+    seed_quick_capture(&mut state, &mut model, &snapshot);
+    assert_eq!(model.form_scope(), Some(&stored));
 }

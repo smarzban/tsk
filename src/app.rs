@@ -80,10 +80,15 @@ pub fn resolve_mode<S: AsRef<str>>(args: impl IntoIterator<Item = S>) -> AppMode
     resolve_mode_from(env::var(MODE_ENV).ok().as_deref(), args)
 }
 
-fn load_snapshot() -> InvocationSnapshot {
+/// The invocation snapshot, its default destination rewritten to the stored project it
+/// aliases (`/tmp/repo` for a launch from `/private/tmp/repo`). Board open, the quick-capture
+/// popup, and the board's quick add all take their snapshot from here.
+pub fn load_snapshot(state: &DomainState) -> InvocationSnapshot {
     let raw = RawHostContext::from_env();
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    build_snapshot(&raw, cwd)
+    let mut snapshot = build_snapshot(&raw, cwd);
+    crate::scope::adopt_stored_identity(&mut snapshot, state);
+    snapshot
 }
 
 /// Load store + snapshot into domain and board view-model (no TTY).
@@ -107,7 +112,7 @@ fn load_board_inner(
         seed_notices_without_blocking_open(&store);
     }
     let state = store.load()?;
-    let snapshot = load_snapshot();
+    let snapshot = load_snapshot(&state);
     let mut model = BoardModel::from_domain_for_snapshot(&state, &snapshot);
     match crate::agents::AgentProfiles::load(&state_dir) {
         Ok(profiles) => model.set_agent_profiles(&profiles),
@@ -285,7 +290,7 @@ pub fn quick_capture_finished(model: &BoardModel) -> bool {
 /// explicit discard closes it, and a failed save keeps it open in recovery.
 fn run_capture() -> Result<(), Box<dyn Error>> {
     let (store, mut domain, mut model) = load_board_for_quick_capture()?;
-    let snapshot = load_snapshot();
+    let snapshot = load_snapshot(&domain);
     seed_quick_capture(&mut domain, &mut model, &snapshot);
     run_board_loop(store, domain, model, true)
 }
@@ -2836,7 +2841,7 @@ fn handle_board_intent_with_host(
 
     let loaded_snapshot;
     let snapshot_for_intent = if !save_recovery.is_pending() && intent == BoardIntent::OpenCapture {
-        loaded_snapshot = load_snapshot();
+        loaded_snapshot = load_snapshot(domain);
         Some(&loaded_snapshot)
     } else {
         None

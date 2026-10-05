@@ -2767,3 +2767,97 @@ fn list_open_and_ready_conflicts_are_usage_errors() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// T152: launched from `work/alpha` while the store knows the same repository as the
+/// symlink `links/beta` (plus a legacy task under the launch spelling and one under a
+/// second alias `mirror/alpha`), bare `list` and
+/// `-p` by either basename or path list the project's tasks and nothing else.
+#[cfg(unix)]
+#[test]
+fn list_from_an_aliased_launch_repo_matches_the_stored_project() {
+    let _env = env_lock();
+    let root = temp_state_dir("alias-root");
+    let real = root.join("work").join("alpha");
+    std::fs::create_dir_all(real.join(".git")).expect("create git marker");
+    std::fs::create_dir(root.join("links")).expect("links directory");
+    let alias = root.join("links").join("beta");
+    std::os::unix::fs::symlink(&real, &alias).expect("alias");
+    // A second alias sharing the launch basename must not make `-p alpha` ambiguous.
+    std::fs::create_dir(root.join("mirror")).expect("mirror directory");
+    let mirror = root.join("mirror").join("alpha");
+    std::os::unix::fs::symlink(&real, &mirror).expect("mirror alias");
+    let other = project_repo("alias-other");
+    let _context = EnvironmentGuard::context_for(&real);
+    let dir = temp_state_dir("alias-rows");
+    let mut state = DomainState::new();
+    let stored = TaskScope::Project {
+        path: alias.to_string_lossy().into_owned(),
+    };
+    create_task(&mut state, "stored", stored.clone(), HumanStatus::Ready);
+    create_task(
+        &mut state,
+        "legacy twin",
+        TaskScope::Project {
+            path: real.to_string_lossy().into_owned(),
+        },
+        HumanStatus::Open,
+    );
+    create_task(
+        &mut state,
+        "mirror",
+        TaskScope::Project {
+            path: mirror.to_string_lossy().into_owned(),
+        },
+        HumanStatus::Started,
+    );
+    create_task(&mut state, "desk", TaskScope::Global, HumanStatus::Ready);
+    create_task(
+        &mut state,
+        "elsewhere",
+        TaskScope::Project {
+            path: other.to_string_lossy().into_owned(),
+        },
+        HumanStatus::Ready,
+    );
+    TaskStore::new(&dir).save(&state).expect("save fixture");
+
+    for project in [
+        None,
+        Some("alpha".to_string()),
+        Some("beta".to_string()),
+        Some(real.to_string_lossy().into_owned()),
+    ] {
+        let mut args: Vec<String> = vec![
+            "tsk".into(),
+            "list".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "--json".into(),
+        ];
+        if let Some(project) = &project {
+            args.extend(["-p".into(), project.clone()]);
+        }
+        let output = list(&args);
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&output.stdout).expect("rows");
+        let mut titles: Vec<&str> = rows
+            .iter()
+            .map(|row| row["title"].as_str().expect("title"))
+            .collect();
+        titles.sort();
+        assert_eq!(
+            titles,
+            vec!["legacy twin", "mirror", "stored"],
+            "-p {project:?}"
+        );
+    }
+    let reloaded = TaskStore::new(&dir).load().expect("reload");
+    assert_eq!(
+        reloaded.tasks()[0].scope,
+        stored,
+        "list never moves a scope"
+    );
+    let _ = std::fs::remove_dir_all(root);
+    let _ = std::fs::remove_dir_all(other);
+    let _ = std::fs::remove_dir_all(dir);
+}
