@@ -182,6 +182,7 @@ pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> boo
                 | BoardIntent::PrimaryVerb
                 | BoardIntent::Dispatch
                 | BoardIntent::DispatchAgain
+                | BoardIntent::ConfirmDispatch
                 | BoardIntent::ConfirmCleanup
                 | BoardIntent::KeepCleanup
                 | BoardIntent::ToggleBlock
@@ -2008,6 +2009,15 @@ fn apply_board_intent(
             return Ok(IntentOutcome::None);
         }
         BoardIntent::CancelCleanup => {
+            model.close_popup();
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::ConfirmDispatch => {
+            // Launches and their saves are owned by the application boundary.
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::CancelDispatch => {
+            // The card keeps the marks: Esc returns to the same marked set.
             model.close_popup();
             return Ok(IntentOutcome::None);
         }
