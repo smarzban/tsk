@@ -975,7 +975,7 @@ fn merge_verdict(
     let (unreachable_remote, warning) = match fetch_failure {
         Some((remote, reason)) => {
             let warning = if base_available {
-                format!("fetch failed: {reason}; merged status not confirmed, branch kept")
+                format!("{reason}; merged status not confirmed, branch kept")
             } else {
                 format!("fetch failed: {reason}; merged status unavailable because recorded base no longer available")
             };

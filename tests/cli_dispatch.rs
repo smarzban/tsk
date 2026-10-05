@@ -656,7 +656,7 @@ fn cleanup_offline_keeps_the_branch_and_says_why_in_human_and_json() {
             human.stdout
         );
         assert!(
-            human.stdout.contains("warning: fetch failed:"),
+            human.stdout.contains("warning: fetch failed (offline"),
             "{}",
             human.stdout
         );
