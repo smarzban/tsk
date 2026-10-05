@@ -5611,7 +5611,10 @@ fn real_thread_picker_paints_query_and_options() {
         rows.contains("threads \u{b7} @assignees"),
         "picker tabs missing:\n{rows}"
     );
-    assert!(rows.contains("all"), "picker options missing:\n{rows}");
+    assert!(
+        rows.contains("▸ all  1  ✓"),
+        "picker options missing:\n{rows}"
+    );
     assert!(rows.contains("#release"), "thread option missing:\n{rows}");
 }
 

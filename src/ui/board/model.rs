@@ -5576,6 +5576,32 @@ mod tests {
     }
 
     #[test]
+    fn tab_in_an_untabbed_picker_still_moves_its_selection() {
+        let mut domain = DomainState::new();
+        let id = create(&mut domain, "a1", project(REPO_A));
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(REPO_A)));
+        model.agent_names = vec!["claude".to_string(), "pi".to_string()];
+        model.open_assignee_picker(vec![id], None, false);
+        assert_eq!(model.list_picker_tab(), None);
+        crate::ui::board::apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ListPickerTabNext,
+            None,
+        )
+        .expect("tab");
+        assert_eq!(model.list_picker_selected(), 1, "Tab moves to @pi");
+        crate::ui::board::apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ListPickerTabPrev,
+            None,
+        )
+        .expect("shift+tab");
+        assert_eq!(model.list_picker_selected(), 0);
+    }
+
+    #[test]
     fn filter_change_clears_marks_and_reanchors_on_a_painted_row() {
         let mut domain = DomainState::new();
         let kept = create(&mut domain, "kept", project(REPO_A));
