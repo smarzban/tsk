@@ -3108,6 +3108,82 @@ fn filter_golden_rows() -> (Vec<String>, Vec<String>) {
     (picker, board)
 }
 
+/// Both filters active with long names at 40 columns: the chip and the footer wrap, so
+/// neither the thread nor the assignee choice is ever cut off.
+fn filter_long_golden_rows() -> Vec<String> {
+    let model = long_filter_model();
+    board_rows(&model, 40, 24)
+}
+
+fn long_filter_model() -> BoardModel {
+    let mut tasks = fixture_tasks();
+    for task in &mut tasks {
+        match task.id.as_u128() {
+            10 => {
+                task.assignee = Some("integration-agent".to_string());
+                task.thread = Some("release-coordination".to_string());
+            }
+            11 => task.thread = Some("release-coordination".to_string()),
+            _ => {}
+        }
+    }
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from("/repos/tsk")));
+    for intent in [
+        BoardIntent::SelectNavTab(NavTab::ProjectBoard),
+        BoardIntent::OpenThreadFilterPicker,
+        BoardIntent::ListPickerNext,
+        BoardIntent::ConfirmListPicker,
+        BoardIntent::OpenThreadFilterPicker,
+        BoardIntent::ListPickerTabNext,
+        BoardIntent::ListPickerNext,
+        BoardIntent::ConfirmListPicker,
+    ] {
+        apply_intent(&mut domain, &mut model, intent, None).expect("long filter intent");
+    }
+    model
+}
+
+#[test]
+fn long_combined_filter_wraps_chip_and_footer_without_losing_either_choice() {
+    let model = long_filter_model();
+    assert_eq!(
+        model.board_filter().label(),
+        "#release-coordination @integration-agent"
+    );
+    for (width, height) in [(40, 24), (40, 12), (50, 20)] {
+        let rows = board_rows(&model, width, height);
+        let text = rows.join("\n");
+        // The verb bar (last row) trims its own entries; every other row must not.
+        let above_verbs = rows[..rows.len() - 1].join("\n");
+        assert!(
+            !above_verbs.contains('…'),
+            "{width}x{height} truncated:\n{text}"
+        );
+        let top: String = rows[..5].join("\n");
+        assert!(
+            top.contains("#release-coordination"),
+            "chip thread:\n{text}"
+        );
+        assert!(
+            top.contains("@integration-agent ▾"),
+            "chip assignee:\n{text}"
+        );
+        let footer = rows[rows.len() - 4..].join("\n");
+        assert!(footer.contains("#release-coordination"), "footer:\n{text}");
+        assert!(footer.contains("@integration-agent"), "footer:\n{text}");
+        assert!(text.contains("board UI"), "the list keeps a row:\n{text}");
+    }
+    // Every wrapped chip row opens the picker.
+    let hits = tsk_tui::ui::board::board_hit_map(Rect::new(0, 0, 40, 24), &model);
+    let chips: Vec<_> = hits
+        .regions
+        .iter()
+        .filter(|hit| hit.target == FilterHitTarget::NavChip)
+        .collect();
+    assert_eq!(chips.len(), 2, "one hit per wrapped chip row");
+}
+
 fn golden_scenes() -> Vec<GoldenScene> {
     let tasks = fixture_tasks();
 
@@ -3302,6 +3378,7 @@ fn golden_scenes() -> Vec<GoldenScene> {
     let (archived_rows, _) = paint(80, 24, &archived_model);
 
     let (filter_picker_rows, filtered_board_rows) = filter_golden_rows();
+    let filtered_long_rows = filter_long_golden_rows();
 
     vec![
         GoldenScene {
@@ -3312,6 +3389,11 @@ fn golden_scenes() -> Vec<GoldenScene> {
         GoldenScene {
             name: "board_filtered_40x24",
             rows: filtered_board_rows,
+            width: 40,
+        },
+        GoldenScene {
+            name: "board_filtered_long_40x24",
+            rows: filtered_long_rows,
             width: 40,
         },
         GoldenScene {
@@ -3843,12 +3925,13 @@ fn all_golden_frames_pass_no_color_sgr_scan() {
         scanned += 1;
     }
     assert_eq!(
-        scanned, 18,
-        "expected the eighteen board surface goldens (board, board_marked, \
+        scanned, 19,
+        "expected the nineteen board surface goldens (board, board_marked, \
          board_default_split_78, board_search, board_search_pinned, board_search_empty, \
          accordion, palette, help, done_drawer, inbox, done_drawer_archived, \
          projects_index_50x20, projects_index_110x30, projects_preview_split_110x30, \
-         projects_preview_rail_110x30, filter_picker_40x24, board_filtered_40x24) in {dir:?}"
+         projects_preview_rail_110x30, filter_picker_40x24, board_filtered_40x24, \
+         board_filtered_long_40x24) in {dir:?}"
     );
 }
 

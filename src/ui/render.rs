@@ -961,7 +961,7 @@ pub fn draw_queue_footer(
     if geo.row_width == 0 || geo.height == 0 {
         return hits;
     }
-    paint_footer(frame, model, geo, surface, &mut hits, hint, true);
+    paint_footer(frame, model, geo, surface, &mut hits, hint, true, 0);
     hits.translate_and_clip(surface);
     hits
 }
@@ -1227,9 +1227,23 @@ fn draw_queue_frame_impl(
         && selector_chip_wraps(model, selector_geo.row_width)
         && selector_geo.viewport_height > 0
     {
-        // A wrapped control gets one blank row between it and the tabs.
-        selector_geo.viewport_top = selector_geo.viewport_top.saturating_add(2);
-        selector_geo.viewport_height = selector_geo.viewport_height.saturating_sub(2);
+        // A wrapped control gets one blank row between it and the tabs, then as many rows
+        // as its label wraps to (a thread and an assignee may each take one).
+        let rows = selector_chip_rows(model, selector_geo.row_width).len() as u16;
+        let reserve = rows
+            .saturating_add(1)
+            .min(selector_geo.viewport_height.saturating_sub(1).max(2));
+        selector_geo.viewport_top = selector_geo.viewport_top.saturating_add(reserve);
+        selector_geo.viewport_height = selector_geo.viewport_height.saturating_sub(reserve);
+    }
+    let mut context_extra = 0;
+    if footer {
+        // An idle status context that wraps takes its extra rows from the list's bottom.
+        let extra = idle_context_extra_rows(model, &selector_geo);
+        context_extra = extra;
+        selector_geo.viewport_height = selector_geo.viewport_height.saturating_sub(extra);
+        selector_geo.rule_row = selector_geo.rule_row.map(|row| row.saturating_sub(extra));
+        selector_geo.status_row = selector_geo.status_row.map(|row| row.saturating_sub(extra));
     }
     let geo = &selector_geo;
     let mut hits = QueueHitMap::default();
@@ -1256,9 +1270,14 @@ fn draw_queue_frame_impl(
                     hits.push(target, Rect::new(x, row, w, 1));
                 }
                 if selector_chip_wraps(model, width) {
-                    let chip_row = row.saturating_add(2);
-                    if chip_row < geo.rule_row.unwrap_or(geo.height) {
-                        let (chip, x, chip_width) = paint_selector_chip(model, width);
+                    let limit = geo.viewport_top.min(geo.rule_row.unwrap_or(geo.height));
+                    for (index, (chip, x, chip_width)) in
+                        paint_selector_chip(model, width).into_iter().enumerate()
+                    {
+                        let chip_row = row.saturating_add(2 + index as u16);
+                        if chip_row >= limit {
+                            break;
+                        }
                         put_line(frame, surface, chip_row, width, chip);
                         hits.push(
                             QueueHitTarget::NavChip,
@@ -1379,7 +1398,16 @@ fn draw_queue_frame_impl(
     }
 
     if footer {
-        paint_footer(frame, model, geo, surface, &mut hits, None, false);
+        paint_footer(
+            frame,
+            model,
+            geo,
+            surface,
+            &mut hits,
+            None,
+            false,
+            context_extra,
+        );
     }
 
     if let Some((project_name, bold)) = project_header {
@@ -1394,6 +1422,7 @@ fn draw_queue_frame_impl(
 
 /// Rule, status and verb rows. `shared` marks the wide footer, which also owns the palette
 /// query row its column can no longer paint.
+#[allow(clippy::too_many_arguments)]
 fn paint_footer(
     frame: &mut Frame<'_>,
     model: &QueueFrameModel<'_>,
@@ -1402,6 +1431,8 @@ fn paint_footer(
     hits: &mut QueueHitMap,
     hint: Option<StatusHint<'_>>,
     shared: bool,
+    // Rows reserved above the status row for a wrapped idle context.
+    context_extra: u16,
 ) {
     let width = geo.row_width;
     let footer_top = [geo.rule_row, geo.status_row, geo.verb_row]
@@ -1468,7 +1499,26 @@ fn paint_footer(
                 _ => {}
             }
         } else {
-            let idle = idle_context(model);
+            let mut idle = idle_context(model);
+            // A wrapped idle context fills the rows reserved above the status line; its
+            // last row keeps the status line's hint.
+            if context_extra > 0 {
+                let mut rows = idle_context_rows(&idle, width);
+                let rest = rows.split_off((context_extra as usize).min(rows.len()));
+                for (index, text) in rows.into_iter().enumerate() {
+                    put_line(
+                        frame,
+                        surface,
+                        row + index as u16,
+                        width,
+                        paint_bounded_line(&text, width, style_dim()),
+                    );
+                }
+                // Normally one row remains. Only a frame too short to reserve more joins
+                // the leftovers onto the status line, which bounds them.
+                idle = rest.concat();
+            }
+            let row = row + context_extra;
             let (line, undo_hit) = paint_status_line(
                 model.status_message,
                 model.status_undo_offset,
@@ -5087,6 +5137,33 @@ fn paint_bottom_input_message(
     );
 }
 
+/// Rows beyond the status row that an idle context needs to wrap rather than truncate.
+/// Messages, input slots, task pages, and a lone row keep today's single status line.
+fn idle_context_extra_rows(model: &QueueFrameModel<'_>, geo: &TierGeometry) -> u16 {
+    // Board surfaces only: the task page and editors size their own content against the
+    // standard footer, and opening a picker or Help must not move the board under it.
+    let board_surface = matches!(
+        model.overlay,
+        QueueOverlay::None | QueueOverlay::ScopeDropdown { .. } | QueueOverlay::Help { .. }
+    );
+    if !board_surface || geo.status_row.is_none() || model.status_message.is_some() {
+        return 0;
+    }
+    let rows = idle_context_rows(&idle_context(model), geo.row_width).len() as u16;
+    rows.saturating_sub(1)
+        .min(geo.viewport_height.saturating_sub(1))
+}
+
+/// The idle context wrapped at the row width, each row led by the status line's one-cell
+/// indent.
+fn idle_context_rows(idle: &str, width: u16) -> Vec<String> {
+    let room = (width as usize).saturating_sub(1).max(1);
+    wrapped_rows(idle.trim_start(), room)
+        .into_iter()
+        .map(|row| format!(" {row}"))
+        .collect()
+}
+
 fn idle_context(model: &QueueFrameModel<'_>) -> String {
     let mut context = if model.projects_index && !model.has_update_notice {
         // The index's status row names the selected project's full path; rows carry
@@ -5305,18 +5382,42 @@ fn paint_selector_row(
     (bound_line(Line::from(spans), width), hits)
 }
 
-fn paint_selector_chip(model: &QueueFrameModel<'_>, width: u16) -> (Line<'static>, u16, u16) {
+/// The wrapped control's text rows, never truncated: the label wraps at word boundaries
+/// (`#thread` and `@assignee` land on their own rows when both do not fit) and the
+/// chevron closes the last row.
+fn selector_chip_rows(model: &QueueFrameModel<'_>, width: u16) -> Vec<String> {
     let Some(chip) = model.nav.chip.as_ref() else {
-        return (Line::from(""), 0, 0);
+        return Vec::new();
     };
-    let chip_text = present_line(&format!(" {} \u{25be} ", chip.label), width as usize);
-    let chip_width = display_width(&chip_text).min(width as usize);
-    let x = (width as usize).saturating_sub(chip_width) as u16;
-    let line = Line::from(vec![
-        Span::styled(" ".repeat(x as usize), style_plain()),
-        Span::styled(chip_text, style_dim()),
-    ]);
-    (line, x, chip_width.max(1) as u16)
+    let room = (width as usize).saturating_sub(4).max(1);
+    let rows = wrapped_rows(&chip.label, room);
+    let last = rows.len().saturating_sub(1);
+    rows.into_iter()
+        .enumerate()
+        .map(|(index, row)| {
+            if index == last {
+                format!(" {row} \u{25be} ")
+            } else {
+                format!(" {row}   ")
+            }
+        })
+        .collect()
+}
+
+/// One right-aligned line per wrapped control row, with its x and width for hits.
+fn paint_selector_chip(model: &QueueFrameModel<'_>, width: u16) -> Vec<(Line<'static>, u16, u16)> {
+    selector_chip_rows(model, width)
+        .into_iter()
+        .map(|chip_text| {
+            let chip_width = display_width(&chip_text).min(width as usize);
+            let x = (width as usize).saturating_sub(chip_width) as u16;
+            let line = Line::from(vec![
+                Span::styled(" ".repeat(x as usize), style_plain()),
+                Span::styled(chip_text, style_dim()),
+            ]);
+            (line, x, chip_width.max(1) as u16)
+        })
+        .collect()
 }
 
 /// Verb bar: ` key label · key label …`, trimmed to `budget` entries.

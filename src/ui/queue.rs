@@ -183,7 +183,7 @@ pub fn search_words(query: &str) -> Vec<String> {
 }
 
 /// Whether a task matches every content-search term in its title, notes, steps,
-/// thread, or painted task number. Search is Unicode-case-insensitive substring.
+/// thread, assignee (with or without its `@`), or painted task number. Search is Unicode-case-insensitive substring.
 pub fn task_matches(task: &Task, words: &[String]) -> bool {
     if words.is_empty() {
         return true;
@@ -200,6 +200,11 @@ pub fn task_matches(task: &Task, words: &[String]) -> bool {
     if let Some(thread) = task.thread.as_deref() {
         searchable.push('\n');
         searchable.push_str(&thread.to_lowercase());
+    }
+    // `@claude` and `claude` both find the assignee, as the row's `@name` reads.
+    if let Some(assignee) = task.assignee.as_deref() {
+        searchable.push_str("\n@");
+        searchable.push_str(&assignee.to_lowercase());
     }
     if let Some(identifier) = task.board_identifier() {
         searchable.push('\n');
@@ -1678,6 +1683,33 @@ mod tests {
             .expect("empty project keeps the deck section");
         assert!(deck.empty_hint);
         assert!(deck.task_ids.is_empty());
+    }
+
+    #[test]
+    fn board_search_matches_the_assignee_with_or_without_its_at() {
+        let mut assigned = task(1, HumanStatus::Ready, TaskScope::Global, false, 0);
+        assigned.assignee = Some("claude".to_string());
+        let other = task(2, HumanStatus::Ready, TaskScope::Global, false, 0);
+        for query in ["claude", "@claude", "@CLA"] {
+            let view = query_board_search(
+                &[assigned.clone(), other.clone()],
+                &BTreeSet::new(),
+                None,
+                BoardLens::Desk,
+                false,
+                &BoardFilter::default(),
+                query,
+            );
+            assert_eq!(
+                visible_task_ids(&view, false, false)
+                    .into_iter()
+                    .filter(|id| *id != INBOX_HEADER_ROW_ID)
+                    .collect::<Vec<_>>(),
+                vec![assigned.id],
+                "{query}"
+            );
+        }
+        assert!(!task_matches(&other, &search_words("@")));
     }
 
     #[test]

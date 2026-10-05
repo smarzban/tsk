@@ -590,6 +590,7 @@ import { parseCapture } from "./capture.js";
       task.notes,
       ...(task.steps || []).map((step) => step.text),
       task.thread,
+      task.assignee && `@${task.assignee}`,
       `T${task.number}`,
     ]
       .filter(Boolean)
