@@ -314,7 +314,8 @@ pub enum BoardIntent {
     CommandQueryBackspace,
     /// `ctrl+s` — state-mapped primary verb. Reducer lands in.
     PrimaryVerb,
-    /// `ctrl+g` — dispatch the cursor task to its assignee.
+    /// `ctrl+g` — dispatch the cursor task to its assignee, or open the bulk dispatch card
+    /// over a marked set.
     Dispatch,
     /// Palette-only explicit relaunch of an existing dispatch.
     DispatchAgain,
@@ -322,6 +323,9 @@ pub enum BoardIntent {
     ConfirmCleanup,
     KeepCleanup,
     CancelCleanup,
+    /// Bulk dispatch card choices: y launches every eligible task, Esc changes nothing.
+    ConfirmDispatch,
+    CancelDispatch,
     /// Scroll a cleanup card whose rows outgrow the frame.
     CleanupScrollUp,
     CleanupScrollDown,
@@ -1288,6 +1292,7 @@ pub fn map_key(mode: BoardInputMode, key: KeyEvent) -> Option<BoardIntent> {
                 | BoardInputMode::LaunchCard
                 | BoardInputMode::CleanupConfirm
                 | BoardInputMode::CleanupDirtyConfirm
+                | BoardInputMode::DispatchConfirm
                 | BoardInputMode::ProjectPicker
                 | BoardInputMode::ListPicker
                 | BoardInputMode::Help
@@ -1306,6 +1311,7 @@ pub fn map_key(mode: BoardInputMode, key: KeyEvent) -> Option<BoardIntent> {
         BoardInputMode::LaunchCard => map_launch_card(key),
         BoardInputMode::CleanupConfirm => map_cleanup_confirm(key),
         BoardInputMode::CleanupDirtyConfirm => map_cleanup_dirty_confirm(key),
+        BoardInputMode::DispatchConfirm => map_dispatch_confirm(key),
         BoardInputMode::Palette => map_palette(key),
         BoardInputMode::Help => map_help(key),
         BoardInputMode::QuickAdd => map_quick_add_key(key),
@@ -1711,6 +1717,7 @@ pub fn map_edit_paste(mode: BoardInputMode, text: &str) -> Option<BoardIntent> {
         | BoardInputMode::LaunchCard
         | BoardInputMode::CleanupConfirm
         | BoardInputMode::CleanupDirtyConfirm
+        | BoardInputMode::DispatchConfirm
         | BoardInputMode::TaskPage
         | BoardInputMode::CapturePage => None,
         BoardInputMode::ListPicker => {
@@ -1840,6 +1847,8 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::ConfirmCleanup
         | BoardIntent::KeepCleanup
         | BoardIntent::CancelCleanup
+        | BoardIntent::ConfirmDispatch
+        | BoardIntent::CancelDispatch
         | BoardIntent::CleanupScrollUp
         | BoardIntent::CleanupScrollDown
         | BoardIntent::ToggleBlock
@@ -2026,6 +2035,21 @@ fn map_cleanup_confirm(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Char('y') => Some(BoardIntent::ConfirmCleanup),
         KeyCode::Char('n') => Some(BoardIntent::KeepCleanup),
         KeyCode::Esc => Some(BoardIntent::CancelCleanup),
+        code => map_cleanup_scroll(code),
+    }
+}
+
+/// Bulk dispatch card: `y` launches, `Esc` cancels. No `Enter` default.
+fn map_dispatch_confirm(key: KeyEvent) -> Option<BoardIntent> {
+    if key
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+    {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char('y') => Some(BoardIntent::ConfirmDispatch),
+        KeyCode::Esc => Some(BoardIntent::CancelDispatch),
         code => map_cleanup_scroll(code),
     }
 }
