@@ -6,8 +6,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-#[path = "support/stub.rs"]
-mod stub;
+use crate::stub;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

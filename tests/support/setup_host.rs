@@ -23,7 +23,7 @@ impl Host {
         fs::create_dir(root.join("outside")).unwrap();
         let bin = root.join("bin");
         symlink(binary, bin.join("tsk")).unwrap();
-        super::stub::write_stub(
+        crate::stub::write_stub(
             &bin.join("herdr"),
             r#"#!/bin/sh
 printf '%s\n' "$*" >> "$FIXTURE/calls"

@@ -1,8 +1,7 @@
 //! Real Git integration, outside unit suites that temporarily mutate PATH.
 
 #[cfg(unix)]
-#[path = "support/stub.rs"]
-mod stub;
+use crate::stub;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};

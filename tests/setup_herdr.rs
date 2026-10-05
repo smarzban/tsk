@@ -1,12 +1,11 @@
+#[cfg(unix)]
+use crate::stub;
 use std::{
     fs,
     path::PathBuf,
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
 };
-#[cfg(unix)]
-#[path = "support/stub.rs"]
-mod stub;
 use tsk_tui::setup::edit_bindings;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);

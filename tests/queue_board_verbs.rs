@@ -1,8 +1,7 @@
 //! Verb Surface reducers — primary verbs, done/reopen/block, drawer, Esc layers.
 
 #[cfg(unix)]
-#[path = "support/stub.rs"]
-mod stub;
+use crate::stub;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};

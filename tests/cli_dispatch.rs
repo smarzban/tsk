@@ -1,8 +1,7 @@
 //! Dispatch CLI: routing, parsing, stable refusal codes, and persistence.
 
 #[cfg(unix)]
-#[path = "support/stub.rs"]
-mod stub;
+use crate::stub;
 use std::fs;
 use std::io::Cursor;
 use std::sync::atomic::{AtomicU64, Ordering};
