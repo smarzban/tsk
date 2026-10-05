@@ -593,9 +593,11 @@ fn old_herdr_is_refused_before_any_write_with_an_actionable_message() {
 #[cfg(unix)]
 #[test]
 fn setup_lock_is_released_while_a_forked_child_still_shares_it() {
+    use std::io::{Read, Write};
+    use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
-    // The injected fork shares every open descriptor of its process for a second: run it in
-    // a child test process so sibling tests' files never leak into it.
+    // The injected fork shares every open descriptor of its process until released: run it
+    // in a child test process so sibling tests' files never leak into it.
     const CHILD: &str = "TSK_SETUP_LOCK_FORK_CHILD";
     if env::var_os(CHILD).is_none() {
         let output = Command::new(env::current_exe().unwrap())
@@ -618,26 +620,32 @@ fn setup_lock_is_released_while_a_forked_child_still_shares_it() {
     let temp = Temp::new();
     let config = temp.0.join("config.toml");
     let registry = RefCell::new(BTreeMap::<String, PathBuf>::new());
-    let forks = RefCell::new(Vec::new());
+    // Handshake with the forked child: it signals once it exists (so it holds every inherited
+    // descriptor, the setup lock's included), then stays between fork and exec until released.
+    let (mut ready_reader, ready_writer) = std::io::pipe().unwrap();
+    let (release_reader, mut release_writer) = std::io::pipe().unwrap();
+    let (ready_fd, release_fd) = (ready_writer.as_raw_fd(), release_reader.as_raw_fd());
+    let fork = RefCell::new(None);
     let mut host = |args: &[&str], _: &Path| -> io::Result<String> {
         if args == ["--version"] {
             return Ok("herdr 0.9.0\n".into());
         }
-        if args.starts_with(&["config", "check"]) {
-            // Another thread forks while the lock is held, and its child sits between fork
-            // and exec, as a loaded runner can leave it, past the end of this setup.
-            forks.borrow_mut().push(std::thread::spawn(|| {
+        if args.starts_with(&["config", "check"]) && fork.borrow().is_none() {
+            // Another thread forks while the first setup holds the lock.
+            *fork.borrow_mut() = Some(std::thread::spawn(move || {
                 let mut command = Command::new("true");
-                // SAFETY: the closure only sleeps, which is async-signal-safe.
+                // SAFETY: the closure only calls write(2) and read(2), both async-signal-safe.
                 unsafe {
-                    command.pre_exec(|| {
-                        std::thread::sleep(std::time::Duration::from_secs(1));
+                    command.pre_exec(move || {
+                        let mut byte = 0u8;
+                        libc::write(ready_fd, (&raw const byte).cast(), 1);
+                        libc::read(release_fd, (&raw mut byte).cast(), 1);
                         Ok(())
                     });
                 }
                 command.status().unwrap();
             }));
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            ready_reader.read_exact(&mut [0u8]).unwrap();
         }
         if args.starts_with(&["plugin", "link"]) {
             registry
@@ -646,7 +654,7 @@ fn setup_lock_is_released_while_a_forked_child_still_shares_it() {
         }
         Ok(serde_json::json!({"result":{"plugins":registry.borrow().iter().map(|(id,root)|serde_json::json!({"plugin_id":id,"plugin_root":root})).collect::<Vec<_>>()}}).to_string())
     };
-    for version in ["0.5.0", "0.5.1"] {
+    let mut setup = |version| {
         run_at(
             &config,
             version,
@@ -655,9 +663,13 @@ fn setup_lock_is_released_while_a_forked_child_still_shares_it() {
             false,
             &mut host,
         )
-        .unwrap();
-    }
-    for fork in forks.take() {
-        fork.join().unwrap();
-    }
+    };
+    let first = setup("0.5.0");
+    // The child is provably still between fork and exec, sharing the first setup's lock.
+    let second = setup("0.5.1");
+    release_writer.write_all(&[0]).unwrap();
+    fork.take().expect("the first setup forked").join().unwrap();
+    drop((ready_writer, release_reader));
+    first.unwrap();
+    second.unwrap();
 }

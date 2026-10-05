@@ -51,58 +51,85 @@ const LOCAL_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250)
 pub(crate) const NETWORK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Test suites run real Git on loaded machines, where a 250ms metadata query or a 5s local
-/// fetch can overrun and silently flip a ref check. Tests stretch the two default deadlines
-/// above: unit tests always, integration suites through `stretch_default_deadlines_for_tests`,
-/// and the debug binary they spawn through `STRETCH_DEADLINES_ENV`. A release binary reads
-/// neither, so its limits are the constants. Caller-chosen deadlines
-/// (`git_process_output_timeout`) are never stretched.
-#[doc(hidden)]
-pub const TEST_DEADLINE_SCALE: u32 = 20;
+/// fetch can overrun and silently flip a ref check. Debug builds let tests stretch the two
+/// default deadlines above: unit tests always, integration suites through
+/// `stretch_default_deadlines_for_tests`, and the debug binary they spawn through
+/// `STRETCH_DEADLINES_ENV`. Release builds compile none of it: the hooks are no-ops and the
+/// deadlines are the constants. Caller-chosen deadlines (`git_process_output_timeout`) are
+/// never stretched.
 #[doc(hidden)]
 pub const STRETCH_DEADLINES_ENV: &str = "TSK_TEST_STRETCH_GIT_DEADLINES";
-static DEFAULT_DEADLINE_SCALE: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(if cfg!(test) { TEST_DEADLINE_SCALE } else { 1 });
-thread_local! {
-    static EXACT_FETCH_DEADLINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+
+#[cfg(debug_assertions)]
+mod test_deadlines {
+    use std::cell::Cell;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::thread::LocalKey;
+    use std::time::Duration;
+
+    const SCALE: u32 = 20;
+    static STRETCHED: AtomicU32 = AtomicU32::new(if cfg!(test) { SCALE } else { 1 });
+    thread_local! {
+        pub(super) static EXACT_LOCAL: Cell<bool> = const { Cell::new(false) };
+        pub(super) static EXACT_FETCH: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(super) fn stretch() {
+        STRETCHED.store(SCALE, Ordering::Relaxed);
+    }
+
+    pub(super) fn deadline(base: Duration, exact: &'static LocalKey<Cell<bool>>) -> Duration {
+        if exact.with(Cell::get) {
+            return base;
+        }
+        static FROM_ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let from_env =
+            *FROM_ENV.get_or_init(|| std::env::var_os(super::STRETCH_DEADLINES_ENV).is_some());
+        let scale = STRETCHED.load(Ordering::Relaxed);
+        base * if from_env { SCALE } else { scale }
+    }
 }
 
-/// Test hook: stretch the default Git deadlines for this whole process.
+/// Test hook: stretch the default Git deadlines for this whole process (debug builds only).
 #[doc(hidden)]
 pub fn stretch_default_deadlines_for_tests() {
-    DEFAULT_DEADLINE_SCALE.store(TEST_DEADLINE_SCALE, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(debug_assertions)]
+    test_deadlines::stretch();
 }
 
-/// Test hook: a test asserting that the fetch deadline fires keeps the shipped value on its
-/// own thread, whatever parallel tests stretched.
+/// Test hook: a test asserting the shipped 250ms metadata deadline (or that some query does
+/// not use it) keeps that value on its own thread, whatever parallel tests stretched.
+#[doc(hidden)]
+pub fn exact_local_deadline_on_this_thread() {
+    #[cfg(debug_assertions)]
+    test_deadlines::EXACT_LOCAL.with(|exact| exact.set(true));
+}
+
+/// Test hook: as `exact_local_deadline_on_this_thread`, for the shipped 5s fetch deadline.
 #[doc(hidden)]
 pub fn exact_fetch_deadline_on_this_thread() {
-    EXACT_FETCH_DEADLINE.with(|exact| exact.set(true));
+    #[cfg(debug_assertions)]
+    test_deadlines::EXACT_FETCH.with(|exact| exact.set(true));
 }
 
-fn deadline_scale() -> u32 {
-    let scale = DEFAULT_DEADLINE_SCALE.load(std::sync::atomic::Ordering::Relaxed);
-    // `cfg!` short-circuits: a release binary never reads the variable.
-    if cfg!(debug_assertions) && stretched_by_env() {
-        scale.max(TEST_DEADLINE_SCALE)
-    } else {
-        scale
-    }
-}
-
-fn stretched_by_env() -> bool {
-    static STRETCHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *STRETCHED.get_or_init(|| std::env::var_os(STRETCH_DEADLINES_ENV).is_some())
-}
-
+#[cfg(debug_assertions)]
 fn local_deadline() -> std::time::Duration {
-    LOCAL_TIMEOUT * deadline_scale()
+    test_deadlines::deadline(LOCAL_TIMEOUT, &test_deadlines::EXACT_LOCAL)
 }
 
+#[cfg(not(debug_assertions))]
+fn local_deadline() -> std::time::Duration {
+    LOCAL_TIMEOUT
+}
+
+#[cfg(debug_assertions)]
 fn fetch_deadline() -> std::time::Duration {
-    if EXACT_FETCH_DEADLINE.with(std::cell::Cell::get) {
-        return NETWORK_TIMEOUT;
-    }
-    NETWORK_TIMEOUT * deadline_scale()
+    test_deadlines::deadline(NETWORK_TIMEOUT, &test_deadlines::EXACT_FETCH)
+}
+
+#[cfg(not(debug_assertions))]
+fn fetch_deadline() -> std::time::Duration {
+    NETWORK_TIMEOUT
 }
 
 /// A file rather than a pipe: a verbose Git process cannot block while we poll its

@@ -989,6 +989,8 @@ fn cleanup_git_status_is_bounded_even_when_fsmonitor_stalls() {
 #[cfg(unix)]
 #[test]
 fn cleanup_status_tolerates_a_slow_but_finishing_filesystem_watcher() {
+    // Pin the shipped 250ms default so a cleanup query that slipped back onto it fails here.
+    tsk_tui::git_base::exact_local_deadline_on_this_thread();
     let repo = CleanupRepo::new();
     let hook = repo.root.join("slow-fsmonitor-ok");
     // Longer than git_base's 250ms metadata default, well under cleanup's ~10s deadline.
@@ -1109,6 +1111,8 @@ fn delete_merged_branch_tolerates_a_slow_but_finishing_ancestry_check() {
     ) {
         return;
     }
+    // Pin the shipped 250ms default so a cleanup query that slipped back onto it fails here.
+    tsk_tui::git_base::exact_local_deadline_on_this_thread();
     let repo = CleanupRepo::new();
     tsk_tui::dispatch::SystemDispatchHost
         .remove_git_worktree(&repo.project, &repo.worktree)
@@ -1146,6 +1150,8 @@ fn cleanup_inspection_tolerates_a_slow_but_finishing_ancestry_check() {
     ) {
         return;
     }
+    // Pin the shipped 250ms default so a cleanup query that slipped back onto it fails here.
+    tsk_tui::git_base::exact_local_deadline_on_this_thread();
     let repo = CleanupRepo::new();
     let (state, id) = repo.state("base", None);
     let start = std::time::Instant::now();
@@ -1170,6 +1176,8 @@ fn cleanup_tolerates_slow_worktree_listings_at_both_safety_checks() {
     ) {
         return;
     }
+    // Pin the shipped 250ms default so a cleanup query that slipped back onto it fails here.
+    tsk_tui::git_base::exact_local_deadline_on_this_thread();
     let repo = CleanupRepo::new();
     let (mut state, id) = repo.state("base", None);
     let start = std::time::Instant::now();
