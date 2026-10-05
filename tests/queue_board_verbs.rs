@@ -1,5 +1,7 @@
 //! Verb Surface reducers — primary verbs, done/reopen/block, drawer, Esc layers.
 
+#[cfg(unix)]
+use crate::stub;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -83,6 +85,7 @@ fn board_with_task(title: &str, status: HumanStatus) -> (DomainState, BoardModel
 }
 
 fn git_repo_with_branch(label: &str) -> PathBuf {
+    tsk_tui::git_base::stretch_default_deadlines_for_tests();
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let root = std::env::temp_dir().join(format!(
         "tsk-board-base-{label}-{}-{}",
@@ -1114,17 +1117,15 @@ fn base_picker_opens_on_cached_branches_with_a_disabled_refreshing_row_and_cance
     assert!(output.status.success());
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
         let ssh = repo.join("delayed-ssh");
-        std::fs::write(
+        stub::write_stub(
             &ssh,
             format!(
-                "#!/bin/sh\ntouch '{}'\nsleep 2\nexit 1\n",
+                "#!/bin/sh\ntouch '{}'\nsleep 10\nexit 1\n",
                 repo.join("fetch-started").display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+            0o755,
+        );
         assert!(Command::new("git")
             .arg("-C")
             .arg(&repo)
@@ -1147,7 +1148,8 @@ fn base_picker_opens_on_cached_branches_with_a_disabled_refreshing_row_and_cance
     let mut model = BoardModel::from_domain(&domain, Some(repo.clone()));
     let started = std::time::Instant::now();
     apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
-    assert!(started.elapsed() < std::time::Duration::from_millis(500));
+    // Well under the fake transport's 10s, with room for a loaded machine's local Git reads.
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
     // Cached refs paint at once, before the (slow, failing) fetch has returned.
     let labels: Vec<String> = model
         .visible_list_picker_options()
@@ -1172,7 +1174,7 @@ fn base_picker_opens_on_cached_branches_with_a_disabled_refreshing_row_and_cance
     assert_eq!(domain.get(id).unwrap().base, None);
     #[cfg(unix)]
     {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while !repo.join("fetch-started").exists() {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -1183,7 +1185,7 @@ fn base_picker_opens_on_cached_branches_with_a_disabled_refreshing_row_and_cance
     }
     let cancelled = std::time::Instant::now();
     apply_intent(&mut domain, &mut model, BoardIntent::CancelListPicker, None).unwrap();
-    assert!(cancelled.elapsed() < std::time::Duration::from_millis(500));
+    assert!(cancelled.elapsed() < std::time::Duration::from_secs(3));
     assert_eq!(model.input_mode(), BoardInputMode::Normal);
     // Bounded worker owns this path after cancel; removing it is safe for its error result.
     std::fs::remove_dir_all(repo).unwrap();
@@ -1312,11 +1314,9 @@ fn base_picker_opens_on_the_tasks_current_base_and_keeps_it_through_the_refresh(
 #[cfg(unix)]
 #[test]
 fn base_picker_reports_an_offline_refresh_and_keeps_cached_branches() {
-    use std::os::unix::fs::PermissionsExt;
     let repo = git_repo_with_branch("offline");
     let upload = repo.join("failing-upload");
-    std::fs::write(&upload, "#!/bin/sh\nexit 1\n").unwrap();
-    std::fs::set_permissions(&upload, std::fs::Permissions::from_mode(0o700)).unwrap();
+    stub::write_stub(&upload, "#!/bin/sh\nexit 1\n", 0o700);
     for args in [
         vec!["remote", "add", "origin", repo.to_str().unwrap()],
         vec![
@@ -7648,19 +7648,21 @@ fn expanded_capture_base_picker_stages_and_clears_base_without_editing_the_board
 #[cfg(unix)]
 #[test]
 fn base_picker_reopen_reuses_one_in_flight_worker_for_the_project() {
-    use std::os::unix::fs::PermissionsExt;
     let repo = git_repo_with_branch("reopen-single-worker");
     let ssh = repo.join("counted-ssh");
     let counter = repo.join("fetch-count");
-    std::fs::write(
+    let release = repo.join("fetch-release");
+    // The transport holds until the reopen loop ends: a fixed sleep let a slow machine finish
+    // the first fetch mid-loop, and a later reopen then rightly started a fresh one.
+    stub::write_stub(
         &ssh,
         format!(
-            "#!/bin/sh\nprintf 'fetch\\n' >> '{}'\nsleep 1\nexit 1\n",
-            counter.display()
+            "#!/bin/sh\nprintf 'fetch\\n' >> '{}'\nwhile [ ! -f '{}' ]; do sleep 0.05; done\nexit 1\n",
+            counter.display(),
+            release.display()
         ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        0o755,
+    );
     for args in [
         vec!["remote", "add", "origin", "ssh://127.0.0.1:1/unreachable"],
         vec!["config", "ssh.variant", "ssh"],
@@ -7686,7 +7688,8 @@ fn base_picker_reopen_reuses_one_in_flight_worker_for_the_project() {
         .unwrap();
     let mut model = BoardModel::from_domain(&domain, Some(repo.clone()));
     apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    // Only bounds a failure: a loaded machine can take seconds to reach the transport.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while !counter.exists() {
         assert!(std::time::Instant::now() < deadline);
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -7695,6 +7698,7 @@ fn base_picker_reopen_reuses_one_in_flight_worker_for_the_project() {
         apply_intent(&mut domain, &mut model, BoardIntent::CancelListPicker, None).unwrap();
         apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
     }
+    std::fs::write(&release, "").unwrap();
     while model
         .visible_list_picker_options()
         .iter()

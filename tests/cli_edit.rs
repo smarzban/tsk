@@ -62,6 +62,7 @@ fn edit(dir: &Path, args: &[&str]) -> CliOutput {
 }
 
 fn init_git_project(path: &Path) {
+    tsk_tui::git_base::stretch_default_deadlines_for_tests();
     fs::create_dir_all(path).expect("create project");
     for args in [
         &["init", "-q", "-b", "main"][..],

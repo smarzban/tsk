@@ -454,13 +454,7 @@ mod tests {
     #[cfg(unix)]
     fn command(dir: &Path, name: &str, source: &str) -> PathBuf {
         let path = dir.join(name);
-        fs::write(&path, source).expect("write test command");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
-                .expect("make test command executable");
-        }
+        crate::test_stub::write_stub(&path, source, 0o755);
         path
     }
 

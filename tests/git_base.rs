@@ -1,5 +1,7 @@
 //! Real Git integration, outside unit suites that temporarily mutate PATH.
 
+#[cfg(unix)]
+use crate::stub;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,6 +18,7 @@ impl Drop for Repo {
     }
 }
 fn git(path: &Path, args: &[&str]) -> String {
+    stretch_default_deadlines_for_tests();
     let out = Command::new("git")
         .arg("-C")
         .arg(path)
@@ -314,11 +317,11 @@ fn cleanup_retains_a_branch_advanced_after_inspection() {
 #[cfg(unix)]
 #[test]
 fn fetch_timeout_is_bounded_and_returns_cached_base() {
-    use std::os::unix::fs::PermissionsExt;
+    // Asserts the shipped 5s fetch deadline, not the stretched one parallel tests use.
+    exact_fetch_deadline_on_this_thread();
     let r = repo();
     let upload = r.root.join("slow-upload");
-    std::fs::write(&upload, "#!/bin/sh\nsleep 30\n").unwrap();
-    std::fs::set_permissions(&upload, std::fs::Permissions::from_mode(0o700)).unwrap();
+    stub::write_stub(&upload, "#!/bin/sh\nsleep 30\n", 0o700);
     git(
         &r.local,
         &[
@@ -474,7 +477,6 @@ fn explicit_remote_base_fetches_a_newly_pushed_branch_before_validation() {
 #[cfg(unix)]
 #[test]
 fn local_git_queries_are_bounded_and_kill_output_holding_children() {
-    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
     use std::time::{Duration, Instant};
@@ -508,8 +510,7 @@ fn local_git_queries_are_bounded_and_kill_output_holding_children() {
     let r = repo();
     let fake = r.root.join("git");
     let escaped_root = r.root.to_string_lossy().replace('\'', "'\\''");
-    std::fs::write(&fake, format!("#!/bin/sh\ncase \"$3:$4\" in fetch:*|remote:set-head) exit 0;; capture-output:*) dd if=/dev/zero bs=262144 count=1 2>/dev/null; dd if=/dev/zero bs=262144 count=1 1>&2 2>/dev/null; exit 7;; esac\n(sleep 1; echo escaped > '{escaped_root}/escaped') &\n# More than a pipe buffer on both streams, then hold them open.\ndd if=/dev/zero bs=262144 count=1 2>/dev/null\ndd if=/dev/zero bs=262144 count=1 1>&2 2>/dev/null\nsleep 30\n")).unwrap();
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    stub::write_stub(&fake, format!("#!/bin/sh\ncase \"$3:$4\" in fetch:*|remote:set-head) exit 0;; capture-output:*) dd if=/dev/zero bs=262144 count=1 2>/dev/null; dd if=/dev/zero bs=262144 count=1 1>&2 2>/dev/null; exit 7;; esac\n(sleep 1; echo escaped > '{escaped_root}/escaped') &\n# More than a pipe buffer on both streams, then hold them open.\ndd if=/dev/zero bs=262144 count=1 2>/dev/null\ndd if=/dev/zero bs=262144 count=1 1>&2 2>/dev/null\nsleep 30\n"), 0o700);
     let mut child = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -625,7 +626,6 @@ fn fetch_window_reuses_a_fetch_from_the_last_minute() {
 #[cfg(unix)]
 #[test]
 fn cleanup_confirmed_during_a_background_check_waits_for_that_one_fetch() {
-    use std::os::unix::fs::PermissionsExt;
     use tsk_tui::dispatch::{DispatchHost, SystemDispatchHost};
     use tsk_tui::domain::Dispatch;
     let r = repo();
@@ -643,15 +643,14 @@ fn cleanup_confirmed_during_a_background_check_waits_for_that_one_fetch() {
     );
     let counter = r.root.join("upload-count");
     let upload = r.root.join("counted-upload");
-    std::fs::write(
+    stub::write_stub(
         &upload,
         format!(
             "#!/bin/sh\nprintf 'fetch\\n' >> '{}'\nsleep 1\nexit 1\n",
             counter.display()
         ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&upload, std::fs::Permissions::from_mode(0o700)).unwrap();
+        0o700,
+    );
     git(
         &r.local,
         &[
@@ -795,19 +794,17 @@ fn a_background_merge_check_sees_a_remote_merge_the_cached_refs_miss() {
 #[cfg(unix)]
 #[test]
 fn two_tsk_processes_on_one_state_dir_share_one_fetch() {
-    use std::os::unix::fs::PermissionsExt;
     let r = repo();
     let counter = r.root.join("upload-count");
     let upload = r.root.join("counted-upload");
-    std::fs::write(
+    stub::write_stub(
         &upload,
         format!(
             "#!/bin/sh\nprintf 'fetch\\n' >> '{}'\nexec git-upload-pack \"$@\"\n",
             counter.display()
         ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&upload, std::fs::Permissions::from_mode(0o700)).unwrap();
+        0o700,
+    );
     git(
         &r.local,
         &[
@@ -825,6 +822,7 @@ fn two_tsk_processes_on_one_state_dir_share_one_fetch() {
             .arg(&r.local)
             .args(["-t", title, "--base", "origin/main"])
             .env("TSK_NO_UPDATE_CHECK", "1")
+            .env(STRETCH_DEADLINES_ENV, "1")
             .output()
             .unwrap();
         assert!(
@@ -844,21 +842,19 @@ fn two_tsk_processes_on_one_state_dir_share_one_fetch() {
 #[cfg(unix)]
 #[test]
 fn inherited_git_config_entries_survive_the_remote_default_refresh() {
-    use std::os::unix::fs::PermissionsExt;
     let r = repo();
     git(&r.remote, &["branch", "trunk"]);
     git(&r.remote, &["symbolic-ref", "HEAD", "refs/heads/trunk"]);
     let counter = r.root.join("inherited-upload-count");
     let upload = r.root.join("inherited-upload");
-    std::fs::write(
+    stub::write_stub(
         &upload,
         format!(
             "#!/bin/sh\nprintf 'fetch\\n' >> '{}'\nexec git-upload-pack \"$@\"\n",
             counter.display()
         ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&upload, std::fs::Permissions::from_mode(0o700)).unwrap();
+        0o700,
+    );
     let state = r.root.join("state");
     // The caller's own entry 0 routes upload-pack; tsk must append, not overwrite it.
     let output = Command::new(env!("CARGO_BIN_EXE_tsk"))
@@ -868,6 +864,7 @@ fn inherited_git_config_entries_survive_the_remote_default_refresh() {
         .arg(&r.local)
         .args(["-t", "inherited", "--base", "origin/main"])
         .env("TSK_NO_UPDATE_CHECK", "1")
+        .env(STRETCH_DEADLINES_ENV, "1")
         .env("GIT_CONFIG_COUNT", "1")
         .env("GIT_CONFIG_KEY_0", "remote.origin.uploadpack")
         .env("GIT_CONFIG_VALUE_0", &upload)

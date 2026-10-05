@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use crate::stub;
 use std::{
     fs,
     path::PathBuf,
@@ -218,15 +220,14 @@ fn setup_falls_back_to_userprofile_roaming_when_appdata_is_missing() {
 #[cfg(unix)]
 #[test]
 fn installed_symlink_is_shared_with_plugin_and_rerun_does_not_duplicate_assets() {
-    use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::os::unix::fs::symlink;
     let root = temp();
     let bin = root.join("bin with spaces");
     fs::create_dir(&bin).unwrap();
     let installed = bin.join("tsk");
     symlink(env!("CARGO_BIN_EXE_tsk"), &installed).unwrap();
     let host = bin.join("herdr");
-    fs::write(&host, "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'herdr 0.9.0'; exit 0; fi\nif [ \"$1 $2\" = 'plugin list' ]; then if [ -f \"$SETUP_LINK\" ]; then printf '{\"result\":{\"plugins\":[{\"plugin_id\":\"herdr-tsk\",\"plugin_root\":\"%s\"}]}}' \"$(cat \"$SETUP_LINK\")\"; else printf '{\"result\":{\"plugins\":[]}}'; fi; exit 0; fi\nif [ \"$1 $2\" = 'plugin link' ]; then printf '%s' \"$3\" > \"$SETUP_LINK\"; fi\nexit 0\n").unwrap();
-    fs::set_permissions(&host, fs::Permissions::from_mode(0o755)).unwrap();
+    stub::write_stub(&host, "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'herdr 0.9.0'; exit 0; fi\nif [ \"$1 $2\" = 'plugin list' ]; then if [ -f \"$SETUP_LINK\" ]; then printf '{\"result\":{\"plugins\":[{\"plugin_id\":\"herdr-tsk\",\"plugin_root\":\"%s\"}]}}' \"$(cat \"$SETUP_LINK\")\"; else printf '{\"result\":{\"plugins\":[]}}'; fi; exit 0; fi\nif [ \"$1 $2\" = 'plugin link' ]; then printf '%s' \"$3\" > \"$SETUP_LINK\"; fi\nexit 0\n", 0o755);
     let config = root.join("herdr/config.toml");
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let run = || {
@@ -279,15 +280,10 @@ fn installed_symlink_is_shared_with_plugin_and_rerun_does_not_duplicate_assets()
 #[cfg(unix)]
 #[test]
 fn failed_host_registration_keeps_original_config_and_releases_lock() {
-    use std::os::unix::fs::PermissionsExt;
     let root = temp();
     let host = root.join("herdr");
-    fs::write(
-        &host,
-        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'herdr 0.9.0'; exit 0; fi\nif [ \"$1 $2\" = 'plugin list' ]; then printf '{\"result\":{\"plugins\":[]}}'; exit 0; fi\nif [ \"$1 $2\" = 'plugin link' ]; then echo refused >&2; exit 1; fi\nexit 0\n",
-    )
-    .unwrap();
-    fs::set_permissions(&host, fs::Permissions::from_mode(0o755)).unwrap();
+    stub::write_stub(&host,
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'herdr 0.9.0'; exit 0; fi\nif [ \"$1 $2\" = 'plugin list' ]; then printf '{\"result\":{\"plugins\":[]}}'; exit 0; fi\nif [ \"$1 $2\" = 'plugin link' ]; then echo refused >&2; exit 1; fi\nexit 0\n", 0o755);
     let config = root.join("config.toml");
     let original = "# keep this\n[ui]\nmouse_capture = true\n";
     fs::write(&config, original).unwrap();

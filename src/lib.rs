@@ -18,6 +18,9 @@ pub mod scope;
 pub mod setup;
 pub mod setup_agent;
 pub mod store;
+#[cfg(all(test, unix))]
+#[path = "../tests/support/stub.rs"]
+pub(crate) mod test_stub;
 pub(crate) mod text;
 pub mod ui;
 pub mod update;

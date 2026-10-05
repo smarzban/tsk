@@ -1,5 +1,7 @@
 //! Dispatch CLI: routing, parsing, stable refusal codes, and persistence.
 
+#[cfg(unix)]
+use crate::stub;
 use std::fs;
 use std::io::Cursor;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -447,6 +449,7 @@ struct CleanupRepo {
 
 impl CleanupRepo {
     fn new() -> Self {
+        tsk_tui::git_base::stretch_default_deadlines_for_tests();
         let root = std::env::temp_dir().join(format!(
             "tsk-cli-clean-git-{}-{}",
             std::process::id(),
@@ -947,12 +950,10 @@ fn cleanup_advanced_merged_branch_has_truthful_reason() {
 #[cfg(unix)]
 #[test]
 fn cleanup_git_status_is_bounded_even_when_fsmonitor_stalls() {
-    use std::os::unix::fs::PermissionsExt;
     let repo = CleanupRepo::new();
     let hook = repo.root.join("slow-fsmonitor");
     // Longer than cleanup's ~10s deadline, so the deadline (not the hook) ends the wait.
-    fs::write(&hook, "#!/bin/sh\nsleep 13\nprintf 'token\\0'\n").unwrap();
-    fs::set_permissions(&hook, fs::Permissions::from_mode(0o700)).unwrap();
+    stub::write_stub(&hook, "#!/bin/sh\nsleep 13\nprintf 'token\\0'\n", 0o700);
     repo.git(&["config", "core.fsmonitor", hook.to_str().unwrap()]);
     let (mut state, id) = repo.state("base", None);
     let start = std::time::Instant::now();
@@ -988,12 +989,12 @@ fn cleanup_git_status_is_bounded_even_when_fsmonitor_stalls() {
 #[cfg(unix)]
 #[test]
 fn cleanup_status_tolerates_a_slow_but_finishing_filesystem_watcher() {
-    use std::os::unix::fs::PermissionsExt;
+    // Pin the shipped 250ms default so a cleanup query that slipped back onto it fails here.
+    tsk_tui::git_base::exact_local_deadline_on_this_thread();
     let repo = CleanupRepo::new();
     let hook = repo.root.join("slow-fsmonitor-ok");
     // Longer than git_base's 250ms metadata default, well under cleanup's ~10s deadline.
-    fs::write(&hook, "#!/bin/sh\nsleep 1\nprintf 'token\\0'\n").unwrap();
-    fs::set_permissions(&hook, fs::Permissions::from_mode(0o700)).unwrap();
+    stub::write_stub(&hook, "#!/bin/sh\nsleep 1\nprintf 'token\\0'\n", 0o700);
     repo.git(&["config", "core.fsmonitor", hook.to_str().unwrap()]);
     let (state, id) = repo.state("base", None);
     let record = state.get(id).unwrap().dispatch.as_ref().unwrap();
@@ -1023,7 +1024,6 @@ fn ancestry_probe_child(name: &str, sleep_secs: u64) -> bool {
 
 #[cfg(unix)]
 fn cleanup_query_probe_child(name: &str, sleep_secs: u64, pattern: &str) -> bool {
-    use std::os::unix::fs::PermissionsExt;
     if std::env::var("TSK_CLEANUP_ANCESTRY_CHILD").ok().as_deref() == Some(name) {
         return false;
     }
@@ -1040,8 +1040,7 @@ fn cleanup_query_probe_child(name: &str, sleep_secs: u64, pattern: &str) -> bool
     ));
     fs::create_dir_all(&dir).unwrap();
     let script = dir.join("git");
-    fs::write(&script, format!("#!/bin/sh\ncase \"$3:$4\" in {pattern}) sleep {sleep_secs};; esac\nexec \"{}\" \"$@\"\n", real_git.trim())).unwrap();
-    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    stub::write_stub(&script, format!("#!/bin/sh\ncase \"$3:$4\" in {pattern}) sleep {sleep_secs};; esac\nexec \"{}\" \"$@\"\n", real_git.trim()), 0o700);
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", name, "--nocapture"])
         .env("TSK_CLEANUP_ANCESTRY_CHILD", name)
@@ -1112,6 +1111,8 @@ fn delete_merged_branch_tolerates_a_slow_but_finishing_ancestry_check() {
     ) {
         return;
     }
+    // Pin the shipped 250ms default so a cleanup query that slipped back onto it fails here.
+    tsk_tui::git_base::exact_local_deadline_on_this_thread();
     let repo = CleanupRepo::new();
     tsk_tui::dispatch::SystemDispatchHost
         .remove_git_worktree(&repo.project, &repo.worktree)
@@ -1149,6 +1150,8 @@ fn cleanup_inspection_tolerates_a_slow_but_finishing_ancestry_check() {
     ) {
         return;
     }
+    // Pin the shipped 250ms default so a cleanup query that slipped back onto it fails here.
+    tsk_tui::git_base::exact_local_deadline_on_this_thread();
     let repo = CleanupRepo::new();
     let (state, id) = repo.state("base", None);
     let start = std::time::Instant::now();
@@ -1173,6 +1176,8 @@ fn cleanup_tolerates_slow_worktree_listings_at_both_safety_checks() {
     ) {
         return;
     }
+    // Pin the shipped 250ms default so a cleanup query that slipped back onto it fails here.
+    tsk_tui::git_base::exact_local_deadline_on_this_thread();
     let repo = CleanupRepo::new();
     let (mut state, id) = repo.state("base", None);
     let start = std::time::Instant::now();
