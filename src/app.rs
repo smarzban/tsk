@@ -2737,9 +2737,9 @@ pub fn land_bulk_dispatch_with_host(
     }
     let preview = model.bulk_dispatch().is_none();
     if preview
-        && !model
+        && model
             .preview_seat_mut()
-            .is_some_and(|seat| seat.bulk_dispatch().is_some())
+            .is_none_or(|seat| seat.bulk_dispatch().is_none())
     {
         return Ok(());
     }
