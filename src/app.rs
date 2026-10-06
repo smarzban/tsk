@@ -9748,6 +9748,56 @@ mod quick_assign_tests {
         }
     }
 
+    /// A marked-set assignment whose save fails enters recovery, and Retry lands the whole set
+    /// as one undo entry.
+    #[test]
+    fn a_failed_marked_set_assignment_retries_as_one_batch() {
+        let temp = Temp::new("marks-retry", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None)
+            .expect("mark mode");
+        for id in &ids {
+            select(&mut domain, &mut model, *id);
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        }
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAssigneePicker,
+            None,
+        )
+        .expect("open");
+        let mut recovery = SaveRecovery::new();
+        assert!(super::board_intent_may_persist(
+            &model,
+            &BoardIntent::ConfirmListPicker
+        ));
+        save(
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardIntent::ConfirmListPicker,
+            false,
+        );
+        assert!(recovery.is_pending());
+        assert_eq!(model.input_mode(), BoardInputMode::SaveRecovery);
+        save(
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardIntent::RetrySave,
+            true,
+        );
+        assert!(!recovery.is_pending());
+        for id in &ids {
+            assert_eq!(
+                domain.get(*id).expect("task").assignee.as_deref(),
+                Some("builder")
+            );
+        }
+        assert!(matches!(domain.last_undo(), Some(UndoEntry::Batch { .. })));
+    }
+
     fn frame_text(model: &BoardModel, area: Rect) -> String {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))
