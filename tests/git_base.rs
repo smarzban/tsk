@@ -543,22 +543,15 @@ fn local_git_queries_are_bounded_and_kill_output_holding_children() {
     );
 }
 
+/// The exact namespace is what cleanup uses later; a remote added under the same prefix
+/// afterwards is covered end to end by `cleanup_keeps_exact_local_namespace_after_adding_same_named_remote`.
 #[test]
-fn exact_local_base_survives_a_new_remote_named_after_its_prefix() {
+fn a_slash_named_local_base_records_its_heads_namespace() {
     let r = repo();
     git(&r.local, &["branch", "integration/main"]);
     let base = resolve(&r.local, Some("integration/main")).unwrap();
     assert_eq!(base.reference, "integration/main");
     assert_eq!(base.full_ref, "refs/heads/integration/main");
-    git(
-        &r.local,
-        &["remote", "add", "integration", r.remote.to_str().unwrap()],
-    );
-    git(&r.local, &["fetch", "integration"]);
-    git(
-        &r.local,
-        &["show-ref", "--verify", "refs/heads/integration/main"],
-    );
 }
 
 #[test]

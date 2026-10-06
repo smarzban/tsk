@@ -2150,9 +2150,6 @@ fn cleanup_row(
     }
 }
 
-/// Whether `row`'s task still carries the dispatch its card inspected. Another board or the
-/// CLI may have cleaned or relaunched it while the card was open; cleanup then must not touch
-/// the new worktree or agent.
 /// A board save failed: keep the working state aside and show save recovery for it.
 fn fail_board_save(
     domain: &mut DomainState,
@@ -2166,7 +2163,9 @@ fn fail_board_save(
     model.begin_save_recovery(recovery.error().unwrap_or("save failed"));
 }
 
-/// The task still carries the dispatch its cleanup row inspected.
+/// Whether the task still carries the dispatch its cleanup row inspected. Another board or the
+/// CLI may have cleaned or relaunched it while the card was open; cleanup then must not touch
+/// the new worktree or agent.
 fn dispatch_unchanged(
     domain: &DomainState,
     task_id: uuid::Uuid,
@@ -2468,7 +2467,6 @@ fn start_due_cleanup(
     }
 }
 
-/// Whether a run row's task still carries the dispatch its card inspected.
 /// One board-loop step for the running cleanup (one slot, shared with the project preview,
 /// so a dropped or rebound preview never loses it): start the worker when due, withdraw rows
 /// whose dispatch changed, apply landed rows (mark the dispatch cleaned while it is still the

@@ -1125,6 +1125,14 @@ pub struct CleanupRow {
 }
 
 impl CleanupRow {
+    /// The inspected record has no exact base ref, so no ancestry target is known and the
+    /// branch stays whatever the refs say.
+    pub fn no_recorded_base(&self) -> bool {
+        self.inspected
+            .as_ref()
+            .is_some_and(|record| record.base_ref.is_none())
+    }
+
     /// Copy a landed merged check onto the row. True when one landed.
     fn apply_landed_check(&mut self) -> bool {
         let Some(verdict) = self.merge_check.as_ref().and_then(|check| check.take()) else {

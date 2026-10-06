@@ -177,9 +177,7 @@ impl BranchRetentionReason {
             Self::CheckedOutElsewhere => "branch checked out in another worktree".into(),
             Self::LatestTipNotMerged => "latest branch tip is no longer merged into the recorded base; branch or base changed since inspection".into(),
             Self::Advanced => "branch changed during cleanup".into(),
-            Self::NoRecordedBase => {
-                "no exact recorded base (dispatched before base tracking); branch retained".into()
-            }
+            Self::NoRecordedBase => "no recorded base; branch retained".into(),
             Self::MissingWorktree => "worktree already missing; branch retained".into(),
             Self::BranchUnavailable => "branch no longer available".into(),
             Self::AncestryCheckTimedOut => {
@@ -2993,6 +2991,11 @@ mod tests {
                 "base {base:?}"
             );
             assert_eq!(cleanup.deleted_branches, 0, "base {base:?}");
+            let shown = crate::cli::presenter::cleaned(result.clone(), false).stdout;
+            assert!(
+                shown.contains("(kept, no recorded base; branch retained)"),
+                "base {base:?}: {shown}"
+            );
         }
         fs::remove_dir_all(path).expect("cleanup");
     }

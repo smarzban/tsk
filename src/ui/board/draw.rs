@@ -102,7 +102,9 @@ pub(crate) fn cleanup_overlay<'a>(prompt: &CleanupPrompt, home: Option<&str>) ->
                         "keep everything".to_string(),
                     )
                 } else {
-                    let verdict = if row.checking() {
+                    let verdict = if row.no_recorded_base() {
+                        "no recorded base".to_string()
+                    } else if row.checking() {
                         "checking…".to_string()
                     } else if row.unreachable_remote.is_some() {
                         "not confirmed (offline)".to_string()
@@ -360,6 +362,8 @@ fn single_cleanup_lines(
     };
     let headline = if row.dirty {
         "Worktree has uncommitted changes, so it stays.".to_string()
+    } else if row.no_recorded_base() {
+        "No recorded base, so the branch stays.".to_string()
     } else if row.checking() {
         format!("Checking merge into {base}…")
     } else if row.unreachable_remote.is_some() {
