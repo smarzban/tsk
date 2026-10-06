@@ -5,7 +5,7 @@ use std::path::Path;
 pub struct ResolvedBase {
     pub reference: String,
     /// Exact branch namespace, independent of later remote configuration changes.
-    pub full_ref: Option<String>,
+    pub full_ref: String,
     pub commit: Option<String>,
     pub remote: Option<String>,
     pub warning: Option<String>,
@@ -823,7 +823,7 @@ pub fn resolve(project: &Path, explicit: Option<&str>) -> Result<ResolvedBase, S
     }
     Ok(ResolvedBase {
         reference: short,
-        full_ref: Some(reference),
+        full_ref: reference,
         commit: Some(commit),
         remote: selected_remote,
         warning,
