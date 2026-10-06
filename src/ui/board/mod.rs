@@ -14,6 +14,6 @@ pub use model::{
     nothing_to_dispatch, project_option_label, BoardInputMode, BoardModel, BoardTab, BulkCleanup,
     BulkDispatchRun, CleanupPrompt, CleanupRow, CleanupRowState, CleanupRun, CleanupRunRow,
     DispatchPrompt, FilterTab, IntentOutcome, ListPickerKind, PendingLaunch, PickerTab,
-    ProjectScopeOption, ProjectsView, SaveResolution, BOARD_TITLE, FINISHING_CLEANUP,
+    ProjectScopeOption, ProjectsView, SaveResolution, BOARD_TITLE, CLEANUP_BUSY, FINISHING_CLEANUP,
     REFRESHING_BRANCHES,
 };

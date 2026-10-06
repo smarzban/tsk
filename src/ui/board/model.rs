@@ -1349,6 +1349,9 @@ impl CleanupPrompt {
 /// row cut off here is never marked cleaned, and its dispatch converges on the next cleanup.
 pub const QUIT_CLEANUP_BOUND: Duration = Duration::from_secs(30);
 
+/// `ctrl+d` while a confirmed cleanup still runs.
+pub const CLEANUP_BUSY: &str = "cleanup still running; try again when it finishes";
+
 /// The status row while quit waits on a running cleanup.
 pub const FINISHING_CLEANUP: &str = "finishing cleanup…";
 
@@ -1782,10 +1785,27 @@ impl BoardModel {
     /// A cleanup outcome on the status row: a clean one expires on its own, one that kept
     /// anything stays until the next action so it is not missed.
     pub fn post_cleanup_summary(&mut self, summary: String, clean: bool) {
+        // A refusal that only said the cleanup was still running is obsolete now: it must
+        // neither stay up nor come back when an expiring summary restores what it covered.
+        self.drop_cleanup_refusal();
+        if let Some(seat) = self.right_seat.as_deref_mut() {
+            seat.drop_cleanup_refusal();
+        }
         if clean {
             self.set_ephemeral_message(summary, CLEANUP_SUMMARY_TTL);
         } else {
             self.set_message(summary);
+        }
+    }
+
+    fn drop_cleanup_refusal(&mut self) {
+        if self.message.as_deref() == Some(CLEANUP_BUSY) {
+            self.message = None;
+            self.message_expires_at = None;
+            self.message_restore = None;
+        }
+        if self.message_restore.as_deref() == Some(CLEANUP_BUSY) {
+            self.message_restore = None;
         }
     }
 
@@ -5527,6 +5547,17 @@ mod tests {
             Some("done 5 · cleaned 4 · kept T164 (uncommitted changes)")
         );
         assert!(model.message_is_sticky());
+    }
+
+    #[test]
+    fn an_expired_clean_summary_never_restores_a_busy_refusal() {
+        let mut model = BoardModel::from_tasks(Vec::new(), None);
+        model.set_message(CLEANUP_BUSY);
+        model.post_cleanup_summary("done 2 · cleaned 2".into(), true);
+        assert_eq!(model.message(), Some("done 2 · cleaned 2"));
+        model.message_expires_at = Some(Instant::now());
+        model.expire_ephemeral_message();
+        assert_eq!(model.message(), None);
     }
 
     #[test]

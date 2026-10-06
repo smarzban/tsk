@@ -2049,8 +2049,7 @@ pub fn resolve_dispatch_again(
     }
 }
 
-/// `ctrl+d` on a live dispatch while a confirmed cleanup still runs.
-pub const CLEANUP_BUSY: &str = "cleanup still running; try again when it finishes";
+pub use crate::ui::board::CLEANUP_BUSY;
 
 // Returned once per `ctrl+d`; boxing the converged result would buy nothing.
 #[allow(clippy::large_enum_variant)]
@@ -2499,10 +2498,14 @@ pub fn poll_cleanup_runs(
         return;
     }
     start_due_cleanup(store, domain, model, in_herdr, host);
+    // A preview's card counts only while the preview is painted and focused: a parked one
+    // (narrowed frame) is invisible and unreachable, so its run reports on the visible board.
+    let preview_focused = model.project_right_seat_focused();
     let card_open = model.cleanup_card_open()
-        || model
-            .preview_seat_mut()
-            .is_some_and(|seat| seat.cleanup_card_open());
+        || (preview_focused
+            && model
+                .preview_seat_mut()
+                .is_some_and(|seat| seat.cleanup_card_open()));
     let mut baseline = None;
     let mut mutated = false;
     let (finished, clean, progress) = {
@@ -3156,6 +3159,13 @@ fn handle_board_intent_with_host(
     // are allowed there; otherwise, bring the durable record in before the intent is decided.
     if !save_recovery.is_pending() {
         refresh_before_mutation(&intent, &baseline, domain, model);
+    }
+
+    // `ctrl+d` waits for a running cleanup, whatever it targets: a marked set, a task with or
+    // without a dispatch, here or in a project preview. Checked before any eligibility.
+    if intent == BoardIntent::Complete && !save_recovery.is_pending() && model.cleanup_running() {
+        model.set_message(CLEANUP_BUSY);
+        return Ok(false);
     }
 
     if intent == BoardIntent::Complete && !save_recovery.is_pending() && model.bulk_verb_active() {
@@ -12171,6 +12181,47 @@ mod queued_cleanup_tests {
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
 
+    #[test]
+    fn a_cleanup_whose_preview_card_parks_reports_and_releases_on_the_visible_board() {
+        let (dir, store, mut domain, id) = setup("parked-kept");
+        let mut model = BoardModel::from_domain(&domain, None);
+        focus_project_preview(&mut domain, &mut model);
+        // Cached refs say merged, but the check never lands: the branch will be kept.
+        let mut host = CheckHost::new(true);
+        offer_cleanup_prompt_with_host(&mut domain, model.input_target_mut(), id, true, &mut host)
+            .expect("offer");
+        press(
+            &store,
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        // The frame narrows: the preview and its card park, unpainted and unreachable.
+        super::sync_frame_presentation(ratatui::layout::Rect::new(0, 0, 60, 24), &model);
+        assert!(!model.project_right_seat_focused());
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert_eq!(
+            model.message(),
+            Some("cleanup waits for merge checks…"),
+            "progress shows on the visible board"
+        );
+        model.cleanup_run_mut().unwrap().start_deadline = Instant::now();
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert_eq!(host.removed, 1);
+        assert!(
+            !model.cleanup_running(),
+            "a finished run never stays busy behind a parked card"
+        );
+        assert!(model
+            .message()
+            .is_some_and(|message| message.contains("branch kept (merge unconfirmed)")));
+        assert!(model
+            .preview_seat_mut()
+            .is_some_and(|seat| seat.cleanup_prompt().is_none()));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
     /// A preview task-page edit whose save fails, then the frame narrows so the preview parks.
     /// Returns the persistent recovery, with the visible board showing it.
     #[cfg(unix)]
@@ -13663,6 +13714,108 @@ mod bulk_cleanup_tests {
             )
             .expect("offer"),
             super::CleanupOffer::Busy
+        );
+    }
+
+    fn plain_task(board: &mut Board, title: &str) -> uuid::Uuid {
+        let id = board
+            .domain
+            .create(
+                title,
+                None,
+                TaskScope::Project {
+                    path: PROJECT.into(),
+                },
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create");
+        board.model.sync_from_domain(&board.domain);
+        id
+    }
+
+    /// Move the cursor to `id` (a second select on the cursor row would open its page).
+    fn select(board: &mut Board, id: uuid::Uuid) {
+        if board.model.selected_id() == Some(id) {
+            return;
+        }
+        let index = board
+            .model
+            .visible_ids()
+            .iter()
+            .position(|visible| *visible == id)
+            .expect("visible");
+        apply_intent(
+            &mut board.domain,
+            &mut board.model,
+            BoardIntent::SelectIndex(index),
+            None,
+        )
+        .expect("select");
+    }
+
+    #[test]
+    fn ctrl_d_is_refused_for_any_target_while_cleanup_runs() {
+        let (mut board, mut host) = slow_board("busy-any");
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        // A task with no dispatch at all.
+        let plain = plain_task(&mut board, "plain one");
+        select(&mut board, plain);
+        press(&mut board, BoardIntent::Complete, &mut host);
+        assert_eq!(board.model.message(), Some(super::CLEANUP_BUSY));
+        assert_ne!(board.domain.get(plain).unwrap().status, HumanStatus::Done);
+        // A marked set of ordinary tasks.
+        let other = plain_task(&mut board, "plain two");
+        if !board.model.mark_mode_active() {
+            apply_intent(
+                &mut board.domain,
+                &mut board.model,
+                BoardIntent::ToggleMarkMode,
+                None,
+            )
+            .expect("mark mode");
+        }
+        for id in [plain, other] {
+            select(&mut board, id);
+            apply_intent(
+                &mut board.domain,
+                &mut board.model,
+                BoardIntent::MarkToggle,
+                None,
+            )
+            .expect("mark");
+        }
+        assert!(board.model.bulk_verb_active());
+        press(&mut board, BoardIntent::Complete, &mut host);
+        assert_eq!(board.model.message(), Some(super::CLEANUP_BUSY));
+        let disk = board.store.load().expect("load");
+        assert!([plain, other].iter().all(|id| disk
+            .get(*id)
+            .is_none_or(|task| task.status != HumanStatus::Done)));
+        assert!(
+            board.model.bulk_verb_active(),
+            "the marks wait with the refusal"
+        );
+    }
+
+    #[test]
+    fn a_finished_cleanup_clears_its_busy_refusal_with_the_summary() {
+        let (mut board, mut host) = slow_board("busy-cleared");
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        press(&mut board, BoardIntent::Complete, &mut host);
+        assert_eq!(board.model.message(), Some(super::CLEANUP_BUSY));
+        let (first, second) = (slot(&board, 0), slot(&board, 1));
+        host.release(first);
+        host.release(second);
+        tick(&mut board, &mut host);
+        assert_eq!(board.model.message(), Some("done 3 · cleaned 2"));
+        board.model.clear_message();
+        assert_eq!(
+            board.model.message(),
+            None,
+            "the obsolete refusal does not come back"
         );
     }
 }
