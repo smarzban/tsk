@@ -177,18 +177,11 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
                     let short = crate::ui::render::short_project(path).to_string();
                     return Ok((Err(AddError::ProjectArchived(short)), false));
                 }
-                if let Some(base) = base.as_deref() {
-                    if let Err(error) =
-                        crate::git_base::validate_branch_fresh(std::path::Path::new(path), base)
-                    {
-                        return Ok((Err(AddError::UnknownBase(error)), false));
-                    }
+            }
+            if let Some(base) = base.as_deref() {
+                if let Err(error) = crate::git_base::validate_task_base(&scope, base, true) {
+                    return Ok((Err(AddError::UnknownBase(error)), false));
                 }
-            } else if base.is_some() {
-                return Ok((
-                    Err(AddError::UnknownBase("base requires a project task".into())),
-                    false,
-                ));
             }
             let outcome = if let Some(task) = existing_task(
                 domain,
@@ -293,22 +286,13 @@ pub fn run_plan(
                         ));
                         continue;
                     }
-                    if let Some(base) = item.base.as_deref() {
-                        if let Err(error) =
-                            crate::git_base::validate_branch_fresh(std::path::Path::new(path), base)
-                        {
-                            failed.push(fail_item(item.i, Some(item.title), "unknown-base", error));
-                            continue;
-                        }
+                }
+                if let Some(base) = item.base.as_deref() {
+                    if let Err(error) = crate::git_base::validate_task_base(&item.scope, base, true)
+                    {
+                        failed.push(fail_item(item.i, Some(item.title), "unknown-base", error));
+                        continue;
                     }
-                } else if item.base.is_some() {
-                    failed.push(fail_item(
-                        item.i,
-                        Some(item.title),
-                        "unknown-base",
-                        "base requires a project task",
-                    ));
-                    continue;
                 }
                 if let Some(task) = existing_task(
                     domain,

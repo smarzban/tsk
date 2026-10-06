@@ -1631,13 +1631,12 @@ fn apply_board_intent(
             }
             if let Some(branch) = base.as_deref() {
                 for id in &target.ids {
-                    let Some(TaskScope::Project { path }) = domain.get(*id).map(|task| &task.scope)
-                    else {
+                    let Some(task) = domain.get(*id) else {
                         model.set_message("base requires a project task");
                         return Ok(IntentOutcome::None);
                     };
                     if let Err(message) =
-                        crate::git_base::validate_branch(std::path::Path::new(path), branch)
+                        crate::git_base::validate_task_base(&task.scope, branch, false)
                     {
                         model.set_message(message);
                         return Ok(IntentOutcome::None);
@@ -3206,11 +3205,7 @@ fn confirm_edit(
         .as_deref()
         .filter(|_| base != task.base || scope != task.scope)
     {
-        let TaskScope::Project { path } = &scope else {
-            model.set_message("base requires a project task");
-            return Ok(IntentOutcome::None);
-        };
-        if let Err(message) = crate::git_base::validate_branch(std::path::Path::new(path), branch) {
+        if let Err(message) = crate::git_base::validate_task_base(&scope, branch, false) {
             model.set_message(message);
             return Ok(IntentOutcome::None);
         }

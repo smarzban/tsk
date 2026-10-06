@@ -11,6 +11,23 @@ pub struct ResolvedBase {
     pub warning: Option<String>,
 }
 
+/// A task base names a branch in the task's own repository, so a desk task has none. `fresh`
+/// lets CLI validation refresh an explicitly named remote branch first.
+pub fn validate_task_base(
+    scope: &crate::domain::TaskScope,
+    base: &str,
+    fresh: bool,
+) -> Result<(), String> {
+    let crate::domain::TaskScope::Project { path } = scope else {
+        return Err("base requires a project task".into());
+    };
+    if fresh {
+        validate_branch_fresh(Path::new(path), base)
+    } else {
+        validate_branch(Path::new(path), base)
+    }
+}
+
 /// Only exact local or remote branch names are accepted, not revisions or tags.
 pub fn validate_branch(project: &Path, base: &str) -> Result<(), String> {
     branch_ref(project, base).map(|_| ())
