@@ -3070,7 +3070,10 @@ mod tests {
         assert!(kept.contains(&stash.dir.display().to_string()), "{kept}");
         assert!(stash.dir.join("items/target/debug/deps/big").exists());
         assert!(stash.dir.join(STASH_KEEP).exists());
-        assert!(repo.worktree.join("src/build.log").exists(), "the rest went back");
+        assert!(
+            repo.worktree.join("src/build.log").exists(),
+            "the rest went back"
+        );
         assert_eq!(fs::read(repo.worktree.join("target/new")).unwrap(), b"new");
 
         sweep_trash(&repo.trash, Duration::ZERO);
@@ -3078,7 +3081,7 @@ mod tests {
             stash.dir.join("items/target/debug/deps/big").exists(),
             "a kept stash outlives every sweep"
         );
-        assert_eq!(kept_stashes(&repo.trash.parent().unwrap()), vec![stash.dir]);
+        assert_eq!(kept_stashes(repo.trash.parent().unwrap()), vec![stash.dir]);
     }
 
     #[test]
@@ -3112,7 +3115,10 @@ mod tests {
         assert_eq!(stashed, Ok(None));
         assert!(repo.worktree.join("target/debug/deps/big").exists());
         assert!(repo.worktree.join("zz/late.log").exists());
-        assert_eq!(kept_stashes(repo.trash.parent().unwrap()), Vec::<PathBuf>::new());
+        assert_eq!(
+            kept_stashes(repo.trash.parent().unwrap()),
+            Vec::<PathBuf>::new()
+        );
     }
 
     #[cfg(unix)]

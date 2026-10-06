@@ -84,7 +84,7 @@ The list includes both recently deleted tasks still in the main store and tasks 
 
 ## Cleanup trash
 
-Before removing a dispatched worktree, cleanup renames its Git-ignored entries (build output such as `target/`) into `cleanup-trash/` in the state directory and deletes them after the worktree is gone, so removal itself is quick. The state directory and your worktrees usually share a volume; when they do not, cleanup removes the worktree in place instead. Trash a quit or crash left behind is emptied in the background the next time the board opens; entries whose worktree was never removed are put back first, and entries younger than two minutes, which may belong to a cleanup still running elsewhere, wait for a later open.
+Before removing a dispatched worktree, cleanup renames its Git-ignored entries (build output such as `target/`) into `cleanup-trash/` in the state directory and deletes them after the worktree is gone, so removal itself is quick. The state directory and your worktrees usually share a volume; when they do not, cleanup removes the worktree in place instead. Trash a quit or crash left behind is emptied in the background the next time the board opens; entries whose worktree was never removed are put back first, and entries younger than two minutes, which may belong to a cleanup still running elsewhere, wait for a later open. An entry whose files cannot all go back (the destination already exists, or a parent directory is now a symlink) is marked kept instead (a `keep` file inside it) and is never deleted: the board names it on the status row (`cleanup kept files it could not put back: <path>`) so you can recover or delete it yourself.
 
 ## Fetch window
 

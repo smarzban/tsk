@@ -12097,8 +12097,13 @@ mod queued_cleanup_tests {
     }
 
     fn focus_project_preview(domain: &mut DomainState, model: &mut BoardModel) {
-        apply_intent(domain, model, BoardIntent::SelectNavTab(NavTab::Projects), None)
-            .expect("projects overview");
+        apply_intent(
+            domain,
+            model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("projects overview");
         for _ in 0..2 {
             apply_intent(domain, model, BoardIntent::StageRight, None).expect("stage right");
         }
@@ -12130,7 +12135,10 @@ mod queued_cleanup_tests {
         // Leave the overview (the preview is dropped), then come back (a new preview binds).
         model.drop_project_preview();
         assert!(model.right_seat().is_none());
-        assert!(model.cleanup_running(), "the run is not the preview's to lose");
+        assert!(
+            model.cleanup_running(),
+            "the run is not the preview's to lose"
+        );
         apply_intent(
             &mut domain,
             &mut model,
@@ -13599,11 +13607,13 @@ mod bulk_cleanup_tests {
             "neither relaunch loses its worktree: {:?}",
             host.removed
         );
-        assert!(board.model.cleanup_run().is_some_and(|run| run
-            .rows
-            .iter()
-            .all(|row| matches!(&row.state, CleanupRowState::Kept { short, .. }
-                if short == "dispatch changed"))));
+        assert!(board
+            .model
+            .cleanup_run()
+            .is_some_and(|run| run.rows.iter().all(
+                |row| matches!(&row.state, CleanupRowState::Kept { short, .. }
+                if short == "dispatch changed")
+            )));
         assert!(!cleaned(&board, 1));
     }
 
@@ -13662,8 +13672,13 @@ mod bulk_cleanup_tests {
         )
         .expect("projects overview");
         for _ in 0..2 {
-            apply_intent(&mut board.domain, &mut board.model, BoardIntent::StageRight, None)
-                .expect("stage right");
+            apply_intent(
+                &mut board.domain,
+                &mut board.model,
+                BoardIntent::StageRight,
+                None,
+            )
+            .expect("stage right");
         }
         assert!(board.model.project_right_seat_focused());
         assert_eq!(
