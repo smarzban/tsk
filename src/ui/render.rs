@@ -2782,27 +2782,6 @@ pub struct TaskPageLayout {
     pub meta_y: Option<u16>,
 }
 
-/// What the page's steps section asks of the layout (AC-24).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StepsSection {
-    /// No stored or draft steps: no section paints, so notes keep the full content region.
-    /// An inline add draft contributes a transient step view and therefore uses `Steps`.
-    None,
-    /// At least one step: the section follows the notes after two blank rows, and
-    /// the shared content viewport scrolls when the resulting page overflows.
-    Steps,
-}
-
-/// Classify the page's steps section from its payload facts: steps alone
-/// decide it.
-pub fn steps_section(steps: usize) -> StepsSection {
-    if steps > 0 {
-        StepsSection::Steps
-    } else {
-        StepsSection::None
-    }
-}
-
 /// The window of steps steps the section's step rows show.
 ///
 /// `avail` is the row count the section has for steps (its block minus the label). When
@@ -2877,23 +2856,11 @@ pub fn steps_window(total: usize, scroll: usize, avail: u16) -> StepsWindow {
     }
 }
 
-/// Build the fixed frame around the task page's shared content viewport. `section`
-/// remains an input for callers that classify a task, but the content itself owns
-/// the notes/steps allocation and scrolls as one region.
-pub fn task_page_layout(
-    geo: &TierGeometry,
-    _section: StepsSection,
-    _notes_floor: u16,
-    title_rows: u16,
-) -> TaskPageLayout {
-    task_page_layout_rows(geo, title_rows, 1)
-}
-
-/// The footer uses the same wrap engine and width as its painter.
+/// The fixed frame around the task page's shared content viewport, which owns the
+/// notes/steps allocation and scrolls as one region. The footer uses the same wrap engine
+/// and width as its painter.
 pub fn task_page_layout_with_meta(
     geo: &TierGeometry,
-    _section: StepsSection,
-    _notes_floor: u16,
     title_rows: u16,
     meta: &str,
 ) -> TaskPageLayout {
@@ -3024,19 +2991,11 @@ fn paint_task_page(
     if width == 0 || geo.height == 0 {
         return None;
     }
-    // `focus == Notes` arrives from the same frame's input mode the payload builder
-    // used, so both sides of the payload/paint seam budget the same notes floor.
     let title_row_count = header_rows.len().max(1) as u16;
     let lay = if column {
         task_column_layout_with_meta(geo, meta)
     } else {
-        task_page_layout_with_meta(
-            geo,
-            steps_section(step_views.len()),
-            u16::from(focus == Some(CaptureField::Notes)),
-            title_row_count,
-            meta,
-        )
+        task_page_layout_with_meta(geo, title_row_count, meta)
     };
     if lay.bottom == 0 {
         return None;

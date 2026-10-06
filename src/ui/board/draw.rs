@@ -144,24 +144,7 @@ pub(crate) fn cleanup_overlay<'a>(prompt: &CleanupPrompt, home: Option<&str>) ->
                     value: "keep everything".into(),
                 });
             }
-            if !bulk.missing.is_empty() {
-                let noun = if bulk.missing.len() == 1 {
-                    "worktree"
-                } else {
-                    "worktrees"
-                };
-                lines.push(CleanupCardLine::Text(format!(
-                    "+ {} {noun} already gone, marked cleaned",
-                    identifiers_list(bulk.missing.iter().map(|(_, identifier, _)| identifier))
-                )));
-            }
-            if !bulk.plain.is_empty() {
-                let verb = if bulk.plain.len() == 1 { "has" } else { "have" };
-                lines.push(CleanupCardLine::Text(format!(
-                    "+ {} {verb} no dispatch, just marked done",
-                    identifiers_list(&bulk.plain)
-                )));
-            }
+            bulk_trailer_lines(bulk, &mut lines);
             (title, lines)
         }
         (None, None) => (
@@ -268,24 +251,7 @@ pub(crate) fn cleanup_run_overlay<'a>(
         });
     }
     if let Some(bulk) = &prompt.bulk {
-        if !bulk.missing.is_empty() {
-            let noun = if bulk.missing.len() == 1 {
-                "worktree"
-            } else {
-                "worktrees"
-            };
-            lines.push(CleanupCardLine::Text(format!(
-                "+ {} {noun} already gone, marked cleaned",
-                identifiers_list(bulk.missing.iter().map(|(_, identifier, _)| identifier))
-            )));
-        }
-        if !bulk.plain.is_empty() {
-            let verb = if bulk.plain.len() == 1 { "has" } else { "have" };
-            lines.push(CleanupCardLine::Text(format!(
-                "+ {} {verb} no dispatch, just marked done",
-                identifiers_list(&bulk.plain)
-            )));
-        }
+        bulk_trailer_lines(bulk, &mut lines);
     }
     QueueOverlay::CleanupConfirm {
         title,
@@ -296,6 +262,28 @@ pub(crate) fn cleanup_run_overlay<'a>(
             CleanupFooter::Running
         },
         scroll: prompt.scroll,
+    }
+}
+
+/// The bulk card's closing lines for targets that needed no cleanup.
+fn bulk_trailer_lines(bulk: &super::BulkCleanup, lines: &mut Vec<CleanupCardLine>) {
+    if !bulk.missing.is_empty() {
+        let noun = if bulk.missing.len() == 1 {
+            "worktree"
+        } else {
+            "worktrees"
+        };
+        lines.push(CleanupCardLine::Text(format!(
+            "+ {} {noun} already gone, marked cleaned",
+            identifiers_list(bulk.missing.iter().map(|(_, identifier, _)| identifier))
+        )));
+    }
+    if !bulk.plain.is_empty() {
+        let verb = if bulk.plain.len() == 1 { "has" } else { "have" };
+        lines.push(CleanupCardLine::Text(format!(
+            "+ {} {verb} no dispatch, just marked done",
+            identifiers_list(&bulk.plain)
+        )));
     }
 }
 
@@ -1088,13 +1076,7 @@ fn build_task_page_overlay<'a>(
     let lay = if column {
         render::task_column_layout_with_meta(&page_geo, &meta)
     } else {
-        render::task_page_layout_with_meta(
-            &page_geo,
-            render::steps_section(step_views.len()),
-            u16::from(model.input_mode() == BoardInputMode::EditNotes),
-            header_rows.len().max(1) as u16,
-            &meta,
-        )
+        render::task_page_layout_with_meta(&page_geo, header_rows.len().max(1) as u16, &meta)
     };
     // The renderer and input reducer share this viewport size for page scrolling.
     form.steps.window_rows.set(lay.notes_rows as usize);
