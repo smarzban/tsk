@@ -33,8 +33,8 @@ Use `--json` on `add`, `list`, or `clean` for machine-readable output. Read the 
 | `tsk list` | Read tasks |
 | `tsk status` | Set task status |
 | `tsk edit` | Replace title or notes; assign or unassign |
-| `tsk dispatch` | Launch an assigned task in a Herdr worktree |
-| `tsk clean` | Safely remove a dispatched worktree |
+| `tsk dispatch` | Launch an assigned task's agent in its own worktree |
+| `tsk clean` | Remove a dispatched worktree and its merged branch |
 | `tsk steps` | Add, toggle, rename, or remove steps |
 | `tsk archive` / `tsk unarchive` | Hide or restore a task |
 | `tsk project archive` / `tsk project unarchive` | Hide or restore a project |
@@ -98,7 +98,7 @@ tsk add -t "Draft release notes" -p atlas --json
 | `--assignee` | Exact configured agent profile name |
 | `--unassign` | Explicitly create without an assignee |
 | `--base <branch>` | Explicit dispatch base, an existing local or remote branch in the task's project repository |
-| `--clear-base` | Explicitly create without a base override; conflicts with `--base` |
+| `--clear-base` | Explicitly create without a base; conflicts with `--base` |
 | `--json` | One result object |
 | `--file <path>` or `--file -` | Read a JSON plan |
 | `--state-dir <dir>` | Alternate state directory |
@@ -138,7 +138,7 @@ cat plan.json | tsk add
 | `thread` string | Normalized thread |
 | `assignee` omitted or `null` | Unassigned |
 | `assignee` string | Exact configured agent profile name |
-| `base` omitted or `null` | Use the repository's remote default at dispatch time |
+| `base` omitted or `null` | Dispatch from the repository's default branch |
 | `base` string | Existing local or remote branch in the task's project repository |
 
 Output contains `created`, `existing`, and `failed` arrays. Items carry their input index `i`; failures include `code` and `error`. Successful entries include task ID, number, and title. Notes and assignees are not echoed; read the task back when needed.
@@ -184,7 +184,7 @@ Human output groups by status in `STARTED`, `READY`, `OPEN`, `BLOCKED`, `REVIEW`
 
 Single-task output removes metadata from the title row and presents notes, steps, `@assignee`, `⎇ <base>` when explicitly set, then `#thread` as separate blocks. A blank line separates adjacent blocks that exist. Human step rows show state and text without machine-oriented short IDs.
 
-JSON returns an array with `id`, `number`, `title`, `status`, `project`, `assignee`, `base`, and `thread`. Direct lookup returns the complete task, including `notes` (`null` when absent) and `steps` (an empty array when absent). Its fields are ordered `id`, `number`, `project`, `status`, `title`, `notes`, `steps`, `assignee`, `base`, `thread`, then `dispatch` when a record exists; each JSON step retains its `short_id` for step commands. `base` is the explicit task branch or `null`; the optional `dispatch` field is the full launch record: `argv`, `worktree`, `branch`, optional `base`, `base_ref`, `base_commit`, and `base_remote`, `herdr_workspace_id`, `at`, and `cleaned` when true. `dispatch.base` is the resolved display ref, not the task override; `dispatch.base_ref` records the fully qualified branch namespace used verbatim at cleanup; `dispatch.base_commit` is its starting commit SHA; `dispatch.base_remote` records the fetch remote so cleanup and `{base}` keep the original upstream's provenance. Legacy records may omit these fields. Filtered listings do not include `dispatch`. Archived listings include an `archived` mark: `archived` or `project archived`.
+JSON returns an array with `id`, `number`, `title`, `status`, `project`, `assignee`, `base`, and `thread`. Direct lookup returns the complete task, including `notes` (`null` when absent) and `steps` (an empty array when absent). Its fields are ordered `id`, `number`, `project`, `status`, `title`, `notes`, `steps`, `assignee`, `base`, `thread`, then `dispatch` when a record exists; each JSON step retains its `short_id` for step commands. `base` is the task's explicit base branch or `null`. `dispatch` is the launch record: `argv`, `worktree`, `branch`, `base` (the ref it started from), `base_ref` (the same ref, fully qualified), `base_commit` (the starting commit), `base_remote` (when the base has a remote), `herdr_workspace_id`, `at`, and `cleaned` once cleaned up. Filtered listings do not include `dispatch`. Archived listings include an `archived` mark: `archived` or `project archived`.
 
 ## status
 
@@ -198,7 +198,7 @@ tsk status T12 done --clean
 
 Accepts `open`, `ready`, `started` (or `start`), `blocked`, `review`, and `done`.
 
-Unlike keyboard toggles, this command sets the requested status directly. Repeating the same value is safe. `--clean` is valid only with `done`: tsk persists done first, then applies the same cleanup guardrails as `tsk clean`. A cleanup refusal exits 1 and leaves the task done.
+Unlike keyboard toggles, this command sets the requested status directly. Repeating the same value is safe. `--clean` is valid only with `done`: tsk saves done first, then runs [`tsk clean`](#clean). A cleanup refusal exits 1 and leaves the task done.
 
 Output: `status T12 <status> <title>`. The output uses `started`, even when the input was `start`.
 
@@ -213,7 +213,7 @@ tsk edit T12 --base dispatch
 tsk edit T12 --clear-base
 ```
 
-Requires `--title`, `--notes`, `--assignee`, `--unassign`, `--base`, `--clear-base`, or a combination. `--assignee` and `--unassign` conflict; so do `--base` and `--clear-base`. Scope and thread stay unchanged. Base validation uses the task's project repository, not the CLI checkout. Tags and bare commits are not accepted; an unknown branch refuses with `unknown-base`. Clearing the base restores the repository's remote default for the next dispatch.
+Requires `--title`, `--notes`, `--assignee`, `--unassign`, `--base`, `--clear-base`, or a combination. `--assignee` and `--unassign` conflict; so do `--base` and `--clear-base`. Scope and thread stay unchanged. `--base` must be an existing branch in the task's repository, not a tag or commit; an unknown branch refuses with `unknown-base`. `--clear-base` returns the task to the repository's default branch.
 
 Blank notes clear the field. Notes preserve newlines and tabs. Use `--title=...` or `--notes=...` for values starting with `-`.
 
@@ -227,17 +227,17 @@ tsk dispatch T12 --again
 tsk dispatch T12 --base dispatch
 ```
 
-Dispatch requires Herdr, an assigned project task whose project is a Git repository, and a matching profile in `config.toml`. It runs on macOS and Linux only; on Windows it refuses with `unsupported-platform`. It creates a branch and worktree, opens a Herdr workspace there, and runs the profile's rendered command in its root pane. The branch is `tsk/t<n>-<slug>`, where the slug is the title lowercased with every run of characters other than letters and digits (in any script) turned into one `-`, keeping whole words while it stays within 30 characters (a longer first word is cut at 30); a title of only symbols gives plain `tsk/t<n>`. Herdr names the worktree directory from the branch with every run of characters other than ASCII letters and digits as one `-` (`tsk-t<n>-<slug>`, so `Café` checks out in `tsk-t<n>-caf`), and the Herdr workspace is labelled `T<n>` plus the title up to the same cut, ending in `…` when the title was cut. If a local or remote branch, a registered worktree, or a directory at the checkout path already has that name, tsk appends `-2`, `-3`, and so on. A relaunch keeps the recorded names. After saving, tsk names the Herdr agent `t<number>-<assignee>` in the background (for example `t12-claude`, so `herdr agent get t12-claude` finds it; dots become hyphens and the name is cut to Herdr's 32 characters). If Herdr detects no agent within a few seconds, the name is taken, or a relaunch finds an agent still running in the pane, the agent stays unnamed and dispatch still succeeds. Only after the launch succeeds, tsk saves the dispatch record and sets the task to `started` in the same write. The dispatch itself is not undoable.
+Launches an assigned task's agent in its own Git worktree and Herdr workspace, then sets the task to `started`. It needs Herdr on macOS or Linux (on Windows it refuses with `unsupported-platform`), a task in a project that is a Git repository, and an assignee with a profile in [`config.toml`](/docs/storage/#agent-profiles).
 
-For a first dispatch, base resolution uses the one-off `--base <branch>` override first, then the task's explicit `base`, otherwise the task repository's remote default (`origin/HEAD`). The checkout where you run the CLI never supplies the default. The override does not change the task's stored base. If the repository has no usable `origin/HEAD`, choose an explicit branch; tsk does not substitute the current checkout. Explicit bases must be existing local or remote branches in the task's repository, not tags or commits; an unknown branch refuses with `unknown-base`.
+tsk creates a branch and worktree from the base, opens a Herdr workspace there, and runs the profile's rendered command in its root pane. Only after the launch succeeds does it save the dispatch record and set `started`, in one write. Dispatch is not undoable. Names follow the task number and title, as on the [board](/docs/board/#dispatch): branch `tsk/t12-fix-login-timeout`, worktree directory `tsk-t12-fix-login-timeout`, workspace `T12 Fix login timeout`, with `-2`, `-3` appended when a name is taken. tsk then names the agent `t12-<assignee>` once Herdr detects it, so `herdr agent get t12-claude` finds it; an undetected agent stays unnamed and the dispatch still succeeds.
 
-tsk fetches the base's remote first, bounded and best effort, unless it was fetched in the last 60 seconds ([fetch window](/docs/storage/#fetch-window)). A local branch with a remote upstream starts from that upstream, for example `origin/dispatch`; a local-only branch starts from itself. An explicit remote-qualified branch is fetched before validation, including in CLI add/edit, so a newly pushed branch need not already be cached. Offline dispatch falls back to the local ref and reports it. The dispatch records the actual base ref and commit, displayed as `from <ref> @ <short sha>` on the task page. Agent command and prompt templates can use `{base}` for its short branch name, for example "open the PR into {base}".
+The base is the one-off `--base <branch>` when given, then the task's `base`, otherwise the repository's default branch (`origin/HEAD`), never the branch checked out where you run the command. `--base` does not change the task. A base must be an existing local or remote branch in the task's repository, not a tag or commit; an unknown branch refuses with `unknown-base`, and a repository without `origin/HEAD` needs an explicit base. tsk fetches the base's remote first unless it was fetched in the last 60 seconds ([fetch window](/docs/storage/#fetch-window)), so a newly pushed branch works; this also applies when `tsk add` or `tsk edit` sets a remote branch as the base. A local branch that tracks a remote starts from the remote branch. Offline, dispatch starts from the local copy and says so. `{base}` in agent templates is the short branch name, such as `dispatch` for `origin/dispatch`.
 
-A task with an existing record refuses with `already-dispatched`. Use `--again` deliberately to reuse the recorded Herdr workspace and rerun the rendered command in its root pane. `--again` always retains the recorded base, ignoring a one-off `--base` override and later changes to the task's base. If the record was cleaned, it recreates the worktree: a retained branch reopens, while a removed branch is recreated from the recorded `base_commit` (the original starting commit), falling back to the recorded base ref for legacy records without a commit. Ordinary status changes retain the record.
+A dispatched task refuses with `already-dispatched`. `--again` relaunches deliberately: it reruns the command in the recorded workspace and keeps the recorded base, ignoring `--base` and later changes to the task's base. After a cleanup it recreates the worktree, reopening the kept branch or recreating a deleted one from its original starting commit. Status changes never remove the record.
 
 Output: `dispatched T12 to @implementer in /path/to/worktree`.
 
-Refusals have stable codes: `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `unsupported-platform`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, `unknown-base`, and `herdr-failed`. Every refusal leaves task state unchanged. A storage failure after a successful launch exits 3; read the task before deciding whether to retry, because another launch could already be running.
+Refusal codes: `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `unsupported-platform`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, `unknown-base`, and `herdr-failed`. A refusal leaves the task unchanged. A storage failure after a successful launch exits 3; read the task before retrying, because the agent may already be running.
 
 ## clean
 
@@ -246,9 +246,17 @@ tsk clean T12
 tsk clean T12 --json
 ```
 
-Cleanup never changes human status. Its worktree listings, full status and ancestry queries each allow up to 10 seconds, separate from short board metadata queries. A preflight timeout refuses before removal. A timeout in the final branch recheck retains the branch with a reason, even if the clean worktree was already removed. It refuses a dirty worktree without touching anything. For a clean worktree it verifies that the recorded path is a non-root Git worktree for the project and that any matching Herdr workspace names the same checkout. It then closes that Herdr workspace when running inside Herdr (otherwise it uses Git directly), removes the recorded worktree, and removes the branch only when the branch is merged into its recorded dispatch base. Before the ancestry check, tsk fetches the recorded base's remote (bounded, best effort), so a GitHub merge counts without pulling the local branch. A remote fetched in the last 60 seconds by any tsk surface is not fetched again ([fetch window](/docs/storage/#fetch-window)). An unmerged branch is kept. Squash merges do not establish ancestry: cleanup keeps the branch and explains "not merged into origin/main; squash-merged? delete by hand" (using its recorded ref). If that fetch fails or times out, merged status is not confirmed (the refs on disk may predate a force-push or reset of the remote base): cleanup still removes a clean worktree but always keeps the branch, with the reason `could not reach <remote> to confirm the merge` (`branch.reason` in JSON) and a `warning` naming the fetch error. Inside the fetch window the refs on disk count as confirmed; a local base without a remote upstream is checked on local refs. If the recorded base has been deleted or pruned, cleanup still removes a clean worktree, retains the branch, and says the base is no longer available. A merged branch checked out elsewhere or advanced during cleanup is kept with its own reason, not the squash hint. A legacy record with no base also keeps its branch. A missing registered worktree is successful: the dispatch record is marked cleaned without removing the retained branch.
+Removes a dispatched task's worktree after review, without changing its status. To complete and clean in one step, use `tsk status T12 done --clean`.
 
-The task keeps its dispatch record and page history, marked `cleaned`. Human output names the worktree, branch, and workspace as removed or kept; `--json` returns the same outcomes, with `branch.reason` for a kept branch (`null` when removed) and `warning` naming a failed fetch, which leaves merged status unconfirmed and the branch kept, for example `fetch failed (offline or unavailable remote); merged status not confirmed, branch kept` (`null` without a fetch failure). Refusal codes are `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, and `herdr-failed`. Store failures exit 3 with `store-error`; other refusals exit 1. There is no force option.
+- A worktree with uncommitted changes refuses with `dirty-worktree` and nothing is touched.
+- Otherwise tsk checks that the recorded path is a Git worktree of the project, not its root, and matches the recorded Herdr workspace (`worktree-mismatch` if not). It closes that workspace when running inside Herdr and removes the worktree.
+- The branch is deleted only when it is merged into the recorded base. tsk fetches the base first (unless inside the [fetch window](/docs/storage/#fetch-window)), so a merge on GitHub counts without a local pull.
+- The branch is kept, with a reason, when it is not merged (squash merges do not count: "not merged into origin/main; squash-merged? delete by hand"), when the fetch fails and the merge cannot be confirmed (`could not reach <remote> to confirm the merge`), when the base no longer exists, or when the branch is checked out elsewhere or changes during cleanup.
+- A worktree that is already gone counts as cleaned.
+
+The task keeps its dispatch record, marked `cleaned`. Human output says whether the worktree, branch, and workspace were removed or kept. `--json` returns the same outcomes, with `branch.reason` for a kept branch (`null` when deleted) and `warning` naming a failed fetch (`null` otherwise).
+
+Refusal codes: `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, and `herdr-failed`; these exit 1. Store failures exit 3 with `store-error`. There is no force option.
 
 ## steps
 

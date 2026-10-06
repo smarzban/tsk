@@ -88,7 +88,19 @@ New tasks start `open` in the inbox; `ready` means the user picked it.
 **Start work on a task.** `tsk list T12 --json` for notes and steps. `tsk status T12 start`.
 Tick steps as you go: `tsk steps T12 toggle <short_id>`.
 
-**Dispatch assigned work.** When the user asks you to launch an assigned task, read it first, then run `tsk dispatch T12`. A previous launch refuses with `already-dispatched`; use `--again` only when the user explicitly wants the recorded Herdr workspace reused. After an uncertain result, read the task before retrying because an agent may already be running. Watch the launched agent with `herdr agent get t12-<assignee>` (tsk names it when Herdr detects it). A first dispatch uses a one-off `--base` override, then the task base, otherwise the task repository's remote default (`origin/HEAD`), never the current checkout. Fetch is bounded and best effort; offline fallback is reported. Explicit remote-qualified bases are fetched before CLI validation, including add/edit. A local base with a remote upstream starts from that upstream; the dispatch records its actual ref and starting commit as `dispatch.base` and `dispatch.base_commit`, plus exact namespace `dispatch.base_ref` in direct-task JSON (the optional full record follows `thread`; filtered listings omit it). `--again` ignores base overrides and later task-base changes, reusing the recorded base. For a cleaned record it reopens a retained branch or recreates a removed branch from the original `base_commit`, falling back to the recorded base ref for legacy records. `{base}` in agent command and prompt templates is the short base branch name, for example `dispatch` for `origin/dispatch`. A profile without its own prompt sends the default, which tells the launched agent to work only on its branch, run the project's checks, open a pull request into the base, never merge it, and then set the task to review or blocked. After review and merge, the human runs `tsk clean T12`; an agent never cleans the worktree it is running in. Cleanup fetches the recorded base before checking ancestry, so a remote merge counts without a local pull. If the cleanup fetch fails, the merge is not confirmed: the clean worktree is removed but the branch is kept, with reason `could not reach <remote> to confirm the merge` in human and JSON output. A deleted or pruned base keeps the branch without preventing clean worktree removal. Only failed ancestry gets a squash hint; branches checked out elsewhere or changed during cleanup get their own retention reason. Manual deletion is the human's decision.
+**Dispatch assigned work.** Only when the user asks. Read the task, then `tsk dispatch T12`: it
+launches the assignee's agent in a new worktree and Herdr workspace and sets the task `started`.
+`already-dispatched` means a launch exists; use `--again` only when the user wants it relaunched.
+After exit 3, read the task before retrying, since an agent may already be running. Watch it with
+`herdr agent get t12-<assignee>`. `tsk list T12 --json` shows the `dispatch` record (worktree,
+branch, base, starting commit). The default prompt tells the launched agent to work only on its
+branch, open a pull request into the base without merging, then set the task to review or blocked.
+
+**Clean up a dispatch.** Only when the user asks, after review and merge: `tsk clean T12`, or
+`tsk status T12 done --clean` when they also said the task is done. Never clean the worktree you are
+running in. Cleanup removes a clean worktree and deletes the branch only when it is merged into the
+recorded base; otherwise it keeps the branch and says why (`branch.reason` in `--json`). Uncommitted
+work refuses with `dirty-worktree`. Deleting a kept branch is the user's decision.
 
 **Hand back.** `tsk status T12 review`, and say in one line what you did and what to look at.
 Blocked on the user: `tsk status T12 blocked` and ask the question.

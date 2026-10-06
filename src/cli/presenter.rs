@@ -1004,6 +1004,7 @@ pub fn clean_help() -> CliOutput {
         ],
         examples: vec!["tsk clean T12".into(), "tsk clean 12 --json".into()],
         refusals: vec![
+            "unknown-task".into(),
             "not-dispatched".into(),
             "already-cleaned".into(),
             "dirty-worktree".into(),

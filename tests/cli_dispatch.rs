@@ -229,6 +229,7 @@ fn clean_cli_help_and_success_report_each_removed_resource() {
     assert_eq!(help.code, 0, "{}", help.stderr);
     assert!(help.stdout.contains("usage: tsk clean <task> [--json]"));
     for code in [
+        "unknown-task",
         "not-dispatched",
         "already-cleaned",
         "dirty-worktree",

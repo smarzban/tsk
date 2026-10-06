@@ -62,7 +62,7 @@ Buy coffee !p !a
 
 Each token takes one whitespace-separated argument. Put bare `!p`, `!t`, or `!a` at the end, or before another token. A following `#word` also leaves the token bare.
 
-`!b` takes an existing local or remote branch, such as `dispatch` or `origin/dispatch`, not a tag, commit, or task number. Saving validates only cached local branch refs, with bounded queries and no fetch on the board thread. An unknown branch refuses on save and keeps the draft open; the Base picker can fetch branches in the background first. With no explicit base, dispatch uses the task repository's remote default branch (`origin/HEAD`), never the checkout where you captured the task. Choose **default** in the Base picker to clear a staged base.
+`!b` takes an existing local or remote branch, such as `dispatch` or `origin/dispatch`, not a tag or commit. The board checks it against the branches already on disk without fetching: an unknown branch refuses on save and keeps the draft open, and the Base picker can fetch newer branches first. With no base, [dispatch](/docs/board/#base-branch) uses the repository's default branch (`origin/HEAD`). Choose **default** in the Base picker to clear a staged base.
 
 Tokens are removed from the saved title. Remaining words are joined with single spaces. A title is required.
 
