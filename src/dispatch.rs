@@ -228,9 +228,6 @@ pub struct CleanupResult {
     pub worktree: WorktreeCleanup,
     pub branch: BranchCleanup,
     pub workspace_removed: bool,
-    /// The worktree's git-ignored entries, parked in the cleanup trash before removal. The
-    /// caller deletes it once the cleaned marker is saved ([`purge_trash`]).
-    pub trash: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -484,28 +481,13 @@ pub trait DispatchHost {
                 }
             })
     }
-    /// Rename the worktree's git-ignored entries (build output) into the cleanup trash, so the
-    /// removal below deletes only tracked files and git keeps its own dirty-worktree refusal.
-    /// `None` leaves the worktree as is and removal takes the slow path.
-    /// An `Err` means parking failed and what had moved could not all go back: the stash is
-    /// kept (its path is in the message) and the cleanup refuses before removal.
-    fn stash_ignored(&mut self, _worktree: &Path) -> Result<Option<IgnoredStash>, String> {
-        Ok(None)
-    }
-    /// Put a stash back after its worktree's removal failed. `Err` names where the entries
-    /// that could not go back are kept.
-    fn restore_ignored(&mut self, _stash: IgnoredStash) -> Result<(), String> {
-        Ok(())
-    }
     /// Run a board cleanup's host work off the event loop, filling `job`: the board polls it
     /// and applies each row's outcome as it lands. This default runs inline.
     fn begin_cleanup(&mut self, job: CleanupJob, plan: Vec<CleanupPlanRow>, in_herdr: bool)
     where
         Self: Sized,
     {
-        for trash in run_cleanup_job(&job, &plan, in_herdr, self) {
-            purge_trash(&trash);
-        }
+        run_cleanup_job(&job, &plan, in_herdr, self);
     }
     fn root_pane(&mut self, workspace_id: &str) -> Result<String, String>;
     fn run_in_pane(&mut self, pane_id: &str, command: &str) -> Result<(), String>;
@@ -816,24 +798,8 @@ impl DispatchHost for SystemDispatchHost {
         Err(command_failure("git update-ref", &deleted))
     }
 
-    fn stash_ignored(&mut self, worktree: &Path) -> Result<Option<IgnoredStash>, String> {
-        match trash_root() {
-            Some(root) => stash_ignored_entries(worktree, &root),
-            None => Ok(None),
-        }
-    }
-
-    fn restore_ignored(&mut self, stash: IgnoredStash) -> Result<(), String> {
-        restore_or_keep(&stash.dir, &stash.worktree, &stash.entries)
-    }
-
     fn begin_cleanup(&mut self, job: CleanupJob, plan: Vec<CleanupPlanRow>, in_herdr: bool) {
-        std::thread::spawn(move || {
-            // Every git and Herdr step lands first; the parked build output goes last.
-            for trash in run_cleanup_job(&job, &plan, in_herdr, &mut SystemDispatchHost) {
-                purge_trash(&trash);
-            }
-        });
+        std::thread::spawn(move || run_cleanup_job(&job, &plan, in_herdr, &mut SystemDispatchHost));
     }
 
     fn root_pane(&mut self, workspace_id: &str) -> Result<String, String> {
@@ -1378,12 +1344,9 @@ pub fn clean_with_host_refs(
 ) -> Result<CleanupResult, CleanupError> {
     let plan = cleanup_plan(state, id, refs)?;
     let result = clean_planned_with_host(&plan, in_herdr, host)?;
-    if let Err(error) = state.record_dispatch_cleaned(id) {
-        if let Some(trash) = &result.trash {
-            purge_trash(trash);
-        }
-        return Err(CleanupError::Store(error.to_string()));
-    }
+    state
+        .record_dispatch_cleaned(id)
+        .map_err(|error| CleanupError::Store(error.to_string()))?;
     Ok(result)
 }
 
@@ -1400,26 +1363,15 @@ pub fn clean_planned_with_host(
         return Err(CleanupError::DirtyWorktree);
     }
 
-    let mut trash = None;
     let (worktree, deletion, workspace_removed) = if preview.inspection.worktree_exists {
         let workspace_removed = in_herdr && preview.inspection.workspace_exists;
-        let path = Path::new(&preview.record.worktree);
-        // Park the build output first: removal then deletes only tracked files, in
-        // milliseconds, and git's own refusal of modified or untracked files still applies.
-        let stash = host.stash_ignored(path).map_err(CleanupError::Herdr)?;
-        let removed = if workspace_removed {
+        if workspace_removed {
             host.remove_herdr_worktree(&preview.record.herdr_workspace_id)
+                .map_err(CleanupError::Herdr)?;
         } else {
-            host.remove_git_worktree(&preview.project, path)
-        };
-        if let Err(error) = removed {
-            let kept = stash.map_or(Ok(()), |stash| host.restore_ignored(stash));
-            return Err(CleanupError::Herdr(match kept {
-                Ok(()) => error,
-                Err(kept) => format!("{error}; {kept}"),
-            }));
+            host.remove_git_worktree(&preview.project, Path::new(&preview.record.worktree))
+                .map_err(CleanupError::Herdr)?;
         }
-        trash = stash.map(IgnoredStash::into_trash);
         let deletion = if preview.record.base.is_none() && preview.record.base_ref.is_none() {
             BranchDeletion::Kept(BranchRetentionReason::NoRecordedBase)
         } else if refs == CleanupRefs::Unconfirmed {
@@ -1436,20 +1388,8 @@ pub fn clean_planned_with_host(
                 .as_deref()
                 .or(preview.record.base.as_deref())
                 .expect("recorded base");
-            match host.delete_merged_branch_with_reason(
-                &preview.project,
-                &preview.record.branch,
-                base,
-            ) {
-                Ok(deletion) => deletion,
-                Err(error) => {
-                    // The worktree is gone for good: its parked build output goes with it.
-                    if let Some(trash) = &trash {
-                        purge_trash(trash);
-                    }
-                    return Err(CleanupError::Herdr(error));
-                }
-            }
+            host.delete_merged_branch_with_reason(&preview.project, &preview.record.branch, base)
+                .map_err(CleanupError::Herdr)?
         } else {
             BranchDeletion::Kept(BranchRetentionReason::NotMerged)
         };
@@ -1487,7 +1427,6 @@ pub fn clean_planned_with_host(
         worktree,
         branch,
         workspace_removed,
-        trash,
     })
 }
 
@@ -1506,7 +1445,7 @@ struct CleanupJobState {
     rows: Vec<CleanupSlot>,
     /// Rows the board withdrew because their task's dispatch changed: never touched.
     cancelled: Vec<bool>,
-    /// Every row's git and Herdr work has landed (trash deletion may still run).
+    /// Every row's git and Herdr work has landed.
     settled: bool,
 }
 
@@ -1609,30 +1548,27 @@ impl CleanupJob {
     }
 }
 
-/// Run every planned row in order; a refusal on one never stops the others. Returns the
-/// parked trash of the rows that were removed, for the caller to delete last.
+/// Run every planned row in order; a refusal on one never stops the others.
 pub fn run_cleanup_job(
     job: &CleanupJob,
     plan: &[CleanupPlanRow],
     in_herdr: bool,
     host: &mut impl DispatchHost,
-) -> Vec<PathBuf> {
-    let mut trash = Vec::new();
+) {
     for (index, row) in plan.iter().enumerate() {
-        trash.extend(run_cleanup_row(job, index, row, in_herdr, host));
+        run_cleanup_row(job, index, row, in_herdr, host);
     }
     job.settle();
-    trash
 }
 
-/// One row of [`run_cleanup_job`]: returns its parked trash, if it was removed.
+/// One row of [`run_cleanup_job`].
 pub fn run_cleanup_row(
     job: &CleanupJob,
     index: usize,
     row: &CleanupPlanRow,
     in_herdr: bool,
     host: &mut impl DispatchHost,
-) -> Option<PathBuf> {
+) {
     job.start(index);
     // Checked right before the host work, not only when `y` planned the row: the board
     // stays interactive meanwhile, so the task may have been relaunched since.
@@ -1641,289 +1577,7 @@ pub fn run_cleanup_row(
     } else {
         Err(CleanupError::DispatchChanged)
     };
-    let trash = result.as_ref().ok().and_then(|result| result.trash.clone());
     job.finish(index, result);
-    trash
-}
-
-/// Cleanup trash lives here under the state dir: on the same volume as a typical worktree,
-/// so parking build output is one rename, and in one place for the sweep on board open.
-pub const TRASH_DIR: &str = "cleanup-trash";
-const STASH_ORIGIN: &str = "origin";
-const STASH_MANIFEST: &str = "manifest";
-const STASH_ITEMS: &str = "items";
-/// Written once the worktree is removed: the sweep then deletes, never restores.
-const STASH_REMOVED: &str = "removed";
-/// Written when entries could not go back: the stash is never deleted, only reported.
-pub const STASH_KEEP: &str = "keep";
-/// A stash younger than this may belong to a cleanup still running in another process.
-const TRASH_SWEEP_AGE: Duration = Duration::from_secs(120);
-
-static TRASH_ROOT: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
-static STASH_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// Park cleanup trash under `state_dir`. Without this, cleanup removes worktrees in place.
-pub fn remember_trash_in(state_dir: &Path) {
-    if let Ok(mut slot) = TRASH_ROOT.lock() {
-        *slot = Some(state_dir.join(TRASH_DIR));
-    }
-}
-
-fn trash_root() -> Option<PathBuf> {
-    TRASH_ROOT.lock().ok().and_then(|slot| slot.clone())
-}
-
-/// A worktree's git-ignored entries, renamed into the cleanup trash.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IgnoredStash {
-    pub dir: PathBuf,
-    pub worktree: PathBuf,
-    /// Paths relative to the worktree, mirrored under the stash's `items`.
-    pub entries: Vec<PathBuf>,
-}
-
-impl IgnoredStash {
-    /// The worktree is removed: the stash is now only trash to delete.
-    pub fn into_trash(self) -> PathBuf {
-        let _ = std::fs::write(self.dir.join(STASH_REMOVED), b"");
-        self.dir
-    }
-}
-
-/// Rename every git-ignored entry of `worktree` into a fresh stash under `root`. `Ok(None)`
-/// (no ignored entries, a listing error, a rename across volumes after everything moved back)
-/// means removal deletes in place. `Err` means a rollback could not put everything back: the
-/// stash is kept and named, and the cleanup must refuse.
-pub fn stash_ignored_entries(worktree: &Path, root: &Path) -> Result<Option<IgnoredStash>, String> {
-    let Some(listed) = cleanup_query(
-        worktree,
-        &[
-            "ls-files",
-            "-z",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "--directory",
-        ],
-    )
-    .ok()
-    .filter(|output| output.status.success()) else {
-        return Ok(None);
-    };
-    let mut entries = Vec::new();
-    for raw in listed.stdout.split(|byte| *byte == 0) {
-        if raw.is_empty() {
-            continue;
-        }
-        let Ok(text) = std::str::from_utf8(raw) else {
-            return Ok(None);
-        };
-        let text = text.trim_end_matches('/');
-        let relative = PathBuf::from(text);
-        let plain = relative
-            .components()
-            .all(|part| matches!(part, std::path::Component::Normal(_)));
-        if text.is_empty() || text.contains('\n') || !plain {
-            return Ok(None);
-        }
-        entries.push(relative);
-    }
-    let Some(origin) = worktree.to_str().filter(|_| !entries.is_empty()) else {
-        return Ok(None);
-    };
-    let name = format!(
-        "{}-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos())
-            .unwrap_or_default(),
-        STASH_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    );
-    let dir = root.join(name);
-    if std::fs::create_dir_all(dir.join(STASH_ITEMS)).is_err() {
-        return Ok(None);
-    }
-    let manifest = entries
-        .iter()
-        .map(|entry| entry.to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join("\n");
-    if std::fs::write(dir.join(STASH_ORIGIN), origin).is_err()
-        || std::fs::write(dir.join(STASH_MANIFEST), manifest).is_err()
-    {
-        let _ = std::fs::remove_dir_all(&dir);
-        return Ok(None);
-    }
-    let mut moved = Vec::new();
-    for entry in entries {
-        let target = dir.join(STASH_ITEMS).join(&entry);
-        let renamed = target
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| std::fs::rename(worktree.join(&entry), &target));
-        if renamed.is_err() {
-            // Nothing is deleted on this path: either everything went back, or the stash is
-            // kept and the cleanup refuses.
-            restore_or_keep(&dir, worktree, &moved)?;
-            return Ok(None);
-        }
-        moved.push(entry);
-    }
-    Ok(Some(IgnoredStash {
-        dir,
-        worktree: worktree.to_path_buf(),
-        entries: moved,
-    }))
-}
-
-/// Put a stash back, dropping it only once nothing in it is left to lose. Otherwise the stash
-/// is marked kept (the sweep never deletes it) and the error names where it is.
-fn restore_or_keep(dir: &Path, worktree: &Path, entries: &[PathBuf]) -> Result<(), String> {
-    if restore_stash(dir, worktree, entries) {
-        let _ = std::fs::remove_dir_all(dir);
-        Ok(())
-    } else {
-        let _ = std::fs::write(
-            dir.join(STASH_KEEP),
-            format!("could not put these back into {}\n", worktree.display()),
-        );
-        Err(format!(
-            "ignored files that could not go back are kept in {}",
-            dir.join(STASH_ITEMS).display()
-        ))
-    }
-}
-
-/// Rename a stash's entries back into its worktree. True when nothing is left in the stash.
-/// An entry whose destination exists (a build recreated it) stays in the stash rather than
-/// replace or merge, and no rename ever goes through a symlinked directory: restoration
-/// lands inside the worktree or not at all.
-fn restore_stash(dir: &Path, worktree: &Path, entries: &[PathBuf]) -> bool {
-    let real_dir = |path: &Path| {
-        std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir() && !meta.is_symlink())
-    };
-    if !real_dir(worktree) {
-        return entries
-            .iter()
-            .all(|entry| std::fs::symlink_metadata(dir.join(STASH_ITEMS).join(entry)).is_err());
-    }
-    let mut complete = true;
-    for entry in entries {
-        let from = dir.join(STASH_ITEMS).join(entry);
-        if std::fs::symlink_metadata(&from).is_err() {
-            continue;
-        }
-        if !confined_parent(worktree, entry) {
-            complete = false;
-            continue;
-        }
-        let to = worktree.join(entry);
-        if std::fs::symlink_metadata(&to).is_ok() || std::fs::rename(&from, &to).is_err() {
-            complete = false;
-        }
-    }
-    complete
-}
-
-/// Make sure every directory between `worktree` and `entry` is a real directory, never a
-/// symlink, creating missing ones one component at a time. False refuses the restore.
-fn confined_parent(worktree: &Path, entry: &Path) -> bool {
-    let Some(parent) = entry.parent() else {
-        return true;
-    };
-    let mut path = worktree.to_path_buf();
-    for part in parent.components() {
-        let std::path::Component::Normal(part) = part else {
-            return false;
-        };
-        path.push(part);
-        match std::fs::symlink_metadata(&path) {
-            Ok(meta) if meta.is_dir() && !meta.is_symlink() => {}
-            Ok(_) => return false,
-            Err(_) => {
-                if std::fs::create_dir(&path).is_err() {
-                    return false;
-                }
-            }
-        }
-    }
-    true
-}
-
-/// Stashes the sweep left in place because they hold files it could not put back.
-pub fn kept_stashes(state_dir: &Path) -> Vec<PathBuf> {
-    let Ok(children) = std::fs::read_dir(state_dir.join(TRASH_DIR)) else {
-        return Vec::new();
-    };
-    let mut kept = children
-        .flatten()
-        .map(|child| child.path())
-        .filter(|dir| std::fs::symlink_metadata(dir.join(STASH_KEEP)).is_ok())
-        .collect::<Vec<_>>();
-    kept.sort();
-    kept
-}
-
-/// Delete parked trash. Best effort: what survives is swept on the next board open.
-pub fn purge_trash(dir: &Path) {
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-/// Empty trash a quit or crash left mid-delete, on a detached thread. A stash whose worktree
-/// was never removed (the process died between parking and removal) goes back first, and is
-/// kept, never deleted, when it cannot all go back. The handle returns every kept stash.
-pub fn spawn_trash_sweep(state_dir: &Path) -> std::thread::JoinHandle<Vec<PathBuf>> {
-    let state_dir = state_dir.to_path_buf();
-    std::thread::spawn(move || {
-        sweep_trash(&state_dir.join(TRASH_DIR), TRASH_SWEEP_AGE);
-        kept_stashes(&state_dir)
-    })
-}
-
-fn sweep_trash(root: &Path, min_age: Duration) {
-    let Ok(children) = std::fs::read_dir(root) else {
-        return;
-    };
-    for child in children.flatten() {
-        let dir = child.path();
-        let Ok(metadata) = std::fs::symlink_metadata(&dir) else {
-            continue;
-        };
-        if !metadata.is_dir() {
-            let _ = std::fs::remove_file(&dir);
-            continue;
-        }
-        if std::fs::symlink_metadata(dir.join(STASH_KEEP)).is_ok() {
-            continue;
-        }
-        let young = metadata
-            .modified()
-            .ok()
-            .and_then(|at| at.elapsed().ok())
-            .is_none_or(|age| age < min_age);
-        if young {
-            continue;
-        }
-        if std::fs::symlink_metadata(dir.join(STASH_REMOVED)).is_ok() {
-            purge_trash(&dir);
-            continue;
-        }
-        let manifest = std::fs::read_to_string(dir.join(STASH_MANIFEST)).unwrap_or_default();
-        let entries = manifest.lines().map(PathBuf::from).collect::<Vec<_>>();
-        let origin = std::fs::read_to_string(dir.join(STASH_ORIGIN))
-            .ok()
-            .map(PathBuf::from);
-        match origin {
-            Some(origin) => {
-                let _ = restore_or_keep(&dir, &origin, &entries);
-            }
-            // No record of where it came from: nothing can be put back, so keep it.
-            None => {
-                let _ = std::fs::write(dir.join(STASH_KEEP), "origin unknown\n");
-            }
-        }
-    }
 }
 
 /// Launch the cursor task. Domain state changes only after every host command succeeds.
@@ -2887,265 +2541,6 @@ mod tests {
             listed.contains(&canonical_repo),
             "listing must keep resolvable worktrees: {listed:?}"
         );
-    }
-
-    /// A throwaway repo with one linked worktree holding a tracked file, an ignored
-    /// `target/` (nested build output) and an ignored file inside a tracked directory.
-    struct StashRepo {
-        root: PathBuf,
-        repo: PathBuf,
-        worktree: PathBuf,
-        trash: PathBuf,
-    }
-
-    impl Drop for StashRepo {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.root);
-        }
-    }
-
-    impl StashRepo {
-        fn new(label: &str) -> Self {
-            let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-            let root = std::env::temp_dir().join(format!(
-                "tsk-dispatch-stash-{label}-{}-{seq}",
-                std::process::id()
-            ));
-            let repo = root.join("repo");
-            fs::create_dir_all(&repo).expect("repo dir");
-            let this = Self {
-                worktree: root.join("wt"),
-                trash: root.join("state").join(TRASH_DIR),
-                repo,
-                root,
-            };
-            this.git(&["init", "-q"]);
-            fs::write(this.repo.join(".gitignore"), "target/\n*.log\n").expect("ignore");
-            fs::create_dir_all(this.repo.join("src")).expect("src");
-            fs::write(this.repo.join("src/lib.rs"), "// tracked\n").expect("tracked");
-            this.git(&["add", "."]);
-            this.git(&[
-                "-c",
-                "user.email=tsk@example.com",
-                "-c",
-                "user.name=tsk",
-                "commit",
-                "-qm",
-                "init",
-            ]);
-            this.git(&[
-                "worktree",
-                "add",
-                "-q",
-                "-b",
-                "tsk/t1",
-                this.worktree.to_str().expect("utf8"),
-            ]);
-            fs::create_dir_all(this.worktree.join("target/debug/deps")).expect("target");
-            fs::write(this.worktree.join("target/debug/deps/big"), vec![0u8; 4096])
-                .expect("build output");
-            fs::write(this.worktree.join("src/build.log"), "log\n").expect("ignored log");
-            this
-        }
-
-        fn git(&self, args: &[&str]) -> Output {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&self.repo)
-                .args(args)
-                .output()
-                .expect("run git");
-            assert!(output.status.success(), "git {args:?}: {output:?}");
-            output
-        }
-
-        fn remove_worktree(&self) -> Result<(), String> {
-            SystemDispatchHost.remove_git_worktree(&self.repo, &self.worktree)
-        }
-    }
-
-    #[test]
-    fn stashing_ignored_entries_leaves_only_tracked_files_and_git_still_removes_cleanly() {
-        let repo = StashRepo::new("removed");
-        let stash = stash_ignored_entries(&repo.worktree, &repo.trash)
-            .expect("no rollback")
-            .expect("stash");
-        let mut entries = stash.entries.clone();
-        entries.sort();
-        assert_eq!(
-            entries,
-            vec![PathBuf::from("src/build.log"), PathBuf::from("target")]
-        );
-        assert!(!repo.worktree.join("target").exists());
-        assert!(
-            repo.worktree.join("src/lib.rs").exists(),
-            "tracked files stay"
-        );
-        assert!(stash.dir.join("items/target/debug/deps/big").exists());
-        // git's own removal (no --force) sees a clean checkout and succeeds.
-        repo.remove_worktree().expect("plain git worktree remove");
-        assert!(!repo.worktree.exists());
-        let trash = stash.into_trash();
-        assert!(trash.join("removed").exists());
-        purge_trash(&trash);
-        assert!(!trash.exists());
-    }
-
-    #[test]
-    fn a_refused_removal_puts_the_stash_back() {
-        let repo = StashRepo::new("refused");
-        // Uncommitted work: git refuses the removal and nothing may be lost.
-        fs::write(repo.worktree.join("notes.txt"), "draft\n").expect("untracked");
-        let stash = stash_ignored_entries(&repo.worktree, &repo.trash)
-            .expect("no rollback")
-            .expect("stash");
-        assert!(
-            repo.remove_worktree().is_err(),
-            "git still guards dirty work"
-        );
-        SystemDispatchHost
-            .restore_ignored(stash.clone())
-            .expect("everything goes back");
-        assert!(repo.worktree.join("target/debug/deps/big").exists());
-        assert!(repo.worktree.join("src/build.log").exists());
-        assert!(repo.worktree.join("notes.txt").exists());
-        assert!(!stash.dir.exists(), "an emptied stash is dropped");
-    }
-
-    #[test]
-    fn a_worktree_without_ignored_entries_takes_the_plain_path() {
-        let repo = StashRepo::new("plain");
-        fs::remove_dir_all(repo.worktree.join("target")).expect("no target");
-        fs::remove_file(repo.worktree.join("src/build.log")).expect("no log");
-        assert_eq!(stash_ignored_entries(&repo.worktree, &repo.trash), Ok(None));
-        assert!(!repo.trash.exists() || fs::read_dir(&repo.trash).unwrap().next().is_none());
-    }
-
-    #[test]
-    fn the_sweep_empties_left_over_trash_and_returns_a_stash_whose_worktree_survived() {
-        let repo = StashRepo::new("sweep");
-        // A quit mid-delete: the worktree is gone, its parked output never got deleted.
-        let removed = stash_ignored_entries(&repo.worktree, &repo.trash)
-            .expect("no rollback")
-            .expect("stash");
-        let removed_dir = removed.dir.clone();
-        let _ = removed.into_trash();
-        // A crash between parking and removal: the worktree survived without its output.
-        fs::create_dir_all(repo.worktree.join("target")).expect("rebuild");
-        fs::write(repo.worktree.join("target/again"), "x").expect("build");
-        let survived = stash_ignored_entries(&repo.worktree, &repo.trash)
-            .expect("no rollback")
-            .expect("stash");
-        assert!(!repo.worktree.join("target").exists());
-        fs::write(repo.trash.join("stray"), "x").expect("stray file");
-
-        sweep_trash(&repo.trash, Duration::from_secs(3600));
-        assert!(
-            removed_dir.exists(),
-            "a young stash may belong to a running cleanup"
-        );
-
-        sweep_trash(&repo.trash, Duration::ZERO);
-        assert!(!removed_dir.exists());
-        assert!(!survived.dir.exists());
-        assert!(
-            repo.worktree.join("target/again").exists(),
-            "a stash whose removal never happened goes back"
-        );
-        assert_eq!(fs::read_dir(&repo.trash).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn a_restore_that_meets_a_rebuilt_entry_keeps_the_stash_and_the_sweep_never_deletes_it() {
-        let repo = StashRepo::new("collision");
-        let stash = stash_ignored_entries(&repo.worktree, &repo.trash)
-            .expect("no rollback")
-            .expect("stash");
-        // A build recreates target/ while removal is refused.
-        fs::create_dir_all(repo.worktree.join("target")).expect("rebuild");
-        fs::write(repo.worktree.join("target/new"), "new").expect("new output");
-        let kept = SystemDispatchHost
-            .restore_ignored(stash.clone())
-            .expect_err("target/ could not go back");
-        assert!(kept.contains(&stash.dir.display().to_string()), "{kept}");
-        assert!(stash.dir.join("items/target/debug/deps/big").exists());
-        assert!(stash.dir.join(STASH_KEEP).exists());
-        assert!(
-            repo.worktree.join("src/build.log").exists(),
-            "the rest went back"
-        );
-        assert_eq!(fs::read(repo.worktree.join("target/new")).unwrap(), b"new");
-
-        sweep_trash(&repo.trash, Duration::ZERO);
-        assert!(
-            stash.dir.join("items/target/debug/deps/big").exists(),
-            "a kept stash outlives every sweep"
-        );
-        assert_eq!(kept_stashes(repo.trash.parent().unwrap()), vec![stash.dir]);
-    }
-
-    #[test]
-    fn the_sweep_keeps_an_unremoved_stash_it_cannot_put_back() {
-        let repo = StashRepo::new("sweep-collision");
-        // A crash between parking and removal, then a rebuild before the next open.
-        let stash = stash_ignored_entries(&repo.worktree, &repo.trash)
-            .expect("no rollback")
-            .expect("stash");
-        fs::create_dir_all(repo.worktree.join("target")).expect("rebuild");
-        sweep_trash(&repo.trash, Duration::ZERO);
-        assert!(stash.dir.join("items/target/debug/deps/big").exists());
-        assert!(stash.dir.join(STASH_KEEP).exists());
-        assert!(repo.worktree.join("src/build.log").exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_rename_that_fails_midway_puts_back_what_moved_and_removes_in_place() {
-        use std::os::unix::fs::PermissionsExt;
-        let repo = StashRepo::new("rename-fails");
-        // `zz/` is read-only: its ignored file cannot be renamed out after target/ moved.
-        fs::create_dir_all(repo.worktree.join("zz")).expect("zz");
-        fs::write(repo.worktree.join("zz/late.log"), "late").expect("late");
-        fs::write(repo.worktree.join("zz/.keep"), "").expect("keep");
-        repo.git(&["-C", repo.worktree.to_str().unwrap(), "add", "zz/.keep"]);
-        let mode = |mode| fs::Permissions::from_mode(mode);
-        fs::set_permissions(repo.worktree.join("zz"), mode(0o555)).expect("read-only");
-        let stashed = stash_ignored_entries(&repo.worktree, &repo.trash);
-        fs::set_permissions(repo.worktree.join("zz"), mode(0o755)).expect("writable");
-        assert_eq!(stashed, Ok(None));
-        assert!(repo.worktree.join("target/debug/deps/big").exists());
-        assert!(repo.worktree.join("zz/late.log").exists());
-        assert_eq!(
-            kept_stashes(repo.trash.parent().unwrap()),
-            Vec::<PathBuf>::new()
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn restoration_never_follows_a_symlinked_parent_out_of_the_worktree() {
-        let repo = StashRepo::new("symlink");
-        let stash = stash_ignored_entries(&repo.worktree, &repo.trash)
-            .expect("no rollback")
-            .expect("stash");
-        // The checkout swaps src/ for a link to a directory outside the worktree.
-        let outside = repo.root.join("outside");
-        fs::create_dir_all(&outside).expect("outside");
-        fs::remove_dir_all(repo.worktree.join("src")).expect("drop src");
-        std::os::unix::fs::symlink(&outside, repo.worktree.join("src")).expect("link");
-        let kept = SystemDispatchHost
-            .restore_ignored(stash.clone())
-            .expect_err("src/build.log must not land outside");
-        assert!(kept.contains("kept in"), "{kept}");
-        assert!(!outside.join("build.log").exists());
-        assert!(stash.dir.join("items/src/build.log").exists());
-        assert!(stash.dir.join(STASH_KEEP).exists());
-        assert!(repo.worktree.join("target/debug/deps/big").exists());
-
-        // The sweep is no way around it either.
-        sweep_trash(&repo.trash, Duration::ZERO);
-        assert!(!outside.join("build.log").exists());
-        assert!(stash.dir.join("items/src/build.log").exists());
     }
 
     #[test]

@@ -94,7 +94,6 @@ fn share_fetch_window(state_dir: &Option<std::path::PathBuf>) {
         .clone()
         .unwrap_or_else(crate::store::default_state_dir);
     crate::git_base::remember_fetches_in(&dir);
-    crate::dispatch::remember_trash_in(&dir);
 }
 
 fn run_help(args: Vec<String>) -> CliOutput {

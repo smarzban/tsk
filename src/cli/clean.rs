@@ -36,13 +36,8 @@ pub fn run_with_host(
         .map(|task| task.id)
         .ok_or(CleanupError::UnknownTask)?;
     let result = dispatch::clean_with_host(&mut state, id, in_herdr, host)?;
-    let saved = store
+    store
         .reload_merge_save(&mut state)
-        .map_err(|error| CleanupError::Store(error.to_string()));
-    // The worktree is gone either way; its parked build output goes last, after the marker.
-    if let Some(trash) = &result.trash {
-        dispatch::purge_trash(trash);
-    }
-    saved?;
+        .map_err(|error| CleanupError::Store(error.to_string()))?;
     Ok(result)
 }

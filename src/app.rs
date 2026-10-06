@@ -294,16 +294,13 @@ fn run_capture() -> Result<(), Box<dyn Error>> {
     let (store, mut domain, mut model) = load_board_for_quick_capture()?;
     let snapshot = load_snapshot(&domain);
     seed_quick_capture(&mut domain, &mut model, &snapshot);
-    run_board_loop(store, domain, model, true, None)
+    run_board_loop(store, domain, model, true)
 }
 
 fn run_board() -> Result<(), Box<dyn Error>> {
     let (store, domain, model) = load_board()?;
     crate::git_base::remember_fetches_in(store.path());
-    crate::dispatch::remember_trash_in(store.path());
-    // Off the event loop: trash a quit left mid-delete can be gigabytes.
-    let sweep = crate::dispatch::spawn_trash_sweep(store.path());
-    run_board_loop(store, domain, model, false, Some(sweep))
+    run_board_loop(store, domain, model, false)
 }
 
 fn run_board_loop(
@@ -311,7 +308,6 @@ fn run_board_loop(
     mut domain: DomainState,
     mut model: BoardModel,
     quick_capture: bool,
-    mut trash_sweep: Option<std::thread::JoinHandle<Vec<std::path::PathBuf>>>,
 ) -> Result<(), Box<dyn Error>> {
     // `load_board` just read the store, so seed the watch from that snapshot: the first idle
     // tick must not immediately re-merge what is already loaded.
@@ -360,15 +356,6 @@ fn run_board_loop(
             )?;
             if model.quit_after_cleanup_due() {
                 break;
-            }
-            if trash_sweep
-                .as_ref()
-                .is_some_and(std::thread::JoinHandle::is_finished)
-            {
-                let kept = trash_sweep.take().and_then(|sweep| sweep.join().ok());
-                if let Some(message) = kept.and_then(|kept| kept_trash_message(&kept)) {
-                    model.set_message(message);
-                }
             }
             // Settle, paint, then wait. The wait is only the Frame Scheduler's idle floor.
             // All three are one call so the frame is painted before the wait can time out into
@@ -2062,20 +2049,6 @@ pub fn resolve_dispatch_again(
     }
 }
 
-/// The status row when cleanup trash holds files it could not put back: never deleted, so
-/// the human decides.
-pub fn kept_trash_message(kept: &[std::path::PathBuf]) -> Option<String> {
-    let first = kept.first()?;
-    let more = match kept.len() {
-        1 => String::new(),
-        count => format!(" (+{} more)", count - 1),
-    };
-    Some(format!(
-        "cleanup kept files it could not put back: {}{more}",
-        first.display()
-    ))
-}
-
 /// `ctrl+d` on a live dispatch while a confirmed cleanup still runs.
 pub const CLEANUP_BUSY: &str = "cleanup still running; try again when it finishes";
 
@@ -2141,7 +2114,6 @@ pub fn offer_cleanup_prompt_with_host(
             worktree: WorktreeCleanup::Missing,
             branch: BranchCleanup::Kept,
             workspace_removed: false,
-            trash: None,
         }));
     }
     model.begin_cleanup_prompt(CleanupPrompt::single(cleanup_row(id, preview, merge_check)));
