@@ -257,7 +257,7 @@ fn cleanup_fetches_recorded_upstream_without_a_local_pull_and_keeps_squash_branc
     assert_eq!(git(&r.local, &["rev-parse", "main"]), initial_local);
     host.remove_git_worktree(&r.local, &worktree).unwrap();
     assert!(host
-        .delete_merged_branch(&r.local, "tsk/test", "origin/main")
+        .delete_merged_branch(&r.local, "tsk/test", "refs/remotes/origin/main")
         .unwrap());
 
     git(
@@ -306,7 +306,7 @@ fn cleanup_retains_a_branch_advanced_after_inspection() {
     let new_tip = git(&r.local, &["rev-parse", "HEAD"]);
     git(&r.local, &["checkout", "main"]);
     assert!(!SystemDispatchHost
-        .delete_merged_branch(&r.local, "tsk/race", "origin/main")
+        .delete_merged_branch(&r.local, "tsk/race", "refs/remotes/origin/main")
         .unwrap());
     assert_eq!(git(&r.local, &["rev-parse", "tsk/race"]), new_tip);
 }

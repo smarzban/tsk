@@ -406,8 +406,8 @@ pub trait DispatchHost {
             None => self.resolve_base(project)?,
         };
         Ok(crate::git_base::ResolvedBase {
+            full_ref: Some(format!("refs/heads/{reference}")),
             reference,
-            full_ref: None,
             commit: None,
             remote: None,
             warning: None,

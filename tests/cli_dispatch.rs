@@ -1082,7 +1082,7 @@ fn delete_merged_branch_retains_branch_when_late_ancestry_check_times_out() {
         tsk_tui::dispatch::SystemDispatchHost.delete_merged_branch_with_reason(
             &repo.project,
             "tsk/t1-clean",
-            "base",
+            "refs/heads/base",
         )
     };
     let elapsed = start.elapsed();
@@ -1122,7 +1122,7 @@ fn delete_merged_branch_tolerates_a_slow_but_finishing_ancestry_check() {
         tsk_tui::dispatch::SystemDispatchHost.delete_merged_branch_with_reason(
             &repo.project,
             "tsk/t1-clean",
-            "base",
+            "refs/heads/base",
         )
     };
     let elapsed = start.elapsed();
@@ -1211,7 +1211,7 @@ fn timed_out_final_worktree_listing_keeps_the_branch_with_a_clear_reason() {
         .remove_git_worktree(&repo.project, &repo.worktree)
         .unwrap();
     let result = tsk_tui::dispatch::SystemDispatchHost
-        .delete_merged_branch_with_reason(&repo.project, "tsk/t1-clean", "base")
+        .delete_merged_branch_with_reason(&repo.project, "tsk/t1-clean", "refs/heads/base")
         .unwrap();
     let tsk_tui::dispatch::BranchDeletion::Kept(reason) = result else {
         panic!("timed-out listing must not delete the branch");
