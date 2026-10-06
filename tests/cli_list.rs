@@ -2768,7 +2768,7 @@ fn list_open_and_ready_conflicts_are_usage_errors() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// T152: launched from `work/alpha` while the store knows the same repository as the
+/// Launched from `work/alpha` while the store knows the same repository as the
 /// symlink `links/beta` (plus a legacy task under the launch spelling and one under a
 /// second alias `mirror/alpha`), bare `list` and
 /// `-p` by either basename or path list the project's tasks and nothing else.

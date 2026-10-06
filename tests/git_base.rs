@@ -69,7 +69,7 @@ fn default_ignores_checkout_and_fetches_remote_tip() {
     let expected = git(&r.remote, &["rev-parse", "HEAD"]);
     let base = resolve(&r.local, None).unwrap();
     assert_eq!(base.reference, "origin/main");
-    assert_eq!(base.full_ref.as_deref(), Some("refs/remotes/origin/main"));
+    assert_eq!(base.full_ref, "refs/remotes/origin/main");
     assert_eq!(base.commit.as_deref(), Some(expected.as_str()));
     assert!(base.warning.is_none());
     assert_eq!(default_branch_name(&r.local).as_deref(), Some("main"));
@@ -182,10 +182,7 @@ fn colliding_tag_or_local_remote_name_cannot_change_the_recorded_base() {
     git(&r.local, &["tag", "main"]);
     let local = resolve(&r.local, Some("main")).unwrap();
     assert_eq!(local.reference, "origin/main");
-    assert_eq!(
-        recorded_branch_ref(&r.local, &local.reference).unwrap(),
-        "refs/remotes/origin/main"
-    );
+    assert_eq!(local.full_ref, "refs/remotes/origin/main");
     git(&r.local, &["branch", "origin/main", "refs/heads/main"]);
     let colliding = resolve(&r.local, Some("origin/main")).unwrap();
     assert_eq!(colliding.reference, "refs/heads/origin/main");
@@ -193,10 +190,7 @@ fn colliding_tag_or_local_remote_name_cannot_change_the_recorded_base() {
         short_name_for_remote(&colliding.reference, colliding.remote.as_deref()),
         "origin/main"
     );
-    assert_eq!(
-        recorded_branch_ref(&r.local, &colliding.reference).unwrap(),
-        "refs/heads/origin/main"
-    );
+    assert_eq!(colliding.full_ref, "refs/heads/origin/main");
 }
 
 #[test]
@@ -220,7 +214,7 @@ fn offline_keeps_cached_remote_ref_and_reports_fallback() {
 }
 #[test]
 fn cleanup_fetches_recorded_upstream_without_a_local_pull_and_keeps_squash_branches() {
-    use tsk_tui::dispatch::{DispatchHost, SystemDispatchHost};
+    use tsk_tui::dispatch::{BranchDeletion, DispatchHost, SystemDispatchHost};
     use tsk_tui::domain::Dispatch;
     let r = repo();
     let worktree = r.root.join("task-worktree");
@@ -259,9 +253,10 @@ fn cleanup_fetches_recorded_upstream_without_a_local_pull_and_keeps_squash_branc
     );
     assert_eq!(git(&r.local, &["rev-parse", "main"]), initial_local);
     host.remove_git_worktree(&r.local, &worktree).unwrap();
-    assert!(host
-        .delete_merged_branch(&r.local, "tsk/test", "origin/main")
-        .unwrap());
+    assert_eq!(
+        host.delete_merged_branch(&r.local, "tsk/test", "refs/remotes/origin/main"),
+        Ok(BranchDeletion::Removed)
+    );
 
     git(
         &r.local,
@@ -296,7 +291,9 @@ fn cleanup_fetches_recorded_upstream_without_a_local_pull_and_keeps_squash_branc
 
 #[test]
 fn cleanup_retains_a_branch_advanced_after_inspection() {
-    use tsk_tui::dispatch::{DispatchHost, SystemDispatchHost};
+    use tsk_tui::dispatch::{
+        BranchDeletion, BranchRetentionReason, DispatchHost, SystemDispatchHost,
+    };
     let r = repo();
     git(&r.local, &["branch", "tsk/race", "origin/main"]);
     // The old tip is merged. A concurrent worker then advances the branch before
@@ -308,9 +305,12 @@ fn cleanup_retains_a_branch_advanced_after_inspection() {
     );
     let new_tip = git(&r.local, &["rev-parse", "HEAD"]);
     git(&r.local, &["checkout", "main"]);
-    assert!(!SystemDispatchHost
-        .delete_merged_branch(&r.local, "tsk/race", "origin/main")
-        .unwrap());
+    assert_eq!(
+        SystemDispatchHost.delete_merged_branch(&r.local, "tsk/race", "refs/remotes/origin/main"),
+        Ok(BranchDeletion::Kept(
+            BranchRetentionReason::LatestTipNotMerged
+        ))
+    );
     assert_eq!(git(&r.local, &["rev-parse", "tsk/race"]), new_tip);
 }
 
@@ -410,7 +410,7 @@ fn footer_default_cache_refreshes_after_dispatch_updates_origin_head() {
                 worktree: r.root.join("not-opened").to_string_lossy().into_owned(),
                 branch: "tsk/cache".into(),
                 base: Some(base.reference),
-                base_ref: base.full_ref,
+                base_ref: Some(base.full_ref),
                 base_commit: base.commit,
                 base_remote: base.remote,
                 herdr_workspace_id: "not-opened".into(),
@@ -453,7 +453,7 @@ fn local_upstream_dot_keeps_the_selected_local_tip() {
     let expected = git(&r.local, &["rev-parse", "HEAD"]);
     let base = resolve(&r.local, Some("feature")).unwrap();
     assert_eq!(base.reference, "feature");
-    assert_eq!(base.full_ref.as_deref(), Some("refs/heads/feature"));
+    assert_eq!(base.full_ref, "refs/heads/feature");
     assert_eq!(base.commit.as_deref(), Some(expected.as_str()));
     assert_eq!(base.remote, None);
 }
@@ -466,10 +466,7 @@ fn explicit_remote_base_fetches_a_newly_pushed_branch_before_validation() {
     assert!(validate_branch(&r.local, "origin/new-release").is_err());
     let base = resolve(&r.local, Some("origin/new-release")).unwrap();
     assert_eq!(base.reference, "origin/new-release");
-    assert_eq!(
-        base.full_ref.as_deref(),
-        Some("refs/remotes/origin/new-release")
-    );
+    assert_eq!(base.full_ref, "refs/remotes/origin/new-release");
     assert_eq!(base.remote.as_deref(), Some("origin"));
     assert_eq!(base.commit.unwrap(), git(&r.remote, &["rev-parse", "HEAD"]));
 }
@@ -495,9 +492,9 @@ fn local_git_queries_are_bounded_and_kill_output_holding_children() {
             match query {
                 0 => assert_eq!(default_branch_name(path), None),
                 1 => assert!(validate_branch(path, "main").is_err()),
-                2 => assert!(recorded_branch_ref(path, "refs/heads/main").is_err()),
+                2 => assert!(validate_branch(path, "origin/main").is_err()),
                 3 => assert_eq!(remote_for_ref(path, "origin/main"), None),
-                4 => assert!(list_branches(path).is_err()),
+                4 => assert!(list_cached_branches(path).is_err()),
                 _ => assert!(resolve(path, None).is_err()),
             }
             assert!(
@@ -546,25 +543,15 @@ fn local_git_queries_are_bounded_and_kill_output_holding_children() {
     );
 }
 
+/// The exact namespace is what cleanup uses later; a remote added under the same prefix
+/// afterwards is covered end to end by `cleanup_keeps_exact_local_namespace_after_adding_same_named_remote`.
 #[test]
-fn exact_local_base_survives_a_new_remote_named_after_its_prefix() {
+fn a_slash_named_local_base_records_its_heads_namespace() {
     let r = repo();
     git(&r.local, &["branch", "integration/main"]);
     let base = resolve(&r.local, Some("integration/main")).unwrap();
     assert_eq!(base.reference, "integration/main");
-    assert_eq!(
-        base.full_ref.as_deref(),
-        Some("refs/heads/integration/main")
-    );
-    git(
-        &r.local,
-        &["remote", "add", "integration", r.remote.to_str().unwrap()],
-    );
-    git(&r.local, &["fetch", "integration"]);
-    assert_eq!(
-        recorded_branch_ref(&r.local, base.full_ref.as_deref().unwrap()).unwrap(),
-        "refs/heads/integration/main"
-    );
+    assert_eq!(base.full_ref, "refs/heads/integration/main");
 }
 
 #[test]

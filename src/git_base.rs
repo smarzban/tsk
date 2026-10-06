@@ -5,10 +5,27 @@ use std::path::Path;
 pub struct ResolvedBase {
     pub reference: String,
     /// Exact branch namespace, independent of later remote configuration changes.
-    pub full_ref: Option<String>,
+    pub full_ref: String,
     pub commit: Option<String>,
     pub remote: Option<String>,
     pub warning: Option<String>,
+}
+
+/// A task base names a branch in the task's own repository, so a desk task has none. `fresh`
+/// lets CLI validation refresh an explicitly named remote branch first.
+pub fn validate_task_base(
+    scope: &crate::domain::TaskScope,
+    base: &str,
+    fresh: bool,
+) -> Result<(), String> {
+    let crate::domain::TaskScope::Project { path } = scope else {
+        return Err("base requires a project task".into());
+    };
+    if fresh {
+        validate_branch_fresh(Path::new(path), base)
+    } else {
+        validate_branch(Path::new(path), base)
+    }
 }
 
 /// Only exact local or remote branch names are accepted, not revisions or tags.
@@ -710,10 +727,6 @@ fn git_follows_remote_head(project: &Path) -> bool {
     })
 }
 
-pub fn list_branches(project: &Path) -> Result<Vec<String>, String> {
-    list_branches_with_warning(project).map(|(branches, _)| branches)
-}
-
 /// Refresh picker branches, retaining an explicit cached-ref fallback warning.
 pub fn list_branches_with_warning(project: &Path) -> Result<(Vec<String>, Option<String>), String> {
     let warning = fetch_remote(project, "origin")
@@ -745,7 +758,7 @@ pub fn list_cached_branches(project: &Path) -> Result<Vec<String>, String> {
     Ok(branches.into_iter().collect())
 }
 
-/// Infer a legacy/direct remote name. Explicitly resolved upstreams keep actual provenance.
+/// The configured remote a remote-tracking name belongs to, shortest prefix first.
 pub fn remote_for_ref(project: &Path, reference: &str) -> Option<String> {
     let short = reference.strip_prefix("refs/remotes/").unwrap_or(reference);
     git_output(project, &["remote"])
@@ -827,39 +840,11 @@ pub fn resolve(project: &Path, explicit: Option<&str>) -> Result<ResolvedBase, S
     }
     Ok(ResolvedBase {
         reference: short,
-        full_ref: Some(reference),
+        full_ref: reference,
         commit: Some(commit),
         remote: selected_remote,
         warning,
     })
-}
-
-/// Resolve a recorded name without Git's tag/branch ambiguity rules. New ambiguous
-/// local names are recorded fully qualified; legacy names conservatively use branches.
-pub fn recorded_branch_ref(project: &Path, reference: &str) -> Result<String, String> {
-    let exact = if reference.starts_with("refs/heads/") || reference.starts_with("refs/remotes/") {
-        reference.to_string()
-    } else if remote_for_ref(project, reference).is_some() {
-        format!("refs/remotes/{reference}")
-    } else {
-        format!("refs/heads/{reference}")
-    };
-    if git_status(project, &["show-ref", "--verify", &exact]).is_ok_and(|status| status.success()) {
-        return Ok(exact);
-    }
-    // Pre-base v6 dispatches could record a detached HEAD commit. Accept only an
-    // exact object id here, never a revision expression or tag, and never on input.
-    if matches!(reference.len(), 40 | 64) && reference.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        let commit = git_output(
-            project,
-            &["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
-        )?;
-        if commit.eq_ignore_ascii_case(reference) {
-            return Ok(commit);
-        }
-    }
-    Err(format!("recorded base {reference} is unavailable"))
 }
 
 /// Template value: the short branch name, using the actual resolved remote.

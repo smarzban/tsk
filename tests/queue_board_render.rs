@@ -6231,6 +6231,59 @@ fn cleanup_card_exposes_an_offline_check_and_missing_base_without_a_squash_hint(
     }
 }
 
+/// A record without an exact base ref keeps its branch and says so plainly, even when a
+/// branch of its display base exists.
+#[test]
+fn cleanup_cards_say_no_recorded_base_for_a_record_without_base_ref() {
+    use tsk_tui::ui::board::{CleanupPrompt, CleanupRow};
+    let record = tsk_tui::domain::Dispatch {
+        argv: vec!["agent".into()],
+        worktree: "/tmp/worktree".into(),
+        branch: "tsk/t1-cleanup".into(),
+        base: Some("main".into()),
+        base_ref: None,
+        base_commit: None,
+        base_remote: None,
+        herdr_workspace_id: "w1".into(),
+        at: std::time::SystemTime::UNIX_EPOCH,
+        cleaned: false,
+    };
+    let domain = DomainState::new();
+    let mut single = BoardModel::from_domain(&domain, None);
+    single.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
+        merge_check: None,
+        check_failed: false,
+        unreachable_remote: None,
+        inspected: Some(record.clone()),
+        number: 1,
+        task_id: Uuid::from_u128(1),
+        worktree: "/tmp/worktree".into(),
+        branch: "tsk/t1-cleanup".into(),
+        base: "main".into(),
+        dirty: false,
+        branch_merged: false,
+        base_available: false,
+        warning: None,
+        workspace_exists: true,
+    }));
+    let mut bulk = bulk_cleanup_model();
+    {
+        let row = &mut bulk.cleanup_prompt_mut().unwrap().rows[0];
+        row.inspected = Some(record);
+        row.base_available = false;
+        row.branch_merged = false;
+    }
+    for (model, expected) in [
+        (&single, "No recorded base, so the branch stays."),
+        (&bulk, "no recorded base"),
+    ] {
+        let painted = board_rows(model, 80, 30).join("\n");
+        assert!(painted.contains(expected), "{painted}");
+        assert!(!painted.contains("unavailable"), "{painted}");
+        assert!(painted.contains("keep branch"), "{painted}");
+    }
+}
+
 #[test]
 fn bulk_cleanup_card_marks_an_offline_row_not_confirmed_and_keeps_its_branch() {
     let mut model = bulk_cleanup_model();

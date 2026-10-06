@@ -1006,8 +1006,6 @@ pub struct BoardModel {
     pub(super) quick_add_save: Option<QuickAddSave>,
     /// A task-form edit waiting for the app save boundary to confirm persistence.
     pub(super) task_edit_save: Option<TaskEditSave>,
-    /// Palette assignee targets, retained until Enter applies them as one batch.
-    pub(super) pending_assignee_targets: Option<Vec<Uuid>>,
     /// Tasks a quick-picker assignment changed, waiting for its save to land before an open
     /// task form bound to one of them adopts the new assignee. Cancel drops it unapplied.
     pub(super) pending_form_assignee_sync: Option<Vec<Uuid>>,
@@ -1127,6 +1125,28 @@ pub struct CleanupRow {
 }
 
 impl CleanupRow {
+    /// The inspected record has no exact base ref, so no ancestry target is known and the
+    /// branch stays whatever the refs say.
+    pub fn no_recorded_base(&self) -> bool {
+        self.inspected
+            .as_ref()
+            .is_some_and(|record| record.base_ref.is_none())
+    }
+
+    /// Copy a landed merged check onto the row. True when one landed.
+    fn apply_landed_check(&mut self) -> bool {
+        let Some(verdict) = self.merge_check.as_ref().and_then(|check| check.take()) else {
+            return false;
+        };
+        self.merge_check = None;
+        self.check_failed = !verdict.confirmed;
+        self.unreachable_remote = verdict.unreachable_remote;
+        self.branch_merged = verdict.branch_merged;
+        self.base_available = verdict.base_available;
+        self.warning = verdict.warning;
+        true
+    }
+
     pub fn checking(&self) -> bool {
         self.merge_check.is_some()
     }
@@ -1446,15 +1466,9 @@ impl CleanupRun {
     /// every check landed, or the bound passed (unconfirmed rows then keep their branch).
     pub fn poll_checks(&mut self) -> bool {
         for (slot, row) in self.waiting.iter_mut().enumerate() {
-            let Some(verdict) = row.merge_check.as_ref().and_then(|check| check.take()) else {
+            if !row.apply_landed_check() {
                 continue;
-            };
-            row.merge_check = None;
-            row.check_failed = !verdict.confirmed;
-            row.unreachable_remote = verdict.unreachable_remote;
-            row.branch_merged = verdict.branch_merged;
-            row.base_available = verdict.base_available;
-            row.warning = verdict.warning;
+            }
             if let Some(run_row) = self
                 .rows
                 .iter_mut()
@@ -1629,7 +1643,6 @@ impl BoardModel {
             saved_task: None,
             quick_add_save: None,
             task_edit_save: None,
-            pending_assignee_targets: None,
             pending_form_assignee_sync: None,
             pending_form_base_sync: None,
             hold_task_edit_save: false,
@@ -1770,15 +1783,11 @@ impl BoardModel {
     /// the card (completion stays saved, cleanup continues, the status row reports it); once
     /// the run finished it closes with the summary.
     pub fn cancel_cleanup_card(&mut self) {
-        let finished = self.cleanup_run().map(|run| run.finished());
-        match finished {
-            None => self.close_popup(),
-            Some(true) => {
-                if let Some((summary, clean)) = self.finish_cleanup_run() {
-                    self.post_cleanup_summary(summary, clean);
-                }
-            }
-            Some(false) => self.close_popup(),
+        let finished = self.cleanup_run().is_some_and(|run| run.finished());
+        if !finished {
+            self.close_popup();
+        } else if let Some((summary, clean)) = self.finish_cleanup_run() {
+            self.post_cleanup_summary(summary, clean);
         }
     }
 
@@ -1787,10 +1796,7 @@ impl BoardModel {
     pub fn post_cleanup_summary(&mut self, summary: String, clean: bool) {
         // A refusal that only said the cleanup was still running is obsolete now: it must
         // neither stay up nor come back when an expiring summary restores what it covered.
-        self.drop_cleanup_refusal();
-        if let Some(seat) = self.right_seat.as_deref_mut() {
-            seat.drop_cleanup_refusal();
-        }
+        self.drop_cleanup_refusals();
         if clean {
             self.set_ephemeral_message(summary, CLEANUP_SUMMARY_TTL);
         } else {
@@ -1889,15 +1895,6 @@ impl BoardModel {
         self.bulk_dispatch.0.borrow().is_some()
     }
 
-    /// The running batch's status line, if one is landing.
-    pub fn bulk_dispatch_message(&self) -> Option<String> {
-        self.bulk_dispatch
-            .0
-            .borrow()
-            .as_ref()
-            .map(BulkDispatchRun::message)
-    }
-
     /// Apply a landed git check to the open bulk dispatch card (this board's or its project
     /// preview's): tasks outside a git repository move to the skipped rows. A card left with
     /// nothing to launch closes with the refusal, keeping the marks. True when anything changed.
@@ -1953,16 +1950,7 @@ impl BoardModel {
         };
         let mut landed = false;
         for row in &mut prompt.rows {
-            let Some(verdict) = row.merge_check.as_ref().and_then(|check| check.take()) else {
-                continue;
-            };
-            row.merge_check = None;
-            row.check_failed = !verdict.confirmed;
-            row.unreachable_remote = verdict.unreachable_remote;
-            row.branch_merged = verdict.branch_merged;
-            row.base_available = verdict.base_available;
-            row.warning = verdict.warning;
-            landed = true;
+            landed |= row.apply_landed_check();
         }
         landed || nested
     }
@@ -1979,8 +1967,7 @@ impl BoardModel {
             Some(error) => {
                 let target = self.input_target_mut();
                 if target.popup != BoardPopup::SaveRecovery {
-                    target.begin_save_recovery(error);
-                    target.save_recovery_proxy = true;
+                    target.begin_proxy_save_recovery(error);
                 }
             }
             None => {
@@ -2040,13 +2027,7 @@ impl BoardModel {
     }
 
     pub fn take_dispatch_again(&mut self, id: Uuid) -> bool {
-        if self.pending_dispatch_again == Some(id) {
-            self.pending_dispatch_again = None;
-            true
-        } else {
-            self.pending_dispatch_again = None;
-            false
-        }
+        self.pending_dispatch_again.take() == Some(id)
     }
 
     pub fn clear_dispatch_again(&mut self) {
@@ -2310,7 +2291,6 @@ impl BoardModel {
         // becomes an ordinary project board: tab, dim rows and verbs all follow.
         if let BoardLocation::ArchivedProject(path) = &self.board_location {
             if !self.is_archived_project_path(path) {
-                self.pending_assignee_targets = None;
                 self.selected_project = Some(path.clone());
                 self.board_location = BoardLocation::Project(path.clone());
             }
@@ -2330,7 +2310,6 @@ impl BoardModel {
                 }
                 _ => String::new(),
             };
-            self.pending_assignee_targets = None;
             self.board_location = BoardLocation::Desk;
             self.selected_project = None;
             self.set_message(format!("project {name} is archived"));
@@ -2472,7 +2451,6 @@ impl BoardModel {
         // project's tasks again. (`2` stays put: the archived focus already occupies
         // slot 2.)
         if self.focus_is_archived() {
-            self.pending_assignee_targets = None;
             let previous_visible = self.visible_ids();
             self.search_query.clear();
             self.search_pinned = false;
@@ -2627,7 +2605,6 @@ impl BoardModel {
         if self.board_location == target {
             return;
         }
-        self.pending_assignee_targets = None;
         let previous_visible = self.visible_ids();
         let previous = self.selection_id;
         self.search_query.clear();
@@ -2764,7 +2741,6 @@ impl BoardModel {
 
     /// Leave the read-only archived focus for the desk (AC-45).
     pub(super) fn leave_archived_focus(&mut self) {
-        self.pending_assignee_targets = None;
         let previous_visible = self.visible_ids();
         self.clear_marks();
         self.search_query.clear();
@@ -2778,7 +2754,6 @@ impl BoardModel {
     /// Turn a read-only focus into the ordinary project focus on the same project
     /// (AC-43), keeping the selection where the user left it.
     pub(super) fn enter_project_focus(&mut self, path: PathBuf) {
-        self.pending_assignee_targets = None;
         self.selected_project = Some(path.clone());
         let previous_visible = self.visible_ids();
         let previous = self.selection_id;
@@ -2790,7 +2765,6 @@ impl BoardModel {
 
     /// Open the read-only focus on `path` (AC-41). Session-only: nothing persists.
     pub(super) fn open_archived_focus(&mut self, path: PathBuf) {
-        self.pending_assignee_targets = None;
         self.selected_project = None;
         self.close_popup();
         let previous_visible = self.visible_ids();
@@ -4001,7 +3975,6 @@ impl BoardModel {
             _ => false,
         };
         if applied {
-            self.pending_assignee_targets = None;
             self.list_picker = None;
             Some(value)
         } else {
@@ -4989,16 +4962,6 @@ impl BoardModel {
         true
     }
 
-    /// Close an assignment form only after its batch reached the persistence boundary.
-    pub fn finish_pending_assignee_assignment(&mut self) -> bool {
-        if self.pending_assignee_targets.take().is_none() {
-            return false;
-        }
-        self.form = None;
-        self.input_mode = BoardInputMode::Normal;
-        true
-    }
-
     /// Help line listing primary key bindings.
     pub fn help_line(&self) -> &'static str {
         match self.input_mode() {
@@ -5237,9 +5200,6 @@ impl BoardModel {
                 self.set_message(DIRTY_TASK_SWITCH_REFUSAL);
             }
             return false;
-        }
-        if requested != bound {
-            self.pending_assignee_targets = None;
         }
         if source == SelectionRetarget::Explicit
             && requested != bound
@@ -6015,7 +5975,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    /// T152 review F-3: when the board sits on the alias spelling that dedupe would drop,
+    /// When the board sits on the alias spelling that dedupe would drop,
     /// the selector keeps that spelling and highlights it instead of falling back to Home.
     #[cfg(unix)]
     #[test]
@@ -6067,7 +6027,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    /// T152: `/tmp/x` and `/private/tmp/x` (any symlink alias) are one project in the board
+    /// `/tmp/x` and `/private/tmp/x` (any symlink alias) are one project in the board
     /// selector and the task page's project dropdown, even when the store holds both.
     #[cfg(unix)]
     #[test]

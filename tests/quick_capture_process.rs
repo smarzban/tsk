@@ -87,7 +87,7 @@ fn capture_entrypoint_skips_launch_card_and_exits_on_escape() {
     );
 }
 
-/// T152: a store that knows `work/alpha` as the symlink `links/beta`, launched from
+/// A store that knows `work/alpha` as the symlink `links/beta`, launched from
 /// `work/alpha`. Returns the root, the launch directory, the stored scope, and context.
 fn aliased_launch(label: &str) -> (std::path::PathBuf, std::path::PathBuf, TaskScope, OsString) {
     let root = pty::scratch_root(label);

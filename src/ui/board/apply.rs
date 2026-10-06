@@ -144,15 +144,6 @@ fn stale_undo_message(id: Uuid) -> String {
 ///. Both read this list rather than keeping one of their own, so the pinned
 /// definition and the classification cannot drift apart.
 pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> bool {
-    let dropdown_assignment = matches!(
-        intent,
-        BoardIntent::ConfirmFormDropdown | BoardIntent::SelectFormDropdownOption(_)
-    ) && model.input_mode == BoardInputMode::FormDropdown
-        && model
-            .form
-            .as_ref()
-            .is_some_and(|form| form.focus == CaptureField::Assignee)
-        && model.pending_assignee_targets.is_some();
     // The mouse route recurses into ConfirmListPicker inside the reducer, so the outer
     // intent is the one the save baseline is decided on.
     let picker_assignment = matches!(
@@ -165,13 +156,11 @@ pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> boo
                 crate::ui::board::ListPickerKind::Assignee | crate::ui::board::ListPickerKind::Base
             )
         );
-    dropdown_assignment
-        || picker_assignment
+    picker_assignment
         || matches!(
             intent,
             BoardIntent::ConfirmEdit
                 | BoardIntent::ConfirmEditNext
-                | BoardIntent::ConfirmFormAssignee
                 | BoardIntent::SetStatus(_)
                 | BoardIntent::Complete
                 | BoardIntent::Reopen
@@ -256,8 +245,6 @@ fn read_only_focus_refuses(model: &BoardModel, intent: &BoardIntent) -> bool {
             | BoardIntent::BeginEditTitle
             | BoardIntent::BeginEditNotes
             | BoardIntent::BeginEditScope
-            | BoardIntent::BeginEditAssignee
-            | BoardIntent::BeginEditBase
             | BoardIntent::OpenAssigneePicker
             | BoardIntent::OpenBasePicker
             | BoardIntent::BeginAddStep
@@ -808,22 +795,6 @@ fn apply_board_intent(
             model.cycle_form_assignee(matches!(intent, BoardIntent::FormAssigneeNext));
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::ConfirmFormAssignee => {
-            if let Some(targets) = model.pending_assignee_targets.take() {
-                let assignee = model.form.as_ref().and_then(|form| form.assignee.clone());
-                let changed = domain.assign_batch(&targets, assignee)?;
-                model.clear_marks();
-                model.form = None;
-                model.input_mode = BoardInputMode::Normal;
-                return Ok(if changed {
-                    IntentOutcome::Persist
-                } else {
-                    IntentOutcome::None
-                });
-            }
-            model.move_form_focus(true);
-            return Ok(IntentOutcome::None);
-        }
         BoardIntent::FormCycleScope => {
             if model
                 .form
@@ -848,21 +819,8 @@ fn apply_board_intent(
             return Ok(IntentOutcome::None);
         }
         BoardIntent::ConfirmFormDropdown => {
-            let field = model.form.as_ref().map(|form| form.focus);
-            if model.input_mode == BoardInputMode::FormDropdown
-                && model.close_form_dropdown(true)
-                && field == Some(CaptureField::Assignee)
-            {
-                if let Some(targets) = model.pending_assignee_targets.as_ref() {
-                    let assignee = model.form.as_ref().and_then(|form| form.assignee.clone());
-                    let changed = domain.assign_batch(targets, assignee)?;
-                    model.clear_marks();
-                    if changed {
-                        return Ok(IntentOutcome::Persist);
-                    }
-                    model.finish_pending_assignee_assignment();
-                    return Ok(IntentOutcome::None);
-                }
+            if model.input_mode == BoardInputMode::FormDropdown {
+                model.close_form_dropdown(true);
             }
             return Ok(IntentOutcome::None);
         }
@@ -873,19 +831,7 @@ fn apply_board_intent(
             return Ok(IntentOutcome::None);
         }
         BoardIntent::SelectFormDropdownOption(index) => {
-            let field = model.form.as_ref().map(|form| form.focus);
-            if model.select_form_dropdown_option(index) && field == Some(CaptureField::Assignee) {
-                if let Some(targets) = model.pending_assignee_targets.as_ref() {
-                    let assignee = model.form.as_ref().and_then(|form| form.assignee.clone());
-                    let changed = domain.assign_batch(targets, assignee)?;
-                    model.clear_marks();
-                    if changed {
-                        return Ok(IntentOutcome::Persist);
-                    }
-                    model.finish_pending_assignee_assignment();
-                    return Ok(IntentOutcome::None);
-                }
-            }
+            model.select_form_dropdown_option(index);
             return Ok(IntentOutcome::None);
         }
 
@@ -1022,17 +968,9 @@ fn apply_board_intent(
             }
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::BeginEditTitle
-        | BoardIntent::BeginEditNotes
-        | BoardIntent::BeginEditScope
-        | BoardIntent::BeginEditAssignee
-        | BoardIntent::BeginEditBase => {
+        BoardIntent::BeginEditTitle | BoardIntent::BeginEditNotes | BoardIntent::BeginEditScope => {
             model.close_popup();
-            let assignee_targets =
-                (intent == BoardIntent::BeginEditAssignee).then(|| model.verb_target_ids());
-            if intent != BoardIntent::BeginEditAssignee {
-                model.clear_marks();
-            }
+            model.clear_marks();
             // Ctrl+E on an already-open inline row keeps that row focused. Field traversal is
             // explicit through Tab or clicks, so this never discards or redirects its draft.
             if intent == BoardIntent::BeginEditTitle && model.input_mode == BoardInputMode::EditStep
@@ -1043,8 +981,6 @@ fn apply_board_intent(
                 BoardIntent::BeginEditTitle => CaptureField::Title,
                 BoardIntent::BeginEditNotes => CaptureField::Notes,
                 BoardIntent::BeginEditScope => CaptureField::Scope,
-                BoardIntent::BeginEditAssignee => CaptureField::Assignee,
-                BoardIntent::BeginEditBase => CaptureField::Base,
                 _ => unreachable!("matched task-form entry intent"),
             };
             // Ctrl+E on a selected step begins the whole task edit session and opens that
@@ -1070,7 +1006,6 @@ fn apply_board_intent(
             // transfer input ownership before the editor can accept a key.
             if model.form.as_ref().is_some_and(BoardForm::is_task) {
                 enter_task_stage(model);
-                model.pending_assignee_targets = assignee_targets;
                 model.focus_form_field(focus);
                 return Ok(IntentOutcome::None);
             }
@@ -1090,7 +1025,6 @@ fn apply_board_intent(
                     // A direct board edit is a real edit session too, so its confirmed task
                     // page keeps step interaction available after the field saves.
                     form.editing = true;
-                    model.pending_assignee_targets = assignee_targets;
                     model.input_mode = form.parent_mode();
                     model.form = Some(form);
                     enter_task_stage(model);
@@ -1234,7 +1168,6 @@ fn apply_board_intent(
                 if let (Some(form), Some(task)) = (model.form.as_mut(), saved) {
                     form.reset_field_to_saved(field, &task);
                 }
-                model.pending_assignee_targets = None;
                 model.input_mode = BoardInputMode::TaskPage;
                 model.clear_message();
                 return Ok(IntentOutcome::None);
@@ -1249,7 +1182,6 @@ fn apply_board_intent(
             }
             // All other complete forms discard as before. Dropdown Esc has its own intent.
             if model.form.take().is_some() {
-                model.pending_assignee_targets = None;
                 model.input_mode = if model.quick_add.is_some() {
                     BoardInputMode::QuickAdd
                 } else {
@@ -1260,7 +1192,6 @@ fn apply_board_intent(
             return Ok(IntentOutcome::None);
         }
         BoardIntent::ConfirmEditNext => {
-            model.pending_assignee_targets = None;
             // Shift+Enter on an existing step, or on a typed new step, commits the complete
             // task edit session. Keep the active row allocated until persistence confirms.
             if model.input_mode == BoardInputMode::EditStep {
@@ -1274,7 +1205,6 @@ fn apply_board_intent(
             return apply_intent(domain, model, BoardIntent::ConfirmEdit, snapshot);
         }
         BoardIntent::ConfirmEdit => {
-            model.pending_assignee_targets = None;
             if model.input_mode == BoardInputMode::EditStep {
                 // Plain Enter parks an existing-step rename. New-step adds save and open the
                 // next empty row, including an empty draft which stays on the line as a refusal.
@@ -1701,13 +1631,12 @@ fn apply_board_intent(
             }
             if let Some(branch) = base.as_deref() {
                 for id in &target.ids {
-                    let Some(TaskScope::Project { path }) = domain.get(*id).map(|task| &task.scope)
-                    else {
+                    let Some(task) = domain.get(*id) else {
                         model.set_message("base requires a project task");
                         return Ok(IntentOutcome::None);
                     };
                     if let Err(message) =
-                        crate::git_base::validate_branch(std::path::Path::new(path), branch)
+                        crate::git_base::validate_task_base(&task.scope, branch, false)
                     {
                         model.set_message(message);
                         return Ok(IntentOutcome::None);
@@ -3276,11 +3205,7 @@ fn confirm_edit(
         .as_deref()
         .filter(|_| base != task.base || scope != task.scope)
     {
-        let TaskScope::Project { path } = &scope else {
-            model.set_message("base requires a project task");
-            return Ok(IntentOutcome::None);
-        };
-        if let Err(message) = crate::git_base::validate_branch(std::path::Path::new(path), branch) {
+        if let Err(message) = crate::git_base::validate_task_base(&scope, branch, false) {
             model.set_message(message);
             return Ok(IntentOutcome::None);
         }

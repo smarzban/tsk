@@ -153,10 +153,6 @@ pub enum BoardIntent {
     BeginEditNotes,
     /// Open the same bound task form as `e`, focused on Scope (palette Change scope).
     BeginEditScope,
-    /// Open the assignee field (palette "set assignee").
-    BeginEditAssignee,
-    /// Open the task page's Base chooser field.
-    BeginEditBase,
     /// Open the common branch picker for the selected task, marked set, or Base field.
     OpenBasePicker,
     /// Open the steps section's one-line editor empty to add an step (page `a`).
@@ -176,7 +172,6 @@ pub enum BoardIntent {
     /// Cycle the shared form's assignee choices, or confirm the current choice.
     FormAssigneeNext,
     FormAssigneePrev,
-    ConfirmFormAssignee,
     /// Open a shared form footer dropdown, move its pending selection, apply it,
     /// or return to the parent form without applying it.
     OpenFormDropdown(CaptureField),
@@ -1765,8 +1760,6 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::MarkClear
         | BoardIntent::BeginEditNotes
         | BoardIntent::BeginEditScope
-        | BoardIntent::BeginEditAssignee
-        | BoardIntent::BeginEditBase
         | BoardIntent::OpenBasePicker
         | BoardIntent::BeginAddStep
         | BoardIntent::Quit
@@ -1810,7 +1803,6 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::FormCycleScope
         | BoardIntent::FormAssigneeNext
         | BoardIntent::FormAssigneePrev
-        | BoardIntent::ConfirmFormAssignee
         | BoardIntent::OpenFormDropdown(_)
         | BoardIntent::FormDropdownNext
         | BoardIntent::FormDropdownPrev

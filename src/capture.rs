@@ -79,31 +79,6 @@ pub fn capture_save(
     Ok(id)
 }
 
-/// Board quick-add variant carrying a validated optional assignee.
-#[allow(clippy::too_many_arguments)]
-pub fn capture_save_assigned(
-    state: &mut DomainState,
-    store: Option<&TaskStore>,
-    snapshot: &InvocationSnapshot,
-    title: impl AsRef<str>,
-    notes: Option<String>,
-    scope_override: Option<TaskScope>,
-    thread: Option<String>,
-    assignee: Option<String>,
-) -> Result<TaskId, CaptureError> {
-    capture_save_configured(
-        state,
-        store,
-        snapshot,
-        title,
-        notes,
-        scope_override,
-        thread,
-        assignee,
-        None,
-    )
-}
-
 /// Board capture variant carrying validated assignment and dispatch base fields.
 #[allow(clippy::too_many_arguments)]
 pub fn capture_save_configured(
@@ -121,12 +96,7 @@ pub fn capture_save_configured(
     // An expanded draft may change project after its !b token was lifted. Validate
     // again at save against the final destination, before any domain mutation.
     if let Some(branch) = base.as_deref() {
-        let TaskScope::Project { path } = &scope else {
-            return Err(CaptureError::UnknownBase(
-                "base requires a project task".into(),
-            ));
-        };
-        crate::git_base::validate_branch(std::path::Path::new(path), branch)
+        crate::git_base::validate_task_base(&scope, branch, false)
             .map_err(CaptureError::UnknownBase)?;
     }
 
@@ -231,11 +201,11 @@ pub fn lift_quick_add_tokens(
     }
 
     if let Some(branch) = base.as_deref() {
-        let effective_scope = scope.as_ref().unwrap_or(default_scope);
-        let TaskScope::Project { path } = effective_scope else {
-            return Err("base requires a project task".into());
-        };
-        crate::git_base::validate_branch(std::path::Path::new(path), branch)?;
+        crate::git_base::validate_task_base(
+            scope.as_ref().unwrap_or(default_scope),
+            branch,
+            false,
+        )?;
     }
 
     Ok(QuickAddTokens {

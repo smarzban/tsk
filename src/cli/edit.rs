@@ -155,16 +155,7 @@ fn apply(
         .unwrap_or_else(|| found.assignee.clone());
     let next_base = fields.base.clone().unwrap_or_else(|| found.base.clone());
     if let Some(base) = fields.base.as_ref().and_then(|value| value.as_deref()) {
-        let TaskScope::Project { path } = &found.scope else {
-            return (
-                Err(EditError::UnknownBase(
-                    "base requires a project task".into(),
-                )),
-                false,
-            );
-        };
-        if let Err(error) = crate::git_base::validate_branch_fresh(std::path::Path::new(path), base)
-        {
+        if let Err(error) = crate::git_base::validate_task_base(&found.scope, base, true) {
             return (Err(EditError::UnknownBase(error)), false);
         }
     }

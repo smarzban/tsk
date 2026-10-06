@@ -21,7 +21,6 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 struct FakeHost {
     inspection: Option<CleanupInspection>,
     removed: usize,
-    full_ref: Option<String>,
 }
 
 impl DispatchHost for FakeHost {
@@ -38,9 +37,10 @@ impl DispatchHost for FakeHost {
         _project: &Path,
         explicit: Option<&str>,
     ) -> Result<tsk_tui::git_base::ResolvedBase, String> {
+        let reference = explicit.unwrap_or("main");
         Ok(tsk_tui::git_base::ResolvedBase {
-            reference: explicit.unwrap_or("main").into(),
-            full_ref: self.full_ref.clone(),
+            full_ref: format!("refs/heads/{reference}"),
+            reference: reference.into(),
             commit: None,
             remote: None,
             warning: None,
@@ -141,10 +141,7 @@ fn successful_cli_dispatch_persists_record_and_started_together() {
         false,
         Some(dir.clone()),
         true,
-        &mut FakeHost {
-            full_ref: Some("refs/heads/main".into()),
-            ..FakeHost::default()
-        },
+        &mut FakeHost::default(),
     )
     .expect("dispatch");
     assert_eq!(result.number, 1);
@@ -907,14 +904,13 @@ impl DispatchHost for AdvancingCleanupHost {
         assert!(output.status.success());
         Ok(())
     }
-    fn delete_merged_branch_with_reason(
+    fn delete_merged_branch(
         &mut self,
         project: &Path,
         branch: &str,
         base: &str,
     ) -> Result<tsk_tui::dispatch::BranchDeletion, String> {
-        tsk_tui::dispatch::SystemDispatchHost
-            .delete_merged_branch_with_reason(project, branch, base)
+        tsk_tui::dispatch::SystemDispatchHost.delete_merged_branch(project, branch, base)
     }
 }
 
@@ -1080,10 +1076,10 @@ fn delete_merged_branch_retains_branch_when_late_ancestry_check_times_out() {
         .expect("remove worktree ahead of the late ancestry check");
     let start = std::time::Instant::now();
     let result = {
-        tsk_tui::dispatch::SystemDispatchHost.delete_merged_branch_with_reason(
+        tsk_tui::dispatch::SystemDispatchHost.delete_merged_branch(
             &repo.project,
             "tsk/t1-clean",
-            "base",
+            "refs/heads/base",
         )
     };
     let elapsed = start.elapsed();
@@ -1120,10 +1116,10 @@ fn delete_merged_branch_tolerates_a_slow_but_finishing_ancestry_check() {
         .expect("remove worktree ahead of the ancestry check");
     let start = std::time::Instant::now();
     let result = {
-        tsk_tui::dispatch::SystemDispatchHost.delete_merged_branch_with_reason(
+        tsk_tui::dispatch::SystemDispatchHost.delete_merged_branch(
             &repo.project,
             "tsk/t1-clean",
-            "base",
+            "refs/heads/base",
         )
     };
     let elapsed = start.elapsed();
@@ -1212,7 +1208,7 @@ fn timed_out_final_worktree_listing_keeps_the_branch_with_a_clear_reason() {
         .remove_git_worktree(&repo.project, &repo.worktree)
         .unwrap();
     let result = tsk_tui::dispatch::SystemDispatchHost
-        .delete_merged_branch_with_reason(&repo.project, "tsk/t1-clean", "base")
+        .delete_merged_branch(&repo.project, "tsk/t1-clean", "refs/heads/base")
         .unwrap();
     let tsk_tui::dispatch::BranchDeletion::Kept(reason) = result else {
         panic!("timed-out listing must not delete the branch");

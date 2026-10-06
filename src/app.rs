@@ -1145,20 +1145,16 @@ fn resolve_save_recovery(model: &mut BoardModel, domain: &DomainState, resolutio
     let seat_owns = model
         .preview_seat_mut()
         .is_some_and(|seat| seat.owns_save_recovery());
-    // A board answering with no other owner in sight owns it, as before proxies existed.
+    // A board answering with no other owner in sight owns it.
     let outer_owns =
         model.owns_save_recovery() || (!seat_owns && !model.shows_save_recovery_proxy());
     let retried = resolution == SaveResolution::Retried;
     let before_sync = |board: &mut BoardModel| {
         if retried {
             board.release_task_edit_save();
-            board.finish_pending_assignee_assignment();
         }
     };
     let after_sync = |board: &mut BoardModel| {
-        if !retried {
-            board.finish_pending_assignee_assignment();
-        }
         board.finish_form_assignee_sync(retried);
         board.finish_form_base_sync(retried);
         let cancelled_quick_add = board.end_save_recovery(resolution);
@@ -1290,10 +1286,6 @@ pub fn apply_board_intent_with_save_recovery(
         }
     }
 
-    let holds_assignee_form = matches!(
-        intent,
-        BoardIntent::ConfirmFormDropdown | BoardIntent::SelectFormDropdownOption(_)
-    ) && board_intent_may_persist(model, &intent);
     let holds_task_edit = matches!(
         intent,
         BoardIntent::ConfirmEdit | BoardIntent::ConfirmEditNext
@@ -1321,15 +1313,10 @@ pub fn apply_board_intent_with_save_recovery(
         return Ok(outcome);
     }
     if let Err(error) = persist(domain) {
-        let working = std::mem::take(domain);
-        recovery.fail(baseline, working, error);
-        model.begin_save_recovery(recovery.error().unwrap_or("save failed"));
+        fail_board_save(domain, model, recovery, baseline, error);
         return Ok(IntentOutcome::None);
     }
     model.release_task_edit_save();
-    if holds_assignee_form {
-        model.finish_pending_assignee_assignment();
-    }
     model.sync_from_domain(domain);
     model.finish_form_assignee_sync(true);
     model.finish_form_base_sync(true);
@@ -2163,21 +2150,34 @@ fn cleanup_row(
     }
 }
 
-/// Whether `row`'s task still carries the dispatch its card inspected. Another board or the
+/// A board save failed: keep the working state aside and show save recovery for it.
+fn fail_board_save(
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    recovery: &mut SaveRecovery<DomainState>,
+    baseline: DomainState,
+    error: String,
+) {
+    let working = std::mem::take(domain);
+    recovery.fail(baseline, working, error);
+    model.begin_save_recovery(recovery.error().unwrap_or("save failed"));
+}
+
+/// Whether the task still carries the dispatch its cleanup row inspected. Another board or the
 /// CLI may have cleaned or relaunched it while the card was open; cleanup then must not touch
 /// the new worktree or agent.
-fn cleanup_row_current(domain: &DomainState, row: &CleanupRow) -> bool {
-    row.inspected.is_some()
-        && domain
-            .get(row.task_id)
-            .and_then(|task| task.dispatch.as_ref())
-            == row.inspected.as_ref()
+fn dispatch_unchanged(
+    domain: &DomainState,
+    task_id: uuid::Uuid,
+    inspected: Option<&crate::domain::Dispatch>,
+) -> bool {
+    inspected.is_some() && domain.get(task_id).and_then(|task| task.dispatch.as_ref()) == inspected
 }
 
 /// What a bulk `ctrl+d` on a marked set did before the reducer's plain batch completion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BulkCleanupOffer {
-    /// No target has a live dispatch: complete the set as before, no card.
+    /// No target has a live dispatch: complete the set as a plain batch, no card.
     None,
     /// The card is open over the marked set, which stays marked until `y` or `n`.
     Prompted,
@@ -2321,7 +2321,7 @@ pub fn confirm_cleanup_with_host(
         };
         let state = if row.dirty {
             Some(kept(CleanupError::DirtyWorktree))
-        } else if !cleanup_row_current(domain, row) {
+        } else if !dispatch_unchanged(domain, row.task_id, row.inspected.as_ref()) {
             Some(kept(CleanupError::DispatchChanged))
         } else {
             // The refs are settled when the worker starts, from this row's merged check.
@@ -2453,7 +2453,7 @@ fn start_due_cleanup(
                 row.state = CleanupRowState::Queued;
             }
             if let Some(slot) = row.slot {
-                if !run_row_current(domain, row) {
+                if !dispatch_unchanged(domain, row.task_id, row.inspected.as_ref()) {
                     job.cancel(slot);
                 }
             }
@@ -2465,15 +2465,6 @@ fn start_due_cleanup(
     if !plan.is_empty() {
         host.begin_cleanup(job, plan, in_herdr);
     }
-}
-
-/// Whether a run row's task still carries the dispatch its card inspected.
-fn run_row_current(domain: &DomainState, row: &CleanupRunRow) -> bool {
-    row.inspected.is_some()
-        && domain
-            .get(row.task_id)
-            .and_then(|task| task.dispatch.as_ref())
-            == row.inspected.as_ref()
 }
 
 /// One board-loop step for the running cleanup (one slot, shared with the project preview,
@@ -2526,7 +2517,7 @@ pub fn poll_cleanup_runs(
                     match slots.get(index) {
                         Some(dispatch::CleanupSlot::Queued) => {
                             // Not reached yet: withdraw it if its dispatch changed meanwhile.
-                            if !run_row_current(domain, row) {
+                            if !dispatch_unchanged(domain, row.task_id, row.inspected.as_ref()) {
                                 job.cancel(index);
                             }
                         }
@@ -2534,7 +2525,7 @@ pub fn poll_cleanup_runs(
                             row.state = CleanupRowState::Removing;
                         }
                         Some(dispatch::CleanupSlot::Done(Ok(result))) => {
-                            if run_row_current(domain, row) {
+                            if dispatch_unchanged(domain, row.task_id, row.inspected.as_ref()) {
                                 // The pre-mutation state, for save recovery.
                                 baseline.get_or_insert_with(|| domain.clone());
                                 if domain
@@ -2572,9 +2563,13 @@ pub fn poll_cleanup_runs(
     };
     if mutated {
         if let Err(error) = store.reload_merge_save(domain) {
-            let working = std::mem::take(domain);
-            save_recovery.fail(baseline.unwrap_or_default(), working, error.to_string());
-            model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+            fail_board_save(
+                domain,
+                model,
+                save_recovery,
+                baseline.unwrap_or_default(),
+                error.to_string(),
+            );
             return;
         }
         model.sync_from_domain(domain);
@@ -2689,9 +2684,7 @@ fn run_board_dispatch(
     match dispatch_task_with_host(domain, model, target, &profiles, again, in_herdr, host) {
         Ok(result) => {
             if let Err(error) = store.reload_merge_save(domain) {
-                let working = std::mem::take(domain);
-                save_recovery.fail(baseline, working, error.to_string());
-                model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+                fail_board_save(domain, model, save_recovery, baseline, error.to_string());
                 return;
             }
             if let Some(naming) = result.naming.clone() {
@@ -2833,17 +2826,6 @@ fn start_bulk_dispatch(
     land_bulk_dispatch_with_host(store, domain, model, save_recovery, name_agent)
 }
 
-fn status_word(status: HumanStatus) -> &'static str {
-    match status {
-        HumanStatus::Open => "open",
-        HumanStatus::Ready => "ready",
-        HumanStatus::Started => "started",
-        HumanStatus::Blocked => "blocked",
-        HumanStatus::Review => "review",
-        HumanStatus::Done => "done",
-    }
-}
-
 /// A launch whose record is durable: count it and name its agent.
 fn settle_saved_launch(
     run: &mut crate::ui::board::BulkDispatchRun,
@@ -2934,7 +2916,9 @@ pub fn land_bulk_dispatch_with_host(
                 }
                 Some(task) if task.soft_deleted => Some("deleted"),
                 Some(task) if task.archived => Some("archived"),
-                Some(task) if job.status_touched_since(task) => Some(status_word(task.status)),
+                Some(task) if job.status_touched_since(task) => {
+                    Some(crate::cli::presenter::status_name(task.status))
+                }
                 Some(_) => None,
             };
             let task_id = job.id;
@@ -3018,7 +3002,7 @@ fn board_background_step(
 
 /// `ctrl+g` on an unassigned task with profiles defined: open the assignee picker for that one
 /// cursor task, armed to dispatch after the choice is saved. Returns whether it opened. With no
-/// profile it does not, and dispatch refuses with [`dispatch::NO_ASSIGNEE`] as before.
+/// profile it does not, and dispatch refuses with [`dispatch::NO_ASSIGNEE`].
 pub fn open_dispatch_assignee_picker(
     domain: &DomainState,
     model: &mut BoardModel,
@@ -3174,9 +3158,7 @@ fn handle_board_intent_with_host(
             Ok(BulkCleanupOffer::Prompted) => return Ok(false),
             Ok(BulkCleanupOffer::MissingConverged { done, missing }) => {
                 if let Err(error) = store.reload_merge_save(domain) {
-                    let working = std::mem::take(domain);
-                    save_recovery.fail(baseline, working, error.to_string());
-                    model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+                    fail_board_save(domain, model, save_recovery, baseline, error.to_string());
                     return Ok(false);
                 }
                 model.sync_from_domain(domain);
@@ -3205,9 +3187,7 @@ fn handle_board_intent_with_host(
                 Ok(CleanupOffer::Prompted) => return Ok(false),
                 Ok(CleanupOffer::MissingConverged(result)) => {
                     if let Err(error) = store.reload_merge_save(domain) {
-                        let working = std::mem::take(domain);
-                        save_recovery.fail(baseline, working, error.to_string());
-                        model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+                        fail_board_save(domain, model, save_recovery, baseline, error.to_string());
                         return Ok(false);
                     }
                     model.sync_from_domain(domain);
@@ -3249,9 +3229,7 @@ fn handle_board_intent_with_host(
         // Completion is durable before any worktree is touched.
         if let Err(error) = store.reload_merge_save(domain) {
             model.close_popup();
-            let working = std::mem::take(domain);
-            save_recovery.fail(baseline, working, error.to_string());
-            model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+            fail_board_save(domain, model, save_recovery, baseline, error.to_string());
             return Ok(false);
         }
         model.sync_from_domain(domain);
@@ -4397,22 +4375,23 @@ mod tests {
         apply_intent(
             &mut domain,
             model.input_target_mut(),
-            BoardIntent::BeginEditAssignee,
+            BoardIntent::OpenAssigneePicker,
             None,
         )
-        .expect("open right-seat assignee");
-        apply_intent(
-            &mut domain,
-            model.input_target_mut(),
-            BoardIntent::FormAssigneeNext,
-            None,
-        )
-        .expect("pick inherited profile");
+        .expect("open right-seat assignee picker");
+        assert_eq!(
+            model
+                .input_target_mut()
+                .selected_list_picker_option()
+                .map(|(_, option)| option.label),
+            Some("@reviewer".to_string()),
+            "the inherited profile is offered"
+        );
         assert_eq!(
             apply_intent(
                 &mut domain,
                 model.input_target_mut(),
-                BoardIntent::ConfirmFormAssignee,
+                BoardIntent::ConfirmListPicker,
                 None,
             )
             .expect("assign in right seat"),
@@ -5259,7 +5238,7 @@ mod tests {
             Some(BoardIntent::FormFocusNext),
             "Tab keeps its task-page meaning"
         );
-        // Narrow task page: ← stays inert, Esc closes, exactly as before the slider.
+        // Narrow task page: ← stays inert, Esc closes.
         assert_eq!(route(&mut model, single, KeyCode::Left), None);
         assert_eq!(route(&mut model, single, KeyCode::Char('h')), None);
         assert_eq!(route(&mut model, single, KeyCode::Char('l')), None);
@@ -8388,126 +8367,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn dropdown_assignment_save_failure_retains_form_and_retry_finishes_batch() {
-        let temp = TempStore::new("dropdown-assignment-recovery");
-        std::fs::write(
-            temp.dir.join("config.toml"),
-            "[agent.reviewer]\ncommand = [\"true\"]\n",
-        )
-        .expect("write profiles");
-        let profiles = AgentProfiles::load(&temp.dir).expect("load profiles");
-        let mut domain = DomainState::new();
-        let first = domain
-            .create(
-                "first",
-                None,
-                TaskScope::Global,
-                ProvenanceOrigin::Manual,
-                None,
-            )
-            .expect("first task");
-        let second = domain
-            .create(
-                "second",
-                None,
-                TaskScope::Global,
-                ProvenanceOrigin::Manual,
-                None,
-            )
-            .expect("second task");
-        let baseline = domain.clone();
-        let mut model = BoardModel::from_domain(&domain, None);
-        model.set_agent_profiles(&profiles);
-        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None)
-            .expect("enter mark mode");
-        for id in [first, second] {
-            let index = model
-                .visible_ids()
-                .iter()
-                .position(|visible| *visible == id)
-                .expect("marked task visible");
-            apply_intent(
-                &mut domain,
-                &mut model,
-                BoardIntent::SelectIndex(index),
-                None,
-            )
-            .expect("select mark target");
-            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None)
-                .expect("mark task");
-        }
-        apply_intent(
-            &mut domain,
-            &mut model,
-            BoardIntent::BeginEditAssignee,
-            None,
-        )
-        .expect("begin assignment");
-        apply_intent(
-            &mut domain,
-            &mut model,
-            BoardIntent::OpenFormDropdown(CaptureField::Assignee),
-            None,
-        )
-        .expect("open assignee dropdown");
-        apply_intent(&mut domain, &mut model, BoardIntent::FormDropdownNext, None)
-            .expect("select reviewer");
-
-        let mut recovery = SaveRecovery::new();
-        let outcome = apply_board_intent_with_save_recovery(
-            &mut domain,
-            &mut model,
-            &mut recovery,
-            BoardSaveContext {
-                baseline,
-                intent: BoardIntent::ConfirmFormDropdown,
-                snapshot: None,
-            },
-            |_| Err("injected save failure".into()),
-        )
-        .expect("failed assignment enters recovery");
-        assert_eq!(outcome, IntentOutcome::None);
-        assert!(recovery.is_pending());
-        assert!(model.board_form_open(), "the assignment form must survive");
-        assert_eq!(model.input_mode(), BoardInputMode::SaveRecovery);
-        assert_eq!(
-            board_keyboard_intent(
-                &model,
-                model.input_mode(),
-                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
-            ),
-            Some(BoardIntent::RetrySave)
-        );
-
-        assert_eq!(
-            apply_board_intent_with_save_recovery(
-                &mut domain,
-                &mut model,
-                &mut recovery,
-                BoardSaveContext {
-                    baseline: DomainState::new(),
-                    intent: BoardIntent::RetrySave,
-                    snapshot: None,
-                },
-                |_| Ok(()),
-            )
-            .expect("retry assignment"),
-            IntentOutcome::Persisted
-        );
-        assert!(!recovery.is_pending());
-        assert!(!model.board_form_open());
-        assert_eq!(model.input_mode(), BoardInputMode::Normal);
-        assert_eq!(
-            domain.get(first).expect("first").assignee.as_deref(),
-            Some("reviewer")
-        );
-        assert_eq!(
-            domain.get(second).expect("second").assignee.as_deref(),
-            Some("reviewer")
-        );
-    }
-
     /// SaveRecovery outranks an open form, so Retry and both Cancel keys must retain the only
     /// routes that can resolve a failed save.
     #[test]
@@ -9113,7 +8972,7 @@ mod tests {
             .expect("insert the paste");
         assert_eq!(model.scope_path_edit(), Some("/repos/app more"));
 
-        // Scope focus without an active path editor is not a text field: inert, as before.
+        // Scope focus without an active path editor is not a text field: inert.
         apply_capture_intent(
             &mut domain,
             None,
@@ -9885,6 +9744,56 @@ mod quick_assign_tests {
         for id in &ids {
             assert_eq!(domain.get(*id).expect("task").assignee, None);
         }
+    }
+
+    /// A marked-set assignment whose save fails enters recovery, and Retry lands the whole set
+    /// as one undo entry.
+    #[test]
+    fn a_failed_marked_set_assignment_retries_as_one_batch() {
+        let temp = Temp::new("marks-retry", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None)
+            .expect("mark mode");
+        for id in &ids {
+            select(&mut domain, &mut model, *id);
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        }
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAssigneePicker,
+            None,
+        )
+        .expect("open");
+        let mut recovery = SaveRecovery::new();
+        assert!(super::board_intent_may_persist(
+            &model,
+            &BoardIntent::ConfirmListPicker
+        ));
+        save(
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardIntent::ConfirmListPicker,
+            false,
+        );
+        assert!(recovery.is_pending());
+        assert_eq!(model.input_mode(), BoardInputMode::SaveRecovery);
+        save(
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardIntent::RetrySave,
+            true,
+        );
+        assert!(!recovery.is_pending());
+        for id in &ids {
+            assert_eq!(
+                domain.get(*id).expect("task").assignee.as_deref(),
+                Some("builder")
+            );
+        }
+        assert!(matches!(domain.last_undo(), Some(UndoEntry::Batch { .. })));
     }
 
     fn frame_text(model: &BoardModel, area: Rect) -> String {
@@ -11401,7 +11310,7 @@ mod quick_assign_tests {
                     BoardIntent::OpenTaskPage,
                     BoardIntent::BeginEditTitle,
                     BoardIntent::EditInsertText(" draft".into()),
-                    BoardIntent::BeginEditAssignee,
+                    BoardIntent::FocusFormField(crate::ui::capture::CaptureField::Assignee),
                 ] {
                     apply_intent(&mut domain, &mut model, intent, None).expect("edit");
                 }
