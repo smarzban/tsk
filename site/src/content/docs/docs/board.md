@@ -81,7 +81,7 @@ You can also assign with `!a name` in [quick-add](/docs/capture/#title-tokens), 
 
 ### Dispatch
 
-Press `ctrl+g`, or choose **dispatch to @name** in the palette, to send the cursor task to its assignee. tsk creates a branch and Git worktree from the task's [base](#base-branch), opens a Herdr workspace there, and runs the profile's command. It then records the dispatch on the task and sets it to started, in one save. If anything fails before that, nothing changes. Dispatch is not undoable.
+Press `ctrl+g`, or choose **dispatch to @name** in the palette, to send the cursor task to its assignee. tsk creates a branch and Git worktree from the task's [base](#base-branch), opens a Herdr workspace there, and runs the profile's command. It then records the dispatch on the task and sets it to started, in one save. If the launch fails, the task records no dispatch and keeps its status. Dispatch is not undoable.
 
 Names come from the task number and title. For T12 `Fix login timeout`:
 

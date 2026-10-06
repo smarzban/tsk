@@ -250,7 +250,8 @@ migration or design work they imply. What the behaviour *is* lives in the docs
   for a running batch, or launched agents lose their record. Relaunch (`dispatch again`) stays
   cursor-only.
 - The dispatch record stays on the task through every later status change. `◉` is derived only
-  from `record present && status == started`, never from agent or pane state.
+  from `record present && !record.cleaned && status == started`, never from agent or pane
+  state.
 - Cleanup never deletes uncommitted work or a branch it cannot confirm is merged into the
   recorded base (a failed fetch keeps the branch), and only removes the recorded worktree
   (registered with git, matching the herdr entry's path, never the project root). It runs off the
