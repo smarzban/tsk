@@ -79,31 +79,6 @@ pub fn capture_save(
     Ok(id)
 }
 
-/// Board quick-add variant carrying a validated optional assignee.
-#[allow(clippy::too_many_arguments)]
-pub fn capture_save_assigned(
-    state: &mut DomainState,
-    store: Option<&TaskStore>,
-    snapshot: &InvocationSnapshot,
-    title: impl AsRef<str>,
-    notes: Option<String>,
-    scope_override: Option<TaskScope>,
-    thread: Option<String>,
-    assignee: Option<String>,
-) -> Result<TaskId, CaptureError> {
-    capture_save_configured(
-        state,
-        store,
-        snapshot,
-        title,
-        notes,
-        scope_override,
-        thread,
-        assignee,
-        None,
-    )
-}
-
 /// Board capture variant carrying validated assignment and dispatch base fields.
 #[allow(clippy::too_many_arguments)]
 pub fn capture_save_configured(

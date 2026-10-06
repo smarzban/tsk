@@ -840,20 +840,6 @@ impl DomainState {
         Ok(())
     }
 
-    /// Edit ordinary fields plus assignee without creating an assignment undo entry.
-    pub fn edit_with_assignee(
-        &mut self,
-        id: Uuid,
-        title: impl AsRef<str>,
-        notes: Option<String>,
-        scope: TaskScope,
-        thread: Option<String>,
-        assignee: Option<String>,
-    ) -> Result<(), DomainError> {
-        let base = self.get(id).and_then(|task| task.base.clone());
-        self.edit_with_assignee_and_base(id, title, notes, scope, thread, assignee, base)
-    }
-
     /// Edit ordinary fields, assignee, and base without creating a standalone undo entry.
     #[allow(clippy::too_many_arguments)]
     pub fn edit_with_assignee_and_base(

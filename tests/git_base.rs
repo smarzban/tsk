@@ -495,9 +495,9 @@ fn local_git_queries_are_bounded_and_kill_output_holding_children() {
             match query {
                 0 => assert_eq!(default_branch_name(path), None),
                 1 => assert!(validate_branch(path, "main").is_err()),
-                2 => assert!(recorded_branch_ref(path, "refs/heads/main").is_err()),
+                2 => assert!(validate_branch(path, "origin/main").is_err()),
                 3 => assert_eq!(remote_for_ref(path, "origin/main"), None),
-                4 => assert!(list_branches(path).is_err()),
+                4 => assert!(list_cached_branches(path).is_err()),
                 _ => assert!(resolve(path, None).is_err()),
             }
             assert!(

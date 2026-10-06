@@ -710,10 +710,6 @@ fn git_follows_remote_head(project: &Path) -> bool {
     })
 }
 
-pub fn list_branches(project: &Path) -> Result<Vec<String>, String> {
-    list_branches_with_warning(project).map(|(branches, _)| branches)
-}
-
 /// Refresh picker branches, retaining an explicit cached-ref fallback warning.
 pub fn list_branches_with_warning(project: &Path) -> Result<(Vec<String>, Option<String>), String> {
     let warning = fetch_remote(project, "origin")

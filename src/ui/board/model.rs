@@ -1889,15 +1889,6 @@ impl BoardModel {
         self.bulk_dispatch.0.borrow().is_some()
     }
 
-    /// The running batch's status line, if one is landing.
-    pub fn bulk_dispatch_message(&self) -> Option<String> {
-        self.bulk_dispatch
-            .0
-            .borrow()
-            .as_ref()
-            .map(BulkDispatchRun::message)
-    }
-
     /// Apply a landed git check to the open bulk dispatch card (this board's or its project
     /// preview's): tasks outside a git repository move to the skipped rows. A card left with
     /// nothing to launch closes with the refusal, keeping the marks. True when anything changed.

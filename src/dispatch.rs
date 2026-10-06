@@ -1221,16 +1221,6 @@ fn herdr_error_detail(stderr: &[u8]) -> Option<String> {
         .map(|code| format!("herdr: {code}"))
 }
 
-/// Inspect a retained dispatch without mutating host or domain state.
-pub fn inspect_cleanup_with_host(
-    state: &DomainState,
-    id: Uuid,
-    in_herdr: bool,
-    host: &mut impl DispatchHost,
-) -> Result<CleanupPreview, CleanupError> {
-    inspect_cleanup_refs(state, id, in_herdr, false, host)
-}
-
 /// The board card's preview: cached refs only, so it opens without a network round trip.
 pub fn inspect_cleanup_cached_with_host(
     state: &DomainState,
@@ -1238,18 +1228,8 @@ pub fn inspect_cleanup_cached_with_host(
     in_herdr: bool,
     host: &mut impl DispatchHost,
 ) -> Result<CleanupPreview, CleanupError> {
-    inspect_cleanup_refs(state, id, in_herdr, true, host)
-}
-
-fn inspect_cleanup_refs(
-    state: &DomainState,
-    id: Uuid,
-    in_herdr: bool,
-    cached: bool,
-    host: &mut impl DispatchHost,
-) -> Result<CleanupPreview, CleanupError> {
     let plan = cleanup_plan(state, id, CleanupRefs::Cached)?;
-    inspect_planned(&plan, in_herdr, cached, host)
+    inspect_planned(&plan, in_herdr, true, host)
 }
 
 /// One dispatch a cleanup will remove, captured from the domain so the host work can run
@@ -2438,13 +2418,14 @@ mod tests {
                 }
                 "desk" => {
                     state
-                        .edit_with_assignee(
+                        .edit_with_assignee_and_base(
                             id,
                             "Ship Dispatch!!!",
                             Some("notes".into()),
                             TaskScope::Global,
                             None,
                             Some("implementer".into()),
+                            None,
                         )
                         .expect("move to desk");
                 }
