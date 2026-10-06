@@ -1125,6 +1125,20 @@ pub struct CleanupRow {
 }
 
 impl CleanupRow {
+    /// Copy a landed merged check onto the row. True when one landed.
+    fn apply_landed_check(&mut self) -> bool {
+        let Some(verdict) = self.merge_check.as_ref().and_then(|check| check.take()) else {
+            return false;
+        };
+        self.merge_check = None;
+        self.check_failed = !verdict.confirmed;
+        self.unreachable_remote = verdict.unreachable_remote;
+        self.branch_merged = verdict.branch_merged;
+        self.base_available = verdict.base_available;
+        self.warning = verdict.warning;
+        true
+    }
+
     pub fn checking(&self) -> bool {
         self.merge_check.is_some()
     }
@@ -1444,15 +1458,9 @@ impl CleanupRun {
     /// every check landed, or the bound passed (unconfirmed rows then keep their branch).
     pub fn poll_checks(&mut self) -> bool {
         for (slot, row) in self.waiting.iter_mut().enumerate() {
-            let Some(verdict) = row.merge_check.as_ref().and_then(|check| check.take()) else {
+            if !row.apply_landed_check() {
                 continue;
-            };
-            row.merge_check = None;
-            row.check_failed = !verdict.confirmed;
-            row.unreachable_remote = verdict.unreachable_remote;
-            row.branch_merged = verdict.branch_merged;
-            row.base_available = verdict.base_available;
-            row.warning = verdict.warning;
+            }
             if let Some(run_row) = self
                 .rows
                 .iter_mut()
@@ -1767,15 +1775,11 @@ impl BoardModel {
     /// the card (completion stays saved, cleanup continues, the status row reports it); once
     /// the run finished it closes with the summary.
     pub fn cancel_cleanup_card(&mut self) {
-        let finished = self.cleanup_run().map(|run| run.finished());
-        match finished {
-            None => self.close_popup(),
-            Some(true) => {
-                if let Some((summary, clean)) = self.finish_cleanup_run() {
-                    self.post_cleanup_summary(summary, clean);
-                }
-            }
-            Some(false) => self.close_popup(),
+        let finished = self.cleanup_run().is_some_and(|run| run.finished());
+        if !finished {
+            self.close_popup();
+        } else if let Some((summary, clean)) = self.finish_cleanup_run() {
+            self.post_cleanup_summary(summary, clean);
         }
     }
 
@@ -1784,10 +1788,7 @@ impl BoardModel {
     pub fn post_cleanup_summary(&mut self, summary: String, clean: bool) {
         // A refusal that only said the cleanup was still running is obsolete now: it must
         // neither stay up nor come back when an expiring summary restores what it covered.
-        self.drop_cleanup_refusal();
-        if let Some(seat) = self.right_seat.as_deref_mut() {
-            seat.drop_cleanup_refusal();
-        }
+        self.drop_cleanup_refusals();
         if clean {
             self.set_ephemeral_message(summary, CLEANUP_SUMMARY_TTL);
         } else {
@@ -1941,16 +1942,7 @@ impl BoardModel {
         };
         let mut landed = false;
         for row in &mut prompt.rows {
-            let Some(verdict) = row.merge_check.as_ref().and_then(|check| check.take()) else {
-                continue;
-            };
-            row.merge_check = None;
-            row.check_failed = !verdict.confirmed;
-            row.unreachable_remote = verdict.unreachable_remote;
-            row.branch_merged = verdict.branch_merged;
-            row.base_available = verdict.base_available;
-            row.warning = verdict.warning;
-            landed = true;
+            landed |= row.apply_landed_check();
         }
         landed || nested
     }
@@ -1967,8 +1959,7 @@ impl BoardModel {
             Some(error) => {
                 let target = self.input_target_mut();
                 if target.popup != BoardPopup::SaveRecovery {
-                    target.begin_save_recovery(error);
-                    target.save_recovery_proxy = true;
+                    target.begin_proxy_save_recovery(error);
                 }
             }
             None => {
@@ -2028,13 +2019,7 @@ impl BoardModel {
     }
 
     pub fn take_dispatch_again(&mut self, id: Uuid) -> bool {
-        if self.pending_dispatch_again == Some(id) {
-            self.pending_dispatch_again = None;
-            true
-        } else {
-            self.pending_dispatch_again = None;
-            false
-        }
+        self.pending_dispatch_again.take() == Some(id)
     }
 
     pub fn clear_dispatch_again(&mut self) {

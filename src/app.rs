@@ -1313,9 +1313,7 @@ pub fn apply_board_intent_with_save_recovery(
         return Ok(outcome);
     }
     if let Err(error) = persist(domain) {
-        let working = std::mem::take(domain);
-        recovery.fail(baseline, working, error);
-        model.begin_save_recovery(recovery.error().unwrap_or("save failed"));
+        fail_board_save(domain, model, recovery, baseline, error);
         return Ok(IntentOutcome::None);
     }
     model.release_task_edit_save();
@@ -2155,12 +2153,26 @@ fn cleanup_row(
 /// Whether `row`'s task still carries the dispatch its card inspected. Another board or the
 /// CLI may have cleaned or relaunched it while the card was open; cleanup then must not touch
 /// the new worktree or agent.
-fn cleanup_row_current(domain: &DomainState, row: &CleanupRow) -> bool {
-    row.inspected.is_some()
-        && domain
-            .get(row.task_id)
-            .and_then(|task| task.dispatch.as_ref())
-            == row.inspected.as_ref()
+/// A board save failed: keep the working state aside and show save recovery for it.
+fn fail_board_save(
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    recovery: &mut SaveRecovery<DomainState>,
+    baseline: DomainState,
+    error: String,
+) {
+    let working = std::mem::take(domain);
+    recovery.fail(baseline, working, error);
+    model.begin_save_recovery(recovery.error().unwrap_or("save failed"));
+}
+
+/// The task still carries the dispatch its cleanup row inspected.
+fn dispatch_unchanged(
+    domain: &DomainState,
+    task_id: uuid::Uuid,
+    inspected: Option<&crate::domain::Dispatch>,
+) -> bool {
+    inspected.is_some() && domain.get(task_id).and_then(|task| task.dispatch.as_ref()) == inspected
 }
 
 /// What a bulk `ctrl+d` on a marked set did before the reducer's plain batch completion.
@@ -2310,7 +2322,7 @@ pub fn confirm_cleanup_with_host(
         };
         let state = if row.dirty {
             Some(kept(CleanupError::DirtyWorktree))
-        } else if !cleanup_row_current(domain, row) {
+        } else if !dispatch_unchanged(domain, row.task_id, row.inspected.as_ref()) {
             Some(kept(CleanupError::DispatchChanged))
         } else {
             // The refs are settled when the worker starts, from this row's merged check.
@@ -2442,7 +2454,7 @@ fn start_due_cleanup(
                 row.state = CleanupRowState::Queued;
             }
             if let Some(slot) = row.slot {
-                if !run_row_current(domain, row) {
+                if !dispatch_unchanged(domain, row.task_id, row.inspected.as_ref()) {
                     job.cancel(slot);
                 }
             }
@@ -2457,14 +2469,6 @@ fn start_due_cleanup(
 }
 
 /// Whether a run row's task still carries the dispatch its card inspected.
-fn run_row_current(domain: &DomainState, row: &CleanupRunRow) -> bool {
-    row.inspected.is_some()
-        && domain
-            .get(row.task_id)
-            .and_then(|task| task.dispatch.as_ref())
-            == row.inspected.as_ref()
-}
-
 /// One board-loop step for the running cleanup (one slot, shared with the project preview,
 /// so a dropped or rebound preview never loses it): start the worker when due, withdraw rows
 /// whose dispatch changed, apply landed rows (mark the dispatch cleaned while it is still the
@@ -2515,7 +2519,7 @@ pub fn poll_cleanup_runs(
                     match slots.get(index) {
                         Some(dispatch::CleanupSlot::Queued) => {
                             // Not reached yet: withdraw it if its dispatch changed meanwhile.
-                            if !run_row_current(domain, row) {
+                            if !dispatch_unchanged(domain, row.task_id, row.inspected.as_ref()) {
                                 job.cancel(index);
                             }
                         }
@@ -2523,7 +2527,7 @@ pub fn poll_cleanup_runs(
                             row.state = CleanupRowState::Removing;
                         }
                         Some(dispatch::CleanupSlot::Done(Ok(result))) => {
-                            if run_row_current(domain, row) {
+                            if dispatch_unchanged(domain, row.task_id, row.inspected.as_ref()) {
                                 // The pre-mutation state, for save recovery.
                                 baseline.get_or_insert_with(|| domain.clone());
                                 if domain
@@ -2561,9 +2565,13 @@ pub fn poll_cleanup_runs(
     };
     if mutated {
         if let Err(error) = store.reload_merge_save(domain) {
-            let working = std::mem::take(domain);
-            save_recovery.fail(baseline.unwrap_or_default(), working, error.to_string());
-            model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+            fail_board_save(
+                domain,
+                model,
+                save_recovery,
+                baseline.unwrap_or_default(),
+                error.to_string(),
+            );
             return;
         }
         model.sync_from_domain(domain);
@@ -2678,9 +2686,7 @@ fn run_board_dispatch(
     match dispatch_task_with_host(domain, model, target, &profiles, again, in_herdr, host) {
         Ok(result) => {
             if let Err(error) = store.reload_merge_save(domain) {
-                let working = std::mem::take(domain);
-                save_recovery.fail(baseline, working, error.to_string());
-                model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+                fail_board_save(domain, model, save_recovery, baseline, error.to_string());
                 return;
             }
             if let Some(naming) = result.naming.clone() {
@@ -2822,17 +2828,6 @@ fn start_bulk_dispatch(
     land_bulk_dispatch_with_host(store, domain, model, save_recovery, name_agent)
 }
 
-fn status_word(status: HumanStatus) -> &'static str {
-    match status {
-        HumanStatus::Open => "open",
-        HumanStatus::Ready => "ready",
-        HumanStatus::Started => "started",
-        HumanStatus::Blocked => "blocked",
-        HumanStatus::Review => "review",
-        HumanStatus::Done => "done",
-    }
-}
-
 /// A launch whose record is durable: count it and name its agent.
 fn settle_saved_launch(
     run: &mut crate::ui::board::BulkDispatchRun,
@@ -2923,7 +2918,9 @@ pub fn land_bulk_dispatch_with_host(
                 }
                 Some(task) if task.soft_deleted => Some("deleted"),
                 Some(task) if task.archived => Some("archived"),
-                Some(task) if job.status_touched_since(task) => Some(status_word(task.status)),
+                Some(task) if job.status_touched_since(task) => {
+                    Some(crate::cli::presenter::status_name(task.status))
+                }
                 Some(_) => None,
             };
             let task_id = job.id;
@@ -3163,9 +3160,7 @@ fn handle_board_intent_with_host(
             Ok(BulkCleanupOffer::Prompted) => return Ok(false),
             Ok(BulkCleanupOffer::MissingConverged { done, missing }) => {
                 if let Err(error) = store.reload_merge_save(domain) {
-                    let working = std::mem::take(domain);
-                    save_recovery.fail(baseline, working, error.to_string());
-                    model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+                    fail_board_save(domain, model, save_recovery, baseline, error.to_string());
                     return Ok(false);
                 }
                 model.sync_from_domain(domain);
@@ -3194,9 +3189,7 @@ fn handle_board_intent_with_host(
                 Ok(CleanupOffer::Prompted) => return Ok(false),
                 Ok(CleanupOffer::MissingConverged(result)) => {
                     if let Err(error) = store.reload_merge_save(domain) {
-                        let working = std::mem::take(domain);
-                        save_recovery.fail(baseline, working, error.to_string());
-                        model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+                        fail_board_save(domain, model, save_recovery, baseline, error.to_string());
                         return Ok(false);
                     }
                     model.sync_from_domain(domain);
@@ -3238,9 +3231,7 @@ fn handle_board_intent_with_host(
         // Completion is durable before any worktree is touched.
         if let Err(error) = store.reload_merge_save(domain) {
             model.close_popup();
-            let working = std::mem::take(domain);
-            save_recovery.fail(baseline, working, error.to_string());
-            model.begin_save_recovery(save_recovery.error().unwrap_or("save failed"));
+            fail_board_save(domain, model, save_recovery, baseline, error.to_string());
             return Ok(false);
         }
         model.sync_from_domain(domain);

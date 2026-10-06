@@ -932,7 +932,7 @@ pub fn steps_rejected(error: StepsError, task: TaskAddress) -> CliOutput {
     }
 }
 
-fn status_name(status: HumanStatus) -> &'static str {
+pub(crate) fn status_name(status: HumanStatus) -> &'static str {
     match status {
         HumanStatus::Open => "open",
         HumanStatus::Ready => "ready",
