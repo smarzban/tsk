@@ -135,20 +135,6 @@ live smoke was not run. Wide (110 columns or more) smoke needs a full-width Herd
 a split pane; splitting the smoke pane right is the cheap way to drive it below 110 and
 back.
 
-## The `dispatch` integration branch
-
-Agent assignee and dispatch work lands on the `dispatch` branch, not `main`, until the feature is
-complete and released. `main` stays on store format v5 and releasable; `dispatch` carries v6
-(assignee and dispatch record). Feature branches (`t<task>-<slug>`) PR into `dispatch`; each gets
-the local green bar and a review-panel pass (no CI runs on PRs into `dispatch`, by choice). Keep
-`dispatch` current with `git merge main`, never rebase it once pushed. The feature ships as one
-PR `dispatch` -> `main` with the version bump and a v6 announcement.
-
-A binary built from `dispatch` migrates any store it opens to v6, and a `main` binary then
-refuses that store. Never point a `dispatch` build at a real store: use `TSK_STATE_DIR` with a
-throwaway dir, and never `cargo build --release` in a checkout that the daily `tsk` symlink or the
-Herdr plugin launches from while it is on `dispatch`.
-
 ## Docs ship with the feature
 
 Any change that adds, removes, or alters user-visible behaviour (a key, verb, palette
@@ -257,17 +243,20 @@ migration or design work they imply. What the behaviour *is* lives in the docs
   the launch is `$SHELL -lc '<quoted argv>'`, one command line, never chained. tsk carries no
   knowledge of any harness's flags. A malformed `config.toml` never blocks the board or CLI work
   that does not assign.
-- Dispatch is its own verb (ADR-0004 in `docs/specs/adr/`, local-only), never a side effect of
-  `started`: not undoable, sets `started` in the same save as the record. Without marks it is
-  cursor-only; a marked set gets one confirm card, then every listed task takes the single-task
-  path (check, launch, commit in `src/dispatch.rs`) off the event loop and is saved as it lands.
-  Quit and further dispatches wait for a running batch, or launched agents lose their record.
-  Relaunch (`dispatch again`) stays cursor-only. Outside `HERDR_ENV=1` it refuses. The dispatch record stays on the task through every later status
-  change; `◉` is derived only from `record present && status == started`, never from agent or
-  pane state.
-- Cleanup never deletes uncommitted work or an unmerged branch, and only removes the recorded
-  worktree (registered with git, matching the herdr entry's path, never the project root). A
-  missing worktree converges to `cleaned`. CLI `status done` never prompts.
+- Dispatch is its own verb, never a side effect of `started`: not undoable, and it sets `started`
+  in the same save as the record. Outside `HERDR_ENV=1` it refuses. A marked set gets one confirm
+  card, then every listed task takes the single-task path (check, launch, commit in
+  `src/dispatch.rs`) off the event loop and is saved as it lands. Quit and further dispatches wait
+  for a running batch, or launched agents lose their record. Relaunch (`dispatch again`) stays
+  cursor-only.
+- The dispatch record stays on the task through every later status change. `◉` is derived only
+  from `record present && !record.cleaned && status == started`, never from agent or pane
+  state.
+- Cleanup never deletes uncommitted work or a branch it cannot confirm is merged into the
+  recorded base (a failed fetch keeps the branch), and only removes the recorded worktree
+  (registered with git, matching the herdr entry's path, never the project root). It runs off the
+  event loop after the completion is saved; quit waits for it. A missing worktree converges to
+  `cleaned`. CLI `status done` never prompts.
 - Every git and herdr call goes through the `DispatchHost` seam so tests use a fake host; changes
   to the real host need a live herdr smoke against a throwaway repo under `/tmp`, never this one.
 

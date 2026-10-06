@@ -16,7 +16,7 @@ your agent the task number when you're ready to work on it. New tasks start in t
 
 In Herdr, **prefix+t** opens or focuses your workspace's board, even across tabs;
 other workspaces keep their own views of the same tasks. **prefix+a** opens quick capture.
-Click a task's `T` number to copy it, then paste it into your agent conversation. Tasks can also carry an optional assignee tied to an exact configured agent profile; `ctrl+g` dispatches assigned project work into a dedicated Git worktree and Herdr workspace, and completion can safely clean it up.
+Click a task's `T` number to copy it, then paste it into your agent conversation.
 
 ### Room to think
 
@@ -28,9 +28,11 @@ run `tsk` in your terminal.
 
 ### From task to implementation
 
-Assign a project task to an agent, press `ctrl+g` to dispatch it into its own
-Herdr worktree, then review the result and safely clean the worktree when you
-complete the task.
+Define your agents once in `config.toml`, press `@` to assign a task, and press
+`ctrl+g` to dispatch it: tsk opens a Git worktree and Herdr workspace for the task
+and launches the agent there with the task as its brief. When the pull request is
+merged, `ctrl+d` completes the task and cleans up the worktree and branch, never
+touching uncommitted or unmerged work. Dispatch runs in Herdr on macOS and Linux.
 
 ## Quickstart
 
