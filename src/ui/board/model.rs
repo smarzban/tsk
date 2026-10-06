@@ -1798,6 +1798,15 @@ impl BoardModel {
         }
     }
 
+    /// No cleanup runs: a "still running" refusal on this board or its preview is obsolete.
+    /// The preview cannot reach the outer board, so the outer loop clears both.
+    pub fn drop_cleanup_refusals(&mut self) {
+        self.drop_cleanup_refusal();
+        if let Some(seat) = self.right_seat.as_deref_mut() {
+            seat.drop_cleanup_refusal();
+        }
+    }
+
     fn drop_cleanup_refusal(&mut self) {
         if self.message.as_deref() == Some(CLEANUP_BUSY) {
             self.message = None;

@@ -2492,6 +2492,7 @@ pub fn poll_cleanup_runs(
 ) {
     if !model.cleanup_running() {
         model.set_cleanup_status(None);
+        model.drop_cleanup_refusals();
         return;
     }
     if save_recovery.is_pending() {
@@ -12219,6 +12220,60 @@ mod queued_cleanup_tests {
         assert!(model
             .preview_seat_mut()
             .is_some_and(|seat| seat.cleanup_prompt().is_none()));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn a_busy_refusal_on_the_outer_board_clears_when_the_preview_closes_the_finished_card() {
+        let (dir, store, mut domain, id) = setup("outer-refusal");
+        let mut model = BoardModel::from_domain(&domain, None);
+        focus_project_preview(&mut domain, &mut model);
+        // Cached refs say merged, but the check never lands: the branch is kept, so the
+        // finished card stays open until Esc.
+        let mut host = CheckHost::new(true);
+        offer_cleanup_prompt_with_host(&mut domain, model.input_target_mut(), id, true, &mut host)
+            .expect("offer");
+        press(
+            &store,
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        let narrow = ratatui::layout::Rect::new(0, 0, 60, 24);
+        let wide = ratatui::layout::Rect::new(0, 0, 160, 40);
+        super::sync_frame_presentation(narrow, &model);
+        assert!(!model.project_right_seat_focused());
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        assert_eq!(model.message(), Some(super::CLEANUP_BUSY));
+
+        super::sync_frame_presentation(wide, &model);
+        assert!(model.project_right_seat_focused());
+        model.cleanup_run_mut().unwrap().start_deadline = Instant::now();
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert!(model.cleanup_run().is_some_and(|run| run.finished()));
+        assert!(model.input_target_mut().cleanup_card_open());
+        press(
+            &store,
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::CancelCleanup,
+            &mut host,
+        );
+        tick(&store, &mut domain, &mut model, &mut host);
+
+        super::sync_frame_presentation(narrow, &model);
+        assert_ne!(
+            model.message(),
+            Some(super::CLEANUP_BUSY),
+            "the outer board's refusal does not outlive the run"
+        );
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
 
