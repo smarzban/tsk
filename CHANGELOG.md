@@ -15,12 +15,12 @@ One `## vX.Y.Z` section per release, newest first, with `## Unreleased
 - Dispatch: `ctrl+g`, palette **dispatch to @name**, or `tsk dispatch T<n>` creates a branch, Git worktree, and Herdr workspace named after the task (`tsk/t12-fix-login-timeout`, workspace `T12 Fix login timeout`), launches the assigned agent there as `t12-<name>`, and starts the task. An unassigned task asks for an agent first. With tasks marked, `ctrl+g` opens one card listing what will launch and what is skipped, and `y` launches them all in the background. `ctrl+g` twice, **dispatch again**, or `tsk dispatch --again` relaunches a dispatched task. A started task with a live dispatch shows `◉`. Dispatch needs Herdr on macOS or Linux.
 - Base branches: dispatch starts from the task's base branch, set with `!b branch`, the task page's `⎇` footer or Base field, palette **set base**, or `tsk add/edit --base`, and otherwise from the repository's default branch. The branch picker opens at once and refreshes after a background fetch. The task page shows the branch and commit each dispatch started from.
 - Completion and cleanup: `ctrl+d` on a dispatched task shows whether its branch is merged and what cleanup will remove. `y` completes the task and removes the worktree, Herdr workspace, and merged branch in the background; `n` completes it and keeps everything. A marked set gets one card for all its dispatches and one undo step. Cleanup never removes a worktree with uncommitted changes and keeps every branch it cannot confirm is merged into its base. `tsk clean T<n>` and `tsk status T<n> done --clean` do the same from scripts.
-- CLI and JSON: `tsk add` and `tsk edit` take `--assignee`, `--unassign`, `--base`, and `--clear-base`, and JSON plans take `assignee` and `base`. `tsk list --json` includes `assignee` and `base`; `tsk list T<n> --json` adds the dispatch record; `tsk clean --json` reports what was removed and kept. Agent skill 1.5.0 covers dispatch and cleanup.
+- CLI and JSON: `tsk add` and `tsk edit` take `--assignee`, `--unassign`, `--base`, and `--clear-base`, and JSON plans take `assignee` and `base`. `tsk list --json` includes `assignee` and `base`; `tsk list T<n> --json` adds the dispatch record; `tsk clean --json` reports what was removed and kept. Agent skill 1.5.0 covers dispatch and cleanup; `tsk update` refreshes installed copies, or rerun `tsk setup`.
 
 ### Fixed
 
 - A project reached through a symlinked path, such as `/tmp/repo` and `/private/tmp/repo` on macOS, is one project on the board, in quick add, and in the CLI.
-- With tasks marked, `Esc` in the filter or view picker closes the picker and keeps the marks.
+- With tasks marked, `Esc` in a project board's filter picker closes the picker and keeps the marks.
 - The task page's project chooser lists options top to bottom, so `↓` moves the highlight down.
 
 ## v0.11.6
