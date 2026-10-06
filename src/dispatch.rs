@@ -155,6 +155,23 @@ pub enum BranchRetentionReason {
 }
 
 impl BranchRetentionReason {
+    /// A few words for the status row; the card and the CLI carry [`Self::message`].
+    pub fn short(self) -> &'static str {
+        match self {
+            Self::NotMerged | Self::LatestTipNotMerged => "not merged",
+            Self::BaseUnavailable => "base unavailable",
+            Self::CheckedOutElsewhere => "checked out elsewhere",
+            Self::Advanced => "branch changed",
+            Self::DeletionDeclined => "deletion declined",
+            Self::NoRecordedBase => "no recorded base",
+            Self::MissingWorktree => "worktree already gone",
+            Self::BranchUnavailable => "branch gone",
+            Self::AncestryCheckTimedOut | Self::WorktreeListingTimedOut => "check timed out",
+            Self::MergeCheckUnfinished => "merge unconfirmed",
+            Self::RemoteUnreachable => "offline",
+        }
+    }
+
     pub fn message(self, base: Option<&str>, remote: Option<&str>) -> String {
         match self {
             Self::NotMerged => format!("not merged into {}; squash-merged? delete by hand", base.unwrap_or("recorded base")),
@@ -228,6 +245,20 @@ pub enum CleanupError {
 }
 
 impl CleanupError {
+    /// A few words for the status row; the card carries the full message.
+    pub fn short(&self) -> &'static str {
+        match self {
+            Self::UnknownTask => "task gone",
+            Self::NotDispatched => "no dispatch",
+            Self::AlreadyCleaned => "already cleaned",
+            Self::DirtyWorktree => "uncommitted changes",
+            Self::WorktreeMismatch => "worktree mismatch",
+            Self::DispatchChanged => "dispatch changed",
+            Self::Herdr(_) => "removal failed",
+            Self::Store(_) => "save failed",
+        }
+    }
+
     pub fn code(&self) -> &'static str {
         match self {
             Self::UnknownTask => "unknown-task",
@@ -449,6 +480,14 @@ pub trait DispatchHost {
                     BranchDeletion::Kept(BranchRetentionReason::DeletionDeclined)
                 }
             })
+    }
+    /// Run a board cleanup's host work off the event loop, filling `job`: the board polls it
+    /// and applies each row's outcome as it lands. This default runs inline.
+    fn begin_cleanup(&mut self, job: CleanupJob, plan: Vec<CleanupPlanRow>, in_herdr: bool)
+    where
+        Self: Sized,
+    {
+        run_cleanup_job(&job, &plan, in_herdr, self);
     }
     fn root_pane(&mut self, workspace_id: &str) -> Result<String, String>;
     fn run_in_pane(&mut self, pane_id: &str, command: &str) -> Result<(), String>;
@@ -757,6 +796,10 @@ impl DispatchHost for SystemDispatchHost {
             return Ok(BranchDeletion::Kept(BranchRetentionReason::Advanced));
         }
         Err(command_failure("git update-ref", &deleted))
+    }
+
+    fn begin_cleanup(&mut self, job: CleanupJob, plan: Vec<CleanupPlanRow>, in_herdr: bool) {
+        std::thread::spawn(move || run_cleanup_job(&job, &plan, in_herdr, &mut SystemDispatchHost));
     }
 
     fn root_pane(&mut self, workspace_id: &str) -> Result<String, String> {
@@ -1205,20 +1248,59 @@ fn inspect_cleanup_refs(
     cached: bool,
     host: &mut impl DispatchHost,
 ) -> Result<CleanupPreview, CleanupError> {
-    let task = state.get(id).cloned().ok_or(CleanupError::UnknownTask)?;
+    let plan = cleanup_plan(state, id, CleanupRefs::Cached)?;
+    inspect_planned(&plan, in_herdr, cached, host)
+}
+
+/// One dispatch a cleanup will remove, captured from the domain so the host work can run
+/// without it (on the board, off the event loop).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupPlanRow {
+    pub task_id: Uuid,
+    pub number: u64,
+    pub title: String,
+    pub project: PathBuf,
+    pub record: Dispatch,
+    pub refs: CleanupRefs,
+}
+
+/// Capture the task's live dispatch for cleanup, refusing what cleanup never touches.
+pub fn cleanup_plan(
+    state: &DomainState,
+    id: Uuid,
+    refs: CleanupRefs,
+) -> Result<CleanupPlanRow, CleanupError> {
+    let task = state.get(id).ok_or(CleanupError::UnknownTask)?;
     let number = task.number.ok_or(CleanupError::UnknownTask)?;
     let record = task.dispatch.clone().ok_or(CleanupError::NotDispatched)?;
     if record.cleaned {
         return Err(CleanupError::AlreadyCleaned);
     }
-    let project = match task.scope {
+    let project = match &task.scope {
         TaskScope::Project { path } => PathBuf::from(path),
         TaskScope::Global => return Err(CleanupError::NotDispatched),
     };
+    Ok(CleanupPlanRow {
+        task_id: id,
+        number,
+        title: task.title.clone(),
+        project,
+        record,
+        refs,
+    })
+}
+
+fn inspect_planned(
+    plan: &CleanupPlanRow,
+    in_herdr: bool,
+    cached: bool,
+    host: &mut impl DispatchHost,
+) -> Result<CleanupPreview, CleanupError> {
+    let (project, record) = (&plan.project, &plan.record);
     let mut inspection = if cached {
-        host.inspect_cleanup_cached(&project, &record, in_herdr)
+        host.inspect_cleanup_cached(project, record, in_herdr)
     } else {
-        host.inspect_cleanup(&project, &record, in_herdr)
+        host.inspect_cleanup(project, record, in_herdr)
     }
     .map_err(CleanupError::Herdr)?;
     if !inspection.target_matches {
@@ -1231,10 +1313,10 @@ fn inspect_cleanup_refs(
         inspection.base_available = false;
     }
     Ok(CleanupPreview {
-        number,
-        title: task.title,
-        project,
-        record,
+        number: plan.number,
+        title: plan.title.clone(),
+        project: project.clone(),
+        record: record.clone(),
         inspection,
     })
 }
@@ -1260,7 +1342,23 @@ pub fn clean_with_host_refs(
     refs: CleanupRefs,
     host: &mut impl DispatchHost,
 ) -> Result<CleanupResult, CleanupError> {
-    let preview = inspect_cleanup_refs(state, id, in_herdr, refs != CleanupRefs::Fetch, host)?;
+    let plan = cleanup_plan(state, id, refs)?;
+    let result = clean_planned_with_host(&plan, in_herdr, host)?;
+    state
+        .record_dispatch_cleaned(id)
+        .map_err(|error| CleanupError::Store(error.to_string()))?;
+    Ok(result)
+}
+
+/// The host half of a cleanup: inspect, then remove the worktree and, when confirmed merged,
+/// the branch. Touches no domain state; the caller records the dispatch cleaned on success.
+pub fn clean_planned_with_host(
+    plan: &CleanupPlanRow,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<CleanupResult, CleanupError> {
+    let refs = plan.refs;
+    let preview = inspect_planned(plan, in_herdr, refs != CleanupRefs::Fetch, host)?;
     if preview.inspection.dirty {
         return Err(CleanupError::DirtyWorktree);
     }
@@ -1307,10 +1405,6 @@ pub fn clean_with_host_refs(
         BranchDeletion::Removed => (BranchCleanup::Removed, None),
         BranchDeletion::Kept(reason) => (BranchCleanup::Kept, Some(reason)),
     };
-
-    state
-        .record_dispatch_cleaned(id)
-        .map_err(|error| CleanupError::Store(error.to_string()))?;
     let remote = (branch_reason == Some(BranchRetentionReason::RemoteUnreachable))
         .then(|| {
             preview
@@ -1334,6 +1428,156 @@ pub fn clean_with_host_refs(
         branch,
         workspace_removed,
     })
+}
+
+/// Where one row of a background cleanup stands. A handful per card, so the outcome is
+/// held inline rather than boxed.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CleanupSlot {
+    Queued,
+    Running,
+    Done(Result<CleanupResult, CleanupError>),
+}
+
+#[derive(Debug, Default)]
+struct CleanupJobState {
+    rows: Vec<CleanupSlot>,
+    /// Rows the board withdrew because their task's dispatch changed: never touched.
+    cancelled: Vec<bool>,
+    /// Every row's git and Herdr work has landed.
+    settled: bool,
+}
+
+/// A board cleanup's host work running off the event loop, one slot per planned row. The
+/// worker fills it; the board polls it each frame and never waits on it.
+#[derive(Debug, Clone, Default)]
+pub struct CleanupJob {
+    state: std::sync::Arc<std::sync::Mutex<CleanupJobState>>,
+    /// The state dir whose `tsk.json` the worker rereads right before each row's host work.
+    store: Option<PathBuf>,
+}
+
+/// Identity, not content: two handles are equal when they watch the same job.
+impl PartialEq for CleanupJob {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.state, &other.state)
+    }
+}
+
+impl Eq for CleanupJob {}
+
+impl CleanupJob {
+    pub fn new(rows: usize) -> Self {
+        let job = Self::default();
+        if let Ok(mut state) = job.state.lock() {
+            state.rows = vec![CleanupSlot::Queued; rows];
+            state.cancelled = vec![false; rows];
+            state.settled = rows == 0;
+        }
+        job
+    }
+
+    /// Bind each row to its task's dispatch as `tsk.json` in `state_dir` records it: the
+    /// worker rereads the store right before a row's host work and skips a row whose dispatch
+    /// another board or process relaunched or cleaned meanwhile.
+    pub fn bound_to_store(mut self, state_dir: &Path) -> Self {
+        self.store = Some(state_dir.to_path_buf());
+        self
+    }
+
+    /// Withdraw row `index` before the worker reaches it: it lands as `dispatch-changed`.
+    pub fn cancel(&self, index: usize) {
+        if let Ok(mut state) = self.state.lock() {
+            if let Some(flag) = state.cancelled.get_mut(index) {
+                *flag = true;
+            }
+        }
+    }
+
+    /// Whether row `index` still names its task's current dispatch: not withdrawn by the
+    /// board, and (when bound) still the record on disk.
+    pub fn row_current(&self, index: usize, row: &CleanupPlanRow) -> bool {
+        let cancelled = self
+            .state
+            .lock()
+            .map(|state| state.cancelled.get(index).copied().unwrap_or(true))
+            .unwrap_or(true);
+        if cancelled {
+            return false;
+        }
+        let Some(dir) = &self.store else {
+            return true;
+        };
+        crate::store::TaskStore::new(dir).load().is_ok_and(|state| {
+            state
+                .get(row.task_id)
+                .and_then(|task| task.dispatch.as_ref())
+                == Some(&row.record)
+        })
+    }
+
+    fn set(&self, index: usize, slot: CleanupSlot) {
+        if let Ok(mut state) = self.state.lock() {
+            if let Some(row) = state.rows.get_mut(index) {
+                *row = slot;
+            }
+        }
+    }
+
+    pub fn start(&self, index: usize) {
+        self.set(index, CleanupSlot::Running);
+    }
+
+    pub fn finish(&self, index: usize, result: Result<CleanupResult, CleanupError>) {
+        self.set(index, CleanupSlot::Done(result));
+    }
+
+    pub fn settle(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.settled = true;
+        }
+    }
+
+    /// Every row's slot and whether the job settled; `None` while the worker holds the lock.
+    pub fn snapshot(&self) -> Option<(Vec<CleanupSlot>, bool)> {
+        self.state
+            .try_lock()
+            .ok()
+            .map(|state| (state.rows.clone(), state.settled))
+    }
+}
+
+/// Run every planned row in order; a refusal on one never stops the others.
+pub fn run_cleanup_job(
+    job: &CleanupJob,
+    plan: &[CleanupPlanRow],
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) {
+    for (index, row) in plan.iter().enumerate() {
+        run_cleanup_row(job, index, row, in_herdr, host);
+    }
+    job.settle();
+}
+
+/// One row of [`run_cleanup_job`].
+pub fn run_cleanup_row(
+    job: &CleanupJob,
+    index: usize,
+    row: &CleanupPlanRow,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) {
+    job.start(index);
+    // Checked right before the host work, not only when `y` planned the row: the board
+    // stays interactive meanwhile, so the task may have been relaunched since.
+    let result = if job.row_current(index, row) {
+        clean_planned_with_host(row, in_herdr, host)
+    } else {
+        Err(CleanupError::DispatchChanged)
+    };
+    job.finish(index, result);
 }
 
 /// Launch the cursor task. Domain state changes only after every host command succeeds.

@@ -6276,7 +6276,6 @@ fn bulk_cleanup_model() -> BoardModel {
             missing: Vec::new(),
             refused: Vec::new(),
         }),
-        confirm_deadline: None,
         scroll: 0,
     });
     model
@@ -6365,7 +6364,6 @@ fn large_bulk_cleanup_model(count: u64, dirty: bool) -> BoardModel {
                 .collect(),
             ..BulkCleanup::default()
         }),
-        confirm_deadline: None,
         scroll: 0,
     });
     model
