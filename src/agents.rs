@@ -223,16 +223,6 @@ impl AgentProfiles {
         self.profiles.get(name)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &AgentProfile)> {
-        self.profiles
-            .iter()
-            .map(|(name, profile)| (name.as_str(), profile))
-    }
-
-    pub fn len(&self) -> usize {
-        self.profiles.len()
-    }
-
     pub fn is_empty(&self) -> bool {
         self.profiles.is_empty()
     }
@@ -580,7 +570,7 @@ command = ["claude", "--print"]
         );
 
         let profiles = AgentProfiles::load(dir.path()).expect("valid profiles");
-        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles.names().count(), 2);
         assert_eq!(
             profiles.get("implementer").expect("implementer").command,
             ["pi", "--model", "anthropic/claude"]

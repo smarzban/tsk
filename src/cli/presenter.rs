@@ -1087,20 +1087,20 @@ pub fn clean_usage(reason: &str) -> CliOutput {
 }
 
 pub fn clean_rejected(error: CleanupError, task: TaskAddress) -> CliOutput {
-    let exit = if matches!(error, CleanupError::Store(_)) {
-        3
-    } else {
-        1
-    };
-    let refusal = error.code();
-    let detail = match error {
+    let store = matches!(error, CleanupError::Store(_));
+    let detail = match &error {
         CleanupError::UnknownTask => format!("{} is not on the board", task.display()),
         other => other.to_string(),
     };
+    verb_rejected("clean", error.code(), store, &detail)
+}
+
+/// A dispatch or cleanup refusal: exit 3 when the store failed, 1 otherwise.
+fn verb_rejected(verb: &str, refusal: &str, store: bool, detail: &str) -> CliOutput {
     CliOutput {
         stdout: String::new(),
-        stderr: format!("tsk clean: {refusal}: {}\n", human_reason(&detail)),
-        code: exit,
+        stderr: format!("tsk {verb}: {refusal}: {}\n", human_reason(detail)),
+        code: if store { 3 } else { 1 },
     }
 }
 
@@ -1132,21 +1132,12 @@ pub fn dispatch_usage(reason: &str) -> CliOutput {
 }
 
 pub fn dispatch_rejected(error: DispatchError, task: TaskAddress) -> CliOutput {
-    let exit = if matches!(error, DispatchError::Store(_)) {
-        3
-    } else {
-        1
-    };
-    let refusal = error.code();
-    let detail = match error {
+    let store = matches!(error, DispatchError::Store(_));
+    let detail = match &error {
         DispatchError::UnknownTask => format!("{} is not on the board", task.display()),
         other => other.to_string(),
     };
-    CliOutput {
-        stdout: String::new(),
-        stderr: format!("tsk dispatch: {refusal}: {}\n", human_reason(&detail)),
-        code: exit,
-    }
+    verb_rejected("dispatch", error.code(), store, &detail)
 }
 
 pub fn status_help() -> CliOutput {

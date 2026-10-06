@@ -156,7 +156,7 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
     let global = input.global;
     let notes = input.notes.filter(|notes| !notes.trim().is_empty());
     let thread = input.thread;
-    let base = if input.clear_base { None } else { input.base };
+    let base = input.base;
     store
         .locked_transition_if_changed(|domain| {
             let mut snapshot = snapshot.clone();
