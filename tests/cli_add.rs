@@ -2828,7 +2828,7 @@ fn flag_and_plan_add_fetch_new_remote_base_before_validation() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// T152: launched from `work/alpha` while the store knows the same repository as the
+/// Launched from `work/alpha` while the store knows the same repository as the
 /// symlink `links/beta`, every add route lands on the stored spelling, and the launch
 /// basename `alpha` still resolves (it names the repository you launched from).
 #[cfg(unix)]

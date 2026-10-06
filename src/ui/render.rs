@@ -3428,7 +3428,7 @@ fn paint_task_page(
                 .saturating_add(component_width)
                 .saturating_add(3);
         }
-        // Preserve the old aggregate-thread-width seam for hand-built fixtures.
+        // A meta line with no thread component (hand-built fixtures) uses the aggregate width.
         if thread_slot.is_none() {
             thread_slot = thread_slot_width.map(|slot_width| (0, slot_width));
         }

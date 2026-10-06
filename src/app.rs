@@ -1145,7 +1145,7 @@ fn resolve_save_recovery(model: &mut BoardModel, domain: &DomainState, resolutio
     let seat_owns = model
         .preview_seat_mut()
         .is_some_and(|seat| seat.owns_save_recovery());
-    // A board answering with no other owner in sight owns it, as before proxies existed.
+    // A board answering with no other owner in sight owns it.
     let outer_owns =
         model.owns_save_recovery() || (!seat_owns && !model.shows_save_recovery_proxy());
     let retried = resolution == SaveResolution::Retried;
@@ -2177,7 +2177,7 @@ fn cleanup_row_current(domain: &DomainState, row: &CleanupRow) -> bool {
 /// What a bulk `ctrl+d` on a marked set did before the reducer's plain batch completion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BulkCleanupOffer {
-    /// No target has a live dispatch: complete the set as before, no card.
+    /// No target has a live dispatch: complete the set as a plain batch, no card.
     None,
     /// The card is open over the marked set, which stays marked until `y` or `n`.
     Prompted,
@@ -3018,7 +3018,7 @@ fn board_background_step(
 
 /// `ctrl+g` on an unassigned task with profiles defined: open the assignee picker for that one
 /// cursor task, armed to dispatch after the choice is saved. Returns whether it opened. With no
-/// profile it does not, and dispatch refuses with [`dispatch::NO_ASSIGNEE`] as before.
+/// profile it does not, and dispatch refuses with [`dispatch::NO_ASSIGNEE`].
 pub fn open_dispatch_assignee_picker(
     domain: &DomainState,
     model: &mut BoardModel,
@@ -5259,7 +5259,7 @@ mod tests {
             Some(BoardIntent::FormFocusNext),
             "Tab keeps its task-page meaning"
         );
-        // Narrow task page: ← stays inert, Esc closes, exactly as before the slider.
+        // Narrow task page: ← stays inert, Esc closes.
         assert_eq!(route(&mut model, single, KeyCode::Left), None);
         assert_eq!(route(&mut model, single, KeyCode::Char('h')), None);
         assert_eq!(route(&mut model, single, KeyCode::Char('l')), None);
@@ -9113,7 +9113,7 @@ mod tests {
             .expect("insert the paste");
         assert_eq!(model.scope_path_edit(), Some("/repos/app more"));
 
-        // Scope focus without an active path editor is not a text field: inert, as before.
+        // Scope focus without an active path editor is not a text field: inert.
         apply_capture_intent(
             &mut domain,
             None,

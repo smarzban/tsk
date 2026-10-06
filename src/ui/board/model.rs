@@ -6006,7 +6006,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    /// T152 review F-3: when the board sits on the alias spelling that dedupe would drop,
+    /// When the board sits on the alias spelling that dedupe would drop,
     /// the selector keeps that spelling and highlights it instead of falling back to Home.
     #[cfg(unix)]
     #[test]
@@ -6058,7 +6058,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    /// T152: `/tmp/x` and `/private/tmp/x` (any symlink alias) are one project in the board
+    /// `/tmp/x` and `/private/tmp/x` (any symlink alias) are one project in the board
     /// selector and the task page's project dropdown, even when the store holds both.
     #[cfg(unix)]
     #[test]

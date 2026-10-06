@@ -410,7 +410,7 @@ fn completing_a_guide_on_the_real_board_records_its_dismissal() {
     );
 }
 
-/// T152: launched from `work/alpha` while the store knows the same repository as the
+/// Launched from `work/alpha` while the store knows the same repository as the
 /// symlink `links/beta`, the board opens on the stored project, lists it once, and both
 /// the board's quick add and the capture popup default to the stored spelling.
 #[test]

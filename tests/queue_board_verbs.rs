@@ -7725,8 +7725,8 @@ fn base_picker_reopen_reuses_one_in_flight_worker_for_the_project() {
     let ssh = repo.join("counted-ssh");
     let counter = repo.join("fetch-count");
     let release = repo.join("fetch-release");
-    // The transport holds until the reopen loop ends: a fixed sleep let a slow machine finish
-    // the first fetch mid-loop, and a later reopen then rightly started a fresh one.
+    // The transport holds until the reopen loop ends, so the first fetch cannot finish
+    // mid-loop and let a later reopen rightly start a fresh one.
     stub::write_stub(
         &ssh,
         format!(
