@@ -1006,8 +1006,6 @@ pub struct BoardModel {
     pub(super) quick_add_save: Option<QuickAddSave>,
     /// A task-form edit waiting for the app save boundary to confirm persistence.
     pub(super) task_edit_save: Option<TaskEditSave>,
-    /// Palette assignee targets, retained until Enter applies them as one batch.
-    pub(super) pending_assignee_targets: Option<Vec<Uuid>>,
     /// Tasks a quick-picker assignment changed, waiting for its save to land before an open
     /// task form bound to one of them adopts the new assignee. Cancel drops it unapplied.
     pub(super) pending_form_assignee_sync: Option<Vec<Uuid>>,
@@ -1629,7 +1627,6 @@ impl BoardModel {
             saved_task: None,
             quick_add_save: None,
             task_edit_save: None,
-            pending_assignee_targets: None,
             pending_form_assignee_sync: None,
             pending_form_base_sync: None,
             hold_task_edit_save: false,
@@ -2301,7 +2298,6 @@ impl BoardModel {
         // becomes an ordinary project board: tab, dim rows and verbs all follow.
         if let BoardLocation::ArchivedProject(path) = &self.board_location {
             if !self.is_archived_project_path(path) {
-                self.pending_assignee_targets = None;
                 self.selected_project = Some(path.clone());
                 self.board_location = BoardLocation::Project(path.clone());
             }
@@ -2321,7 +2317,6 @@ impl BoardModel {
                 }
                 _ => String::new(),
             };
-            self.pending_assignee_targets = None;
             self.board_location = BoardLocation::Desk;
             self.selected_project = None;
             self.set_message(format!("project {name} is archived"));
@@ -2463,7 +2458,6 @@ impl BoardModel {
         // project's tasks again. (`2` stays put: the archived focus already occupies
         // slot 2.)
         if self.focus_is_archived() {
-            self.pending_assignee_targets = None;
             let previous_visible = self.visible_ids();
             self.search_query.clear();
             self.search_pinned = false;
@@ -2618,7 +2612,6 @@ impl BoardModel {
         if self.board_location == target {
             return;
         }
-        self.pending_assignee_targets = None;
         let previous_visible = self.visible_ids();
         let previous = self.selection_id;
         self.search_query.clear();
@@ -2755,7 +2748,6 @@ impl BoardModel {
 
     /// Leave the read-only archived focus for the desk (AC-45).
     pub(super) fn leave_archived_focus(&mut self) {
-        self.pending_assignee_targets = None;
         let previous_visible = self.visible_ids();
         self.clear_marks();
         self.search_query.clear();
@@ -2769,7 +2761,6 @@ impl BoardModel {
     /// Turn a read-only focus into the ordinary project focus on the same project
     /// (AC-43), keeping the selection where the user left it.
     pub(super) fn enter_project_focus(&mut self, path: PathBuf) {
-        self.pending_assignee_targets = None;
         self.selected_project = Some(path.clone());
         let previous_visible = self.visible_ids();
         let previous = self.selection_id;
@@ -2781,7 +2772,6 @@ impl BoardModel {
 
     /// Open the read-only focus on `path` (AC-41). Session-only: nothing persists.
     pub(super) fn open_archived_focus(&mut self, path: PathBuf) {
-        self.pending_assignee_targets = None;
         self.selected_project = None;
         self.close_popup();
         let previous_visible = self.visible_ids();
@@ -3992,7 +3982,6 @@ impl BoardModel {
             _ => false,
         };
         if applied {
-            self.pending_assignee_targets = None;
             self.list_picker = None;
             Some(value)
         } else {
@@ -4980,16 +4969,6 @@ impl BoardModel {
         true
     }
 
-    /// Close an assignment form only after its batch reached the persistence boundary.
-    pub fn finish_pending_assignee_assignment(&mut self) -> bool {
-        if self.pending_assignee_targets.take().is_none() {
-            return false;
-        }
-        self.form = None;
-        self.input_mode = BoardInputMode::Normal;
-        true
-    }
-
     /// Help line listing primary key bindings.
     pub fn help_line(&self) -> &'static str {
         match self.input_mode() {
@@ -5228,9 +5207,6 @@ impl BoardModel {
                 self.set_message(DIRTY_TASK_SWITCH_REFUSAL);
             }
             return false;
-        }
-        if requested != bound {
-            self.pending_assignee_targets = None;
         }
         if source == SelectionRetarget::Explicit
             && requested != bound

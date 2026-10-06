@@ -1152,13 +1152,9 @@ fn resolve_save_recovery(model: &mut BoardModel, domain: &DomainState, resolutio
     let before_sync = |board: &mut BoardModel| {
         if retried {
             board.release_task_edit_save();
-            board.finish_pending_assignee_assignment();
         }
     };
     let after_sync = |board: &mut BoardModel| {
-        if !retried {
-            board.finish_pending_assignee_assignment();
-        }
         board.finish_form_assignee_sync(retried);
         board.finish_form_base_sync(retried);
         let cancelled_quick_add = board.end_save_recovery(resolution);
@@ -1290,10 +1286,6 @@ pub fn apply_board_intent_with_save_recovery(
         }
     }
 
-    let holds_assignee_form = matches!(
-        intent,
-        BoardIntent::ConfirmFormDropdown | BoardIntent::SelectFormDropdownOption(_)
-    ) && board_intent_may_persist(model, &intent);
     let holds_task_edit = matches!(
         intent,
         BoardIntent::ConfirmEdit | BoardIntent::ConfirmEditNext
@@ -1327,9 +1319,6 @@ pub fn apply_board_intent_with_save_recovery(
         return Ok(IntentOutcome::None);
     }
     model.release_task_edit_save();
-    if holds_assignee_form {
-        model.finish_pending_assignee_assignment();
-    }
     model.sync_from_domain(domain);
     model.finish_form_assignee_sync(true);
     model.finish_form_base_sync(true);
@@ -4397,22 +4386,23 @@ mod tests {
         apply_intent(
             &mut domain,
             model.input_target_mut(),
-            BoardIntent::BeginEditAssignee,
+            BoardIntent::OpenAssigneePicker,
             None,
         )
-        .expect("open right-seat assignee");
-        apply_intent(
-            &mut domain,
-            model.input_target_mut(),
-            BoardIntent::FormAssigneeNext,
-            None,
-        )
-        .expect("pick inherited profile");
+        .expect("open right-seat assignee picker");
+        assert_eq!(
+            model
+                .input_target_mut()
+                .selected_list_picker_option()
+                .map(|(_, option)| option.label),
+            Some("@reviewer".to_string()),
+            "the inherited profile is offered"
+        );
         assert_eq!(
             apply_intent(
                 &mut domain,
                 model.input_target_mut(),
-                BoardIntent::ConfirmFormAssignee,
+                BoardIntent::ConfirmListPicker,
                 None,
             )
             .expect("assign in right seat"),
@@ -8388,126 +8378,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn dropdown_assignment_save_failure_retains_form_and_retry_finishes_batch() {
-        let temp = TempStore::new("dropdown-assignment-recovery");
-        std::fs::write(
-            temp.dir.join("config.toml"),
-            "[agent.reviewer]\ncommand = [\"true\"]\n",
-        )
-        .expect("write profiles");
-        let profiles = AgentProfiles::load(&temp.dir).expect("load profiles");
-        let mut domain = DomainState::new();
-        let first = domain
-            .create(
-                "first",
-                None,
-                TaskScope::Global,
-                ProvenanceOrigin::Manual,
-                None,
-            )
-            .expect("first task");
-        let second = domain
-            .create(
-                "second",
-                None,
-                TaskScope::Global,
-                ProvenanceOrigin::Manual,
-                None,
-            )
-            .expect("second task");
-        let baseline = domain.clone();
-        let mut model = BoardModel::from_domain(&domain, None);
-        model.set_agent_profiles(&profiles);
-        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None)
-            .expect("enter mark mode");
-        for id in [first, second] {
-            let index = model
-                .visible_ids()
-                .iter()
-                .position(|visible| *visible == id)
-                .expect("marked task visible");
-            apply_intent(
-                &mut domain,
-                &mut model,
-                BoardIntent::SelectIndex(index),
-                None,
-            )
-            .expect("select mark target");
-            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None)
-                .expect("mark task");
-        }
-        apply_intent(
-            &mut domain,
-            &mut model,
-            BoardIntent::BeginEditAssignee,
-            None,
-        )
-        .expect("begin assignment");
-        apply_intent(
-            &mut domain,
-            &mut model,
-            BoardIntent::OpenFormDropdown(CaptureField::Assignee),
-            None,
-        )
-        .expect("open assignee dropdown");
-        apply_intent(&mut domain, &mut model, BoardIntent::FormDropdownNext, None)
-            .expect("select reviewer");
-
-        let mut recovery = SaveRecovery::new();
-        let outcome = apply_board_intent_with_save_recovery(
-            &mut domain,
-            &mut model,
-            &mut recovery,
-            BoardSaveContext {
-                baseline,
-                intent: BoardIntent::ConfirmFormDropdown,
-                snapshot: None,
-            },
-            |_| Err("injected save failure".into()),
-        )
-        .expect("failed assignment enters recovery");
-        assert_eq!(outcome, IntentOutcome::None);
-        assert!(recovery.is_pending());
-        assert!(model.board_form_open(), "the assignment form must survive");
-        assert_eq!(model.input_mode(), BoardInputMode::SaveRecovery);
-        assert_eq!(
-            board_keyboard_intent(
-                &model,
-                model.input_mode(),
-                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
-            ),
-            Some(BoardIntent::RetrySave)
-        );
-
-        assert_eq!(
-            apply_board_intent_with_save_recovery(
-                &mut domain,
-                &mut model,
-                &mut recovery,
-                BoardSaveContext {
-                    baseline: DomainState::new(),
-                    intent: BoardIntent::RetrySave,
-                    snapshot: None,
-                },
-                |_| Ok(()),
-            )
-            .expect("retry assignment"),
-            IntentOutcome::Persisted
-        );
-        assert!(!recovery.is_pending());
-        assert!(!model.board_form_open());
-        assert_eq!(model.input_mode(), BoardInputMode::Normal);
-        assert_eq!(
-            domain.get(first).expect("first").assignee.as_deref(),
-            Some("reviewer")
-        );
-        assert_eq!(
-            domain.get(second).expect("second").assignee.as_deref(),
-            Some("reviewer")
-        );
-    }
-
     /// SaveRecovery outranks an open form, so Retry and both Cancel keys must retain the only
     /// routes that can resolve a failed save.
     #[test]
@@ -11401,7 +11271,7 @@ mod quick_assign_tests {
                     BoardIntent::OpenTaskPage,
                     BoardIntent::BeginEditTitle,
                     BoardIntent::EditInsertText(" draft".into()),
-                    BoardIntent::BeginEditAssignee,
+                    BoardIntent::FocusFormField(crate::ui::capture::CaptureField::Assignee),
                 ] {
                     apply_intent(&mut domain, &mut model, intent, None).expect("edit");
                 }
