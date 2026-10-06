@@ -182,10 +182,7 @@ fn colliding_tag_or_local_remote_name_cannot_change_the_recorded_base() {
     git(&r.local, &["tag", "main"]);
     let local = resolve(&r.local, Some("main")).unwrap();
     assert_eq!(local.reference, "origin/main");
-    assert_eq!(
-        recorded_branch_ref(&r.local, &local.reference).unwrap(),
-        "refs/remotes/origin/main"
-    );
+    assert_eq!(local.full_ref.as_deref(), Some("refs/remotes/origin/main"));
     git(&r.local, &["branch", "origin/main", "refs/heads/main"]);
     let colliding = resolve(&r.local, Some("origin/main")).unwrap();
     assert_eq!(colliding.reference, "refs/heads/origin/main");
@@ -194,8 +191,8 @@ fn colliding_tag_or_local_remote_name_cannot_change_the_recorded_base() {
         "origin/main"
     );
     assert_eq!(
-        recorded_branch_ref(&r.local, &colliding.reference).unwrap(),
-        "refs/heads/origin/main"
+        colliding.full_ref.as_deref(),
+        Some("refs/heads/origin/main")
     );
 }
 
@@ -562,8 +559,12 @@ fn exact_local_base_survives_a_new_remote_named_after_its_prefix() {
     );
     git(&r.local, &["fetch", "integration"]);
     assert_eq!(
-        recorded_branch_ref(&r.local, base.full_ref.as_deref().unwrap()).unwrap(),
-        "refs/heads/integration/main"
+        base.full_ref.as_deref(),
+        Some("refs/heads/integration/main")
+    );
+    git(
+        &r.local,
+        &["show-ref", "--verify", "refs/heads/integration/main"],
     );
 }
 

@@ -180,7 +180,9 @@ impl BranchRetentionReason {
             Self::LatestTipNotMerged => "latest branch tip is no longer merged into the recorded base; branch or base changed since inspection".into(),
             Self::Advanced => "branch changed during cleanup".into(),
             Self::DeletionDeclined => "branch deletion declined by host".into(),
-            Self::NoRecordedBase => "no recorded base; branch retained".into(),
+            Self::NoRecordedBase => {
+                "no exact recorded base (dispatched before base tracking); branch retained".into()
+            }
             Self::MissingWorktree => "worktree already missing; branch retained".into(),
             Self::BranchUnavailable => "branch no longer available".into(),
             Self::AncestryCheckTimedOut => {
@@ -649,7 +651,7 @@ impl DispatchHost for SystemDispatchHost {
     }
 
     fn begin_merge_check(&mut self, project: &Path, dispatch: &Dispatch) -> Option<MergeCheck> {
-        let remote = cleanup_base_remote(project, dispatch)?;
+        let remote = dispatch.base_remote.clone()?;
         if crate::git_base::fetch_is_fresh(project, &remote) {
             return None;
         }
@@ -1000,7 +1002,7 @@ fn system_inspect_cleanup(
         return Err(command_failure("git status", &status));
     }
     let fetch_failure = if fetch {
-        cleanup_base_remote(project, dispatch).and_then(|remote| {
+        dispatch.base_remote.clone().and_then(|remote| {
             crate::git_base::fetch_remote(project, &remote)
                 .err()
                 .map(|reason| (remote, reason))
@@ -1055,21 +1057,6 @@ fn system_inspect_cleanup(
     })
 }
 
-/// The remote whose fetch can change the recorded base. A new fully qualified record never
-/// borrows another namespace, even if a remote with the same prefix is configured later.
-fn cleanup_base_remote(project: &Path, dispatch: &Dispatch) -> Option<String> {
-    let base = dispatch.base.as_deref().or(dispatch.base_ref.as_deref())?;
-    dispatch.base_remote.clone().or_else(|| {
-        if let Some(exact) = dispatch.base_ref.as_deref() {
-            exact
-                .strip_prefix("refs/remotes/")
-                .and_then(|_| crate::git_base::remote_for_ref(project, exact))
-        } else {
-            crate::git_base::remote_for_ref(project, base)
-        }
-    })
-}
-
 /// Ancestry against the recorded base from the refs on disk now. `fetch_failure` is the
 /// remote whose preceding fetch failed and why: the refs on disk then confirm nothing.
 fn merge_verdict(
@@ -1078,11 +1065,8 @@ fn merge_verdict(
     fetch_failure: Option<(String, String)>,
 ) -> Result<MergeVerdict, String> {
     let mut base_available = false;
-    let branch_merged = if let Some(base) =
-        dispatch.base.as_deref().or(dispatch.base_ref.as_deref())
-    {
-        let exact_base = cleanup_base_ref(project, dispatch.base_ref.as_deref().unwrap_or(base))?;
-        if let Some(exact_base) = exact_base {
+    let branch_merged = if let Some(base_ref) = dispatch.base_ref.as_deref() {
+        if let Some(exact_base) = cleanup_base_ref(project, base_ref)? {
             base_available = true;
             // Same deadline reasoning as the status read: this still runs before any
             // worktree or branch mutation, so a timeout here refuses safely too.
@@ -1129,24 +1113,17 @@ fn merge_verdict(
     })
 }
 
-/// Missing bases are a retention reason, not a failure to clean the worktree.
-/// Exact refs are verified verbatim; only records without one use legacy inference.
-fn cleanup_base_ref(project: &Path, base: &str) -> Result<Option<String>, String> {
-    if base.starts_with("refs/heads/") || base.starts_with("refs/remotes/") {
-        let output = crate::git_base::git_process_output(
-            project,
-            &["show-ref", "--quiet", "--verify", base],
-        )?;
-        return match output.status.code() {
-            Some(0) => Ok(Some(base.to_string())),
-            Some(1) => Ok(None),
-            _ => Err(command_failure("git show-ref", &output)),
-        };
-    }
-    match crate::git_base::recorded_branch_ref(project, base) {
-        Ok(reference) => Ok(Some(reference)),
-        Err(reason) if reason == format!("recorded base {base} is unavailable") => Ok(None),
-        Err(reason) => Err(reason),
+/// The recorded `base_ref`, verified verbatim. Missing bases are a retention reason, not a
+/// failure to clean the worktree.
+fn cleanup_base_ref(project: &Path, base_ref: &str) -> Result<Option<String>, String> {
+    let output = crate::git_base::git_process_output(
+        project,
+        &["show-ref", "--quiet", "--verify", base_ref],
+    )?;
+    match output.status.code() {
+        Some(0) => Ok(Some(base_ref.to_string())),
+        Some(1) => Ok(None),
+        _ => Err(command_failure("git show-ref", &output)),
     }
 }
 
@@ -1286,9 +1263,9 @@ fn inspect_planned(
     if !inspection.target_matches {
         return Err(CleanupError::WorktreeMismatch);
     }
-    // Legacy v6 dispatch records have no creation base. They may still be cleaned, but the
-    // branch is always retained because no safe ancestry target is known.
-    if record.base.is_none() && record.base_ref.is_none() {
+    // Records dispatched before exact base tracking have no `base_ref`. They may still be
+    // cleaned, but the branch is always retained because no safe ancestry target is known.
+    if record.base_ref.is_none() {
         inspection.branch_merged = false;
         inspection.base_available = false;
     }
@@ -1352,7 +1329,7 @@ pub fn clean_planned_with_host(
             host.remove_git_worktree(&preview.project, Path::new(&preview.record.worktree))
                 .map_err(CleanupError::Herdr)?;
         }
-        let deletion = if preview.record.base.is_none() && preview.record.base_ref.is_none() {
+        let deletion = if preview.record.base_ref.is_none() {
             BranchDeletion::Kept(BranchRetentionReason::NoRecordedBase)
         } else if refs == CleanupRefs::Unconfirmed {
             BranchDeletion::Kept(BranchRetentionReason::MergeCheckUnfinished)
@@ -1361,13 +1338,7 @@ pub fn clean_planned_with_host(
         } else if !preview.inspection.base_available {
             BranchDeletion::Kept(BranchRetentionReason::BaseUnavailable)
         } else if preview.inspection.branch_merged {
-            // Never resolve a fully qualified saved ref back through a short name.
-            let base = preview
-                .record
-                .base_ref
-                .as_deref()
-                .or(preview.record.base.as_deref())
-                .expect("recorded base");
+            let base = preview.record.base_ref.as_deref().expect("recorded base");
             host.delete_merged_branch_with_reason(&preview.project, &preview.record.branch, base)
                 .map_err(CleanupError::Herdr)?
         } else {
@@ -1391,7 +1362,7 @@ pub fn clean_planned_with_host(
                 .inspection
                 .unreachable_remote
                 .clone()
-                .or_else(|| cleanup_base_remote(&preview.project, &preview.record))
+                .or_else(|| preview.record.base_remote.clone())
         })
         .flatten();
     Ok(CleanupResult {
@@ -1402,7 +1373,7 @@ pub fn clean_planned_with_host(
         title: preview.title,
         worktree_path: preview.record.worktree,
         branch_name: preview.record.branch,
-        base: preview.record.base.or(preview.record.base_ref),
+        base: preview.record.base,
         workspace_id: preview.record.herdr_workspace_id,
         worktree,
         branch,
@@ -3067,41 +3038,52 @@ mod tests {
         assert_eq!(dispatched.record.base.as_deref(), Some("main"));
         assert_eq!(launch.created_bases, vec![Some("main".into())]);
 
-        let (mut legacy, legacy_id) = task();
-        legacy
-            .record_dispatch(
-                legacy_id,
-                Dispatch {
-                    argv: vec!["agent".into()],
-                    worktree: "/tmp/worktree".into(),
-                    branch: "tsk/t1-legacy".into(),
-                    base: None,
-                    base_ref: None,
-                    base_commit: None,
-                    base_remote: None,
-                    herdr_workspace_id: "w9".into(),
-                    at: SystemTime::now(),
-                    cleaned: false,
-                },
-            )
-            .expect("legacy dispatch");
-        let mut cleanup = FakeHost {
-            cleanup: Some(CleanupInspection {
-                unreachable_remote: None,
-                warning: None,
-                base_available: true,
-                worktree_exists: true,
-                dirty: false,
-                branch_merged: true,
-                workspace_exists: true,
-                target_matches: true,
-            }),
-            ..FakeHost::default()
-        };
-        let result = clean_with_host(&mut legacy, legacy_id, true, &mut cleanup).expect("clean");
-        assert_eq!(cleanup.inspected_bases, vec![None]);
-        assert_eq!(result.branch, BranchCleanup::Kept);
-        assert_eq!(cleanup.deleted_branches, 0);
+        // Records from before exact base tracking: no base at all, or a short base without
+        // `base_ref`. Both clean the worktree but keep the branch, even when reported merged.
+        for base in [None, Some("main")] {
+            let (mut legacy, legacy_id) = task();
+            legacy
+                .record_dispatch(
+                    legacy_id,
+                    Dispatch {
+                        argv: vec!["agent".into()],
+                        worktree: "/tmp/worktree".into(),
+                        branch: "tsk/t1-legacy".into(),
+                        base: base.map(str::to_string),
+                        base_ref: None,
+                        base_commit: None,
+                        base_remote: None,
+                        herdr_workspace_id: "w9".into(),
+                        at: SystemTime::now(),
+                        cleaned: false,
+                    },
+                )
+                .expect("legacy dispatch");
+            let mut cleanup = FakeHost {
+                cleanup: Some(CleanupInspection {
+                    unreachable_remote: None,
+                    warning: None,
+                    base_available: true,
+                    worktree_exists: true,
+                    dirty: false,
+                    branch_merged: true,
+                    workspace_exists: true,
+                    target_matches: true,
+                }),
+                ..FakeHost::default()
+            };
+            let result =
+                clean_with_host(&mut legacy, legacy_id, true, &mut cleanup).expect("clean");
+            assert_eq!(cleanup.inspected_bases, vec![base.map(str::to_string)]);
+            assert_eq!(result.worktree, WorktreeCleanup::Removed, "base {base:?}");
+            assert_eq!(result.branch, BranchCleanup::Kept, "base {base:?}");
+            assert_eq!(
+                result.branch_reason,
+                Some(BranchRetentionReason::NoRecordedBase),
+                "base {base:?}"
+            );
+            assert_eq!(cleanup.deleted_branches, 0, "base {base:?}");
+        }
         fs::remove_dir_all(path).expect("cleanup");
     }
 

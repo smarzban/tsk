@@ -741,7 +741,7 @@ pub fn list_cached_branches(project: &Path) -> Result<Vec<String>, String> {
     Ok(branches.into_iter().collect())
 }
 
-/// Infer a legacy/direct remote name. Explicitly resolved upstreams keep actual provenance.
+/// The configured remote a remote-tracking name belongs to, shortest prefix first.
 pub fn remote_for_ref(project: &Path, reference: &str) -> Option<String> {
     let short = reference.strip_prefix("refs/remotes/").unwrap_or(reference);
     git_output(project, &["remote"])
@@ -828,34 +828,6 @@ pub fn resolve(project: &Path, explicit: Option<&str>) -> Result<ResolvedBase, S
         remote: selected_remote,
         warning,
     })
-}
-
-/// Resolve a recorded name without Git's tag/branch ambiguity rules. New ambiguous
-/// local names are recorded fully qualified; legacy names conservatively use branches.
-pub fn recorded_branch_ref(project: &Path, reference: &str) -> Result<String, String> {
-    let exact = if reference.starts_with("refs/heads/") || reference.starts_with("refs/remotes/") {
-        reference.to_string()
-    } else if remote_for_ref(project, reference).is_some() {
-        format!("refs/remotes/{reference}")
-    } else {
-        format!("refs/heads/{reference}")
-    };
-    if git_status(project, &["show-ref", "--verify", &exact]).is_ok_and(|status| status.success()) {
-        return Ok(exact);
-    }
-    // Pre-base v6 dispatches could record a detached HEAD commit. Accept only an
-    // exact object id here, never a revision expression or tag, and never on input.
-    if matches!(reference.len(), 40 | 64) && reference.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        let commit = git_output(
-            project,
-            &["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
-        )?;
-        if commit.eq_ignore_ascii_case(reference) {
-            return Ok(commit);
-        }
-    }
-    Err(format!("recorded base {reference} is unavailable"))
 }
 
 /// Template value: the short branch name, using the actual resolved remote.
