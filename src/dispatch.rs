@@ -524,9 +524,22 @@ pub trait DispatchHost {
     fn long_paths_enabled(&mut self, _project: &Path) -> Result<bool, String> {
         Ok(true)
     }
-    /// The pause before cleanup retries a removal that files still in use refused: a closed
-    /// workspace's agent may take a moment to exit.
+    /// The pause before cleanup checks a worktree again that files still in use blocked: a
+    /// closed workspace's agent may take a moment to exit.
     fn wait_before_retry(&mut self) {}
+    /// Close a Herdr workspace without touching its checkout (Windows cleanup closes before it
+    /// checks and removes).
+    fn close_herdr_workspace(&mut self, _workspace_id: &str) -> Result<(), String> {
+        Err("Herdr workspace close is not supported".into())
+    }
+    /// Why removing `worktree` now would fail partway on Windows, if it would.
+    fn removal_blocker(
+        &mut self,
+        _project: &Path,
+        _worktree: &Path,
+    ) -> Result<Option<RemovalBlock>, String> {
+        Ok(None)
+    }
     /// Whether Herdr currently detects an agent in `pane_id`.
     fn pane_has_agent(&mut self, _pane_id: &str) -> Result<bool, String> {
         Err("agent detection is not supported".into())
@@ -636,6 +649,60 @@ impl SystemDispatchHost {
             .unwrap_or_else(crate::store::default_state_dir)
             .join("launchers")
             .join(launcher_file_name(workspace_id))
+    }
+}
+
+/// Windows' MAX_PATH, in UTF-16 units, including the terminating null.
+const MAX_PATH: usize = 260;
+
+/// Whether any path under `root` is too long for Git to delete without `core.longpaths`.
+fn has_long_path(root: &Path) -> Result<bool, String> {
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let entries = std::fs::read_dir(&directory)
+            .map_err(|error| format!("could not read {}: {error}", directory.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let path = entry.path();
+            if path.to_string_lossy().encode_utf16().count() >= MAX_PATH {
+                return Ok(true);
+            }
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                pending.push(path);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Windows refuses to rename a directory while any process holds a handle inside it without
+/// delete sharing (an open file, a running program, a shell's working directory): the same
+/// handles that would stop a removal halfway. Rename the checkout aside and straight back.
+fn worktree_in_use(worktree: &Path) -> Result<bool, String> {
+    const ACCESS_DENIED: i32 = 5;
+    const SHARING_VIOLATION: i32 = 32;
+    let mut aside = worktree.as_os_str().to_owned();
+    aside.push(".tsk-cleanup-check");
+    let aside = PathBuf::from(aside);
+    match std::fs::rename(worktree, &aside) {
+        Ok(()) => std::fs::rename(&aside, worktree)
+            .map(|()| false)
+            .map_err(|error| {
+                format!(
+                    "could not move {} back from {}: {error}",
+                    worktree.display(),
+                    aside.display()
+                )
+            }),
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(ACCESS_DENIED | SHARING_VIOLATION)
+            ) =>
+        {
+            Ok(true)
+        }
+        Err(error) => Err(format!("could not check {}: {error}", worktree.display())),
     }
 }
 
@@ -921,6 +988,28 @@ impl DispatchHost for SystemDispatchHost {
 
     fn wait_before_retry(&mut self) {
         std::thread::sleep(REMOVAL_RETRY_DELAY);
+    }
+
+    fn close_herdr_workspace(&mut self, workspace_id: &str) -> Result<(), String> {
+        let output = Command::new("herdr")
+            .args(["workspace", "close", workspace_id])
+            .output()
+            .map_err(|error| format!("could not run herdr: {error}"))?;
+        herdr_json(output).map(|_| ())
+    }
+
+    fn removal_blocker(
+        &mut self,
+        project: &Path,
+        worktree: &Path,
+    ) -> Result<Option<RemovalBlock>, String> {
+        if !cfg!(windows) {
+            return Ok(None);
+        }
+        if !self.long_paths_enabled(project).unwrap_or(false) && has_long_path(worktree)? {
+            return Ok(Some(RemovalBlock::PathTooLong));
+        }
+        worktree_in_use(worktree).map(|in_use| in_use.then_some(RemovalBlock::FilesInUse))
     }
 
     fn begin_launches(&mut self, jobs: Vec<EligibleDispatch>) -> LaunchBatch {
@@ -1415,29 +1504,14 @@ pub fn clean_planned_with_host(
     let (worktree, deletion, workspace_removed) = if preview.inspection.worktree_exists {
         let workspace_removed = in_herdr && preview.inspection.workspace_exists;
         let worktree = Path::new(&preview.record.worktree);
-        let removed = if workspace_removed {
+        if host.platform() == HostPlatform::Windows {
+            remove_windows_worktree(host, &preview, workspace_removed)?;
+        } else if workspace_removed {
             host.remove_herdr_worktree(&preview.record.herdr_workspace_id)
+                .map_err(CleanupError::Herdr)?;
         } else {
             host.remove_git_worktree(&preview.project, worktree)
-        };
-        if let Err(error) = removed {
-            let platform = host.platform();
-            let retried = match removal_failure(&error, platform) {
-                // Closing the workspace ends its agent, which may still be exiting: one
-                // brief retry, then the files are reported in use and the record stays live.
-                RemovalFailure::FilesInUse => {
-                    host.wait_before_retry();
-                    host.remove_git_worktree(&preview.project, worktree)
-                }
-                _ => Err(error),
-            };
-            if let Err(error) = retried {
-                return Err(match removal_failure(&error, platform) {
-                    RemovalFailure::FilesInUse => CleanupError::FilesInUse,
-                    RemovalFailure::PathTooLong => CleanupError::PathTooLong,
-                    RemovalFailure::Other => CleanupError::Herdr(error),
-                });
-            }
+                .map_err(CleanupError::Herdr)?;
         }
         let deletion = if preview.record.base_ref.is_none() {
             BranchDeletion::Kept(BranchRetentionReason::NoRecordedBase)
@@ -1494,19 +1568,55 @@ pub fn clean_planned_with_host(
     })
 }
 
+/// Why Windows would refuse to delete a worktree right now. Git deletes a worktree file by
+/// file and unregisters it on the way, so a removal that fails midway leaves an unregistered,
+/// half-deleted directory no later cleanup may touch: these are checked before anything is
+/// deleted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RemovalFailure {
+pub enum RemovalBlock {
+    /// A process holds a file or directory in the worktree open.
     FilesInUse,
+    /// A path in the worktree exceeds MAX_PATH while Git's `core.longpaths` is off.
     PathTooLong,
-    Other,
 }
 
-/// Why Windows refused a worktree removal, read from git's or Herdr's error text. Elsewhere
-/// every failure is reported verbatim.
-fn removal_failure(error: &str, platform: HostPlatform) -> RemovalFailure {
-    if platform != HostPlatform::Windows {
-        return RemovalFailure::Other;
+/// Windows cleanup: close the workspace first (that ends its agent), make sure nothing still
+/// holds the checkout (one brief retry while the agent exits), then let git remove it.
+fn remove_windows_worktree(
+    host: &mut impl DispatchHost,
+    preview: &CleanupPreview,
+    close_workspace: bool,
+) -> Result<(), CleanupError> {
+    let (project, worktree) = (&preview.project, Path::new(&preview.record.worktree));
+    if close_workspace {
+        host.close_herdr_workspace(&preview.record.herdr_workspace_id)
+            .map_err(CleanupError::Herdr)?;
     }
+    let mut blocked = host
+        .removal_blocker(project, worktree)
+        .map_err(CleanupError::Herdr)?;
+    if blocked == Some(RemovalBlock::FilesInUse) {
+        host.wait_before_retry();
+        blocked = host
+            .removal_blocker(project, worktree)
+            .map_err(CleanupError::Herdr)?;
+    }
+    match blocked {
+        Some(RemovalBlock::FilesInUse) => return Err(CleanupError::FilesInUse),
+        Some(RemovalBlock::PathTooLong) => return Err(CleanupError::PathTooLong),
+        None => {}
+    }
+    // Something could still open a file between the check and the removal: name the cause.
+    host.remove_git_worktree(project, worktree)
+        .map_err(|error| match removal_failure(&error) {
+            Some(RemovalBlock::FilesInUse) => CleanupError::FilesInUse,
+            Some(RemovalBlock::PathTooLong) => CleanupError::PathTooLong,
+            None => CleanupError::Herdr(error),
+        })
+}
+
+/// Why git on Windows failed to remove a worktree, read from its error text.
+fn removal_failure(error: &str) -> Option<RemovalBlock> {
     let error = error.to_ascii_lowercase();
     let any = |needles: &[&str]| needles.iter().any(|needle| error.contains(needle));
     if any(&[
@@ -1516,21 +1626,21 @@ fn removal_failure(error: &str, platform: HostPlatform) -> RemovalFailure {
         "filename or extension is too long",
         "os error 206",
     ]) {
-        RemovalFailure::PathTooLong
+        Some(RemovalBlock::PathTooLong)
     } else if any(&[
+        // Git for Windows reports a sharing violation while deleting as EINVAL or EACCES.
+        "failed to delete",
         "being used by another process",
         "sharing violation",
         "os error 32",
         "permission denied",
         "access is denied",
-        "os error 5)",
         "directory not empty",
-        "directory is not empty",
         "resource busy",
     ]) {
-        RemovalFailure::FilesInUse
+        Some(RemovalBlock::FilesInUse)
     } else {
-        RemovalFailure::Other
+        None
     }
 }
 
@@ -2422,6 +2532,10 @@ mod tests {
         herdr_remove_errors: Vec<String>,
         git_remove_errors: Vec<String>,
         retry_waits: usize,
+        /// What the next Windows removal checks find, oldest first; then nothing.
+        blockers: Vec<Option<RemovalBlock>>,
+        blocker_checks: usize,
+        closed: usize,
     }
 
     impl DispatchHost for FakeHost {
@@ -2515,6 +2629,19 @@ mod tests {
 
         fn wait_before_retry(&mut self) {
             self.retry_waits += 1;
+        }
+
+        fn close_herdr_workspace(&mut self, _: &str) -> Result<(), String> {
+            self.closed += 1;
+            Ok(())
+        }
+
+        fn removal_blocker(&mut self, _: &Path, _: &Path) -> Result<Option<RemovalBlock>, String> {
+            self.blocker_checks += 1;
+            Ok(match self.blockers.is_empty() {
+                true => None,
+                false => self.blockers.remove(0),
+            })
         }
 
         fn delete_branch(&mut self, _: &Path, _: &str) -> Result<(), String> {
@@ -2903,11 +3030,13 @@ mod tests {
         }
     }
 
-    const SHARING_VIOLATION: &str = "herdr: failed to remove worktree: The process cannot access \
-        the file because it is being used by another process. (os error 32)";
+    /// Git for Windows' text when another process holds a file it deletes (seen live).
+    const IN_USE: &str =
+        "error: failed to delete 'C:/Users/DevBoxWin/.herdr/worktrees/app/tsk-t1-x': \
+        Invalid argument";
 
     #[test]
-    fn windows_cleanup_retries_files_in_use_once_then_keeps_the_record_live() {
+    fn windows_cleanup_closes_the_workspace_and_keeps_everything_while_files_stay_in_use() {
         let (path, profiles) = profiles();
         let (mut state, id) = task();
         run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
@@ -2916,8 +3045,10 @@ mod tests {
 
         let mut host = FakeHost {
             cleanup: Some(clean_inspection()),
-            herdr_remove_errors: vec![SHARING_VIOLATION.into()],
-            git_remove_errors: vec!["error: failed to delete 'C:/w': Permission denied".into()],
+            blockers: vec![
+                Some(RemovalBlock::FilesInUse),
+                Some(RemovalBlock::FilesInUse),
+            ],
             ..windows_host()
         };
         let error = clean_with_host(&mut state, id, true, &mut host).expect_err("kept");
@@ -2927,13 +3058,16 @@ mod tests {
             error.to_string(),
             "kept: files in use (close what is running in the worktree and retry)"
         );
+        assert_eq!(host.closed, 1, "closing the workspace ends its agent first");
         assert_eq!(
-            (host.removed_herdr, host.retry_waits, host.removed_git),
-            (1, 1, 1)
+            (host.blocker_checks, host.retry_waits),
+            (2, 1),
+            "one brief retry"
         );
         assert_eq!(
-            host.deleted_branches, 0,
-            "the branch outlives a kept worktree"
+            (host.removed_herdr, host.removed_git, host.deleted_branches),
+            (0, 0, 0),
+            "nothing is deleted while files are in use"
         );
         assert!(host.removed_launchers.is_empty());
         assert_eq!(
@@ -2942,53 +3076,67 @@ mod tests {
             "the record stays live, never marked cleaned"
         );
 
-        // Once whatever held the files exits, the same cleanup completes.
+        // Once whatever held the files exits, the same cleanup completes; the workspace is
+        // already closed.
         let mut host = FakeHost {
-            cleanup: Some(clean_inspection()),
+            cleanup: Some(CleanupInspection {
+                workspace_exists: false,
+                ..clean_inspection()
+            }),
             ..windows_host()
         };
         let result = clean_with_host(&mut state, id, true, &mut host).expect("cleaned");
         assert_eq!(result.worktree, WorktreeCleanup::Removed);
+        assert_eq!(
+            (host.closed, host.removed_git, host.removed_herdr),
+            (0, 1, 0)
+        );
         assert_eq!(host.removed_launchers, vec!["w9".to_string()]);
         assert!(state
             .get(id)
             .and_then(|task| task.dispatch.as_ref())
-            .is_some_and(|d| d.cleaned));
+            .is_some_and(|dispatch| dispatch.cleaned));
         fs::remove_dir_all(path).expect("cleanup");
     }
 
     #[test]
-    fn windows_cleanup_succeeds_when_the_retry_finds_the_files_released() {
+    fn windows_cleanup_removes_once_the_closed_agent_has_exited() {
         let (path, profiles) = profiles();
         let (mut state, id) = task();
         run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
             .expect("dispatch");
         let mut host = FakeHost {
             cleanup: Some(clean_inspection()),
-            herdr_remove_errors: vec![SHARING_VIOLATION.into()],
+            blockers: vec![Some(RemovalBlock::FilesInUse), None],
             ..windows_host()
         };
         let result = clean_with_host(&mut state, id, true, &mut host).expect("cleaned");
         assert_eq!(result.worktree, WorktreeCleanup::Removed);
         assert_eq!(result.branch, BranchCleanup::Removed);
+        assert!(result.workspace_removed);
         assert_eq!(
-            (host.removed_herdr, host.retry_waits, host.removed_git),
-            (1, 1, 1)
+            (
+                host.closed,
+                host.retry_waits,
+                host.removed_git,
+                host.removed_herdr
+            ),
+            (1, 1, 1, 0)
         );
         fs::remove_dir_all(path).expect("cleanup");
     }
 
     #[test]
-    fn windows_cleanup_names_a_long_path_failure_and_unix_reports_verbatim() {
+    fn windows_cleanup_names_long_paths_and_a_removal_that_lost_a_race() {
         let (path, profiles) = profiles();
-        let long = "error: cannot remove 'C:/w/node_modules/a/b': Filename too long";
         let (mut state, id) = task();
         run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
             .expect("dispatch");
-        let before = state.clone();
+        let before = serde_json::to_value(&state).expect("before");
+
         let mut host = FakeHost {
             cleanup: Some(clean_inspection()),
-            herdr_remove_errors: vec![long.into()],
+            blockers: vec![Some(RemovalBlock::PathTooLong)],
             ..windows_host()
         };
         let error = clean_with_host(&mut state, id, true, &mut host).expect_err("kept");
@@ -3002,59 +3150,93 @@ mod tests {
             host.retry_waits, 0,
             "a long path does not go away by waiting"
         );
-        assert_eq!(
-            serde_json::to_value(&state).expect("state"),
-            serde_json::to_value(&before).expect("before")
-        );
+        assert_eq!(host.removed_git, 0);
 
-        // Elsewhere the same texts are ordinary failures, reported as they came.
-        for text in [long, SHARING_VIOLATION] {
-            let mut host = FakeHost {
-                git: true,
-                cleanup: Some(clean_inspection()),
-                herdr_remove_errors: vec![text.into()],
-                ..FakeHost::default()
-            };
-            let error = clean_with_host(&mut state, id, true, &mut host).expect_err("failed");
-            assert_eq!(error, CleanupError::Herdr(text.into()));
-            assert_eq!(host.retry_waits, 0);
-        }
+        // A file opened between the check and git's removal still reads as files in use.
+        let mut host = FakeHost {
+            cleanup: Some(clean_inspection()),
+            git_remove_errors: vec![IN_USE.into()],
+            ..windows_host()
+        };
+        let error = clean_with_host(&mut state, id, true, &mut host).expect_err("kept");
+        assert_eq!(error, CleanupError::FilesInUse);
+        assert_eq!(serde_json::to_value(&state).expect("state"), before);
+
+        // Elsewhere Herdr removes the checkout itself and its failures pass through verbatim.
+        let mut host = FakeHost {
+            git: true,
+            cleanup: Some(clean_inspection()),
+            herdr_remove_errors: vec![IN_USE.into()],
+            ..FakeHost::default()
+        };
+        let error = clean_with_host(&mut state, id, true, &mut host).expect_err("failed");
+        assert_eq!(error, CleanupError::Herdr(IN_USE.into()));
+        assert_eq!((host.closed, host.blocker_checks), (0, 0));
         fs::remove_dir_all(path).expect("cleanup");
     }
 
     #[test]
-    fn removal_failures_classify_only_on_windows() {
+    fn git_removal_failures_name_their_windows_cause() {
         for (text, expected) in [
-            (SHARING_VIOLATION, RemovalFailure::FilesInUse),
+            (IN_USE, Some(RemovalBlock::FilesInUse)),
             (
                 "error: failed to delete 'C:/w': Permission denied",
-                RemovalFailure::FilesInUse,
+                Some(RemovalBlock::FilesInUse),
             ),
-            ("Access is denied. (os error 5)", RemovalFailure::FilesInUse),
             (
-                "error: failed to delete 'C:/w': Directory not empty",
-                RemovalFailure::FilesInUse,
+                "The process cannot access the file because it is being used by another \
+                 process. (os error 32)",
+                Some(RemovalBlock::FilesInUse),
             ),
             (
                 "fatal: cannot remove: Filename too long",
-                RemovalFailure::PathTooLong,
+                Some(RemovalBlock::PathTooLong),
             ),
-            (
-                "The filename or extension is too long. (os error 206)",
-                RemovalFailure::PathTooLong,
-            ),
-            ("fatal: 'C:/w' is not a working tree", RemovalFailure::Other),
+            ("fatal: 'C:/w' is not a working tree", None),
         ] {
-            assert_eq!(
-                removal_failure(text, HostPlatform::Windows),
-                expected,
-                "{text}"
-            );
-            assert_eq!(
-                removal_failure(text, HostPlatform::Unix),
-                RemovalFailure::Other
-            );
+            assert_eq!(removal_failure(text), expected, "{text}");
         }
+    }
+
+    /// The real checks against a real directory: free, then held open by this process.
+    #[cfg(windows)]
+    #[test]
+    fn a_held_file_blocks_the_windows_removal_check_and_a_free_tree_passes() {
+        let root = std::env::temp_dir().join(format!(
+            "tsk-removal-check-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let worktree = root.join("tsk-t1-x");
+        fs::create_dir_all(worktree.join("deep")).expect("mkdir");
+        fs::write(worktree.join("deep").join("file.txt"), "x").expect("file");
+        assert_eq!(worktree_in_use(&worktree), Ok(false));
+        assert!(
+            worktree.join("deep").join("file.txt").exists(),
+            "moved back"
+        );
+        // Read sharing only, as a running program or a writer holds its files; Rust's default
+        // shares delete too, which Windows lets a rename through.
+        let held = {
+            use std::os::windows::fs::OpenOptionsExt;
+            fs::OpenOptions::new()
+                .read(true)
+                .share_mode(1) // FILE_SHARE_READ
+                .open(worktree.join("deep").join("file.txt"))
+                .expect("hold")
+        };
+        assert_eq!(worktree_in_use(&worktree), Ok(true));
+        drop(held);
+        assert_eq!(worktree_in_use(&worktree), Ok(false));
+
+        assert_eq!(has_long_path(&worktree), Ok(false));
+        let mut deep = worktree.clone();
+        while deep.to_string_lossy().encode_utf16().count() < MAX_PATH {
+            deep.push("a-directory-name-of-some-length");
+        }
+        fs::create_dir_all(&deep).expect("long path");
+        assert_eq!(has_long_path(&worktree), Ok(true));
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]

@@ -106,8 +106,7 @@ Herdr on Windows is a preview, and so is dispatch there. Instead of a `$SHELL -l
 
 - `command` may name an `.exe` (`claude`) or the `.ps1` shim npm installs (`pi`, `codex`). A `.cmd` or `.bat` wrapper runs through `cmd.exe`, which can change `%` and quotes in the prompt.
 - Windows refuses paths longer than 260 characters unless Git's `core.longpaths` is on. When it is off for the repository, dispatch still launches and says once: "core.longpaths is off, so deep paths in the worktree may fail; enable it with git config --global core.longpaths true".
-- Windows cannot delete files a running program holds open. Cleanup closes the workspace (which ends its agent) and retries once; if files are still in use it keeps the worktree, branch, and dispatch record and says "kept: files in use (close what is running in the worktree and retry)". A path too long to delete says "kept: path too long (run git config --global core.longpaths true and retry)".
-- AGENT_NAMING_PLACEHOLDER
+- Windows cannot delete files a running program holds open, and a removal that stops halfway would strand the worktree. Cleanup closes the workspace first (which ends its agent), checks that nothing still holds the worktree, and checks again once after a moment. If something does, it deletes nothing, keeps the dispatch record, and says "kept: files in use (close what is running in the worktree and retry)". With `core.longpaths` off and a path in the worktree over the limit, it says "kept: path too long (run git config --global core.longpaths true and retry)".
 
 ### Base branch
 

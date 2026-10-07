@@ -253,7 +253,7 @@ Removes a dispatched task's worktree after review, without changing its status. 
 - The branch is deleted only when it is merged into the recorded base. tsk fetches the base first (unless inside the [fetch window](/docs/storage/#fetch-window)), so a merge on GitHub counts without a local pull.
 - The branch is kept, with a reason, when it is not merged (squash merges do not count: "not merged into origin/main; squash-merged? delete by hand"), when the fetch fails and the merge cannot be confirmed (`could not reach <remote> to confirm the merge`), when the base no longer exists, or when the branch is checked out elsewhere or changes during cleanup.
 - A worktree that is already gone counts as cleaned.
-- On Windows, files a running program holds open block removal. tsk retries once after closing the workspace, then refuses with `files-in-use` and keeps everything, dispatch record included; a path over Windows' length limit refuses with `path-too-long`. Retry after closing what runs there, or after `git config --global core.longpaths true`.
+- On Windows, tsk closes the workspace first and checks that no running program holds files in the worktree, once more after a moment. If one does, it refuses with `files-in-use` before deleting anything and keeps the dispatch record. With `core.longpaths` off, a path over Windows' length limit refuses with `path-too-long`. Retry after closing what runs there, or after `git config --global core.longpaths true`.
 
 The task keeps its dispatch record, marked `cleaned`. Human output says whether the worktree, branch, and workspace were removed or kept. `--json` returns the same outcomes, with `branch.reason` for a kept branch (`null` when deleted) and `warning` naming a failed fetch (`null` otherwise).
 
