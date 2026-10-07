@@ -656,38 +656,27 @@ fn cleanup_restores_a_clean_checkout_left_aside_and_keeps_its_unmerged_branch() 
     fs::remove_dir_all(&repo.root).unwrap();
 }
 
+/// The removal mark of the dispatch `CleanupRepo` records (workspace `w1`).
+fn removal_mark(repo: &CleanupRepo) -> PathBuf {
+    repo.root
+        .join("state")
+        .join("cleanups")
+        .join("dispatch-w1.removing")
+}
+
 /// A Windows removal git never finished (a board quit ended tsk, or git stopped midway) left
-/// tracked files deleted in a still-registered worktree. The next cleanup reports a partial
-/// removal with how to finish, never "uncommitted changes", and converges once it is finished.
+/// committed files deleted in a still-registered worktree. The next cleanup reports a partial
+/// removal, never "uncommitted changes", and its non-destructive advice converges.
 #[test]
 fn an_unfinished_removal_reads_as_partly_removed_not_as_uncommitted_work() {
     use tsk_tui::dispatch::{CleanupError, DispatchHost, SystemDispatchHost};
 
     let repo = CleanupRepo::new();
-    fs::write(repo.worktree.join("tracked.txt"), "x").unwrap();
-    let in_worktree = |args: &[&str]| {
-        let output = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo.worktree)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{args:?}: {output:?}");
-    };
-    in_worktree(&["add", "tracked.txt"]);
-    in_worktree(&[
-        "-c",
-        "user.email=t@t",
-        "-c",
-        "user.name=t",
-        "commit",
-        "-qm",
-        "work",
-    ]);
+    repo.commit_files(&[("tracked.txt", "x")]);
     let (mut state, id) = repo.state("base", None);
     let mut host = SystemDispatchHost::in_state_dir(repo.root.join("state"));
 
-    // Without a removal under way, a deleted tracked file is uncommitted work.
+    // Without a started removal, a deleted tracked file is uncommitted work.
     fs::remove_file(repo.worktree.join("tracked.txt")).unwrap();
     assert_eq!(
         tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut host),
@@ -699,30 +688,209 @@ fn an_unfinished_removal_reads_as_partly_removed_not_as_uncommitted_work() {
         .expect_err("partly removed");
     assert_eq!(refused.code(), "partly-removed");
     assert!(
-        refused
-            .to_string()
-            .contains("run git worktree remove --force"),
+        refused.to_string().contains("restore . and clean again"),
         "{refused}"
     );
     assert!(!state.get(id).unwrap().dispatch.as_ref().unwrap().cleaned);
 
-    // Finishing by hand as told lets the next cleanup converge.
-    repo.git(&[
-        "worktree",
-        "remove",
-        "--force",
-        repo.worktree.to_str().unwrap(),
-    ]);
+    // Restoring as told lets the next cleanup run normally and converge.
+    repo.in_worktree(&["restore", "."]);
     let result =
         tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut host).expect("cleaned");
-    assert_eq!(result.worktree, WorktreeCleanup::Missing);
+    assert_eq!(result.worktree, WorktreeCleanup::Removed);
     assert!(state.get(id).unwrap().dispatch.as_ref().unwrap().cleaned);
-    assert!(!repo
-        .root
-        .join("state")
-        .join("cleanups")
-        .join("dispatch-w1.removing")
-        .exists());
+    assert!(!removal_mark(&repo).exists());
+    fs::remove_dir_all(&repo.root).unwrap();
+}
+
+/// With a started removal marked, any change git's removal cannot make (it deletes files
+/// and never touches the index) is uncommitted work: refused as dirty, nothing deleted, the
+/// dispatch live, and the mark cleared so it never vouches for later changes.
+#[test]
+fn a_marked_removal_never_reads_real_work_as_partly_removed() {
+    use tsk_tui::dispatch::{CleanupError, DispatchHost, SystemDispatchHost};
+
+    type Change = fn(&CleanupRepo);
+    /// Each file afterwards: its content, or `None` when it is gone.
+    type After = &'static [(&'static str, Option<&'static str>)];
+    let cases: [(&str, Change, After); 4] = [
+        (
+            "modified",
+            |repo| fs::write(repo.worktree.join("a.txt"), "edited").unwrap(),
+            &[("a.txt", Some("edited")), ("b.txt", Some("b"))],
+        ),
+        (
+            "untracked",
+            |repo| fs::write(repo.worktree.join("new.txt"), "new").unwrap(),
+            &[("new.txt", Some("new")), ("a.txt", Some("a"))],
+        ),
+        (
+            "staged deletion",
+            |repo| repo.in_worktree(&["rm", "-q", "a.txt"]),
+            &[("a.txt", None), ("b.txt", Some("b"))],
+        ),
+        (
+            "deletion and edit",
+            |repo| {
+                fs::remove_file(repo.worktree.join("a.txt")).unwrap();
+                fs::write(repo.worktree.join("b.txt"), "edited").unwrap();
+            },
+            &[("a.txt", None), ("b.txt", Some("edited"))],
+        ),
+    ];
+    for (label, change, after) in cases {
+        let repo = CleanupRepo::new();
+        repo.commit_files(&[("a.txt", "a"), ("b.txt", "b")]);
+        let (mut state, id) = repo.state("base", None);
+        let mut host = SystemDispatchHost::in_state_dir(repo.root.join("state"));
+        host.mark_removal("w1", true);
+        change(&repo);
+
+        assert_eq!(
+            tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut host),
+            Err(CleanupError::DirtyWorktree),
+            "{label}"
+        );
+        for (file, content) in after {
+            let found = fs::read_to_string(repo.worktree.join(file)).ok();
+            assert_eq!(found.as_deref(), *content, "{label}: {file}");
+        }
+        assert!(
+            !state.get(id).unwrap().dispatch.as_ref().unwrap().cleaned,
+            "{label}"
+        );
+        assert!(!removal_mark(&repo).exists(), "{label}: mark cleared");
+        fs::remove_dir_all(&repo.root).unwrap();
+    }
+}
+
+/// A mark left by a run that ended before git started (an older build, or a crash) proves
+/// nothing: a deletion made afterwards is the user's work.
+#[test]
+fn a_stale_removal_mark_never_vouches_for_a_later_deletion() {
+    use tsk_tui::dispatch::{CleanupError, SystemDispatchHost};
+
+    let repo = CleanupRepo::new();
+    repo.commit_files(&[("tracked.txt", "x")]);
+    let (mut state, id) = repo.state("base", None);
+    fs::create_dir_all(removal_mark(&repo).parent().unwrap()).unwrap();
+    fs::write(removal_mark(&repo), "").unwrap();
+    fs::remove_file(repo.worktree.join("tracked.txt")).unwrap();
+
+    let mut host = SystemDispatchHost::in_state_dir(repo.root.join("state"));
+    assert_eq!(
+        tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut host),
+        Err(CleanupError::DirtyWorktree)
+    );
+    assert!(!state.get(id).unwrap().dispatch.as_ref().unwrap().cleaned);
+    assert!(!removal_mark(&repo).exists(), "the stale mark is cleared");
+    fs::remove_dir_all(&repo.root).unwrap();
+}
+
+/// The real host behind a Windows cleanup whose agent writes one more file as its workspace
+/// closes, after the inspection found the worktree clean.
+struct AgentWritesOnClose {
+    inner: tsk_tui::dispatch::SystemDispatchHost,
+    worktree: PathBuf,
+}
+
+impl DispatchHost for AgentWritesOnClose {
+    fn is_git_repo(&mut self, project: &Path) -> Result<bool, String> {
+        self.inner.is_git_repo(project)
+    }
+    fn create_worktree(
+        &mut self,
+        project: &Path,
+        branch: &str,
+        base: Option<&str>,
+        label: &str,
+    ) -> Result<CreatedWorktree, String> {
+        self.inner.create_worktree(project, branch, base, label)
+    }
+    fn root_pane(&mut self, workspace_id: &str) -> Result<String, String> {
+        self.inner.root_pane(workspace_id)
+    }
+    fn run_in_pane(&mut self, pane_id: &str, command: &str) -> Result<(), String> {
+        self.inner.run_in_pane(pane_id, command)
+    }
+    fn platform(&self) -> tsk_tui::dispatch::HostPlatform {
+        tsk_tui::dispatch::HostPlatform::Windows
+    }
+    fn inspect_cleanup(
+        &mut self,
+        project: &Path,
+        dispatch: &tsk_tui::domain::Dispatch,
+        _: bool,
+    ) -> Result<CleanupInspection, String> {
+        let inspection = self.inner.inspect_cleanup(project, dispatch, false)?;
+        Ok(CleanupInspection {
+            workspace_exists: true,
+            ..inspection
+        })
+    }
+    fn close_herdr_workspace(&mut self, _: &str) -> Result<(), String> {
+        fs::write(self.worktree.join("agent-notes.txt"), "written on exit").unwrap();
+        Ok(())
+    }
+    fn worktree_dirty(&mut self, worktree: &Path) -> Result<bool, String> {
+        self.inner.worktree_dirty(worktree)
+    }
+    fn remove_git_worktree(&mut self, project: &Path, worktree: &Path) -> Result<(), String> {
+        self.inner.remove_git_worktree(project, worktree)
+    }
+    fn remove_marked_worktree(
+        &mut self,
+        project: &Path,
+        worktree: &Path,
+        workspace_id: &str,
+    ) -> Result<(), String> {
+        self.inner
+            .remove_marked_worktree(project, worktree, workspace_id)
+    }
+    fn mark_removal(&mut self, workspace_id: &str, started: bool) {
+        self.inner.mark_removal(workspace_id, started)
+    }
+    fn removal_state(
+        &mut self,
+        project: &Path,
+        worktree: &Path,
+    ) -> Result<tsk_tui::dispatch::RemovalState, String> {
+        self.inner.removal_state(project, worktree)
+    }
+    fn interrupted_removal(
+        &mut self,
+        project: &Path,
+        worktree: &Path,
+        workspace_id: &str,
+    ) -> Result<Option<tsk_tui::dispatch::RemovalState>, String> {
+        self.inner
+            .interrupted_removal(project, worktree, workspace_id)
+    }
+}
+
+#[test]
+fn work_written_after_the_inspection_is_refused_as_uncommitted_and_kept() {
+    let repo = CleanupRepo::new();
+    repo.commit_files(&[("tracked.txt", "x")]);
+    let (mut state, id) = repo.state("base", None);
+    let mut host = AgentWritesOnClose {
+        inner: tsk_tui::dispatch::SystemDispatchHost::in_state_dir(repo.root.join("state")),
+        worktree: repo.worktree.clone(),
+    };
+    assert_eq!(
+        tsk_tui::dispatch::clean_with_host(&mut state, id, true, &mut host),
+        Err(tsk_tui::dispatch::CleanupError::DirtyWorktree)
+    );
+    assert_eq!(
+        fs::read_to_string(repo.worktree.join("agent-notes.txt")).unwrap(),
+        "written on exit"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.worktree.join("tracked.txt")).unwrap(),
+        "x"
+    );
+    assert!(!state.get(id).unwrap().dispatch.as_ref().unwrap().cleaned);
+    assert!(!removal_mark(&repo).exists());
     fs::remove_dir_all(&repo.root).unwrap();
 }
 
@@ -853,6 +1021,33 @@ impl CleanupRepo {
             .output()
             .unwrap();
         assert!(output.status.success());
+    }
+
+    fn in_worktree(&self, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&self.worktree)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+    }
+
+    /// Commit `files` (name, content) on the task branch.
+    fn commit_files(&self, files: &[(&str, &str)]) {
+        for (name, content) in files {
+            fs::write(self.worktree.join(name), content).unwrap();
+            self.in_worktree(&["add", name]);
+        }
+        self.in_worktree(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "work",
+        ]);
     }
 
     fn clean(&self, base: &str, remote: Option<&str>) -> tsk_tui::dispatch::CleanupResult {

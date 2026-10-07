@@ -49,7 +49,7 @@ A profile with its own `prompt` replaces the default entirely. The rendered prom
 
 A malformed `config.toml` does not block the board or CLI work that does not assign a task. The board opens without profiles and shows the error on its status row. `tsk add` and `tsk edit` read the file only when an assignee is supplied; a configuration error then exits 2 without saving.
 
-The command and prompt templates support `{number}`, `{title}`, `{notes}`, `{steps}`, `{worktree}`, `{branch}`, and `{base}`. `{branch}` is the dispatched task branch; `{base}` is the short base branch name, for example `dispatch` for `origin/dispatch`, so a prompt can say "open the PR into {base}". tsk replaces only these placeholders. It quotes every argument and renders one command line as `$SHELL -lc '…'`; it never chains commands. On Windows it writes the same argv and `env` into a one-time PowerShell launcher under `launchers\` in this directory instead ([preview](/docs/board/#dispatch-on-windows-preview)). Write Windows paths as TOML literal strings so backslashes stay as typed, for example `command = ['C:\Users\you\.local\bin\claude.exe']`. Profiles are read-only in tsk, edit the file to change them.
+The command and prompt templates support `{number}`, `{title}`, `{notes}`, `{steps}`, `{worktree}`, `{branch}`, and `{base}`. `{branch}` is the dispatched task branch; `{base}` is the short base branch name, for example `dispatch` for `origin/dispatch`, so a prompt can say "open the PR into {base}". tsk replaces only these placeholders. It quotes every argument and renders one command line as `$SHELL -lc '…'`; it never chains commands. On Windows it launches the same argv and `env` through PowerShell instead ([preview](/docs/board/#dispatch-on-windows-preview)). Write Windows paths as TOML literal strings so backslashes stay as typed, for example `command = ['C:\Users\you\.local\bin\claude.exe']`. Profiles are read-only in tsk, edit the file to change them.
 
 ## Backups
 
@@ -60,8 +60,7 @@ The command and prompt templates support `{number}`, `{title}`, `{notes}`, `{ste
 | `tsk.json.v<N>` | Backup made when migrating an older store format, such as `tsk.json.v5` for the v5 → v6 migration |
 | `config.toml` | Settings, including agent launch profiles, seeded with commented examples on the first full board open |
 | `delivery.json` | Which starter tasks this install has received or dismissed, and the newest release note it has seen |
-| `launchers\` | Windows only: one-time PowerShell dispatch launchers; each deletes itself when it starts |
-| `cleanups\` | Windows only: a mark per worktree removal under way, so an interrupted one reads as partly removed |
+| `launchers\`, `cleanups\` | Windows only: dispatch launchers and cleanup progress |
 
 An older binary refuses a newer or unversioned store instead of rewriting it. Use a compatible tsk version to open it. On first save, v5 stores migrate to v6, which adds task assignees, dispatch base branches, and dispatch records; the original document is saved as `tsk.json.v5`. Earlier stores still run through each migration in order, including v5 batch undo and the v3 to v4 move from ready to open.
 

@@ -317,7 +317,7 @@ fn run_git(
     timeout: std::time::Duration,
     capture: bool,
 ) -> Result<std::process::Output, String> {
-    run_git_env(project, args, &[], timeout, capture, false)
+    run_git_env(project, args, &[], timeout, capture, None)
 }
 
 fn run_git_env(
@@ -326,7 +326,8 @@ fn run_git_env(
     envs: &[(&str, &str)],
     timeout: std::time::Duration,
     capture: bool,
-    outlive_tsk: bool,
+    // Some: the Git tree outlives tsk, and the callback runs once it has started.
+    outlive_tsk: Option<&mut dyn FnMut()>,
 ) -> Result<std::process::Output, String> {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
@@ -363,7 +364,10 @@ fn run_git_env(
     let mut child = command
         .spawn()
         .map_err(|error| format!("could not run git: {error}"))?;
-    let tree = ProcessTree::contain(&child, outlive_tsk);
+    let tree = ProcessTree::contain(&child, outlive_tsk.is_some());
+    if let Some(started) = outlive_tsk {
+        started();
+    }
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -411,13 +415,15 @@ pub fn git_process_output_timeout(
 
 /// Captured Git work that must never stop halfway because tsk exits: it still stops at
 /// `timeout` while tsk waits, but if tsk exits first (a board quit outliving its bound) the
-/// Git tree finishes on its own instead of dying with tsk's job handle.
+/// Git tree finishes on its own instead of dying with tsk's job handle. `started` runs once
+/// Git is running.
 pub fn git_process_output_outliving_tsk(
     project: &Path,
     args: &[&str],
     timeout: std::time::Duration,
+    started: &mut dyn FnMut(),
 ) -> Result<std::process::Output, String> {
-    run_git_env(project, args, &[], timeout, true, true)
+    run_git_env(project, args, &[], timeout, true, Some(started))
 }
 
 /// Bounded, noninteractive local query with deadlock-free output capture.
@@ -479,7 +485,7 @@ fn bounded_git(project: &Path, args: &[&str]) -> Result<(), String> {
 
 fn bounded_git_env(project: &Path, args: &[&str], envs: &[(&str, &str)]) -> Result<(), String> {
     let output =
-        run_git_env(project, args, envs, fetch_deadline(), false, false).map_err(|reason| {
+        run_git_env(project, args, envs, fetch_deadline(), false, None).map_err(|reason| {
             if reason == "git timed out" {
                 "fetch timed out".into()
             } else {
@@ -995,13 +1001,14 @@ mod tests {
             return;
         };
         let outlive = std::env::var("TSK_OUTLIVE").as_deref() == Ok("1");
+        let mut started = || {};
         let _ = run_git_env(
             Path::new(&dir),
             &["-c", &alias, "hang"],
             &[],
             std::time::Duration::from_secs(120),
             true,
-            outlive,
+            outlive.then_some(&mut started as &mut dyn FnMut()),
         );
     }
 

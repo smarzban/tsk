@@ -579,6 +579,20 @@ pub trait DispatchHost {
     ) -> Result<Option<RemovalState>, String> {
         Ok(None)
     }
+    /// Whether the worktree holds uncommitted work, untracked files included.
+    fn worktree_dirty(&mut self, _worktree: &Path) -> Result<bool, String> {
+        Ok(false)
+    }
+    /// Remove the worktree with git, marking the removal as started for the next run.
+    fn remove_marked_worktree(
+        &mut self,
+        project: &Path,
+        worktree: &Path,
+        workspace_id: &str,
+    ) -> Result<(), String> {
+        self.mark_removal(workspace_id, true);
+        self.remove_git_worktree(project, worktree)
+    }
     /// What a failed Windows removal left behind.
     fn removal_state(&mut self, _project: &Path, _worktree: &Path) -> Result<RemovalState, String> {
         Ok(RemovalState::Intact)
@@ -953,34 +967,7 @@ impl DispatchHost for SystemDispatchHost {
     }
 
     fn remove_git_worktree(&mut self, project: &Path, worktree: &Path) -> Result<(), String> {
-        let worktree = worktree
-            .to_str()
-            .ok_or_else(|| "worktree path is not UTF-8".to_string())?;
-        let deadline = if cfg!(windows) {
-            WINDOWS_REMOVAL_TIMEOUT
-        } else {
-            Duration::from_secs(5)
-        };
-        // A removal stopped midway strands a half-deleted checkout, so on Windows its Git
-        // finishes even when tsk exits first (a board quit outlives its bound).
-        let output = if cfg!(windows) {
-            crate::git_base::git_process_output_outliving_tsk(
-                project,
-                &["worktree", "remove", worktree],
-                deadline,
-            )
-        } else {
-            crate::git_base::git_process_output_timeout(
-                project,
-                &["worktree", "remove", worktree],
-                deadline,
-            )
-        }?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(command_failure("git worktree remove", &output))
-        }
+        system_remove_git_worktree(project, worktree, None)
     }
 
     fn delete_merged_branch(
@@ -1163,7 +1150,7 @@ impl DispatchHost for SystemDispatchHost {
             if let Some(directory) = mark.parent() {
                 let _ = std::fs::create_dir_all(directory);
             }
-            let _ = std::fs::write(&mark, b"");
+            let _ = std::fs::write(&mark, REMOVAL_STARTED);
         } else {
             let _ = std::fs::remove_file(mark);
         }
@@ -1175,57 +1162,58 @@ impl DispatchHost for SystemDispatchHost {
         worktree: &Path,
         workspace_id: &str,
     ) -> Result<Option<RemovalState>, String> {
-        if !self.removal_mark(workspace_id)?.exists() {
-            return Ok(None);
+        let mark = self.removal_mark(workspace_id)?;
+        match std::fs::read(&mark) {
+            Ok(content) if content == REMOVAL_STARTED => {}
+            // Only a mark git's start wrote is evidence; any other is stale.
+            Ok(_) => {
+                let _ = std::fs::remove_file(&mark);
+                return Ok(None);
+            }
+            Err(_) => return Ok(None),
         }
-        if worktree.symlink_metadata().is_err() {
-            return Ok(Some(RemovalState::Gone));
+        let state = leftover_state(project, worktree)?;
+        if matches!(state, RemovalState::Intact | RemovalState::Dirty) {
+            let _ = std::fs::remove_file(&mark);
         }
-        let path = canonical_cleanup_path(worktree)?;
-        if !git_worktree_paths(project)?
-            .iter()
-            .any(|listed| same_path(listed, &path))
-        {
-            return Ok(Some(RemovalState::Partial { registered: false }));
-        }
-        let status = cleanup_query(worktree, &["status", "--porcelain"])
-            .map_err(|error| cleanup_inspection_error("status", error))?;
-        if !status.status.success() {
-            return Ok(Some(RemovalState::Partial { registered: true }));
-        }
-        let status = String::from_utf8_lossy(&status.stdout);
-        // Only deletions are the removal's own; anything else is work to keep refusing on.
-        Ok(if status.is_empty() {
-            Some(RemovalState::Intact)
-        } else if status
-            .lines()
-            .all(|line| line.starts_with(" D ") || line.starts_with("D "))
-        {
-            Some(RemovalState::Partial { registered: true })
-        } else {
-            None
-        })
+        Ok(Some(state))
     }
 
     fn removal_state(&mut self, project: &Path, worktree: &Path) -> Result<RemovalState, String> {
-        if worktree.symlink_metadata().is_err() {
-            return Ok(RemovalState::Gone);
+        leftover_state(project, worktree)
+    }
+
+    fn worktree_dirty(&mut self, worktree: &Path) -> Result<bool, String> {
+        let status = cleanup_query(
+            worktree,
+            &["status", "--porcelain", "--untracked-files=all"],
+        )
+        .map_err(|error| cleanup_inspection_error("status", error))?;
+        if !status.status.success() {
+            return Err(command_failure("git status", &status));
         }
-        let path = canonical_cleanup_path(worktree)?;
-        let registered = git_worktree_paths(project)?
-            .iter()
-            .any(|listed| same_path(listed, &path));
-        if !registered {
-            return Ok(RemovalState::Partial { registered: false });
+        Ok(!status.stdout.is_empty())
+    }
+
+    fn remove_marked_worktree(
+        &mut self,
+        project: &Path,
+        worktree: &Path,
+        workspace_id: &str,
+    ) -> Result<(), String> {
+        if !cfg!(windows) {
+            self.mark_removal(workspace_id, true);
+            return self.remove_git_worktree(project, worktree);
         }
-        let status = cleanup_query(worktree, &["status", "--porcelain"])
-            .map_err(|error| cleanup_inspection_error("status", error))?;
-        // A status that cannot run lost its `.git` file to the delete.
-        Ok(if status.status.success() && status.stdout.is_empty() {
-            RemovalState::Intact
-        } else {
-            RemovalState::Partial { registered: true }
-        })
+        // The mark is written once git runs, so it proves a removal started, not just that
+        // one was about to.
+        let mut host = self.clone();
+        let workspace_id = workspace_id.to_string();
+        system_remove_git_worktree(
+            project,
+            worktree,
+            Some(&mut move || host.mark_removal(&workspace_id, true)),
+        )
     }
 
     fn removal_blocker(
@@ -1850,12 +1838,16 @@ fn remove_windows_worktree(
         Some(RemovalBlock::PathTooLong) => return Err(CleanupError::PathTooLong),
         None => {}
     }
-    // Marked until the removal is known to have finished or touched nothing: if tsk exits
-    // or git is stopped midway, the next inspection reads the leftovers as a partial
-    // removal rather than as uncommitted work.
+    // The agent ran until the workspace closed and may have written after the inspection:
+    // check again now that nothing else writes, before anything is marked or deleted.
+    if host.worktree_dirty(worktree).map_err(CleanupError::Herdr)? {
+        return Err(CleanupError::DirtyWorktree);
+    }
+    // Marked once git starts and until the removal is known to have finished or touched
+    // nothing: if tsk exits or git stops midway, the next inspection reads git's deletions
+    // as a partial removal rather than as uncommitted work.
     let workspace = &preview.record.herdr_workspace_id;
-    host.mark_removal(workspace, true);
-    let Err(error) = host.remove_git_worktree(project, worktree) else {
+    let Err(error) = host.remove_marked_worktree(project, worktree, workspace) else {
         return Ok(());
     };
     // Something opened a file after the check, or the delete outlived its deadline. Git may
@@ -1874,26 +1866,97 @@ fn remove_windows_worktree(
                 None => CleanupError::Herdr(error),
             })
         }
+        RemovalState::Dirty => {
+            host.mark_removal(workspace, false);
+            Err(CleanupError::DirtyWorktree)
+        }
         RemovalState::Partial { registered } => Err(partly_removed(&preview.record, registered)),
     }
 }
 
-/// What is left of a removal git stopped partway, and how to finish it by hand. The pre-checks
-/// found the checkout clean, so every commit is on the branch.
+/// What is left of a removal git stopped partway, and how to finish it by hand. Only
+/// committed files are missing, so every commit is on the branch; the advice never deletes
+/// anything without saying what it deletes.
 fn partly_removed(record: &Dispatch, registered: bool) -> CleanupError {
     let (display, branch) = (&record.worktree, &record.branch);
     CleanupError::PartlyRemoved(if registered {
         format!(
-            "partly removed: git deleted part of {display} and stopped; every commit is on \
-             {branch}. Close what holds it, run git worktree remove --force \"{display}\", \
-             then clean again"
+            "partly removed: git deleted some committed files from {display} and stopped; \
+             every commit is on {branch}. Close what holds it, then restore them with git -C \
+             \"{display}\" restore . and clean again, or finish with git worktree remove \
+             --force \"{display}\", which also deletes any uncommitted changes"
         )
     } else {
         format!(
-            "partly removed: git unregistered the worktree but could not delete all of \
-             {display}; every commit is on {branch}. Close what holds it, delete the folder, \
-             then clean again"
+            "partly removed: git unregistered the worktree and left part of {display}; every \
+             commit is on {branch}. Check what is left; once nothing in it is needed, delete \
+             the folder and clean again"
         )
+    })
+}
+
+/// What a mark of a started Windows removal holds.
+const REMOVAL_STARTED: &[u8] = b"git worktree remove started\n";
+
+/// `git worktree remove`. On Windows its Git tree outlives tsk, because a removal stopped
+/// midway strands a half-deleted checkout, and `started` runs once Git is running.
+fn system_remove_git_worktree(
+    project: &Path,
+    worktree: &Path,
+    started: Option<&mut dyn FnMut()>,
+) -> Result<(), String> {
+    let worktree = worktree
+        .to_str()
+        .ok_or_else(|| "worktree path is not UTF-8".to_string())?;
+    let args = ["worktree", "remove", worktree];
+    let output = if cfg!(windows) {
+        let mut nothing = || {};
+        crate::git_base::git_process_output_outliving_tsk(
+            project,
+            &args,
+            WINDOWS_REMOVAL_TIMEOUT,
+            started.unwrap_or(&mut nothing),
+        )
+    } else {
+        crate::git_base::git_process_output_timeout(project, &args, Duration::from_secs(5))
+    }?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(command_failure("git worktree remove", &output))
+    }
+}
+
+/// What a removal left of the worktree. Git's removal deletes files without touching the
+/// index, so only unstaged deletions of tracked files can be its doing; anything else
+/// (modified, added, staged, renamed, untracked) is work, never a partial removal.
+fn leftover_state(project: &Path, worktree: &Path) -> Result<RemovalState, String> {
+    if worktree.symlink_metadata().is_err() {
+        return Ok(RemovalState::Gone);
+    }
+    let path = canonical_cleanup_path(worktree)?;
+    if !git_worktree_paths(project)?
+        .iter()
+        .any(|listed| same_path(listed, &path))
+    {
+        return Ok(RemovalState::Partial { registered: false });
+    }
+    let status = cleanup_query(
+        worktree,
+        &["status", "--porcelain", "--untracked-files=all"],
+    )
+    .map_err(|error| cleanup_inspection_error("status", error))?;
+    // A status that cannot run lost its `.git` file to the delete.
+    if !status.status.success() {
+        return Ok(RemovalState::Partial { registered: true });
+    }
+    let status = String::from_utf8_lossy(&status.stdout);
+    Ok(if status.is_empty() {
+        RemovalState::Intact
+    } else if status.lines().all(|line| line.starts_with(" D ")) {
+        RemovalState::Partial { registered: true }
+    } else {
+        RemovalState::Dirty
     })
 }
 
@@ -1904,6 +1967,9 @@ pub enum RemovalState {
     Gone,
     /// Still registered with every tracked file in place: nothing that matters was deleted.
     Intact,
+    /// Holds uncommitted work (modified, added, staged, renamed, or untracked): never a
+    /// partial removal, whatever else is missing.
+    Dirty,
     /// Git deleted part of it; `registered` says whether git still lists it.
     Partial { registered: bool },
 }
@@ -2852,6 +2918,8 @@ mod tests {
         /// What an unsettled removal from an earlier run left, if one is marked.
         interrupted: Option<RemovalState>,
         marks: Vec<(String, bool)>,
+        /// Work the agent wrote while its workspace closed.
+        dirty_after_close: bool,
     }
 
     impl DispatchHost for FakeHost {
@@ -2949,6 +3017,10 @@ mod tests {
 
         fn mark_removal(&mut self, workspace_id: &str, started: bool) {
             self.marks.push((workspace_id.into(), started));
+        }
+
+        fn worktree_dirty(&mut self, _: &Path) -> Result<bool, String> {
+            Ok(self.closed > 0 && self.dirty_after_close)
         }
 
         fn interrupted_removal(
@@ -3564,18 +3636,24 @@ mod tests {
             error.to_string()
         };
         // Git unregisters before it fails: never "kept … retry", which would now be refused
-        // as a mismatch forever. Deleting the folder lets the next cleanup converge.
+        // as a mismatch forever. The advice deletes nothing the user has not looked at.
         let unregistered = partly(false);
         assert!(
             unregistered.starts_with("partly removed: git unregistered the worktree")
                 && unregistered.contains("every commit is on tsk/t")
-                && unregistered.ends_with("delete the folder, then clean again"),
+                && unregistered.contains("Check what is left; once nothing in it is needed")
+                && unregistered.ends_with("delete the folder and clean again"),
             "{unregistered}"
         );
-        assert!(!unregistered.contains("kept"));
+        assert!(!unregistered.contains("kept") && !unregistered.contains("--force"));
+        // Force is offered only beside a restore, with what it also deletes.
         let registered = partly(true);
         assert!(
-            registered.contains("run git worktree remove --force \"/tmp/worktree\""),
+            registered.contains("git -C \"/tmp/worktree\" restore . and clean again")
+                && registered.contains(
+                    "git worktree remove --force \"/tmp/worktree\", which also deletes any \
+                     uncommitted changes"
+                ),
             "{registered}"
         );
 
@@ -3605,6 +3683,75 @@ mod tests {
         };
         let result = clean_with_host(&mut state, id, true, &mut host).expect("cleaned");
         assert_eq!(result.worktree, WorktreeCleanup::Removed);
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    /// Every failure that deleted nothing clears the removal mark, so a later deletion is
+    /// never read as the removal's own.
+    #[test]
+    fn every_windows_removal_failure_that_deleted_nothing_clears_its_mark() {
+        let (path, profiles) = profiles();
+        for (error, left_behind, code) in [
+            (IN_USE, RemovalState::Intact, "files-in-use"),
+            (
+                "fatal: cannot remove: Filename too long",
+                RemovalState::Intact,
+                "path-too-long",
+            ),
+            ("git timed out", RemovalState::Intact, "removal-timed-out"),
+            (
+                "fatal: something else",
+                RemovalState::Intact,
+                "herdr-failed",
+            ),
+            (
+                "fatal: contains modified or untracked files, use --force to delete it",
+                RemovalState::Dirty,
+                "dirty-worktree",
+            ),
+        ] {
+            let (mut state, id) = task();
+            run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
+                .expect("dispatch");
+            let mut host = FakeHost {
+                cleanup: Some(clean_inspection()),
+                git_remove_errors: vec![error.into()],
+                left_behind: Some(left_behind),
+                ..windows_host()
+            };
+            let refused = clean_with_host(&mut state, id, true, &mut host).expect_err(error);
+            assert_eq!(refused.code(), code, "{error}");
+            assert_eq!(
+                host.marks,
+                vec![("w9".to_string(), true), ("w9".to_string(), false)],
+                "{error}"
+            );
+        }
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    /// The agent writes until its workspace closes, after the inspection: the worktree is
+    /// checked again once it has, and refused before anything is marked or deleted.
+    #[test]
+    fn work_written_while_the_workspace_closes_refuses_before_any_removal() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
+            .expect("dispatch");
+        let before = serde_json::to_value(&state).expect("before");
+        let mut host = FakeHost {
+            cleanup: Some(clean_inspection()),
+            dirty_after_close: true,
+            ..windows_host()
+        };
+        assert_eq!(
+            clean_with_host(&mut state, id, true, &mut host),
+            Err(CleanupError::DirtyWorktree)
+        );
+        assert_eq!(host.closed, 1);
+        assert_eq!((host.removed_git, host.deleted_branches), (0, 0));
+        assert!(host.marks.is_empty(), "nothing marked");
+        assert_eq!(serde_json::to_value(&state).expect("after"), before);
         fs::remove_dir_all(path).expect("cleanup");
     }
 
@@ -3692,6 +3839,121 @@ mod tests {
         ] {
             assert_eq!(removal_failure(text), expected, "{text}");
         }
+    }
+
+    /// The child half of [`a_board_quit_never_stops_a_windows_removal_partway`]: a tsk
+    /// process that removes a worktree through the production host and is killed meanwhile.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "helper process, run by its parent test"]
+    fn removal_git_helper() {
+        let (Some(project), Some(worktree), Some(started)) = (
+            std::env::var_os("TSK_REMOVAL_PROJECT"),
+            std::env::var_os("TSK_REMOVAL_WORKTREE"),
+            std::env::var_os("TSK_REMOVAL_STARTED"),
+        ) else {
+            return;
+        };
+        fs::write(started, "").expect("started");
+        let _ = SystemDispatchHost::default()
+            .remove_git_worktree(Path::new(&project), Path::new(&worktree));
+    }
+
+    /// Quitting the board ends tsk after its bound while a large removal runs. The removal's
+    /// git, started through the production host, must finish instead of dying with tsk.
+    #[cfg(windows)]
+    #[test]
+    fn a_board_quit_never_stops_a_windows_removal_partway() {
+        let git = |cwd: &Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(output.status.success(), "{args:?}: {output:?}");
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        };
+        let root = std::env::temp_dir().join(format!(
+            "tsk-removal-outlives-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let (project, worktree) = (root.join("repo"), root.join("wt"));
+        fs::create_dir_all(&project).expect("repo");
+        git(&project, &["init", "-q", "-b", "main"]);
+        fs::write(project.join(".gitignore"), "target/\n").expect("ignore");
+        git(&project, &["add", ".gitignore"]);
+        git(
+            &project,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        );
+        git(
+            &project,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "wt",
+                worktree.to_str().expect("utf-8"),
+            ],
+        );
+        // Ignored build output, enough that deleting it takes seconds.
+        for directory in 0..300 {
+            let directory = worktree.join("target").join(format!("d{directory}"));
+            fs::create_dir_all(&directory).expect("build dir");
+            for file in 0..150 {
+                fs::write(directory.join(format!("f{file}.o")), "x").expect("build file");
+            }
+        }
+        let started = root.join("started");
+        let mut helper = std::process::Command::new(std::env::current_exe().expect("exe"))
+            .args([
+                "--exact",
+                "dispatch::tests::removal_git_helper",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env("TSK_REMOVAL_PROJECT", &project)
+            .env("TSK_REMOVAL_WORKTREE", &worktree)
+            .env("TSK_REMOVAL_STARTED", &started)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("helper");
+        let begun = std::time::Instant::now();
+        while !started.exists() {
+            assert!(
+                begun.elapsed() < Duration::from_secs(60),
+                "helper never started"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(700));
+        assert!(
+            worktree.exists(),
+            "the fixture deleted too fast to test anything"
+        );
+        // tsk exits mid-removal, as when a board quit outlives its bound.
+        helper.kill().expect("kill");
+        helper.wait().expect("reap");
+
+        let begun = std::time::Instant::now();
+        while worktree.exists() && begun.elapsed() < Duration::from_secs(180) {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        assert!(!worktree.exists(), "git stopped partway when tsk exited");
+        assert!(!git(&project, &["worktree", "list"]).contains("[wt]"));
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     /// The real checks against a real directory: free, then held open by this process.
