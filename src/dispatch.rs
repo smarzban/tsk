@@ -681,9 +681,8 @@ fn has_long_path(root: &Path) -> Result<bool, String> {
 fn worktree_in_use(worktree: &Path) -> Result<bool, String> {
     const ACCESS_DENIED: i32 = 5;
     const SHARING_VIOLATION: i32 = 32;
-    let mut aside = worktree.as_os_str().to_owned();
-    aside.push(".tsk-cleanup-check");
-    let aside = PathBuf::from(aside);
+    restore_checked_aside(worktree)?;
+    let aside = checked_aside(worktree);
     match std::fs::rename(worktree, &aside) {
         Ok(()) => std::fs::rename(&aside, worktree)
             .map(|()| false)
@@ -704,6 +703,29 @@ fn worktree_in_use(worktree: &Path) -> Result<bool, String> {
         }
         Err(error) => Err(format!("could not check {}: {error}", worktree.display())),
     }
+}
+
+/// Where [`worktree_in_use`] moves a checkout for the moment of its check.
+fn checked_aside(worktree: &Path) -> PathBuf {
+    let mut aside = worktree.as_os_str().to_owned();
+    aside.push(".tsk-cleanup-check");
+    PathBuf::from(aside)
+}
+
+/// Move back a checkout an interrupted [`worktree_in_use`] left aside, before anything reads
+/// the worktree as missing and records it cleaned.
+fn restore_checked_aside(worktree: &Path) -> Result<(), String> {
+    let aside = checked_aside(worktree);
+    if worktree.symlink_metadata().is_err() && aside.is_dir() {
+        std::fs::rename(&aside, worktree).map_err(|error| {
+            format!(
+                "could not move {} back from {}: {error}",
+                worktree.display(),
+                aside.display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 /// One launcher per Herdr workspace: a relaunch in the same workspace replaces it, and cleanup
@@ -1142,6 +1164,7 @@ fn system_inspect_cleanup(
     fetch: bool,
 ) -> Result<CleanupInspection, String> {
     let worktree = Path::new(&dispatch.worktree);
+    restore_checked_aside(worktree)?;
     let project_path = canonical_cleanup_path(project)?;
     // A worktree deleted by hand may already be pruned from git's list, so a missing
     // directory converges to cleaned before the registration gate can refuse it. The
@@ -3176,6 +3199,29 @@ mod tests {
     }
 
     #[test]
+    fn an_interrupted_removal_check_is_moved_back_before_cleanup_reads_the_worktree() {
+        let root = std::env::temp_dir().join(format!(
+            "tsk-removal-aside-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let worktree = root.join("tsk-t1-x");
+        fs::create_dir_all(checked_aside(&worktree)).expect("aside");
+        fs::write(checked_aside(&worktree).join("work.txt"), "x").expect("work");
+        restore_checked_aside(&worktree).expect("restored");
+        assert!(
+            worktree.join("work.txt").exists(),
+            "the agent's work is back in place"
+        );
+        assert!(!checked_aside(&worktree).exists());
+        // With the worktree in place, a leftover aside directory is never moved over it.
+        fs::create_dir_all(checked_aside(&worktree)).expect("aside again");
+        restore_checked_aside(&worktree).expect("nothing to do");
+        assert!(worktree.join("work.txt").exists() && checked_aside(&worktree).exists());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn git_removal_failures_name_their_windows_cause() {
         for (text, expected) in [
             (IN_USE, Some(RemovalBlock::FilesInUse)),
@@ -3228,6 +3274,12 @@ mod tests {
         assert_eq!(worktree_in_use(&worktree), Ok(true));
         drop(held);
         assert_eq!(worktree_in_use(&worktree), Ok(false));
+
+        // A check interrupted between its two renames is undone before the next one.
+        fs::rename(&worktree, checked_aside(&worktree)).expect("left aside");
+        assert_eq!(worktree_in_use(&worktree), Ok(false));
+        assert!(worktree.join("deep").join("file.txt").exists());
+        assert!(!checked_aside(&worktree).exists());
 
         assert_eq!(has_long_path(&worktree), Ok(false));
         let mut deep = worktree.clone();
