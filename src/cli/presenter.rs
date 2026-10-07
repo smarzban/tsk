@@ -1011,6 +1011,8 @@ pub fn clean_help() -> CliOutput {
             "worktree-mismatch".into(),
             "files-in-use".into(),
             "path-too-long".into(),
+            "removal-timed-out".into(),
+            "partly-removed".into(),
             "herdr-failed".into(),
         ],
         exit: exit_line(

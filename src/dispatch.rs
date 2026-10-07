@@ -262,6 +262,11 @@ pub enum CleanupError {
     FilesInUse,
     /// Windows refused the removal because a path in the worktree exceeds MAX_PATH.
     PathTooLong,
+    /// Windows: git's removal outlived its deadline with nothing deleted that matters.
+    RemovalTimedOut,
+    /// Windows: git's removal stopped partway. The message says what is left and how to
+    /// finish by hand; the branch keeps every commit.
+    PartlyRemoved(String),
     Herdr(String),
     Store(String),
 }
@@ -278,6 +283,8 @@ impl CleanupError {
             Self::DispatchChanged => "dispatch changed",
             Self::FilesInUse => "files in use",
             Self::PathTooLong => "path too long",
+            Self::RemovalTimedOut => "removal timed out",
+            Self::PartlyRemoved(_) => "partly removed",
             Self::Herdr(_) => "removal failed",
             Self::Store(_) => "save failed",
         }
@@ -293,6 +300,8 @@ impl CleanupError {
             Self::DispatchChanged => "dispatch-changed",
             Self::FilesInUse => "files-in-use",
             Self::PathTooLong => "path-too-long",
+            Self::RemovalTimedOut => "removal-timed-out",
+            Self::PartlyRemoved(_) => "partly-removed",
             Self::Herdr(_) => "herdr-failed",
             Self::Store(_) => "store-error",
         }
@@ -321,7 +330,14 @@ impl std::fmt::Display for CleanupError {
                 formatter,
                 "kept: path too long (run git config --global core.longpaths true and retry)"
             ),
-            Self::Herdr(reason) | Self::Store(reason) => write!(formatter, "{reason}"),
+            Self::RemovalTimedOut => write!(
+                formatter,
+                "kept: removal timed out after {} minutes (retry when the disk is less busy)",
+                WINDOWS_REMOVAL_TIMEOUT.as_secs() / 60
+            ),
+            Self::PartlyRemoved(reason) | Self::Herdr(reason) | Self::Store(reason) => {
+                write!(formatter, "{reason}")
+            }
         }
     }
 }
@@ -352,7 +368,9 @@ pub enum DispatchError {
     UnknownTask,
     NoAssignee,
     NotInHerdr,
-    UnsupportedPlatform,
+    /// Windows cannot launch here: no Windows PowerShell, or a path the pane's shell would
+    /// rewrite.
+    UnsupportedPlatform(String),
     NeedsGitProject,
     DoneTask,
     ArchivedTask,
@@ -371,7 +389,7 @@ impl DispatchError {
             Self::UnknownTask => "unknown-task",
             Self::NoAssignee => "no-assignee",
             Self::NotInHerdr => "not-in-herdr",
-            Self::UnsupportedPlatform => "unsupported-platform",
+            Self::UnsupportedPlatform(_) => "unsupported-platform",
             Self::NeedsGitProject => "needs-git-project",
             Self::DoneTask => "done-task",
             Self::ArchivedTask => "archived-task",
@@ -392,7 +410,6 @@ impl std::fmt::Display for DispatchError {
             Self::UnknownTask => write!(formatter, "task is not on the board"),
             Self::NoAssignee => write!(formatter, "{NO_ASSIGNEE}"),
             Self::NotInHerdr => write!(formatter, "{NOT_IN_HERDR}"),
-            Self::UnsupportedPlatform => write!(formatter, "{UNSUPPORTED_PLATFORM}"),
             Self::NeedsGitProject => write!(formatter, "{NEEDS_GIT_PROJECT}"),
             Self::DoneTask => write!(formatter, "completed tasks cannot be dispatched"),
             Self::ArchivedTask => write!(formatter, "archived tasks cannot be dispatched"),
@@ -403,6 +420,7 @@ impl std::fmt::Display for DispatchError {
             ),
             Self::UnknownAgent(name) => write!(formatter, "unknown agent {name}"),
             Self::UnknownBase(reason)
+            | Self::UnsupportedPlatform(reason)
             | Self::AgentConfig(reason)
             | Self::Herdr(reason)
             | Self::Store(reason) => {
@@ -515,6 +533,17 @@ pub trait DispatchHost {
     }
     /// Store a Windows launcher script for the dispatch in `workspace_id` and return its path.
     /// It lives under the state dir, never inside the worktree, so it is never committed.
+    /// Where the launcher for the dispatch in `workspace_id` goes: absolute, so the pane finds
+    /// it from the worktree.
+    fn launcher_path(&self, _workspace_id: &str) -> Result<PathBuf, String> {
+        Err("PowerShell launchers are not supported".into())
+    }
+    /// The trusted Windows PowerShell that runs launchers, never one found from the worktree.
+    fn powershell_path(&self) -> Result<PathBuf, String> {
+        Ok(PathBuf::from(
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        ))
+    }
     fn write_launcher(&mut self, _workspace_id: &str, _script: &str) -> Result<PathBuf, String> {
         Err("PowerShell launchers are not supported".into())
     }
@@ -531,6 +560,10 @@ pub trait DispatchHost {
     /// checks and removes).
     fn close_herdr_workspace(&mut self, _workspace_id: &str) -> Result<(), String> {
         Err("Herdr workspace close is not supported".into())
+    }
+    /// What a failed Windows removal left behind.
+    fn removal_state(&mut self, _project: &Path, _worktree: &Path) -> Result<RemovalState, String> {
+        Ok(RemovalState::Intact)
     }
     /// Why removing `worktree` now would fail partway on Windows, if it would.
     fn removal_blocker(
@@ -628,6 +661,10 @@ const AGENT_DETECTION_TIMEOUT: Duration = Duration::from_secs(3);
 const AGENT_DETECTION_POLL: Duration = Duration::from_millis(100);
 /// How long cleanup waits before its one retry of a removal refused by files in use.
 const REMOVAL_RETRY_DELAY: Duration = Duration::from_secs(2);
+/// How long a Windows `git worktree remove` may take. It deletes ignored build output too
+/// (`target`, `node_modules`), file by file, so the bound is minutes; stopping it partway is
+/// what this avoids, and [`RemovalState`] reports honestly when it happens anyway.
+pub const WINDOWS_REMOVAL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// The real host: git and Herdr processes. Windows launchers go under `state_dir`'s
 /// `launchers` directory (the default state dir when unset).
@@ -643,12 +680,16 @@ impl SystemDispatchHost {
         }
     }
 
-    fn launcher_path(&self, workspace_id: &str) -> PathBuf {
-        self.state_dir
+    fn launcher_file(&self, workspace_id: &str) -> Result<PathBuf, String> {
+        let path = self
+            .state_dir
             .clone()
             .unwrap_or_else(crate::store::default_state_dir)
             .join("launchers")
-            .join(launcher_file_name(workspace_id))
+            .join(launcher_file_name(workspace_id));
+        // The pane resolves a relative path against the worktree, not where tsk wrote it.
+        std::path::absolute(&path)
+            .map_err(|error| format!("could not resolve {}: {error}", path.display()))
     }
 }
 
@@ -744,12 +785,47 @@ fn launcher_file_name(workspace_id: &str) -> String {
     format!("dispatch-{safe}.ps1")
 }
 
-/// The pane line that runs a Windows launcher. It reads the same in PowerShell and cmd.
-pub fn powershell_launch_line(launcher: &Path) -> String {
-    format!(
-        "powershell -NoProfile -ExecutionPolicy Bypass -File \"{}\"",
-        launcher.display()
-    )
+/// The pane line that runs a Windows launcher. Herdr can only type a line into the pane's
+/// shell, which may be Windows PowerShell, PowerShell 7, cmd, or a POSIX shell such as Git
+/// Bash. The line reads literally in all of them: the trusted PowerShell by absolute path,
+/// unquoted and with forward slashes, and the launcher in double quotes, refused when it holds
+/// a character any of those shells would still expand inside them.
+pub fn powershell_launch_line(powershell: &Path, launcher: &Path) -> Result<String, String> {
+    let powershell = powershell.to_string_lossy().replace('\\', "/");
+    if !windows_absolute(&powershell)
+        || !powershell
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || ":/._-".contains(character))
+    {
+        return Err(format!(
+            "Windows PowerShell at {powershell} cannot be typed safely into the pane"
+        ));
+    }
+    let launcher = launcher.to_string_lossy().replace('\\', "/");
+    if !windows_absolute(&launcher) {
+        return Err(format!("launcher path {launcher} is not absolute"));
+    }
+    if let Some(character) = launcher.chars().find(|character| {
+        character.is_control() || "$`%\"!\u{201c}\u{201d}\u{201e}".contains(*character)
+    }) {
+        let directory = launcher
+            .rsplit_once("/launchers/")
+            .map_or(launcher.as_str(), |(directory, _)| directory);
+        return Err(format!(
+            "the state directory {directory} contains {character:?}, which the pane's shell \
+             would expand; use a state directory without $ ` % \" or !"
+        ));
+    }
+    Ok(format!(
+        "{powershell} -NoProfile -ExecutionPolicy Bypass -File \"{launcher}\""
+    ))
+}
+
+/// `C:/…` or `//server/share/…`, in forward-slash form.
+fn windows_absolute(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    path.starts_with("//")
+        || (bytes.len() > 2 && bytes[0].is_ascii_alphabetic() && &bytes[1..3] == b":/")
 }
 
 impl DispatchHost for SystemDispatchHost {
@@ -849,10 +925,15 @@ impl DispatchHost for SystemDispatchHost {
         let worktree = worktree
             .to_str()
             .ok_or_else(|| "worktree path is not UTF-8".to_string())?;
+        let deadline = if cfg!(windows) {
+            WINDOWS_REMOVAL_TIMEOUT
+        } else {
+            Duration::from_secs(5)
+        };
         let output = crate::git_base::git_process_output_timeout(
             project,
             &["worktree", "remove", worktree],
-            Duration::from_secs(5),
+            deadline,
         )?;
         if output.status.success() {
             Ok(())
@@ -983,8 +1064,19 @@ impl DispatchHost for SystemDispatchHost {
         HostPlatform::native()
     }
 
+    fn launcher_path(&self, workspace_id: &str) -> Result<PathBuf, String> {
+        self.launcher_file(workspace_id)
+    }
+
+    fn powershell_path(&self) -> Result<PathBuf, String> {
+        #[cfg(windows)]
+        return crate::cli::update::windows_powershell_path();
+        #[cfg(not(windows))]
+        Err("Windows PowerShell exists only on Windows".into())
+    }
+
     fn write_launcher(&mut self, workspace_id: &str, script: &str) -> Result<PathBuf, String> {
-        let path = self.launcher_path(workspace_id);
+        let path = self.launcher_file(workspace_id)?;
         let directory = path.parent().expect("launcher has a directory");
         std::fs::create_dir_all(directory)
             .and_then(|()| std::fs::write(&path, script))
@@ -993,7 +1085,9 @@ impl DispatchHost for SystemDispatchHost {
     }
 
     fn remove_launcher(&mut self, workspace_id: &str) {
-        let _ = std::fs::remove_file(self.launcher_path(workspace_id));
+        if let Ok(path) = self.launcher_file(workspace_id) {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     fn long_paths_enabled(&mut self, project: &Path) -> Result<bool, String> {
@@ -1018,6 +1112,27 @@ impl DispatchHost for SystemDispatchHost {
             .output()
             .map_err(|error| format!("could not run herdr: {error}"))?;
         herdr_json(output).map(|_| ())
+    }
+
+    fn removal_state(&mut self, project: &Path, worktree: &Path) -> Result<RemovalState, String> {
+        if worktree.symlink_metadata().is_err() {
+            return Ok(RemovalState::Gone);
+        }
+        let path = canonical_cleanup_path(worktree)?;
+        let registered = git_worktree_paths(project)?
+            .iter()
+            .any(|listed| same_path(listed, &path));
+        if !registered {
+            return Ok(RemovalState::Partial { registered: false });
+        }
+        let status = cleanup_query(worktree, &["status", "--porcelain"])
+            .map_err(|error| cleanup_inspection_error("status", error))?;
+        // A status that cannot run lost its `.git` file to the delete.
+        Ok(if status.status.success() && status.stdout.is_empty() {
+            RemovalState::Intact
+        } else {
+            RemovalState::Partial { registered: true }
+        })
     }
 
     fn removal_blocker(
@@ -1629,13 +1744,46 @@ fn remove_windows_worktree(
         Some(RemovalBlock::PathTooLong) => return Err(CleanupError::PathTooLong),
         None => {}
     }
-    // Something could still open a file between the check and the removal: name the cause.
-    host.remove_git_worktree(project, worktree)
-        .map_err(|error| match removal_failure(&error) {
+    let Err(error) = host.remove_git_worktree(project, worktree) else {
+        return Ok(());
+    };
+    // Something opened a file after the check, or the delete outlived its deadline. Git may
+    // have deleted part of the checkout and unregistered it: report what is actually left.
+    let display = worktree.display();
+    let branch = &preview.record.branch;
+    match host
+        .removal_state(project, worktree)
+        .map_err(CleanupError::Herdr)?
+    {
+        RemovalState::Gone => Ok(()),
+        RemovalState::Intact => Err(match removal_failure(&error) {
+            _ if error == "git timed out" => CleanupError::RemovalTimedOut,
             Some(RemovalBlock::FilesInUse) => CleanupError::FilesInUse,
             Some(RemovalBlock::PathTooLong) => CleanupError::PathTooLong,
             None => CleanupError::Herdr(error),
-        })
+        }),
+        RemovalState::Partial { registered: false } => Err(CleanupError::PartlyRemoved(format!(
+            "partly removed: git unregistered the worktree but could not delete all of \
+             {display}; every commit is on {branch}. Close what holds it, delete the folder, \
+             then clean again"
+        ))),
+        RemovalState::Partial { registered: true } => Err(CleanupError::PartlyRemoved(format!(
+            "partly removed: git deleted part of {display} and stopped; every commit is on \
+             {branch}. Close what holds it, run git worktree remove --force \"{display}\", \
+             then clean again"
+        ))),
+    }
+}
+
+/// What a Windows removal that failed left of the worktree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemovalState {
+    /// The directory is gone: the removal finished after all.
+    Gone,
+    /// Still registered with every tracked file in place: nothing that matters was deleted.
+    Intact,
+    /// Git deleted part of it; `registered` says whether git still lists it.
+    Partial { registered: bool },
 }
 
 /// Why git on Windows failed to remove a worktree, read from its error text.
@@ -2008,6 +2156,18 @@ pub fn launch_with_host(
     // Checked before anything is created; an unanswered check stays quiet rather than nag.
     let long_paths_off =
         platform == HostPlatform::Windows && host.long_paths_enabled(project) == Ok(false);
+    // The launch line must be safe to type before any worktree or workspace exists.
+    let powershell = if platform == HostPlatform::Windows {
+        let powershell = host
+            .powershell_path()
+            .map_err(DispatchError::UnsupportedPlatform)?;
+        let launcher = host.launcher_path("check").map_err(DispatchError::Herdr)?;
+        powershell_launch_line(&powershell, &launcher)
+            .map_err(DispatchError::UnsupportedPlatform)?;
+        Some(powershell)
+    } else {
+        None
+    };
     let mut warning = None;
     let (worktree, branch, base, base_ref, base_commit, base_remote, workspace_id, pane_id) =
         if let Some(existing) = task.dispatch.as_ref().filter(|_| eligible.again) {
@@ -2107,7 +2267,11 @@ pub fn launch_with_host(
             let launcher = host
                 .write_launcher(&workspace_id, &rendered.powershell_script())
                 .map_err(DispatchError::Herdr)?;
-            powershell_launch_line(&launcher)
+            let powershell = powershell.as_deref().expect("checked before launch");
+            powershell_launch_line(powershell, &launcher).map_err(|reason| {
+                host.remove_launcher(&workspace_id);
+                DispatchError::UnsupportedPlatform(reason)
+            })?
         }
     };
     if let Err(error) = host.run_in_pane(&pane_id, &line) {
@@ -2289,7 +2453,9 @@ pub fn commit_launch_with_status(
 pub fn ensure_platform_supported() -> Result<(), DispatchError> {
     #[cfg(windows)]
     if crate::cli::update::windows_powershell_path().is_err() {
-        return Err(DispatchError::UnsupportedPlatform);
+        return Err(DispatchError::UnsupportedPlatform(
+            UNSUPPORTED_PLATFORM.into(),
+        ));
     }
     Ok(())
 }
@@ -2559,6 +2725,10 @@ mod tests {
         blockers: Vec<Option<RemovalBlock>>,
         blocker_checks: usize,
         closed: usize,
+        /// The state dir launchers go under; `C:\Users\Some One\tsk` when unset.
+        state_dir: Option<String>,
+        /// What a failed Windows removal left; `Intact` when unset.
+        left_behind: Option<RemovalState>,
     }
 
     impl DispatchHost for FakeHost {
@@ -2634,12 +2804,24 @@ mod tests {
             }
         }
 
-        fn write_launcher(&mut self, workspace_id: &str, script: &str) -> Result<PathBuf, String> {
-            self.launchers.push((workspace_id.into(), script.into()));
+        fn launcher_path(&self, workspace_id: &str) -> Result<PathBuf, String> {
+            let state = self
+                .state_dir
+                .as_deref()
+                .unwrap_or(r"C:\Users\Some One\tsk");
             Ok(PathBuf::from(format!(
-                "C:\\Users\\Some One\\tsk\\launchers\\{}",
+                r"{state}\launchers\{}",
                 launcher_file_name(workspace_id)
             )))
+        }
+
+        fn write_launcher(&mut self, workspace_id: &str, script: &str) -> Result<PathBuf, String> {
+            self.launchers.push((workspace_id.into(), script.into()));
+            self.launcher_path(workspace_id)
+        }
+
+        fn removal_state(&mut self, _: &Path, _: &Path) -> Result<RemovalState, String> {
+            Ok(self.left_behind.unwrap_or(RemovalState::Intact))
         }
 
         fn remove_launcher(&mut self, workspace_id: &str) {
@@ -2930,7 +3112,7 @@ mod tests {
     fn platform_gate_passes_where_the_launch_can_run() {
         assert_eq!(ensure_platform_supported(), Ok(()));
         assert_eq!(
-            DispatchError::UnsupportedPlatform.to_string(),
+            DispatchError::UnsupportedPlatform(UNSUPPORTED_PLATFORM.into()).to_string(),
             "dispatch on Windows needs Windows PowerShell"
         );
     }
@@ -2977,8 +3159,8 @@ mod tests {
             host.runs,
             vec![(
                 "w9:p1".to_string(),
-                "powershell -NoProfile -ExecutionPolicy Bypass -File \
-                 \"C:\\Users\\Some One\\tsk\\launchers\\dispatch-w9.ps1\""
+                "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile \
+                 -ExecutionPolicy Bypass -File \"C:/Users/Some One/tsk/launchers/dispatch-w9.ps1\""
                     .to_string()
             )]
         );
@@ -3222,6 +3404,75 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_windows_removal_reports_what_git_left_behind() {
+        let (path, profiles) = profiles();
+        let partly = |registered| {
+            let (mut state, id) = task();
+            run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
+                .expect("dispatch");
+            let before = serde_json::to_value(&state).expect("before");
+            let mut host = FakeHost {
+                cleanup: Some(clean_inspection()),
+                git_remove_errors: vec![IN_USE.into()],
+                left_behind: Some(RemovalState::Partial { registered }),
+                ..windows_host()
+            };
+            let error = clean_with_host(&mut state, id, true, &mut host).expect_err("partly");
+            assert_eq!(error.code(), "partly-removed");
+            assert_eq!(
+                serde_json::to_value(&state).expect("after"),
+                before,
+                "record live"
+            );
+            assert_eq!(host.deleted_branches, 0, "the branch keeps every commit");
+            error.to_string()
+        };
+        // Git unregisters before it fails: never "kept … retry", which would now be refused
+        // as a mismatch forever. Deleting the folder lets the next cleanup converge.
+        let unregistered = partly(false);
+        assert!(
+            unregistered.starts_with("partly removed: git unregistered the worktree")
+                && unregistered.contains("every commit is on tsk/t")
+                && unregistered.ends_with("delete the folder, then clean again"),
+            "{unregistered}"
+        );
+        assert!(!unregistered.contains("kept"));
+        let registered = partly(true);
+        assert!(
+            registered.contains("run git worktree remove --force \"/tmp/worktree\""),
+            "{registered}"
+        );
+
+        // A timeout that deleted nothing tracked is its own honest outcome.
+        let (mut state, id) = task();
+        run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
+            .expect("dispatch");
+        let mut host = FakeHost {
+            cleanup: Some(clean_inspection()),
+            git_remove_errors: vec!["git timed out".into()],
+            ..windows_host()
+        };
+        let error = clean_with_host(&mut state, id, true, &mut host).expect_err("timed out");
+        assert_eq!(error, CleanupError::RemovalTimedOut);
+        assert_eq!(error.code(), "removal-timed-out");
+        assert_eq!(
+            error.to_string(),
+            "kept: removal timed out after 15 minutes (retry when the disk is less busy)"
+        );
+
+        // The removal finished after all: the cleanup succeeds.
+        let mut host = FakeHost {
+            cleanup: Some(clean_inspection()),
+            git_remove_errors: vec![IN_USE.into()],
+            left_behind: Some(RemovalState::Gone),
+            ..windows_host()
+        };
+        let result = clean_with_host(&mut state, id, true, &mut host).expect("cleaned");
+        assert_eq!(result.worktree, WorktreeCleanup::Removed);
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
     fn git_removal_failures_name_their_windows_cause() {
         for (text, expected) in [
             (IN_USE, Some(RemovalBlock::FilesInUse)),
@@ -3336,12 +3587,128 @@ mod tests {
     fn launcher_files_are_named_from_the_workspace_id_alone() {
         assert_eq!(launcher_file_name("w7T"), "dispatch-w7T.ps1");
         assert_eq!(launcher_file_name(r"..\w:1"), "dispatch-___w_1.ps1");
+    }
+
+    const POWERSHELL: &str = r"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe";
+
+    #[test]
+    fn the_launch_line_names_the_trusted_powershell_and_a_literal_launcher() {
         assert_eq!(
-            powershell_launch_line(Path::new(
-                r"C:\Users\Some One\tsk\launchers\dispatch-w7T.ps1"
-            )),
-            "powershell -NoProfile -ExecutionPolicy Bypass -File \
-             \"C:\\Users\\Some One\\tsk\\launchers\\dispatch-w7T.ps1\""
+            powershell_launch_line(
+                Path::new(POWERSHELL),
+                Path::new(r"C:\Users\Some One (work)\tsk & co\launchers\dispatch-w7T.ps1")
+            ),
+            Ok(
+                "C:/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile \
+                -ExecutionPolicy Bypass -File \
+                \"C:/Users/Some One (work)/tsk & co/launchers/dispatch-w7T.ps1\""
+                    .to_string()
+            )
+        );
+        // Every character a PowerShell, cmd, or POSIX pane still expands inside double quotes.
+        for state in [
+            r"C:\tsk\$state",
+            r"C:\tsk\$(Start-Process calc)",
+            r"C:\tsk\`tick",
+            r"C:\tsk\%USERPROFILE%",
+            r"C:\tsk\bang!",
+            "C:\\tsk\\smart\u{201c}quote",
+        ] {
+            let launcher = format!(r"{state}\launchers\dispatch-w1.ps1");
+            let refused = powershell_launch_line(Path::new(POWERSHELL), Path::new(&launcher))
+                .expect_err(state);
+            assert!(
+                refused.starts_with(&format!(
+                    "the state directory {} contains",
+                    state.replace('\\', "/")
+                )),
+                "{refused}"
+            );
+        }
+        assert_eq!(
+            powershell_launch_line(Path::new(POWERSHELL), Path::new(r"tsk\launchers\x.ps1")),
+            Err("launcher path tsk/launchers/x.ps1 is not absolute".into())
+        );
+        for powershell in [r"C:\Program Files\PowerShell\powershell.exe", "powershell"] {
+            assert!(
+                powershell_launch_line(Path::new(powershell), Path::new(r"C:\t\x.ps1")).is_err(),
+                "{powershell}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_state_dir_the_pane_would_expand_refuses_before_anything_exists() {
+        let (path, profiles) = profiles();
+        for state in [r"C:\tsk\$state dir", r"C:\tsk\`x", r"C:\tsk\100% here"] {
+            let (mut state_doc, id) = task();
+            let before = serde_json::to_value(&state_doc).expect("before");
+            let mut host = FakeHost {
+                state_dir: Some(state.into()),
+                ..windows_host()
+            };
+            let error = run_with_host(&mut state_doc, id, &profiles, false, true, &mut host)
+                .expect_err("refused");
+            assert_eq!(error.code(), "unsupported-platform", "{state}");
+            assert!(error.to_string().contains("state directory"), "{error}");
+            assert_eq!((host.creates, host.runs.len()), (0, 0), "{state}");
+            assert!(host.launchers.is_empty());
+            assert_eq!(serde_json::to_value(&state_doc).expect("after"), before);
+        }
+        // A space is fine.
+        let (mut state_doc, id) = task();
+        let mut host = FakeHost {
+            state_dir: Some(r"C:\Users\Some One\tsk state".into()),
+            ..windows_host()
+        };
+        run_with_host(&mut state_doc, id, &profiles, false, true, &mut host).expect("dispatch");
+        assert!(host.runs[0]
+            .1
+            .ends_with("-File \"C:/Users/Some One/tsk state/launchers/dispatch-w9.ps1\""));
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn the_system_host_writes_absolute_launchers_in_its_state_dir_and_removes_them() {
+        let relative = PathBuf::from("target").join(format!(
+            "tsk-launchers-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut host = SystemDispatchHost::in_state_dir(&relative);
+        let written = host.write_launcher("w:1", "script").expect("written");
+        let expected = std::env::current_dir()
+            .expect("cwd")
+            .join(&relative)
+            .join("launchers")
+            .join("dispatch-w_1.ps1");
+        assert!(written.is_absolute(), "{}", written.display());
+        assert_eq!(written, expected);
+        assert_eq!(host.launcher_path("w:1"), Ok(expected.clone()));
+        assert_eq!(fs::read_to_string(&written).expect("launcher"), "script");
+        host.remove_launcher("w:1");
+        assert!(!expected.exists());
+        fs::remove_dir_all(relative).expect("cleanup");
+    }
+
+    #[test]
+    fn herdr_windows_worktree_json_records_the_path_without_its_trailing_separator() {
+        let value: Value = serde_json::from_str(
+            r#"{"result":{"worktree":{"path":"C:\\Users\\Some One\\.herdr\\worktrees\\app\\tsk-t1-x\\","branch":"tsk/t1-x"},"workspace":{"workspace_id":"w5"},"root_pane":{"pane_id":"w5:p1"}}}"#,
+        )
+        .expect("json");
+        let created = created_worktree_from_value(value).expect("created");
+        assert_eq!(
+            created.path,
+            PathBuf::from(r"C:\Users\Some One\.herdr\worktrees\app\tsk-t1-x")
+        );
+        assert_eq!(
+            (
+                created.branch.as_str(),
+                created.workspace_id.as_str(),
+                created.root_pane_id.as_str()
+            ),
+            ("tsk/t1-x", "w5", "w5:p1")
         );
     }
 
@@ -3352,7 +3719,10 @@ mod tests {
             (DispatchError::SoftDeletedTask, "soft-deleted-task"),
             (DispatchError::NoAssignee, "no-assignee"),
             (DispatchError::NotInHerdr, "not-in-herdr"),
-            (DispatchError::UnsupportedPlatform, "unsupported-platform"),
+            (
+                DispatchError::UnsupportedPlatform(UNSUPPORTED_PLATFORM.into()),
+                "unsupported-platform",
+            ),
             (DispatchError::NeedsGitProject, "needs-git-project"),
             (DispatchError::DoneTask, "done-task"),
             (DispatchError::ArchivedTask, "archived-task"),

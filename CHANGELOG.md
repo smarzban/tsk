@@ -19,7 +19,7 @@ the GitHub release notes verbatim.
 - Assign tasks to an agent with `@` or `!a name`, and filter a project board by assignee (`t`, then `Tab`).
 - Dispatch: `ctrl+g` starts the assigned agent in its own Git worktree and Herdr workspace. Mark several tasks to dispatch them together; `!b branch` picks the base branch.
 - Completing a dispatched task offers to remove its worktree and merged branch in the background, for one task or a marked set.
-- Dispatch on Windows (preview), through a one-time PowerShell launcher. Cleanup there names files still in use or paths too long, and keeps the dispatch.
+- Dispatch on Windows (preview).
 - `tsk dispatch` and `tsk clean`, plus `--assignee` and `--base` on `tsk add`/`tsk edit`. Agent skill 1.5.0; `tsk update` refreshes installed copies.
 
 ### Fixed

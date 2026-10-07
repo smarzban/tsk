@@ -319,6 +319,10 @@ impl RenderedLaunch {
     /// Windows PowerShell passes arguments to programs (and to the `.ps1` shims npm installs,
     /// which forward them to `node.exe`) without escaping embedded double quotes. Each argument
     /// is pre-escaped for the program's command-line parser so it arrives verbatim.
+    ///
+    /// A `.cmd` or `.bat` file would hand the arguments to cmd.exe, which no escaping makes
+    /// safe for task text, so the program resolves only to an executable or a PowerShell
+    /// script; a name that finds nothing else refuses in the pane and starts nothing.
     pub fn powershell_script(&self) -> String {
         let text = |value: &str| format!("(TskText '{}')", base64_text(value));
         let mut script = String::from(POWERSHELL_PRELUDE);
@@ -330,10 +334,7 @@ impl RenderedLaunch {
             ));
         }
         let (program, arguments) = self.argv.split_first().expect("argv has a program");
-        script.push_str(&format!(
-            "$TskCommand = Get-Command -Name {} -ErrorAction Stop | Select-Object -First 1\n",
-            text(program)
-        ));
+        script.push_str(&format!("$TskCommand = TskProgram {}\n", text(program)));
         script.push_str("$TskArguments = @(\n");
         for argument in arguments {
             script.push_str(&format!("    (TskArgument {})\n", text(argument)));
@@ -359,6 +360,17 @@ function TskArgument([string]$Value) {
     $Value = [regex]::Replace($Value, '(\\*)"', '$1$1\"')
     if ($Value -match '\s') { $Value = [regex]::Replace($Value, '(\\+)$', '$1$1') }
     $Value
+}
+function TskProgram([string]$Name) {
+    $Found = @(Get-Command -Name $Name -All -CommandType Application, ExternalScript -ErrorAction SilentlyContinue)
+    $Safe = @($Found | Where-Object { $_.Path -notmatch '\.(cmd|bat)$' })
+    if ($Safe.Count -gt 0) { return $Safe[0] }
+    if ($Found.Count -gt 0) {
+        [Console]::Error.WriteLine("tsk: not starting ${Name}: it resolves only to the batch file $($Found[0].Path), and cmd.exe would run task text as commands. Point the profile at the agent's .exe or .ps1.")
+    } else {
+        [Console]::Error.WriteLine("tsk: not starting ${Name}: no program or PowerShell script has that name.")
+    }
+    exit 1
 }
 "#;
 

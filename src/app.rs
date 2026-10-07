@@ -351,7 +351,7 @@ fn run_board_loop(
                 &mut model,
                 &mut save_recovery,
                 dispatch::running_inside_herdr(),
-                &mut SystemDispatchHost::in_state_dir(store.path()),
+                &mut board_dispatch_host(&store),
                 &mut |naming| drop(dispatch::spawn_agent_naming(naming)),
             )?;
             if model.quit_after_cleanup_due() {
@@ -3023,6 +3023,11 @@ pub fn open_dispatch_assignee_picker(
     true
 }
 
+/// The real dispatch host for a board: launchers live beside the board's own store.
+fn board_dispatch_host(store: &TaskStore) -> SystemDispatchHost {
+    SystemDispatchHost::in_state_dir(store.path())
+}
+
 /// Apply a board intent. Returns `true` when the board loop should quit.
 ///
 /// In the quick-capture popup (`quick_capture`), the loop also quits once the capture
@@ -3045,7 +3050,7 @@ fn handle_board_intent(
         save_recovery,
         quick_capture,
         dispatch::running_inside_herdr(),
-        &mut SystemDispatchHost::in_state_dir(store.path()),
+        &mut board_dispatch_host(store),
         // Detached: the board never waits on Herdr's agent detection.
         &mut |naming| drop(dispatch::spawn_agent_naming(naming)),
     )
@@ -9662,6 +9667,17 @@ mod quick_assign_tests {
             !NO_ASSIGNEE.contains('@'),
             "the CLI refusal names the CLI route, not a board key"
         );
+    }
+
+    #[test]
+    fn the_boards_dispatch_host_writes_launchers_beside_its_own_store() {
+        use crate::dispatch::DispatchHost;
+        let temp = Temp::new("launchers", &["builder"]);
+        let launcher = super::board_dispatch_host(&temp.store)
+            .launcher_path("w1")
+            .expect("launcher path");
+        assert!(launcher.starts_with(&temp.dir), "{}", launcher.display());
+        assert_eq!(launcher.file_name(), Some("dispatch-w1.ps1".as_ref()));
     }
 
     #[test]

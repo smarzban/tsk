@@ -457,6 +457,205 @@ fn windows_launcher_delivers_argv_and_env_verbatim_through_powershell() {
     fs::remove_dir_all(dir).expect("cleanup");
 }
 
+/// Run a rendered profile's Windows launcher with `bin` first on PATH, as the pane would.
+#[cfg(windows)]
+fn run_windows_launcher(
+    dir: &Path,
+    bin: &Path,
+    profile: &tsk_tui::agents::AgentProfile,
+    title: &str,
+) -> std::process::Output {
+    let rendered = profile.render(&tsk_tui::agents::RenderContext {
+        number: 1,
+        title,
+        notes: "",
+        steps: "",
+        worktree: "C:\\w",
+        branch: "tsk/t1",
+        base: "main",
+    });
+    let launcher = dir.join(format!(
+        "launcher-{}.ps1",
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::write(&launcher, rendered.powershell_script()).expect("launcher");
+    let path = std::env::join_paths(std::iter::once(bin.to_path_buf()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .expect("PATH");
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(&launcher)
+        .env("PATH", path)
+        .output()
+        .expect("powershell");
+    assert!(!launcher.exists(), "the launcher deletes itself");
+    output
+}
+
+/// npm installs an agent as `agent.ps1` and `agent.cmd` shims that forward their arguments to a
+/// native program. The launcher picks the PowerShell shim, and a hostile multiline prompt, an
+/// empty argument, and trailing backslashes reach the native program (`tsk.exe`) intact.
+#[cfg(windows)]
+#[test]
+fn windows_launcher_hands_arguments_through_an_npm_powershell_shim_intact() {
+    use tsk_tui::agents::AgentProfile;
+
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cli-shim-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let (bin, state) = (dir.join("bin"), dir.join("state"));
+    fs::create_dir_all(&bin).expect("bin");
+    fs::create_dir_all(&state).expect("state");
+    let ran_batch = dir.join("ran-batch.txt");
+    fs::write(
+        bin.join("agent.ps1"),
+        format!(
+            "#!/usr/bin/env pwsh\r\n& \"{}\" $args\r\nexit $LASTEXITCODE\r\n",
+            env!("CARGO_BIN_EXE_tsk")
+        ),
+    )
+    .expect("ps1 shim");
+    fs::write(
+        bin.join("agent.cmd"),
+        format!("@echo off\r\necho ran > \"{}\"\r\n", ran_batch.display()),
+    )
+    .expect("cmd shim");
+    let env = [(
+        "TSK_STATE_DIR".to_string(),
+        state.to_string_lossy().into_owned(),
+    )];
+    let prompt = "say \"hi there\" & echo x | y\nnext line $HOME %PATH% `t` end\\";
+
+    // The prompt as notes, after a title with a trailing backslash and a space.
+    let notes = AgentProfile {
+        command: ["agent", "add", "--desk", "-t", "{title}", "-n"]
+            .map(String::from)
+            .to_vec(),
+        prompt: Some(prompt.into()),
+        env: env.clone().into(),
+    };
+    let output = run_windows_launcher(&dir, &bin, &notes, "first title\\");
+    assert!(output.status.success(), "{output:?}");
+    // An empty argument: dropped, `-n` would take `-t` and the add would fail.
+    let empty = AgentProfile {
+        command: ["agent", "add", "--desk", "-n", "", "-t"]
+            .map(String::from)
+            .to_vec(),
+        prompt: Some("second".into()),
+        env: env.into(),
+    };
+    let output = run_windows_launcher(&dir, &bin, &empty, "unused");
+    assert!(output.status.success(), "{output:?}");
+
+    let tasks = TaskStore::new(&state).load().expect("store");
+    let tasks = tasks.tasks();
+    assert_eq!(tasks[0].title, "first title\\");
+    assert_eq!(tasks[0].notes.as_deref(), Some(prompt));
+    assert_eq!(tasks[1].title, "second");
+    assert!(!ran_batch.exists(), "the .cmd shim never runs");
+    fs::remove_dir_all(dir).expect("cleanup");
+}
+
+/// A profile that resolves only to a batch file would hand task text to cmd.exe, where a quote
+/// in a title ends quoting and `&` runs a command. The launcher refuses and starts nothing.
+#[cfg(windows)]
+#[test]
+fn windows_launcher_refuses_a_batch_only_program_before_cmd_sees_task_text() {
+    use tsk_tui::agents::AgentProfile;
+
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cli-batch-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let bin = dir.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let (ran, injected) = (dir.join("ran.txt"), dir.join("injected.txt"));
+    fs::write(
+        bin.join("batchonly.cmd"),
+        format!("@echo off\r\necho ran > \"{}\"\r\n", ran.display()),
+    )
+    .expect("cmd");
+    let profile = AgentProfile {
+        command: vec!["batchonly".into()],
+        prompt: Some("{title}".into()),
+        env: Default::default(),
+    };
+    let title = format!("x\" & echo pwned > \"{}\" & rem \"", injected.display());
+
+    let output = run_windows_launcher(&dir, &bin, &profile, &title);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("tsk: not starting batchonly: it resolves only to the batch file"),
+        "{stderr}"
+    );
+    assert!(!ran.exists(), "the batch file never starts");
+    assert!(!injected.exists(), "task text never reaches cmd.exe");
+    fs::remove_dir_all(dir).expect("cleanup");
+}
+
+/// Where Windows cleanup's in-use check moves a checkout for a moment.
+fn checked_aside(worktree: &Path) -> PathBuf {
+    let mut aside = worktree.as_os_str().to_owned();
+    aside.push(".tsk-cleanup-check");
+    PathBuf::from(aside)
+}
+
+/// A cleanup interrupted between the check's two renames leaves the checkout aside. The next
+/// cleanup must put it back before it reads the worktree as missing and records it cleaned.
+#[test]
+fn cleanup_restores_a_checkout_left_aside_and_still_refuses_its_uncommitted_work() {
+    let repo = CleanupRepo::new();
+    fs::write(repo.worktree.join("work.txt"), "uncommitted").unwrap();
+    fs::rename(&repo.worktree, checked_aside(&repo.worktree)).unwrap();
+    let (mut state, id) = repo.state("base", None);
+
+    let refused = tsk_tui::dispatch::clean_with_host(
+        &mut state,
+        id,
+        false,
+        &mut tsk_tui::dispatch::SystemDispatchHost::default(),
+    )
+    .expect_err("dirty work is never cleaned");
+    assert_eq!(refused, tsk_tui::dispatch::CleanupError::DirtyWorktree);
+    assert_eq!(
+        fs::read_to_string(repo.worktree.join("work.txt")).unwrap(),
+        "uncommitted"
+    );
+    assert!(!checked_aside(&repo.worktree).exists());
+    let record = state.get(id).unwrap().dispatch.as_ref().unwrap();
+    assert!(!record.cleaned, "the dispatch stays live");
+    fs::remove_dir_all(&repo.root).unwrap();
+}
+
+#[test]
+fn cleanup_restores_a_clean_checkout_left_aside_and_keeps_its_unmerged_branch() {
+    let repo = CleanupRepo::new();
+    repo.commit_in_worktree("unmerged work");
+    fs::rename(&repo.worktree, checked_aside(&repo.worktree)).unwrap();
+
+    let result = repo.clean("base", None);
+    assert_eq!(
+        result.worktree,
+        WorktreeCleanup::Removed,
+        "removed, not missing"
+    );
+    assert_eq!(
+        result.branch_reason,
+        Some(tsk_tui::dispatch::BranchRetentionReason::NotMerged)
+    );
+    assert!(!repo.worktree.exists() && !checked_aside(&repo.worktree).exists());
+    assert_eq!(
+        repo.git(&["branch", "--list", "tsk/t1-clean"]),
+        "tsk/t1-clean"
+    );
+    fs::remove_dir_all(&repo.root).unwrap();
+}
+
 struct CleanupRepo {
     root: PathBuf,
     project: PathBuf,
