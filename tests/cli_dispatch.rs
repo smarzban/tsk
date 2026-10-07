@@ -708,6 +708,73 @@ fn status_done_clean_keeps_the_branch_when_the_remote_is_unreachable() {
 }
 
 #[test]
+fn status_done_clean_on_an_already_cleaned_dispatch_succeeds_with_nothing_to_clean() {
+    let repo = CleanupRepo::new();
+    let (mut state, id) = repo.state("base", None);
+    state.record_dispatch_cleaned(id).unwrap();
+    let dir = repo.root.join("state");
+    TaskStore::new(dir.clone()).save(&state).unwrap();
+    let output = run_with(
+        [
+            "tsk",
+            "status",
+            "T1",
+            "done",
+            "--clean",
+            "--state-dir",
+            dir.to_str().unwrap(),
+        ],
+        Cursor::new(Vec::<u8>::new()),
+        true,
+    );
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    assert_eq!(output.stdout, "status T1 done cleanup\nnothing to clean\n");
+    assert_eq!(output.stderr, "");
+    // The explicit verb still refuses: there the user asked for cleanup specifically.
+    let explicit = run_with(
+        ["tsk", "clean", "T1", "--state-dir", dir.to_str().unwrap()],
+        Cursor::new(Vec::<u8>::new()),
+        true,
+    );
+    assert_eq!(explicit.code, 1);
+    assert_eq!(
+        explicit.stderr,
+        "tsk clean: already-cleaned: dispatch is already cleaned\n"
+    );
+}
+
+#[test]
+fn status_done_clean_still_refuses_a_dirty_worktree_after_done_persists() {
+    let repo = CleanupRepo::new();
+    let (state, _) = repo.state("base", None);
+    let dir = repo.root.join("state");
+    TaskStore::new(dir.clone()).save(&state).unwrap();
+    fs::write(repo.worktree.join("wip.txt"), "unsaved").unwrap();
+    let output = run_with(
+        [
+            "tsk",
+            "status",
+            "T1",
+            "done",
+            "--clean",
+            "--state-dir",
+            dir.to_str().unwrap(),
+        ],
+        Cursor::new(Vec::<u8>::new()),
+        true,
+    );
+    assert_eq!(output.code, 1);
+    assert!(
+        output.stderr.starts_with("tsk status: dirty-worktree:"),
+        "{}",
+        output.stderr
+    );
+    assert!(repo.worktree.exists());
+    let task = TaskStore::new(&dir).load().unwrap().tasks()[0].clone();
+    assert_eq!(task.status, tsk_tui::domain::HumanStatus::Done);
+}
+
+#[test]
 fn cleanup_inside_the_fetch_window_trusts_the_fresh_refs() {
     let repo = CleanupRepo::new();
     let remote = repo.root.join("remote.git");

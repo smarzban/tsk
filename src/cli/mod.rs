@@ -5,6 +5,8 @@ use std::io::{IsTerminal, Read};
 
 use serde_json::Value;
 
+use crate::dispatch::CleanupError;
+
 pub mod add;
 pub mod archive;
 pub mod clean;
@@ -202,6 +204,10 @@ fn run_status(args: Vec<String>) -> CliOutput {
                     Ok(result) => output
                         .stdout
                         .push_str(&presenter::cleaned(result, false).stdout),
+                    // `--clean` means clean what is there: no live dispatch is success.
+                    Err(CleanupError::NotDispatched | CleanupError::AlreadyCleaned) => {
+                        output.stdout.push_str("nothing to clean\n")
+                    }
                     Err(error) => {
                         let refused = presenter::clean_rejected(error, task);
                         output.stderr = refused.stderr.replacen("tsk clean:", "tsk status:", 1);

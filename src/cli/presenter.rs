@@ -1154,7 +1154,10 @@ pub fn status_help() -> CliOutput {
                     "<status>",
                     "open, ready, started (or start), blocked, review, or done",
                 ),
-                ("--clean", "after setting done, safely clean its dispatch"),
+                (
+                    "--clean",
+                    "after setting done, safely clean its dispatch if it has a live one",
+                ),
                 ("--state-dir <dir>", "use another board store"),
             ],
         )],
