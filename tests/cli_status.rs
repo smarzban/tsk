@@ -167,8 +167,8 @@ fn status_unknown_and_deleted_refuse_without_mutation() {
 }
 
 #[test]
-fn status_done_clean_persists_done_even_when_cleanup_refuses() {
-    let dir = temp_state_dir("done-clean-refusal");
+fn status_done_clean_without_a_dispatch_succeeds_with_nothing_to_clean() {
+    let dir = temp_state_dir("done-clean-nothing");
     let _guard = TempDirGuard(dir.clone());
     assert_eq!(add_task(&dir, "finish and clean").code, 0);
 
@@ -181,12 +181,12 @@ fn status_done_clean_persists_done_even_when_cleanup_refuses() {
         "--state-dir".into(),
         dir.to_string_lossy().into_owned(),
     ]);
-    assert_eq!(output.code, 1);
-    assert_eq!(output.stdout, "status T1 done finish and clean\n");
+    assert_eq!(output.code, 0, "{}", output.stderr);
     assert_eq!(
-        output.stderr,
-        "tsk status: not-dispatched: task has no dispatch to clean\n"
+        output.stdout,
+        "status T1 done finish and clean\nnothing to clean\n"
     );
+    assert_eq!(output.stderr, "");
     assert_eq!(loaded_status(&dir).0, HumanStatus::Done);
 
     let invalid = cli(vec![

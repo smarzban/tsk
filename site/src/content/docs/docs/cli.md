@@ -198,7 +198,7 @@ tsk status T12 done --clean
 
 Accepts `open`, `ready`, `started` (or `start`), `blocked`, `review`, and `done`.
 
-Unlike keyboard toggles, this command sets the requested status directly. Repeating the same value is safe. `--clean` is valid only with `done`: tsk saves done first, then runs [`tsk clean`](#clean). A cleanup refusal exits 1 and leaves the task done.
+Unlike keyboard toggles, this command sets the requested status directly. Repeating the same value is safe. `--clean` is valid only with `done`: tsk saves done first, then runs [`tsk clean`](#clean) when the task has a live dispatch. With no dispatch, or one already cleaned, it exits 0 and prints `nothing to clean`. A real cleanup refusal (such as `dirty-worktree`) exits 1 and leaves the task done.
 
 Output: `status T12 <status> <title>`. The output uses `started`, even when the input was `start`.
 
@@ -410,7 +410,7 @@ After an uncertain add, inspect `tsk list --all --json`. Also check `--done` and
 | Dispatch | `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `unsupported-platform`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, `unknown-base`, `herdr-failed` |
 | Clean | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `herdr-failed` |
 | Steps | `empty-step-text`, `invalid-step-text`, `unknown-task`, `soft-deleted-task`, `unknown-step`, `ambiguous-step` |
-| Status | `unknown-task`, `soft-deleted-task`; with `--clean`, cleanup codes above |
+| Status | `unknown-task`, `soft-deleted-task`; with `--clean`, cleanup codes above except `not-dispatched` and `already-cleaned` |
 | Archive / unarchive | `unknown-task`, `soft-deleted-task` |
 
 A refusal prints as `tsk <command>: <code>: <message>` on stderr, for example `tsk status: unknown-task: T99 is not on the board`. Branch on the code; the message is for people and may change.
