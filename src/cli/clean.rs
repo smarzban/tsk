@@ -3,14 +3,14 @@
 use std::path::PathBuf;
 
 use crate::cli::parser::TaskAddress;
-use crate::dispatch::{self, CleanupError, CleanupResult, DispatchHost, SystemDispatchHost};
+use crate::dispatch::{self, CleanupError, CleanupResult, DispatchHost};
 use crate::store::{default_state_dir, TaskStore};
 
 pub fn run(target: TaskAddress, state_dir: Option<PathBuf>) -> Result<CleanupResult, CleanupError> {
-    let mut host = SystemDispatchHost;
+    let (state_dir, mut host) = crate::cli::dispatch::system_host(state_dir);
     run_with_host(
         target,
-        state_dir,
+        Some(state_dir),
         dispatch::running_inside_herdr(),
         &mut host,
     )

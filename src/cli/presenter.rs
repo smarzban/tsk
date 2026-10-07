@@ -968,6 +968,7 @@ pub fn dispatch_help() -> CliOutput {
             "no-assignee".into(),
             "not-in-herdr".into(),
             "unsupported-platform".into(),
+            "unsafe-state-dir".into(),
             "needs-git-project".into(),
             "done-task".into(),
             "archived-task".into(),
@@ -1009,6 +1010,10 @@ pub fn clean_help() -> CliOutput {
             "already-cleaned".into(),
             "dirty-worktree".into(),
             "worktree-mismatch".into(),
+            "files-in-use".into(),
+            "path-too-long".into(),
+            "removal-timed-out".into(),
+            "partly-removed".into(),
             "herdr-failed".into(),
         ],
         exit: exit_line(

@@ -351,7 +351,7 @@ fn run_board_loop(
                 &mut model,
                 &mut save_recovery,
                 dispatch::running_inside_herdr(),
-                &mut SystemDispatchHost,
+                &mut board_dispatch_host(&store),
                 &mut |naming| drop(dispatch::spawn_agent_naming(naming)),
             )?;
             if model.quit_after_cleanup_due() {
@@ -3023,6 +3023,11 @@ pub fn open_dispatch_assignee_picker(
     true
 }
 
+/// The real dispatch host for a board: launchers live beside the board's own store.
+fn board_dispatch_host(store: &TaskStore) -> SystemDispatchHost {
+    SystemDispatchHost::in_state_dir(store.path())
+}
+
 /// Apply a board intent. Returns `true` when the board loop should quit.
 ///
 /// In the quick-capture popup (`quick_capture`), the loop also quits once the capture
@@ -3045,7 +3050,7 @@ fn handle_board_intent(
         save_recovery,
         quick_capture,
         dispatch::running_inside_herdr(),
-        &mut SystemDispatchHost,
+        &mut board_dispatch_host(store),
         // Detached: the board never waits on Herdr's agent detection.
         &mut |naming| drop(dispatch::spawn_agent_naming(naming)),
     )
@@ -9570,8 +9575,6 @@ mod quick_assign_tests {
         assert_eq!(task.revision, before);
     }
 
-    // Dispatch refuses on Windows before the picker can open; see the Windows test below.
-    #[cfg(unix)]
     #[test]
     fn none_in_the_ctrl_g_picker_never_dispatches() {
         let temp = Temp::new("ctrl-g-none", &["builder"]);
@@ -9610,7 +9613,6 @@ mod quick_assign_tests {
         assert_eq!(host.launched, 0);
     }
 
-    #[cfg(unix)]
     #[test]
     fn ctrl_g_on_an_unassigned_task_assigns_then_dispatches() {
         let temp = Temp::new("ctrl-g", &["builder", "reviewer"]);
@@ -9644,7 +9646,6 @@ mod quick_assign_tests {
             .is_some_and(|message| message.contains("dispatched")));
     }
 
-    #[cfg(unix)]
     #[test]
     fn ctrl_g_without_profiles_keeps_the_refusal() {
         use crate::dispatch::{BOARD_NO_ASSIGNEE, NO_ASSIGNEE};
@@ -9668,26 +9669,15 @@ mod quick_assign_tests {
         );
     }
 
-    #[cfg(windows)]
     #[test]
-    fn ctrl_g_on_an_unassigned_task_refuses_on_windows_before_the_picker() {
-        let temp = Temp::new("windows", &["builder"]);
-        let (mut domain, mut model, ids) = board(&temp, &["no dispatch here"]);
-        select(&mut domain, &mut model, ids[0]);
-        let mut host = fake_host(&temp);
-        let ctrl_g = key(&model, KeyCode::Char('g'), KeyModifiers::CONTROL);
-        handle(&temp, &mut domain, &mut model, ctrl_g, &mut host);
-        assert!(!model.list_picker_open(), "no picker opens");
-        assert_eq!(
-            model.message(),
-            Some(
-                crate::dispatch::DispatchError::UnsupportedPlatform
-                    .to_string()
-                    .as_str()
-            )
-        );
-        assert_eq!(domain.get(ids[0]).expect("task").assignee, None);
-        assert_eq!(host.launched, 0);
+    fn the_boards_dispatch_host_writes_launchers_beside_its_own_store() {
+        use crate::dispatch::DispatchHost;
+        let temp = Temp::new("launchers", &["builder"]);
+        let launcher = super::board_dispatch_host(&temp.store)
+            .launcher_path("w1")
+            .expect("launcher path");
+        assert!(launcher.starts_with(&temp.dir), "{}", launcher.display());
+        assert_eq!(launcher.file_name(), Some("dispatch-w1.ps1".as_ref()));
     }
 
     #[test]
@@ -10026,7 +10016,6 @@ mod quick_assign_tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_failed_launch_after_picking_leaves_the_task_assigned_only() {
         let temp = Temp::new("launch-fails", &["builder"]);
@@ -10066,7 +10055,6 @@ mod quick_assign_tests {
         );
     }
 
-    #[cfg(unix)]
     fn click_picker_row(model: &BoardModel, label: &str) -> BoardIntent {
         let area = Rect::new(0, 0, 80, 24);
         let hits = board_hit_map(area, model);
@@ -10083,7 +10071,6 @@ mod quick_assign_tests {
         map_board_mouse(model, &hits, left_click(hit.area.x, hit.area.y)).expect("click intent")
     }
 
-    #[cfg(unix)]
     #[test]
     fn clicking_a_profile_in_the_ctrl_g_picker_dispatches_and_none_does_not() {
         let temp = Temp::new("click", &["builder", "reviewer"]);
@@ -10186,12 +10173,12 @@ mod quick_assign_tests {
         );
     }
 
-    /// Bulk dispatch (`ctrl+g` on a marked set). Dispatch refuses on Windows before any card.
-    #[cfg(unix)]
+    /// Bulk dispatch (`ctrl+g` on a marked set).
     mod bulk_dispatch {
         use super::*;
         use crate::dispatch::{AgentNaming, EligibleDispatch, GitChecks, LaunchBatch};
         use crate::domain::{Dispatch, HumanStatus};
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
 
         /// Mark `ids` on the board after saving them.
@@ -10359,6 +10346,7 @@ mod quick_assign_tests {
                 batch.land(job, outcome);
             }
 
+            #[cfg(unix)]
             fn batch(&self) -> &LaunchBatch {
                 &self.batch.as_ref().expect("launches started").0
             }
@@ -10941,6 +10929,8 @@ mod quick_assign_tests {
         /// The store cannot be read when a launch lands: the board stays up, the launch goes to
         /// save recovery, a later landing waits on the batch, and Retry saves both and shows the
         /// batch outcome.
+        // A read-only store needs Unix permissions.
+        #[cfg(unix)]
         #[test]
         fn a_store_failure_while_launches_land_goes_to_recovery_and_retry_keeps_them() {
             let (temp, mut domain, mut model, ids) = two_marked("bulk-read-fail");
@@ -11005,6 +10995,8 @@ mod quick_assign_tests {
 
         /// Cancel on a failed landing save discards the record, so the outcome says the agent
         /// launched without one and where it runs, never that it was dispatched.
+        // A read-only store needs Unix permissions.
+        #[cfg(unix)]
         #[test]
         fn cancelling_a_failed_landing_save_reports_the_launch_as_not_recorded() {
             let (temp, mut domain, mut model, ids) = two_marked("bulk-cancel");
@@ -11287,6 +11279,8 @@ mod quick_assign_tests {
         /// A landing whose save fails while the human has a task edit open (a typed title,
         /// then the assignee field) never takes that form over: Retry and Cancel both leave the
         /// form, its focus, and its draft exactly as they were.
+        // A read-only store needs Unix permissions.
+        #[cfg(unix)]
         #[test]
         fn a_landing_save_failure_never_closes_an_open_task_edit() {
             for retry in [true, false] {
@@ -11373,6 +11367,8 @@ mod quick_assign_tests {
         /// With launches outstanding, a store that cannot be read refuses a mutating key on the
         /// status row and a second dispatch is refused before any read: the board never exits,
         /// and the launches still land once the store is back.
+        // A read-only store needs Unix permissions.
+        #[cfg(unix)]
         #[test]
         fn an_unreadable_store_during_a_batch_never_exits_the_board() {
             let (temp, mut domain, mut model, ids) = two_marked("bulk-unreadable");
@@ -11512,7 +11508,7 @@ mod quick_assign_tests {
             let eligible = crate::dispatch::check_task(&domain, id, &temp.profiles(), true)
                 .expect("eligible before the git check");
             let board_thread = std::thread::current().id();
-            let mut host = SystemDispatchHost;
+            let mut host = SystemDispatchHost::default();
 
             let checks = host.begin_git_checks(vec![project.clone()]);
             let results = eventually(|| checks.take());

@@ -71,7 +71,7 @@ Assign threads when [capturing](/docs/capture/#title-tokens) or [editing a task]
 
 ## Agents
 
-Assign a task to an agent, dispatch it into its own Git worktree and Herdr workspace, then clean up when you complete it. Agents are profiles you define in [`config.toml`](/docs/storage/#agent-profiles). Dispatch needs Herdr on macOS or Linux; assigning works everywhere.
+Assign a task to an agent, dispatch it into its own Git worktree and Herdr workspace, then clean up when you complete it. Agents are profiles you define in [`config.toml`](/docs/storage/#agent-profiles). Dispatch needs Herdr; on Windows it is a [preview](#dispatch-on-windows-preview). Assigning works everywhere.
 
 ### Assign
 
@@ -98,7 +98,25 @@ A started task with a live dispatch shows `◉` instead of `●`.
 
 On an unassigned task `ctrl+g` opens the assignee picker first: choosing a profile saves the assignment, then dispatches; **none** or `Esc` changes nothing. With no profile defined, `ctrl+g` refuses: "no agent assigned: press @ or add a profile to config.toml".
 
-Dispatch needs a task in a project that is a Git repository, an assignee with a profile, and a status other than done; archived tasks are refused. On Windows `ctrl+g` refuses with "dispatch needs herdr on macOS or Linux".
+Dispatch needs a task in a project that is a Git repository, an assignee with a profile, and a status other than done; archived tasks are refused.
+
+### Dispatch on Windows (preview)
+
+Herdr on Windows is a preview, and so is dispatch there.
+
+- A profile's `command` must find an `.exe` (`claude`) or a PowerShell script (`pi`, `codex`). Batch files (`.cmd`, `.bat`) are refused, because cmd.exe could run task text as commands; the pane says so and nothing starts.
+- The [state directory](/docs/storage/) must not contain `$`, `` ` ``, `%`, `"`, or `!`. Dispatch refuses one that does with `unsafe-state-dir`.
+- If Git's `core.longpaths` is off, dispatch says so once; turn it on with `git config --global core.longpaths true`.
+
+Cleanup on Windows can stop with one of these, and keeps the task's dispatch until a later cleanup succeeds:
+
+| Message | What to do |
+| --- | --- |
+| files in use | Close what is running in the worktree, then clean again. |
+| path too long | Run `git config --global core.longpaths true`, then clean again. |
+| removal timed out | Clean again. |
+| partly removed | Follow the message, which says what is left and how to finish. Every commit is on the task's branch. |
+| uncommitted changes | Commit or discard the changes in the worktree, then clean again. |
 
 ### Base branch
 

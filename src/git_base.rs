@@ -196,15 +196,119 @@ impl Capture {
         Ok(bytes)
     }
 }
-fn stop_git(child: &mut std::process::Child) {
+fn stop_git(child: &mut std::process::Child, tree: &ProcessTree) {
     #[cfg(unix)]
     // SAFETY: our child was spawned into its own process group. This also stops
     // Git's SSH/credential children, never processes in the caller's group.
     unsafe {
         libc::kill(-(child.id() as i32), libc::SIGKILL);
     }
+    tree.kill();
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// Everything a spawned process starts, so a timeout stops the whole tree. On Unix the
+/// process group does this; on Windows a Job Object holds the child from just after spawn
+/// (a grandchild started in that instant escapes it). Closing the job's last handle kills
+/// whatever is still in it, so a crashed tsk leaves no stuck Git behind either, unless the
+/// tree is meant to outlive tsk.
+struct ProcessTree {
+    #[cfg(windows)]
+    job: Option<job::Job>,
+}
+
+impl ProcessTree {
+    fn contain(_child: &std::process::Child, _outlive_tsk: bool) -> Self {
+        Self {
+            #[cfg(windows)]
+            job: job::Job::contain(_child, !_outlive_tsk),
+        }
+    }
+
+    fn kill(&self) {
+        #[cfg(windows)]
+        if let Some(job) = &self.job {
+            job.kill();
+        }
+    }
+
+    /// The process exited on its own: let anything it detached on purpose (Git's background
+    /// auto-gc) outlive the job instead of dying with its handle.
+    fn release(self) {
+        #[cfg(windows)]
+        if let Some(job) = self.job {
+            job.release();
+        }
+    }
+}
+
+#[cfg(windows)]
+mod job {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    pub(super) struct Job(HANDLE);
+
+    impl Job {
+        pub(super) fn contain(child: &std::process::Child, kill_on_close: bool) -> Option<Self> {
+            // SAFETY: plain Win32 calls on handles we own; the limit structure outlives the
+            // call that reads it, and `Job` closes the job handle exactly once.
+            unsafe {
+                let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if handle.is_null() {
+                    return None;
+                }
+                let job = Self(handle);
+                if kill_on_close && !job.limit(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) {
+                    return None;
+                }
+                if AssignProcessToJobObject(handle, child.as_raw_handle() as HANDLE) == 0 {
+                    return None;
+                }
+                Some(job)
+            }
+        }
+
+        fn limit(&self, flags: u32) -> bool {
+            // SAFETY: see `contain`.
+            unsafe {
+                let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                limits.BasicLimitInformation.LimitFlags = flags;
+                SetInformationJobObject(
+                    self.0,
+                    JobObjectExtendedLimitInformation,
+                    std::ptr::addr_of!(limits).cast(),
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                ) != 0
+            }
+        }
+
+        pub(super) fn kill(&self) {
+            // SAFETY: see `contain`.
+            unsafe {
+                TerminateJobObject(self.0, 1);
+            }
+        }
+
+        pub(super) fn release(self) {
+            self.limit(0);
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // SAFETY: the handle came from CreateJobObjectW and is closed only here.
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
 }
 
 fn run_git(
@@ -213,7 +317,7 @@ fn run_git(
     timeout: std::time::Duration,
     capture: bool,
 ) -> Result<std::process::Output, String> {
-    run_git_env(project, args, &[], timeout, capture)
+    run_git_env(project, args, &[], timeout, capture, None)
 }
 
 fn run_git_env(
@@ -222,6 +326,8 @@ fn run_git_env(
     envs: &[(&str, &str)],
     timeout: std::time::Duration,
     capture: bool,
+    // Some: the Git tree outlives tsk, and the callback runs once it has started.
+    outlive_tsk: Option<&mut dyn FnMut()>,
 ) -> Result<std::process::Output, String> {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
@@ -258,20 +364,25 @@ fn run_git_env(
     let mut child = command
         .spawn()
         .map_err(|error| format!("could not run git: {error}"))?;
+    let tree = ProcessTree::contain(&child, outlive_tsk.is_some());
+    if let Some(started) = outlive_tsk {
+        started();
+    }
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Err(error) => {
-                stop_git(&mut child);
+                stop_git(&mut child, &tree);
                 return Err(format!("could not wait for git: {error}"));
             }
             Ok(None) if Instant::now() >= deadline => {
-                stop_git(&mut child);
+                stop_git(&mut child, &tree);
                 return Err("git timed out".into());
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(5)),
         }
     };
+    tree.release();
     Ok(std::process::Output {
         status,
         stdout: stdout
@@ -300,6 +411,19 @@ pub fn git_process_output_timeout(
     timeout: std::time::Duration,
 ) -> Result<std::process::Output, String> {
     run_git(project, args, timeout, true)
+}
+
+/// Captured Git work that must never stop halfway because tsk exits: it still stops at
+/// `timeout` while tsk waits, but if tsk exits first (a board quit outliving its bound) the
+/// Git tree finishes on its own instead of dying with tsk's job handle. `started` runs once
+/// Git is running.
+pub fn git_process_output_outliving_tsk(
+    project: &Path,
+    args: &[&str],
+    timeout: std::time::Duration,
+    started: &mut dyn FnMut(),
+) -> Result<std::process::Output, String> {
+    run_git_env(project, args, &[], timeout, true, Some(started))
 }
 
 /// Bounded, noninteractive local query with deadlock-free output capture.
@@ -360,13 +484,14 @@ fn bounded_git(project: &Path, args: &[&str]) -> Result<(), String> {
 }
 
 fn bounded_git_env(project: &Path, args: &[&str], envs: &[(&str, &str)]) -> Result<(), String> {
-    let output = run_git_env(project, args, envs, fetch_deadline(), false).map_err(|reason| {
-        if reason == "git timed out" {
-            "fetch timed out".into()
-        } else {
-            reason
-        }
-    })?;
+    let output =
+        run_git_env(project, args, envs, fetch_deadline(), false, None).map_err(|reason| {
+            if reason == "git timed out" {
+                "fetch timed out".into()
+            } else {
+                reason
+            }
+        })?;
     if output.status.success() {
         Ok(())
     } else {
@@ -862,6 +987,153 @@ pub fn short_name_for_remote(reference: &str, remote: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The child half of [`a_git_meant_to_outlive_tsk_survives_tsk_exiting_and_others_do_not`]:
+    /// a test process that runs one long Git and is killed while it waits.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "helper process, run by its parent test"]
+    fn outliving_git_helper() {
+        let (Some(dir), Some(alias)) = (
+            std::env::var_os("TSK_OUTLIVE_DIR"),
+            std::env::var("TSK_OUTLIVE_ALIAS").ok(),
+        ) else {
+            return;
+        };
+        let outlive = std::env::var("TSK_OUTLIVE").as_deref() == Ok("1");
+        let mut started = || {};
+        let _ = run_git_env(
+            Path::new(&dir),
+            &["-c", &alias, "hang"],
+            &[],
+            std::time::Duration::from_secs(120),
+            true,
+            outlive.then_some(&mut started as &mut dyn FnMut()),
+        );
+    }
+
+    /// A board quit that outlives its bound ends tsk while a Windows worktree removal runs.
+    /// Ordinary Git dies with tsk; a removal's Git must finish, never stop mid-delete.
+    #[cfg(windows)]
+    #[test]
+    fn a_git_meant_to_outlive_tsk_survives_tsk_exiting_and_others_do_not() {
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+            PROCESS_TERMINATE,
+        };
+        for outlive in [false, true] {
+            let dir = std::env::temp_dir().join(format!(
+                "tsk-git-outlive-{}-{}",
+                std::process::id(),
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&dir).expect("mkdir");
+            let pid_file = dir.join("pid.txt");
+            let alias = format!(
+                "alias.hang=!powershell -NoProfile -Command '$PID | Out-File -Encoding ascii \
+                 \"{}\"; Start-Sleep 60'",
+                pid_file.to_string_lossy().replace('\\', "/")
+            );
+            let mut helper = std::process::Command::new(std::env::current_exe().expect("exe"))
+                .args([
+                    "--exact",
+                    "git_base::tests::outliving_git_helper",
+                    "--ignored",
+                    "--test-threads=1",
+                ])
+                .env("TSK_OUTLIVE_DIR", &dir)
+                .env("TSK_OUTLIVE_ALIAS", &alias)
+                .env("TSK_OUTLIVE", if outlive { "1" } else { "0" })
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("helper");
+            let started = std::time::Instant::now();
+            let pid: u32 = loop {
+                if let Some(pid) = std::fs::read_to_string(&pid_file)
+                    .ok()
+                    .and_then(|text| text.trim().parse().ok())
+                {
+                    break pid;
+                }
+                assert!(
+                    started.elapsed() < std::time::Duration::from_secs(60),
+                    "no grandchild"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            };
+            // tsk exits mid-Git, as when a board quit outlives its bound.
+            helper.kill().expect("kill helper");
+            helper.wait().expect("reap helper");
+            // SAFETY: plain Win32 calls on a handle opened and closed here.
+            let exited = unsafe {
+                let handle = OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid);
+                if handle.is_null() {
+                    true
+                } else {
+                    let exited = WaitForSingleObject(handle, 5_000) == WAIT_OBJECT_0;
+                    TerminateProcess(handle, 1);
+                    CloseHandle(handle);
+                    exited
+                }
+            };
+            assert_eq!(exited, !outlive, "outlive {outlive}: grandchild {pid}");
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    /// A timed-out Git takes its whole process tree down, as the Unix process group does:
+    /// here an alias whose shell starts a long-lived PowerShell grandchild.
+    #[cfg(windows)]
+    #[test]
+    fn a_timed_out_git_kills_its_grandchildren_on_windows() {
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "tsk-git-tree-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let pid_file = dir.join("pid.txt");
+        let alias = format!(
+            "alias.hang=!powershell -NoProfile -Command '$PID | Out-File -Encoding ascii \
+             \"{}\"; Start-Sleep 120'",
+            pid_file.to_string_lossy().replace('\\', "/")
+        );
+        let started = std::time::Instant::now();
+        let outcome = git_process_output_timeout(
+            &dir,
+            &["-c", &alias, "hang"],
+            std::time::Duration::from_secs(8),
+        );
+        assert_eq!(outcome.map(|_| ()), Err("git timed out".to_string()));
+        assert!(started.elapsed() < std::time::Duration::from_secs(30));
+        let pid: u32 = std::fs::read_to_string(&pid_file)
+            .expect("the grandchild started before the deadline")
+            .trim()
+            .parse()
+            .expect("pid");
+        // SAFETY: plain Win32 calls on a handle opened and closed here.
+        let exited = unsafe {
+            let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+            if handle.is_null() {
+                true // already gone and reaped
+            } else {
+                let waited = WaitForSingleObject(handle, 5_000);
+                CloseHandle(handle);
+                waited == WAIT_OBJECT_0
+            }
+        };
+        assert!(
+            exited,
+            "PowerShell grandchild {pid} outlived the timed-out git"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, SystemTime};

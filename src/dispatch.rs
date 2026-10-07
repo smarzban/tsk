@@ -38,7 +38,28 @@ pub const NO_ASSIGNEE: &str = "no agent assigned, use tsk edit T<n> --assignee <
 pub const BOARD_NO_ASSIGNEE: &str = "no agent assigned: press @ or add a profile to config.toml";
 pub const NOT_IN_HERDR: &str = "dispatch works inside herdr for now";
 pub const NEEDS_GIT_PROJECT: &str = "dispatch needs a project in a git repo";
-pub const UNSUPPORTED_PLATFORM: &str = "dispatch needs herdr on macOS or Linux";
+pub const UNSUPPORTED_PLATFORM: &str = "dispatch on Windows needs Windows PowerShell";
+/// Said once per Windows dispatch whose repository leaves Git's long-path support off.
+pub const LONG_PATHS_OFF: &str = "core.longpaths is off, so deep paths in the worktree may fail; enable it with git config --global core.longpaths true";
+
+/// Which shell a host launches agents through and whose filesystem rules cleanup meets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostPlatform {
+    /// One `$SHELL -lc` command line typed into the pane.
+    Unix,
+    /// A per-dispatch Windows PowerShell launcher script, run with `powershell -File`.
+    Windows,
+}
+
+impl HostPlatform {
+    pub fn native() -> Self {
+        if cfg!(windows) {
+            Self::Windows
+        } else {
+            Self::Unix
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CleanupInspection {
@@ -237,6 +258,15 @@ pub enum CleanupError {
     /// Board only: the task's dispatch is no longer the one its cleanup card inspected
     /// (another board or the CLI cleaned or relaunched it), so nothing is touched.
     DispatchChanged,
+    /// Windows refused the removal because a process still holds files in the worktree.
+    FilesInUse,
+    /// Windows refused the removal because a path in the worktree exceeds MAX_PATH.
+    PathTooLong,
+    /// Windows: git's removal outlived its deadline with nothing deleted that matters.
+    RemovalTimedOut,
+    /// Windows: git's removal stopped partway. The message says what is left and how to
+    /// finish by hand; the branch keeps every commit.
+    PartlyRemoved(String),
     Herdr(String),
     Store(String),
 }
@@ -251,6 +281,10 @@ impl CleanupError {
             Self::DirtyWorktree => "uncommitted changes",
             Self::WorktreeMismatch => "worktree mismatch",
             Self::DispatchChanged => "dispatch changed",
+            Self::FilesInUse => "files in use",
+            Self::PathTooLong => "path too long",
+            Self::RemovalTimedOut => "removal timed out",
+            Self::PartlyRemoved(_) => "partly removed",
             Self::Herdr(_) => "removal failed",
             Self::Store(_) => "save failed",
         }
@@ -264,6 +298,10 @@ impl CleanupError {
             Self::DirtyWorktree => "dirty-worktree",
             Self::WorktreeMismatch => "worktree-mismatch",
             Self::DispatchChanged => "dispatch-changed",
+            Self::FilesInUse => "files-in-use",
+            Self::PathTooLong => "path-too-long",
+            Self::RemovalTimedOut => "removal-timed-out",
+            Self::PartlyRemoved(_) => "partly-removed",
             Self::Herdr(_) => "herdr-failed",
             Self::Store(_) => "store-error",
         }
@@ -284,7 +322,22 @@ impl std::fmt::Display for CleanupError {
                 )
             }
             Self::DispatchChanged => write!(formatter, "changed since the card opened"),
-            Self::Herdr(reason) | Self::Store(reason) => write!(formatter, "{reason}"),
+            Self::FilesInUse => write!(
+                formatter,
+                "kept: files in use (close what is running in the worktree and retry)"
+            ),
+            Self::PathTooLong => write!(
+                formatter,
+                "kept: path too long (run git config --global core.longpaths true and retry)"
+            ),
+            Self::RemovalTimedOut => write!(
+                formatter,
+                "kept: removal timed out after {} minutes (retry when the disk is less busy)",
+                WINDOWS_REMOVAL_TIMEOUT.as_secs() / 60
+            ),
+            Self::PartlyRemoved(reason) | Self::Herdr(reason) | Self::Store(reason) => {
+                write!(formatter, "{reason}")
+            }
         }
     }
 }
@@ -315,7 +368,12 @@ pub enum DispatchError {
     UnknownTask,
     NoAssignee,
     NotInHerdr,
-    UnsupportedPlatform,
+    /// Windows cannot launch here: no Windows PowerShell, or a path the pane's shell would
+    /// rewrite.
+    UnsupportedPlatform(String),
+    /// Windows: the state directory holds a character the pane's shell would expand in the
+    /// launch line.
+    UnsafeStateDir(String),
     NeedsGitProject,
     DoneTask,
     ArchivedTask,
@@ -334,7 +392,8 @@ impl DispatchError {
             Self::UnknownTask => "unknown-task",
             Self::NoAssignee => "no-assignee",
             Self::NotInHerdr => "not-in-herdr",
-            Self::UnsupportedPlatform => "unsupported-platform",
+            Self::UnsupportedPlatform(_) => "unsupported-platform",
+            Self::UnsafeStateDir(_) => "unsafe-state-dir",
             Self::NeedsGitProject => "needs-git-project",
             Self::DoneTask => "done-task",
             Self::ArchivedTask => "archived-task",
@@ -355,7 +414,6 @@ impl std::fmt::Display for DispatchError {
             Self::UnknownTask => write!(formatter, "task is not on the board"),
             Self::NoAssignee => write!(formatter, "{NO_ASSIGNEE}"),
             Self::NotInHerdr => write!(formatter, "{NOT_IN_HERDR}"),
-            Self::UnsupportedPlatform => write!(formatter, "{UNSUPPORTED_PLATFORM}"),
             Self::NeedsGitProject => write!(formatter, "{NEEDS_GIT_PROJECT}"),
             Self::DoneTask => write!(formatter, "completed tasks cannot be dispatched"),
             Self::ArchivedTask => write!(formatter, "archived tasks cannot be dispatched"),
@@ -366,6 +424,8 @@ impl std::fmt::Display for DispatchError {
             ),
             Self::UnknownAgent(name) => write!(formatter, "unknown agent {name}"),
             Self::UnknownBase(reason)
+            | Self::UnsupportedPlatform(reason)
+            | Self::UnsafeStateDir(reason)
             | Self::AgentConfig(reason)
             | Self::Herdr(reason)
             | Self::Store(reason) => {
@@ -472,6 +532,79 @@ pub trait DispatchHost {
     }
     fn root_pane(&mut self, workspace_id: &str) -> Result<String, String>;
     fn run_in_pane(&mut self, pane_id: &str, command: &str) -> Result<(), String>;
+    /// The platform whose launch line and cleanup rules apply. Test hosts default to Unix.
+    fn platform(&self) -> HostPlatform {
+        HostPlatform::Unix
+    }
+    /// Store a Windows launcher script for the dispatch in `workspace_id` and return its path.
+    /// It lives under the state dir, never inside the worktree, so it is never committed.
+    /// Where the launcher for the dispatch in `workspace_id` goes: absolute, so the pane finds
+    /// it from the worktree.
+    fn launcher_path(&self, _workspace_id: &str) -> Result<PathBuf, String> {
+        Err("PowerShell launchers are not supported".into())
+    }
+    /// The trusted Windows PowerShell that runs launchers, never one found from the worktree.
+    fn powershell_path(&self) -> Result<PathBuf, String> {
+        Ok(PathBuf::from(
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        ))
+    }
+    fn write_launcher(&mut self, _workspace_id: &str, _script: &str) -> Result<PathBuf, String> {
+        Err("PowerShell launchers are not supported".into())
+    }
+    /// Delete a launcher the agent never ran (a launched one deletes itself). Best effort.
+    fn remove_launcher(&mut self, _workspace_id: &str) {}
+    /// Whether Git may create paths longer than Windows' MAX_PATH in `project`'s checkouts.
+    fn long_paths_enabled(&mut self, _project: &Path) -> Result<bool, String> {
+        Ok(true)
+    }
+    /// The pause before cleanup checks a worktree again that files still in use blocked: a
+    /// closed workspace's agent may take a moment to exit.
+    fn wait_before_retry(&mut self) {}
+    /// Close a Herdr workspace without touching its checkout (Windows cleanup closes before it
+    /// checks and removes).
+    fn close_herdr_workspace(&mut self, _workspace_id: &str) -> Result<(), String> {
+        Err("Herdr workspace close is not supported".into())
+    }
+    /// Record that a Windows removal of the worktree in `workspace_id` is under way (`true`)
+    /// or settled (`false`). The mark outlives tsk.
+    fn mark_removal(&mut self, _workspace_id: &str, _started: bool) {}
+    /// What a marked removal that never settled left behind, or `None` when none is marked or
+    /// the worktree holds changes other than the removal's deletions.
+    fn interrupted_removal(
+        &mut self,
+        _project: &Path,
+        _worktree: &Path,
+        _workspace_id: &str,
+    ) -> Result<Option<RemovalState>, String> {
+        Ok(None)
+    }
+    /// Whether the worktree holds uncommitted work, untracked files included.
+    fn worktree_dirty(&mut self, _worktree: &Path) -> Result<bool, String> {
+        Ok(false)
+    }
+    /// Remove the worktree with git, marking the removal as started for the next run.
+    fn remove_marked_worktree(
+        &mut self,
+        project: &Path,
+        worktree: &Path,
+        workspace_id: &str,
+    ) -> Result<(), String> {
+        self.mark_removal(workspace_id, true);
+        self.remove_git_worktree(project, worktree)
+    }
+    /// What a failed Windows removal left behind.
+    fn removal_state(&mut self, _project: &Path, _worktree: &Path) -> Result<RemovalState, String> {
+        Ok(RemovalState::Intact)
+    }
+    /// Why removing `worktree` now would fail partway on Windows, if it would.
+    fn removal_blocker(
+        &mut self,
+        _project: &Path,
+        _worktree: &Path,
+    ) -> Result<Option<RemovalBlock>, String> {
+        Ok(None)
+    }
     /// Whether Herdr currently detects an agent in `pane_id`.
     fn pane_has_agent(&mut self, _pane_id: &str) -> Result<bool, String> {
         Err("agent detection is not supported".into())
@@ -558,9 +691,187 @@ impl LaunchBatch {
 /// How long dispatch waits for Herdr to detect the launched agent before leaving it unnamed.
 const AGENT_DETECTION_TIMEOUT: Duration = Duration::from_secs(3);
 const AGENT_DETECTION_POLL: Duration = Duration::from_millis(100);
+/// How long cleanup waits before its one retry of a removal refused by files in use.
+const REMOVAL_RETRY_DELAY: Duration = Duration::from_secs(2);
+/// How long a Windows `git worktree remove` may take. It deletes ignored build output too
+/// (`target`, `node_modules`), file by file, so the bound is minutes; stopping it partway is
+/// what this avoids, and [`RemovalState`] reports honestly when it happens anyway.
+pub const WINDOWS_REMOVAL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
-#[derive(Debug, Default)]
-pub struct SystemDispatchHost;
+/// The real host: git and Herdr processes. Windows launchers go under `state_dir`'s
+/// `launchers` directory (the default state dir when unset).
+#[derive(Debug, Default, Clone)]
+pub struct SystemDispatchHost {
+    state_dir: Option<PathBuf>,
+}
+
+impl SystemDispatchHost {
+    pub fn in_state_dir(state_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            state_dir: Some(state_dir.into()),
+        }
+    }
+
+    /// The mark of a Windows removal under way, beside the store.
+    fn removal_mark(&self, workspace_id: &str) -> Result<PathBuf, String> {
+        let launcher = self.launcher_file(workspace_id)?;
+        let directory = launcher
+            .parent()
+            .and_then(Path::parent)
+            .expect("launcher sits in the state dir");
+        let name = launcher_file_name(workspace_id).replace(".ps1", ".removing");
+        Ok(directory.join("cleanups").join(name))
+    }
+
+    fn launcher_file(&self, workspace_id: &str) -> Result<PathBuf, String> {
+        let path = self
+            .state_dir
+            .clone()
+            .unwrap_or_else(crate::store::default_state_dir)
+            .join("launchers")
+            .join(launcher_file_name(workspace_id));
+        // The pane resolves a relative path against the worktree, not where tsk wrote it.
+        std::path::absolute(&path)
+            .map_err(|error| format!("could not resolve {}: {error}", path.display()))
+    }
+}
+
+/// Windows' MAX_PATH, in UTF-16 units, including the terminating null.
+const MAX_PATH: usize = 260;
+
+/// Whether any path under `root` is too long for Git to delete without `core.longpaths`.
+fn has_long_path(root: &Path) -> Result<bool, String> {
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let entries = std::fs::read_dir(&directory)
+            .map_err(|error| format!("could not read {}: {error}", directory.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let path = entry.path();
+            if path.to_string_lossy().encode_utf16().count() >= MAX_PATH {
+                return Ok(true);
+            }
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                pending.push(path);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Windows refuses to rename a directory while any process holds a handle inside it without
+/// delete sharing (an open file, a running program, a shell's working directory): the same
+/// handles that would stop a removal halfway. Rename the checkout aside and straight back.
+fn worktree_in_use(worktree: &Path) -> Result<bool, String> {
+    const ACCESS_DENIED: i32 = 5;
+    const SHARING_VIOLATION: i32 = 32;
+    restore_checked_aside(worktree)?;
+    let aside = checked_aside(worktree);
+    match std::fs::rename(worktree, &aside) {
+        Ok(()) => std::fs::rename(&aside, worktree)
+            .map(|()| false)
+            .map_err(|error| {
+                format!(
+                    "could not move {} back from {}: {error}",
+                    worktree.display(),
+                    aside.display()
+                )
+            }),
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(ACCESS_DENIED | SHARING_VIOLATION)
+            ) =>
+        {
+            Ok(true)
+        }
+        Err(error) => Err(format!("could not check {}: {error}", worktree.display())),
+    }
+}
+
+/// Where [`worktree_in_use`] moves a checkout for the moment of its check.
+fn checked_aside(worktree: &Path) -> PathBuf {
+    let mut aside = worktree.as_os_str().to_owned();
+    aside.push(".tsk-cleanup-check");
+    PathBuf::from(aside)
+}
+
+/// Move back a checkout an interrupted [`worktree_in_use`] left aside, before anything reads
+/// the worktree as missing and records it cleaned.
+fn restore_checked_aside(worktree: &Path) -> Result<(), String> {
+    let aside = checked_aside(worktree);
+    if worktree.symlink_metadata().is_err() && aside.is_dir() {
+        std::fs::rename(&aside, worktree).map_err(|error| {
+            format!(
+                "could not move {} back from {}: {error}",
+                worktree.display(),
+                aside.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// One launcher per Herdr workspace: a relaunch in the same workspace replaces it, and cleanup
+/// finds it from the dispatch record alone.
+fn launcher_file_name(workspace_id: &str) -> String {
+    let safe = workspace_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!("dispatch-{safe}.ps1")
+}
+
+/// The pane line that runs a Windows launcher. Herdr can only type a line into the pane's
+/// shell, which may be Windows PowerShell, PowerShell 7, cmd, or a POSIX shell such as Git
+/// Bash. The line reads literally in all of them: the trusted PowerShell by absolute path,
+/// unquoted and with forward slashes, and the launcher in double quotes, refused when it holds
+/// a character any of those shells would still expand inside them.
+pub fn powershell_launch_line(powershell: &Path, launcher: &Path) -> Result<String, DispatchError> {
+    let powershell = powershell.to_string_lossy().replace('\\', "/");
+    if !windows_absolute(&powershell)
+        || !powershell
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || ":/._-".contains(character))
+    {
+        return Err(DispatchError::UnsupportedPlatform(format!(
+            "Windows PowerShell at {powershell} cannot be typed safely into the pane"
+        )));
+    }
+    let launcher = launcher.to_string_lossy().replace('\\', "/");
+    if !windows_absolute(&launcher) {
+        return Err(DispatchError::Herdr(format!(
+            "launcher path {launcher} is not absolute"
+        )));
+    }
+    if let Some(character) = launcher.chars().find(|character| {
+        character.is_control() || "$`%\"!\u{201c}\u{201d}\u{201e}".contains(*character)
+    }) {
+        let directory = launcher
+            .rsplit_once("/launchers/")
+            .map_or(launcher.as_str(), |(directory, _)| directory);
+        return Err(DispatchError::UnsafeStateDir(format!(
+            "the state directory {directory} contains {character:?}, which the pane's shell \
+             would expand; use a state directory without $ ` % \" or !"
+        )));
+    }
+    Ok(format!(
+        "{powershell} -NoProfile -ExecutionPolicy Bypass -File \"{launcher}\""
+    ))
+}
+
+/// `C:/…` or `//server/share/…`, in forward-slash form.
+fn windows_absolute(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    path.starts_with("//")
+        || (bytes.len() > 2 && bytes[0].is_ascii_alphabetic() && &bytes[1..3] == b":/")
+}
 
 impl DispatchHost for SystemDispatchHost {
     fn is_git_repo(&mut self, project: &Path) -> Result<bool, String> {
@@ -599,7 +910,9 @@ impl DispatchHost for SystemDispatchHost {
     }
 
     fn branch_taken(&mut self, project: &Path, branch: &str) -> Result<bool, String> {
-        let home = std::env::var_os("HOME").map(PathBuf::from);
+        // Herdr keeps worktrees under the user's home: `%USERPROFILE%` on Windows.
+        let home =
+            std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
         system_branch_taken(project, branch, home.as_deref())
     }
 
@@ -654,19 +967,7 @@ impl DispatchHost for SystemDispatchHost {
     }
 
     fn remove_git_worktree(&mut self, project: &Path, worktree: &Path) -> Result<(), String> {
-        let worktree = worktree
-            .to_str()
-            .ok_or_else(|| "worktree path is not UTF-8".to_string())?;
-        let output = crate::git_base::git_process_output_timeout(
-            project,
-            &["worktree", "remove", worktree],
-            Duration::from_secs(5),
-        )?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(command_failure("git worktree remove", &output))
-        }
+        system_remove_git_worktree(project, worktree, None)
     }
 
     fn delete_merged_branch(
@@ -748,7 +1049,8 @@ impl DispatchHost for SystemDispatchHost {
     }
 
     fn begin_cleanup(&mut self, job: CleanupJob, plan: Vec<CleanupPlanRow>, in_herdr: bool) {
-        std::thread::spawn(move || run_cleanup_job(&job, &plan, in_herdr, &mut SystemDispatchHost));
+        let mut host = self.clone();
+        std::thread::spawn(move || run_cleanup_job(&job, &plan, in_herdr, &mut host));
     }
 
     fn root_pane(&mut self, workspace_id: &str) -> Result<String, String> {
@@ -786,15 +1088,159 @@ impl DispatchHost for SystemDispatchHost {
         herdr_json(output).map(|_| true)
     }
 
+    fn platform(&self) -> HostPlatform {
+        HostPlatform::native()
+    }
+
+    fn launcher_path(&self, workspace_id: &str) -> Result<PathBuf, String> {
+        self.launcher_file(workspace_id)
+    }
+
+    fn powershell_path(&self) -> Result<PathBuf, String> {
+        #[cfg(windows)]
+        return crate::cli::update::windows_powershell_path();
+        #[cfg(not(windows))]
+        Err("Windows PowerShell exists only on Windows".into())
+    }
+
+    fn write_launcher(&mut self, workspace_id: &str, script: &str) -> Result<PathBuf, String> {
+        let path = self.launcher_file(workspace_id)?;
+        let directory = path.parent().expect("launcher has a directory");
+        std::fs::create_dir_all(directory)
+            .and_then(|()| std::fs::write(&path, script))
+            .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+        Ok(path)
+    }
+
+    fn remove_launcher(&mut self, workspace_id: &str) {
+        if let Ok(path) = self.launcher_file(workspace_id) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    fn long_paths_enabled(&mut self, project: &Path) -> Result<bool, String> {
+        let output = crate::git_base::git_process_output(
+            project,
+            &["config", "--type=bool", "--get", "core.longpaths"],
+        )?;
+        match output.status.code() {
+            Some(0) => Ok(String::from_utf8_lossy(&output.stdout).trim() == "true"),
+            Some(1) => Ok(false),
+            _ => Err(command_failure("git config", &output)),
+        }
+    }
+
+    fn wait_before_retry(&mut self) {
+        std::thread::sleep(REMOVAL_RETRY_DELAY);
+    }
+
+    fn close_herdr_workspace(&mut self, workspace_id: &str) -> Result<(), String> {
+        let output = Command::new("herdr")
+            .args(["workspace", "close", workspace_id])
+            .output()
+            .map_err(|error| format!("could not run herdr: {error}"))?;
+        herdr_json(output).map(|_| ())
+    }
+
+    fn mark_removal(&mut self, workspace_id: &str, started: bool) {
+        let Ok(mark) = self.removal_mark(workspace_id) else {
+            return;
+        };
+        if started {
+            if let Some(directory) = mark.parent() {
+                let _ = std::fs::create_dir_all(directory);
+            }
+            let _ = std::fs::write(&mark, REMOVAL_STARTED);
+        } else {
+            let _ = std::fs::remove_file(mark);
+        }
+    }
+
+    fn interrupted_removal(
+        &mut self,
+        project: &Path,
+        worktree: &Path,
+        workspace_id: &str,
+    ) -> Result<Option<RemovalState>, String> {
+        let mark = self.removal_mark(workspace_id)?;
+        match std::fs::read(&mark) {
+            Ok(content) if content == REMOVAL_STARTED => {}
+            // Only a mark git's start wrote is evidence; any other is stale.
+            Ok(_) => {
+                let _ = std::fs::remove_file(&mark);
+                return Ok(None);
+            }
+            Err(_) => return Ok(None),
+        }
+        let state = leftover_state(project, worktree)?;
+        if matches!(state, RemovalState::Intact | RemovalState::Dirty) {
+            let _ = std::fs::remove_file(&mark);
+        }
+        Ok(Some(state))
+    }
+
+    fn removal_state(&mut self, project: &Path, worktree: &Path) -> Result<RemovalState, String> {
+        leftover_state(project, worktree)
+    }
+
+    fn worktree_dirty(&mut self, worktree: &Path) -> Result<bool, String> {
+        let status = cleanup_query(
+            worktree,
+            &["status", "--porcelain", "--untracked-files=all"],
+        )
+        .map_err(|error| cleanup_inspection_error("status", error))?;
+        if !status.status.success() {
+            return Err(command_failure("git status", &status));
+        }
+        Ok(!status.stdout.is_empty())
+    }
+
+    fn remove_marked_worktree(
+        &mut self,
+        project: &Path,
+        worktree: &Path,
+        workspace_id: &str,
+    ) -> Result<(), String> {
+        if !cfg!(windows) {
+            self.mark_removal(workspace_id, true);
+            return self.remove_git_worktree(project, worktree);
+        }
+        // The mark is written once git runs, so it proves a removal started, not just that
+        // one was about to.
+        let mut host = self.clone();
+        let workspace_id = workspace_id.to_string();
+        system_remove_git_worktree(
+            project,
+            worktree,
+            Some(&mut move || host.mark_removal(&workspace_id, true)),
+        )
+    }
+
+    fn removal_blocker(
+        &mut self,
+        project: &Path,
+        worktree: &Path,
+    ) -> Result<Option<RemovalBlock>, String> {
+        if !cfg!(windows) {
+            return Ok(None);
+        }
+        if !self.long_paths_enabled(project).unwrap_or(false) && has_long_path(worktree)? {
+            return Ok(Some(RemovalBlock::PathTooLong));
+        }
+        worktree_in_use(worktree).map(|in_use| in_use.then_some(RemovalBlock::FilesInUse))
+    }
+
     fn begin_launches(&mut self, jobs: Vec<EligibleDispatch>) -> LaunchBatch {
-        spawn_launches(jobs, || SystemDispatchHost)
+        let host = self.clone();
+        spawn_launches(jobs, move || host)
     }
 
     fn begin_git_checks(&mut self, projects: Vec<PathBuf>) -> GitChecks {
         let checks = GitChecks::default();
         let finishing = checks.clone();
+        let mut host = self.clone();
         std::thread::spawn(move || {
-            finishing.finish(check_git_projects(projects, &mut SystemDispatchHost));
+            finishing.finish(check_git_projects(projects, &mut host));
         });
         checks
     }
@@ -856,6 +1302,38 @@ fn canonical_cleanup_path(path: &Path) -> Result<PathBuf, String> {
     Ok(parent.join(name))
 }
 
+/// Whether two canonical cleanup paths name the same checkout. Windows compares them
+/// case-insensitively and ignores separator style, a trailing separator, and the `\\?\`
+/// prefix `canonicalize` adds, since Herdr, git, and the record each spell paths differently.
+fn same_path(left: &Path, right: &Path) -> bool {
+    if cfg!(windows) {
+        normalize_windows_path(&left.to_string_lossy())
+            == normalize_windows_path(&right.to_string_lossy())
+    } else {
+        left == right
+    }
+}
+
+/// One spelling for a Windows path: `\` separators, no verbatim prefix, no trailing separator
+/// (except on a drive root), lowercase.
+fn normalize_windows_path(path: &str) -> String {
+    let path = path.replace('/', "\\");
+    let path = if let Some(unc) = path.strip_prefix("\\\\?\\UNC\\") {
+        format!("\\\\{unc}")
+    } else if let Some(local) = path.strip_prefix("\\\\?\\") {
+        local.to_string()
+    } else {
+        path
+    };
+    let trimmed = path.trim_end_matches('\\');
+    let path = if trimmed.ends_with(':') {
+        format!("{trimmed}\\")
+    } else {
+        trimmed.to_string()
+    };
+    path.to_lowercase()
+}
+
 /// Canonical paths of every worktree git lists for the project. Prunable entries whose
 /// directories are already gone (a leftover from another tool) can neither canonicalize
 /// nor be the recorded target, so they are skipped instead of failing the whole listing:
@@ -882,12 +1360,13 @@ fn system_inspect_cleanup(
     fetch: bool,
 ) -> Result<CleanupInspection, String> {
     let worktree = Path::new(&dispatch.worktree);
+    restore_checked_aside(worktree)?;
     let project_path = canonical_cleanup_path(project)?;
     // A worktree deleted by hand may already be pruned from git's list, so a missing
     // directory converges to cleaned before the registration gate can refuse it. The
     // project root itself is never a removal target, present or not.
     let worktree_path = match canonical_cleanup_path(worktree) {
-        Ok(path) if path != project_path => path,
+        Ok(path) if !same_path(&path, &project_path) => path,
         _ => {
             return Ok(CleanupInspection {
                 worktree_exists: worktree.exists(),
@@ -903,7 +1382,7 @@ fn system_inspect_cleanup(
     }
     let registered = git_worktree_paths(project)?
         .iter()
-        .any(|listed| listed == &worktree_path);
+        .any(|listed| same_path(listed, &worktree_path));
     if !registered {
         return Ok(CleanupInspection {
             worktree_exists: true,
@@ -938,9 +1417,11 @@ fn system_inspect_cleanup(
         ..
     } = merge_verdict(project, dispatch, fetch_failure)?;
     let (workspace_exists, workspace_matches) = if in_herdr {
+        // Herdr refuses `worktree list` outside a Git work tree, whatever `--cwd` says.
         let listed = Command::new("herdr")
             .args(["worktree", "list", "--cwd"])
             .arg(project)
+            .current_dir(project)
             .output()
             .map_err(|error| format!("could not run herdr: {error}"))?;
         let value = herdr_json(listed)?;
@@ -957,7 +1438,7 @@ fn system_inspect_cleanup(
             Some(entry) => {
                 let matches = herdr_checkout_path(entry)
                     .and_then(|path| canonical_cleanup_path(Path::new(path)).ok())
-                    .is_some_and(|path| path == worktree_path);
+                    .is_some_and(|path| same_path(&path, &worktree_path));
                 (true, matches)
             }
             None => (false, true),
@@ -1065,11 +1546,22 @@ fn created_worktree_from_value(value: Value) -> Result<CreatedWorktree, String> 
             .ok_or_else(|| format!("herdr response is missing {pointer}"))
     };
     Ok(CreatedWorktree {
-        path: PathBuf::from(string("/worktree/path")?),
+        path: PathBuf::from(without_trailing_separator(&string("/worktree/path")?)),
         branch: string("/worktree/branch")?,
         workspace_id: string("/workspace/workspace_id")?,
         root_pane_id: string("/root_pane/pane_id")?,
     })
+}
+
+/// Herdr on Windows reports checkout paths with a trailing `\\`; the record and `{worktree}`
+/// carry the path without it. A bare root keeps its separator.
+fn without_trailing_separator(path: &str) -> String {
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    if trimmed.is_empty() || trimmed.ends_with(':') {
+        path.to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn command_failure(name: &str, output: &Output) -> String {
@@ -1173,6 +1665,18 @@ fn inspect_planned(
     host: &mut impl DispatchHost,
 ) -> Result<CleanupPreview, CleanupError> {
     let (project, record) = (&plan.project, &plan.record);
+    // A removal tsk started and never saw finish (tsk exited, or git stopped midway) left
+    // deleted files that would otherwise read as uncommitted work, forever.
+    if let Some(RemovalState::Partial { registered }) = host
+        .interrupted_removal(
+            project,
+            Path::new(&record.worktree),
+            &record.herdr_workspace_id,
+        )
+        .map_err(CleanupError::Herdr)?
+    {
+        return Err(partly_removed(record, registered));
+    }
     let mut inspection = if plan.refs != CleanupRefs::Fetch {
         host.inspect_cleanup_cached(project, record, in_herdr)
     } else {
@@ -1230,11 +1734,14 @@ pub fn clean_planned_with_host(
 
     let (worktree, deletion, workspace_removed) = if preview.inspection.worktree_exists {
         let workspace_removed = in_herdr && preview.inspection.workspace_exists;
-        if workspace_removed {
+        let worktree = Path::new(&preview.record.worktree);
+        if host.platform() == HostPlatform::Windows {
+            remove_windows_worktree(host, &preview, workspace_removed)?;
+        } else if workspace_removed {
             host.remove_herdr_worktree(&preview.record.herdr_workspace_id)
                 .map_err(CleanupError::Herdr)?;
         } else {
-            host.remove_git_worktree(&preview.project, Path::new(&preview.record.worktree))
+            host.remove_git_worktree(&preview.project, worktree)
                 .map_err(CleanupError::Herdr)?;
         }
         let deletion = if preview.record.base_ref.is_none() {
@@ -1260,6 +1767,10 @@ pub fn clean_planned_with_host(
             false,
         )
     };
+    if host.platform() == HostPlatform::Windows {
+        host.remove_launcher(&preview.record.herdr_workspace_id);
+    }
+    host.mark_removal(&preview.record.herdr_workspace_id, false);
     let (branch, branch_reason) = match deletion {
         BranchDeletion::Removed => (BranchCleanup::Removed, None),
         BranchDeletion::Kept(reason) => (BranchCleanup::Kept, Some(reason)),
@@ -1287,6 +1798,215 @@ pub fn clean_planned_with_host(
         branch,
         workspace_removed,
     })
+}
+
+/// Why Windows would refuse to delete a worktree right now. Git deletes a worktree file by
+/// file and unregisters it on the way, so a removal that fails midway leaves an unregistered,
+/// half-deleted directory no later cleanup may touch: these are checked before anything is
+/// deleted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemovalBlock {
+    /// A process holds a file or directory in the worktree open.
+    FilesInUse,
+    /// A path in the worktree exceeds MAX_PATH while Git's `core.longpaths` is off.
+    PathTooLong,
+}
+
+/// Windows cleanup: close the workspace first (that ends its agent), make sure nothing still
+/// holds the checkout (one brief retry while the agent exits), then let git remove it.
+fn remove_windows_worktree(
+    host: &mut impl DispatchHost,
+    preview: &CleanupPreview,
+    close_workspace: bool,
+) -> Result<(), CleanupError> {
+    let (project, worktree) = (&preview.project, Path::new(&preview.record.worktree));
+    if close_workspace {
+        host.close_herdr_workspace(&preview.record.herdr_workspace_id)
+            .map_err(CleanupError::Herdr)?;
+    }
+    let mut blocked = host
+        .removal_blocker(project, worktree)
+        .map_err(CleanupError::Herdr)?;
+    if blocked == Some(RemovalBlock::FilesInUse) {
+        host.wait_before_retry();
+        blocked = host
+            .removal_blocker(project, worktree)
+            .map_err(CleanupError::Herdr)?;
+    }
+    match blocked {
+        Some(RemovalBlock::FilesInUse) => return Err(CleanupError::FilesInUse),
+        Some(RemovalBlock::PathTooLong) => return Err(CleanupError::PathTooLong),
+        None => {}
+    }
+    // The agent ran until the workspace closed and may have written after the inspection:
+    // check again now that nothing else writes, before anything is marked or deleted.
+    if host.worktree_dirty(worktree).map_err(CleanupError::Herdr)? {
+        return Err(CleanupError::DirtyWorktree);
+    }
+    // Marked once git starts and until the removal is known to have finished or touched
+    // nothing: if tsk exits or git stops midway, the next inspection reads git's deletions
+    // as a partial removal rather than as uncommitted work.
+    let workspace = &preview.record.herdr_workspace_id;
+    let Err(error) = host.remove_marked_worktree(project, worktree, workspace) else {
+        return Ok(());
+    };
+    // Git checks the worktree itself before deleting anything: its dirty refusal means
+    // something changed it after the recheck, whatever the leftovers look like.
+    if error.contains("contains modified or untracked files") {
+        host.mark_removal(workspace, false);
+        return Err(CleanupError::DirtyWorktree);
+    }
+    // Something opened a file after the check, or the delete outlived its deadline. Git may
+    // have deleted part of the checkout and unregistered it: report what is actually left.
+    match host
+        .removal_state(project, worktree)
+        .map_err(CleanupError::Herdr)?
+    {
+        RemovalState::Gone => Ok(()),
+        RemovalState::Intact => {
+            host.mark_removal(workspace, false);
+            Err(match removal_failure(&error) {
+                _ if error == "git timed out" => CleanupError::RemovalTimedOut,
+                Some(RemovalBlock::FilesInUse) => CleanupError::FilesInUse,
+                Some(RemovalBlock::PathTooLong) => CleanupError::PathTooLong,
+                None => CleanupError::Herdr(error),
+            })
+        }
+        RemovalState::Dirty => {
+            host.mark_removal(workspace, false);
+            Err(CleanupError::DirtyWorktree)
+        }
+        RemovalState::Partial { registered } => Err(partly_removed(&preview.record, registered)),
+    }
+}
+
+/// What is left of a removal git stopped partway, and how to finish it by hand. Only
+/// committed files are missing, so every commit is on the branch; the advice never deletes
+/// anything without saying what it deletes.
+fn partly_removed(record: &Dispatch, registered: bool) -> CleanupError {
+    let (display, branch) = (&record.worktree, &record.branch);
+    CleanupError::PartlyRemoved(if registered {
+        format!(
+            "partly removed: git deleted some committed files from {display} and stopped; \
+             every commit is on {branch}. Close what holds it, then restore them with git -C \
+             \"{display}\" restore . and clean again, or finish with git worktree remove \
+             --force \"{display}\", which also deletes any uncommitted changes"
+        )
+    } else {
+        format!(
+            "partly removed: git unregistered the worktree and left part of {display}; every \
+             commit is on {branch}. Check what is left; once nothing in it is needed, delete \
+             the folder and clean again"
+        )
+    })
+}
+
+/// What a mark of a started Windows removal holds.
+const REMOVAL_STARTED: &[u8] = b"git worktree remove started\n";
+
+/// `git worktree remove`. On Windows its Git tree outlives tsk, because a removal stopped
+/// midway strands a half-deleted checkout, and `started` runs once Git is running.
+fn system_remove_git_worktree(
+    project: &Path,
+    worktree: &Path,
+    started: Option<&mut dyn FnMut()>,
+) -> Result<(), String> {
+    let worktree = worktree
+        .to_str()
+        .ok_or_else(|| "worktree path is not UTF-8".to_string())?;
+    let args = ["worktree", "remove", worktree];
+    let output = if cfg!(windows) {
+        let mut nothing = || {};
+        crate::git_base::git_process_output_outliving_tsk(
+            project,
+            &args,
+            WINDOWS_REMOVAL_TIMEOUT,
+            started.unwrap_or(&mut nothing),
+        )
+    } else {
+        crate::git_base::git_process_output_timeout(project, &args, Duration::from_secs(5))
+    }?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(command_failure("git worktree remove", &output))
+    }
+}
+
+/// What a removal left of the worktree. Git's removal deletes files without touching the
+/// index, so only unstaged deletions of tracked files can be its doing; anything else
+/// (modified, added, staged, renamed, untracked) is work, never a partial removal.
+fn leftover_state(project: &Path, worktree: &Path) -> Result<RemovalState, String> {
+    if worktree.symlink_metadata().is_err() {
+        return Ok(RemovalState::Gone);
+    }
+    let path = canonical_cleanup_path(worktree)?;
+    if !git_worktree_paths(project)?
+        .iter()
+        .any(|listed| same_path(listed, &path))
+    {
+        return Ok(RemovalState::Partial { registered: false });
+    }
+    let status = cleanup_query(
+        worktree,
+        &["status", "--porcelain", "--untracked-files=all"],
+    )
+    .map_err(|error| cleanup_inspection_error("status", error))?;
+    // A status that cannot run lost its `.git` file to the delete.
+    if !status.status.success() {
+        return Ok(RemovalState::Partial { registered: true });
+    }
+    let status = String::from_utf8_lossy(&status.stdout);
+    Ok(if status.is_empty() {
+        RemovalState::Intact
+    } else if status.lines().all(|line| line.starts_with(" D ")) {
+        RemovalState::Partial { registered: true }
+    } else {
+        RemovalState::Dirty
+    })
+}
+
+/// What a Windows removal that failed left of the worktree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemovalState {
+    /// The directory is gone: the removal finished after all.
+    Gone,
+    /// Still registered with every tracked file in place: nothing that matters was deleted.
+    Intact,
+    /// Holds uncommitted work (modified, added, staged, renamed, or untracked): never a
+    /// partial removal, whatever else is missing.
+    Dirty,
+    /// Git deleted part of it; `registered` says whether git still lists it.
+    Partial { registered: bool },
+}
+
+/// Why git on Windows failed to remove a worktree, read from its error text.
+fn removal_failure(error: &str) -> Option<RemovalBlock> {
+    let error = error.to_ascii_lowercase();
+    let any = |needles: &[&str]| needles.iter().any(|needle| error.contains(needle));
+    if any(&[
+        "filename too long",
+        "file name too long",
+        "path too long",
+        "filename or extension is too long",
+        "os error 206",
+    ]) {
+        Some(RemovalBlock::PathTooLong)
+    } else if any(&[
+        // Git for Windows reports a sharing violation while deleting as EINVAL or EACCES.
+        "failed to delete",
+        "being used by another process",
+        "sharing violation",
+        "os error 32",
+        "permission denied",
+        "access is denied",
+        "directory not empty",
+        "resource busy",
+    ]) {
+        Some(RemovalBlock::FilesInUse)
+    } else {
+        None
+    }
 }
 
 /// Where one row of a background cleanup stands. A handful per card, so the outcome is
@@ -1626,6 +2346,21 @@ pub fn launch_with_host(
     } = eligible;
     let number = *number;
     let project = project.as_path();
+    let platform = host.platform();
+    // Checked before anything is created; an unanswered check stays quiet rather than nag.
+    let long_paths_off =
+        platform == HostPlatform::Windows && host.long_paths_enabled(project) == Ok(false);
+    // The launch line must be safe to type before any worktree or workspace exists.
+    let powershell = if platform == HostPlatform::Windows {
+        let powershell = host
+            .powershell_path()
+            .map_err(DispatchError::UnsupportedPlatform)?;
+        let launcher = host.launcher_path("check").map_err(DispatchError::Herdr)?;
+        powershell_launch_line(&powershell, &launcher)?;
+        Some(powershell)
+    } else {
+        None
+    };
     let mut warning = None;
     let (worktree, branch, base, base_ref, base_commit, base_remote, workspace_id, pane_id) =
         if let Some(existing) = task.dispatch.as_ref().filter(|_| eligible.again) {
@@ -1719,8 +2454,30 @@ pub fn launch_with_host(
         branch: &branch,
         base: &short_base,
     });
-    host.run_in_pane(&pane_id, &rendered.command)
-        .map_err(DispatchError::Herdr)?;
+    let line = match platform {
+        HostPlatform::Unix => rendered.command.clone(),
+        HostPlatform::Windows => {
+            let launcher = host
+                .write_launcher(&workspace_id, &rendered.powershell_script())
+                .map_err(DispatchError::Herdr)?;
+            let powershell = powershell.as_deref().expect("checked before launch");
+            powershell_launch_line(powershell, &launcher).inspect_err(|_| {
+                host.remove_launcher(&workspace_id);
+            })?
+        }
+    };
+    if let Err(error) = host.run_in_pane(&pane_id, &line) {
+        if platform == HostPlatform::Windows {
+            host.remove_launcher(&workspace_id);
+        }
+        return Err(DispatchError::Herdr(error));
+    }
+    if long_paths_off {
+        warning = Some(match warning {
+            Some(earlier) => format!("{earlier}; {LONG_PATHS_OFF}"),
+            None => LONG_PATHS_OFF.to_string(),
+        });
+    }
 
     let record = Dispatch {
         argv: rendered.argv,
@@ -1842,8 +2599,7 @@ pub(crate) mod thread_probe {
             .push((project.to_path_buf(), std::thread::current().id()));
     }
 
-    /// The threads that ran work for `project` (read by the unix-only bulk dispatch tests).
-    #[cfg(unix)]
+    /// The threads that ran work for `project` (read by the bulk dispatch tests).
     pub(crate) fn threads(project: &Path) -> Vec<ThreadId> {
         RUNS.lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1883,14 +2639,17 @@ pub fn commit_launch_with_status(
     })
 }
 
-/// Refuse dispatch where the rendered launch, a POSIX `$SHELL -lc` line, cannot run. Checked at
-/// the board and CLI boundaries, before any worktree or workspace is created.
+/// Refuse dispatch where the launch cannot run: on Windows the launcher needs the stock
+/// Windows PowerShell. Checked at the board and CLI boundaries, before any worktree or
+/// workspace is created.
 pub fn ensure_platform_supported() -> Result<(), DispatchError> {
-    if cfg!(windows) {
-        Err(DispatchError::UnsupportedPlatform)
-    } else {
-        Ok(())
+    #[cfg(windows)]
+    if crate::cli::update::windows_powershell_path().is_err() {
+        return Err(DispatchError::UnsupportedPlatform(
+            UNSUPPORTED_PLATFORM.into(),
+        ));
     }
+    Ok(())
 }
 
 pub fn running_inside_herdr() -> bool {
@@ -2146,6 +2905,27 @@ mod tests {
         removed_herdr: usize,
         removed_git: usize,
         deleted_branches: usize,
+        windows: bool,
+        launchers: Vec<(String, String)>,
+        removed_launchers: Vec<String>,
+        long_paths: Option<bool>,
+        /// Errors the next Herdr or git worktree removals return, oldest first.
+        herdr_remove_errors: Vec<String>,
+        git_remove_errors: Vec<String>,
+        retry_waits: usize,
+        /// What the next Windows removal checks find, oldest first; then nothing.
+        blockers: Vec<Option<RemovalBlock>>,
+        blocker_checks: usize,
+        closed: usize,
+        /// The state dir launchers go under; `C:\Users\Some One\tsk` when unset.
+        state_dir: Option<String>,
+        /// What a failed Windows removal left; `Intact` when unset.
+        left_behind: Option<RemovalState>,
+        /// What an unsettled removal from an earlier run left, if one is marked.
+        interrupted: Option<RemovalState>,
+        marks: Vec<(String, bool)>,
+        /// Work the agent wrote while its workspace closed.
+        dirty_after_close: bool,
     }
 
     impl DispatchHost for FakeHost {
@@ -2199,12 +2979,88 @@ mod tests {
 
         fn remove_herdr_worktree(&mut self, _: &str) -> Result<(), String> {
             self.removed_herdr += 1;
-            Ok(())
+            match self.herdr_remove_errors.is_empty() {
+                true => Ok(()),
+                false => Err(self.herdr_remove_errors.remove(0)),
+            }
         }
 
         fn remove_git_worktree(&mut self, _: &Path, _: &Path) -> Result<(), String> {
             self.removed_git += 1;
+            match self.git_remove_errors.is_empty() {
+                true => Ok(()),
+                false => Err(self.git_remove_errors.remove(0)),
+            }
+        }
+
+        fn platform(&self) -> HostPlatform {
+            if self.windows {
+                HostPlatform::Windows
+            } else {
+                HostPlatform::Unix
+            }
+        }
+
+        fn launcher_path(&self, workspace_id: &str) -> Result<PathBuf, String> {
+            let state = self
+                .state_dir
+                .as_deref()
+                .unwrap_or(r"C:\Users\Some One\tsk");
+            Ok(PathBuf::from(format!(
+                r"{state}\launchers\{}",
+                launcher_file_name(workspace_id)
+            )))
+        }
+
+        fn write_launcher(&mut self, workspace_id: &str, script: &str) -> Result<PathBuf, String> {
+            self.launchers.push((workspace_id.into(), script.into()));
+            self.launcher_path(workspace_id)
+        }
+
+        fn removal_state(&mut self, _: &Path, _: &Path) -> Result<RemovalState, String> {
+            Ok(self.left_behind.unwrap_or(RemovalState::Intact))
+        }
+
+        fn mark_removal(&mut self, workspace_id: &str, started: bool) {
+            self.marks.push((workspace_id.into(), started));
+        }
+
+        fn worktree_dirty(&mut self, _: &Path) -> Result<bool, String> {
+            Ok(self.closed > 0 && self.dirty_after_close)
+        }
+
+        fn interrupted_removal(
+            &mut self,
+            _: &Path,
+            _: &Path,
+            _: &str,
+        ) -> Result<Option<RemovalState>, String> {
+            Ok(self.interrupted)
+        }
+
+        fn remove_launcher(&mut self, workspace_id: &str) {
+            self.removed_launchers.push(workspace_id.into());
+        }
+
+        fn long_paths_enabled(&mut self, _: &Path) -> Result<bool, String> {
+            self.long_paths.ok_or_else(|| "git config failed".into())
+        }
+
+        fn wait_before_retry(&mut self) {
+            self.retry_waits += 1;
+        }
+
+        fn close_herdr_workspace(&mut self, _: &str) -> Result<(), String> {
+            self.closed += 1;
             Ok(())
+        }
+
+        fn removal_blocker(&mut self, _: &Path, _: &Path) -> Result<Option<RemovalBlock>, String> {
+            self.blocker_checks += 1;
+            Ok(match self.blockers.is_empty() {
+                true => None,
+                false => self.blockers.remove(0),
+            })
         }
 
         fn delete_branch(&mut self, _: &Path, _: &str) -> Result<(), String> {
@@ -2467,17 +3323,900 @@ mod tests {
     }
 
     #[test]
-    fn platform_gate_refuses_only_windows() {
-        let gate = ensure_platform_supported();
-        if cfg!(windows) {
-            assert_eq!(gate, Err(DispatchError::UnsupportedPlatform));
-            assert_eq!(
-                gate.unwrap_err().to_string(),
-                "dispatch needs herdr on macOS or Linux"
-            );
-        } else {
-            assert_eq!(gate, Ok(()));
+    fn platform_gate_passes_where_the_launch_can_run() {
+        assert_eq!(ensure_platform_supported(), Ok(()));
+        assert_eq!(
+            DispatchError::UnsupportedPlatform(UNSUPPORTED_PLATFORM.into()).to_string(),
+            "dispatch on Windows needs Windows PowerShell"
+        );
+    }
+
+    fn windows_host() -> FakeHost {
+        FakeHost {
+            git: true,
+            windows: true,
+            long_paths: Some(true),
+            ..FakeHost::default()
         }
+    }
+
+    /// Decode every `TskText '…'` value of a launcher, in order.
+    fn launcher_values(script: &str) -> Vec<String> {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        script
+            .split("(TskText '")
+            .skip(1)
+            .map(|rest| {
+                let encoded = &rest[..rest.find('\'').expect("closing quote")];
+                String::from_utf8(STANDARD.decode(encoded).expect("base64")).expect("utf-8")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn windows_dispatch_runs_a_state_dir_launcher_carrying_the_argv() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let mut host = windows_host();
+        let result =
+            run_with_host(&mut state, id, &profiles, false, true, &mut host).expect("dispatch");
+
+        assert_eq!(host.launchers.len(), 1, "one launcher per launch");
+        let (workspace, script) = &host.launchers[0];
+        assert_eq!(workspace, "w9");
+        assert!(
+            script.is_ascii(),
+            "task text is embedded encoded, never as PowerShell"
+        );
+        assert_eq!(launcher_values(script), result.record.argv);
+        assert_eq!(
+            host.runs,
+            vec![(
+                "w9:p1".to_string(),
+                "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile \
+                 -ExecutionPolicy Bypass -File \"C:/Users/Some One/tsk/launchers/dispatch-w9.ps1\""
+                    .to_string()
+            )]
+        );
+        assert_eq!(result.warning, None, "long paths on: nothing to say");
+        assert!(host.removed_launchers.is_empty());
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn a_failed_windows_launch_deletes_its_launcher_and_records_nothing() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let before = state.clone();
+        let mut host = FakeHost {
+            fail_run: Some("pane gone".into()),
+            ..windows_host()
+        };
+        let error = run_with_host(&mut state, id, &profiles, false, true, &mut host)
+            .expect_err("launch fails");
+        assert_eq!(error, DispatchError::Herdr("pane gone".into()));
+        assert_eq!(host.removed_launchers, vec!["w9".to_string()]);
+        assert_eq!(
+            serde_json::to_value(&state).expect("state"),
+            serde_json::to_value(&before).expect("before")
+        );
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn windows_dispatch_says_once_when_long_paths_are_off() {
+        let (path, profiles) = profiles();
+        for (long_paths, expected) in [
+            (Some(false), Some(LONG_PATHS_OFF)),
+            (Some(true), None),
+            // An unanswered check stays quiet.
+            (None, None),
+        ] {
+            let (mut state, id) = task();
+            let mut host = FakeHost {
+                long_paths,
+                ..windows_host()
+            };
+            let result =
+                run_with_host(&mut state, id, &profiles, false, true, &mut host).expect("dispatch");
+            assert_eq!(result.warning.as_deref(), expected, "{long_paths:?}");
+        }
+        // Unix never asks: a host whose answer would be "off" stays silent there.
+        let (mut state, id) = task();
+        let mut host = FakeHost {
+            git: true,
+            long_paths: Some(false),
+            ..FakeHost::default()
+        };
+        let result =
+            run_with_host(&mut state, id, &profiles, false, true, &mut host).expect("dispatch");
+        assert_eq!(result.warning, None);
+        assert!(host.launchers.is_empty(), "Unix types the $SHELL line");
+        assert!(host.runs[0].1.starts_with("$SHELL -lc "));
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    fn clean_inspection() -> CleanupInspection {
+        CleanupInspection {
+            unreachable_remote: None,
+            warning: None,
+            base_available: true,
+            worktree_exists: true,
+            dirty: false,
+            branch_merged: true,
+            workspace_exists: true,
+            target_matches: true,
+        }
+    }
+
+    /// Git for Windows' text when another process holds a file it deletes (seen live).
+    const IN_USE: &str =
+        "error: failed to delete 'C:/Users/DevBoxWin/.herdr/worktrees/app/tsk-t1-x': \
+        Invalid argument";
+
+    #[test]
+    fn windows_cleanup_closes_the_workspace_and_keeps_everything_while_files_stay_in_use() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
+            .expect("dispatch");
+        let before = state.clone();
+
+        let mut host = FakeHost {
+            cleanup: Some(clean_inspection()),
+            blockers: vec![
+                Some(RemovalBlock::FilesInUse),
+                Some(RemovalBlock::FilesInUse),
+            ],
+            ..windows_host()
+        };
+        let error = clean_with_host(&mut state, id, true, &mut host).expect_err("kept");
+        assert_eq!(error, CleanupError::FilesInUse);
+        assert_eq!(error.code(), "files-in-use");
+        assert_eq!(
+            error.to_string(),
+            "kept: files in use (close what is running in the worktree and retry)"
+        );
+        assert_eq!(host.closed, 1, "closing the workspace ends its agent first");
+        assert_eq!(
+            (host.blocker_checks, host.retry_waits),
+            (2, 1),
+            "one brief retry"
+        );
+        assert_eq!(
+            (host.removed_herdr, host.removed_git, host.deleted_branches),
+            (0, 0, 0),
+            "nothing is deleted while files are in use"
+        );
+        assert!(host.removed_launchers.is_empty());
+        assert_eq!(
+            serde_json::to_value(&state).expect("state"),
+            serde_json::to_value(&before).expect("before"),
+            "the record stays live, never marked cleaned"
+        );
+
+        // Once whatever held the files exits, the same cleanup completes; the workspace is
+        // already closed.
+        let mut host = FakeHost {
+            cleanup: Some(CleanupInspection {
+                workspace_exists: false,
+                ..clean_inspection()
+            }),
+            ..windows_host()
+        };
+        let result = clean_with_host(&mut state, id, true, &mut host).expect("cleaned");
+        assert_eq!(result.worktree, WorktreeCleanup::Removed);
+        assert_eq!(
+            (host.closed, host.removed_git, host.removed_herdr),
+            (0, 1, 0)
+        );
+        assert_eq!(host.removed_launchers, vec!["w9".to_string()]);
+        assert!(state
+            .get(id)
+            .and_then(|task| task.dispatch.as_ref())
+            .is_some_and(|dispatch| dispatch.cleaned));
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn windows_cleanup_removes_once_the_closed_agent_has_exited() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
+            .expect("dispatch");
+        let mut host = FakeHost {
+            cleanup: Some(clean_inspection()),
+            blockers: vec![Some(RemovalBlock::FilesInUse), None],
+            ..windows_host()
+        };
+        let result = clean_with_host(&mut state, id, true, &mut host).expect("cleaned");
+        assert_eq!(result.worktree, WorktreeCleanup::Removed);
+        assert_eq!(result.branch, BranchCleanup::Removed);
+        assert!(result.workspace_removed);
+        assert_eq!(
+            (
+                host.closed,
+                host.retry_waits,
+                host.removed_git,
+                host.removed_herdr
+            ),
+            (1, 1, 1, 0)
+        );
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn windows_cleanup_names_long_paths_and_a_removal_that_lost_a_race() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
+            .expect("dispatch");
+        let before = serde_json::to_value(&state).expect("before");
+
+        let mut host = FakeHost {
+            cleanup: Some(clean_inspection()),
+            blockers: vec![Some(RemovalBlock::PathTooLong)],
+            ..windows_host()
+        };
+        let error = clean_with_host(&mut state, id, true, &mut host).expect_err("kept");
+        assert_eq!(error, CleanupError::PathTooLong);
+        assert_eq!(error.code(), "path-too-long");
+        assert_eq!(
+            error.to_string(),
+            "kept: path too long (run git config --global core.longpaths true and retry)"
+        );
+        assert_eq!(
+            host.retry_waits, 0,
+            "a long path does not go away by waiting"
+        );
+        assert_eq!(host.removed_git, 0);
+
+        // A file opened between the check and git's removal still reads as files in use.
+        let mut host = FakeHost {
+            cleanup: Some(clean_inspection()),
+            git_remove_errors: vec![IN_USE.into()],
+            ..windows_host()
+        };
+        let error = clean_with_host(&mut state, id, true, &mut host).expect_err("kept");
+        assert_eq!(error, CleanupError::FilesInUse);
+        assert_eq!(serde_json::to_value(&state).expect("state"), before);
+
+        // Elsewhere Herdr removes the checkout itself and its failures pass through verbatim.
+        let mut host = FakeHost {
+            git: true,
+            cleanup: Some(clean_inspection()),
+            herdr_remove_errors: vec![IN_USE.into()],
+            ..FakeHost::default()
+        };
+        let error = clean_with_host(&mut state, id, true, &mut host).expect_err("failed");
+        assert_eq!(error, CleanupError::Herdr(IN_USE.into()));
+        assert_eq!((host.closed, host.blocker_checks), (0, 0));
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn an_interrupted_removal_check_is_moved_back_before_cleanup_reads_the_worktree() {
+        let root = std::env::temp_dir().join(format!(
+            "tsk-removal-aside-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let worktree = root.join("tsk-t1-x");
+        fs::create_dir_all(checked_aside(&worktree)).expect("aside");
+        fs::write(checked_aside(&worktree).join("work.txt"), "x").expect("work");
+        restore_checked_aside(&worktree).expect("restored");
+        assert!(
+            worktree.join("work.txt").exists(),
+            "the agent's work is back in place"
+        );
+        assert!(!checked_aside(&worktree).exists());
+        // With the worktree in place, a leftover aside directory is never moved over it.
+        fs::create_dir_all(checked_aside(&worktree)).expect("aside again");
+        restore_checked_aside(&worktree).expect("nothing to do");
+        assert!(worktree.join("work.txt").exists() && checked_aside(&worktree).exists());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn a_failed_windows_removal_reports_what_git_left_behind() {
+        let (path, profiles) = profiles();
+        let partly = |registered| {
+            let (mut state, id) = task();
+            run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
+                .expect("dispatch");
+            let before = serde_json::to_value(&state).expect("before");
+            let mut host = FakeHost {
+                cleanup: Some(clean_inspection()),
+                git_remove_errors: vec![IN_USE.into()],
+                left_behind: Some(RemovalState::Partial { registered }),
+                ..windows_host()
+            };
+            let error = clean_with_host(&mut state, id, true, &mut host).expect_err("partly");
+            assert_eq!(error.code(), "partly-removed");
+            assert_eq!(
+                serde_json::to_value(&state).expect("after"),
+                before,
+                "record live"
+            );
+            assert_eq!(host.deleted_branches, 0, "the branch keeps every commit");
+            error.to_string()
+        };
+        // Git unregisters before it fails: never "kept … retry", which would now be refused
+        // as a mismatch forever. The advice deletes nothing the user has not looked at.
+        let unregistered = partly(false);
+        assert!(
+            unregistered.starts_with("partly removed: git unregistered the worktree")
+                && unregistered.contains("every commit is on tsk/t")
+                && unregistered.contains("Check what is left; once nothing in it is needed")
+                && unregistered.ends_with("delete the folder and clean again"),
+            "{unregistered}"
+        );
+        assert!(!unregistered.contains("kept") && !unregistered.contains("--force"));
+        // Force is offered only beside a restore, with what it also deletes.
+        let registered = partly(true);
+        assert!(
+            registered.contains("git -C \"/tmp/worktree\" restore . and clean again")
+                && registered.contains(
+                    "git worktree remove --force \"/tmp/worktree\", which also deletes any \
+                     uncommitted changes"
+                ),
+            "{registered}"
+        );
+
+        // A timeout that deleted nothing tracked is its own honest outcome.
+        let (mut state, id) = task();
+        run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
+            .expect("dispatch");
+        let mut host = FakeHost {
+            cleanup: Some(clean_inspection()),
+            git_remove_errors: vec!["git timed out".into()],
+            ..windows_host()
+        };
+        let error = clean_with_host(&mut state, id, true, &mut host).expect_err("timed out");
+        assert_eq!(error, CleanupError::RemovalTimedOut);
+        assert_eq!(error.code(), "removal-timed-out");
+        assert_eq!(
+            error.to_string(),
+            "kept: removal timed out after 15 minutes (retry when the disk is less busy)"
+        );
+
+        // The removal finished after all: the cleanup succeeds.
+        let mut host = FakeHost {
+            cleanup: Some(clean_inspection()),
+            git_remove_errors: vec![IN_USE.into()],
+            left_behind: Some(RemovalState::Gone),
+            ..windows_host()
+        };
+        let result = clean_with_host(&mut state, id, true, &mut host).expect("cleaned");
+        assert_eq!(result.worktree, WorktreeCleanup::Removed);
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    /// Every failure that deleted nothing clears the removal mark, so a later deletion is
+    /// never read as the removal's own.
+    #[test]
+    fn every_windows_removal_failure_that_deleted_nothing_clears_its_mark() {
+        let (path, profiles) = profiles();
+        for (error, left_behind, code) in [
+            (IN_USE, RemovalState::Intact, "files-in-use"),
+            (
+                "fatal: cannot remove: Filename too long",
+                RemovalState::Intact,
+                "path-too-long",
+            ),
+            ("git timed out", RemovalState::Intact, "removal-timed-out"),
+            (
+                "fatal: something else",
+                RemovalState::Intact,
+                "herdr-failed",
+            ),
+            (
+                "fatal: contains modified or untracked files, use --force to delete it",
+                RemovalState::Dirty,
+                "dirty-worktree",
+            ),
+        ] {
+            let (mut state, id) = task();
+            run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
+                .expect("dispatch");
+            let mut host = FakeHost {
+                cleanup: Some(clean_inspection()),
+                git_remove_errors: vec![error.into()],
+                left_behind: Some(left_behind),
+                ..windows_host()
+            };
+            let refused = clean_with_host(&mut state, id, true, &mut host).expect_err(error);
+            assert_eq!(refused.code(), code, "{error}");
+            assert_eq!(
+                host.marks,
+                vec![("w9".to_string(), true), ("w9".to_string(), false)],
+                "{error}"
+            );
+        }
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    /// A tracked file deleted after the recheck makes git refuse without deleting anything;
+    /// the leftovers then look like git's own deletions, but the refusal says otherwise.
+    #[test]
+    fn gits_own_dirty_refusal_is_uncommitted_work_even_when_only_deletions_show() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
+            .expect("dispatch");
+        let mut host = FakeHost {
+            cleanup: Some(clean_inspection()),
+            git_remove_errors: vec![
+                "fatal: 'C:/w' contains modified or untracked files, use --force to delete it"
+                    .into(),
+            ],
+            // What a ` D tracked.txt` status reads as.
+            left_behind: Some(RemovalState::Partial { registered: true }),
+            ..windows_host()
+        };
+        assert_eq!(
+            clean_with_host(&mut state, id, true, &mut host),
+            Err(CleanupError::DirtyWorktree)
+        );
+        assert_eq!(
+            host.marks,
+            vec![("w9".to_string(), true), ("w9".to_string(), false)]
+        );
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    /// The agent writes until its workspace closes, after the inspection: the worktree is
+    /// checked again once it has, and refused before anything is marked or deleted.
+    #[test]
+    fn work_written_while_the_workspace_closes_refuses_before_any_removal() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
+            .expect("dispatch");
+        let before = serde_json::to_value(&state).expect("before");
+        let mut host = FakeHost {
+            cleanup: Some(clean_inspection()),
+            dirty_after_close: true,
+            ..windows_host()
+        };
+        assert_eq!(
+            clean_with_host(&mut state, id, true, &mut host),
+            Err(CleanupError::DirtyWorktree)
+        );
+        assert_eq!(host.closed, 1);
+        assert_eq!((host.removed_git, host.deleted_branches), (0, 0));
+        assert!(host.marks.is_empty(), "nothing marked");
+        assert_eq!(serde_json::to_value(&state).expect("after"), before);
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn a_windows_removal_is_marked_until_it_settles_and_an_unsettled_one_reads_as_partial() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
+            .expect("dispatch");
+        let dispatched = state.clone();
+
+        // A removal git stopped partway stays marked for the next run.
+        let mut host = FakeHost {
+            cleanup: Some(clean_inspection()),
+            git_remove_errors: vec![IN_USE.into()],
+            left_behind: Some(RemovalState::Partial { registered: true }),
+            ..windows_host()
+        };
+        clean_with_host(&mut state, id, true, &mut host).expect_err("partly");
+        assert_eq!(host.marks, vec![("w9".to_string(), true)]);
+
+        // The next run (the card's preview and the cleanup) sees its deletions as a partial
+        // removal, not as uncommitted changes.
+        let dirty = CleanupInspection {
+            dirty: true,
+            ..clean_inspection()
+        };
+        let mut host = FakeHost {
+            cleanup: Some(dirty.clone()),
+            interrupted: Some(RemovalState::Partial { registered: true }),
+            ..windows_host()
+        };
+        let preview =
+            inspect_cleanup_cached_with_host(&state, id, true, &mut host).expect_err("preview");
+        assert_eq!(preview.code(), "partly-removed");
+        let error = clean_with_host(&mut state, id, true, &mut host).expect_err("partly");
+        assert_eq!(error.code(), "partly-removed");
+        assert_eq!(
+            (host.closed, host.removed_git),
+            (0, 0),
+            "nothing more is touched"
+        );
+        // Without an unsettled removal the same changes are uncommitted work.
+        let mut host = FakeHost {
+            cleanup: Some(dirty),
+            ..windows_host()
+        };
+        assert_eq!(
+            clean_with_host(&mut state, id, true, &mut host),
+            Err(CleanupError::DirtyWorktree)
+        );
+
+        // A removal that finishes is marked, then settled.
+        let mut state = dispatched;
+        let mut host = FakeHost {
+            cleanup: Some(clean_inspection()),
+            ..windows_host()
+        };
+        clean_with_host(&mut state, id, true, &mut host).expect("cleaned");
+        assert_eq!(
+            host.marks,
+            vec![("w9".to_string(), true), ("w9".to_string(), false)]
+        );
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn git_removal_failures_name_their_windows_cause() {
+        for (text, expected) in [
+            (IN_USE, Some(RemovalBlock::FilesInUse)),
+            (
+                "error: failed to delete 'C:/w': Permission denied",
+                Some(RemovalBlock::FilesInUse),
+            ),
+            (
+                "The process cannot access the file because it is being used by another \
+                 process. (os error 32)",
+                Some(RemovalBlock::FilesInUse),
+            ),
+            (
+                "fatal: cannot remove: Filename too long",
+                Some(RemovalBlock::PathTooLong),
+            ),
+            ("fatal: 'C:/w' is not a working tree", None),
+        ] {
+            assert_eq!(removal_failure(text), expected, "{text}");
+        }
+    }
+
+    /// The child half of [`a_board_quit_never_stops_a_windows_removal_partway`]: a tsk
+    /// process that removes a worktree through the production host and is killed meanwhile.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "helper process, run by its parent test"]
+    fn removal_git_helper() {
+        let (Some(project), Some(worktree), Some(started)) = (
+            std::env::var_os("TSK_REMOVAL_PROJECT"),
+            std::env::var_os("TSK_REMOVAL_WORKTREE"),
+            std::env::var_os("TSK_REMOVAL_STARTED"),
+        ) else {
+            return;
+        };
+        fs::write(started, "").expect("started");
+        let _ = SystemDispatchHost::default()
+            .remove_git_worktree(Path::new(&project), Path::new(&worktree));
+    }
+
+    /// Quitting the board ends tsk after its bound while a large removal runs. The removal's
+    /// git, started through the production host, must finish instead of dying with tsk.
+    #[cfg(windows)]
+    #[test]
+    fn a_board_quit_never_stops_a_windows_removal_partway() {
+        let git = |cwd: &Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(output.status.success(), "{args:?}: {output:?}");
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        };
+        let root = std::env::temp_dir().join(format!(
+            "tsk-removal-outlives-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let (project, worktree) = (root.join("repo"), root.join("wt"));
+        fs::create_dir_all(&project).expect("repo");
+        git(&project, &["init", "-q", "-b", "main"]);
+        fs::write(project.join(".gitignore"), "target/\n").expect("ignore");
+        git(&project, &["add", ".gitignore"]);
+        git(
+            &project,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        );
+        git(
+            &project,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "wt",
+                worktree.to_str().expect("utf-8"),
+            ],
+        );
+        // Ignored build output, enough that deleting it takes seconds.
+        for directory in 0..300 {
+            let directory = worktree.join("target").join(format!("d{directory}"));
+            fs::create_dir_all(&directory).expect("build dir");
+            for file in 0..150 {
+                fs::write(directory.join(format!("f{file}.o")), "x").expect("build file");
+            }
+        }
+        let started = root.join("started");
+        let mut helper = std::process::Command::new(std::env::current_exe().expect("exe"))
+            .args([
+                "--exact",
+                "dispatch::tests::removal_git_helper",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env("TSK_REMOVAL_PROJECT", &project)
+            .env("TSK_REMOVAL_WORKTREE", &worktree)
+            .env("TSK_REMOVAL_STARTED", &started)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("helper");
+        let begun = std::time::Instant::now();
+        while !started.exists() {
+            assert!(
+                begun.elapsed() < Duration::from_secs(60),
+                "helper never started"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(700));
+        assert!(
+            worktree.exists(),
+            "the fixture deleted too fast to test anything"
+        );
+        // tsk exits mid-removal, as when a board quit outlives its bound.
+        helper.kill().expect("kill");
+        helper.wait().expect("reap");
+
+        let begun = std::time::Instant::now();
+        while worktree.exists() && begun.elapsed() < Duration::from_secs(180) {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        assert!(!worktree.exists(), "git stopped partway when tsk exited");
+        assert!(!git(&project, &["worktree", "list"]).contains("[wt]"));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    /// The real checks against a real directory: free, then held open by this process.
+    #[cfg(windows)]
+    #[test]
+    fn a_held_file_blocks_the_windows_removal_check_and_a_free_tree_passes() {
+        let root = std::env::temp_dir().join(format!(
+            "tsk-removal-check-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let worktree = root.join("tsk-t1-x");
+        fs::create_dir_all(worktree.join("deep")).expect("mkdir");
+        fs::write(worktree.join("deep").join("file.txt"), "x").expect("file");
+        assert_eq!(worktree_in_use(&worktree), Ok(false));
+        assert!(
+            worktree.join("deep").join("file.txt").exists(),
+            "moved back"
+        );
+        // Read sharing only, as a running program or a writer holds its files; Rust's default
+        // shares delete too, which Windows lets a rename through.
+        let held = {
+            use std::os::windows::fs::OpenOptionsExt;
+            fs::OpenOptions::new()
+                .read(true)
+                .share_mode(1) // FILE_SHARE_READ
+                .open(worktree.join("deep").join("file.txt"))
+                .expect("hold")
+        };
+        assert_eq!(worktree_in_use(&worktree), Ok(true));
+        drop(held);
+        assert_eq!(worktree_in_use(&worktree), Ok(false));
+
+        // A check interrupted between its two renames is undone before the next one.
+        fs::rename(&worktree, checked_aside(&worktree)).expect("left aside");
+        assert_eq!(worktree_in_use(&worktree), Ok(false));
+        assert!(worktree.join("deep").join("file.txt").exists());
+        assert!(!checked_aside(&worktree).exists());
+
+        assert_eq!(has_long_path(&worktree), Ok(false));
+        let mut deep = worktree.clone();
+        while deep.to_string_lossy().encode_utf16().count() < MAX_PATH {
+            deep.push("a-directory-name-of-some-length");
+        }
+        fs::create_dir_all(&deep).expect("long path");
+        assert_eq!(has_long_path(&worktree), Ok(true));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn windows_paths_match_across_herdr_git_and_canonical_spellings() {
+        let canonical =
+            normalize_windows_path(r"\\?\C:\Users\Some One\.herdr\worktrees\app\tsk-t1-x");
+        for spelling in [
+            r"C:\Users\Some One\.herdr\worktrees\app\tsk-t1-x\",
+            "C:/Users/Some One/.herdr/worktrees/app/tsk-t1-x",
+            r"c:\users\some one\.HERDR\worktrees\APP\tsk-t1-x",
+        ] {
+            assert_eq!(normalize_windows_path(spelling), canonical, "{spelling}");
+        }
+        assert_ne!(
+            normalize_windows_path(r"C:\Users\Some One\.herdr\worktrees\app\tsk-t1-y"),
+            canonical
+        );
+        assert_eq!(
+            normalize_windows_path(r"\\?\UNC\server\share\repo"),
+            normalize_windows_path(r"\\server\share\repo\")
+        );
+        assert_eq!(
+            normalize_windows_path(r"C:\"),
+            normalize_windows_path("c:/")
+        );
+        assert_eq!(normalize_windows_path(r"C:\"), r"c:\");
+    }
+
+    #[test]
+    fn herdr_checkout_paths_lose_a_trailing_separator() {
+        assert_eq!(
+            without_trailing_separator(r"C:\Users\Some One\.herdr\worktrees\app\tsk-t1-x\"),
+            r"C:\Users\Some One\.herdr\worktrees\app\tsk-t1-x"
+        );
+        assert_eq!(
+            without_trailing_separator("/tmp/worktree/"),
+            "/tmp/worktree"
+        );
+        assert_eq!(without_trailing_separator("/tmp/worktree"), "/tmp/worktree");
+        assert_eq!(without_trailing_separator(r"C:\"), r"C:\");
+        assert_eq!(without_trailing_separator("/"), "/");
+    }
+
+    #[test]
+    fn launcher_files_are_named_from_the_workspace_id_alone() {
+        assert_eq!(launcher_file_name("w7T"), "dispatch-w7T.ps1");
+        assert_eq!(launcher_file_name(r"..\w:1"), "dispatch-___w_1.ps1");
+    }
+
+    const POWERSHELL: &str = r"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe";
+
+    #[test]
+    fn the_launch_line_names_the_trusted_powershell_and_a_literal_launcher() {
+        assert_eq!(
+            powershell_launch_line(
+                Path::new(POWERSHELL),
+                Path::new(r"C:\Users\Some One (work)\tsk & co\launchers\dispatch-w7T.ps1")
+            ),
+            Ok(
+                "C:/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile \
+                -ExecutionPolicy Bypass -File \
+                \"C:/Users/Some One (work)/tsk & co/launchers/dispatch-w7T.ps1\""
+                    .to_string()
+            )
+        );
+        // Every character a PowerShell, cmd, or POSIX pane still expands inside double quotes.
+        for state in [
+            r"C:\tsk\$state",
+            r"C:\tsk\$(Start-Process calc)",
+            r"C:\tsk\`tick",
+            r"C:\tsk\%USERPROFILE%",
+            r"C:\tsk\bang!",
+            "C:\\tsk\\smart\u{201c}quote",
+        ] {
+            let launcher = format!(r"{state}\launchers\dispatch-w1.ps1");
+            let refused = powershell_launch_line(Path::new(POWERSHELL), Path::new(&launcher))
+                .expect_err(state);
+            assert_eq!(refused.code(), "unsafe-state-dir", "{state}");
+            let refused = refused.to_string();
+            assert!(
+                refused.starts_with(&format!(
+                    "the state directory {} contains",
+                    state.replace('\\', "/")
+                )),
+                "{refused}"
+            );
+        }
+        assert_eq!(
+            powershell_launch_line(Path::new(POWERSHELL), Path::new(r"tsk\launchers\x.ps1")),
+            Err(DispatchError::Herdr(
+                "launcher path tsk/launchers/x.ps1 is not absolute".into()
+            ))
+        );
+        for powershell in [r"C:\Program Files\PowerShell\powershell.exe", "powershell"] {
+            assert!(
+                powershell_launch_line(Path::new(powershell), Path::new(r"C:\t\x.ps1")).is_err(),
+                "{powershell}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_state_dir_the_pane_would_expand_refuses_before_anything_exists() {
+        let (path, profiles) = profiles();
+        for state in [r"C:\tsk\$state dir", r"C:\tsk\`x", r"C:\tsk\100% here"] {
+            let (mut state_doc, id) = task();
+            let before = serde_json::to_value(&state_doc).expect("before");
+            let mut host = FakeHost {
+                state_dir: Some(state.into()),
+                ..windows_host()
+            };
+            let error = run_with_host(&mut state_doc, id, &profiles, false, true, &mut host)
+                .expect_err("refused");
+            assert_eq!(error.code(), "unsafe-state-dir", "{state}");
+            let named = state
+                .chars()
+                .find(|c| "$`%".contains(*c))
+                .expect("character");
+            assert!(
+                error.to_string().contains(&format!("contains {named:?}")),
+                "{error}"
+            );
+            assert_eq!((host.creates, host.runs.len()), (0, 0), "{state}");
+            assert!(host.launchers.is_empty());
+            assert_eq!(serde_json::to_value(&state_doc).expect("after"), before);
+        }
+        // A space is fine.
+        let (mut state_doc, id) = task();
+        let mut host = FakeHost {
+            state_dir: Some(r"C:\Users\Some One\tsk state".into()),
+            ..windows_host()
+        };
+        run_with_host(&mut state_doc, id, &profiles, false, true, &mut host).expect("dispatch");
+        assert!(host.runs[0]
+            .1
+            .ends_with("-File \"C:/Users/Some One/tsk state/launchers/dispatch-w9.ps1\""));
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn the_system_host_writes_absolute_launchers_in_its_state_dir_and_removes_them() {
+        let relative = PathBuf::from("target").join(format!(
+            "tsk-launchers-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut host = SystemDispatchHost::in_state_dir(&relative);
+        let written = host.write_launcher("w:1", "script").expect("written");
+        let expected = std::env::current_dir()
+            .expect("cwd")
+            .join(&relative)
+            .join("launchers")
+            .join("dispatch-w_1.ps1");
+        assert!(written.is_absolute(), "{}", written.display());
+        assert_eq!(written, expected);
+        assert_eq!(host.launcher_path("w:1"), Ok(expected.clone()));
+        assert_eq!(fs::read_to_string(&written).expect("launcher"), "script");
+        host.remove_launcher("w:1");
+        assert!(!expected.exists());
+        fs::remove_dir_all(relative).expect("cleanup");
+    }
+
+    #[test]
+    fn herdr_windows_worktree_json_records_the_path_without_its_trailing_separator() {
+        let value: Value = serde_json::from_str(
+            r#"{"result":{"worktree":{"path":"C:\\Users\\Some One\\.herdr\\worktrees\\app\\tsk-t1-x\\","branch":"tsk/t1-x"},"workspace":{"workspace_id":"w5"},"root_pane":{"pane_id":"w5:p1"}}}"#,
+        )
+        .expect("json");
+        let created = created_worktree_from_value(value).expect("created");
+        assert_eq!(
+            created.path,
+            PathBuf::from(r"C:\Users\Some One\.herdr\worktrees\app\tsk-t1-x")
+        );
+        assert_eq!(
+            (
+                created.branch.as_str(),
+                created.workspace_id.as_str(),
+                created.root_pane_id.as_str()
+            ),
+            ("tsk/t1-x", "w5", "w5:p1")
+        );
     }
 
     #[test]
@@ -2487,7 +4226,14 @@ mod tests {
             (DispatchError::SoftDeletedTask, "soft-deleted-task"),
             (DispatchError::NoAssignee, "no-assignee"),
             (DispatchError::NotInHerdr, "not-in-herdr"),
-            (DispatchError::UnsupportedPlatform, "unsupported-platform"),
+            (
+                DispatchError::UnsupportedPlatform(UNSUPPORTED_PLATFORM.into()),
+                "unsupported-platform",
+            ),
+            (
+                DispatchError::UnsafeStateDir("C:/tsk/$x".into()),
+                "unsafe-state-dir",
+            ),
             (DispatchError::NeedsGitProject, "needs-git-project"),
             (DispatchError::DoneTask, "done-task"),
             (DispatchError::ArchivedTask, "archived-task"),
@@ -3509,7 +5255,7 @@ mod tests {
             at: SystemTime::now(),
             cleaned: false,
         };
-        let inspection = SystemDispatchHost
+        let inspection = SystemDispatchHost::default()
             .inspect_cleanup(&project, &record, false)
             .expect("inspect");
         assert!(!inspection.worktree_exists);
@@ -3523,7 +5269,7 @@ mod tests {
             worktree: project.to_string_lossy().into_owned(),
             ..record
         };
-        let inspection = SystemDispatchHost
+        let inspection = SystemDispatchHost::default()
             .inspect_cleanup(&project, &root_record, false)
             .expect("inspect root");
         assert!(!inspection.target_matches);

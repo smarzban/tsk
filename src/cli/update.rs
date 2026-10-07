@@ -254,7 +254,7 @@ fn run_installer(
 }
 
 #[cfg(windows)]
-fn windows_powershell_path() -> Result<PathBuf, String> {
+pub(crate) fn windows_powershell_path() -> Result<PathBuf, String> {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
