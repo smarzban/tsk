@@ -1088,7 +1088,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_timed_out_git_kills_its_grandchildren_on_windows() {
-        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_TIMEOUT};
         use windows_sys::Win32::System::Threading::{
             OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
         };
@@ -1099,36 +1099,59 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let pid_file = dir.join("pid.txt");
-        // Git for Windows' shell starts a native `sleep` in milliseconds and reports its
-        // Windows pid, so the grandchild is running long before the deadline even on a slow
-        // runner (PowerShell's start-up could outlast it).
+        let pid_path = pid_file.to_string_lossy().replace('\\', "/");
+        // Git for Windows' shell starts a native `sleep` in milliseconds (PowerShell's start-up
+        // could outlast the deadline on a slow runner). Its Windows pid is recorded only once
+        // the background child has exec'd `sleep`; before that it is a short-lived fork stub.
         let alias = format!(
-            "alias.hang=!sleep 120 & cat /proc/$!/winpid > \"{}\"; wait",
-            pid_file.to_string_lossy().replace('\\', "/")
+            "alias.hang=!sleep 120 & p=$!; i=0; \
+             until grep -q sleep /proc/$p/exename 2>/dev/null || [ $i -ge 400 ]; \
+             do i=$((i+1)); sleep 0.05; done; \
+             cat /proc/$p/winpid > \"{pid_path}.tmp\" && mv \"{pid_path}.tmp\" \"{pid_path}\"; \
+             wait"
         );
+        let deadline = std::time::Duration::from_secs(30);
+        let git = {
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                git_process_output_timeout(&dir, &["-c", &alias, "hang"], deadline).map(|_| ())
+            })
+        };
         let started = std::time::Instant::now();
-        let outcome = git_process_output_timeout(
-            &dir,
-            &["-c", &alias, "hang"],
-            std::time::Duration::from_secs(15),
-        );
-        assert_eq!(outcome.map(|_| ()), Err("git timed out".to_string()));
-        assert!(started.elapsed() < std::time::Duration::from_secs(60));
-        let pid: u32 = std::fs::read_to_string(&pid_file)
-            .expect("the grandchild started before the deadline")
-            .trim()
-            .parse()
-            .expect("pid");
-        // SAFETY: plain Win32 calls on a handle opened and closed here.
-        let exited = unsafe {
-            let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
-            if handle.is_null() {
-                true // already gone and reaped
-            } else {
-                let waited = WaitForSingleObject(handle, 5_000);
-                CloseHandle(handle);
-                waited == WAIT_OBJECT_0
+        let pid: u32 = loop {
+            if let Some(pid) = std::fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
+                break pid;
             }
+            assert!(started.elapsed() < deadline, "the sleeper never started");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        // SAFETY: plain Win32 calls; the handle is held across the deadline, so the pid cannot
+        // be reused, and closed once below.
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+        assert!(
+            !handle.is_null(),
+            "recorded pid {pid} is not a running process"
+        );
+        // Negative control: before the deadline the recorded process is the live, long-lived
+        // sleeper, so a wrong (already exited) pid fails here instead of passing vacuously.
+        // SAFETY: a zero-timeout wait on the handle opened above.
+        assert_eq!(
+            unsafe { WaitForSingleObject(handle, 0) },
+            WAIT_TIMEOUT,
+            "recorded pid {pid} exited before the deadline"
+        );
+        assert_eq!(
+            git.join().expect("git thread"),
+            Err("git timed out".to_string())
+        );
+        // SAFETY: as above.
+        let exited = unsafe {
+            let waited = WaitForSingleObject(handle, 5_000);
+            CloseHandle(handle);
+            waited == WAIT_OBJECT_0
         };
         assert!(exited, "grandchild {pid} outlived the timed-out git");
         let _ = std::fs::remove_dir_all(dir);
