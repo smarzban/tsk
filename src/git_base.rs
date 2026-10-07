@@ -1102,11 +1102,13 @@ mod tests {
         let pid_path = pid_file.to_string_lossy().replace('\\', "/");
         // Git for Windows' shell starts a native `sleep` in milliseconds (PowerShell's start-up
         // could outlast the deadline on a slow runner). Its Windows pid is recorded only once
-        // the background child has exec'd `sleep`; before that it is a short-lived fork stub.
+        // the background child has exec'd `sleep`; before that it is a short-lived fork stub,
+        // so a child that never shows as `sleep` publishes nothing and the test fails.
         let alias = format!(
             "alias.hang=!sleep 120 & p=$!; i=0; \
              until grep -q sleep /proc/$p/exename 2>/dev/null || [ $i -ge 400 ]; \
              do i=$((i+1)); sleep 0.05; done; \
+             grep -q sleep /proc/$p/exename 2>/dev/null || {{ kill $p; exit 3; }}; \
              cat /proc/$p/winpid > \"{pid_path}.tmp\" && mv \"{pid_path}.tmp\" \"{pid_path}\"; \
              wait"
         );
