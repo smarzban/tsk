@@ -1084,7 +1084,7 @@ mod tests {
     }
 
     /// A timed-out Git takes its whole process tree down, as the Unix process group does:
-    /// here an alias whose shell starts a long-lived PowerShell grandchild.
+    /// here an alias whose shell starts a long-lived `sleep` grandchild.
     #[cfg(windows)]
     #[test]
     fn a_timed_out_git_kills_its_grandchildren_on_windows() {
@@ -1099,19 +1099,21 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let pid_file = dir.join("pid.txt");
+        // Git for Windows' shell starts a native `sleep` in milliseconds and reports its
+        // Windows pid, so the grandchild is running long before the deadline even on a slow
+        // runner (PowerShell's start-up could outlast it).
         let alias = format!(
-            "alias.hang=!powershell -NoProfile -Command '$PID | Out-File -Encoding ascii \
-             \"{}\"; Start-Sleep 120'",
+            "alias.hang=!sleep 120 & cat /proc/$!/winpid > \"{}\"; wait",
             pid_file.to_string_lossy().replace('\\', "/")
         );
         let started = std::time::Instant::now();
         let outcome = git_process_output_timeout(
             &dir,
             &["-c", &alias, "hang"],
-            std::time::Duration::from_secs(8),
+            std::time::Duration::from_secs(15),
         );
         assert_eq!(outcome.map(|_| ()), Err("git timed out".to_string()));
-        assert!(started.elapsed() < std::time::Duration::from_secs(30));
+        assert!(started.elapsed() < std::time::Duration::from_secs(60));
         let pid: u32 = std::fs::read_to_string(&pid_file)
             .expect("the grandchild started before the deadline")
             .trim()
@@ -1128,10 +1130,7 @@ mod tests {
                 waited == WAIT_OBJECT_0
             }
         };
-        assert!(
-            exited,
-            "PowerShell grandchild {pid} outlived the timed-out git"
-        );
+        assert!(exited, "grandchild {pid} outlived the timed-out git");
         let _ = std::fs::remove_dir_all(dir);
     }
     use std::sync::atomic::{AtomicUsize, Ordering};
