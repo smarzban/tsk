@@ -227,7 +227,7 @@ tsk dispatch T12 --again
 tsk dispatch T12 --base dispatch
 ```
 
-Launches an assigned task's agent in its own Git worktree and Herdr workspace, then sets the task to `started`. It needs Herdr (on Windows a [preview](/docs/board/#dispatch-on-windows-preview) that runs a PowerShell launcher and refuses with `unsupported-platform` when Windows PowerShell is missing or the state directory holds a character the pane's shell would expand), a task in a project that is a Git repository, and an assignee with a profile in [`config.toml`](/docs/storage/#agent-profiles).
+Launches an assigned task's agent in its own Git worktree and Herdr workspace, then sets the task to `started`. It needs Herdr (on Windows a [preview](/docs/board/#dispatch-on-windows-preview) that runs a PowerShell launcher and refuses with `unsupported-platform` when Windows PowerShell is missing, and with `unsafe-state-dir`, naming the character, when the state directory holds one the pane's shell would expand), a task in a project that is a Git repository, and an assignee with a profile in [`config.toml`](/docs/storage/#agent-profiles).
 
 tsk creates a branch and worktree from the base, opens a Herdr workspace there, and runs the profile's rendered command in its root pane. Only after the launch succeeds does it save the dispatch record and set `started`, in one write. Dispatch is not undoable. Names follow the task number and title, as on the [board](/docs/board/#dispatch): branch `tsk/t12-fix-login-timeout`, worktree directory `tsk-t12-fix-login-timeout`, workspace `T12 Fix login timeout`, with `-2`, `-3` appended when a name is taken. tsk then names the agent `t12-<assignee>` once Herdr detects it, so `herdr agent get t12-claude` finds it; an undetected agent stays unnamed and the dispatch still succeeds.
 
@@ -237,7 +237,7 @@ A dispatched task refuses with `already-dispatched`. `--again` relaunches delibe
 
 Output: `dispatched T12 to @implementer in /path/to/worktree`. On Windows with Git's `core.longpaths` off, a warning line says how to turn it on; the dispatch still succeeds.
 
-Refusal codes: `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `unsupported-platform`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, `unknown-base`, and `herdr-failed`. A refusal leaves the task unchanged. A storage failure after a successful launch exits 3; read the task before retrying, because the agent may already be running.
+Refusal codes: `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `unsupported-platform`, `unsafe-state-dir`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, `unknown-base`, and `herdr-failed`. A refusal leaves the task unchanged. A storage failure after a successful launch exits 3; read the task before retrying, because the agent may already be running.
 
 ## clean
 
@@ -408,7 +408,7 @@ After an uncertain add, inspect `tsk list --all --json`. Also check `--done` and
 | --- | --- |
 | Add | `empty-title`, `invalid-title`, `invalid-thread`, `invalid-item`, `unknown-project`, `unknown-agent`, `unknown-base`, `project-archived` |
 | Edit | `empty-title`, `invalid-title`, `unknown-task`, `soft-deleted-task`, `unknown-agent`, `unknown-base` |
-| Dispatch | `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `unsupported-platform`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, `unknown-base`, `herdr-failed` |
+| Dispatch | `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `unsupported-platform`, `unsafe-state-dir`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, `unknown-base`, `herdr-failed` |
 | Clean | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`, `herdr-failed` |
 | Steps | `empty-step-text`, `invalid-step-text`, `unknown-task`, `soft-deleted-task`, `unknown-step`, `ambiguous-step` |
 | Status | `unknown-task`, `soft-deleted-task`; with `--clean`, cleanup codes above |

@@ -968,6 +968,7 @@ pub fn dispatch_help() -> CliOutput {
             "no-assignee".into(),
             "not-in-herdr".into(),
             "unsupported-platform".into(),
+            "unsafe-state-dir".into(),
             "needs-git-project".into(),
             "done-task".into(),
             "archived-task".into(),

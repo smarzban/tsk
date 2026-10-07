@@ -371,6 +371,9 @@ pub enum DispatchError {
     /// Windows cannot launch here: no Windows PowerShell, or a path the pane's shell would
     /// rewrite.
     UnsupportedPlatform(String),
+    /// Windows: the state directory holds a character the pane's shell would expand in the
+    /// launch line.
+    UnsafeStateDir(String),
     NeedsGitProject,
     DoneTask,
     ArchivedTask,
@@ -390,6 +393,7 @@ impl DispatchError {
             Self::NoAssignee => "no-assignee",
             Self::NotInHerdr => "not-in-herdr",
             Self::UnsupportedPlatform(_) => "unsupported-platform",
+            Self::UnsafeStateDir(_) => "unsafe-state-dir",
             Self::NeedsGitProject => "needs-git-project",
             Self::DoneTask => "done-task",
             Self::ArchivedTask => "archived-task",
@@ -421,6 +425,7 @@ impl std::fmt::Display for DispatchError {
             Self::UnknownAgent(name) => write!(formatter, "unknown agent {name}"),
             Self::UnknownBase(reason)
             | Self::UnsupportedPlatform(reason)
+            | Self::UnsafeStateDir(reason)
             | Self::AgentConfig(reason)
             | Self::Herdr(reason)
             | Self::Store(reason) => {
@@ -561,6 +566,19 @@ pub trait DispatchHost {
     fn close_herdr_workspace(&mut self, _workspace_id: &str) -> Result<(), String> {
         Err("Herdr workspace close is not supported".into())
     }
+    /// Record that a Windows removal of the worktree in `workspace_id` is under way (`true`)
+    /// or settled (`false`). The mark outlives tsk.
+    fn mark_removal(&mut self, _workspace_id: &str, _started: bool) {}
+    /// What a marked removal that never settled left behind, or `None` when none is marked or
+    /// the worktree holds changes other than the removal's deletions.
+    fn interrupted_removal(
+        &mut self,
+        _project: &Path,
+        _worktree: &Path,
+        _workspace_id: &str,
+    ) -> Result<Option<RemovalState>, String> {
+        Ok(None)
+    }
     /// What a failed Windows removal left behind.
     fn removal_state(&mut self, _project: &Path, _worktree: &Path) -> Result<RemovalState, String> {
         Ok(RemovalState::Intact)
@@ -680,6 +698,17 @@ impl SystemDispatchHost {
         }
     }
 
+    /// The mark of a Windows removal under way, beside the store.
+    fn removal_mark(&self, workspace_id: &str) -> Result<PathBuf, String> {
+        let launcher = self.launcher_file(workspace_id)?;
+        let directory = launcher
+            .parent()
+            .and_then(Path::parent)
+            .expect("launcher sits in the state dir");
+        let name = launcher_file_name(workspace_id).replace(".ps1", ".removing");
+        Ok(directory.join("cleanups").join(name))
+    }
+
     fn launcher_file(&self, workspace_id: &str) -> Result<PathBuf, String> {
         let path = self
             .state_dir
@@ -790,20 +819,22 @@ fn launcher_file_name(workspace_id: &str) -> String {
 /// Bash. The line reads literally in all of them: the trusted PowerShell by absolute path,
 /// unquoted and with forward slashes, and the launcher in double quotes, refused when it holds
 /// a character any of those shells would still expand inside them.
-pub fn powershell_launch_line(powershell: &Path, launcher: &Path) -> Result<String, String> {
+pub fn powershell_launch_line(powershell: &Path, launcher: &Path) -> Result<String, DispatchError> {
     let powershell = powershell.to_string_lossy().replace('\\', "/");
     if !windows_absolute(&powershell)
         || !powershell
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || ":/._-".contains(character))
     {
-        return Err(format!(
+        return Err(DispatchError::UnsupportedPlatform(format!(
             "Windows PowerShell at {powershell} cannot be typed safely into the pane"
-        ));
+        )));
     }
     let launcher = launcher.to_string_lossy().replace('\\', "/");
     if !windows_absolute(&launcher) {
-        return Err(format!("launcher path {launcher} is not absolute"));
+        return Err(DispatchError::Herdr(format!(
+            "launcher path {launcher} is not absolute"
+        )));
     }
     if let Some(character) = launcher.chars().find(|character| {
         character.is_control() || "$`%\"!\u{201c}\u{201d}\u{201e}".contains(*character)
@@ -811,10 +842,10 @@ pub fn powershell_launch_line(powershell: &Path, launcher: &Path) -> Result<Stri
         let directory = launcher
             .rsplit_once("/launchers/")
             .map_or(launcher.as_str(), |(directory, _)| directory);
-        return Err(format!(
+        return Err(DispatchError::UnsafeStateDir(format!(
             "the state directory {directory} contains {character:?}, which the pane's shell \
              would expand; use a state directory without $ ` % \" or !"
-        ));
+        )));
     }
     Ok(format!(
         "{powershell} -NoProfile -ExecutionPolicy Bypass -File \"{launcher}\""
@@ -930,11 +961,21 @@ impl DispatchHost for SystemDispatchHost {
         } else {
             Duration::from_secs(5)
         };
-        let output = crate::git_base::git_process_output_timeout(
-            project,
-            &["worktree", "remove", worktree],
-            deadline,
-        )?;
+        // A removal stopped midway strands a half-deleted checkout, so on Windows its Git
+        // finishes even when tsk exits first (a board quit outlives its bound).
+        let output = if cfg!(windows) {
+            crate::git_base::git_process_output_outliving_tsk(
+                project,
+                &["worktree", "remove", worktree],
+                deadline,
+            )
+        } else {
+            crate::git_base::git_process_output_timeout(
+                project,
+                &["worktree", "remove", worktree],
+                deadline,
+            )
+        }?;
         if output.status.success() {
             Ok(())
         } else {
@@ -1112,6 +1153,58 @@ impl DispatchHost for SystemDispatchHost {
             .output()
             .map_err(|error| format!("could not run herdr: {error}"))?;
         herdr_json(output).map(|_| ())
+    }
+
+    fn mark_removal(&mut self, workspace_id: &str, started: bool) {
+        let Ok(mark) = self.removal_mark(workspace_id) else {
+            return;
+        };
+        if started {
+            if let Some(directory) = mark.parent() {
+                let _ = std::fs::create_dir_all(directory);
+            }
+            let _ = std::fs::write(&mark, b"");
+        } else {
+            let _ = std::fs::remove_file(mark);
+        }
+    }
+
+    fn interrupted_removal(
+        &mut self,
+        project: &Path,
+        worktree: &Path,
+        workspace_id: &str,
+    ) -> Result<Option<RemovalState>, String> {
+        if !self.removal_mark(workspace_id)?.exists() {
+            return Ok(None);
+        }
+        if worktree.symlink_metadata().is_err() {
+            return Ok(Some(RemovalState::Gone));
+        }
+        let path = canonical_cleanup_path(worktree)?;
+        if !git_worktree_paths(project)?
+            .iter()
+            .any(|listed| same_path(listed, &path))
+        {
+            return Ok(Some(RemovalState::Partial { registered: false }));
+        }
+        let status = cleanup_query(worktree, &["status", "--porcelain"])
+            .map_err(|error| cleanup_inspection_error("status", error))?;
+        if !status.status.success() {
+            return Ok(Some(RemovalState::Partial { registered: true }));
+        }
+        let status = String::from_utf8_lossy(&status.stdout);
+        // Only deletions are the removal's own; anything else is work to keep refusing on.
+        Ok(if status.is_empty() {
+            Some(RemovalState::Intact)
+        } else if status
+            .lines()
+            .all(|line| line.starts_with(" D ") || line.starts_with("D "))
+        {
+            Some(RemovalState::Partial { registered: true })
+        } else {
+            None
+        })
     }
 
     fn removal_state(&mut self, project: &Path, worktree: &Path) -> Result<RemovalState, String> {
@@ -1584,6 +1677,18 @@ fn inspect_planned(
     host: &mut impl DispatchHost,
 ) -> Result<CleanupPreview, CleanupError> {
     let (project, record) = (&plan.project, &plan.record);
+    // A removal tsk started and never saw finish (tsk exited, or git stopped midway) left
+    // deleted files that would otherwise read as uncommitted work, forever.
+    if let Some(RemovalState::Partial { registered }) = host
+        .interrupted_removal(
+            project,
+            Path::new(&record.worktree),
+            &record.herdr_workspace_id,
+        )
+        .map_err(CleanupError::Herdr)?
+    {
+        return Err(partly_removed(record, registered));
+    }
     let mut inspection = if plan.refs != CleanupRefs::Fetch {
         host.inspect_cleanup_cached(project, record, in_herdr)
     } else {
@@ -1677,6 +1782,7 @@ pub fn clean_planned_with_host(
     if host.platform() == HostPlatform::Windows {
         host.remove_launcher(&preview.record.herdr_workspace_id);
     }
+    host.mark_removal(&preview.record.herdr_workspace_id, false);
     let (branch, branch_reason) = match deletion {
         BranchDeletion::Removed => (BranchCleanup::Removed, None),
         BranchDeletion::Kept(reason) => (BranchCleanup::Kept, Some(reason)),
@@ -1744,35 +1850,51 @@ fn remove_windows_worktree(
         Some(RemovalBlock::PathTooLong) => return Err(CleanupError::PathTooLong),
         None => {}
     }
+    // Marked until the removal is known to have finished or touched nothing: if tsk exits
+    // or git is stopped midway, the next inspection reads the leftovers as a partial
+    // removal rather than as uncommitted work.
+    let workspace = &preview.record.herdr_workspace_id;
+    host.mark_removal(workspace, true);
     let Err(error) = host.remove_git_worktree(project, worktree) else {
         return Ok(());
     };
     // Something opened a file after the check, or the delete outlived its deadline. Git may
     // have deleted part of the checkout and unregistered it: report what is actually left.
-    let display = worktree.display();
-    let branch = &preview.record.branch;
     match host
         .removal_state(project, worktree)
         .map_err(CleanupError::Herdr)?
     {
         RemovalState::Gone => Ok(()),
-        RemovalState::Intact => Err(match removal_failure(&error) {
-            _ if error == "git timed out" => CleanupError::RemovalTimedOut,
-            Some(RemovalBlock::FilesInUse) => CleanupError::FilesInUse,
-            Some(RemovalBlock::PathTooLong) => CleanupError::PathTooLong,
-            None => CleanupError::Herdr(error),
-        }),
-        RemovalState::Partial { registered: false } => Err(CleanupError::PartlyRemoved(format!(
-            "partly removed: git unregistered the worktree but could not delete all of \
-             {display}; every commit is on {branch}. Close what holds it, delete the folder, \
-             then clean again"
-        ))),
-        RemovalState::Partial { registered: true } => Err(CleanupError::PartlyRemoved(format!(
+        RemovalState::Intact => {
+            host.mark_removal(workspace, false);
+            Err(match removal_failure(&error) {
+                _ if error == "git timed out" => CleanupError::RemovalTimedOut,
+                Some(RemovalBlock::FilesInUse) => CleanupError::FilesInUse,
+                Some(RemovalBlock::PathTooLong) => CleanupError::PathTooLong,
+                None => CleanupError::Herdr(error),
+            })
+        }
+        RemovalState::Partial { registered } => Err(partly_removed(&preview.record, registered)),
+    }
+}
+
+/// What is left of a removal git stopped partway, and how to finish it by hand. The pre-checks
+/// found the checkout clean, so every commit is on the branch.
+fn partly_removed(record: &Dispatch, registered: bool) -> CleanupError {
+    let (display, branch) = (&record.worktree, &record.branch);
+    CleanupError::PartlyRemoved(if registered {
+        format!(
             "partly removed: git deleted part of {display} and stopped; every commit is on \
              {branch}. Close what holds it, run git worktree remove --force \"{display}\", \
              then clean again"
-        ))),
-    }
+        )
+    } else {
+        format!(
+            "partly removed: git unregistered the worktree but could not delete all of \
+             {display}; every commit is on {branch}. Close what holds it, delete the folder, \
+             then clean again"
+        )
+    })
 }
 
 /// What a Windows removal that failed left of the worktree.
@@ -2162,8 +2284,7 @@ pub fn launch_with_host(
             .powershell_path()
             .map_err(DispatchError::UnsupportedPlatform)?;
         let launcher = host.launcher_path("check").map_err(DispatchError::Herdr)?;
-        powershell_launch_line(&powershell, &launcher)
-            .map_err(DispatchError::UnsupportedPlatform)?;
+        powershell_launch_line(&powershell, &launcher)?;
         Some(powershell)
     } else {
         None
@@ -2268,9 +2389,8 @@ pub fn launch_with_host(
                 .write_launcher(&workspace_id, &rendered.powershell_script())
                 .map_err(DispatchError::Herdr)?;
             let powershell = powershell.as_deref().expect("checked before launch");
-            powershell_launch_line(powershell, &launcher).map_err(|reason| {
+            powershell_launch_line(powershell, &launcher).inspect_err(|_| {
                 host.remove_launcher(&workspace_id);
-                DispatchError::UnsupportedPlatform(reason)
             })?
         }
     };
@@ -2729,6 +2849,9 @@ mod tests {
         state_dir: Option<String>,
         /// What a failed Windows removal left; `Intact` when unset.
         left_behind: Option<RemovalState>,
+        /// What an unsettled removal from an earlier run left, if one is marked.
+        interrupted: Option<RemovalState>,
+        marks: Vec<(String, bool)>,
     }
 
     impl DispatchHost for FakeHost {
@@ -2822,6 +2945,19 @@ mod tests {
 
         fn removal_state(&mut self, _: &Path, _: &Path) -> Result<RemovalState, String> {
             Ok(self.left_behind.unwrap_or(RemovalState::Intact))
+        }
+
+        fn mark_removal(&mut self, workspace_id: &str, started: bool) {
+            self.marks.push((workspace_id.into(), started));
+        }
+
+        fn interrupted_removal(
+            &mut self,
+            _: &Path,
+            _: &Path,
+            _: &str,
+        ) -> Result<Option<RemovalState>, String> {
+            Ok(self.interrupted)
         }
 
         fn remove_launcher(&mut self, workspace_id: &str) {
@@ -3473,6 +3609,69 @@ mod tests {
     }
 
     #[test]
+    fn a_windows_removal_is_marked_until_it_settles_and_an_unsettled_one_reads_as_partial() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
+            .expect("dispatch");
+        let dispatched = state.clone();
+
+        // A removal git stopped partway stays marked for the next run.
+        let mut host = FakeHost {
+            cleanup: Some(clean_inspection()),
+            git_remove_errors: vec![IN_USE.into()],
+            left_behind: Some(RemovalState::Partial { registered: true }),
+            ..windows_host()
+        };
+        clean_with_host(&mut state, id, true, &mut host).expect_err("partly");
+        assert_eq!(host.marks, vec![("w9".to_string(), true)]);
+
+        // The next run (the card's preview and the cleanup) sees its deletions as a partial
+        // removal, not as uncommitted changes.
+        let dirty = CleanupInspection {
+            dirty: true,
+            ..clean_inspection()
+        };
+        let mut host = FakeHost {
+            cleanup: Some(dirty.clone()),
+            interrupted: Some(RemovalState::Partial { registered: true }),
+            ..windows_host()
+        };
+        let preview =
+            inspect_cleanup_cached_with_host(&state, id, true, &mut host).expect_err("preview");
+        assert_eq!(preview.code(), "partly-removed");
+        let error = clean_with_host(&mut state, id, true, &mut host).expect_err("partly");
+        assert_eq!(error.code(), "partly-removed");
+        assert_eq!(
+            (host.closed, host.removed_git),
+            (0, 0),
+            "nothing more is touched"
+        );
+        // Without an unsettled removal the same changes are uncommitted work.
+        let mut host = FakeHost {
+            cleanup: Some(dirty),
+            ..windows_host()
+        };
+        assert_eq!(
+            clean_with_host(&mut state, id, true, &mut host),
+            Err(CleanupError::DirtyWorktree)
+        );
+
+        // A removal that finishes is marked, then settled.
+        let mut state = dispatched;
+        let mut host = FakeHost {
+            cleanup: Some(clean_inspection()),
+            ..windows_host()
+        };
+        clean_with_host(&mut state, id, true, &mut host).expect("cleaned");
+        assert_eq!(
+            host.marks,
+            vec![("w9".to_string(), true), ("w9".to_string(), false)]
+        );
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
     fn git_removal_failures_name_their_windows_cause() {
         for (text, expected) in [
             (IN_USE, Some(RemovalBlock::FilesInUse)),
@@ -3617,6 +3816,8 @@ mod tests {
             let launcher = format!(r"{state}\launchers\dispatch-w1.ps1");
             let refused = powershell_launch_line(Path::new(POWERSHELL), Path::new(&launcher))
                 .expect_err(state);
+            assert_eq!(refused.code(), "unsafe-state-dir", "{state}");
+            let refused = refused.to_string();
             assert!(
                 refused.starts_with(&format!(
                     "the state directory {} contains",
@@ -3627,7 +3828,9 @@ mod tests {
         }
         assert_eq!(
             powershell_launch_line(Path::new(POWERSHELL), Path::new(r"tsk\launchers\x.ps1")),
-            Err("launcher path tsk/launchers/x.ps1 is not absolute".into())
+            Err(DispatchError::Herdr(
+                "launcher path tsk/launchers/x.ps1 is not absolute".into()
+            ))
         );
         for powershell in [r"C:\Program Files\PowerShell\powershell.exe", "powershell"] {
             assert!(
@@ -3649,8 +3852,15 @@ mod tests {
             };
             let error = run_with_host(&mut state_doc, id, &profiles, false, true, &mut host)
                 .expect_err("refused");
-            assert_eq!(error.code(), "unsupported-platform", "{state}");
-            assert!(error.to_string().contains("state directory"), "{error}");
+            assert_eq!(error.code(), "unsafe-state-dir", "{state}");
+            let named = state
+                .chars()
+                .find(|c| "$`%".contains(*c))
+                .expect("character");
+            assert!(
+                error.to_string().contains(&format!("contains {named:?}")),
+                "{error}"
+            );
             assert_eq!((host.creates, host.runs.len()), (0, 0), "{state}");
             assert!(host.launchers.is_empty());
             assert_eq!(serde_json::to_value(&state_doc).expect("after"), before);
@@ -3722,6 +3932,10 @@ mod tests {
             (
                 DispatchError::UnsupportedPlatform(UNSUPPORTED_PLATFORM.into()),
                 "unsupported-platform",
+            ),
+            (
+                DispatchError::UnsafeStateDir("C:/tsk/$x".into()),
+                "unsafe-state-dir",
             ),
             (DispatchError::NeedsGitProject, "needs-git-project"),
             (DispatchError::DoneTask, "done-task"),

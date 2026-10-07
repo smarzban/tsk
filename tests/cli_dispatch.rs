@@ -656,6 +656,76 @@ fn cleanup_restores_a_clean_checkout_left_aside_and_keeps_its_unmerged_branch() 
     fs::remove_dir_all(&repo.root).unwrap();
 }
 
+/// A Windows removal git never finished (a board quit ended tsk, or git stopped midway) left
+/// tracked files deleted in a still-registered worktree. The next cleanup reports a partial
+/// removal with how to finish, never "uncommitted changes", and converges once it is finished.
+#[test]
+fn an_unfinished_removal_reads_as_partly_removed_not_as_uncommitted_work() {
+    use tsk_tui::dispatch::{CleanupError, DispatchHost, SystemDispatchHost};
+
+    let repo = CleanupRepo::new();
+    fs::write(repo.worktree.join("tracked.txt"), "x").unwrap();
+    let in_worktree = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo.worktree)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+    };
+    in_worktree(&["add", "tracked.txt"]);
+    in_worktree(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-qm",
+        "work",
+    ]);
+    let (mut state, id) = repo.state("base", None);
+    let mut host = SystemDispatchHost::in_state_dir(repo.root.join("state"));
+
+    // Without a removal under way, a deleted tracked file is uncommitted work.
+    fs::remove_file(repo.worktree.join("tracked.txt")).unwrap();
+    assert_eq!(
+        tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut host),
+        Err(CleanupError::DirtyWorktree)
+    );
+
+    host.mark_removal("w1", true);
+    let refused = tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut host)
+        .expect_err("partly removed");
+    assert_eq!(refused.code(), "partly-removed");
+    assert!(
+        refused
+            .to_string()
+            .contains("run git worktree remove --force"),
+        "{refused}"
+    );
+    assert!(!state.get(id).unwrap().dispatch.as_ref().unwrap().cleaned);
+
+    // Finishing by hand as told lets the next cleanup converge.
+    repo.git(&[
+        "worktree",
+        "remove",
+        "--force",
+        repo.worktree.to_str().unwrap(),
+    ]);
+    let result =
+        tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut host).expect("cleaned");
+    assert_eq!(result.worktree, WorktreeCleanup::Missing);
+    assert!(state.get(id).unwrap().dispatch.as_ref().unwrap().cleaned);
+    assert!(!repo
+        .root
+        .join("state")
+        .join("cleanups")
+        .join("dispatch-w1.removing")
+        .exists());
+    fs::remove_dir_all(&repo.root).unwrap();
+}
+
 struct CleanupRepo {
     root: PathBuf,
     project: PathBuf,

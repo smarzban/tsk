@@ -61,6 +61,7 @@ The command and prompt templates support `{number}`, `{title}`, `{notes}`, `{ste
 | `config.toml` | Settings, including agent launch profiles, seeded with commented examples on the first full board open |
 | `delivery.json` | Which starter tasks this install has received or dismissed, and the newest release note it has seen |
 | `launchers\` | Windows only: one-time PowerShell dispatch launchers; each deletes itself when it starts |
+| `cleanups\` | Windows only: a mark per worktree removal under way, so an interrupted one reads as partly removed |
 
 An older binary refuses a newer or unversioned store instead of rewriting it. Use a compatible tsk version to open it. On first save, v5 stores migrate to v6, which adds task assignees, dispatch base branches, and dispatch records; the original document is saved as `tsk.json.v5`. Earlier stores still run through each migration in order, including v5 batch undo and the v3 to v4 move from ready to open.
 
