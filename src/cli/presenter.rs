@@ -1009,6 +1009,8 @@ pub fn clean_help() -> CliOutput {
             "already-cleaned".into(),
             "dirty-worktree".into(),
             "worktree-mismatch".into(),
+            "files-in-use".into(),
+            "path-too-long".into(),
             "herdr-failed".into(),
         ],
         exit: exit_line(

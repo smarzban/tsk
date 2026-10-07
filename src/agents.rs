@@ -1018,7 +1018,15 @@ when you need a human."
         let profiles = AgentProfiles::parse(&examples).expect("uncommented examples parse");
         assert_eq!(
             profiles.names().collect::<Vec<_>>(),
-            ["claude", "claude-win", "grok", "my-agent", "pi-opus", "pi-win", "sol"]
+            [
+                "claude",
+                "claude-win",
+                "grok",
+                "my-agent",
+                "pi-opus",
+                "pi-win",
+                "sol"
+            ]
         );
         assert_eq!(
             profiles.get("claude-win").expect("windows example").command,

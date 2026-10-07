@@ -71,7 +71,7 @@ Assign threads when [capturing](/docs/capture/#title-tokens) or [editing a task]
 
 ## Agents
 
-Assign a task to an agent, dispatch it into its own Git worktree and Herdr workspace, then clean up when you complete it. Agents are profiles you define in [`config.toml`](/docs/storage/#agent-profiles). Dispatch needs Herdr on macOS or Linux; assigning works everywhere.
+Assign a task to an agent, dispatch it into its own Git worktree and Herdr workspace, then clean up when you complete it. Agents are profiles you define in [`config.toml`](/docs/storage/#agent-profiles). Dispatch needs Herdr; on Windows it is a [preview](#dispatch-on-windows-preview). Assigning works everywhere.
 
 ### Assign
 
@@ -98,7 +98,16 @@ A started task with a live dispatch shows `◉` instead of `●`.
 
 On an unassigned task `ctrl+g` opens the assignee picker first: choosing a profile saves the assignment, then dispatches; **none** or `Esc` changes nothing. With no profile defined, `ctrl+g` refuses: "no agent assigned: press @ or add a profile to config.toml".
 
-Dispatch needs a task in a project that is a Git repository, an assignee with a profile, and a status other than done; archived tasks are refused. On Windows `ctrl+g` refuses with "dispatch needs herdr on macOS or Linux".
+Dispatch needs a task in a project that is a Git repository, an assignee with a profile, and a status other than done; archived tasks are refused.
+
+### Dispatch on Windows (preview)
+
+Herdr on Windows is a preview, and so is dispatch there. Instead of a `$SHELL -lc` line, tsk writes a one-time PowerShell launcher to `launchers\` in the [state directory](/docs/storage/) and runs it in the workspace's pane with `powershell -NoProfile -ExecutionPolicy Bypass -File`. The launcher deletes itself when it starts, and cleanup deletes one that never ran; it is never inside the worktree, so it is never committed. It carries the profile's arguments and `env` encoded, so quotes, `$`, `%`, newlines, and backslashes in the prompt arrive as written.
+
+- `command` may name an `.exe` (`claude`) or the `.ps1` shim npm installs (`pi`, `codex`). A `.cmd` or `.bat` wrapper runs through `cmd.exe`, which can change `%` and quotes in the prompt.
+- Windows refuses paths longer than 260 characters unless Git's `core.longpaths` is on. When it is off for the repository, dispatch still launches and says once: "core.longpaths is off, so deep paths in the worktree may fail; enable it with git config --global core.longpaths true".
+- Windows cannot delete files a running program holds open. Cleanup closes the workspace (which ends its agent) and retries once; if files are still in use it keeps the worktree, branch, and dispatch record and says "kept: files in use (close what is running in the worktree and retry)". A path too long to delete says "kept: path too long (run git config --global core.longpaths true and retry)".
+- AGENT_NAMING_PLACEHOLDER
 
 ### Base branch
 
