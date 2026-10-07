@@ -3736,8 +3736,6 @@ mod tests {
         fs::remove_dir_all(path).expect("cleanup");
     }
 
-    /// The agent writes until its workspace closes, after the inspection: the worktree is
-    /// checked again once it has, and refused before anything is marked or deleted.
     /// A tracked file deleted after the recheck makes git refuse without deleting anything;
     /// the leftovers then look like git's own deletions, but the refusal says otherwise.
     #[test]
@@ -3767,6 +3765,8 @@ mod tests {
         fs::remove_dir_all(path).expect("cleanup");
     }
 
+    /// The agent writes until its workspace closes, after the inspection: the worktree is
+    /// checked again once it has, and refused before anything is marked or deleted.
     #[test]
     fn work_written_while_the_workspace_closes_refuses_before_any_removal() {
         let (path, profiles) = profiles();
