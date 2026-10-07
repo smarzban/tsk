@@ -16,11 +16,12 @@ pub fn run(
     state_dir: Option<PathBuf>,
 ) -> Result<DispatchResult, DispatchError> {
     dispatch::ensure_platform_supported()?;
-    let mut host = SystemDispatchHost;
+    let state_dir = state_dir.unwrap_or_else(default_state_dir);
+    let mut host = SystemDispatchHost::in_state_dir(&state_dir);
     let result = run_with_host_base(
         target,
         again,
-        state_dir,
+        Some(state_dir),
         dispatch::running_inside_herdr(),
         base_override.as_deref(),
         &mut host,

@@ -7,10 +7,11 @@ use crate::dispatch::{self, CleanupError, CleanupResult, DispatchHost, SystemDis
 use crate::store::{default_state_dir, TaskStore};
 
 pub fn run(target: TaskAddress, state_dir: Option<PathBuf>) -> Result<CleanupResult, CleanupError> {
-    let mut host = SystemDispatchHost;
+    let state_dir = state_dir.unwrap_or_else(default_state_dir);
+    let mut host = SystemDispatchHost::in_state_dir(&state_dir);
     run_with_host(
         target,
-        state_dir,
+        Some(state_dir),
         dispatch::running_inside_herdr(),
         &mut host,
     )

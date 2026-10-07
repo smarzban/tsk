@@ -100,6 +100,17 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 # [agent.my-agent.env]
 # GIT_AUTHOR_NAME = "my-agent (via tsk)"
 # GIT_COMMITTER_NAME = "my-agent (via tsk)"
+
+# --- On Windows (preview) ---------------------------------------------------
+
+# tsk starts the agent through Windows PowerShell, so `command` may name an
+# .exe or the .ps1 shim npm installs (pi, codex). Write Windows paths as
+# literal strings ('...') so their backslashes stay as typed.
+# [agent.claude-win]
+# command = ['C:\Users\you\.local\bin\claude.exe']
+
+# [agent.pi-win]
+# command = ["pi", "--model", "anthropic/claude-opus-5-5", "--thinking", "high"]
 "##;
 
 /// Seed the commented profile examples on a full board open.
@@ -298,6 +309,62 @@ pub struct RenderedLaunch {
     pub command: String,
     pub argv: Vec<String>,
     pub env: BTreeMap<String, String>,
+}
+
+impl RenderedLaunch {
+    /// The same launch as a Windows PowerShell 5.1 script, for `powershell -File`. Every value
+    /// is embedded base64-encoded UTF-8, so the script is plain ASCII and no task text is ever
+    /// parsed as PowerShell. The script deletes itself before it starts the agent.
+    ///
+    /// Windows PowerShell passes arguments to programs (and to the `.ps1` shims npm installs,
+    /// which forward them to `node.exe`) without escaping embedded double quotes. Each argument
+    /// is pre-escaped for the program's command-line parser so it arrives verbatim.
+    pub fn powershell_script(&self) -> String {
+        let text = |value: &str| format!("(TskText '{}')", base64_text(value));
+        let mut script = String::from(POWERSHELL_PRELUDE);
+        for (key, value) in &self.env {
+            script.push_str(&format!(
+                "[Environment]::SetEnvironmentVariable({}, {}, 'Process')\n",
+                text(key),
+                text(value)
+            ));
+        }
+        let (program, arguments) = self.argv.split_first().expect("argv has a program");
+        script.push_str(&format!(
+            "$TskCommand = Get-Command -Name {} -ErrorAction Stop | Select-Object -First 1\n",
+            text(program)
+        ));
+        script.push_str("$TskArguments = @(\n");
+        for argument in arguments {
+            script.push_str(&format!("    (TskArgument {})\n", text(argument)));
+        }
+        script.push_str(")\n& $TskCommand @TskArguments\nexit $LASTEXITCODE\n");
+        script
+    }
+}
+
+/// The fixed head of every PowerShell launcher. `TskArgument` escapes one argument the way
+/// the Microsoft C runtime parses a command line: backslashes before a quote double and the
+/// quote is escaped; trailing backslashes double when PowerShell will wrap the argument in
+/// quotes (it does so for any argument containing whitespace); an empty argument becomes `""`,
+/// which PowerShell would otherwise drop.
+const POWERSHELL_PRELUDE: &str = r#"# tsk dispatch launcher: runs once, then deletes itself.
+$ErrorActionPreference = 'Stop'
+Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+function TskText([string]$Value) {
+    [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Value))
+}
+function TskArgument([string]$Value) {
+    if ($Value.Length -eq 0) { return '""' }
+    $Value = [regex]::Replace($Value, '(\\*)"', '$1$1\"')
+    if ($Value -match '\s') { $Value = [regex]::Replace($Value, '(\\+)$', '$1$1') }
+    $Value
+}
+"#;
+
+fn base64_text(value: &str) -> String {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    STANDARD.encode(value.as_bytes())
 }
 
 /// Typed failures from reading or validating `config.toml`.
@@ -753,7 +820,7 @@ command = ["pi"]
         assert!(!rendered.argv.last().expect("prompt").contains("tsk guide"));
     }
 
-    // The rendered line is POSIX shell; Windows refuses dispatch before rendering.
+    // Runs the rendered POSIX line under /bin/sh; Windows launches through a PowerShell script.
     #[cfg(unix)]
     #[test]
     fn rendering_shell_quotes_a_prompt_containing_a_single_quote() {
@@ -807,7 +874,7 @@ when you need a human."
         );
     }
 
-    // The rendered line is POSIX shell; Windows refuses dispatch before rendering.
+    // Runs the rendered POSIX line under /bin/sh; Windows launches through a PowerShell script.
     #[cfg(unix)]
     #[test]
     fn rendering_the_builtin_prompt_survives_shell_quoting_of_a_hostile_title() {
@@ -839,6 +906,53 @@ when you need a human."
         assert!(printed.starts_with(
             "You were dispatched to T101 (Don't run `rm -rf $HOME`; echo \"hi\") in worktree"
         ));
+    }
+
+    #[test]
+    fn powershell_launcher_embeds_env_program_and_arguments_encoded_in_order() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let profile = AgentProfile {
+            command: vec!["claude".into(), "--add-dir".into(), "{worktree}".into()],
+            prompt: Some("Don't \"quote\" $HOME %PATH% `x`; T{number}\ncafé".into()),
+            env: [(
+                "GIT_AUTHOR_NAME".to_string(),
+                "a \"b\" (via tsk)".to_string(),
+            )]
+            .into(),
+        };
+        let rendered = profile.render(&RenderContext {
+            worktree: r"C:\Users\Some One\.herdr\worktrees\app\tsk-t101",
+            ..context()
+        });
+        let script = rendered.powershell_script();
+
+        assert!(script.is_ascii(), "{script}");
+        assert!(script.starts_with(POWERSHELL_PRELUDE));
+        let values = script
+            .split("(TskText '")
+            .skip(1)
+            .map(|rest| {
+                let encoded = &rest[..rest.find('\'').expect("closing quote")];
+                String::from_utf8(STANDARD.decode(encoded).expect("base64")).expect("utf-8")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            values,
+            [
+                "GIT_AUTHOR_NAME",
+                "a \"b\" (via tsk)",
+                "claude",
+                "--add-dir",
+                r"C:\Users\Some One\.herdr\worktrees\app\tsk-t101",
+                "Don't \"quote\" $HOME %PATH% `x`; T101\ncafé",
+            ]
+        );
+        assert_eq!(
+            script.matches("(TskArgument ").count(),
+            3,
+            "program is not an argument"
+        );
+        assert!(script.ends_with("& $TskCommand @TskArguments\nexit $LASTEXITCODE\n"));
     }
 
     /// The default prompt as the starter file quotes it, unwrapped: `#   ` prefixes stripped,
@@ -904,7 +1018,11 @@ when you need a human."
         let profiles = AgentProfiles::parse(&examples).expect("uncommented examples parse");
         assert_eq!(
             profiles.names().collect::<Vec<_>>(),
-            ["claude", "grok", "my-agent", "pi-opus", "sol"]
+            ["claude", "claude-win", "grok", "my-agent", "pi-opus", "pi-win", "sol"]
+        );
+        assert_eq!(
+            profiles.get("claude-win").expect("windows example").command,
+            [r"C:\Users\you\.local\bin\claude.exe"]
         );
         let grok = profiles.get("grok").expect("grok example");
         assert!(grok

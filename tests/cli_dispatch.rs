@@ -335,7 +335,6 @@ fn clean_cli_refusals_print_stable_codes() {
     fs::remove_dir_all(dir).expect("cleanup");
 }
 
-#[cfg(unix)]
 #[test]
 fn dispatch_refusals_print_stable_codes_and_persist_nothing() {
     let dir = std::env::temp_dir().join(format!(
@@ -394,48 +393,67 @@ fn dispatch_refusals_print_stable_codes_and_persist_nothing() {
     fs::remove_dir_all(dir).expect("cleanup");
 }
 
+/// The Windows launcher hands a hostile prompt and the profile's env to a real program
+/// (`tsk.exe`, which stores the prompt as a task's notes) through Windows PowerShell 5.1
+/// exactly: quotes, `$`, `%`, cmd metacharacters, a newline, backslashes, non-ASCII.
 #[cfg(windows)]
 #[test]
-fn dispatch_refuses_on_windows_and_persists_nothing() {
+fn windows_launcher_delivers_argv_and_env_verbatim_through_powershell() {
+    use tsk_tui::agents::{AgentProfile, RenderContext};
+
     let dir = std::env::temp_dir().join(format!(
-        "tsk-cli-dispatch-{}-{}",
+        "tsk-cli-launcher-{}-{}",
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     ));
-    fs::create_dir_all(&dir).expect("mkdir");
-    let store = TaskStore::new(&dir);
-    let mut state = DomainState::new();
-    state
-        .create(
-            "assigned",
-            None,
-            TaskScope::Project {
-                path: "/repos/app".into(),
-            },
-            ProvenanceOrigin::Manual,
-            None,
-        )
-        .expect("task");
-    store.save(&state).expect("save");
-    let before = fs::read(dir.join("tsk.json")).expect("state bytes");
-
-    let output = run_with(
-        [
-            "tsk",
-            "dispatch",
-            "T1",
-            "--state-dir",
-            dir.to_str().expect("utf-8 path"),
+    let state = dir.join("state dir");
+    fs::create_dir_all(&state).expect("mkdir");
+    let prompt = "say \"hi there\" and 'single' \\\"pre-escaped\\\"\nnew line $HOME %PATH% \
+                  ^ & | < > `tick` C:\\path with space\\ caf\u{e9} \u{6771}\u{4eac} end\\";
+    let profile = AgentProfile {
+        command: vec![
+            env!("CARGO_BIN_EXE_tsk").into(),
+            "add".into(),
+            "--desk".into(),
+            "-t".into(),
+            "{title}".into(),
+            "-n".into(),
         ],
-        Cursor::new(Vec::<u8>::new()),
-        true,
+        prompt: Some(prompt.into()),
+        env: [(
+            "TSK_STATE_DIR".to_string(),
+            state.to_string_lossy().into_owned(),
+        )]
+        .into(),
+    };
+    let rendered = profile.render(&RenderContext {
+        number: 1,
+        title: "a \"quoted\" title\\",
+        notes: "",
+        steps: "",
+        worktree: "C:\\w",
+        branch: "tsk/t1",
+        base: "main",
+    });
+    let launcher = dir.join("launcher.ps1");
+    fs::write(&launcher, rendered.powershell_script()).expect("launcher");
+
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(&launcher)
+        .output()
+        .expect("powershell");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(output.code, 1);
-    assert_eq!(
-        output.stderr,
-        "tsk dispatch: unsupported-platform: dispatch needs herdr on macOS or Linux\n"
-    );
-    assert_eq!(fs::read(dir.join("tsk.json")).expect("after"), before);
+    assert!(!launcher.exists(), "the launcher deletes itself");
+
+    let tasks = TaskStore::new(&state).load().expect("store");
+    let task = &tasks.tasks()[0];
+    assert_eq!(task.title, "a \"quoted\" title\\");
+    assert_eq!(task.notes.as_deref(), Some(prompt));
     fs::remove_dir_all(dir).expect("cleanup");
 }
 
@@ -574,7 +592,7 @@ impl CleanupRepo {
             &mut state,
             id,
             false,
-            &mut tsk_tui::dispatch::SystemDispatchHost,
+            &mut tsk_tui::dispatch::SystemDispatchHost::default(),
         )
         .expect("clean worktree even when base vanished")
     }
@@ -816,7 +834,7 @@ fn cleanup_keeps_exact_local_namespace_after_adding_same_named_remote() {
             &mut state,
             id,
             false,
-            &mut tsk_tui::dispatch::SystemDispatchHost,
+            &mut tsk_tui::dispatch::SystemDispatchHost::default(),
         )
         .unwrap();
         assert_eq!(
@@ -872,10 +890,10 @@ impl DispatchHost for AdvancingCleanupHost {
         record: &tsk_tui::domain::Dispatch,
         in_herdr: bool,
     ) -> Result<CleanupInspection, String> {
-        tsk_tui::dispatch::SystemDispatchHost.inspect_cleanup(project, record, in_herdr)
+        tsk_tui::dispatch::SystemDispatchHost::default().inspect_cleanup(project, record, in_herdr)
     }
     fn remove_git_worktree(&mut self, project: &Path, worktree: &Path) -> Result<(), String> {
-        tsk_tui::dispatch::SystemDispatchHost.remove_git_worktree(project, worktree)?;
+        tsk_tui::dispatch::SystemDispatchHost::default().remove_git_worktree(project, worktree)?;
         let output = std::process::Command::new("git")
             .arg("-C")
             .arg(project)
@@ -910,7 +928,7 @@ impl DispatchHost for AdvancingCleanupHost {
         branch: &str,
         base: &str,
     ) -> Result<tsk_tui::dispatch::BranchDeletion, String> {
-        tsk_tui::dispatch::SystemDispatchHost.delete_merged_branch(project, branch, base)
+        tsk_tui::dispatch::SystemDispatchHost::default().delete_merged_branch(project, branch, base)
     }
 }
 
@@ -958,7 +976,7 @@ fn cleanup_git_status_is_bounded_even_when_fsmonitor_stalls() {
         &mut state,
         id,
         false,
-        &mut tsk_tui::dispatch::SystemDispatchHost,
+        &mut tsk_tui::dispatch::SystemDispatchHost::default(),
     );
     let elapsed = start.elapsed();
     assert!(result.is_err(), "stalled Git must time out: {result:?}");
@@ -996,8 +1014,11 @@ fn cleanup_status_tolerates_a_slow_but_finishing_filesystem_watcher() {
     let (state, id) = repo.state("base", None);
     let record = state.get(id).unwrap().dispatch.as_ref().unwrap();
     let start = std::time::Instant::now();
-    let result =
-        tsk_tui::dispatch::SystemDispatchHost.inspect_cleanup(&repo.project, record, false);
+    let result = tsk_tui::dispatch::SystemDispatchHost::default().inspect_cleanup(
+        &repo.project,
+        record,
+        false,
+    );
     let elapsed = start.elapsed();
     assert!(
         result.is_ok(),
@@ -1071,12 +1092,12 @@ fn delete_merged_branch_retains_branch_when_late_ancestry_check_times_out() {
         return;
     }
     let repo = CleanupRepo::new();
-    tsk_tui::dispatch::SystemDispatchHost
+    tsk_tui::dispatch::SystemDispatchHost::default()
         .remove_git_worktree(&repo.project, &repo.worktree)
         .expect("remove worktree ahead of the late ancestry check");
     let start = std::time::Instant::now();
     let result = {
-        tsk_tui::dispatch::SystemDispatchHost.delete_merged_branch(
+        tsk_tui::dispatch::SystemDispatchHost::default().delete_merged_branch(
             &repo.project,
             "tsk/t1-clean",
             "refs/heads/base",
@@ -1111,12 +1132,12 @@ fn delete_merged_branch_tolerates_a_slow_but_finishing_ancestry_check() {
     // Pin the shipped 250ms default so a cleanup query that slipped back onto it fails here.
     tsk_tui::git_base::exact_local_deadline_on_this_thread();
     let repo = CleanupRepo::new();
-    tsk_tui::dispatch::SystemDispatchHost
+    tsk_tui::dispatch::SystemDispatchHost::default()
         .remove_git_worktree(&repo.project, &repo.worktree)
         .expect("remove worktree ahead of the ancestry check");
     let start = std::time::Instant::now();
     let result = {
-        tsk_tui::dispatch::SystemDispatchHost.delete_merged_branch(
+        tsk_tui::dispatch::SystemDispatchHost::default().delete_merged_branch(
             &repo.project,
             "tsk/t1-clean",
             "refs/heads/base",
@@ -1152,7 +1173,7 @@ fn cleanup_inspection_tolerates_a_slow_but_finishing_ancestry_check() {
     let repo = CleanupRepo::new();
     let (state, id) = repo.state("base", None);
     let start = std::time::Instant::now();
-    let result = tsk_tui::dispatch::SystemDispatchHost
+    let result = tsk_tui::dispatch::SystemDispatchHost::default()
         .inspect_cleanup(
             &repo.project,
             state.get(id).unwrap().dispatch.as_ref().unwrap(),
@@ -1182,7 +1203,7 @@ fn cleanup_tolerates_slow_worktree_listings_at_both_safety_checks() {
         &mut state,
         id,
         false,
-        &mut tsk_tui::dispatch::SystemDispatchHost,
+        &mut tsk_tui::dispatch::SystemDispatchHost::default(),
     )
     .unwrap();
     assert_eq!(result.branch, tsk_tui::dispatch::BranchCleanup::Removed);
@@ -1204,10 +1225,10 @@ fn timed_out_final_worktree_listing_keeps_the_branch_with_a_clear_reason() {
         return;
     }
     let repo = CleanupRepo::new();
-    tsk_tui::dispatch::SystemDispatchHost
+    tsk_tui::dispatch::SystemDispatchHost::default()
         .remove_git_worktree(&repo.project, &repo.worktree)
         .unwrap();
-    let result = tsk_tui::dispatch::SystemDispatchHost
+    let result = tsk_tui::dispatch::SystemDispatchHost::default()
         .delete_merged_branch(&repo.project, "tsk/t1-clean", "refs/heads/base")
         .unwrap();
     let tsk_tui::dispatch::BranchDeletion::Kept(reason) = result else {
