@@ -1850,6 +1850,12 @@ fn remove_windows_worktree(
     let Err(error) = host.remove_marked_worktree(project, worktree, workspace) else {
         return Ok(());
     };
+    // Git checks the worktree itself before deleting anything: its dirty refusal means
+    // something changed it after the recheck, whatever the leftovers look like.
+    if error.contains("contains modified or untracked files") {
+        host.mark_removal(workspace, false);
+        return Err(CleanupError::DirtyWorktree);
+    }
     // Something opened a file after the check, or the delete outlived its deadline. Git may
     // have deleted part of the checkout and unregistered it: report what is actually left.
     match host
@@ -3732,6 +3738,35 @@ mod tests {
 
     /// The agent writes until its workspace closes, after the inspection: the worktree is
     /// checked again once it has, and refused before anything is marked or deleted.
+    /// A tracked file deleted after the recheck makes git refuse without deleting anything;
+    /// the leftovers then look like git's own deletions, but the refusal says otherwise.
+    #[test]
+    fn gits_own_dirty_refusal_is_uncommitted_work_even_when_only_deletions_show() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
+            .expect("dispatch");
+        let mut host = FakeHost {
+            cleanup: Some(clean_inspection()),
+            git_remove_errors: vec![
+                "fatal: 'C:/w' contains modified or untracked files, use --force to delete it"
+                    .into(),
+            ],
+            // What a ` D tracked.txt` status reads as.
+            left_behind: Some(RemovalState::Partial { registered: true }),
+            ..windows_host()
+        };
+        assert_eq!(
+            clean_with_host(&mut state, id, true, &mut host),
+            Err(CleanupError::DirtyWorktree)
+        );
+        assert_eq!(
+            host.marks,
+            vec![("w9".to_string(), true), ("w9".to_string(), false)]
+        );
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
     #[test]
     fn work_written_while_the_workspace_closes_refuses_before_any_removal() {
         let (path, profiles) = profiles();
