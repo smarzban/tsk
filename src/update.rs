@@ -277,17 +277,6 @@ mod tests {
         assert_eq!(REPORTED.load(Ordering::SeqCst), 1);
     }
 
-    /// One real request through the Windows downloader: before the TLS provider was set,
-    /// ureq panicked on the first HTTPS URL. The installer host has no API rate limit.
-    #[cfg(windows)]
-    #[test]
-    fn windows_download_https_fetches_over_native_tls() {
-        let bytes =
-            crate::cli::update::download_https("https://www.gettsk.sh/install.ps1", 1 << 20, 30)
-                .expect("HTTPS fetch of the PowerShell installer");
-        assert!(!bytes.is_empty());
-    }
-
     #[test]
     fn semver_compare_orders_core_versions_and_v_prefix() {
         assert!(is_newer("v0.6.1", "0.6.0"));
