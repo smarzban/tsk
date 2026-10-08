@@ -17,6 +17,15 @@ use tsk_tui::store::TaskStore;
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// A real host whose launchers and removal marks land in a fresh temp dir, never the real store.
+fn system_host() -> tsk_tui::dispatch::SystemDispatchHost {
+    tsk_tui::dispatch::SystemDispatchHost::in_state_dir(std::env::temp_dir().join(format!(
+        "tsk-cli-dispatch-host-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    )))
+}
+
 #[derive(Default)]
 struct FakeHost {
     inspection: Option<CleanupInspection>,
@@ -614,13 +623,8 @@ fn cleanup_restores_a_checkout_left_aside_and_still_refuses_its_uncommitted_work
     fs::rename(&repo.worktree, checked_aside(&repo.worktree)).unwrap();
     let (mut state, id) = repo.state("base", None);
 
-    let refused = tsk_tui::dispatch::clean_with_host(
-        &mut state,
-        id,
-        false,
-        &mut tsk_tui::dispatch::SystemDispatchHost::default(),
-    )
-    .expect_err("dirty work is never cleaned");
+    let refused = tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut system_host())
+        .expect_err("dirty work is never cleaned");
     assert_eq!(refused, tsk_tui::dispatch::CleanupError::DirtyWorktree);
     assert_eq!(
         fs::read_to_string(repo.worktree.join("work.txt")).unwrap(),
@@ -1052,13 +1056,8 @@ impl CleanupRepo {
 
     fn clean(&self, base: &str, remote: Option<&str>) -> tsk_tui::dispatch::CleanupResult {
         let (mut state, id) = self.state(base, remote);
-        tsk_tui::dispatch::clean_with_host(
-            &mut state,
-            id,
-            false,
-            &mut tsk_tui::dispatch::SystemDispatchHost::default(),
-        )
-        .expect("clean worktree even when base vanished")
+        tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut system_host())
+            .expect("clean worktree even when base vanished")
     }
 }
 
@@ -1361,13 +1360,8 @@ fn cleanup_keeps_exact_local_namespace_after_adding_same_named_remote() {
                 "tsk/t1-clean:main"
             },
         ]);
-        let result = tsk_tui::dispatch::clean_with_host(
-            &mut state,
-            id,
-            false,
-            &mut tsk_tui::dispatch::SystemDispatchHost::default(),
-        )
-        .unwrap();
+        let result =
+            tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut system_host()).unwrap();
         assert_eq!(
             result.branch,
             if merged {
@@ -1421,10 +1415,10 @@ impl DispatchHost for AdvancingCleanupHost {
         record: &tsk_tui::domain::Dispatch,
         in_herdr: bool,
     ) -> Result<CleanupInspection, String> {
-        tsk_tui::dispatch::SystemDispatchHost::default().inspect_cleanup(project, record, in_herdr)
+        system_host().inspect_cleanup(project, record, in_herdr)
     }
     fn remove_git_worktree(&mut self, project: &Path, worktree: &Path) -> Result<(), String> {
-        tsk_tui::dispatch::SystemDispatchHost::default().remove_git_worktree(project, worktree)?;
+        system_host().remove_git_worktree(project, worktree)?;
         let output = std::process::Command::new("git")
             .arg("-C")
             .arg(project)
@@ -1459,7 +1453,7 @@ impl DispatchHost for AdvancingCleanupHost {
         branch: &str,
         base: &str,
     ) -> Result<tsk_tui::dispatch::BranchDeletion, String> {
-        tsk_tui::dispatch::SystemDispatchHost::default().delete_merged_branch(project, branch, base)
+        system_host().delete_merged_branch(project, branch, base)
     }
 }
 
@@ -1503,12 +1497,7 @@ fn cleanup_git_status_is_bounded_even_when_fsmonitor_stalls() {
     repo.git(&["config", "core.fsmonitor", hook.to_str().unwrap()]);
     let (mut state, id) = repo.state("base", None);
     let start = std::time::Instant::now();
-    let result = tsk_tui::dispatch::clean_with_host(
-        &mut state,
-        id,
-        false,
-        &mut tsk_tui::dispatch::SystemDispatchHost::default(),
-    );
+    let result = tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut system_host());
     let elapsed = start.elapsed();
     assert!(result.is_err(), "stalled Git must time out: {result:?}");
     assert!(result
@@ -1545,11 +1534,7 @@ fn cleanup_status_tolerates_a_slow_but_finishing_filesystem_watcher() {
     let (state, id) = repo.state("base", None);
     let record = state.get(id).unwrap().dispatch.as_ref().unwrap();
     let start = std::time::Instant::now();
-    let result = tsk_tui::dispatch::SystemDispatchHost::default().inspect_cleanup(
-        &repo.project,
-        record,
-        false,
-    );
+    let result = system_host().inspect_cleanup(&repo.project, record, false);
     let elapsed = start.elapsed();
     assert!(
         result.is_ok(),
@@ -1623,17 +1608,12 @@ fn delete_merged_branch_retains_branch_when_late_ancestry_check_times_out() {
         return;
     }
     let repo = CleanupRepo::new();
-    tsk_tui::dispatch::SystemDispatchHost::default()
+    system_host()
         .remove_git_worktree(&repo.project, &repo.worktree)
         .expect("remove worktree ahead of the late ancestry check");
     let start = std::time::Instant::now();
-    let result = {
-        tsk_tui::dispatch::SystemDispatchHost::default().delete_merged_branch(
-            &repo.project,
-            "tsk/t1-clean",
-            "refs/heads/base",
-        )
-    };
+    let result =
+        { system_host().delete_merged_branch(&repo.project, "tsk/t1-clean", "refs/heads/base") };
     let elapsed = start.elapsed();
     assert!(
         elapsed >= std::time::Duration::from_secs(9)
@@ -1663,17 +1643,12 @@ fn delete_merged_branch_tolerates_a_slow_but_finishing_ancestry_check() {
     // Pin the shipped 250ms default so a cleanup query that slipped back onto it fails here.
     tsk_tui::git_base::exact_local_deadline_on_this_thread();
     let repo = CleanupRepo::new();
-    tsk_tui::dispatch::SystemDispatchHost::default()
+    system_host()
         .remove_git_worktree(&repo.project, &repo.worktree)
         .expect("remove worktree ahead of the ancestry check");
     let start = std::time::Instant::now();
-    let result = {
-        tsk_tui::dispatch::SystemDispatchHost::default().delete_merged_branch(
-            &repo.project,
-            "tsk/t1-clean",
-            "refs/heads/base",
-        )
-    };
+    let result =
+        { system_host().delete_merged_branch(&repo.project, "tsk/t1-clean", "refs/heads/base") };
     let elapsed = start.elapsed();
     assert_eq!(
         result,
@@ -1704,7 +1679,7 @@ fn cleanup_inspection_tolerates_a_slow_but_finishing_ancestry_check() {
     let repo = CleanupRepo::new();
     let (state, id) = repo.state("base", None);
     let start = std::time::Instant::now();
-    let result = tsk_tui::dispatch::SystemDispatchHost::default()
+    let result = system_host()
         .inspect_cleanup(
             &repo.project,
             state.get(id).unwrap().dispatch.as_ref().unwrap(),
@@ -1730,13 +1705,8 @@ fn cleanup_tolerates_slow_worktree_listings_at_both_safety_checks() {
     let repo = CleanupRepo::new();
     let (mut state, id) = repo.state("base", None);
     let start = std::time::Instant::now();
-    let result = tsk_tui::dispatch::clean_with_host(
-        &mut state,
-        id,
-        false,
-        &mut tsk_tui::dispatch::SystemDispatchHost::default(),
-    )
-    .unwrap();
+    let result =
+        tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut system_host()).unwrap();
     assert_eq!(result.branch, tsk_tui::dispatch::BranchCleanup::Removed);
     assert!(!repo.worktree.exists());
     assert!(
@@ -1756,10 +1726,10 @@ fn timed_out_final_worktree_listing_keeps_the_branch_with_a_clear_reason() {
         return;
     }
     let repo = CleanupRepo::new();
-    tsk_tui::dispatch::SystemDispatchHost::default()
+    system_host()
         .remove_git_worktree(&repo.project, &repo.worktree)
         .unwrap();
-    let result = tsk_tui::dispatch::SystemDispatchHost::default()
+    let result = system_host()
         .delete_merged_branch(&repo.project, "tsk/t1-clean", "refs/heads/base")
         .unwrap();
     let tsk_tui::dispatch::BranchDeletion::Kept(reason) = result else {
@@ -1773,4 +1743,129 @@ fn timed_out_final_worktree_listing_keeps_the_branch_with_a_clear_reason() {
         .message(Some("base"), None)
         .contains("worktree listing timed out; branch retained"));
     repo.git(&["show-ref", "--verify", "refs/heads/tsk/t1-clean"]);
+}
+
+/// `tsk dispatch` hands naming to a detached `tsk --name-agent` helper, which keeps asking
+/// Herdr through slow detection after the caller has moved on, then exits.
+#[cfg(unix)]
+#[test]
+fn the_detached_naming_helper_names_a_slow_agent_on_its_own() {
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cli-name-agent-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let bin = dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let log = dir.join("calls");
+    // Two undetected answers, then the rename lands.
+    stub::write_stub(
+        &bin.join("herdr"),
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{log}'\nif [ $(wc -l < '{log}') -lt 3 ]; then\n  echo '{{\"error\":{{\"code\":\"agent_not_found\",\"message\":\"agent target p1 not found\"}}}}' >&2\n  exit 1\nfi\necho '{{\"result\":{{}}}}'\n",
+            log = log.display()
+        ),
+        0o700,
+    );
+    let naming = tsk_tui::dispatch::AgentNaming {
+        pane_id: "p1".into(),
+        name: "t12-claude".into(),
+    };
+    let mut command =
+        tsk_tui::dispatch::agent_naming_command(Path::new(env!("CARGO_BIN_EXE_tsk")), &naming);
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    command.env("PATH", path);
+    let mut helper = command.spawn().expect("spawn helper");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = helper.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "helper never finished"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert!(status.success());
+    assert_eq!(
+        fs::read_to_string(&log).unwrap(),
+        "agent rename p1 t12-claude\n".repeat(3)
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// A Herdr that never answers cannot hold the detached naming helper open: each rename is
+/// bounded by what is left of the 30 s window, and the stalled herdr is killed and reaped.
+#[cfg(unix)]
+#[test]
+fn the_naming_helper_exits_within_its_window_when_herdr_hangs() {
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cli-name-agent-hang-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let bin = dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let pid_file = dir.join("herdr.pid");
+    stub::write_stub(
+        &bin.join("herdr"),
+        format!(
+            "#!/bin/sh\necho $$ > '{}'\nexec sleep 600\n",
+            pid_file.display()
+        ),
+        0o700,
+    );
+    let naming = tsk_tui::dispatch::AgentNaming {
+        pane_id: "p1".into(),
+        name: "t12-claude".into(),
+    };
+    let mut command =
+        tsk_tui::dispatch::agent_naming_command(Path::new(env!("CARGO_BIN_EXE_tsk")), &naming);
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    command.env("PATH", path);
+    let started = std::time::Instant::now();
+    let mut helper = command.spawn().expect("spawn helper");
+
+    let deadline = started + std::time::Duration::from_secs(45);
+    let status = loop {
+        if let Some(status) = helper.try_wait().unwrap() {
+            break Some(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    let herdr: Option<i32> = fs::read_to_string(&pid_file)
+        .ok()
+        .and_then(|pid| pid.trim().parse().ok());
+    if status.is_none() {
+        let _ = helper.kill();
+        let _ = helper.wait();
+    }
+    // The stalled herdr must be gone too, whatever happened to the helper.
+    let herdr_alive = herdr.is_some_and(|pid| {
+        // SAFETY: signal 0 only checks that the process exists.
+        let alive = unsafe { libc::kill(pid, 0) } == 0;
+        if alive {
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        alive
+    });
+    let _ = fs::remove_dir_all(&dir);
+    let status = status.expect("the helper outlived its 30 s window with herdr hung");
+    assert!(status.success());
+    assert!(herdr.is_some(), "the helper never ran herdr");
+    assert!(!herdr_alive, "the hung herdr was left running");
+    assert!(started.elapsed() < std::time::Duration::from_secs(40));
 }

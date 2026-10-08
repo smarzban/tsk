@@ -92,7 +92,7 @@ Names come from the task number and title. For T12 `Fix login timeout`:
 | Herdr workspace | `T12 Fix login timeout` |
 | Herdr agent | `t12-claude`, for assignee `claude` |
 
-The slug lowercases the title, joins its words (letters and digits in any script) with `-`, and keeps whole words within 30 characters; a longer title ends the workspace label with `…`. The worktree directory keeps only ASCII letters and digits, so `Café` checks out in `tsk-t12-caf`. When a branch, worktree, or directory of that name already exists, tsk appends `-2`, `-3`, and so on. tsk names the agent once Herdr detects it, so `herdr agent get t12-claude` finds it; if Herdr does not detect one within a few seconds, the agent stays unnamed.
+The slug lowercases the title, joins its words (letters and digits in any script) with `-`, and keeps whole words within 30 characters; a longer title ends the workspace label with `…`. The worktree directory keeps only ASCII letters and digits, so `Café` checks out in `tsk-t12-caf`. When a branch, worktree, or directory of that name already exists, tsk appends `-2`, `-3`, and so on. tsk names the agent once Herdr detects it, so `herdr agent get t12-claude` finds it; if Herdr does not detect one within 30 seconds, the agent stays unnamed. Neither the board nor `tsk dispatch` waits for this.
 
 A started task with a live dispatch shows `◉` instead of `●`.
 
@@ -105,6 +105,7 @@ Dispatch needs a task in a project that is a Git repository, an assignee with a 
 Herdr on Windows is a preview, and so is dispatch there.
 
 - A profile's `command` must find an `.exe` (`claude`) or a PowerShell script (`pi`, `codex`). Batch files (`.cmd`, `.bat`) are refused, because cmd.exe could run task text as commands; the pane says so and nothing starts.
+- A PowerShell script is supported as a shim that hands its arguments to a program, like the `.ps1` files npm installs. tsk escapes each argument for that program's command line, so it arrives exactly as written. A script that reads `$args` itself sees the escaping instead: `"` arrives as `\"` and an empty argument as `""`.
 - The [state directory](/docs/storage/) must not contain `$`, `` ` ``, `%`, `"`, or `!`. Dispatch refuses one that does with `unsafe-state-dir`.
 - If Git's `core.longpaths` is off, dispatch says so once; turn it on with `git config --global core.longpaths true`.
 

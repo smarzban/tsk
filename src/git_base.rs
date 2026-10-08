@@ -196,7 +196,7 @@ impl Capture {
         Ok(bytes)
     }
 }
-fn stop_git(child: &mut std::process::Child, tree: &ProcessTree) {
+fn stop_tree(child: &mut std::process::Child, tree: &ProcessTree) {
     #[cfg(unix)]
     // SAFETY: our child was spawned into its own process group. This also stops
     // Git's SSH/credential children, never processes in the caller's group.
@@ -329,20 +329,40 @@ fn run_git_env(
     // Some: the Git tree outlives tsk, and the callback runs once it has started.
     outlive_tsk: Option<&mut dyn FnMut()>,
 ) -> Result<std::process::Output, String> {
-    use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
-    let deadline = Instant::now() + timeout;
-    let mut stdout = capture.then(Capture::new).transpose()?;
-    let mut stderr = capture.then(Capture::new).transpose()?;
-    let mut command = Command::new("git");
+    let mut command = std::process::Command::new("git");
     command
         .arg("-C")
         .arg(project)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "never")
-        .envs(envs.iter().copied())
-        .stdin(Stdio::null());
+        .envs(envs.iter().copied());
+    run_bounded(command, "git", timeout, capture, outlive_tsk)
+}
+
+/// Any other program under the same bound as Git: captured output, and at `timeout` its
+/// whole process tree is killed and reaped. Errors name `program`, such as `herdr timed out`.
+pub fn bounded_process_output(
+    command: std::process::Command,
+    program: &str,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, String> {
+    run_bounded(command, program, timeout, true, None)
+}
+
+fn run_bounded(
+    mut command: std::process::Command,
+    program: &str,
+    timeout: std::time::Duration,
+    capture: bool,
+    outlive_tsk: Option<&mut dyn FnMut()>,
+) -> Result<std::process::Output, String> {
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + timeout;
+    let mut stdout = capture.then(Capture::new).transpose()?;
+    let mut stderr = capture.then(Capture::new).transpose()?;
+    command.stdin(Stdio::null());
     for (stream, is_stdout) in [(&stdout, true), (&stderr, false)] {
         let io = match stream {
             Some(output) => {
@@ -363,7 +383,7 @@ fn run_git_env(
     }
     let mut child = command
         .spawn()
-        .map_err(|error| format!("could not run git: {error}"))?;
+        .map_err(|error| format!("could not run {program}: {error}"))?;
     let tree = ProcessTree::contain(&child, outlive_tsk.is_some());
     if let Some(started) = outlive_tsk {
         started();
@@ -372,12 +392,12 @@ fn run_git_env(
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Err(error) => {
-                stop_git(&mut child, &tree);
-                return Err(format!("could not wait for git: {error}"));
+                stop_tree(&mut child, &tree);
+                return Err(format!("could not wait for {program}: {error}"));
             }
             Ok(None) if Instant::now() >= deadline => {
-                stop_git(&mut child, &tree);
-                return Err("git timed out".into());
+                stop_tree(&mut child, &tree);
+                return Err(format!("{program} timed out"));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(5)),
         }

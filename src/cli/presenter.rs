@@ -12,7 +12,8 @@ use crate::cli::status::{StatusError, StatusResult};
 use crate::cli::steps::{StepLine, StepsError, StepsResult};
 use crate::cli::trash::{TrashCliError, TrashRestoreResult};
 use crate::dispatch::{
-    BranchCleanup, CleanupError, CleanupResult, DispatchError, DispatchResult, WorktreeCleanup,
+    BranchCleanup, CleanupError, CleanupResult, DispatchError, DispatchResult, WorkspaceCleanup,
+    WorktreeCleanup,
 };
 use crate::domain::HumanStatus;
 use crate::ui::terminal_text;
@@ -976,6 +977,7 @@ pub fn dispatch_help() -> CliOutput {
             "unknown-agent".into(),
             "agent-config".into(),
             "unknown-base".into(),
+            "no-default-base".into(),
             "herdr-failed".into(),
         ],
         exit: exit_line(
@@ -1033,10 +1035,10 @@ pub fn cleaned(result: CleanupResult, json: bool) -> CliOutput {
         BranchCleanup::Removed => "removed",
         BranchCleanup::Kept => "kept",
     };
-    let workspace = if result.workspace_removed {
-        "removed"
-    } else {
-        "kept"
+    let (workspace, workspace_detail) = match result.workspace {
+        WorkspaceCleanup::Removed => ("removed", "removed"),
+        WorkspaceCleanup::Kept => ("kept", "kept"),
+        WorkspaceCleanup::Missing => ("missing", "already closed"),
     };
     let branch_reason = result
         .branch_reason
@@ -1071,7 +1073,7 @@ pub fn cleaned(result: CleanupResult, json: bool) -> CliOutput {
             terminal_text(&result.branch_name),
             branch_detail,
             terminal_text(&result.workspace_id),
-            workspace,
+            workspace_detail,
         )
     };
     CliOutput {
@@ -1895,7 +1897,7 @@ mod tests {
             workspace_id: "w12".into(),
             worktree: WorktreeCleanup::Removed,
             branch: BranchCleanup::Kept,
-            workspace_removed: true,
+            workspace: WorkspaceCleanup::Removed,
             base: Some("origin/main".into()),
         };
         let human = cleaned(result.clone(), false);
@@ -1913,6 +1915,34 @@ mod tests {
             "not merged into origin/main; squash-merged? delete by hand"
         );
         assert_eq!(value["workspace"]["outcome"], "removed");
+    }
+
+    /// A workspace an earlier refused cleanup closed reads as already closed, never kept.
+    #[test]
+    fn clean_output_says_an_already_closed_workspace_is_gone() {
+        let result = CleanupResult {
+            remote: None,
+            warning: None,
+            branch_reason: None,
+            number: 12,
+            title: "finished".into(),
+            worktree_path: "/tmp/task-12".into(),
+            branch_name: "tsk/t12-finished".into(),
+            workspace_id: "w12".into(),
+            worktree: WorktreeCleanup::Removed,
+            branch: BranchCleanup::Removed,
+            workspace: WorkspaceCleanup::Missing,
+            base: Some("origin/main".into()),
+        };
+        let human = cleaned(result.clone(), false);
+        assert!(
+            human.stdout.ends_with("workspace w12 (already closed)\n"),
+            "{}",
+            human.stdout
+        );
+        let json = cleaned(result, true);
+        let value: serde_json::Value = serde_json::from_str(json.stdout.trim()).unwrap();
+        assert_eq!(value["workspace"]["outcome"], "missing");
     }
 
     #[test]

@@ -2083,6 +2083,7 @@ pub fn offer_cleanup_prompt_with_host(
     // Cached refs only: the card opens at once and the background check fills merged status.
     let preview = dispatch::inspect_cleanup_cached_with_host(domain, id, in_herdr, host)?;
     if !preview.inspection.worktree_exists {
+        let workspace = dispatch::untouched_workspace(in_herdr, &preview.inspection);
         domain
             .record_dispatch_cleaned(id)
             .and_then(|()| domain.complete_after_cleanup(id))
@@ -2099,7 +2100,7 @@ pub fn offer_cleanup_prompt_with_host(
             workspace_id: preview.record.herdr_workspace_id,
             worktree: WorktreeCleanup::Missing,
             branch: BranchCleanup::Kept,
-            workspace_removed: false,
+            workspace,
         }));
     }
     model.begin_cleanup_prompt(CleanupPrompt::single(cleanup_row(id, preview, merge_check)));
@@ -11508,7 +11509,7 @@ mod quick_assign_tests {
             let eligible = crate::dispatch::check_task(&domain, id, &temp.profiles(), true)
                 .expect("eligible before the git check");
             let board_thread = std::thread::current().id();
-            let mut host = SystemDispatchHost::default();
+            let mut host = SystemDispatchHost::in_state_dir(temp.dir.join("host-state"));
 
             let checks = host.begin_git_checks(vec![project.clone()]);
             let results = eventually(|| checks.take());
