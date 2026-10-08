@@ -2546,7 +2546,7 @@ pub fn poll_cleanup_runs(
                             };
                         }
                         Some(dispatch::CleanupSlot::Done(Err(error))) => {
-                            row.state = CleanupRowState::kept(&error);
+                            row.state = CleanupRowState::kept(error);
                         }
                         None => {}
                     }
