@@ -357,8 +357,8 @@ fn open_capture_uses_herdr_cli_and_capture_path() {
         "open-capture must call herdr plugin pane open"
     );
     assert!(
-        text.contains("capture") || text.contains("overlay"),
-        "open-capture must open capture mode or a popup/overlay surface"
+        text.contains("capture"),
+        "open-capture must open capture mode"
     );
     assert!(
         text.contains("tsk") || text.contains("board"),
