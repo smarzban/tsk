@@ -289,8 +289,15 @@ fn windows_powershell_path() -> Result<PathBuf, String> {
 #[cfg(windows)]
 pub(crate) fn download_https(url: &str, limit: u64, timeout_secs: u64) -> Result<Vec<u8>, String> {
     use std::time::Duration;
+    use ureq::tls::{TlsConfig, TlsProvider};
 
+    // ureq defaults to Rustls, which this build does not compile in: without an explicit
+    // provider the first HTTPS request panics.
+    let tls = TlsConfig::builder()
+        .provider(TlsProvider::NativeTls)
+        .build();
     let config = ureq::Agent::config_builder()
+        .tls_config(tls)
         .https_only(true)
         .max_redirects(5)
         .timeout_global(Some(Duration::from_secs(timeout_secs)))

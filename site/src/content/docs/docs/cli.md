@@ -137,6 +137,8 @@ Valid items persist even if another item fails. Retry only failed or confirmed-m
 
 Do not mix item flags with `--file`. Piped input is ignored when item flags are present.
 
+A leading UTF-8 byte order mark, which Windows PowerShell 5.1 writes by default, is ignored.
+
 ## list
 
 ```sh

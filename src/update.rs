@@ -175,9 +175,30 @@ fn spawn_fetch(dir: PathBuf) {
     if cfg!(test) || !BACKGROUND_FETCH.load(Ordering::SeqCst) {
         return;
     }
-    std::thread::spawn(move || {
-        apply_fetch(&dir, unix_now(), fetch_latest);
-    });
+    silence_update_check_panics();
+    let _ = std::thread::Builder::new()
+        .name(UPDATE_CHECK_THREAD.to_string())
+        .spawn(move || {
+            apply_fetch(&dir, unix_now(), fetch_latest);
+        });
+}
+
+const UPDATE_CHECK_THREAD: &str = "tsk-update-check";
+
+/// The check is best effort and runs beside the TUI: a panic on its thread must not print
+/// over the board. Panics on every other thread still reach the previous hook.
+fn silence_update_check_panics() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| quiet_panic_hook(UPDATE_CHECK_THREAD));
+}
+
+fn quiet_panic_hook(thread_name: &'static str) {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if std::thread::current().name() != Some(thread_name) {
+            previous(info);
+        }
+    }));
 }
 
 #[cfg(unix)]
@@ -224,6 +245,48 @@ fn unique_tmp_path(dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quiet_panic_hook_silences_only_the_named_thread() {
+        use std::sync::atomic::AtomicUsize;
+        static REPORTED: AtomicUsize = AtomicUsize::new(0);
+        const QUIET: &str = "tsk-quiet-hook-probe";
+        const LOUD: &str = "tsk-loud-hook-probe";
+
+        let outer = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if std::thread::current().name() == Some(LOUD) {
+                REPORTED.fetch_add(1, Ordering::SeqCst);
+            } else if std::thread::current().name() != Some(QUIET) {
+                outer(info);
+            }
+        }));
+        quiet_panic_hook(QUIET);
+
+        let quiet = std::thread::Builder::new()
+            .name(QUIET.to_string())
+            .spawn(|| panic!("quiet probe"))
+            .expect("spawn quiet probe");
+        assert!(quiet.join().is_err());
+        assert_eq!(REPORTED.load(Ordering::SeqCst), 0);
+        let loud = std::thread::Builder::new()
+            .name(LOUD.to_string())
+            .spawn(|| panic!("loud probe"))
+            .expect("spawn loud probe");
+        assert!(loud.join().is_err());
+        assert_eq!(REPORTED.load(Ordering::SeqCst), 1);
+    }
+
+    /// One real request through the Windows downloader: before the TLS provider was set,
+    /// ureq panicked on the first HTTPS URL. The installer host has no API rate limit.
+    #[cfg(windows)]
+    #[test]
+    fn windows_download_https_fetches_over_native_tls() {
+        let bytes =
+            crate::cli::update::download_https("https://www.gettsk.sh/install.ps1", 1 << 20, 30)
+                .expect("HTTPS fetch of the PowerShell installer");
+        assert!(!bytes.is_empty());
+    }
 
     #[test]
     fn semver_compare_orders_core_versions_and_v_prefix() {
