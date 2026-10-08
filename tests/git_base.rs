@@ -502,9 +502,10 @@ fn local_git_queries_are_bounded_and_kill_output_holding_children() {
                 4 => assert!(list_cached_branches(path).is_err()),
                 _ => assert!(resolve(path, None).is_err()),
             }
-            // Far under the stub's 30 s hold, so only a bounded query passes.
+            // Under the 5 s network deadline, so a query wrongly bounded by fetch fails, yet
+            // over 12x the 250 ms local one for a loaded machine.
             assert!(
-                started.elapsed() < Duration::from_secs(10),
+                started.elapsed() < Duration::from_secs(3),
                 "query {query} stalled"
             );
         }
