@@ -6,11 +6,12 @@ on:
     paths-ignore:
       - "site/**"
       - ".github/workflows/site.yml"
+  # No paths filter on PRs: `Verify (ubuntu-latest)` and `Verify (macos-latest)` are
+  # required checks, so they must report on every PR, site-only ones included. The
+  # `changes` step below skips the expensive steps instead (never a job-level `if:`,
+  # which can report the unexpanded matrix name and miss the required context).
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "site/**"
-      - ".github/workflows/site.yml"
 
 # Validation never needs more than reading the repo. Fork PRs run under this
 # token too (read-only, no secrets), and checkout leaves no credentials behind
@@ -30,35 +31,47 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+          # A PR checks out its merge commit; depth 2 brings its first parent (the base).
+          fetch-depth: 2
+
+      # Site-only PRs (site/** and the site workflow) finish green without building.
+      # Anything else, any push, or a failed diff runs the full verify.
+      - name: Detect Rust-relevant changes
+        id: changes
+        shell: bash
+        run: bash scripts/ci-rust-changes.sh
 
       # Install the channel from rust-toolchain.toml with fmt/clippy components.
       # Using @stable alone leaves 1.96.0 (from rust-toolchain.toml) without rustfmt.
       - name: Install Rust toolchain
+        if: steps.changes.outputs.rust == 'true'
         uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d # 1.96.0
         with:
           components: rustfmt, clippy
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        if: steps.changes.outputs.rust == 'true'
         with:
           python-version: "3.12"
 
       - name: Verify
+        if: steps.changes.outputs.rust == 'true'
         run: cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --release
 
       - name: Packaging contract tests
-        if: runner.os != 'Windows'
+        if: steps.changes.outputs.rust == 'true' && runner.os != 'Windows'
         env:
           TSK_TEST_BINARY: ${{ github.workspace }}/target/release/tsk
         run: python3 -m unittest discover -s tests/packaging
 
       - name: Windows packaging contract tests
-        if: runner.os == 'Windows'
+        if: steps.changes.outputs.rust == 'true' && runner.os == 'Windows'
         env:
           TSK_TEST_BINARY: ${{ github.workspace }}/target/release/tsk.exe
         run: python -m unittest discover -s tests/packaging
 
       - name: Windows installer syntax and help smoke
-        if: runner.os == 'Windows'
+        if: steps.changes.outputs.rust == 'true' && runner.os == 'Windows'
         shell: powershell
         run: powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File site/public/install.ps1 -Help
 
@@ -66,7 +79,7 @@ jobs:
       # slow for the thresholds). Scope to this test only: a bare `--ignored` would also
       # rewrite golden fixtures. Retry once for shared-runner noise.
       - name: Performance bench
-        if: matrix.os == 'ubuntu-latest'
+        if: steps.changes.outputs.rust == 'true' && matrix.os == 'ubuntu-latest'
         run: |
           bench() { cargo test --release --test queue_board_bench -- --ignored --test-threads=1; }
           bench || {
