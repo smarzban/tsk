@@ -1799,3 +1799,73 @@ fn the_detached_naming_helper_names_a_slow_agent_on_its_own() {
     );
     fs::remove_dir_all(dir).unwrap();
 }
+
+/// A Herdr that never answers cannot hold the detached naming helper open: each rename is
+/// bounded by what is left of the 30 s window, and the stalled herdr is killed and reaped.
+#[cfg(unix)]
+#[test]
+fn the_naming_helper_exits_within_its_window_when_herdr_hangs() {
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cli-name-agent-hang-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let bin = dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let pid_file = dir.join("herdr.pid");
+    stub::write_stub(
+        &bin.join("herdr"),
+        format!(
+            "#!/bin/sh\necho $$ > '{}'\nexec sleep 600\n",
+            pid_file.display()
+        ),
+        0o700,
+    );
+    let naming = tsk_tui::dispatch::AgentNaming {
+        pane_id: "p1".into(),
+        name: "t12-claude".into(),
+    };
+    let mut command =
+        tsk_tui::dispatch::agent_naming_command(Path::new(env!("CARGO_BIN_EXE_tsk")), &naming);
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    command.env("PATH", path);
+    let started = std::time::Instant::now();
+    let mut helper = command.spawn().expect("spawn helper");
+
+    let deadline = started + std::time::Duration::from_secs(45);
+    let status = loop {
+        if let Some(status) = helper.try_wait().unwrap() {
+            break Some(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    let herdr: Option<i32> = fs::read_to_string(&pid_file)
+        .ok()
+        .and_then(|pid| pid.trim().parse().ok());
+    if status.is_none() {
+        let _ = helper.kill();
+        let _ = helper.wait();
+    }
+    // The stalled herdr must be gone too, whatever happened to the helper.
+    let herdr_alive = herdr.is_some_and(|pid| {
+        // SAFETY: signal 0 only checks that the process exists.
+        let alive = unsafe { libc::kill(pid, 0) } == 0;
+        if alive {
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        alive
+    });
+    let _ = fs::remove_dir_all(&dir);
+    let status = status.expect("the helper outlived its 30 s window with herdr hung");
+    assert!(status.success());
+    assert!(herdr.is_some(), "the helper never ran herdr");
+    assert!(!herdr_alive, "the hung herdr was left running");
+    assert!(started.elapsed() < std::time::Duration::from_secs(40));
+}

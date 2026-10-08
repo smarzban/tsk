@@ -1330,12 +1330,16 @@ fn name_agent_when_detected(naming: &AgentNaming) -> Result<(), String> {
     let started = Instant::now();
     rename_when_detected(
         || {
-            let output = match Command::new("herdr")
-                .args(["agent", "rename", &naming.pane_id, &naming.name])
-                .output()
-            {
+            // Each call gets only what is left of the window: a stalled Herdr is killed at
+            // the deadline instead of holding the naming (and a CLI helper) open forever.
+            let left = AGENT_DETECTION_TIMEOUT
+                .saturating_sub(started.elapsed())
+                .max(AGENT_DETECTION_POLL);
+            let mut rename = Command::new("herdr");
+            rename.args(["agent", "rename", &naming.pane_id, &naming.name]);
+            let output = match crate::git_base::bounded_process_output(rename, "herdr", left) {
                 Ok(output) => output,
-                Err(error) => return Rename::Final(Err(format!("could not run herdr: {error}"))),
+                Err(error) => return Rename::Final(Err(error)),
             };
             let undetected = !output.status.success()
                 && herdr_error_code(&output.stderr).as_deref() == Some("agent_not_found");
