@@ -112,10 +112,12 @@ same PR, never leave them apart.
 - Site CI is `npm ci && npm test && npm run build` in `site/`. `npm test` validates
   `site/vercel.json` with Vercel's own route parser; never edit that file without it, a
   bad pattern fails every production deploy silently.
-- CI runs on pushes to `main` and PRs targeting `main`. Site-only changes skip the Rust
-  matrix; installer-only changes run the `Installer` workflow (packaging tests, ShellCheck,
-  and native x86-64 and ARM64 Windows PowerShell smokes) on the PR and again on the push,
-  since gettsk.sh serves both installers straight from `main`.
+- CI runs on pushes to `main` and PRs targeting `main`. A site-only push skips the Rust
+  matrix; a site-only PR still runs it (the `Verify` checks are required), but a change
+  probe skips every expensive step so each job goes green in seconds. Installer-only
+  changes run the `Installer` workflow (packaging tests, ShellCheck, and native x86-64
+  and ARM64 Windows PowerShell smokes) on the PR and again on the push, since gettsk.sh
+  serves both installers straight from `main`.
   Vercel production deploys only on pushes to `main`.
 
 ### Isolated state
