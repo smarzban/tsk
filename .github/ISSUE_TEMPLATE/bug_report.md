@@ -13,4 +13,4 @@ about: Report a problem
 
 - herdr version:
 - OS:
-- herdr-tasks version / commit:
+- tsk version / commit:

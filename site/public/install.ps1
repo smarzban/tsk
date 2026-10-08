@@ -670,15 +670,6 @@ function Write-InstallClosing([string] $Executable, [bool] $PostInstallSetup) {
     }
 }
 
-function Refresh-ExistingSetup([string] $Executable) {
-    try {
-        Invoke-HerdrPostInstall $Executable $true $true
-        Invoke-AgentSkillPostInstall $Executable $true $true
-    } catch {
-        [Console]::Error.WriteLine('tsk setup refresh failed; the binary update succeeded: ' + $_.Exception.Message)
-    }
-}
-
 function Add-UserPath([string] $InstallDirectory, [Microsoft.Win32.RegistryKey] $EnvironmentKey = $null) {
     $ownsKey = $null -eq $EnvironmentKey
     $key = $EnvironmentKey
