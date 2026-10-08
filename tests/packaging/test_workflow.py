@@ -46,14 +46,65 @@ class WorkflowTests(unittest.TestCase):
         job = source.split("\n  verify:\n", 1)[1]
         self.assertNotRegex(job.split("\n    steps:\n", 1)[0], r"(?m)^    if:")
         self.assertIn("fetch-depth: 2", job)
-        self.assertIn("git diff --name-only HEAD^1 HEAD", job)
-        self.assertIn(r"grep -Eqv '^(site/|\.github/workflows/site\.yml$)'", job)
+        self.assertIn("run: bash scripts/ci-rust-changes.sh", job)
         steps = re.split(r"(?m)^      - ", job.split("\n    steps:\n", 1)[1])[1:]
         probe = next(i for i, step in enumerate(steps) if "id: changes" in step)
         self.assertGreater(len(steps) - probe, 5)
         for step in steps[probe + 1:]:
             with self.subTest(step=step.splitlines()[0]):
                 self.assertRegex(step, r"(?m)^        if: steps\.changes\.outputs\.rust == 'true'")
+
+    @unittest.skipIf(os.name == "nt", "the probe runs under bash; covered on Unix CI")
+    def test_rust_change_probe_skips_only_site_only_prs(self):
+        def probe(*changes, event="pull_request", base=("src/main.rs", "Cargo.toml", "site/a.md")):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                git = lambda *args: subprocess.run(["git", "-C", tmp, "-c", "user.name=t", "-c", "user.email=t@t", *args], check=True, capture_output=True)
+                git("init", "-q")
+                for path in base:
+                    (repo / path).parent.mkdir(parents=True, exist_ok=True)
+                    (repo / path).write_text(f"{path}\n")
+                git("add", "-A")
+                git("commit", "-qm", "base")
+                for change in changes:
+                    change(repo, git)
+                git("add", "-A")
+                git("commit", "-qm", "pr", "--allow-empty")
+                output = repo / "out"
+                env = {**os.environ, "GITHUB_EVENT_NAME": event, "GITHUB_OUTPUT": str(output)}
+                subprocess.run(["bash", str(ROOT / "scripts/ci-rust-changes.sh")], cwd=tmp, env=env, check=True, capture_output=True)
+                return output.read_text().strip()
+
+        def write(path):
+            def change(repo, git):
+                (repo / path).parent.mkdir(parents=True, exist_ok=True)
+                (repo / path).write_text("changed\n")
+            return change
+
+        def move(src, dst):
+            def change(repo, git):
+                (repo / dst).parent.mkdir(parents=True, exist_ok=True)
+                git("mv", src, dst)
+            return change
+
+        def many_site_files(repo, git):
+            for i in range(4000):
+                write(f"site/many/file-{i:05}.md")(repo, git)
+
+        cases = {
+            "site only": ([write("site/a.md")], "rust=false"),
+            "site workflow": ([write("site/b.md"), write(".github/workflows/site.yml")], "rust=false"),
+            "mixed": ([write("site/a.md"), write("src/main.rs")], "rust=true"),
+            "rename into site": ([move("src/main.rs", "site/main.rs")], "rust=true"),
+            "manifest into site": ([move("Cargo.toml", "site/Cargo.toml")], "rust=true"),
+            "non-site first in a long list": ([write("Cargo.toml"), many_site_files], "rust=true"),
+            "empty diff": ([], "rust=true"),
+        }
+        for name, (changes, expected) in cases.items():
+            with self.subTest(case=name):
+                self.assertEqual(probe(*changes), expected)
+        with self.subTest(case="push"):
+            self.assertEqual(probe(write("site/a.md"), event="push"), "rust=true")
 
     def test_vercel_secret_is_only_available_to_main_push_deployment(self):
         source = (ROOT / ".github/workflows/vercel.yml").read_text()

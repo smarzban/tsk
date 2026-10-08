@@ -39,16 +39,7 @@ jobs:
       - name: Detect Rust-relevant changes
         id: changes
         shell: bash
-        run: |
-          rust=true
-          if [ "$GITHUB_EVENT_NAME" = pull_request ] && changed=$(git diff --name-only HEAD^1 HEAD) && [ -n "$changed" ]; then
-            printf '%s\n' "$changed"
-            if ! printf '%s\n' "$changed" | grep -Eqv '^(site/|\.github/workflows/site\.yml$)'; then
-              rust=false
-              echo "::notice::Site-only change; skipping the Rust verify steps."
-            fi
-          fi
-          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+        run: bash scripts/ci-rust-changes.sh
 
       # Install the channel from rust-toolchain.toml with fmt/clippy components.
       # Using @stable alone leaves 1.96.0 (from rust-toolchain.toml) without rustfmt.
