@@ -23,13 +23,37 @@ class WorkflowTests(unittest.TestCase):
                 triggers = source.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
                 events = dict(re.findall(r"^  (\w+):\n((?:    .*\n|\n)*)", triggers, re.M))
                 self.assertEqual(set(events), {"push", "pull_request"})
-                self.assertEqual(events["push"].strip(), events["pull_request"].strip())
                 self.assertIn("branches: [main]", events["pull_request"])
-                self.assertIn("paths-ignore:" if name == "ci" else "paths:", events["pull_request"])
+                if name == "ci":
+                    # Required Verify checks must report on every PR (see the next test).
+                    self.assertNotIn("paths", events["pull_request"])
+                    self.assertIn("paths-ignore:", events["push"])
+                else:
+                    self.assertEqual(events["push"].strip(), events["pull_request"].strip())
+                    self.assertIn("paths:", events["pull_request"])
                 self.assertIn("permissions:\n  contents: read", source)
                 self.assertEqual(source.count("permissions:"), 1)
                 self.assertNotRegex(source, r"secrets\s*[.\[]")
                 self.assertIn("persist-credentials: false", source)
+
+    def test_required_verify_checks_report_on_site_only_prs(self):
+        # Branch protection requires `Verify (ubuntu-latest)` and `Verify (macos-latest)`.
+        # A paths filter or a job-level `if:` leaves a site-only PR without those contexts,
+        # so the gate lives on steps: every step after the change probe is conditional.
+        source = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn("name: Verify (${{ matrix.os }})", source)
+        self.assertRegex(source, r"os: \[ubuntu-latest, macos-latest,")
+        job = source.split("\n  verify:\n", 1)[1]
+        self.assertNotRegex(job.split("\n    steps:\n", 1)[0], r"(?m)^    if:")
+        self.assertIn("fetch-depth: 2", job)
+        self.assertIn("git diff --name-only HEAD^1 HEAD", job)
+        self.assertIn(r"grep -Eqv '^(site/|\.github/workflows/site\.yml$)'", job)
+        steps = re.split(r"(?m)^      - ", job.split("\n    steps:\n", 1)[1])[1:]
+        probe = next(i for i, step in enumerate(steps) if "id: changes" in step)
+        self.assertGreater(len(steps) - probe, 5)
+        for step in steps[probe + 1:]:
+            with self.subTest(step=step.splitlines()[0]):
+                self.assertRegex(step, r"(?m)^        if: steps\.changes\.outputs\.rust == 'true'")
 
     def test_vercel_secret_is_only_available_to_main_push_deployment(self):
         source = (ROOT / ".github/workflows/vercel.yml").read_text()
@@ -59,8 +83,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("runs-on: ${{ matrix.os }}", installer)
         self.assertIn("powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File site/public/install.ps1 -Help", installer)
         self.assertIn("windows-11-arm", ci)
-        self.assertIn("if: runner.os != 'Windows'", ci)
-        self.assertIn("if: runner.os == 'Windows'", ci)
+        self.assertIn("&& runner.os != 'Windows'", ci)
+        self.assertIn("&& runner.os == 'Windows'", ci)
         self.assertIn("TSK_TEST_BINARY: ${{ github.workspace }}/target/release/tsk", ci)
         self.assertLess(ci.index("name: Verify"), ci.index("name: Packaging contract tests"))
 
