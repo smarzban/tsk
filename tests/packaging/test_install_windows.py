@@ -421,7 +421,8 @@ if (Test-Path -LiteralPath $boundedPath) {{ throw 'partial oversized download wa
 'bounded-ok' | Set-Content -LiteralPath '{quote(bounded_result)}' -Encoding ASCII
 
 $env:TSK_REFRESH_LOG = '{quote(refresh_log)}'
-Refresh-ExistingSetup '{quote(fake_tsk)}' | Out-Null
+Invoke-HerdrPostInstall '{quote(fake_tsk)}' $true $true | Out-Null
+Invoke-AgentSkillPostInstall '{quote(fake_tsk)}' $true $true | Out-Null
 $refreshCalls = @(Get-Content -LiteralPath '{quote(refresh_log)}')
 Remove-Item -LiteralPath '{quote(refresh_log)}'
 function Test-InstallerInteractive {{ return $true }}
