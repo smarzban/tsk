@@ -92,7 +92,7 @@ Names come from the task number and title. For T12 `Fix login timeout`:
 | Herdr workspace | `T12 Fix login timeout` |
 | Herdr agent | `t12-claude`, for assignee `claude` |
 
-The slug lowercases the title, joins its words (letters and digits in any script) with `-`, and keeps whole words within 30 characters; a longer title ends the workspace label with `…`. The worktree directory keeps only ASCII letters and digits, so `Café` checks out in `tsk-t12-caf`. When a branch, worktree, or directory of that name already exists, tsk appends `-2`, `-3`, and so on. tsk names the agent once Herdr detects it, so `herdr agent get t12-claude` finds it; if Herdr does not detect one within 30 seconds, the agent stays unnamed. The board never waits for this.
+The slug lowercases the title, joins its words (letters and digits in any script) with `-`, and keeps whole words within 30 characters; a longer title ends the workspace label with `…`. The worktree directory keeps only ASCII letters and digits, so `Café` checks out in `tsk-t12-caf`. When a branch, worktree, or directory of that name already exists, tsk appends `-2`, `-3`, and so on. tsk names the agent once Herdr detects it, so `herdr agent get t12-claude` finds it; if Herdr does not detect one within 30 seconds, the agent stays unnamed. Neither the board nor `tsk dispatch` waits for this.
 
 A started task with a live dispatch shows `◉` instead of `●`.
 

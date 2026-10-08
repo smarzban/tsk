@@ -1744,3 +1744,58 @@ fn timed_out_final_worktree_listing_keeps_the_branch_with_a_clear_reason() {
         .contains("worktree listing timed out; branch retained"));
     repo.git(&["show-ref", "--verify", "refs/heads/tsk/t1-clean"]);
 }
+
+/// `tsk dispatch` hands naming to a detached `tsk --name-agent` helper, which keeps asking
+/// Herdr through slow detection after the caller has moved on, then exits.
+#[cfg(unix)]
+#[test]
+fn the_detached_naming_helper_names_a_slow_agent_on_its_own() {
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cli-name-agent-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let bin = dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let log = dir.join("calls");
+    // Two undetected answers, then the rename lands.
+    stub::write_stub(
+        &bin.join("herdr"),
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{log}'\nif [ $(wc -l < '{log}') -lt 3 ]; then\n  echo '{{\"error\":{{\"code\":\"agent_not_found\",\"message\":\"agent target p1 not found\"}}}}' >&2\n  exit 1\nfi\necho '{{\"result\":{{}}}}'\n",
+            log = log.display()
+        ),
+        0o700,
+    );
+    let naming = tsk_tui::dispatch::AgentNaming {
+        pane_id: "p1".into(),
+        name: "t12-claude".into(),
+    };
+    let mut command =
+        tsk_tui::dispatch::agent_naming_command(Path::new(env!("CARGO_BIN_EXE_tsk")), &naming);
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    command.env("PATH", path);
+    let mut helper = command.spawn().expect("spawn helper");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = helper.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "helper never finished"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert!(status.success());
+    assert_eq!(
+        fs::read_to_string(&log).unwrap(),
+        "agent rename p1 t12-claude\n".repeat(3)
+    );
+    fs::remove_dir_all(dir).unwrap();
+}

@@ -10,6 +10,10 @@ fn main() -> ExitCode {
     match route(&args, std::env::var(tsk_tui::app::MODE_ENV).ok().as_deref()) {
         Surface::FindBoardPane => find_board_main(false),
         Surface::FindBoardTab => find_board_main(true),
+        Surface::NameAgent => {
+            tsk_tui::dispatch::name_agent(&args[2], &args[3]);
+            ExitCode::SUCCESS
+        }
         Surface::GlobalHelp => {
             print!("{}", tsk_tui::cli::presenter::top_level_help());
             ExitCode::SUCCESS
@@ -97,7 +101,6 @@ fn headless_main(args: Vec<String>) -> ExitCode {
         return ExitCode::from(1);
     }
     let _ = io::stdout().flush();
-    tsk_tui::cli::dispatch::wait_for_agent_naming();
     ExitCode::from(output.code)
 }
 

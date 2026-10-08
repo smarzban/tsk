@@ -705,8 +705,8 @@ impl LaunchBatch {
 
 /// How long dispatch waits for Herdr to detect the launched agent before leaving it unnamed.
 /// Generous: an agent's first start can take many seconds (on Windows above all, or behind a
-/// first-run prompt), and the board never waits on it. `tsk dispatch` returns once the agent
-/// is named, so it waits this long only for an agent Herdr never detects.
+/// first-run prompt). Neither the board nor `tsk dispatch` waits on it: the board names from
+/// a thread, the CLI from a detached helper process.
 const AGENT_DETECTION_TIMEOUT: Duration = Duration::from_secs(30);
 const AGENT_DETECTION_POLL: Duration = Duration::from_millis(250);
 /// How long cleanup waits before its one retry of a removal refused by files in use.
@@ -1264,12 +1264,61 @@ impl DispatchHost for SystemDispatchHost {
 }
 
 /// Name the dispatched agent on a detached thread so neither the board nor the save waits on
-/// Herdr's detection. Best effort: every failure leaves the agent unnamed. A CLI process must
-/// join the handle before exiting, or the thread dies with it.
+/// Herdr's detection. Best effort: every failure leaves the agent unnamed. The thread dies
+/// with its process, so only the long-lived board uses it; the CLI starts
+/// [`spawn_agent_naming_process`] instead.
 pub fn spawn_agent_naming(naming: AgentNaming) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let _ = name_agent_when_detected(&naming);
     })
+}
+
+/// Name the dispatched agent from a detached `tsk --name-agent` process, so `tsk dispatch`
+/// returns as soon as its output is written while the helper waits for Herdr's detection.
+pub fn spawn_agent_naming_process(naming: &AgentNaming) -> Result<(), String> {
+    let executable =
+        std::env::current_exe().map_err(|error| format!("could not find tsk: {error}"))?;
+    agent_naming_command(&executable, naming)
+        .spawn()
+        .map(drop)
+        .map_err(|error| format!("could not start agent naming: {error}"))
+}
+
+/// The detached helper's command: no stdio, and out of the caller's process group (on
+/// Windows, without its console) so the caller's exit or Ctrl+C does not end it.
+pub fn agent_naming_command(executable: &Path, naming: &AgentNaming) -> Command {
+    let mut command = Command::new(executable);
+    command
+        .args([
+            crate::cli::router::NAME_AGENT_FLAG,
+            &naming.pane_id,
+            &naming.name,
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+    command
+}
+
+/// The `tsk --name-agent` helper's whole job. Best effort: every failure leaves the agent
+/// unnamed.
+pub fn name_agent(pane_id: &str, name: &str) {
+    let _ = name_agent_when_detected(&AgentNaming {
+        pane_id: pane_id.into(),
+        name: name.into(),
+    });
 }
 
 fn name_agent_when_detected(naming: &AgentNaming) -> Result<(), String> {
@@ -1319,6 +1368,18 @@ fn rename_when_detected(
             Rename::Undetected(_) => sleep(AGENT_DETECTION_POLL),
         }
     }
+}
+
+/// Herdr says the workspace no longer exists. Any other answer, a failure to ask included,
+/// counts as open, so a cleanup never calls a workspace gone that it could not check.
+fn herdr_workspace_gone(workspace_id: &str) -> bool {
+    Command::new("herdr")
+        .args(["workspace", "get", workspace_id])
+        .output()
+        .is_ok_and(|output| {
+            !output.status.success()
+                && herdr_error_code(&output.stderr).as_deref() == Some("workspace_not_found")
+        })
 }
 
 fn herdr_error_code(stderr: &[u8]) -> Option<String> {
@@ -1422,8 +1483,10 @@ fn system_inspect_cleanup(
         }
     };
     if !worktree.exists() {
+        // Nothing to remove, but the result still says whether the workspace is open.
         return Ok(CleanupInspection {
             target_matches: true,
+            workspace_exists: in_herdr && !herdr_workspace_gone(&dispatch.herdr_workspace_id),
             ..CleanupInspection::default()
         });
     }
@@ -1808,17 +1871,15 @@ pub fn clean_planned_with_host(
         };
         let workspace = if workspace_removed {
             WorkspaceCleanup::Removed
-        } else if in_herdr {
-            WorkspaceCleanup::Missing
         } else {
-            WorkspaceCleanup::Kept
+            untouched_workspace(in_herdr, &preview.inspection)
         };
         (WorktreeCleanup::Removed, deletion, workspace)
     } else {
         (
             WorktreeCleanup::Missing,
             BranchDeletion::Kept(BranchRetentionReason::MissingWorktree),
-            WorkspaceCleanup::Kept,
+            untouched_workspace(in_herdr, &preview.inspection),
         )
     };
     if host.platform() == HostPlatform::Windows {
@@ -1852,6 +1913,16 @@ pub fn clean_planned_with_host(
         branch,
         workspace,
     })
+}
+
+/// The outcome for a workspace this cleanup did not close: inside Herdr, one the inspection
+/// did not find was already closed; outside Herdr, tsk never looks, so it is kept.
+pub fn untouched_workspace(in_herdr: bool, inspection: &CleanupInspection) -> WorkspaceCleanup {
+    if in_herdr && !inspection.workspace_exists {
+        WorkspaceCleanup::Missing
+    } else {
+        WorkspaceCleanup::Kept
+    }
 }
 
 /// Why Windows would refuse to delete a worktree right now. Git deletes a worktree file by
@@ -3579,6 +3650,38 @@ mod tests {
             .get(id)
             .and_then(|task| task.dispatch.as_ref())
             .is_some_and(|dispatch| dispatch.cleaned));
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    /// A worktree that is already gone (deleted by hand after a refused cleanup) still reports
+    /// whether its workspace is open: closed earlier reads as missing, open as kept.
+    #[test]
+    fn a_missing_worktree_reports_whether_its_workspace_is_still_open() {
+        let (path, profiles) = profiles();
+        for (in_herdr, open, expected) in [
+            (true, false, WorkspaceCleanup::Missing),
+            (true, true, WorkspaceCleanup::Kept),
+            (false, false, WorkspaceCleanup::Kept),
+        ] {
+            let (mut state, id) = task();
+            run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
+                .expect("dispatch");
+            let mut host = FakeHost {
+                cleanup: Some(CleanupInspection {
+                    worktree_exists: false,
+                    workspace_exists: open,
+                    ..clean_inspection()
+                }),
+                ..windows_host()
+            };
+            let result = clean_with_host(&mut state, id, in_herdr, &mut host).expect("converged");
+            assert_eq!(result.worktree, WorktreeCleanup::Missing);
+            assert_eq!(
+                result.workspace, expected,
+                "in_herdr {in_herdr}, open {open}"
+            );
+            assert_eq!(host.closed, 0, "a missing worktree never closes anything");
+        }
         fs::remove_dir_all(path).expect("cleanup");
     }
 
