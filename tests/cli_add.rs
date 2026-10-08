@@ -564,6 +564,43 @@ fn plan_item_thread_applies_per_item() {
 }
 
 #[test]
+fn plan_with_utf8_byte_order_mark_parses_from_file_and_stdin() {
+    let _env = env_lock();
+    let dir = temp_state_dir("plan-bom");
+    let plan = dir.join("plan.json");
+    std::fs::write(&plan, "\u{feff}[{\"title\":\"bom from file\"}]").expect("write plan");
+    let output = add(
+        &[
+            "tsk".into(),
+            "add".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "--file".into(),
+            state_dir_arg(&plan),
+        ],
+        true,
+    );
+    assert_eq!(output.code, 0, "{}", output.stderr);
+
+    let stdin = run_with(
+        ["tsk", "add", "--state-dir", &state_dir_arg(&dir)],
+        Cursor::new("\u{feff}[{\"title\":\"bom from stdin\"}]"),
+        false,
+    );
+    assert_eq!(stdin.code, 0, "{}", stdin.stderr);
+
+    let state = task_store(&dir).load().expect("load bom plan state");
+    let titles: Vec<&str> = state
+        .tasks()
+        .iter()
+        .map(|task| task.title.as_str())
+        .collect();
+    assert_eq!(titles, ["bom from file", "bom from stdin"]);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn invalid_thread_flag_is_usage_error_exit_2_nothing_persisted() {
     let _env = env_lock();
     let dir = temp_state_dir("invalid-thread-flag");
