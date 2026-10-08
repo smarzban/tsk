@@ -1284,8 +1284,10 @@ pub fn spawn_agent_naming_process(naming: &AgentNaming) -> Result<(), String> {
         .map_err(|error| format!("could not start agent naming: {error}"))
 }
 
-/// The detached helper's command: no stdio, and out of the caller's process group (on
-/// Windows, without its console) so the caller's exit or Ctrl+C does not end it.
+/// The detached helper's command: no stdio, and out of the caller's process group so the
+/// caller's exit or Ctrl+C does not end it. On Windows it gets a console of its own that is
+/// never shown: without one (`DETACHED_PROCESS`), every `herdr` it runs would open a
+/// visible console window.
 pub fn agent_naming_command(executable: &Path, naming: &AgentNaming) -> Command {
     let mut command = Command::new(executable);
     command
@@ -1305,12 +1307,15 @@ pub fn agent_naming_command(executable: &Path, naming: &AgentNaming) -> Command 
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
     }
     command
 }
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(windows)]
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
 /// The `tsk --name-agent` helper's whole job. Best effort: every failure leaves the agent
 /// unnamed.
@@ -1478,8 +1483,10 @@ fn system_inspect_cleanup(
         _ => {
             return Ok(CleanupInspection {
                 worktree_exists: worktree.exists(),
+                // Never checked, so never reported closed.
+                workspace_exists: in_herdr,
                 ..CleanupInspection::default()
-            })
+            });
         }
     };
     if !worktree.exists() {
@@ -5529,6 +5536,29 @@ mod tests {
             .inspect_cleanup(&project, &root_record, false)
             .expect("inspect root");
         assert!(!inspection.target_matches);
+
+        // Inside Herdr these early answers never asked about the workspace, so they must
+        // not read as an already closed one.
+        let unresolvable = Dispatch {
+            worktree: root
+                .join("gone")
+                .join("repo-t1")
+                .to_string_lossy()
+                .into_owned(),
+            ..root_record.clone()
+        };
+        for record in [&root_record, &unresolvable] {
+            let inspection = SystemDispatchHost::in_state_dir(root.join("state"))
+                .inspect_cleanup(&project, record, true)
+                .expect("inspect early answer");
+            assert!(!inspection.target_matches, "{}", record.worktree);
+            assert_eq!(
+                untouched_workspace(true, &inspection),
+                WorkspaceCleanup::Kept,
+                "{}",
+                record.worktree
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&root);
     }
