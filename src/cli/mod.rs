@@ -407,6 +407,8 @@ fn read_plan_source<R: Read>(input: &parser::FlagAdd, stdin: &mut R) -> Result<S
 }
 
 fn parse_plan(source: &str) -> Result<Vec<Value>, String> {
+    // Windows PowerShell 5.1 writes UTF-8 files with a byte order mark.
+    let source = source.strip_prefix('\u{feff}').unwrap_or(source);
     let value: Value =
         serde_json::from_str(source).map_err(|error| format!("invalid JSON plan: {error}"))?;
     value

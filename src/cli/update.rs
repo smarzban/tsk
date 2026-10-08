@@ -289,8 +289,15 @@ pub(crate) fn windows_powershell_path() -> Result<PathBuf, String> {
 #[cfg(windows)]
 pub(crate) fn download_https(url: &str, limit: u64, timeout_secs: u64) -> Result<Vec<u8>, String> {
     use std::time::Duration;
+    use ureq::tls::{TlsConfig, TlsProvider};
 
+    // ureq defaults to Rustls, which this build does not compile in: without an explicit
+    // provider the first HTTPS request panics.
+    let tls = TlsConfig::builder()
+        .provider(TlsProvider::NativeTls)
+        .build();
     let config = ureq::Agent::config_builder()
+        .tls_config(tls)
         .https_only(true)
         .max_redirects(5)
         .timeout_global(Some(Duration::from_secs(timeout_secs)))
@@ -793,5 +800,32 @@ mod tests {
             .expect_err("missing curl fails");
         assert!(error.contains("TSK_UPDATE_CURL"), "{error}");
         let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Offline: a local listener that drops the connection. Before the TLS provider was
+    /// set, ureq panicked on the first HTTPS request instead of returning an error.
+    #[cfg(windows)]
+    #[test]
+    fn windows_download_https_fails_without_panicking_when_the_peer_drops() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let port = listener.local_addr().expect("listener address").port();
+        let server = std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                drop(stream);
+            }
+        });
+        let result = super::download_https(&format!("https://127.0.0.1:{port}/"), 1024, 10);
+        assert!(result.is_err(), "{result:?}");
+        let _ = server.join();
+    }
+
+    /// Live: one real fetch over native TLS. Run with `cargo test -- --ignored`.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "network"]
+    fn windows_download_https_fetches_the_installer_live() {
+        let bytes = super::download_https("https://www.gettsk.sh/install.ps1", 1 << 20, 30)
+            .expect("HTTPS fetch of the PowerShell installer");
+        assert!(!bytes.is_empty());
     }
 }

@@ -27,6 +27,8 @@ the GitHub release notes verbatim.
 - A project reached through a symlinked path, such as `/tmp/repo` and `/private/tmp/repo` on macOS, is one project.
 - With tasks marked, `Esc` in the thread or view picker closes the picker and keeps the marks.
 - The task page's project chooser lists options top to bottom, so `↓` moves down.
+- Windows: `tsk update` and the board's update check work instead of crashing on the first HTTPS request, so update notices appear. A failed check stays silent.
+- `tsk add --file` and piped JSON plans accept a leading UTF-8 byte order mark, as Windows PowerShell 5.1 writes by default.
 
 ## v0.11.6
 
