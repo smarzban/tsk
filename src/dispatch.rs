@@ -319,36 +319,43 @@ impl CleanupError {
     }
 }
 
-impl std::fmt::Display for CleanupError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl CleanupError {
+    /// Why the worktree stayed, without the `kept:` lead the CLI prints: the board card
+    /// writes its own.
+    pub fn reason(&self) -> String {
         match self {
-            Self::UnknownTask => write!(formatter, "task is not on the board"),
-            Self::NotDispatched => write!(formatter, "task has no dispatch to clean"),
-            Self::AlreadyCleaned => write!(formatter, "dispatch is already cleaned"),
-            Self::DirtyWorktree => write!(formatter, "worktree has uncommitted changes"),
+            Self::UnknownTask => "task is not on the board".into(),
+            Self::NotDispatched => "task has no dispatch to clean".into(),
+            Self::AlreadyCleaned => "dispatch is already cleaned".into(),
+            Self::DirtyWorktree => "worktree has uncommitted changes".into(),
             Self::WorktreeMismatch => {
-                write!(
-                    formatter,
-                    "recorded worktree does not match the project or workspace"
-                )
+                "recorded worktree does not match the project or workspace".into()
             }
-            Self::DispatchChanged => write!(formatter, "changed since the card opened"),
-            Self::FilesInUse => write!(
-                formatter,
-                "kept: files in use (close what is running in the worktree and retry)"
-            ),
-            Self::PathTooLong => write!(
-                formatter,
-                "kept: path too long (run git config --global core.longpaths true and retry)"
-            ),
-            Self::RemovalTimedOut => write!(
-                formatter,
-                "kept: removal timed out after {} minutes (retry when the disk is less busy)",
+            Self::DispatchChanged => "changed since the card opened".into(),
+            Self::FilesInUse => {
+                "files in use (close what is running in the worktree and retry)".into()
+            }
+            Self::PathTooLong => {
+                "path too long (run git config --global core.longpaths true and retry)".into()
+            }
+            Self::RemovalTimedOut => format!(
+                "removal timed out after {} minutes (retry when the disk is less busy)",
                 WINDOWS_REMOVAL_TIMEOUT.as_secs() / 60
             ),
             Self::PartlyRemoved(reason) | Self::Herdr(reason) | Self::Store(reason) => {
-                write!(formatter, "{reason}")
+                reason.clone()
             }
+        }
+    }
+}
+
+impl std::fmt::Display for CleanupError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FilesInUse | Self::PathTooLong | Self::RemovalTimedOut => {
+                write!(formatter, "kept: {}", self.reason())
+            }
+            _ => write!(formatter, "{}", self.reason()),
         }
     }
 }

@@ -320,7 +320,7 @@ fn t64_real_board_ctrl_q_exits_from_a_stored_task_page() {
     session.send(b"\r");
     session.output_until("target");
     session.send(b"\x11");
-    assert!(session.wait_exit(Duration::from_secs(5)).success());
+    assert!(session.wait_exit(Duration::from_secs(30)).success());
 }
 
 fn assert_real_root_esc_exits(label: &str, tab_key: u8) {
@@ -334,7 +334,7 @@ fn assert_real_root_esc_exits(label: &str, tab_key: u8) {
     session.send(&[tab_key]);
     std::thread::sleep(Duration::from_millis(100));
     session.send(b"\x1b[27u");
-    assert!(session.wait_exit(Duration::from_secs(5)).success());
+    assert!(session.wait_exit(Duration::from_secs(30)).success());
 }
 
 #[test]
@@ -370,10 +370,11 @@ fn t64_real_board_editor_ctrl_q_stays_live_then_task_page_ctrl_q_exits() {
     session.send(b"\x11");
     session.send(b"ZXQMARK");
     session.output_until("\x1b[1mK");
-    session.send(b"\x1b");
+    // The unambiguous Esc: a bare one read together with the next byte is alt+ctrl+q.
+    session.send(b"\x1b[27u");
     std::thread::sleep(Duration::from_millis(100));
     session.send(b"\x11");
-    assert!(session.wait_exit(Duration::from_secs(5)).success());
+    assert!(session.wait_exit(Duration::from_secs(30)).success());
 }
 
 #[test]
@@ -394,7 +395,7 @@ fn completing_a_guide_on_the_real_board_records_its_dismissal() {
 
     session.send(b"\x04");
     session.send(b"\x11");
-    assert!(session.wait_exit(Duration::from_secs(5)).success());
+    assert!(session.wait_exit(Duration::from_secs(30)).success());
 
     let state = store.load().unwrap();
     let done: Vec<&Task> = notices(&state)

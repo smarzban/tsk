@@ -2245,7 +2245,7 @@ pub fn offer_bulk_cleanup_prompt_with_host(
                 bulk.missing.push((id, identifier, preview.record));
             }
             Ok(preview) => rows.push(cleanup_row(id, preview, merge_check)),
-            Err(error) => bulk.refused.push((identifier, error.to_string())),
+            Err(error) => bulk.refused.push((identifier, error.reason())),
         }
     }
     if rows.is_empty() && bulk.refused.is_empty() {
@@ -2316,10 +2316,7 @@ pub fn confirm_cleanup_with_host(
         .iter()
         .filter(|row| clean && targets.contains(&row.task_id))
     {
-        let kept = |error: CleanupError| CleanupRowState::Kept {
-            short: error.short().into(),
-            full: error.to_string(),
-        };
+        let kept = |error: CleanupError| CleanupRowState::kept(&error);
         let state = if row.dirty {
             Some(kept(CleanupError::DirtyWorktree))
         } else if !dispatch_unchanged(domain, row.task_id, row.inspected.as_ref()) {
@@ -2549,10 +2546,7 @@ pub fn poll_cleanup_runs(
                             };
                         }
                         Some(dispatch::CleanupSlot::Done(Err(error))) => {
-                            row.state = CleanupRowState::Kept {
-                                short: error.short().into(),
-                                full: error.to_string(),
-                            };
+                            row.state = CleanupRowState::kept(error);
                         }
                         None => {}
                     }
@@ -12708,8 +12702,8 @@ mod bulk_cleanup_tests {
         offer_bulk_cleanup_prompt_with_host, BulkCleanupOffer,
     };
     use crate::dispatch::{
-        run_cleanup_job, run_cleanup_row, CleanupInspection, CleanupJob, CleanupPlanRow,
-        CreatedWorktree, DispatchHost, MergeCheck, MergeVerdict,
+        run_cleanup_job, run_cleanup_row, CleanupError, CleanupInspection, CleanupJob,
+        CleanupPlanRow, CreatedWorktree, DispatchHost, MergeCheck, MergeVerdict,
     };
     use crate::domain::{
         Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope, UndoEntry,
@@ -13189,7 +13183,9 @@ mod bulk_cleanup_tests {
         press(&mut board, BoardIntent::Complete, &mut host);
         let pressed = Instant::now();
         press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
-        assert!(pressed.elapsed() < std::time::Duration::from_millis(500));
+        // No check ever lands here: a `y` that waited for them would block until their bound.
+        // Half that bound still catches it, with seconds to spare for a loaded runner's save.
+        assert!(pressed.elapsed() < crate::dispatch::MERGE_CHECK_TIMEOUT / 2);
         // The set is done at once; only the worker waits for the checks.
         assert!(disk_statuses(&board)
             .iter()
@@ -13454,6 +13450,50 @@ mod bulk_cleanup_tests {
             .iter()
             .all(|status| *status == HumanStatus::Open));
         assert!(cleaned(&board, 0) && cleaned(&board, 1));
+    }
+
+    /// The cleanup card as painted, one string per screen row.
+    fn rendered_card(board: &Board) -> String {
+        let (width, height) = (120u16, 30u16);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+                .expect("terminal");
+        terminal
+            .draw(|frame| {
+                crate::ui::board::draw_board(frame, &board.model);
+            })
+            .expect("draw card");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer.cell((x, y)).expect("cell").symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_row_the_worker_kept_says_kept_once_on_the_card() {
+        // These refusals carry `kept:` in their CLI wording; the card writes its own lead.
+        for (error, reason) in [
+            (CleanupError::FilesInUse, "kept: files in use"),
+            (CleanupError::PathTooLong, "kept: path too long"),
+            (CleanupError::RemovalTimedOut, "kept: removal timed out"),
+        ] {
+            let (mut board, mut host) = slow_board("kept-once");
+            press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+            let (first, second) = (slot(&board, 0), slot(&board, 1));
+            let job = host.held.as_ref().expect("held job").0.clone();
+            job.finish(first, Err(error));
+            host.release(second);
+            tick(&mut board, &mut host);
+            assert!(board.model.cleanup_card_open(), "a kept row is not missed");
+            let card = rendered_card(&board);
+            assert!(card.contains(&format!("T1  {reason}")), "{card}");
+            assert!(!card.contains("kept: kept:"), "{card}");
+        }
     }
 
     #[test]

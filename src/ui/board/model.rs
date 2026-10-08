@@ -1406,6 +1406,15 @@ pub enum CleanupRowState {
 }
 
 impl CleanupRowState {
+    /// A worktree the cleanup left in place. The card leads with `kept:`, so the full reason
+    /// is the bare one, never the CLI line that already carries it.
+    pub fn kept(error: &crate::dispatch::CleanupError) -> Self {
+        Self::Kept {
+            short: error.short().into(),
+            full: error.reason(),
+        }
+    }
+
     pub fn landed(&self) -> bool {
         matches!(self, Self::Cleaned { .. } | Self::Kept { .. })
     }
