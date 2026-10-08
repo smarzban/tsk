@@ -145,6 +145,17 @@ pub enum WorktreeCleanup {
     Missing,
 }
 
+/// What cleanup did with the dispatch's Herdr workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceCleanup {
+    /// Closed by this cleanup.
+    Removed,
+    /// Left open: cleanup ran outside Herdr, or found no worktree to remove.
+    Kept,
+    /// Already closed when cleanup looked, for example by an earlier refused Windows cleanup.
+    Missing,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BranchCleanup {
     Removed,
@@ -245,7 +256,7 @@ pub struct CleanupResult {
     pub workspace_id: String,
     pub worktree: WorktreeCleanup,
     pub branch: BranchCleanup,
-    pub workspace_removed: bool,
+    pub workspace: WorkspaceCleanup,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -381,6 +392,8 @@ pub enum DispatchError {
     AlreadyDispatched(String),
     UnknownAgent(String),
     UnknownBase(String),
+    /// No base was given and the repository's default branch (`origin/HEAD`) is unresolved.
+    NoDefaultBase(String),
     AgentConfig(String),
     Herdr(String),
     Store(String),
@@ -401,6 +414,7 @@ impl DispatchError {
             Self::AlreadyDispatched(_) => "already-dispatched",
             Self::UnknownAgent(_) => "unknown-agent",
             Self::UnknownBase(_) => "unknown-base",
+            Self::NoDefaultBase(_) => "no-default-base",
             Self::AgentConfig(_) => "agent-config",
             Self::Herdr(_) => "herdr-failed",
             Self::Store(_) => "store-error",
@@ -424,6 +438,7 @@ impl std::fmt::Display for DispatchError {
             ),
             Self::UnknownAgent(name) => write!(formatter, "unknown agent {name}"),
             Self::UnknownBase(reason)
+            | Self::NoDefaultBase(reason)
             | Self::UnsupportedPlatform(reason)
             | Self::UnsafeStateDir(reason)
             | Self::AgentConfig(reason)
@@ -689,8 +704,11 @@ impl LaunchBatch {
 }
 
 /// How long dispatch waits for Herdr to detect the launched agent before leaving it unnamed.
-const AGENT_DETECTION_TIMEOUT: Duration = Duration::from_secs(3);
-const AGENT_DETECTION_POLL: Duration = Duration::from_millis(100);
+/// Generous: an agent's first start can take many seconds (on Windows above all, or behind a
+/// first-run prompt), and the board never waits on it. `tsk dispatch` returns once the agent
+/// is named, so it waits this long only for an agent Herdr never detects.
+const AGENT_DETECTION_TIMEOUT: Duration = Duration::from_secs(30);
+const AGENT_DETECTION_POLL: Duration = Duration::from_millis(250);
 /// How long cleanup waits before its one retry of a removal refused by files in use.
 const REMOVAL_RETRY_DELAY: Duration = Duration::from_secs(2);
 /// How long a Windows `git worktree remove` may take. It deletes ignored build output too
@@ -698,17 +716,18 @@ const REMOVAL_RETRY_DELAY: Duration = Duration::from_secs(2);
 /// what this avoids, and [`RemovalState`] reports honestly when it happens anyway.
 pub const WINDOWS_REMOVAL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
-/// The real host: git and Herdr processes. Windows launchers go under `state_dir`'s
-/// `launchers` directory (the default state dir when unset).
-#[derive(Debug, Default, Clone)]
+/// The real host: git and Herdr processes. Windows launchers and removal marks go under
+/// `state_dir`. There is no default: every host names the store it writes beside, so a test
+/// cannot reach the real one.
+#[derive(Debug, Clone)]
 pub struct SystemDispatchHost {
-    state_dir: Option<PathBuf>,
+    state_dir: PathBuf,
 }
 
 impl SystemDispatchHost {
     pub fn in_state_dir(state_dir: impl Into<PathBuf>) -> Self {
         Self {
-            state_dir: Some(state_dir.into()),
+            state_dir: state_dir.into(),
         }
     }
 
@@ -726,8 +745,6 @@ impl SystemDispatchHost {
     fn launcher_file(&self, workspace_id: &str) -> Result<PathBuf, String> {
         let path = self
             .state_dir
-            .clone()
-            .unwrap_or_else(crate::store::default_state_dir)
             .join("launchers")
             .join(launcher_file_name(workspace_id));
         // The pane resolves a relative path against the worktree, not where tsk wrote it.
@@ -1256,21 +1273,51 @@ pub fn spawn_agent_naming(naming: AgentNaming) -> std::thread::JoinHandle<()> {
 }
 
 fn name_agent_when_detected(naming: &AgentNaming) -> Result<(), String> {
-    // Herdr detects the agent shortly after the launch line runs; until then the pane has no
-    // agent and rename answers `agent_not_found`. Any other refusal, such as
-    // `agent_name_taken` by an agent elsewhere, is final: the agent stays unnamed.
-    let deadline = Instant::now() + AGENT_DETECTION_TIMEOUT;
+    let started = Instant::now();
+    rename_when_detected(
+        || {
+            let output = match Command::new("herdr")
+                .args(["agent", "rename", &naming.pane_id, &naming.name])
+                .output()
+            {
+                Ok(output) => output,
+                Err(error) => return Rename::Final(Err(format!("could not run herdr: {error}"))),
+            };
+            let undetected = !output.status.success()
+                && herdr_error_code(&output.stderr).as_deref() == Some("agent_not_found");
+            let result = herdr_json(output).map(|_| ());
+            match result {
+                Err(error) if undetected => Rename::Undetected(error),
+                result => Rename::Final(result),
+            }
+        },
+        || started.elapsed(),
+        std::thread::sleep,
+    )
+}
+
+/// One `herdr agent rename` attempt.
+enum Rename {
+    /// The pane has no agent yet (`agent_not_found`).
+    Undetected(String),
+    /// Named, or refused for good.
+    Final(Result<(), String>),
+}
+
+/// Herdr detects the agent some time after the launch line runs; until then the pane has no
+/// agent and rename answers `agent_not_found`. Any other refusal, such as `agent_name_taken`
+/// by an agent elsewhere, is final: the agent stays unnamed.
+fn rename_when_detected(
+    mut rename: impl FnMut() -> Rename,
+    mut elapsed: impl FnMut() -> Duration,
+    mut sleep: impl FnMut(Duration),
+) -> Result<(), String> {
     loop {
-        let output = Command::new("herdr")
-            .args(["agent", "rename", &naming.pane_id, &naming.name])
-            .output()
-            .map_err(|error| format!("could not run herdr: {error}"))?;
-        let undetected = !output.status.success()
-            && herdr_error_code(&output.stderr).as_deref() == Some("agent_not_found");
-        if !undetected || Instant::now() >= deadline {
-            return herdr_json(output).map(|_| ());
+        match rename() {
+            Rename::Final(result) => return result,
+            Rename::Undetected(error) if elapsed() >= AGENT_DETECTION_TIMEOUT => return Err(error),
+            Rename::Undetected(_) => sleep(AGENT_DETECTION_POLL),
         }
-        std::thread::sleep(AGENT_DETECTION_POLL);
     }
 }
 
@@ -1732,7 +1779,7 @@ pub fn clean_planned_with_host(
         return Err(CleanupError::DirtyWorktree);
     }
 
-    let (worktree, deletion, workspace_removed) = if preview.inspection.worktree_exists {
+    let (worktree, deletion, workspace) = if preview.inspection.worktree_exists {
         let workspace_removed = in_herdr && preview.inspection.workspace_exists;
         let worktree = Path::new(&preview.record.worktree);
         if host.platform() == HostPlatform::Windows {
@@ -1759,12 +1806,19 @@ pub fn clean_planned_with_host(
         } else {
             BranchDeletion::Kept(BranchRetentionReason::NotMerged)
         };
-        (WorktreeCleanup::Removed, deletion, workspace_removed)
+        let workspace = if workspace_removed {
+            WorkspaceCleanup::Removed
+        } else if in_herdr {
+            WorkspaceCleanup::Missing
+        } else {
+            WorkspaceCleanup::Kept
+        };
+        (WorktreeCleanup::Removed, deletion, workspace)
     } else {
         (
             WorktreeCleanup::Missing,
             BranchDeletion::Kept(BranchRetentionReason::MissingWorktree),
-            false,
+            WorkspaceCleanup::Kept,
         )
     };
     if host.platform() == HostPlatform::Windows {
@@ -1796,7 +1850,7 @@ pub fn clean_planned_with_host(
         workspace_id: preview.record.herdr_workspace_id,
         worktree,
         branch,
-        workspace_removed,
+        workspace,
     })
 }
 
@@ -2411,7 +2465,7 @@ pub fn launch_with_host(
                     if explicit.is_some() {
                         DispatchError::UnknownBase(reason)
                     } else {
-                        DispatchError::Herdr(reason)
+                        DispatchError::NoDefaultBase(reason)
                     }
                 })?;
             let base = choice.reference;
@@ -2926,6 +2980,8 @@ mod tests {
         marks: Vec<(String, bool)>,
         /// Work the agent wrote while its workspace closed.
         dirty_after_close: bool,
+        /// The repository has no `origin/HEAD`.
+        no_default_base: bool,
     }
 
     impl DispatchHost for FakeHost {
@@ -2934,6 +2990,9 @@ mod tests {
         }
 
         fn resolve_base(&mut self, _: &Path) -> Result<String, String> {
+            if self.no_default_base {
+                return Err("repo has no origin default branch".into());
+            }
             Ok("main".into())
         }
 
@@ -3507,6 +3566,11 @@ mod tests {
         let result = clean_with_host(&mut state, id, true, &mut host).expect("cleaned");
         assert_eq!(result.worktree, WorktreeCleanup::Removed);
         assert_eq!(
+            result.workspace,
+            WorkspaceCleanup::Missing,
+            "the refused attempt closed it; the retry must not report it kept"
+        );
+        assert_eq!(
             (host.closed, host.removed_git, host.removed_herdr),
             (0, 1, 0)
         );
@@ -3532,7 +3596,7 @@ mod tests {
         let result = clean_with_host(&mut state, id, true, &mut host).expect("cleaned");
         assert_eq!(result.worktree, WorktreeCleanup::Removed);
         assert_eq!(result.branch, BranchCleanup::Removed);
-        assert!(result.workspace_removed);
+        assert_eq!(result.workspace, WorkspaceCleanup::Removed);
         assert_eq!(
             (
                 host.closed,
@@ -3889,8 +3953,9 @@ mod tests {
         ) else {
             return;
         };
-        fs::write(started, "").expect("started");
-        let _ = SystemDispatchHost::default()
+        fs::write(&started, "").expect("started");
+        let state = Path::new(&started).with_extension("state");
+        let _ = SystemDispatchHost::in_state_dir(state)
             .remove_git_worktree(Path::new(&project), Path::new(&worktree));
     }
 
@@ -4249,12 +4314,100 @@ mod tests {
                 DispatchError::AgentConfig("bad config".into()),
                 "agent-config",
             ),
+            (
+                DispatchError::NoDefaultBase("no origin/HEAD".into()),
+                "no-default-base",
+            ),
             (DispatchError::Herdr("failed".into()), "herdr-failed"),
             (DispatchError::Store("failed".into()), "store-error"),
         ];
         for (error, code) in cases {
             assert_eq!(error.code(), code);
         }
+    }
+
+    /// An agent Herdr detects only after a slow start (ten seconds, as Claude Code and Pi took
+    /// on Windows) is still named.
+    #[test]
+    fn a_slow_starting_agent_is_still_named() {
+        let clock = std::cell::Cell::new(Duration::ZERO);
+        let mut attempts = 0;
+        let result = rename_when_detected(
+            || {
+                attempts += 1;
+                if clock.get() < Duration::from_secs(10) {
+                    Rename::Undetected("agent_not_found".into())
+                } else {
+                    Rename::Final(Ok(()))
+                }
+            },
+            || clock.get(),
+            |pause| clock.set(clock.get() + pause),
+        );
+        assert_eq!(result, Ok(()));
+        assert!(attempts > 1);
+    }
+
+    /// An agent Herdr never detects stays unnamed once the window closes, and the wait is
+    /// bounded by it.
+    #[test]
+    fn an_undetected_agent_stops_waiting_at_the_window() {
+        let clock = std::cell::Cell::new(Duration::ZERO);
+        let mut attempts = 0u32;
+        let result = rename_when_detected(
+            || {
+                attempts += 1;
+                Rename::Undetected("agent target p1 not found".into())
+            },
+            || clock.get(),
+            |pause| clock.set(clock.get() + pause),
+        );
+        assert_eq!(result, Err("agent target p1 not found".into()));
+        assert!(clock.get() >= AGENT_DETECTION_TIMEOUT);
+        assert!(clock.get() < AGENT_DETECTION_TIMEOUT + AGENT_DETECTION_POLL);
+        assert_eq!(
+            attempts,
+            (AGENT_DETECTION_TIMEOUT.as_millis() / AGENT_DETECTION_POLL.as_millis()) as u32 + 1
+        );
+    }
+
+    /// A refusal other than `agent_not_found`, such as a taken name, ends naming at once.
+    #[test]
+    fn a_final_rename_refusal_is_not_retried() {
+        let mut attempts = 0;
+        let result = rename_when_detected(
+            || {
+                attempts += 1;
+                Rename::Final(Err("agent_name_taken".into()))
+            },
+            || Duration::ZERO,
+            |_| panic!("a final refusal never waits"),
+        );
+        assert_eq!(result, Err("agent_name_taken".into()));
+        assert_eq!(attempts, 1);
+    }
+
+    /// Without a base, a repository with no `origin/HEAD` is a base problem, not a Herdr one.
+    #[test]
+    fn a_missing_default_branch_refuses_as_no_default_base() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let before = state.clone();
+        let mut host = FakeHost {
+            git: true,
+            no_default_base: true,
+            ..FakeHost::default()
+        };
+        let error = run_with_host(&mut state, id, &profiles, false, true, &mut host)
+            .expect_err("no default base");
+        assert_eq!(error.code(), "no-default-base", "{error}");
+        assert!(error.to_string().contains("no origin default branch"));
+        assert_eq!(host.creates, 0);
+        assert_eq!(
+            serde_json::to_value(&state).expect("state json"),
+            serde_json::to_value(&before).expect("before json"),
+        );
+        fs::remove_dir_all(path).expect("cleanup");
     }
 
     #[test]
@@ -5255,7 +5408,7 @@ mod tests {
             at: SystemTime::now(),
             cleaned: false,
         };
-        let inspection = SystemDispatchHost::default()
+        let inspection = SystemDispatchHost::in_state_dir(root.join("state"))
             .inspect_cleanup(&project, &record, false)
             .expect("inspect");
         assert!(!inspection.worktree_exists);
@@ -5269,7 +5422,7 @@ mod tests {
             worktree: project.to_string_lossy().into_owned(),
             ..record
         };
-        let inspection = SystemDispatchHost::default()
+        let inspection = SystemDispatchHost::in_state_dir(root.join("state"))
             .inspect_cleanup(&project, &root_record, false)
             .expect("inspect root");
         assert!(!inspection.target_matches);

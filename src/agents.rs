@@ -318,7 +318,9 @@ impl RenderedLaunch {
     ///
     /// Windows PowerShell passes arguments to programs (and to the `.ps1` shims npm installs,
     /// which forward them to `node.exe`) without escaping embedded double quotes. Each argument
-    /// is pre-escaped for the program's command-line parser so it arrives verbatim.
+    /// is pre-escaped for the program's command-line parser so it arrives verbatim. A script
+    /// that reads `$args` itself sees that escaping: whether a script forwards to a program
+    /// cannot be known from outside it, so the supported script is a forwarding shim.
     ///
     /// A `.cmd` or `.bat` file would hand the arguments to cmd.exe, which no escaping makes
     /// safe for task text, so the program resolves only to an executable or a PowerShell
