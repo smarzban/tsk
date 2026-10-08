@@ -2245,7 +2245,7 @@ pub fn offer_bulk_cleanup_prompt_with_host(
                 bulk.missing.push((id, identifier, preview.record));
             }
             Ok(preview) => rows.push(cleanup_row(id, preview, merge_check)),
-            Err(error) => bulk.refused.push((identifier, error.to_string())),
+            Err(error) => bulk.refused.push((identifier, error.reason())),
         }
     }
     if rows.is_empty() && bulk.refused.is_empty() {
@@ -2316,10 +2316,7 @@ pub fn confirm_cleanup_with_host(
         .iter()
         .filter(|row| clean && targets.contains(&row.task_id))
     {
-        let kept = |error: CleanupError| CleanupRowState::Kept {
-            short: error.short().into(),
-            full: error.to_string(),
-        };
+        let kept = |error: CleanupError| CleanupRowState::kept(&error);
         let state = if row.dirty {
             Some(kept(CleanupError::DirtyWorktree))
         } else if !dispatch_unchanged(domain, row.task_id, row.inspected.as_ref()) {
@@ -2549,10 +2546,7 @@ pub fn poll_cleanup_runs(
                             };
                         }
                         Some(dispatch::CleanupSlot::Done(Err(error))) => {
-                            row.state = CleanupRowState::Kept {
-                                short: error.short().into(),
-                                full: error.to_string(),
-                            };
+                            row.state = CleanupRowState::kept(&error);
                         }
                         None => {}
                     }
@@ -13189,7 +13183,9 @@ mod bulk_cleanup_tests {
         press(&mut board, BoardIntent::Complete, &mut host);
         let pressed = Instant::now();
         press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
-        assert!(pressed.elapsed() < std::time::Duration::from_millis(500));
+        // No check ever lands here: a `y` that waited for them would block until their bound.
+        // Half that bound still catches it, with seconds to spare for a loaded runner's save.
+        assert!(pressed.elapsed() < crate::dispatch::MERGE_CHECK_TIMEOUT / 2);
         // The set is done at once; only the worker waits for the checks.
         assert!(disk_statuses(&board)
             .iter()

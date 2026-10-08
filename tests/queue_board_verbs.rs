@@ -18,8 +18,8 @@ use tsk_tui::app::{
 };
 use tsk_tui::context::InvocationSnapshot;
 use tsk_tui::dispatch::{
-    CleanupInspection, CleanupJob, CleanupSlot, CreatedWorktree, DispatchHost, MergeCheck,
-    MergeVerdict,
+    CleanupError, CleanupInspection, CleanupJob, CleanupSlot, CreatedWorktree, DispatchHost,
+    MergeCheck, MergeVerdict,
 };
 use tsk_tui::domain::{
     Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskEventKind, TaskScope,
@@ -651,6 +651,41 @@ fn a_confirmed_card_reports_each_row_and_esc_closes_it_once_finished() {
         model.message(),
         Some("done T1 · cleaned · branch kept (not merged)")
     );
+    std::fs::remove_dir_all(dir).expect("cleanup temp store");
+}
+
+#[test]
+fn a_kept_row_on_the_card_says_kept_once_for_every_cleanup_refusal() {
+    // Some refusals carry `kept:` in their CLI wording; the card writes its own lead.
+    let (mut domain, mut model, id, dir) = dispatched_board_for_merge_check("kept-once");
+    let mut host = merge_check_host(true, true);
+    offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host).expect("offer");
+    let mut run = confirm_cleanup_with_host(&mut domain, &mut model, true, true, &mut host)
+        .expect("completion")
+        .expect("card")
+        .run
+        .expect("y plans a run");
+    run.started = true;
+    run.settled = true;
+    model.begin_cleanup_run(run);
+    for (error, reason) in [
+        (CleanupError::FilesInUse, "kept: files in use"),
+        (CleanupError::PathTooLong, "kept: path too long"),
+        (CleanupError::RemovalTimedOut, "kept: removal timed out"),
+        (
+            CleanupError::DirtyWorktree,
+            "kept: worktree has uncommitted",
+        ),
+        (
+            CleanupError::DispatchChanged,
+            "kept: changed since the card",
+        ),
+    ] {
+        model.cleanup_run_mut().expect("run").rows[0].state = CleanupRowState::kept(&error);
+        let screen = rendered_board(&model, 120, 30);
+        assert!(screen.contains(&format!("T1  {reason}")), "{screen}");
+        assert!(!screen.contains("kept: kept:"), "{screen}");
+    }
     std::fs::remove_dir_all(dir).expect("cleanup temp store");
 }
 

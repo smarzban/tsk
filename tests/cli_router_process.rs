@@ -29,8 +29,12 @@ fn temp_state_dir(label: &str) -> PathBuf {
     dir
 }
 
+/// A TUI never exits on its own, so the ceiling only has to outlast a loaded machine starting a
+/// fresh binary (a first-launch scan on macOS), not race it.
+const TUI_CEILING: Duration = Duration::from_secs(30);
+
 fn wait_with_output_before_deadline(mut child: Child, description: &str) -> Output {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + TUI_CEILING;
     loop {
         if child.try_wait().expect("poll child process").is_some() {
             return child
@@ -241,7 +245,7 @@ fn unknown_positional_exits_2_without_opening_the_board() {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn tsk foo");
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + TUI_CEILING;
     let status = loop {
         if let Some(status) = child.try_wait().expect("poll child process") {
             break status;

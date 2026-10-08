@@ -484,10 +484,11 @@ fn local_git_queries_are_bounded_and_kill_output_holding_children() {
     // Mutate PATH only in a dedicated subprocess, never the shared harness.
     if let Ok(root) = std::env::var("TSK_GIT_BASE_TIMEOUT_CHILD") {
         let path = Path::new(&root);
-        // Allow script/DD startup overhead for the saturation probe; the local
-        // metadata calls below still use the production 250ms deadline.
+        // The saturation probe exits on its own once both pipes drain, so its deadline only
+        // has to outlast a loaded machine; a capture that deadlocked would still hit it. The
+        // local metadata calls below keep the production 250ms deadline.
         let captured =
-            git_process_output_timeout(path, &["capture-output"], Duration::from_secs(2)).unwrap();
+            git_process_output_timeout(path, &["capture-output"], Duration::from_secs(30)).unwrap();
         assert!(!captured.status.success());
         assert_eq!(captured.stdout.len(), 256 * 1024);
         assert_eq!(captured.stderr.len(), 256 * 1024);
@@ -501,8 +502,9 @@ fn local_git_queries_are_bounded_and_kill_output_holding_children() {
                 4 => assert!(list_cached_branches(path).is_err()),
                 _ => assert!(resolve(path, None).is_err()),
             }
+            // Far under the stub's 30 s hold, so only a bounded query passes.
             assert!(
-                started.elapsed() < Duration::from_secs(2),
+                started.elapsed() < Duration::from_secs(10),
                 "query {query} stalled"
             );
         }
@@ -529,7 +531,7 @@ fn local_git_queries_are_bounded_and_kill_output_holding_children() {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
         }
-        if started.elapsed() > Duration::from_secs(8) {
+        if started.elapsed() > Duration::from_secs(120) {
             // SAFETY: the child was launched into its own process group.
             unsafe {
                 libc::kill(-(child.id() as i32), libc::SIGKILL);
