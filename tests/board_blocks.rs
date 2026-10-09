@@ -639,3 +639,70 @@ fn a_cancelled_failed_reply_save_keeps_the_box_and_its_text() {
         "a retry lands"
     );
 }
+
+#[test]
+fn reply_and_unblock_saves_through_the_locked_store_as_one_change() {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-board-blocks-save-{nanos}-{}",
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let store = TaskStore::new(&dir);
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "db",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    domain
+        .block(id, BlockDraft::default(), "claude")
+        .expect("block");
+    store.save(&domain).expect("save blocked");
+    let mut domain = store.load().expect("load");
+    let mut model = BoardModel::from_domain(&domain, None);
+    model.sync_from_domain(&domain);
+    select(&mut domain, &mut model, id);
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).unwrap();
+
+    for (unblock, text) in [(false, "first"), (true, "second")] {
+        press(
+            &mut domain,
+            &mut model,
+            key(KeyCode::Char('r'), KeyModifiers::NONE),
+        );
+        type_text(&mut domain, &mut model, text);
+        let chord = if unblock {
+            key(KeyCode::Char('s'), KeyModifiers::CONTROL)
+        } else {
+            key(KeyCode::Enter, KeyModifiers::SHIFT)
+        };
+        let intent = map_key(model.input_mode(), chord).unwrap();
+        assert_eq!(
+            apply_intent(&mut domain, &mut model, intent, None).unwrap(),
+            IntentOutcome::Persist
+        );
+        // The board's locked merge-save: the task must still be based on the disk revision.
+        store
+            .reload_merge_save(&mut domain)
+            .unwrap_or_else(|error| panic!("{text}: {error}"));
+        domain = store.load().expect("reload");
+        model.sync_from_domain(&domain);
+    }
+    let task = domain.get(id).unwrap();
+    assert_eq!(task.status, HumanStatus::Ready);
+    let texts: Vec<_> = task.past_blocks[0]
+        .replies
+        .iter()
+        .map(|reply| reply.text.as_str())
+        .collect();
+    assert_eq!(texts, ["first", "second"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -682,6 +682,31 @@ impl DomainState {
         Ok(index)
     }
 
+    /// Run several mutations of one task as one transaction: on success the task keeps the
+    /// merge base it had before the first, so the locked save merges them as one change; on
+    /// failure the task is restored.
+    pub fn as_one_change<T>(
+        &mut self,
+        id: Uuid,
+        change: impl FnOnce(&mut Self) -> Result<T, DomainError>,
+    ) -> Result<T, DomainError> {
+        let baseline = self.task_mut(id)?.clone();
+        match change(self) {
+            Ok(value) => {
+                let task = self.task_mut(id)?;
+                if task.revision != baseline.revision {
+                    task.merge_base_revision =
+                        baseline.merge_base_revision.or(Some(baseline.revision));
+                }
+                Ok(value)
+            }
+            Err(error) => {
+                *self.task_mut(id)? = baseline;
+                Err(error)
+            }
+        }
+    }
+
     /// Rewrite one of the owner's live replies on the open block.
     pub fn edit_reply(&mut self, id: Uuid, index: usize, text: &str) -> Result<(), DomainError> {
         let text = block_text(Some(text), BlockField::Reply)

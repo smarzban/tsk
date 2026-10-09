@@ -581,11 +581,17 @@ pub(super) fn save_reply(
     if text.len() > BLOCK_TEXT_MAX {
         return refuse(model, too_long(BlockField::Reply));
     }
-    let baseline = domain.clone();
-    let stored = match edit {
-        Some(index) => domain.edit_reply(id, index, &text).map(|()| index),
-        None => domain.reply(id, &text, OWNER),
-    };
+    // The reply lands on the open block before the unblock closes it, as one change.
+    let stored = domain.as_one_change(id, |domain| {
+        let index = match edit {
+            Some(index) => domain.edit_reply(id, index, &text).map(|()| index)?,
+            None => domain.reply(id, &text, OWNER)?,
+        };
+        if unblock {
+            domain.set_status(id, HumanStatus::Ready)?;
+        }
+        Ok(index)
+    });
     let index = match stored {
         Ok(index) => index,
         Err(DomainError::NotBlocked(_) | DomainError::UnknownReply(_)) => {
@@ -593,12 +599,6 @@ pub(super) fn save_reply(
         }
         Err(error) => return Err(error),
     };
-    if unblock {
-        if let Err(error) = domain.set_status(id, HumanStatus::Ready) {
-            *domain = baseline;
-            return Err(error);
-        }
-    }
     if let Some(editor) = model
         .form
         .as_mut()
