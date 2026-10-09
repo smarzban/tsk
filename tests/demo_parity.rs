@@ -251,7 +251,13 @@ fn fixture_flow(export: bool) {
                 .iter()
                 .position(|id| *id == blocked)
                 .unwrap();
-            apply_intent(&mut state, &mut model, BoardIntent::SelectIndex(index), None).unwrap();
+            apply_intent(
+                &mut state,
+                &mut model,
+                BoardIntent::SelectIndex(index),
+                None,
+            )
+            .unwrap();
             apply_intent(&mut state, &mut model, BoardIntent::OpenTaskPage, None).unwrap();
             let page = capture(&model, width, "blocked-page");
             assert!(page.contains("@claude blocked on you"), "{page}");
