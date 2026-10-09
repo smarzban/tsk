@@ -547,7 +547,9 @@ import { parseCapture } from "./capture.js";
     task.statusAt = at;
   }
 
-  // The task page's PAPER TRAIL: newest first, the latest five, then `+ N earlier`.
+  // The task page's PAPER TRAIL: collapsed and dim on every page open (`PAPER TRAIL · N ▸`);
+  // `g` or a click on the heading shows every entry, newest first, still dim (`▾`).
+  let trailOpen = null;
   function paperTrail(task) {
     const entries = [
       ...(task.trail || []),
@@ -555,17 +557,49 @@ import { parseCapture } from "./capture.js";
     ]
       .slice()
       .sort((a, b) => b.at - a.at);
-    const shown = entries.slice(0, 5);
-    const rows = shown.map(
-      (entry) =>
-        `<div class="tsk-trail-entry dim">${esc(`${entry.text} · you ${age(entry.at)}`)}</div>`,
-    );
-    if (entries.length > shown.length) {
-      rows.push(
-        `<div class="tsk-trail-entry dim">+ ${entries.length - shown.length} earlier</div>`,
-      );
+    const open = trailOpen === task.id;
+    const rows = open
+      ? entries.map(
+          (entry) =>
+            `<div class="tsk-trail-entry dim">${esc(`${entry.text} · you ${age(entry.at)}`)}</div>`,
+        )
+      : [];
+    return `<div class="tsk-trail"><button type="button" class="tsk-trail-heading dim" data-trail-toggle="${esc(task.id)}" aria-expanded="${open}">PAPER TRAIL · ${entries.length} ${open ? "▾" : "▸"}</button>${rows.join("")}</div>`;
+  }
+
+  function toggleTrail(task) {
+    trailOpen = trailOpen === task.id ? null : task.id;
+  }
+
+  // A blocked task's BLOCKED section above the notes: the row's live line, why and needs as
+  // plain text, the numbered options, then the dim action line and the rule. The demo answers
+  // nothing, so the action line offers only what works here (bare `b` unblocks).
+  function blockSection(task, width) {
+    const block = task.status === "blocked" ? task.block : null;
+    if (!block) return "";
+    const line = (text, cls = "") =>
+      `<span class="${cls}">${esc(text) || " "}</span>`;
+    const rows = [line(liveLine(task), "is-bold")];
+    const body = [block.why, block.needs].filter(Boolean);
+    if (body.length) {
+      rows.push(line(""));
+      for (const text of body)
+        rows.push(...wrapText(text, width).map((part) => line(part)));
     }
-    return `<div class="tsk-trail"><div class="tsk-trail-heading">PAPER TRAIL</div>${rows.join("")}</div>`;
+    if (block.options?.length) {
+      rows.push(line(""));
+      block.options.forEach((option, index) => {
+        wrapText(option, width - 4).forEach((part, at) =>
+          rows.push(
+            line(
+              `${at ? "    " : `${String(index + 1).padStart(2)}  `}${part}`,
+            ),
+          ),
+        );
+      });
+    }
+    rows.push(line(""), line("b unblock", "dim"));
+    return `<div class="tsk-page-block" aria-label="blocked">${rows.join("")}</div><div class="tsk-page-block-rule" aria-hidden="true"></div>`;
   }
 
   const age = (ts) => {
@@ -2528,6 +2562,9 @@ import { parseCapture } from "./capture.js";
             .map((line) => `<span>${esc(line) || " "}</span>`)
             .join("")}</div>`;
     const stepRows = pageSteps.rows(task);
+    // The expanded trail lasts while you stay on the task; another task's page opens collapsed.
+    if (!previewMode && trailOpen && trailOpen !== task.id) trailOpen = null;
+    const block = editing ? "" : blockSection(task, taskColumnWidth() - 6);
     const inlineEditor = `<textarea id="${stepEditId}" class="tsk-field" aria-label="Step text" rows="${wrapText(pageSteps.editor?.text ?? "", taskColumnWidth() - 8).length}">${esc(pageSteps.editor?.text ?? "")}</textarea><span class="tsk-step-refusal">${esc(pageSteps.refusal)}</span>`;
     const stepList = `<div class="tsk-steps"><div class="tsk-steps-heading dim">steps ${stepRows.filter((step) => step.done).length}/${stepRows.length}</div>${stepRows
       .map(
@@ -2598,7 +2635,7 @@ import { parseCapture } from "./capture.js";
     const editTarget = editing?.startsWith("step:")
       ? editing.slice("step:".length)
       : "";
-    return `<div class="tsk-task-column tsk-surface ${narrow ? "is-narrow" : ""}" aria-label="T${task.number}${previewMode ? " project" : ""} task column" data-status="${esc(task.status)}" data-edit-state="${pageSteps.editor ? "editing" : pageSteps.dirty ? "unsaved" : "view"}" data-edit-field="${esc(editField)}" data-edit-target="${esc(editTarget)}">${header}<div class="tsk-task-surface tsk-page">${notes}${stepList}${paperTrail(task)}</div>${meta}</div>`;
+    return `<div class="tsk-task-column tsk-surface ${narrow ? "is-narrow" : ""}" aria-label="T${task.number}${previewMode ? " project" : ""} task column" data-status="${esc(task.status)}" data-edit-state="${pageSteps.editor ? "editing" : pageSteps.dirty ? "unsaved" : "view"}" data-edit-field="${esc(editField)}" data-edit-target="${esc(editTarget)}">${header}<div class="tsk-task-surface tsk-page">${block}${notes}${stepList}${paperTrail(task)}</div>${meta}</div>`;
   }
 
   function renderPage(embedded = false) {
@@ -3263,6 +3300,12 @@ import { parseCapture } from "./capture.js";
       render();
       return true;
     }
+    if (bare && e.key === "g") {
+      e.preventDefault();
+      toggleTrail(task);
+      render();
+      return true;
+    }
     if (bare && e.key === "e") {
       e.preventDefault();
       clearMarks(preview);
@@ -3678,6 +3721,12 @@ import { parseCapture } from "./capture.js";
       if (bare && e.key === "a") {
         e.preventDefault();
         steps.begin(task);
+        render();
+        return;
+      }
+      if (bare && e.key === "g") {
+        e.preventDefault();
+        toggleTrail(task);
         render();
         return;
       }
@@ -4271,6 +4320,13 @@ import { parseCapture } from "./capture.js";
       if (previewStepTarget.hasAttribute("data-preview-step-add"))
         previewSteps.begin(task);
       else previewSteps.selected = previewStepTarget.dataset.previewStep;
+      render();
+      return;
+    }
+    const trailToggle = e.target.closest("[data-trail-toggle]");
+    if (trailToggle) {
+      const task = taskById(trailToggle.dataset.trailToggle);
+      if (task) toggleTrail(task);
       render();
       return;
     }

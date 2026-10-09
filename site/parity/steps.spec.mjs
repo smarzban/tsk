@@ -30,10 +30,18 @@ for (const width of [40, 78, 109, 110])
     // The dates moved from the footer to the paper trail.
     await expect(page.locator(".tsk-page-meta")).not.toContainText("created");
     await expect(page.locator(".tsk-meta-row")).toHaveCount(1);
-    await expect(page.locator(".tsk-trail-heading")).toHaveText("PAPER TRAIL");
+    // The paper trail opens collapsed and dim; `g` shows every entry and folds them again.
+    const heading = page.locator(".tsk-trail-heading");
+    await expect(heading).toHaveText(/^PAPER TRAIL · \d+ ▸$/);
+    await expect(heading).toHaveClass(/\bdim\b/);
+    await expect(page.locator(".tsk-trail-entry")).toHaveCount(0);
+    await page.keyboard.press("g");
+    await expect(heading).toHaveText(/^PAPER TRAIL · \d+ ▾$/);
     await expect(page.locator(".tsk-trail-entry").last()).toContainText(
       "created · you",
     );
+    await page.keyboard.press("g");
+    await expect(page.locator(".tsk-trail-entry")).toHaveCount(0);
     const scrollbarRows = await readReference(`page-scrollbar-${width}`);
     const chrome = await page.locator("#tsk-demo").evaluate((el) => {
       const origin = el.getBoundingClientRect();
@@ -129,23 +137,27 @@ for (const width of [40, 78, 109, 110])
     await expect(page.locator("[data-step]")).toHaveCount(3);
   });
 
-// The TUI keeps the paper trail painted through an edit session, so the page body never jumps;
-// its records take no Tab stops then.
+// The TUI keeps the paper trail painted through an edit session, expanded or not, so the page
+// body never jumps; its records take no Tab stops then.
 test("the paper trail stays painted while a field is edited", async ({
   page,
 }) => {
   await open(page, 78);
   const column = page.locator(".tsk-task-column");
-  await expect(page.locator(".tsk-trail-heading")).toHaveText("PAPER TRAIL");
+  const heading = page.locator(".tsk-trail-heading");
+  // A click on the heading expands the trail, like `g`.
+  await heading.click();
+  await expect(heading).toHaveText(/^PAPER TRAIL · \d+ ▾$/);
   await expect(page.locator(".tsk-trail-entry").first()).toContainText(
     "ready → started · you",
   );
+  await page.locator("#board-demo").focus();
   await page.keyboard.press("e");
   await expect(column).toHaveAttribute("data-edit-field", "title");
-  await expect(page.locator(".tsk-trail-heading")).toHaveText("PAPER TRAIL");
+  await expect(heading).toHaveText(/^PAPER TRAIL · \d+ ▾$/);
   await page.keyboard.press("Tab");
   await expect(column).toHaveAttribute("data-edit-field", "notes");
-  await expect(page.locator(".tsk-trail-heading")).toHaveText("PAPER TRAIL");
+  await expect(heading).toHaveText(/^PAPER TRAIL · \d+ ▾$/);
   await expect(page.locator(".tsk-trail-entry").last()).toContainText(
     "created · you",
   );

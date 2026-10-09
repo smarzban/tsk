@@ -115,6 +115,24 @@ fn export_reference(text: &str, width: u16, name: &str) {
                 &under_row(text, "T12 ", column),
             );
         }
+        if name == "blocked-page" {
+            // The BLOCKED section from its top line through the options, without the gutter.
+            // The action line differs on purpose: the demo answers nothing.
+            let lines: Vec<String> = text
+                .lines()
+                .skip_while(|line| !line.contains("blocked on you"))
+                .map(|line| {
+                    line.chars()
+                        .skip(2)
+                        .collect::<String>()
+                        .trim_end_matches(['▌', ' '])
+                        .to_string()
+                })
+                .take_while(|line| !line.contains("choose"))
+                .collect();
+            let end = lines.iter().rposition(|line| !line.is_empty()).unwrap_or(0);
+            write_json(&dir, &format!("blocked-page-{width}.json"), &lines[..=end]);
+        }
         if name == "initial" {
             // The blocked row's live line, at the fixture's pinned clock.
             write_json(
@@ -212,6 +230,33 @@ fn fixture_flow(export: bool) {
         text
     };
     for width in [40, 78, 109, 110] {
+        {
+            // T12's page: the BLOCKED section the demo's page mirrors.
+            let (mut state, mut model) = fixture_board();
+            apply_intent(
+                &mut state,
+                &mut model,
+                BoardIntent::SelectNavTab(NavTab::Desk),
+                None,
+            )
+            .unwrap();
+            let blocked = state
+                .tasks()
+                .iter()
+                .find(|task| task.number == Some(12))
+                .unwrap()
+                .id;
+            let index = model
+                .visible_ids()
+                .iter()
+                .position(|id| *id == blocked)
+                .unwrap();
+            apply_intent(&mut state, &mut model, BoardIntent::SelectIndex(index), None).unwrap();
+            apply_intent(&mut state, &mut model, BoardIntent::OpenTaskPage, None).unwrap();
+            let page = capture(&model, width, "blocked-page");
+            assert!(page.contains("@claude blocked on you"), "{page}");
+            assert!(page.contains(" 1  Keep it"), "{page}");
+        }
         let (mut state, mut model) = fixture_board();
         apply_intent(
             &mut state,
