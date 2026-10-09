@@ -2608,7 +2608,6 @@ pub fn finish_queued_cleanup_with_host(
 /// the real host and saves its record with `started`. A start that moved the status is
 /// undoable: `ctrl+u` restores the status and leaves the agent running. A refusal or a
 /// failed launch changes nothing and says why on the status row.
-#[allow(clippy::too_many_arguments)]
 /// Start what the unsaved completions in `domain` released, through the start route (plain, or
 /// a dispatch for an assigned task never dispatched). Call it right before the save that makes
 /// the done durable, so each start lands in that same save.
@@ -2644,6 +2643,7 @@ fn with_released(message: String, note: Option<String>) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_board_dispatch(
     store: &TaskStore,
     domain: &mut DomainState,

@@ -428,7 +428,7 @@ fn deleted_rows(
         .map(|task| {
             (
                 task.soft_deleted_at().unwrap_or(task.updated_at),
-                row_for(task, &domain),
+                row_for(task, domain),
             )
         })
         .collect();
@@ -439,7 +439,7 @@ fn deleted_rows(
         if live_ids.contains(&line.task.id) || !in_view(&line.task) {
             continue;
         }
-        dated.push((line.deleted_at, row_for(&line.task, &domain)));
+        dated.push((line.deleted_at, row_for(&line.task, domain)));
     }
     dated.sort_by(|(left, _), (right, _)| right.cmp(left));
     Ok(ListResult {
