@@ -494,7 +494,7 @@ fn list_all_groups_each_status_by_concise_scope_for_every_filter() {
     assert_eq!(
         open.stdout,
         format!(
-            "STARTED\n  desk\n    - 1 global started\n  {project_name}\n    - 2 project started\n  other\n    - 3 other started\n\nREADY\n  {project_name}\n    - 4 project ready\n\nBLOCKED\n  other\n    - 5 other blocked\n\nREVIEW\n  desk\n    - 6 global review\n"
+            "STARTED\n  other\n    - 3 other started\n  {project_name}\n    - 2 project started\n  desk\n    - 1 global started\n\nREADY\n  {project_name}\n    - 4 project ready\n\nBLOCKED\n  other\n    - 5 other blocked\n\nREVIEW\n  desk\n    - 6 global review\n"
         )
     );
 
@@ -513,10 +513,11 @@ fn list_all_groups_each_status_by_concise_scope_for_every_filter() {
             .iter()
             .map(|row| row["title"].as_str().expect("title"))
             .collect::<Vec<_>>(),
+        // Newest status change first within STARTED, as on the board.
         vec![
-            "global started",
-            "project started",
             "other started",
+            "project started",
+            "global started",
             "project ready",
             "other blocked",
             "global review",
@@ -539,7 +540,7 @@ fn list_all_groups_each_status_by_concise_scope_for_every_filter() {
             .iter()
             .map(|row| row["title"].as_str().expect("title"))
             .collect::<Vec<_>>(),
-        vec!["project done", "global done"]
+        vec!["global done", "project done"]
     );
     for row in &done_rows {
         assert_eq!(
@@ -561,7 +562,7 @@ fn list_all_groups_each_status_by_concise_scope_for_every_filter() {
     ]);
     assert_eq!(
         done_human.stdout,
-        format!("DONE\n  {project_name}\n    - 7 project done\n  desk\n    - 8 global done\n")
+        format!("DONE\n  desk\n    - 8 global done\n  {project_name}\n    - 7 project done\n")
     );
 
     let deleted = list(&[
@@ -726,7 +727,7 @@ fn list_all_uses_shortest_unique_trailing_scope_labels_across_statuses() {
     assert_eq!(output.code, 0);
     assert_eq!(
         output.stdout,
-        "STARTED\n  global\n    - 1 project global\n  work/api\n    - 2 work api\n\nREADY\n  desk\n    - 3 global\n  project: <empty project 1>\n    - 4 blank one\n\nBLOCKED\n  personal/api\n    - 5 personal api\n\nREVIEW\n  project: <empty project 2>\n    - 6 blank two\n"
+        "STARTED\n  work/api\n    - 2 work api\n  global\n    - 1 project global\n\nREADY\n  desk\n    - 3 global\n  project: <empty project 1>\n    - 4 blank one\n\nBLOCKED\n  personal/api\n    - 5 personal api\n\nREVIEW\n  project: <empty project 2>\n    - 6 blank two\n"
     );
 
     let _ = std::fs::remove_dir_all(dir);
@@ -2586,6 +2587,103 @@ fn list_open_and_ready_conflicts_are_usage_errors() {
     ]);
     assert_eq!(with_task.code, 2, "{with_task:?}");
     assert!(with_task.stderr.contains("cannot be used"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+fn cli(dir: &Path, args: &[&str]) -> tsk_tui::cli::CliOutput {
+    let mut argv: Vec<String> = vec!["tsk".into()];
+    argv.extend(args.iter().map(|arg| (*arg).to_owned()));
+    argv.push("--state-dir".into());
+    argv.push(state_dir_arg(dir));
+    run_with(&argv, Cursor::new(Vec::<u8>::new()), true)
+}
+
+fn listed_numbers(dir: &Path, args: &[&str]) -> Vec<u64> {
+    let mut list_args = vec!["list", "--json"];
+    list_args.extend_from_slice(args);
+    let output = cli(dir, &list_args);
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&output.stdout).expect("JSON rows");
+    rows.iter()
+        .map(|row| row["number"].as_u64().expect("number"))
+        .collect()
+}
+
+fn set_status(dir: &Path, task: &str, status: &str) {
+    let output = cli(dir, &["status", task, status]);
+    assert_eq!(output.code, 0, "{}", output.stderr);
+}
+
+#[test]
+fn list_ready_puts_the_oldest_pick_first_like_the_board() {
+    let _env = env_lock();
+    let dir = temp_state_dir("ready-pick-order");
+    let mut state = DomainState::new();
+    for title in ["first captured", "second captured"] {
+        state
+            .create(
+                title,
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create task");
+    }
+    TaskStore::new(&dir).save(&state).expect("seed store");
+
+    // GitHub #123: T2 picked before T1 lists first.
+    set_status(&dir, "T2", "ready");
+    set_status(&dir, "T1", "ready");
+    assert_eq!(listed_numbers(&dir, &["--desk", "--ready"]), vec![2, 1]);
+    assert_eq!(listed_numbers(&dir, &["--desk"]), vec![2, 1]);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn list_orders_each_status_group_like_its_board_section() {
+    let _env = env_lock();
+    let dir = temp_state_dir("group-order");
+    let mut state = DomainState::new();
+    for number in 1..=12 {
+        state
+            .create(
+                format!("task {number}"),
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create task");
+    }
+    TaskStore::new(&dir).save(&state).expect("seed store");
+
+    // Within each pair the lower number changes status first.
+    for (first, second, status) in [
+        ("T1", "T2", "started"),
+        ("T3", "T4", "ready"),
+        ("T7", "T8", "blocked"),
+        ("T9", "T10", "review"),
+        ("T11", "T12", "done"),
+    ] {
+        set_status(&dir, first, status);
+        set_status(&dir, second, status);
+    }
+    // Open stays capture order even when the later capture changed status first.
+    set_status(&dir, "T6", "ready");
+    set_status(&dir, "T6", "open");
+    set_status(&dir, "T5", "ready");
+    set_status(&dir, "T5", "open");
+
+    // STARTED, BLOCKED, REVIEW (and done): newest status change first. READY: oldest
+    // pick first. OPEN: oldest capture first.
+    assert_eq!(
+        listed_numbers(&dir, &["--desk"]),
+        vec![2, 1, 3, 4, 5, 6, 8, 7, 10, 9]
+    );
+    assert_eq!(listed_numbers(&dir, &["--desk", "--done"]), vec![12, 11]);
 
     let _ = std::fs::remove_dir_all(dir);
 }
