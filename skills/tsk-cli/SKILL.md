@@ -1,6 +1,6 @@
 ---
 name: tsk-cli
-description: Work the user's tsk task board from the command line. Use when asked to add, update, edit, start, block, finish, archive, or restore a task on the board (or "tsk", "the tsk board", "the desk"), to add or tick steps, to answer "what's on the board", "what's next", "what's on deck", "what needs me", or to refine a task ("refine T12", "let's discuss T12", "what's missing from T12", "improve / rewrite this task"). Always `tsk add|list|status|edit|steps|archive|dispatch|clean|trash`, never the TUI.
+description: Work the user's tsk task board from the command line. Use when asked to add, update, edit, start, block, finish, archive, or restore a task on the board (or "tsk", "the tsk board", "the desk"), to add or tick steps, to answer "what's on the board", "what's next", "what's on deck", "what needs me", or to refine a task ("refine T12", "let's discuss T12", "what's missing from T12", "improve / rewrite this task"). Always `tsk add|list|status|reply|edit|steps|archive|dispatch|clean|trash`, never the TUI.
 version: 1.5.0
 ---
 
@@ -103,7 +103,14 @@ recorded base; otherwise it keeps the branch and says why (`branch.reason` in `-
 work refuses with `dirty-worktree`. Deleting a kept branch is the user's decision.
 
 **Hand back.** `tsk status T12 review`, and say in one line what you did and what to look at.
-Blocked on the user: `tsk status T12 blocked` and ask the question.
+
+**Block on the user.** `tsk status T12 blocked --why "…"` with your question; add `--needs "…"`
+for what would unblock you and one `--option "…"` per choice the user can pick. `--on T9` waits on
+another task, `--on "<text>"` on anything else; the default is the user. Running it again edits the
+same block. Read answers in `tsk list T12 --json` under `block` (`replies`, `answered`). Unblocking
+or a relaunch closes the block: on a relaunch, read the answers in the last `past_blocks` entry.
+`tsk reply T12 "…"` adds a reply to the open block (`not-blocked` when there is none); it is not
+idempotent, so read the task before retrying. Text over 4 KB refuses with `text-too-long`. Never unblock a task yourself unless the user said so.
 
 **Plan as steps.** When the user wants order of work tracked on the task: `tsk steps T12 add
 "…"` per step, in order. Do not add steps for your own bookkeeping.

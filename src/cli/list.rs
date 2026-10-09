@@ -64,6 +64,9 @@ pub(crate) struct ListRow {
     /// `archived` / `project archived` mark, set only in the archived view.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) archived: Option<&'static str>,
+    /// The open block's reason, painted as `blocked: <why>` by the human listing only.
+    #[serde(skip)]
+    pub(crate) blocked_why: Option<String>,
 }
 
 /// Complete detail attached only to a direct single-task listing.
@@ -72,6 +75,8 @@ pub(crate) struct DirectTaskDetails {
     pub(crate) notes: Option<String>,
     pub(crate) steps: Vec<crate::cli::steps::StepLine>,
     pub(crate) dispatch: Option<crate::domain::Dispatch>,
+    pub(crate) block: Option<crate::domain::Block>,
+    pub(crate) past_blocks: Vec<crate::domain::Block>,
 }
 
 /// Read-only result for the list command.
@@ -272,6 +277,8 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
                 notes: task.notes.clone(),
                 steps: crate::cli::steps::step_lines(&task.steps),
                 dispatch: task.dispatch.clone(),
+                block: task.block.clone(),
+                past_blocks: task.past_blocks.clone(),
             }),
         });
     }
@@ -439,6 +446,11 @@ fn row_for(task: &crate::domain::Task) -> ListRow {
         assignee: task.assignee.clone(),
         base: task.base.clone(),
         archived: None,
+        blocked_why: task
+            .block
+            .as_ref()
+            .filter(|_| task.status == HumanStatus::Blocked)
+            .and_then(|block| block.why.clone()),
     }
 }
 

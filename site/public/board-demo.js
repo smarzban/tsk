@@ -135,6 +135,13 @@ import { parseCapture } from "./capture.js";
         status: "blocked",
         project: "launchpad",
         thread: "auth",
+        block: {
+          why: "Which staging client should the callback use?",
+          needs: "The client id from the identity provider",
+          options: ["Shared staging client", "New client per environment"],
+          by: "claude",
+          answered: false,
+        },
         notes:
           "Waiting for the identity provider's staging client registration. The callback handler is ready.",
         steps: [
@@ -1520,6 +1527,23 @@ import { parseCapture } from "./capture.js";
     }, 420);
   }
 
+  // The dim right edge of a blocked row: who asks, until you answer.
+  function blockTrailer(task) {
+    if (task.status !== "blocked" || !task.block) return "";
+    if (task.block.answered) return "answered";
+    return task.block.by && task.block.by !== "you" ? `@${task.block.by} ?` : "";
+  }
+
+  // The peek's block lines: why, needs, then each option.
+  function blockPeekLines(task) {
+    if (task.status !== "blocked" || !task.block) return [];
+    const lines = [];
+    if (task.block.why) lines.push(`why  ${task.block.why}`);
+    if (task.block.needs) lines.push(`needs  ${task.block.needs}`);
+    for (const option of task.block.options || []) lines.push(`○ ${option}`);
+    return lines;
+  }
+
   function setStatus(status) {
     const tasks = targetTasks();
     const changed = tasks.filter((task) => task.status !== status);
@@ -1528,6 +1552,8 @@ import { parseCapture } from "./capture.js";
       task.status = status;
       task.updatedAt = clock();
       task.statusAt = task.updatedAt;
+      // Leaving blocked closes the block.
+      if (status !== "blocked") delete task.block;
     }
     clearMarks();
     state.pendingDelete = null;
@@ -2750,9 +2776,14 @@ import { parseCapture } from "./capture.js";
           isWideSplit() && state.stage === "split"
             ? Math.floor(terminalColumns() * 0.4)
             : terminalColumns();
+        const trailer = blockTrailer(task);
         const titleLines = wrapText(
           task.title,
-          columns - 2 - 4 - `T${task.number} `.length,
+          columns -
+            2 -
+            4 -
+            `T${task.number} `.length -
+            (trailer ? trailer.length + 2 : 0),
         );
         const title = titleLines
           .map((line) => `<span class="tsk-title-line">${esc(line)}</span>`)
@@ -2761,10 +2792,16 @@ import { parseCapture } from "./capture.js";
           (task.notes || "").trim() || "no notes yet",
           columns - 7,
         );
+        const blockLines = blockPeekLines(task).flatMap((line) =>
+          wrapText(line, columns - 7),
+        );
         const label = metaFor(task);
         const peek =
           state.peekId === task.id && !isWideSplit()
             ? [
+                ...blockLines.map(
+                  (line) => `<div class="tsk-peek dim">    │ ${esc(line)}</div>`,
+                ),
                 ...noteLines
                   .slice(0, 5)
                   .map(
@@ -2785,7 +2822,10 @@ import { parseCapture } from "./capture.js";
               ].join("")
             : "";
         const dimRow = row.dim ? "dim" : "";
-        return `<button type="button" class="tsk-row ${dimRow} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-task="${task.id}"><span class="tsk-row-main"><span class="tsk-row-prefix">${indent}${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> </span><span class="tsk-row-title">${title}</span></span></button>${peek}`;
+        const trailerHtml = trailer
+          ? `<span class="tsk-row-trailer dim">${esc(trailer)}</span>`
+          : "";
+        return `<button type="button" class="tsk-row ${dimRow} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-task="${task.id}"><span class="tsk-row-main"><span class="tsk-row-prefix">${indent}${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> </span><span class="tsk-row-title">${title}</span></span>${trailerHtml}</button>${peek}`;
       })
       .join("");
 

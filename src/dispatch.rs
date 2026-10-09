@@ -2452,10 +2452,14 @@ fn check_inner(
     if !is_git_repo(&project) {
         return Err(DispatchError::NeedsGitProject);
     }
-    let profile = profiles
+    let mut profile = profiles
         .get(&assignee)
         .ok_or_else(|| DispatchError::UnknownAgent(assignee.clone()))?
         .clone();
+    // The launched agent's `tsk` calls sign blocks and replies with its profile name.
+    profile
+        .env
+        .insert(crate::domain::AGENT_ENV.to_string(), assignee.clone());
     if let Some(existing) = &task.dispatch {
         if !again {
             return Err(DispatchError::AlreadyDispatched(existing.worktree.clone()));
@@ -3516,7 +3520,16 @@ mod tests {
             script.is_ascii(),
             "task text is embedded encoded, never as PowerShell"
         );
-        assert_eq!(launcher_values(script), result.record.argv);
+        let mut expected = vec![
+            crate::domain::AGENT_ENV.to_string(),
+            result.assignee.clone(),
+        ];
+        expected.extend(result.record.argv.iter().cloned());
+        assert_eq!(
+            launcher_values(script),
+            expected,
+            "the launcher sets TSK_AGENT before it starts the argv"
+        );
         assert_eq!(
             host.runs,
             vec![(
@@ -3581,6 +3594,13 @@ mod tests {
         assert_eq!(result.warning, None);
         assert!(host.launchers.is_empty(), "Unix types the $SHELL line");
         assert!(host.runs[0].1.starts_with("$SHELL -lc "));
+        assert!(
+            host.runs[0]
+                .1
+                .contains(&format!("'\\''TSK_AGENT={}'\\''", result.assignee)),
+            "the agent's tsk calls know who they are: {}",
+            host.runs[0].1
+        );
         fs::remove_dir_all(path).expect("cleanup");
     }
 
@@ -4704,6 +4724,50 @@ mod tests {
     }
 
     #[test]
+    fn a_relaunch_closes_the_answered_block_where_its_prompt_says_to_read_it() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let mut first_host = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        run_with_host(&mut state, id, &profiles, false, true, &mut first_host).expect("first");
+        let draft = crate::domain::BlockDraft::from_input(
+            Some("Which database?"),
+            None,
+            &["postgres".to_string(), "sqlite".to_string()],
+            crate::domain::BlockOn::You,
+        )
+        .expect("draft");
+        state.block(id, draft, "implementer").expect("agent blocks");
+        state
+            .reply(id, "postgres", crate::domain::OWNER)
+            .expect("owner answers");
+
+        let mut again_host = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        run_with_host(&mut state, id, &profiles, true, true, &mut again_host).expect("again");
+
+        let task = state.get(id).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        assert!(task.block.is_none(), "the relaunch closed the block");
+        let closed = task.past_blocks.last().expect("closed block kept");
+        assert_eq!(closed.why.as_deref(), Some("Which database?"));
+        assert_eq!(
+            closed.last_reply().map(|reply| reply.text.as_str()),
+            Some("postgres")
+        );
+        let (_, command) = again_host.runs.first().expect("relaunched");
+        assert!(
+            command.contains("last `past_blocks` entry"),
+            "the relaunched agent is pointed at the closed block: {command}"
+        );
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
     fn board_dispatch_uses_only_the_cursor_and_clears_a_marked_set() {
         let (path, profiles) = profiles();
         let (mut state, first) = task();
@@ -5100,8 +5164,8 @@ mod tests {
     }
 
     #[test]
-    fn cleaned_marker_is_optional_and_store_format_stays_v6() {
-        assert_eq!(crate::domain::STORE_FORMAT_VERSION, 6);
+    fn cleaned_marker_is_optional_and_store_format_stays_v7() {
+        assert_eq!(crate::domain::STORE_FORMAT_VERSION, 7);
         let record = Dispatch {
             argv: vec!["agent".into()],
             worktree: "/tmp/worktree".into(),

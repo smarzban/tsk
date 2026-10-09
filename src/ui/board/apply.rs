@@ -175,6 +175,9 @@ pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> boo
                 | BoardIntent::ConfirmCleanup
                 | BoardIntent::KeepCleanup
                 | BoardIntent::ToggleBlock
+                | BoardIntent::BlockCardConfirm
+                | BoardIntent::ReplySave
+                | BoardIntent::ReplySaveUnblock
                 | BoardIntent::ToggleReview
                 | BoardIntent::ToggleStep
                 | BoardIntent::QuickAddSave
@@ -670,8 +673,33 @@ fn apply_board_intent(
                     } else if !move_step_within_edit_group(model, true) {
                         select_add_step(model);
                     }
-                } else if !move_step_with_tab(model, true) && !select_first_step_from_page(model) {
-                    model.enter_page_field_focus();
+                } else {
+                    match super::block::move_block_tab(model, true) {
+                        super::block::PageTab::Moved => {}
+                        super::block::PageTab::LeaveBlock => {
+                            if !select_first_step_from_page(model) {
+                                model.enter_page_field_focus();
+                            }
+                        }
+                        super::block::PageTab::NotHandled => {
+                            let on_add = model
+                                .form
+                                .as_ref()
+                                .is_some_and(|form| form.steps.add_selected);
+                            let nothing_selected = model.form.as_ref().is_some_and(|form| {
+                                form.steps.cursor.is_none() && !form.steps.add_selected
+                            });
+                            // The ring leads with the BLOCKED section: from nothing, and
+                            // after `+ step` wraps.
+                            if !((nothing_selected || on_add)
+                                && super::block::enter_block_ring(model, true))
+                                && !move_step_with_tab(model, true)
+                                && !select_first_step_from_page(model)
+                            {
+                                model.enter_page_field_focus();
+                            }
+                        }
+                    }
                 }
             } else if model.input_mode == BoardInputMode::EditNotes
                 && model.form.as_ref().is_some_and(|form| form.is_task())
@@ -733,8 +761,21 @@ fn apply_board_intent(
                     } else if !move_step_within_edit_group(model, false) {
                         model.focus_form_field(CaptureField::Notes);
                     }
-                } else if !move_step_with_tab(model, false) {
-                    model.enter_page_field_focus();
+                } else {
+                    match super::block::move_block_tab(model, false) {
+                        super::block::PageTab::Moved | super::block::PageTab::LeaveBlock => {}
+                        super::block::PageTab::NotHandled => {
+                            let first_step = model.form.as_ref().is_some_and(|form| {
+                                form.steps.cursor == Some(0) && !form.steps.add_selected
+                            });
+                            // Shift+Tab from the first step climbs back into the section.
+                            let climbed =
+                                first_step && super::block::enter_block_ring(model, false);
+                            if !(climbed || move_step_with_tab(model, false)) {
+                                model.enter_page_field_focus();
+                            }
+                        }
+                    }
                 }
                 return Ok(IntentOutcome::None);
             }
@@ -958,6 +999,46 @@ fn apply_board_intent(
             model.set_list_scroll(offset);
             return Ok(IntentOutcome::None);
         }
+        BoardIntent::BlockCardConfirm => {
+            return super::block::confirm_block_card(domain, model);
+        }
+        BoardIntent::BlockCardCancel => {
+            // Esc keeps the marks: the card returns to the same marked set.
+            super::block::cancel_block_card(model);
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::BlockCardNextField | BoardIntent::BlockCardPrevField => {
+            super::block::block_card_field(model, intent == BoardIntent::BlockCardNextField);
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::BlockCardLeft | BoardIntent::BlockCardRight => {
+            super::block::block_card_arrow(model, intent == BoardIntent::BlockCardRight);
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::BeginReply => {
+            if model.input_mode == BoardInputMode::TaskPage
+                && !super::block::begin_reply(model, "", None)
+            {
+                model.set_message("only a blocked task takes replies");
+            }
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::ReplyWithOption => {
+            if let Some(text) = super::block::selected_option_text(model) {
+                super::block::begin_reply(model, &text, None);
+            }
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::ReplySave | BoardIntent::ReplySaveUnblock => {
+            if model.input_mode != BoardInputMode::EditReply {
+                return Ok(IntentOutcome::None);
+            }
+            return super::block::save_reply(
+                domain,
+                model,
+                intent == BoardIntent::ReplySaveUnblock,
+            );
+        }
         BoardIntent::BeginAddStep => {
             model.close_popup();
             // Ctrl+A and the trailing target both open the independent add row from a task
@@ -971,6 +1052,23 @@ fn apply_board_intent(
         BoardIntent::BeginEditTitle | BoardIntent::BeginEditNotes | BoardIntent::BeginEditScope => {
             model.close_popup();
             model.clear_marks();
+            // Ctrl+E on the BLOCKED section: the heading edits why, on and needs in the
+            // block card; one of your replies opens the reply box on it.
+            if intent == BoardIntent::BeginEditTitle && model.input_mode == BoardInputMode::TaskPage
+            {
+                if let Some(task) = super::block::heading_selected_task(model) {
+                    super::block::open_block_edit_card(model, &task);
+                    return Ok(IntentOutcome::None);
+                }
+                if let Some((index, text)) = super::block::selected_own_reply(model) {
+                    super::block::begin_reply(model, &text, Some(index));
+                    return Ok(IntentOutcome::None);
+                }
+                if super::block::agent_reply_selected(model) {
+                    model.set_message("agent replies cannot be edited");
+                    return Ok(IntentOutcome::None);
+                }
+            }
             // Ctrl+E on an already-open inline row keeps that row focused. Field traversal is
             // explicit through Tab or clicks, so this never discards or redirects its draft.
             if intent == BoardIntent::BeginEditTitle && model.input_mode == BoardInputMode::EditStep
@@ -1041,9 +1139,11 @@ fn apply_board_intent(
             // Title and Thread stay one line in either form; Notes preserves pasted line
             // breaks. The step editor is one line by construction, so it flattens like Title.
             let single_line = model.input_mode == BoardInputMode::EditStep
-                || model.form.as_ref().is_some_and(|form| {
-                    matches!(form.focus, CaptureField::Title | CaptureField::Thread)
-                });
+                || model.input_mode() == BoardInputMode::BlockCard
+                || (model.input_mode != BoardInputMode::EditReply
+                    && model.form.as_ref().is_some_and(|form| {
+                        matches!(form.focus, CaptureField::Title | CaptureField::Thread)
+                    }));
             edit_draft(model, |draft| {
                 if single_line {
                     draft.insert_text(&flatten_line_breaks(&text));
@@ -1054,10 +1154,11 @@ fn apply_board_intent(
             return Ok(IntentOutcome::None);
         }
         BoardIntent::EditInsertLineBreak => {
-            if model
-                .form
-                .as_ref()
-                .is_some_and(|form| form.focus == CaptureField::Notes)
+            if model.input_mode == BoardInputMode::EditReply
+                || model
+                    .form
+                    .as_ref()
+                    .is_some_and(|form| form.focus == CaptureField::Notes)
             {
                 edit_draft(model, |draft| draft.insert_char('\n'));
             }
@@ -1087,20 +1188,34 @@ fn apply_board_intent(
             } else {
                 -1
             };
-            let target = model
+            let reply = model
                 .form
                 .as_ref()
-                .filter(|form| {
-                    form.focus == CaptureField::Notes
-                        && model.input_mode == BoardInputMode::EditNotes
-                })
-                .and_then(|form| {
+                .filter(|_| model.input_mode == BoardInputMode::EditReply)
+                .and_then(|form| form.block.reply.as_ref())
+                .and_then(|editor| {
                     crate::ui::edit::wrapped_vertical_move(
-                        &form.notes,
-                        form.notes_width.get(),
+                        &editor.buffer,
+                        editor.width.get(),
                         delta,
                     )
                 });
+            let target = reply.or_else(|| {
+                model
+                    .form
+                    .as_ref()
+                    .filter(|form| {
+                        form.focus == CaptureField::Notes
+                            && model.input_mode == BoardInputMode::EditNotes
+                    })
+                    .and_then(|form| {
+                        crate::ui::edit::wrapped_vertical_move(
+                            &form.notes,
+                            form.notes_width.get(),
+                            delta,
+                        )
+                    })
+            });
             if let Some(target) = target {
                 edit_draft(model, |draft| draft.set_cursor(target));
             }
@@ -1127,6 +1242,18 @@ fn apply_board_intent(
             // tasks again. Nothing else on the board is open in that state.
             if model.focus_is_archived() && model.input_mode == BoardInputMode::Normal {
                 model.leave_archived_focus();
+                return Ok(IntentOutcome::None);
+            }
+            // The reply box cancels to page view, its draft discarded.
+            if model.input_mode == BoardInputMode::EditReply {
+                if model
+                    .form
+                    .as_ref()
+                    .and_then(|form| form.block.reply.as_ref())
+                    .is_some_and(|editor| editor.pending.is_none())
+                {
+                    super::block::cancel_reply(model);
+                }
                 return Ok(IntentOutcome::None);
             }
             // The inline step editor cancels to page view: draft discarded, no mutation,
@@ -1984,7 +2111,10 @@ fn apply_board_intent(
         }
         BoardIntent::ToggleBlock => {
             model.close_popup();
-            let (targets, bulk) = take_verb_targets(model);
+            let bulk = model.task_list_owns_input()
+                && model.mark_mode_active()
+                && model.marked_count() > 0;
+            let targets = model.verb_target_ids();
             if targets.is_empty() {
                 model.set_message(NO_SELECTION);
                 return Ok(IntentOutcome::None);
@@ -2004,12 +2134,13 @@ fn apply_board_intent(
                     .get(*id)
                     .is_some_and(|task| task.status == HumanStatus::Blocked)
             });
-            let status = if all_blocked {
-                HumanStatus::Ready
-            } else {
-                HumanStatus::Blocked
-            };
-            set_status_batch(domain, &targets, status)?;
+            if !all_blocked {
+                // Blocking asks why first. The marks stay until the card confirms.
+                super::block::open_block_card(model, targets);
+                return Ok(IntentOutcome::None);
+            }
+            model.clear_marks();
+            set_status_batch(domain, &targets, HumanStatus::Ready)?;
         }
         BoardIntent::ToggleReview => {
             model.close_popup();
@@ -2552,6 +2683,28 @@ fn apply_board_intent(
         // The five intents below aim at the selection, and an empty board has none. Each
         // says so rather than returning to a row that has just been cleared for an action
         // that then did nothing: a silent no-op is the failure the row exists to prevent.
+        // Palette **set status: blocked** asks why like `ctrl+b`, over the targets not yet
+        // blocked; it never unblocks.
+        BoardIntent::SetStatus(HumanStatus::Blocked) => {
+            model.close_popup();
+            let targets = model.verb_target_ids();
+            if targets.is_empty() {
+                model.set_message(NO_SELECTION);
+                return Ok(IntentOutcome::None);
+            }
+            let targets: Vec<Uuid> = targets
+                .into_iter()
+                .filter(|id| {
+                    domain
+                        .get(*id)
+                        .is_some_and(|task| task.status != HumanStatus::Blocked)
+                })
+                .collect();
+            if !targets.is_empty() {
+                super::block::open_block_card(model, targets);
+            }
+            return Ok(IntentOutcome::None);
+        }
         BoardIntent::SetStatus(status) => {
             let (targets, _) = take_verb_targets(model);
             if targets.is_empty() {
@@ -2598,6 +2751,20 @@ fn apply_board_intent(
         }
         BoardIntent::SoftDelete => {
             model.close_popup();
+            // On the BLOCKED section a selected reply is the target, never the task: yours
+            // soft-deletes to a stub, an agent's refuses.
+            if model.input_mode == BoardInputMode::TaskPage {
+                if super::block::selected_own_reply(model).is_some() {
+                    model.pending_delete = None;
+                    model.clear_marks();
+                    return super::block::delete_selected_reply(domain, model);
+                }
+                if super::block::agent_reply_selected(model) {
+                    model.pending_delete = None;
+                    model.set_message("agent replies cannot be deleted");
+                    return Ok(IntentOutcome::None);
+                }
+            }
             // On the page with the step cursor active, the delete verb is the
             // steps's mark-then-confirm: the first press visibly marks the
             // highlighted step, a second press removes it, and the task-level soft
@@ -2848,6 +3015,22 @@ fn edit_draft(model: &mut BoardModel, operation: impl FnOnce(&mut EditBuffer)) {
         {
             editor.refusal = None;
             operation(&mut editor.buffer);
+        }
+        return;
+    }
+    if model.input_mode() == BoardInputMode::BlockCard {
+        if let Some(buffer) = model
+            .block_card
+            .as_mut()
+            .and_then(|card| card.focused_buffer_mut())
+        {
+            operation(buffer);
+        }
+        return;
+    }
+    if model.input_mode == BoardInputMode::EditReply {
+        if let Some(buffer) = super::block::reply_buffer_mut(model) {
+            operation(buffer);
         }
         return;
     }

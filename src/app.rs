@@ -1026,6 +1026,8 @@ fn board_keyboard_intent(
                 | BoardInputMode::CleanupConfirm
                 | BoardInputMode::CleanupDirtyConfirm
                 | BoardInputMode::DispatchConfirm
+                | BoardInputMode::BlockCard
+                | BoardInputMode::EditReply
         );
         // A list picker's or bulk cleanup card's Esc is its own cancel: clearing marks
         // underneath would leave it open, still bound to the set it captured.
@@ -1035,6 +1037,8 @@ fn board_keyboard_intent(
                 | BoardInputMode::CleanupConfirm
                 | BoardInputMode::CleanupDirtyConfirm
                 | BoardInputMode::DispatchConfirm
+                | BoardInputMode::BlockCard
+                | BoardInputMode::EditReply
         );
         if !text_entry_owns_capital_m
             && mode != BoardInputMode::SaveRecovery
@@ -1086,6 +1090,14 @@ fn board_keyboard_intent(
         && key.modifiers == KeyModifiers::SHIFT
     {
         return Some(BoardIntent::ConfirmEdit);
+    }
+    // Bare Enter on a block option opens the reply box prefilled with it.
+    if mode == BoardInputMode::TaskPage
+        && key.code == KeyCode::Enter
+        && key.modifiers.is_empty()
+        && model.block_option_selected()
+    {
+        return Some(BoardIntent::ReplyWithOption);
     }
     // Bare Enter on a stored step toggles it. Resolved here, where the model is in reach,
     // so the persisting intent is classified before the save boundary sees it.
@@ -8396,6 +8408,99 @@ mod tests {
                 "SaveRecovery must own {code:?} while a form stays open"
             );
         }
+    }
+
+    /// Bare Enter on a selected block option opens the prefilled reply box, which then types
+    /// letters such as a capital M.
+    #[test]
+    fn enter_on_a_block_option_resolves_to_reply_with_option_at_the_keyboard_boundary() {
+        use crate::ui::board::apply_intent;
+
+        let (mut domain, mut model) = board_fixture("Asked", None);
+        let id = model.selected_id().expect("task");
+        domain
+            .block(
+                id,
+                crate::domain::BlockDraft {
+                    options: vec!["yes".into()],
+                    ..Default::default()
+                },
+                "claude",
+            )
+            .expect("block");
+        model.sync_from_domain(&domain);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open");
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("tab");
+        assert_eq!(
+            board_keyboard_intent(&model, BoardInputMode::TaskPage, enter),
+            Some(BoardIntent::OpenTaskPage),
+            "the heading keeps Enter's page route"
+        );
+        apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("tab");
+        let intent = board_keyboard_intent(&model, BoardInputMode::TaskPage, enter)
+            .expect("enter on an option");
+        assert_eq!(intent, BoardIntent::ReplyWithOption);
+        apply_intent(&mut domain, &mut model, intent, None).expect("reply");
+        assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+        assert_eq!(model.reply_draft(), Some("yes"));
+        let capital_m = KeyEvent::new(KeyCode::Char('M'), KeyModifiers::SHIFT);
+        assert_eq!(
+            board_keyboard_intent(&model, BoardInputMode::EditReply, capital_m),
+            Some(BoardIntent::EditInsert('M')),
+            "the reply box types a capital M"
+        );
+    }
+
+    /// With mark mode on, the block card and the reply box own capital M and Esc: typing
+    /// `Meeting…` never toggles mark mode, and Esc cancels the surface, never the marked set
+    /// the card captured.
+    #[test]
+    fn mark_mode_keys_belong_to_the_block_card_and_the_reply_box() {
+        use crate::ui::board::apply_intent;
+
+        let (mut domain, mut model) = board_fixture("Asked", None);
+        let id = model.selected_id().expect("task");
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None).expect("mark");
+        apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark one");
+        assert_eq!(model.marked_count(), 1);
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None).expect("card");
+        assert_eq!(model.input_mode(), BoardInputMode::BlockCard);
+        let capital_m = KeyEvent::new(KeyCode::Char('M'), KeyModifiers::SHIFT);
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(
+            board_keyboard_intent(&model, BoardInputMode::BlockCard, capital_m),
+            Some(BoardIntent::EditInsert('M')),
+            "the card's why types a capital M"
+        );
+        let cancel = board_keyboard_intent(&model, BoardInputMode::BlockCard, esc);
+        assert_eq!(cancel, Some(BoardIntent::BlockCardCancel));
+        apply_intent(&mut domain, &mut model, BoardIntent::BlockCardCancel, None).expect("esc");
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+        assert!(
+            model.mark_mode_active() && model.marked_count() == 1,
+            "Esc kept the marks"
+        );
+
+        domain
+            .block(id, crate::domain::BlockDraft::default(), "claude")
+            .expect("block");
+        model.sync_from_domain(&domain);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open");
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("reply");
+        assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+        assert!(model.mark_mode_active(), "the marks are still armed");
+        assert_eq!(
+            board_keyboard_intent(&model, BoardInputMode::EditReply, capital_m),
+            Some(BoardIntent::EditInsert('M'))
+        );
+        let reply_esc = board_keyboard_intent(&model, BoardInputMode::EditReply, esc);
+        assert_ne!(reply_esc, Some(BoardIntent::MarkClear));
+        assert_eq!(
+            reply_esc,
+            crate::ui::input::map_key(BoardInputMode::EditReply, esc),
+            "Esc is the reply box's own cancel"
+        );
     }
 
     /// Bare Enter on the task page becomes `ToggleStep` only while a stored step is

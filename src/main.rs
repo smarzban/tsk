@@ -29,6 +29,7 @@ fn main() -> ExitCode {
         | Surface::Steps
         | Surface::List
         | Surface::Status
+        | Surface::Reply
         | Surface::Dispatch
         | Surface::Clean
         | Surface::Edit

@@ -37,13 +37,14 @@ type MigrationStep = fn(serde_json::Value) -> Result<serde_json::Value, StoreErr
 ///
 /// v1 documents gain the empty per-project record map, v2 documents the notice
 /// counter, v3 documents rewrite ready to open, v4 documents gain batch undo,
-/// and v5 documents gain the optional v6 task fields.
+/// v5 documents gain the optional v6 task fields, and v6 documents gain blocks.
 const MIGRATIONS: &[MigrationStep] = &[
     migrate_v1_to_v2,
     migrate_v2_to_v3,
     migrate_v3_to_v4,
     migrate_v4_to_v5,
     migrate_v5_to_v6,
+    migrate_v6_to_v7,
 ];
 
 /// v1 -> v2: a v1 store has no archived projects, so it gains an empty project map.
@@ -109,6 +110,12 @@ fn migrate_v4_to_v5(document: serde_json::Value) -> Result<serde_json::Value, St
 
 /// v5 -> v6: optional assignment and dispatch fields add no existing wire value.
 fn migrate_v5_to_v6(document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
+    Ok(document)
+}
+
+/// v6 -> v7: optional block fields and the block undo entry add no existing wire value.
+/// A v6 `blocked` task keeps no block and reads as blocked on you with no reason.
+fn migrate_v6_to_v7(document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
     Ok(document)
 }
 
@@ -1615,7 +1622,7 @@ mod tests {
     }
 
     #[test]
-    fn save_emits_format_version_six() {
+    fn save_emits_format_version_seven() {
         let dir = temp_dir("format-stamp");
         let _guard = TempDirGuard(dir.clone());
         let store = TaskStore::new(&dir);
@@ -1624,7 +1631,7 @@ mod tests {
         let value: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(dir.join(STATE_FILE)).expect("read"))
                 .expect("json");
-        assert_eq!(value["format_version"], 6);
+        assert_eq!(value["format_version"], 7);
         assert_eq!(value["next_notice_number"], 1);
     }
 
@@ -1642,7 +1649,7 @@ mod tests {
             error,
             StoreError::UnsupportedFormat {
                 found: 0,
-                supported: 6
+                supported: 7
             }
         ));
         let on_disk: serde_json::Value =
@@ -1653,7 +1660,7 @@ mod tests {
 
     #[test]
     fn load_refuses_noncurrent_format_without_rewriting() {
-        for format_version in [0, 7] {
+        for format_version in [0, 8] {
             let dir = temp_dir("format-noncurrent");
             let _guard = TempDirGuard(dir.clone());
             let document = serde_json::json!({
@@ -1671,7 +1678,7 @@ mod tests {
                     error,
                     StoreError::UnsupportedFormat {
                         found,
-                        supported: 6
+                        supported: 7
                     } if found == format_version
                 ),
                 "{error}"
@@ -1688,7 +1695,7 @@ mod tests {
         let dir = temp_dir("format-save-state");
         let _guard = TempDirGuard(dir.clone());
         let state: DomainState = serde_json::from_value(serde_json::json!({
-            "format_version": 7,
+            "format_version": 8,
             "next_task_number": 1,
             "tasks": [],
             "undo_stack": []
@@ -1701,8 +1708,8 @@ mod tests {
         assert!(matches!(
             error,
             StoreError::UnsupportedFormat {
-                found: 7,
-                supported: 6
+                found: 8,
+                supported: 7
             }
         ));
         assert!(!dir.join(STATE_FILE).exists());
@@ -1716,7 +1723,7 @@ mod tests {
         store.save(&DomainState::new()).expect("seed current store");
         let before = fs::read(dir.join(STATE_FILE)).expect("read current store");
         let mut local: DomainState = serde_json::from_value(serde_json::json!({
-            "format_version": 7,
+            "format_version": 8,
             "next_task_number": 1,
             "tasks": [],
             "undo_stack": []
@@ -1729,8 +1736,8 @@ mod tests {
         assert!(matches!(
             error,
             StoreError::UnsupportedFormat {
-                found: 7,
-                supported: 6
+                found: 8,
+                supported: 7
             }
         ));
         assert_eq!(
@@ -1744,7 +1751,7 @@ mod tests {
         let dir = temp_dir("format-save-newer");
         let _guard = TempDirGuard(dir.clone());
         let newer = serde_json::json!({
-            "format_version": 7,
+            "format_version": 8,
             "tasks": [],
             "undo_stack": []
         });
@@ -1757,8 +1764,8 @@ mod tests {
             matches!(
                 error,
                 StoreError::UnsupportedFormat {
-                    found: 7,
-                    supported: 6
+                    found: 8,
+                    supported: 7
                 }
             ),
             "{error}"
@@ -2983,13 +2990,13 @@ mod tests {
         let store = TaskStore::new(&dir);
         let original = round_tripped_current_state("migrate me");
         let mut original_value = serde_json::to_value(&original).expect("encode state");
-        original_value["format_version"] = serde_json::json!(5);
-        let original_bytes = serde_json::to_vec_pretty(&original_value).expect("encode v5");
+        original_value["format_version"] = serde_json::json!(6);
+        let original_bytes = serde_json::to_vec_pretty(&original_value).expect("encode v6");
         fs::create_dir_all(&dir).expect("mkdir");
-        fs::write(dir.join(STATE_FILE), &original_bytes).expect("seed v5 file");
+        fs::write(dir.join(STATE_FILE), &original_bytes).expect("seed v6 file");
 
-        let mut state = store.load().expect("v5 file loads through v5 -> v6");
-        assert_eq!(state.format_version(), 6);
+        let mut state = store.load().expect("v6 file loads through v6 -> v7");
+        assert_eq!(state.format_version(), 7);
         assert_eq!(state.tasks()[0].assignee, None);
         assert_eq!(
             state.tasks()[0].title,
@@ -2997,19 +3004,19 @@ mod tests {
             "migration must preserve the task content"
         );
 
-        store.save(&state).expect("first save at v6");
+        store.save(&state).expect("first save at v7");
         assert_eq!(
-            fs::read(dir.join("tsk.json.v5")).expect("read version backup"),
+            fs::read(dir.join("tsk.json.v6")).expect("read version backup"),
             original_bytes,
             "the first backup of the pre-migration version is byte-identical"
         );
         let live: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(dir.join(STATE_FILE)).expect("read live"))
                 .expect("json");
-        assert_eq!(live["format_version"], 6);
+        assert_eq!(live["format_version"], 7);
         assert_eq!(live["tasks"][0]["title"], "migrate me");
         assert_eq!(
-            fs::read(dir.join("tsk.json.1")).expect("last-good holds the v5 original"),
+            fs::read(dir.join("tsk.json.1")).expect("last-good holds the v6 original"),
             original_bytes,
             "tsk.json.1 semantics are unchanged"
         );
@@ -3023,11 +3030,11 @@ mod tests {
                 None,
             )
             .expect("create");
-        store.save(&state).expect("second save at v6");
+        store.save(&state).expect("second save at v7");
         assert_eq!(
-            fs::read(dir.join("tsk.json.v5")).expect("read version backup"),
+            fs::read(dir.join("tsk.json.v6")).expect("read version backup"),
             original_bytes,
-            "a second save must not touch tsk.json.v5"
+            "a second save must not touch tsk.json.v6"
         );
     }
 
@@ -3055,7 +3062,7 @@ mod tests {
 
     #[test]
     fn load_refuses_a_higher_version_and_changes_nothing_in_the_state_dir() {
-        for (format_version, supported) in [(8u32, 6u32), (8, 7)] {
+        for (format_version, supported) in [(9u32, 7u32), (9, 8)] {
             let dir = temp_dir("format-higher");
             let _guard = TempDirGuard(dir.clone());
             let document = serde_json::json!({
@@ -3076,7 +3083,7 @@ mod tests {
             assert!(
                 matches!(
                     error,
-                    StoreError::UnsupportedFormat { found, supported: 6 } if found == format_version
+                    StoreError::UnsupportedFormat { found, supported: 7 } if found == format_version
                 ),
                 "{error}"
             );

@@ -1793,18 +1793,18 @@ fn status_verbs_target_all_marks_once_then_clear_them() {
     let outcome = apply_intent(
         &mut domain,
         &mut model,
-        BoardIntent::SetStatus(HumanStatus::Blocked),
+        BoardIntent::SetStatus(HumanStatus::Review),
         None,
     )
-    .expect("block marked set");
+    .expect("review marked set");
     assert_eq!(outcome, IntentOutcome::Persist);
     assert_eq!(
         domain.get(first).expect("first").status,
-        HumanStatus::Blocked
+        HumanStatus::Review
     );
     assert_eq!(
         domain.get(second).expect("second").status,
-        HumanStatus::Blocked
+        HumanStatus::Review
     );
     assert_eq!(model.marked_count(), 0, "a completed verb clears marks");
 }
@@ -1838,7 +1838,11 @@ fn bulk_start_preserves_per_task_eligibility_and_toggle_verbs_are_all_or_nothing
 
     mark_tasks(&mut domain, &mut model, &[open, blocked]);
     apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None)
+        .expect("mixed set opens the block card");
+    apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
         .expect("mixed set goes blocked");
+    // The card and the marks are held until the saved tasks sync back.
+    model.sync_from_domain(&domain);
     assert!([open, blocked]
         .into_iter()
         .all(|id| domain.get(id).expect("task").status == HumanStatus::Blocked));
@@ -1867,7 +1871,8 @@ fn bulk_start_preserves_per_task_eligibility_and_toggle_verbs_are_all_or_nothing
     apply_intent(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer, None)
         .expect("open done drawer");
     mark_tasks(&mut domain, &mut model, &[open, blocked]);
-    apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None)
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None).expect("bulk block card");
+    apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
         .expect("bulk block includes a done target");
     assert!([open, blocked]
         .into_iter()
@@ -2204,13 +2209,13 @@ fn task_page_status_verbs_stay_cursor_only_and_clear_board_marks() {
     apply_intent(
         &mut domain,
         &mut model,
-        BoardIntent::SetStatus(HumanStatus::Blocked),
+        BoardIntent::SetStatus(HumanStatus::Review),
         None,
     )
     .expect("apply status from task page");
     assert_eq!(
         domain.get(cursor).expect("cursor").status,
-        HumanStatus::Blocked
+        HumanStatus::Review
     );
     assert_eq!(
         domain.get(marked).expect("marked").status,
@@ -2425,7 +2430,11 @@ fn b_blocks_todo_doing_and_review() {
         let (mut domain, mut model, id) = board_with_task("block me", status);
 
         let outcome =
-            apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None).expect("block");
+            apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None).expect("card");
+        assert_eq!(outcome, IntentOutcome::None, "blocking asks why first");
+        assert_eq!(model.input_mode(), BoardInputMode::BlockCard, "{status:?}");
+        let outcome = apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
+            .expect("block");
 
         assert_eq!(outcome, IntentOutcome::Persist, "{status:?}");
         assert_eq!(
@@ -3986,8 +3995,11 @@ fn page_verbs_act_on_the_page_task_and_the_page_stays_open() {
 
     // `b` blocks, `b` again unblocks.
     let block = map_key(BoardInputMode::TaskPage, ctrl(KeyCode::Char('b'))).expect("b");
-    apply_intent(&mut domain, &mut model, block.clone(), None).expect("block");
+    apply_intent(&mut domain, &mut model, block.clone(), None).expect("block card");
+    apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None).expect("block");
+    model.sync_from_domain(&domain);
     assert_eq!(domain.get(id).expect("task").status, HumanStatus::Blocked);
+    assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
     apply_intent(&mut domain, &mut model, block, None).expect("unblock");
     assert_eq!(domain.get(id).expect("task").status, HumanStatus::Ready);
 }

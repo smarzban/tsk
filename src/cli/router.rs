@@ -9,6 +9,7 @@ pub enum Surface {
     Steps,
     List,
     Status,
+    Reply,
     Dispatch,
     Clean,
     Edit,
@@ -79,6 +80,7 @@ pub fn route<S: AsRef<str>>(
             "steps" => Surface::Steps,
             "list" => Surface::List,
             "status" => Surface::Status,
+            "reply" => Surface::Reply,
             "dispatch" => Surface::Dispatch,
             "clean" => Surface::Clean,
             "edit" => Surface::Edit,
@@ -197,6 +199,11 @@ mod tests {
             route(["tsk", "status", "T3", "started"], None),
             Surface::Status
         );
+    }
+
+    #[test]
+    fn reply_positional_selects_reply_surface() {
+        assert_eq!(route(["tsk", "reply", "T3", "yes"], None), Surface::Reply);
     }
 
     #[test]

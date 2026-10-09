@@ -16,6 +16,7 @@ pub mod guide;
 pub mod list;
 pub mod parser;
 pub mod presenter;
+pub mod reply;
 pub mod router;
 pub mod status;
 pub mod steps;
@@ -71,6 +72,7 @@ where
         Some("steps") => run_steps(args),
         Some("list") => run_list(args, terminal_width),
         Some("status") => run_status(args),
+        Some("reply") => run_reply(args),
         Some("dispatch") => run_dispatch(args),
         Some("clean") => run_clean(args),
         Some("edit") => run_edit(args),
@@ -85,7 +87,7 @@ where
             run_archive(args, verb, archive)
         }
         _ => presenter::usage(
-            "expected add, steps, list, status, dispatch, clean, edit, trash, archive, unarchive, or project command",
+            "expected add, steps, list, status, reply, dispatch, clean, edit, trash, archive, unarchive, or project command",
         ),
     }
 }
@@ -110,6 +112,7 @@ fn run_help(args: Vec<String>) -> CliOutput {
             "steps" => presenter::steps_help(),
             "list" => presenter::list_help(None),
             "status" => presenter::status_help(),
+            "reply" => presenter::reply_help(),
             "dispatch" => presenter::dispatch_help(),
             "clean" => presenter::clean_help(),
             "edit" => presenter::edit_help(),
@@ -195,7 +198,7 @@ fn run_status(args: Vec<String>) -> CliOutput {
         });
     };
     let state_dir = input.state_dir.clone();
-    match status::run(task, status, input.state_dir) {
+    match status::run(task, status, input.block, input.state_dir) {
         Ok(result) => {
             let mut output = presenter::status(result);
             if input.clean {
@@ -218,6 +221,27 @@ fn run_status(args: Vec<String>) -> CliOutput {
             output
         }
         Err(error) => presenter::status_rejected(error, task),
+    }
+}
+
+fn run_reply(args: Vec<String>) -> CliOutput {
+    let input = match parser::parse_flag_reply(&args) {
+        Ok(input) => input,
+        Err(reason) => return presenter::reply_usage(&reason),
+    };
+    if input.help {
+        return presenter::reply_help();
+    }
+    let (Some(task), Some(text)) = (input.task, input.text) else {
+        return presenter::reply_usage(if input.task.is_none() {
+            "task number is required"
+        } else {
+            "reply text is required"
+        });
+    };
+    match reply::run(task, &text, input.state_dir) {
+        Ok(result) => presenter::replied(result),
+        Err(error) => presenter::reply_rejected(error, task),
     }
 }
 

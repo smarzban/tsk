@@ -59,8 +59,12 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 #   3. Work only on {branch}. Run the project's checks before saying you are
 #      done.
 #   4. Push and open a pull request into {base}. Never merge it.
-#   5. Set the task to review with one line on what to look at, or to blocked
-#      with your question when you need a human.
+#   5. Set the task to review with one line on what to look at. When you need
+#      a human, block it with your question: `tsk status {number} blocked
+#      --why "…"`, adding `--needs` and one `--option` per choice, then stop.
+#   6. On a relaunch, read the answers to your last question first: a
+#      relaunch closes the block, so they are the `replies` of the last
+#      `past_blocks` entry in `tsk list {number} --json`.
 #
 # Remove the leading # from a block below to use it.
 
@@ -181,7 +185,8 @@ pub const DEFAULT_PROMPT: &str = "You were dispatched to T{number} ({title}) in 
 2. Read the repo's agent instructions (AGENTS.md or CLAUDE.md) if present.
 3. Work only on {branch}. Run the project's checks before saying you are done.
 4. Push and open a pull request into {base}. Never merge it.
-5. Set the task to review with one line on what to look at, or to blocked with your question when you need a human.";
+5. Set the task to review with one line on what to look at. When you need a human, block it with your question: `tsk status {number} blocked --why \"…\"`, adding `--needs` and one `--option` per choice, then stop.
+6. On a relaunch, read the answers to your last question first: a relaunch closes the block, so they are the `replies` of the last `past_blocks` entry in `tsk list {number} --json`.";
 
 /// All agent profiles loaded from one state directory.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -883,8 +888,10 @@ tsk/t101-load-profiles, based on dispatch.
 2. Read the repo's agent instructions (AGENTS.md or CLAUDE.md) if present.
 3. Work only on tsk/t101-load-profiles. Run the project's checks before saying you are done.
 4. Push and open a pull request into dispatch. Never merge it.
-5. Set the task to review with one line on what to look at, or to blocked with your question \
-when you need a human."
+5. Set the task to review with one line on what to look at. When you need a human, block it \
+with your question: `tsk status 101 blocked --why \"…\"`, adding `--needs` and one `--option` \
+per choice, then stop.
+6. On a relaunch, read the answers to your last question first: a relaunch closes the block, so they are the `replies` of the last `past_blocks` entry in `tsk list 101 --json`."
         );
     }
 

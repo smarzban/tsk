@@ -38,6 +38,8 @@ pub enum BoardPopup {
     CleanupConfirm,
     /// Bulk dispatch confirmation for a marked set.
     DispatchConfirm,
+    /// The block card for the cursor task or a marked set.
+    BlockCard,
 }
 
 /// Labeled capture hit region.
@@ -965,6 +967,13 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::CleanupOption(0)) => Some(BoardIntent::ConfirmDispatch),
             _ => None,
         },
+        // `[x]` cancels; the card body and the board behind it are inert.
+        BoardInputMode::BlockCard => match hit_at(hits, pos) {
+            Some(QueueHitTarget::ModalClose) => Some(BoardIntent::BlockCardCancel),
+            _ => None,
+        },
+        // The reply box owns the page until it saves or cancels.
+        BoardInputMode::EditReply => None,
         BoardInputMode::LaunchCard => match hit_at(hits, pos) {
             Some(QueueHitTarget::LaunchOption(0)) => Some(BoardIntent::LaunchUnarchive),
             Some(QueueHitTarget::LaunchOption(1)) => Some(BoardIntent::LaunchKeepArchived),

@@ -53,6 +53,8 @@ fn task(id: u128, title: &str, status: HumanStatus, scope: TaskScope, secs_ago: 
         base: None,
         dispatch: None,
         status,
+        block: None,
+        past_blocks: Vec::new(),
         scope,
         provenance: ProvenanceOrigin::Manual,
         history: vec![TaskEvent {
@@ -188,6 +190,15 @@ fn fixture_tasks() -> Vec<Task> {
     for (index, task) in tasks.iter_mut().enumerate() {
         task.number = Some((index + 1) as u64);
     }
+    // The blocked task carries an agent's unanswered block: its row paints `@claude ?`.
+    tasks[4].block = Some(tsk_tui::domain::Block::open(
+        tsk_tui::domain::BlockDraft {
+            why: Some("Which receipt format?".into()),
+            ..Default::default()
+        },
+        "claude",
+        at_secs_ago(41 * 60),
+    ));
     tasks
 }
 
@@ -760,8 +771,11 @@ fn standard_78x24_fixture_has_selector_list_rule_status_verb_and_no_other_chrome
         list.contains("Docs refresh pass after F9 ships"),
         "review rows join blocked rows in the global lane:\n{list}"
     );
+    // A block's dim right edge names who asks (`@claude ?`); no other agent field paints.
     assert!(
-        !list.contains("claude") && !list.contains("grok") && !list.contains("agent"),
+        !list.replace("@claude ?", "").contains("claude")
+            && !list.contains("grok")
+            && !list.contains("agent"),
         "M1 must not paint agent fields:\n{list}"
     );
 
@@ -1705,6 +1719,8 @@ fn task_page_header_shows_identifier_not_footer() {
         step_scroll: 0,
         step_marked: None,
         inline_step_editor: None,
+        block_rows: Vec::new(),
+        block_cursor: None,
         bottom_input: None,
         meta: "desk · created 1m ago · updated 1m ago".to_string(),
         meta_assignee_x: None,
@@ -1817,6 +1833,8 @@ fn task_page_renders_header_notes_and_meta_as_a_full_takeover_in_both_tiers() {
         step_scroll: 0,
         step_marked: None,
         inline_step_editor: None,
+        block_rows: Vec::new(),
+        block_cursor: None,
         bottom_input: None,
         meta: "tsk \u{b7} created 1h ago \u{b7} updated 1h ago".to_string(),
         meta_assignee_x: None,

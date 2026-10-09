@@ -69,6 +69,26 @@ Press `Esc` to discard changes to the current field. Other staged changes remain
 
 If another writer deletes the task, saving refuses. If a save fails, use [retry or cancel](/docs/board/#save-failures).
 
+## Blocked
+
+A blocked task's page opens with a BLOCKED section between the title and the notes, closed by a full-width rule. Its heading reads, for example, `BLOCKED · on you · @claude 1h ──── r reply`: who or what the block waits on, who blocked it and when, and `edited` once the block changed. Below it come `why`, `needs`, the suggested options as `○` rows, and the replies as `└ <author> <age>  <text>`. A deleted reply leaves a dim `deleted` stub. The section shows only while the task is blocked; the closed block stays in `tsk list --json` under `past_blocks`.
+
+In view mode `Tab` walks the heading, the options, and the replies before the steps and **+ step**.
+
+| Action | Key |
+| --- | --- |
+| Reply | `r` |
+| Reply with an option, prefilled | `Enter` on the option |
+| Save the reply | `Shift+Enter` |
+| Save the reply and unblock to ready | `ctrl+s` |
+| New line in the reply | `Enter` |
+| Cancel the reply | `Esc` |
+| Edit why, on, and needs (heading selected) | `ctrl+e` |
+| Edit your selected reply | `ctrl+e` |
+| Soft-delete your selected reply | `ctrl+x` |
+
+The reply box opens under the last reply and wraps like the notes. It belongs to the block it opened on: if that block is closed or replaced elsewhere while you type, saving refuses and keeps your draft. Agent blocks can be edited like your own; an agent's replies cannot be edited or deleted. A block on another task that is now done asks `T169 done, unblock? ctrl+b` under the heading.
+
 ## Status and steps
 
 In task view, status shortcuts act on the open task even when a step is selected. `ctrl+g` dispatches that task to its assigned agent; on an existing dispatch, the first press asks and the second relaunches. `ctrl+d` on a live dispatch offers [cleanup](/docs/board/#complete-and-clean-up) as it completes the task. Multi-select and marks retained from the board are ignored and clear when an action runs. `ctrl+n` sets ready and `ctrl+o` sets open; `ctrl+s` starts an open or ready task. `Enter` toggles the selected step only.

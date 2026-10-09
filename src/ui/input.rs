@@ -330,8 +330,24 @@ pub enum BoardIntent {
     /// Scroll a cleanup card whose rows outgrow the frame.
     CleanupScrollUp,
     CleanupScrollDown,
-    /// `ctrl+b` — toggle blocked ↔ ready. Reducer lands in.
+    /// `ctrl+b` — block with the block card, or unblock a blocked task to ready.
     ToggleBlock,
+    /// Block card: Enter blocks (or saves an edit), Esc cancels, Tab/Shift+Tab move fields.
+    BlockCardConfirm,
+    BlockCardCancel,
+    BlockCardNextField,
+    BlockCardPrevField,
+    /// Block card `←`/`→`: cycle the on choice on that field, move the caret elsewhere.
+    BlockCardLeft,
+    BlockCardRight,
+    /// Task page `r`: open the reply box under the last reply of the open block.
+    BeginReply,
+    /// Task page `Enter` on a block option: open the reply box prefilled with it.
+    ReplyWithOption,
+    /// Reply box `shift+enter`: store the reply.
+    ReplySave,
+    /// Reply box `ctrl+s`: store the reply and unblock the task to ready.
+    ReplySaveUnblock,
     /// `ctrl+r` — toggle review ↔ ready. Reducer lands in.
     ToggleReview,
     /// Help card: edit its focused search query or scroll the filtered key list.
@@ -918,8 +934,44 @@ fn help_bindings() -> Vec<HelpBinding> {
         help_binding(
             HelpGroup::TaskActions,
             "ctrl+x",
-            "delete step / task (task page)",
+            "delete step / reply / task (task page)",
             "remove checklist",
+        ),
+        help_binding(
+            HelpGroup::TaskActions,
+            "r",
+            "reply to a blocked task (task page)",
+            "answer question blocked",
+        ),
+        help_binding(
+            HelpGroup::TaskActions,
+            "enter (option)",
+            "reply with that option (task page)",
+            "answer question blocked",
+        ),
+        help_binding(
+            HelpGroup::CreateEdit,
+            "ctrl+e (blocked)",
+            "edit why, on, needs / your reply",
+            "block reason question",
+        ),
+        help_binding(
+            HelpGroup::SurfaceControls,
+            "shift+enter (reply)",
+            "save reply",
+            "answer blocked",
+        ),
+        help_binding(
+            HelpGroup::SurfaceControls,
+            "ctrl+s (reply)",
+            "save reply + unblock",
+            "answer blocked ready",
+        ),
+        help_binding(
+            HelpGroup::SurfaceControls,
+            "tab (block card)",
+            "why · on · needs",
+            "block reason question",
         ),
         help_binding(
             HelpGroup::Navigation,
@@ -1329,6 +1381,8 @@ pub fn map_key(mode: BoardInputMode, key: KeyEvent) -> Option<BoardIntent> {
         BoardInputMode::SelectBase => map_selected_base_key(key),
         BoardInputMode::EditThread => map_thread_edit_key(key),
         BoardInputMode::EditTitle | BoardInputMode::EditNotes => map_edit(mode, key),
+        BoardInputMode::BlockCard => map_block_card(key),
+        BoardInputMode::EditReply => map_reply_edit(key),
         // A step edit belongs to the retained task form, not a modal editor. Enter saves one
         // independent add; Shift+Enter saves the session. Alt+Enter is not a save route on
         // the board.
@@ -1715,7 +1769,9 @@ pub fn map_edit_paste(mode: BoardInputMode, text: &str) -> Option<BoardIntent> {
         BoardInputMode::EditTitle
         | BoardInputMode::EditNotes
         | BoardInputMode::EditThread
-        | BoardInputMode::EditStep => Some(BoardIntent::EditInsertText(text.to_string())),
+        | BoardInputMode::EditStep
+        | BoardInputMode::BlockCard
+        | BoardInputMode::EditReply => Some(BoardIntent::EditInsertText(text.to_string())),
         BoardInputMode::SelectThread
         | BoardInputMode::SelectBase
         | BoardInputMode::EditScope
@@ -1859,6 +1915,16 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::CleanupScrollUp
         | BoardIntent::CleanupScrollDown
         | BoardIntent::ToggleBlock
+        | BoardIntent::BlockCardConfirm
+        | BoardIntent::BlockCardCancel
+        | BoardIntent::BlockCardNextField
+        | BoardIntent::BlockCardPrevField
+        | BoardIntent::BlockCardLeft
+        | BoardIntent::BlockCardRight
+        | BoardIntent::BeginReply
+        | BoardIntent::ReplyWithOption
+        | BoardIntent::ReplySave
+        | BoardIntent::ReplySaveUnblock
         | BoardIntent::ToggleReview
         | BoardIntent::HelpQueryInsert(_)
         | BoardIntent::HelpQueryInsertText(_)
@@ -1995,6 +2061,7 @@ fn map_task_page(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Char('e') if verb => Some(BoardIntent::BeginEditTitle),
         KeyCode::Char('?') if !extra => Some(BoardIntent::OpenHelp),
         KeyCode::Char('@') if !extra => Some(BoardIntent::OpenAssigneePicker),
+        KeyCode::Char('r') if !extra => Some(BoardIntent::BeginReply),
         KeyCode::Tab if !extra => Some(BoardIntent::FormFocusNext),
         KeyCode::BackTab
             if !mods
@@ -2005,6 +2072,45 @@ fn map_task_page(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Up | KeyCode::Char('k') if !extra => Some(BoardIntent::PageScrollUp),
         KeyCode::Down | KeyCode::Char('j') if !extra => Some(BoardIntent::PageScrollDown),
         _ => None,
+    }
+}
+
+/// The block card: Enter blocks, Tab moves between why, on and needs, Esc cancels. The on
+/// field cycles you, task and other with `←`/`→`; every field takes typed text.
+fn map_block_card(key: KeyEvent) -> Option<BoardIntent> {
+    let mods = key.modifiers;
+    let extra = mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
+    match key.code {
+        KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => {
+            Some(BoardIntent::BlockCardCancel)
+        }
+        KeyCode::Esc if !extra => Some(BoardIntent::BlockCardCancel),
+        KeyCode::Enter if !extra => Some(BoardIntent::BlockCardConfirm),
+        KeyCode::Tab if !extra => Some(BoardIntent::BlockCardNextField),
+        KeyCode::BackTab if !extra => Some(BoardIntent::BlockCardPrevField),
+        KeyCode::Left if !extra => Some(BoardIntent::BlockCardLeft),
+        KeyCode::Right if !extra => Some(BoardIntent::BlockCardRight),
+        _ => map_form_edit_key(CaptureField::Title, FormEditNavigation::None, false, key),
+    }
+}
+
+/// The reply box: a multi-line draft. Shift+Enter stores the reply, Ctrl+S stores it and
+/// unblocks the task, Enter breaks the line, Esc cancels.
+fn map_reply_edit(key: KeyEvent) -> Option<BoardIntent> {
+    let mods = key.modifiers;
+    let only_ctrl = mods.contains(KeyModifiers::CONTROL)
+        && !mods.intersects(KeyModifiers::ALT | KeyModifiers::SUPER);
+    match key.code {
+        KeyCode::Enter
+            if mods.contains(KeyModifiers::SHIFT)
+                && !mods.intersects(
+                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                ) =>
+        {
+            Some(BoardIntent::ReplySave)
+        }
+        KeyCode::Char('s') if only_ctrl => Some(BoardIntent::ReplySaveUnblock),
+        _ => map_form_edit_key(CaptureField::Notes, FormEditNavigation::None, false, key),
     }
 }
 

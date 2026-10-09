@@ -121,7 +121,8 @@ pub fn top_level_help() -> String {
         "Tasks\n",
         "  add      create one task or apply a JSON plan\n",
         "  list     inspect tasks\n",
-        "  status   set a task's human status\n",
+        "  status   set a task's human status, or block it with a reason\n",
+        "  reply    answer a blocked task's question\n",
         "  dispatch hand a task to its assigned agent\n",
         "  clean    remove a dispatched worktree safely\n",
         "  edit     update a task's title or notes\n",
@@ -306,6 +307,10 @@ fn list_json(result: &ListResult) -> String {
             thread: &'a Option<String>,
             #[serde(skip_serializing_if = "Option::is_none")]
             dispatch: Option<&'a crate::domain::Dispatch>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            block: Option<BlockJson<'a>>,
+            #[serde(skip_serializing_if = "Vec::is_empty")]
+            past_blocks: Vec<BlockJson<'a>>,
         }
         let direct_row = DirectRow {
             id: row.id,
@@ -319,6 +324,8 @@ fn list_json(result: &ListResult) -> String {
             base: &row.base,
             thread: &row.thread,
             dispatch: direct.dispatch.as_ref(),
+            block: direct.block.as_ref().map(BlockJson::from),
+            past_blocks: direct.past_blocks.iter().map(BlockJson::from).collect(),
         };
         return format!(
             "{}\n",
@@ -328,6 +335,75 @@ fn list_json(result: &ListResult) -> String {
 
     let value = serde_json::to_value(&result.rows).expect("list rows are serializable");
     format!("{value}\n")
+}
+
+/// The agent-facing block shape: deleted replies are left out, and `answered` says whether
+/// the owner has the last word.
+#[derive(serde::Serialize)]
+struct BlockJson<'a> {
+    why: Option<&'a str>,
+    needs: Option<&'a str>,
+    options: &'a [String],
+    on: String,
+    by: &'a str,
+    #[serde(with = "crate::domain::time_serde")]
+    at: std::time::SystemTime,
+    edited: bool,
+    replies: Vec<ReplyJson<'a>>,
+    answered: bool,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_closed_at"
+    )]
+    closed_at: Option<std::time::SystemTime>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    closed_by: Option<&'a str>,
+}
+
+#[derive(serde::Serialize)]
+struct ReplyJson<'a> {
+    #[serde(with = "crate::domain::time_serde")]
+    at: std::time::SystemTime,
+    by: &'a str,
+    text: &'a str,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    edited: bool,
+}
+
+fn serialize_closed_at<S: serde::Serializer>(
+    time: &Option<std::time::SystemTime>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let time = time.expect("skipped when absent");
+    crate::domain::time_serde::serialize(&time, serializer)
+}
+
+impl<'a> From<&'a crate::domain::Block> for BlockJson<'a> {
+    fn from(block: &'a crate::domain::Block) -> Self {
+        Self {
+            why: block.why.as_deref(),
+            needs: block.needs.as_deref(),
+            options: &block.options,
+            on: block.on.wire(),
+            by: &block.by,
+            at: block.at,
+            edited: block.edited_at.is_some(),
+            replies: block
+                .replies
+                .iter()
+                .filter(|reply| !reply.deleted)
+                .map(|reply| ReplyJson {
+                    at: reply.at,
+                    by: &reply.by,
+                    text: &reply.text,
+                    edited: reply.edited,
+                })
+                .collect(),
+            answered: block.answered(),
+            closed_at: block.closed_at,
+            closed_by: block.closed_by.as_deref(),
+        }
+    }
 }
 
 fn list_human(result: &ListResult, terminal_width: Option<usize>) -> String {
@@ -453,6 +529,15 @@ fn append_rows(
             &content,
             output_width,
         );
+        if let Some(why) = row.blocked_why.as_deref() {
+            append_wrapped(
+                output,
+                &continuation_prefix,
+                &continuation_prefix,
+                &terminal_text(&format!("blocked: {why}")),
+                output_width,
+            );
+        }
     }
 }
 
@@ -916,6 +1001,13 @@ fn task_refusal_message(code: &str, task: TaskAddress) -> String {
         "invalid-step-text" => "the step text contains control characters".to_string(),
         "unknown-step" => format!("no step on {display} matches that id"),
         "ambiguous-step" => format!("more than one step on {display} matches that id"),
+        "text-too-long" => format!(
+            "block and reply text is at most {} bytes",
+            crate::domain::BLOCK_TEXT_MAX
+        ),
+        "invalid-blocker" => "--on must name another task on the board".to_string(),
+        "not-blocked" => format!("{display} has no open block to reply to"),
+        "empty-reply" => "the reply is empty".to_string(),
         _ => return code.to_string(),
     };
     format!("{code}: {message}")
@@ -1150,35 +1242,131 @@ pub fn dispatch_rejected(error: DispatchError, task: TaskAddress) -> CliOutput {
 
 pub fn status_help() -> CliOutput {
     help(HelpDoc {
-        usage: vec!["tsk status <task> <status> [--clean] [--state-dir <dir>]".into()],
-        purpose: "Set a task's human status, optionally cleaning its dispatch after done persists."
+        usage: vec![
+            "tsk status <task> <status> [--clean] [--state-dir <dir>]".into(),
+            "tsk status <task> blocked --why <text> [--needs <text>] [--option <text>]... [--on you|T<n>|<text>]".into(),
+        ],
+        purpose: "Set a task's human status, optionally cleaning its dispatch after done persists. Block with a reason so the owner can answer it."
             .into(),
-        groups: vec![group(
-            "Values",
-            &[
-                ("<task>", "a task number or UUID"),
-                (
-                    "<status>",
-                    "open, ready, started (or start), blocked, review, or done",
-                ),
-                (
-                    "--clean",
-                    "after setting done, safely clean its dispatch if it has a live one",
-                ),
-                ("--state-dir <dir>", "use another board store"),
-            ],
-        )],
+        groups: vec![
+            group(
+                "Values",
+                &[
+                    ("<task>", "a task number or UUID"),
+                    (
+                        "<status>",
+                        "open, ready, started (or start), blocked, review, or done",
+                    ),
+                    (
+                        "--clean",
+                        "after setting done, safely clean its dispatch if it has a live one",
+                    ),
+                    ("--state-dir <dir>", "use another board store"),
+                ],
+            ),
+            group(
+                "Block",
+                &[
+                    ("--why <text>", "what stops the work"),
+                    ("--needs <text>", "what would unblock it"),
+                    ("--option <text>", "one suggested answer; repeat for more"),
+                    (
+                        "--on <who>",
+                        "you (default), another task T<n>, or any other text",
+                    ),
+                    (
+                        "--flag=<value>",
+                        "use equals syntax for dash-leading values",
+                    ),
+                ],
+            ),
+        ],
         examples: vec![
             "tsk status T12 ready".into(),
             "tsk status T12 review".into(),
+            "tsk status T12 blocked --why \"Which database?\" --option postgres --option sqlite".into(),
+            "tsk status T12 blocked --why \"Needs the API from T9\" --on T9".into(),
         ],
-        refusals: vec!["unknown-task".into(), "soft-deleted-task".into()],
+        refusals: vec![
+            "unknown-task".into(),
+            "soft-deleted-task".into(),
+            "text-too-long".into(),
+            "invalid-blocker".into(),
+        ],
         exit: exit_line(
             "status set, or it already had the value",
             Some("status refusal, verify with list before retrying"),
             true,
         ),
     })
+}
+
+pub fn reply_help() -> CliOutput {
+    help(HelpDoc {
+        usage: vec!["tsk reply <task> <text> [--state-dir <dir>]".into()],
+        purpose: "Add a reply to a blocked task's open block. Not idempotent: each run adds one."
+            .into(),
+        groups: vec![group(
+            "Values",
+            &[
+                ("<task>", "a task number or UUID"),
+                ("<text>", "the reply; put -- before text that begins with -"),
+                ("--state-dir <dir>", "use another board store"),
+            ],
+        )],
+        examples: vec![
+            "tsk reply T12 \"Use postgres\"".into(),
+            "tsk reply T12 -- \"-5 degrees is fine\"".into(),
+        ],
+        refusals: vec![
+            "unknown-task".into(),
+            "soft-deleted-task".into(),
+            "not-blocked".into(),
+            "empty-reply".into(),
+            "text-too-long".into(),
+        ],
+        exit: exit_line(
+            "reply stored",
+            Some("reply refusal, verify with list before retrying"),
+            true,
+        ),
+    })
+}
+
+pub fn replied(result: crate::cli::reply::ReplyResult) -> CliOutput {
+    CliOutput {
+        stdout: format!(
+            "replied T{} as {} {}\n",
+            result.number,
+            terminal_text(&result.by),
+            terminal_text(&result.title)
+        ),
+        stderr: String::new(),
+        code: 0,
+    }
+}
+
+pub fn reply_usage(reason: &str) -> CliOutput {
+    CliOutput {
+        stdout: String::new(),
+        stderr: format!(
+            "tsk reply: {}\nusage: tsk reply <task> <text> [--state-dir <dir>]\n",
+            human_reason(reason)
+        ),
+        code: 2,
+    }
+}
+
+pub fn reply_rejected(error: crate::cli::reply::ReplyError, task: TaskAddress) -> CliOutput {
+    let (detail, code) = match error {
+        crate::cli::reply::ReplyError::Store(detail) => (detail, 3),
+        other => (task_refusal_message(other.code(), task), 1),
+    };
+    CliOutput {
+        stdout: String::new(),
+        stderr: format!("tsk reply: {detail}\n"),
+        code,
+    }
 }
 
 pub fn status(result: StatusResult) -> CliOutput {

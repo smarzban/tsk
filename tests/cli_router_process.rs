@@ -412,3 +412,52 @@ fn a_missing_home_refuses_instead_of_creating_a_board_in_the_working_directory()
     let _ = std::fs::remove_dir_all(cwd);
     let _ = std::fs::remove_dir_all(state);
 }
+
+#[test]
+fn a_dispatched_agent_signs_its_block_and_reply_with_tsk_agent() {
+    let dir = temp_state_dir("agent-actor");
+    let mut state = DomainState::new();
+    state
+        .create(
+            "agent work",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("seed task");
+    TaskStore::new(&dir).save(&state).expect("seed state");
+    let run = |args: &[&str], agent: Option<&str>| {
+        let mut command = Command::new(binary());
+        command
+            .args(args)
+            .args(["--state-dir", dir.to_str().expect("UTF-8 state dir")])
+            .env_remove("TSK_AGENT")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(agent) = agent {
+            command.env("TSK_AGENT", agent);
+        }
+        let output = wait_with_output_before_deadline(command.spawn().expect("spawn"), "tsk");
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+    };
+    run(
+        &["status", "T1", "blocked", "--why", "which one?"],
+        Some("Claude"),
+    );
+    run(&["reply", "T1", "this one"], None);
+    run(&["reply", "T1", "thanks"], Some("claude"));
+
+    let state = TaskStore::new(&dir).load().expect("load");
+    let block = state.tasks()[0].block.as_ref().expect("open block");
+    assert_eq!(block.by, "claude");
+    let authors: Vec<_> = block
+        .replies
+        .iter()
+        .map(|reply| reply.by.as_str())
+        .collect();
+    assert_eq!(authors, ["you", "claude"]);
+    assert!(!block.answered());
+    let _ = std::fs::remove_dir_all(dir);
+}
