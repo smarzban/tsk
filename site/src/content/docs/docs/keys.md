@@ -96,7 +96,7 @@ Editing keys take precedence over view-mode status shortcuts. In the step editor
 
 ### If Shift+Enter does not save
 
-Some terminals are set to send a plain line feed for `Shift+Enter` (Ghostty's `keybind = shift+enter=text:\n`, for example). tsk reads that as `ctrl+j`, so the form does not save. In a form editor, `ctrl+j` shows `Shift+Enter arrived as Ctrl+J: check your terminal's key bindings` on the status row and changes nothing. Remove the binding, or map `Shift+Enter` to a sequence that keeps the Shift modifier, then try again.
+Some terminals are set to send a plain line feed for `Shift+Enter` (Ghostty's `keybind = shift+enter=text:\n`, for example). tsk reads that as `ctrl+j`, so the form does not save. In a form editor, `ctrl+j` shows `Shift+Enter sent Ctrl+J: check terminal keys` on the status row and changes nothing. Remove the binding, or map `Shift+Enter` to a sequence that keeps the Shift modifier, then try again.
 
 ## Quick-add
 

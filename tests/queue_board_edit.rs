@@ -1862,10 +1862,17 @@ fn ctrl_j_in_notes_paints_the_shift_enter_hint_and_keeps_the_draft() {
     assert_eq!(outcome, IntentOutcome::None);
     assert_eq!(model.input_mode(), BoardInputMode::EditNotes);
     assert_eq!(model.message(), Some(SHIFT_ENTER_AS_CTRL_J_HINT));
-    let painted = rendered_board(&model, 100, 30);
-    assert!(
-        painted.contains(SHIFT_ENTER_AS_CTRL_J_HINT),
-        "missing hint:\n{painted}"
+    assert_eq!(
+        SHIFT_ENTER_AS_CTRL_J_HINT,
+        "Shift+Enter sent Ctrl+J: check terminal keys"
     );
-    assert!(painted.contains("draft"), "draft lost:\n{painted}");
+    // 52 columns is a common split-pane width; the row must not clip the hint there.
+    for width in [52, 100] {
+        let painted = rendered_board(&model, width, 30);
+        assert!(
+            painted.contains(SHIFT_ENTER_AS_CTRL_J_HINT),
+            "missing hint at {width} columns:\n{painted}"
+        );
+        assert!(painted.contains("draft"), "draft lost:\n{painted}");
+    }
 }
