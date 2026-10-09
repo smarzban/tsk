@@ -1026,6 +1026,8 @@ fn board_keyboard_intent(
                 | BoardInputMode::CleanupConfirm
                 | BoardInputMode::CleanupDirtyConfirm
                 | BoardInputMode::DispatchConfirm
+                | BoardInputMode::BlockCard
+                | BoardInputMode::EditReply
         );
         // A list picker's or bulk cleanup card's Esc is its own cancel: clearing marks
         // underneath would leave it open, still bound to the set it captured.
@@ -1035,6 +1037,8 @@ fn board_keyboard_intent(
                 | BoardInputMode::CleanupConfirm
                 | BoardInputMode::CleanupDirtyConfirm
                 | BoardInputMode::DispatchConfirm
+                | BoardInputMode::BlockCard
+                | BoardInputMode::EditReply
         );
         if !text_entry_owns_capital_m
             && mode != BoardInputMode::SaveRecovery
@@ -1086,6 +1090,14 @@ fn board_keyboard_intent(
         && key.modifiers == KeyModifiers::SHIFT
     {
         return Some(BoardIntent::ConfirmEdit);
+    }
+    // Bare Enter on a block option opens the reply box prefilled with it.
+    if mode == BoardInputMode::TaskPage
+        && key.code == KeyCode::Enter
+        && key.modifiers.is_empty()
+        && model.block_option_selected()
+    {
+        return Some(BoardIntent::ReplyWithOption);
     }
     // Bare Enter on a stored step toggles it. Resolved here, where the model is in reach,
     // so the persisting intent is classified before the save boundary sees it.
@@ -8396,6 +8408,48 @@ mod tests {
                 "SaveRecovery must own {code:?} while a form stays open"
             );
         }
+    }
+
+    /// Bare Enter on a selected block option opens the prefilled reply box, which then types
+    /// letters such as a capital M.
+    #[test]
+    fn enter_on_a_block_option_resolves_to_reply_with_option_at_the_keyboard_boundary() {
+        use crate::ui::board::apply_intent;
+
+        let (mut domain, mut model) = board_fixture("Asked", None);
+        let id = model.selected_id().expect("task");
+        domain
+            .block(
+                id,
+                crate::domain::BlockDraft {
+                    options: vec!["yes".into()],
+                    ..Default::default()
+                },
+                "claude",
+            )
+            .expect("block");
+        model.sync_from_domain(&domain);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open");
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("tab");
+        assert_eq!(
+            board_keyboard_intent(&model, BoardInputMode::TaskPage, enter),
+            Some(BoardIntent::OpenTaskPage),
+            "the heading keeps Enter's page route"
+        );
+        apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("tab");
+        let intent = board_keyboard_intent(&model, BoardInputMode::TaskPage, enter)
+            .expect("enter on an option");
+        assert_eq!(intent, BoardIntent::ReplyWithOption);
+        apply_intent(&mut domain, &mut model, intent, None).expect("reply");
+        assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+        assert_eq!(model.reply_draft(), Some("yes"));
+        let capital_m = KeyEvent::new(KeyCode::Char('M'), KeyModifiers::SHIFT);
+        assert_eq!(
+            board_keyboard_intent(&model, BoardInputMode::EditReply, capital_m),
+            Some(BoardIntent::EditInsert('M')),
+            "the reply box types a capital M"
+        );
     }
 
     /// Bare Enter on the task page becomes `ToggleStep` only while a stored step is

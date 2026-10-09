@@ -1838,6 +1838,8 @@ fn bulk_start_preserves_per_task_eligibility_and_toggle_verbs_are_all_or_nothing
 
     mark_tasks(&mut domain, &mut model, &[open, blocked]);
     apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None)
+        .expect("mixed set opens the block card");
+    apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
         .expect("mixed set goes blocked");
     assert!([open, blocked]
         .into_iter()
@@ -1868,6 +1870,8 @@ fn bulk_start_preserves_per_task_eligibility_and_toggle_verbs_are_all_or_nothing
         .expect("open done drawer");
     mark_tasks(&mut domain, &mut model, &[open, blocked]);
     apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None)
+        .expect("bulk block card");
+    apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
         .expect("bulk block includes a done target");
     assert!([open, blocked]
         .into_iter()
@@ -2425,7 +2429,11 @@ fn b_blocks_todo_doing_and_review() {
         let (mut domain, mut model, id) = board_with_task("block me", status);
 
         let outcome =
-            apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None).expect("block");
+            apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None).expect("card");
+        assert_eq!(outcome, IntentOutcome::None, "blocking asks why first");
+        assert_eq!(model.input_mode(), BoardInputMode::BlockCard, "{status:?}");
+        let outcome = apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
+            .expect("block");
 
         assert_eq!(outcome, IntentOutcome::Persist, "{status:?}");
         assert_eq!(
@@ -3986,8 +3994,10 @@ fn page_verbs_act_on_the_page_task_and_the_page_stays_open() {
 
     // `b` blocks, `b` again unblocks.
     let block = map_key(BoardInputMode::TaskPage, ctrl(KeyCode::Char('b'))).expect("b");
-    apply_intent(&mut domain, &mut model, block.clone(), None).expect("block");
+    apply_intent(&mut domain, &mut model, block.clone(), None).expect("block card");
+    apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None).expect("block");
     assert_eq!(domain.get(id).expect("task").status, HumanStatus::Blocked);
+    assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
     apply_intent(&mut domain, &mut model, block, None).expect("unblock");
     assert_eq!(domain.get(id).expect("task").status, HumanStatus::Ready);
 }

@@ -7,6 +7,7 @@
 pub(crate) mod stub;
 
 mod archive_launch_card;
+mod board_blocks;
 mod cli_archive;
 mod cli_discovery;
 mod cli_dispatch;

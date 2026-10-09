@@ -63,6 +63,16 @@ fn edit_chrome_legends(mode: BoardInputMode) -> [&'static str; 3] {
             "Enter close · Shift+Enter save · Esc",
             "Enter close · Esc",
         ],
+        BoardInputMode::EditReply => [
+            "shift+enter save · ctrl+s save + unblock · esc cancel",
+            "shift+enter save · ctrl+s unblock · esc",
+            "shift+enter · ctrl+s · esc",
+        ],
+        BoardInputMode::BlockCard => [
+            "enter block · tab next field · esc cancel",
+            "enter block · tab next · esc",
+            "enter · tab · esc",
+        ],
         BoardInputMode::EditStep => [
             "Enter next · Shift+Enter save · Esc cancel",
             "Enter next · Shift+Enter save · Esc",

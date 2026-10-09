@@ -398,6 +398,26 @@ pub struct StepView {
     pub rows: Vec<String>,
 }
 
+/// One painted row of the task page's BLOCKED section. Rows come pre-wrapped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockPageRow {
+    pub text: String,
+    pub kind: BlockRowKind,
+    /// The first row of the selected ring stop carries the `▸` gutter.
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockRowKind {
+    /// `BLOCKED · on you · @claude 1h ──── r reply`, the dashes filled to the width.
+    Heading,
+    Plain,
+    Dim,
+    Bold,
+    /// The full-width rule closing the section above the notes.
+    Rule,
+}
+
 /// The task page's in-place step editor. Its rows replace the selected stored step's text, or
 /// follow the stored rows while an add is pending, so the editor never takes over the footer.
 #[derive(Debug, Clone)]
@@ -467,6 +487,8 @@ pub enum QueueOverlay<'a> {
     },
     /// Launch card: the two-choice archived-project modal.
     LaunchCard { name: &'a str },
+    /// The block card: why, on and needs for the cursor task or a marked set.
+    BlockCard(BlockCardPaint),
     /// Dispatched worktree cleanup confirmation (the cursor task or a marked set), and the bulk
     /// dispatch card, which shares its layout.
     CleanupConfirm {
@@ -543,6 +565,10 @@ pub enum QueueOverlay<'a> {
         step_marked: Option<usize>,
         /// The page's in-place add/rename step draft, if one is active.
         inline_step_editor: Option<InlineStepEditor<'a>>,
+        /// The BLOCKED section ahead of the notes, its rule last. Empty unless blocked.
+        block_rows: Vec<BlockPageRow>,
+        /// Reply box caret: (block row, column) while the reply box is open.
+        block_cursor: Option<(usize, u16)>,
         /// The thread field still uses the shared bottom input slot.
         bottom_input: Option<BottomInputSlot<'a>>,
         /// Footer: assignee · thread · scope · created · updated.
@@ -565,6 +591,24 @@ pub enum QueueOverlay<'a> {
         focus: Option<CaptureField>,
         scope_dropdown: Option<FormDropdown<'a>>,
     },
+}
+
+/// Paint input for the block card. Field text arrives raw; the painter wraps it.
+#[derive(Debug, Clone)]
+pub struct BlockCardPaint {
+    pub title: String,
+    pub why: String,
+    pub needs: String,
+    /// `you`, `task` or `other`.
+    pub on_kind: &'static str,
+    /// The typed task number or text, for `task` and `other`.
+    pub on_text: String,
+    /// Focused field (0 why, 1 on, 2 needs) and its caret, counted in characters.
+    pub focus: usize,
+    pub cursor: usize,
+    pub refusal: Option<String>,
+    /// Editing an open block: Enter saves rather than blocks.
+    pub edit: bool,
 }
 
 /// Footer chooser state embedded in its parent form overlay.
@@ -1213,6 +1257,8 @@ pub fn draw_task_column(
         step_scroll,
         step_marked,
         ref inline_step_editor,
+        ref block_rows,
+        block_cursor,
         bottom_input: _,
         ref meta,
         meta_assignee_x,
@@ -1245,6 +1291,8 @@ pub fn draw_task_column(
             step_scroll,
             step_marked,
             inline_step_editor.as_ref(),
+            block_rows,
+            block_cursor,
             meta,
             meta_assignee_x,
             meta_assignee_width,
@@ -1628,6 +1676,7 @@ fn paint_footer(
             QueueOverlay::Palette { .. }
             | QueueOverlay::Help { .. }
             | QueueOverlay::LaunchCard { .. }
+            | QueueOverlay::BlockCard(_)
             | QueueOverlay::CleanupConfirm { .. }
             | QueueOverlay::ScopeDropdown { .. } => &[],
             QueueOverlay::QuickAdd { recovery, .. } if *recovery => &[],
@@ -1897,6 +1946,9 @@ fn paint_overlay(
         QueueOverlay::LaunchCard { name } => {
             paint_launch_card(frame, geo, surface, name, hits);
         }
+        QueueOverlay::BlockCard(card) => {
+            paint_block_card(frame, geo, surface, card, hits);
+        }
         QueueOverlay::CleanupConfirm {
             title,
             lines,
@@ -1957,6 +2009,8 @@ fn paint_overlay(
             step_scroll,
             step_marked,
             ref inline_step_editor,
+            ref block_rows,
+            block_cursor,
             bottom_input: _,
             ref meta,
             meta_assignee_x,
@@ -1988,6 +2042,8 @@ fn paint_overlay(
                 *step_scroll,
                 *step_marked,
                 inline_step_editor.as_ref(),
+                block_rows,
+                *block_cursor,
                 meta,
                 *meta_assignee_x,
                 *meta_assignee_width,
@@ -3043,6 +3099,8 @@ fn paint_task_page(
     step_scroll: usize,
     step_marked: Option<usize>,
     inline_step_editor: Option<&InlineStepEditor<'_>>,
+    block_rows: &[BlockPageRow],
+    block_cursor: Option<(usize, u16)>,
     meta: &str,
     meta_assignee_x: Option<u16>,
     meta_assignee_width: u16,
@@ -3209,10 +3267,12 @@ fn paint_task_page(
 
     // Notes and steps form one vertical stream. Steps begin two blank rows after the
     // notes, and the header and metadata footer never participate in this scroll.
+    // A blocked task's BLOCKED section and its rule lead the stream, ahead of the notes.
+    let block_count = block_rows.len();
     let note_count = notes_rows.len().max(1);
     let step_rows: usize = step_views.iter().map(|step| step.rows.len().max(1)).sum();
     // Every checklist has a trailing add control, including an empty one.
-    let content = page_content_layout(note_count, step_rows + 1, lay.notes_rows);
+    let content = page_content_layout(block_count + note_count, step_rows + 1, lay.notes_rows);
     let scroll = step_scroll.min(content.max_scroll);
     // Content has a two-cell gutter on both sides. An overflowing page keeps its
     // scrollbar outside that right gutter at the frame edge.
@@ -3242,7 +3302,47 @@ fn paint_task_page(
             break;
         }
         let y = lay.notes_y.saturating_add(visible as u16);
-        if absolute < note_count {
+        if absolute < block_count {
+            let row = &block_rows[absolute];
+            let gutter = if row.selected { "▸ " } else { "  " };
+            let room = (content_width as usize).saturating_sub(2);
+            let line = match row.kind {
+                BlockRowKind::Heading => {
+                    const REPLY_HINT: &str = "r reply";
+                    let left = present_line(&row.text, room);
+                    let used = display_width(&left);
+                    let fill = room.saturating_sub(used + display_width(REPLY_HINT) + 2);
+                    let mut spans = vec![
+                        Span::styled(gutter.to_string(), style_plain()),
+                        Span::styled(left, style_bold()),
+                    ];
+                    if fill >= 2 {
+                        spans.push(Span::styled(format!(" {} ", "─".repeat(fill)), style_dim()));
+                        spans.push(Span::styled(REPLY_HINT.to_string(), style_dim()));
+                    }
+                    bound_line(Line::from(spans), content_width as usize)
+                }
+                BlockRowKind::Rule => paint_bounded_line(
+                    &format!("  {}", "─".repeat(room)),
+                    content_width,
+                    style_plain(),
+                ),
+                kind => paint_bounded_line(
+                    &format!("{gutter}{}", row.text),
+                    content_width,
+                    match kind {
+                        BlockRowKind::Dim => style_dim(),
+                        BlockRowKind::Bold => style_bold(),
+                        _ => style_plain(),
+                    },
+                ),
+            };
+            put_line(frame, surface, y, content_width, line);
+            if !matches!(row.kind, BlockRowKind::Rule) {
+                hits.push_copyable(Rect::new(2, y, content_width.saturating_sub(3), 1));
+            }
+        } else if absolute < block_count + note_count {
+            let absolute = absolute - block_count;
             let text = notes_rows
                 .get(absolute)
                 .map(String::as_str)
@@ -3396,6 +3496,19 @@ fn paint_task_page(
                 ),
                 u16::try_from(cursor_row.saturating_sub(scroll)).unwrap_or(u16::MAX),
                 editor.cursor_col.min(content_width.saturating_sub(5)),
+            );
+        }
+    }
+    if let Some((row, col)) = block_cursor {
+        if row >= scroll && row < scroll.saturating_add(lay.notes_rows as usize) {
+            place_edit_cursor_at(
+                frame,
+                local_rect(
+                    surface,
+                    Rect::new(0, lay.notes_y, content_width, lay.notes_rows),
+                ),
+                u16::try_from(row - scroll).unwrap_or(u16::MAX),
+                col.min(content_width.saturating_sub(1)),
             );
         }
     }
@@ -4013,6 +4126,198 @@ fn paint_launch_card(
         Rect::new(content.x, content.y, content.width, 1),
         paint_bounded_line(&message, content.width, style_plain()),
     );
+}
+
+const BLOCK_CARD_FOOTER: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "enter",
+        label: "block",
+    },
+    VerbEntry {
+        key: "tab",
+        label: "next field",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "cancel",
+    },
+];
+
+const BLOCK_EDIT_FOOTER: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "enter",
+        label: "save",
+    },
+    VerbEntry {
+        key: "tab",
+        label: "next field",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "cancel",
+    },
+];
+
+/// Wrapped rows of the block card body, with the caret's (row, column) when focused.
+pub(crate) fn block_card_rows(
+    card: &BlockCardPaint,
+    width: usize,
+) -> (Vec<Line<'static>>, Option<(u16, u16)>) {
+    const LABEL: usize = 7;
+    let value_width = width.saturating_sub(LABEL).max(1);
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    let mut caret = None;
+    let label_style = |focused: bool| if focused { style_bold() } else { style_dim() };
+    let field = |rows: &mut Vec<Line<'static>>,
+                 caret: &mut Option<(u16, u16)>,
+                 label: &str,
+                 value: &str,
+                 placeholder: &str,
+                 focused: bool,
+                 cursor: usize| {
+        let buffer = crate::ui::edit::EditBuffer::new(value, cursor);
+        let (wrapped, cursor_row, cursor_col) =
+            crate::ui::edit::wrapped_edit_rows(&buffer, value_width);
+        if focused {
+            *caret = Some((
+                u16::try_from(rows.len() + cursor_row).unwrap_or(u16::MAX),
+                u16::try_from(LABEL + cursor_col).unwrap_or(u16::MAX),
+            ));
+        }
+        for (index, row) in wrapped.iter().enumerate() {
+            let lead = if index == 0 {
+                format!("{label:<LABEL$}")
+            } else {
+                " ".repeat(LABEL)
+            };
+            let (text, style) = if value.is_empty() && !focused {
+                (placeholder.to_string(), style_dim())
+            } else {
+                (row.clone(), style_plain())
+            };
+            rows.push(Line::from(vec![
+                Span::styled(lead, label_style(focused)),
+                Span::styled(text, style),
+            ]));
+        }
+    };
+    field(
+        &mut rows,
+        &mut caret,
+        "why",
+        &card.why,
+        "optional",
+        card.focus == 0,
+        card.cursor,
+    );
+    let mut on_spans = vec![
+        Span::styled(format!("{:<LABEL$}", "on"), label_style(card.focus == 1)),
+        Span::styled("‹ ".to_string(), style_dim()),
+    ];
+    for (index, kind) in ["you", "task", "other"].into_iter().enumerate() {
+        if index > 0 {
+            on_spans.push(Span::styled(" · ".to_string(), style_dim()));
+        }
+        let style = if kind == card.on_kind {
+            style_bold().add_modifier(Modifier::UNDERLINED)
+        } else {
+            style_dim()
+        };
+        on_spans.push(Span::styled(kind.to_string(), style));
+    }
+    on_spans.push(Span::styled(" ›".to_string(), style_dim()));
+    rows.push(Line::from(on_spans));
+    if card.on_kind != "you" {
+        let placeholder = if card.on_kind == "task" {
+            "task number, like T12"
+        } else {
+            "what it waits on"
+        };
+        field(
+            &mut rows,
+            &mut caret,
+            "",
+            &card.on_text,
+            placeholder,
+            card.focus == 1,
+            card.cursor,
+        );
+    } else if card.focus == 1 {
+        caret = Some((
+            u16::try_from(rows.len() - 1).unwrap_or(u16::MAX),
+            u16::try_from(LABEL).unwrap_or(u16::MAX),
+        ));
+    }
+    field(
+        &mut rows,
+        &mut caret,
+        "needs",
+        &card.needs,
+        "optional",
+        card.focus == 2,
+        card.cursor,
+    );
+    if let Some(refusal) = card.refusal.as_deref() {
+        for row in crate::ui::edit::wrap_text(refusal, width.max(1)) {
+            rows.push(Line::from(Span::styled(row.text, style_bold())));
+        }
+    }
+    (rows, caret)
+}
+
+fn paint_block_card(
+    frame: &mut Frame<'_>,
+    geo: &TierGeometry,
+    surface: Rect,
+    card: &BlockCardPaint,
+    hits: &mut QueueHitMap,
+) {
+    if geo.row_width == 0 {
+        return;
+    }
+    let bounds = Rect::new(0, 0, geo.row_width, geo.height);
+    let pad: u16 = if geo.tier == Tier::Compact { 0 } else { 1 };
+    let content_width = modal_card_width(geo, bounds, 0).saturating_sub(2 + 2 * pad);
+    let (rows, caret) = block_card_rows(card, content_width as usize);
+    let content = paint_modal_card(
+        frame,
+        geo,
+        surface,
+        bounds,
+        ModalCardSpec {
+            title: &card.title,
+            content_rows: u16::try_from(rows.len()).unwrap_or(u16::MAX),
+            min_content_width: 0,
+            legend: if card.edit {
+                BLOCK_EDIT_FOOTER
+            } else {
+                BLOCK_CARD_FOOTER
+            },
+            dismiss: None,
+            legend_hits: None,
+        },
+        hits,
+    );
+    if content.width == 0 || content.height == 0 {
+        return;
+    }
+    for (offset, line) in rows.into_iter().enumerate() {
+        let Ok(offset) = u16::try_from(offset) else {
+            break;
+        };
+        if offset >= content.height {
+            break;
+        }
+        put_line_at(
+            frame,
+            surface,
+            Rect::new(content.x, content.y + offset, content.width, 1),
+            bound_line(line, content.width as usize),
+        );
+    }
+    if let Some((row, column)) = caret.filter(|(row, _)| *row < content.height) {
+        place_edit_cursor_at(frame, local_rect(surface, content), row, column);
+    }
 }
 
 /// The board's `P` project-scope picker: a centered modal card, not the chip-anchored

@@ -132,6 +132,10 @@ pub enum BoardInputMode {
     Search,
     /// Single-line status-row capture from board `+`.
     QuickAdd,
+    /// The block card (`ctrl+b`) owns input: why, on and needs.
+    BlockCard,
+    /// The task page's reply box under the last reply owns input.
+    EditReply,
 }
 
 /// Result of applying a [`BoardIntent`].
@@ -418,6 +422,8 @@ pub(super) struct BoardForm {
     /// Page-session steps state (step cursor, window scroll, delete mark, step
     /// editor). Carried by the form so it lives exactly as long as the page does.
     pub(super) steps: StepsPageState,
+    /// The BLOCKED section's ring stop and reply box. Lives as long as the page does.
+    pub(super) block: super::block::BlockPageState,
     /// The furthest shared-content scroll offset the last painted frame can show.
     ///
     /// The scroll bound depends on the wrap width, which only the renderer knows: the model
@@ -524,6 +530,7 @@ impl BoardForm {
             notes_scroll: 0,
             manual_page_scroll: false,
             steps: StepsPageState::default(),
+            block: super::block::BlockPageState::default(),
             notes_max_scroll: std::cell::Cell::new(0),
             notes_width: std::cell::Cell::new(0),
         }
@@ -1051,6 +1058,8 @@ pub struct BoardModel {
     pub(super) cleanup_status: Option<String>,
     /// Bulk dispatch card over the marked set while it owns input.
     pub(super) dispatch_prompt: Option<DispatchPrompt>,
+    /// The block card while it owns input.
+    pub(super) block_card: Option<super::block::BlockCard>,
     /// A bulk dispatch whose launches are still landing. One slot shared by the outer board and
     /// its project preview, so dropping or rebinding the preview never loses a running batch.
     pub(super) bulk_dispatch: SharedBulkDispatch,
@@ -1668,6 +1677,7 @@ impl BoardModel {
             quit_after_cleanup: None,
             cleanup_status: None,
             dispatch_prompt: None,
+            block_card: None,
             bulk_dispatch: SharedBulkDispatch::default(),
             pending_delete_bulk: false,
             popup: BoardPopup::None,
@@ -1720,6 +1730,7 @@ impl BoardModel {
             self.project_picker = None;
             self.cleanup_prompt = None;
             self.dispatch_prompt = None;
+            self.block_card = None;
             if cleanup {
                 self.clear_message();
             }
@@ -1876,6 +1887,32 @@ impl BoardModel {
         self.dispatch_prompt = Some(prompt);
         self.popup = BoardPopup::DispatchConfirm;
         self.clear_message();
+    }
+
+    /// The block card while it owns input.
+    pub fn block_card(&self) -> Option<&super::block::BlockCard> {
+        self.block_card.as_ref()
+    }
+
+    /// The task page's selected BLOCKED stop, if any. A selected step outranks it.
+    pub fn block_target(&self) -> Option<super::block::BlockTarget> {
+        super::block::selected_block_target(self)
+    }
+
+    /// Whether `Enter` on the task page lands on a block option.
+    pub fn block_option_selected(&self) -> bool {
+        matches!(
+            self.block_target(),
+            Some(super::block::BlockTarget::Option(_))
+        )
+    }
+
+    /// The reply box's draft while it is open.
+    pub fn reply_draft(&self) -> Option<&str> {
+        self.form
+            .as_ref()
+            .and_then(|form| form.block.reply.as_ref())
+            .map(|editor| editor.buffer.value())
     }
 
     pub fn dispatch_prompt(&self) -> Option<&DispatchPrompt> {
@@ -2147,6 +2184,9 @@ impl BoardModel {
         // `sync_from_domain` ran first and left
         // the pending save unresolved precisely because the mutation is not in the
         // baseline; Retried resolves it there instead and never reaches this branch.
+        if resolution == SaveResolution::Cancelled {
+            super::block::release_cancelled_reply(self);
+        }
         if resolution == SaveResolution::Cancelled
             && self
                 .form
@@ -2328,6 +2368,7 @@ impl BoardModel {
         self.finish_quick_add_save();
         self.finish_task_edit_save();
         self.finish_step_editor_save();
+        super::block::finish_reply_save(self);
         if let Some(id) = pinned_edit.or(pinned_quick_add) {
             // A save this surface just made owns the selection, but navigation never
             // follows it: the pin moves only when the current destination already
@@ -4357,6 +4398,7 @@ impl BoardModel {
             }
             BoardPopup::CleanupConfirm => BoardInputMode::CleanupConfirm,
             BoardPopup::DispatchConfirm => BoardInputMode::DispatchConfirm,
+            BoardPopup::BlockCard => BoardInputMode::BlockCard,
             _ if self.project_picker.is_some() => BoardInputMode::ProjectPicker,
             _ if self.focused_surface() == FocusedSurface::Board
                 && self.input_mode == BoardInputMode::TaskPage =>

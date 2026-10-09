@@ -289,6 +289,46 @@ fn bulk_trailer_lines(bulk: &super::BulkCleanup, lines: &mut Vec<CleanupCardLine
     }
 }
 
+/// The block card over the cursor task or a marked set.
+fn block_card_overlay<'a>(
+    model: &BoardModel,
+    card: &crate::ui::board::BlockCard,
+) -> QueueOverlay<'a> {
+    use crate::ui::board::{BlockCardField, OnKind};
+    let identifier = |id: &uuid::Uuid| {
+        model
+            .tasks
+            .iter()
+            .find(|task| task.id == *id)
+            .and_then(|task| task.board_identifier())
+    };
+    let title = match (card.is_edit(), card.targets()) {
+        (true, [id]) => format!("edit block {}", identifier(id).unwrap_or_default()),
+        (false, [id]) => format!("block {}", identifier(id).unwrap_or_default()),
+        (_, targets) => format!("block {} tasks", targets.len()),
+    };
+    let (focus, cursor) = match card.field() {
+        BlockCardField::Why => (0, card.why().cursor()),
+        BlockCardField::On => (1, card.on_text().cursor()),
+        BlockCardField::Needs => (2, card.needs().cursor()),
+    };
+    QueueOverlay::BlockCard(render::BlockCardPaint {
+        title: title.trim().to_string(),
+        why: terminal_text(card.why().value()),
+        needs: terminal_text(card.needs().value()),
+        on_kind: match card.on_kind() {
+            OnKind::You => "you",
+            OnKind::Task => "task",
+            OnKind::Other => "other",
+        },
+        on_text: terminal_text(card.on_text().value()),
+        focus,
+        cursor,
+        refusal: card.refusal().map(str::to_string),
+        edit: card.is_edit(),
+    })
+}
+
 /// The bulk dispatch card: one row per task `y` launches (assignee and base), then the skipped
 /// tasks with the single-task refusal. `default_branch` names a repository's remote default.
 pub(crate) fn dispatch_overlay<'a>(
@@ -453,6 +493,23 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
             VerbEntry {
                 key: "shift+enter",
                 label: "save",
+            },
+            VerbEntry {
+                key: "esc",
+                label: "cancel",
+            },
+        ];
+    }
+
+    if model.input_mode() == BoardInputMode::EditReply {
+        return vec![
+            VerbEntry {
+                key: "shift+enter",
+                label: "save",
+            },
+            VerbEntry {
+                key: "ctrl+s",
+                label: "save + unblock",
             },
             VerbEntry {
                 key: "esc",
@@ -1165,11 +1222,29 @@ fn build_task_page_overlay<'a>(
             }
         }
     }
+    // A blocked task leads its page with the BLOCKED section, outside an edit session.
+    let (block_rows, block_stops, block_cursor) = match bound_task {
+        Some(task) if !editing_session && task.status == HumanStatus::Blocked => {
+            block_page_rows(model, form, task, notes_width)
+        }
+        _ => (Vec::new(), Vec::new(), None),
+    };
+    form.block.rows.replace(block_stops);
     let step_rows: usize = step_views.iter().map(|step| step.rows.len().max(1)).sum();
     // Match the painter's stream exactly: it always paints one notes row and a trailing
     // `+ step` row, even when both stored notes and stored steps are empty.
-    let content =
-        render::page_content_layout(notes_rows.len().max(1), step_rows + 1, lay.notes_rows);
+    let content = render::page_content_layout(
+        block_rows.len() + notes_rows.len().max(1),
+        step_rows + 1,
+        lay.notes_rows,
+    );
+    // The reply box's caret stays in view while it is typed into.
+    let notes_scroll = match block_cursor {
+        Some((row, _)) if !form.manual_page_scroll => notes_scroll
+            .clamp(row.saturating_sub(want.saturating_sub(1)), row)
+            .min(content.max_scroll),
+        _ => notes_scroll,
+    };
     form.notes_max_scroll.set(content.max_scroll);
     form.steps.content_start.set(content.steps_start);
     form.notes_width.set(notes_width);
@@ -1212,6 +1287,8 @@ fn build_task_page_overlay<'a>(
         step_scroll: notes_scroll,
         step_marked: form.steps.delete_mark.and_then(visible_step_index),
         inline_step_editor,
+        block_rows,
+        block_cursor,
         bottom_input,
         meta,
         meta_assignee_x,
@@ -1224,6 +1301,207 @@ fn build_task_page_overlay<'a>(
         focus,
         scope_dropdown,
     }
+}
+
+/// The BLOCKED section of a blocked task's page: heading, why, needs, options and replies,
+/// the reply box when open, then the closing rule. Also returns each ring stop's row and the
+/// reply box caret. Every text wraps at `width`.
+fn block_page_rows(
+    model: &BoardModel,
+    form: &BoardForm,
+    task: &crate::domain::Task,
+    width: usize,
+) -> (
+    Vec<render::BlockPageRow>,
+    Vec<(crate::ui::board::BlockTarget, usize)>,
+    Option<(usize, u16)>,
+) {
+    use crate::domain::{BlockOn, OWNER};
+    use crate::ui::board::BlockTarget;
+    use crate::ui::queue::{block_wait, BlockWait};
+    use render::{BlockPageRow, BlockRowKind};
+
+    let Some(block) = task.block.as_ref() else {
+        return (Vec::new(), Vec::new(), None);
+    };
+    let width = width.max(8);
+    let now = SystemTime::now();
+    let selected = model.block_target();
+    let mut rows: Vec<BlockPageRow> = Vec::new();
+    let mut stops = Vec::new();
+    let author = |by: &str| {
+        if by == OWNER {
+            OWNER.to_string()
+        } else {
+            format!("@{}", terminal_text(by))
+        }
+    };
+    // `lead` paints on the first wrapped row; continuations align under the text after it.
+    let mut push = |rows: &mut Vec<BlockPageRow>,
+                    lead: &str,
+                    text: &str,
+                    kind: BlockRowKind,
+                    stop: Option<BlockTarget>| {
+        let indent = render::display_width(lead);
+        let first = rows.len();
+        for (index, row) in wrap_text(&terminal_text(text), width.saturating_sub(indent).max(1))
+            .into_iter()
+            .enumerate()
+        {
+            let lead = if index == 0 {
+                lead.to_string()
+            } else {
+                " ".repeat(indent)
+            };
+            rows.push(BlockPageRow {
+                text: format!("{lead}{}", row.text),
+                kind: if index > 0 && kind == BlockRowKind::Heading {
+                    BlockRowKind::Bold
+                } else {
+                    kind
+                },
+                selected: index == 0 && stop.is_some() && stop == selected,
+            });
+        }
+        if let Some(stop) = stop {
+            stops.push((stop, first));
+        }
+    };
+
+    let on = match &block.on {
+        BlockOn::You => "on you".to_string(),
+        BlockOn::Task(number) => format!("on T{number}"),
+        BlockOn::Other(text) => format!("on {text}"),
+    };
+    let mut heading = format!(
+        "BLOCKED · {on} · {} {}",
+        author(&block.by),
+        render::format_age(now, block.at)
+    );
+    if block.edited_at.is_some() {
+        heading.push_str(" · edited");
+    }
+    push(
+        &mut rows,
+        "",
+        &heading,
+        BlockRowKind::Heading,
+        Some(BlockTarget::Heading),
+    );
+    match block_wait(task, &model.tasks) {
+        Some(BlockWait::BlockerDone(number)) => push(
+            &mut rows,
+            "",
+            &format!("T{number} done, unblock? ctrl+b"),
+            BlockRowKind::Bold,
+            None,
+        ),
+        Some(BlockWait::BlockerGone(number)) => push(
+            &mut rows,
+            "",
+            &format!("T{number} is gone, unblock? ctrl+b"),
+            BlockRowKind::Bold,
+            None,
+        ),
+        _ => {}
+    }
+    if let Some(why) = block.why.as_deref() {
+        push(&mut rows, "why    ", why, BlockRowKind::Plain, None);
+    }
+    if let Some(needs) = block.needs.as_deref() {
+        push(&mut rows, "needs  ", needs, BlockRowKind::Plain, None);
+    }
+    for (index, option) in block.options.iter().enumerate() {
+        push(
+            &mut rows,
+            "○ ",
+            option,
+            BlockRowKind::Plain,
+            Some(BlockTarget::Option(index)),
+        );
+    }
+    for (index, reply) in block.replies.iter().enumerate() {
+        let mut lead = format!(
+            "└ {} {}  ",
+            author(&reply.by),
+            render::format_age(now, reply.at)
+        );
+        if reply.deleted {
+            push(&mut rows, &lead, "deleted", BlockRowKind::Dim, None);
+            continue;
+        }
+        if reply.edited {
+            lead = format!(
+                "└ {} {} · edited  ",
+                author(&reply.by),
+                render::format_age(now, reply.at)
+            );
+        }
+        push(
+            &mut rows,
+            &lead,
+            &reply.text,
+            BlockRowKind::Plain,
+            Some(BlockTarget::Reply(index)),
+        );
+    }
+    let mut caret = None;
+    if let Some(editor) = form.block.reply.as_ref() {
+        let lead = if editor.edit.is_some() {
+            "└ you (edit)  "
+        } else {
+            "└ you  "
+        };
+        let indent = render::display_width(lead);
+        let field_width = width.saturating_sub(indent).max(1);
+        editor.width.set(field_width);
+        let (draft_rows, cursor_row, cursor_col) = wrapped_edit_rows(&editor.buffer, field_width);
+        let first = rows.len();
+        for (index, row) in draft_rows.iter().enumerate() {
+            let lead = if index == 0 {
+                lead.to_string()
+            } else {
+                " ".repeat(indent)
+            };
+            let empty = editor.buffer.value().is_empty();
+            rows.push(BlockPageRow {
+                text: format!("{lead}{}", if empty { "reply…" } else { row }),
+                kind: BlockRowKind::Bold,
+                selected: false,
+            });
+        }
+        if model.input_mode() == BoardInputMode::EditReply {
+            caret = Some((
+                first + cursor_row,
+                u16::try_from(2 + indent + cursor_col).unwrap_or(u16::MAX),
+            ));
+        }
+        if let Some(refusal) = editor.refusal.as_deref() {
+            push(
+                &mut rows,
+                &" ".repeat(indent),
+                refusal,
+                BlockRowKind::Dim,
+                None,
+            );
+        }
+    }
+    rows.push(BlockPageRow {
+        text: String::new(),
+        kind: BlockRowKind::Plain,
+        selected: false,
+    });
+    rows.push(BlockPageRow {
+        text: String::new(),
+        kind: BlockRowKind::Rule,
+        selected: false,
+    });
+    rows.push(BlockPageRow {
+        text: String::new(),
+        kind: BlockRowKind::Plain,
+        selected: false,
+    });
+    (rows, stops, caret)
 }
 
 /// Idle status-row context for the active lens. Stored paths and thread names reach the
@@ -1593,6 +1871,9 @@ impl OverlayPayloads {
                 Some(run) => cleanup_run_overlay(prompt, &run),
                 None => cleanup_overlay(prompt, home_dir().as_deref()),
             });
+        }
+        if let Some(card) = model.block_card() {
+            return Some(block_card_overlay(model, card));
         }
         if let Some(prompt) = model.dispatch_prompt() {
             return Some(dispatch_overlay(prompt, |project| {
