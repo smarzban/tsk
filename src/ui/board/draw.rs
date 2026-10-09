@@ -1796,8 +1796,16 @@ fn block_page_rows(
             rows.push(row(lead.clone(), BlockRowKind::Bold, false));
         }
         let first = rows.len();
-        let empty = editor.buffer.value().is_empty();
-        for (index, draft) in draft_rows.iter().enumerate() {
+        // The empty draft's hint wraps at the draft's width too, never truncated.
+        let shown: Vec<String> = if editor.buffer.value().is_empty() {
+            wrap_text(&editor.placeholder, field_width)
+                .into_iter()
+                .map(|row| row.text)
+                .collect()
+        } else {
+            draft_rows
+        };
+        for (index, text) in shown.iter().enumerate() {
             let lead = if index == 0 && beside {
                 format!(
                     "{lead}{}",
@@ -1805,11 +1813,6 @@ fn block_page_rows(
                 )
             } else {
                 " ".repeat(indent)
-            };
-            let text = if empty {
-                editor.placeholder.as_str()
-            } else {
-                draft
             };
             rows.push(row(format!("{lead}{text}"), BlockRowKind::Bold, false));
         }

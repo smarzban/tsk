@@ -11892,6 +11892,51 @@ mod quick_assign_tests {
         assert_eq!(model.input_mode(), BoardInputMode::TaskPage, "no box opens");
     }
 
+    /// At 40 columns a wide thread column (an edited reply) leaves the feedback box narrower
+    /// than its empty hint: the hint wraps beside the column instead of being cut.
+    #[test]
+    fn the_empty_feedback_hint_wraps_at_40_columns() {
+        let temp = Temp::new("review-hint", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        domain
+            .assign(ids[0], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        review_page(&temp, &mut domain, &mut model, ids[0], &["a"]);
+        domain
+            .reply(ids[0], "first", crate::domain::OWNER)
+            .expect("feedback");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        domain.edit_reply(ids[0], 0, "first, edited").expect("edit");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        let mut host = fake_host(&temp);
+        page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Char('r'),
+            KeyModifiers::NONE,
+        );
+        assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+        let (screen, _) = board_screen(&model, 40, 40);
+        let rows: Vec<&str> = screen
+            .lines()
+            .skip_while(|line| !line.contains("you · ") || !line.contains("edited"))
+            .skip(1)
+            .take_while(|line| !line.trim().is_empty())
+            .collect();
+        let column = rows
+            .first()
+            .and_then(|row| row.find("feedback"))
+            .unwrap_or_else(|| panic!("the hint beside the column:\n{screen}"));
+        assert!(rows.len() > 1, "the hint wraps:\n{screen}");
+        let hint: Vec<&str> = rows.iter().map(|row| row[column..].trim_end()).collect();
+        assert_eq!(hint.join(" "), "feedback to @builder…", "{screen}");
+        assert!(!screen.contains("feedback to @buil\n"), "{screen}");
+    }
+
     /// The feedback box's keys: Esc discards, Shift+Enter stores and stays in review, and
     /// neither sends anything.
     #[test]
