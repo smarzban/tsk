@@ -186,9 +186,9 @@ fn bare_page_keys_never_mutate_steps() {
             BoardInputMode::TaskPage,
             KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)
         ),
-        Some(BoardIntent::ToggleTrailAll)
+        Some(BoardIntent::ToggleTrail)
     );
-    apply_intent(&mut domain, &mut model, BoardIntent::ToggleTrailAll, None).expect("toggle");
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleTrail, None).expect("toggle");
     for key in [
         KeyCode::Char('s'),
         KeyCode::Char(' '),

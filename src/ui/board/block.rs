@@ -6,7 +6,6 @@ use std::collections::BTreeSet;
 
 use uuid::Uuid;
 
-use crate::activity::TrailEntry;
 use crate::domain::{
     Block, BlockDraft, BlockField, BlockKey, BlockKind, BlockOn, BlockPatch, CheckState,
     DomainError, DomainState, HumanStatus, ReviewDraft, ReviewPatch, Task, BLOCK_TEXT_MAX, OWNER,
@@ -19,8 +18,11 @@ use super::model::{BoardInputMode, BoardModel, IntentOutcome};
 /// One Tab stop of the task page's BLOCKED or REVIEW section, or of its PAPER TRAIL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockTarget {
+    /// The PAPER TRAIL's `PAPER TRAIL · N ▸` heading: Enter expands or collapses the trail.
+    TrailHeading,
     /// A closed block or review round on the PAPER TRAIL, by its index in `past_blocks`.
     Trail(usize),
+    /// The section's top line, the row's live line: `ctrl+e` edits the block or review round.
     Heading,
     Option(usize),
     /// A review check, by its index in the round.
@@ -44,8 +46,8 @@ pub(crate) struct BlockPageState {
     /// Absolute content row of each ring stop at the last painted width, recorded by the
     /// renderer so Tab can keep the selected stop inside the page viewport.
     pub(crate) rows: RefCell<Vec<(BlockTarget, usize)>>,
-    /// The PAPER TRAIL shows every entry rather than the latest few (`a`).
-    pub(crate) trail_all: bool,
+    /// The PAPER TRAIL is expanded (`g`). Every page opens with it collapsed.
+    pub(crate) trail_expanded: bool,
     /// Closed records expanded in place on the PAPER TRAIL, by `past_blocks` index.
     pub(crate) trail_open: BTreeSet<usize>,
 }
@@ -722,6 +724,11 @@ fn page_block_task(model: &BoardModel) -> Option<&Task> {
         .filter(|task| has_open_section(task))
 }
 
+/// Whether the page shows its BLOCKED or REVIEW section.
+pub(super) fn page_section_open(model: &BoardModel) -> bool {
+    page_block_task(model).is_some()
+}
+
 /// The review checks in page order: the checks shown in place, then the ones folded under their
 /// `N passed` line. The page's frozen fold decides which fold; without one for this round, the
 /// passed checks do (a fresh paint).
@@ -734,6 +741,23 @@ pub(crate) fn review_check_order(
         Some(fold) => !fold.folded.contains(index),
         None => block.checks[*index].state != CheckState::Passed,
     })
+}
+
+/// Where a freshly opened page's cursor rests: a review round's first unmarked check in page
+/// order (all marked: its first check shown, else the `N passed` line). A blocked page, and any
+/// other, opens with nothing selected.
+pub(crate) fn initial_target(task: &Task, fold: Option<&CheckFold>) -> Option<BlockTarget> {
+    let block = task
+        .block
+        .as_ref()
+        .filter(|block| block.is_review() && has_open_section(task))?;
+    let (shown, passed) = review_check_order(block, fold);
+    shown
+        .iter()
+        .find(|index| block.checks[**index].state == CheckState::Open)
+        .or(shown.first())
+        .map(|index| BlockTarget::Check(*index))
+        .or_else(|| (!passed.is_empty()).then_some(BlockTarget::PassedFold))
 }
 
 /// The ring stops of the page's open block or review round, in order.
@@ -775,13 +799,25 @@ pub(super) fn selected_block_target(model: &BoardModel) -> Option<BlockTarget> {
         return None;
     }
     let target = form.block.target?;
-    if matches!(target, BlockTarget::Trail(_)) {
+    if matches!(target, BlockTarget::Trail(_) | BlockTarget::TrailHeading) {
         return trail_stops(model).contains(&target).then_some(target);
     }
     let task = page_block_task(model)?;
     block_ring(task, form.block.passed_open, form.block.fold.as_ref())
         .contains(&target)
         .then_some(target)
+}
+
+/// Select `target` when the page's open section has it as a stop (a click). False otherwise.
+pub(super) fn select_stop(model: &mut BoardModel, target: BlockTarget) -> bool {
+    let Some(task) = page_block_task(model) else {
+        return false;
+    };
+    if !page_ring(model, task).contains(&target) {
+        return false;
+    }
+    select_block_target(model, Some(target));
+    true
 }
 
 fn select_block_target(model: &mut BoardModel, target: Option<BlockTarget>) {
@@ -826,20 +862,8 @@ pub(crate) fn page_trail_task(model: &BoardModel) -> Option<&Task> {
         .filter(|task| !task.is_notice())
 }
 
-/// The PAPER TRAIL entries the page shows, newest first, and how many earlier ones `a` reveals.
-pub(crate) fn trail_view(task: &Task, all: bool) -> (Vec<TrailEntry>, usize) {
-    let mut entries = crate::activity::paper_trail(task);
-    let hidden = if all {
-        0
-    } else {
-        entries.len().saturating_sub(crate::activity::LATEST)
-    };
-    entries.truncate(entries.len() - hidden);
-    (entries, hidden)
-}
-
-/// The PAPER TRAIL's Tab stops, newest first: the closed records it shows. An edit session owns
-/// the ring, so it has none then.
+/// The PAPER TRAIL's Tab stops: its heading, then the closed records it shows, newest first,
+/// while it is expanded. An edit session owns the ring, so it has none then.
 fn trail_stops(model: &BoardModel) -> Vec<BlockTarget> {
     let editing = model
         .form
@@ -848,17 +872,30 @@ fn trail_stops(model: &BoardModel) -> Vec<BlockTarget> {
     let Some(task) = page_trail_task(model).filter(|_| !editing) else {
         return Vec::new();
     };
-    let all = model.form.as_ref().is_some_and(|form| form.block.trail_all);
-    trail_view(task, all)
-        .0
-        .iter()
-        .filter_map(|entry| entry.record.map(BlockTarget::Trail))
-        .collect()
+    let entries = crate::activity::paper_trail(task);
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    let mut stops = vec![BlockTarget::TrailHeading];
+    if model
+        .form
+        .as_ref()
+        .is_some_and(|form| form.block.trail_expanded)
+    {
+        stops.extend(
+            entries
+                .iter()
+                .filter_map(|entry| entry.record.map(BlockTarget::Trail)),
+        );
+    }
+    stops
 }
 
 /// Move Tab within the PAPER TRAIL. `LeaveBlock` past either end, `NotHandled` off the trail.
 pub(super) fn move_trail_tab(model: &mut BoardModel, forward: bool) -> PageTab {
-    let Some(current @ BlockTarget::Trail(_)) = selected_block_target(model) else {
+    let Some(current @ (BlockTarget::Trail(_) | BlockTarget::TrailHeading)) =
+        selected_block_target(model)
+    else {
         return PageTab::NotHandled;
     };
     let stops = trail_stops(model);
@@ -894,20 +931,18 @@ pub(super) fn enter_trail(model: &mut BoardModel, forward: bool) -> bool {
     true
 }
 
-/// `a`: show every PAPER TRAIL entry, or only the latest few. A selected record the shorter
-/// view hides loses its selection.
-pub(super) fn toggle_trail_all(model: &mut BoardModel) {
+/// `g`, `Enter` on the heading, or a click on it: expand or collapse the PAPER TRAIL. A record
+/// the collapse hides hands its selection to the heading.
+pub(super) fn toggle_trail(model: &mut BoardModel) {
     if page_trail_task(model).is_none() {
         return;
     }
     let selected = selected_block_target(model);
     if let Some(form) = model.form.as_mut() {
-        form.block.trail_all = !form.block.trail_all;
+        form.block.trail_expanded = !form.block.trail_expanded;
     }
-    if let Some(target @ BlockTarget::Trail(_)) = selected {
-        if !trail_stops(model).contains(&target) {
-            select_block_target(model, None);
-        }
+    if let Some(BlockTarget::Trail(_)) = selected {
+        select_block_target(model, Some(BlockTarget::TrailHeading));
     }
 }
 
@@ -1194,9 +1229,15 @@ pub(super) fn selected_option_text(model: &BoardModel) -> Option<String> {
     let BlockTarget::Option(index) = selected_block_target(model)? else {
         return None;
     };
+    option_text(model, index)
+}
+
+/// The text of the page's open block option `index` (from 0), for its number key.
+pub(super) fn option_text(model: &BoardModel, index: usize) -> Option<String> {
     page_block_task(model)?
         .block
-        .as_ref()?
+        .as_ref()
+        .filter(|block| !block.is_review())?
         .options
         .get(index)
         .cloned()

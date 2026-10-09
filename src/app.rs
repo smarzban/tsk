@@ -1110,6 +1110,18 @@ fn board_keyboard_intent(
         if model.trail_record_selected() {
             return Some(BoardIntent::ToggleTrailRecord(None));
         }
+        if model.trail_heading_selected() {
+            return Some(BoardIntent::ToggleTrail);
+        }
+    }
+    // `ctrl+s` on a page showing its BLOCKED or REVIEW section unblocks, or sends the review
+    // back, the way the reply box's `ctrl+s` does with nothing typed.
+    if mode == BoardInputMode::TaskPage
+        && key.code == KeyCode::Char('s')
+        && key.modifiers == KeyModifiers::CONTROL
+        && model.page_section_open()
+    {
+        return Some(BoardIntent::PageReplyUnblock);
     }
     // Bare Enter on a stored step toggles it. Resolved here, where the model is in reach,
     // so the persisting intent is classified before the save boundary sees it.
@@ -3712,6 +3724,16 @@ fn handle_board_intent_with_host(
         copy_task_number(domain, model, id);
         return Ok(false);
     }
+    // `ctrl+s` on a page showing its BLOCKED or REVIEW section is the reply box's `ctrl+s` on an
+    // empty box: open the box, then save it the same way (a refusal stays in the box).
+    let intent = if intent == BoardIntent::PageReplyUnblock {
+        if save_recovery.is_pending() || !model.open_page_reply_box() {
+            return Ok(false);
+        }
+        BoardIntent::ReplySaveUnblock
+    } else {
+        intent
+    };
     let dispatch_target = if intent == BoardIntent::DispatchAgain {
         model.selected_id()
     } else {
@@ -11176,7 +11198,7 @@ mod quick_assign_tests {
             KeyCode::Char('a'),
             none,
         );
-        assert_eq!(a, BoardIntent::ToggleTrailAll);
+        assert_eq!(a, BoardIntent::ToggleTrail);
         assert!(!crate::ui::board::board_intent_may_persist(&model, &a));
         assert_eq!(temp.store.load().expect("reload").tasks(), before.tasks());
     }

@@ -233,10 +233,12 @@ pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> boo
                 | BoardIntent::BlockCardConfirm
                 | BoardIntent::ReplySave
                 | BoardIntent::ReplySaveUnblock
+                | BoardIntent::PageReplyUnblock
                 | BoardIntent::ReplySaveStart
                 | BoardIntent::ReplySaveBeforeLaunch
                 | BoardIntent::ToggleReview
                 | BoardIntent::CycleCheck
+                | BoardIntent::ClickCheck(_)
                 | BoardIntent::ReplyApprove
                 | BoardIntent::ApproveReview(_)
                 | BoardIntent::ToggleStep
@@ -1109,8 +1111,20 @@ fn apply_board_intent(
             super::block::toggle_passed_checks(model);
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::ToggleTrailAll => {
-            super::block::toggle_trail_all(model);
+        BoardIntent::ClickCheck(index) => {
+            if !super::block::select_stop(model, super::block::BlockTarget::Check(index)) {
+                return Ok(IntentOutcome::None);
+            }
+            return super::block::cycle_selected_check(domain, model);
+        }
+        BoardIntent::ClickPassedFold => {
+            if super::block::select_stop(model, super::block::BlockTarget::PassedFold) {
+                super::block::toggle_passed_checks(model);
+            }
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::ToggleTrail => {
+            super::block::toggle_trail(model);
             return Ok(IntentOutcome::None);
         }
         BoardIntent::ToggleTrailRecord(index) => {
@@ -1144,6 +1158,22 @@ fn apply_board_intent(
                 && !super::block::begin_reply(model, "", None)
             {
                 model.set_message("only a blocked or review task takes replies");
+            }
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::PickOption(index) => {
+            // A number picks a block option only on a blocked page; anywhere else it is inert.
+            if model.input_mode == BoardInputMode::TaskPage {
+                if let Some(text) = super::block::option_text(model, index) {
+                    super::block::begin_reply(model, &text, None);
+                }
+            }
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::PageReplyUnblock => {
+            // The application boundary opens the box and saves it; a bare reducer only opens it.
+            if model.input_mode == BoardInputMode::TaskPage {
+                super::block::begin_reply(model, "", None);
             }
             return Ok(IntentOutcome::None);
         }

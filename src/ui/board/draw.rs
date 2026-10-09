@@ -2,7 +2,6 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::time::SystemTime;
 
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -1450,26 +1449,28 @@ fn build_task_page_overlay<'a>(
     }
 }
 
-/// The PAPER TRAIL section after the steps: its heading (`a all` / `a latest` on the right when
-/// earlier entries exist), the entries newest first with closed records expandable in place, and
-/// `+ N earlier` while the latest few show. Also returns each record stop's row, counted from the
-/// section's first row. Automatic entries are dim; closed records are normal weight.
+/// The PAPER TRAIL section after the steps, all dim: its `PAPER TRAIL · N ▸` heading, and while
+/// it is expanded (`▾`) every entry, newest first, with closed records expandable in place. Also
+/// returns each stop's row, counted from the section's first row.
 fn trail_page_rows(
     model: &BoardModel,
     form: &BoardForm,
     task: &crate::domain::Task,
     width: usize,
 ) -> (
-    Vec<render::TrailPageRow>,
+    Vec<render::BlockPageRow>,
     Vec<(crate::ui::board::BlockTarget, usize)>,
 ) {
     use crate::ui::board::BlockTarget;
-    use render::{BlockPageRow, BlockRowKind, QueueHitTarget, TrailPageRow};
+    use render::{BlockPageRow, BlockRowKind, QueueHitTarget};
 
     let width = width.max(8);
     let now = model.now();
-    let all = form.block.trail_all;
-    let (entries, hidden) = super::block::trail_view(task, all);
+    let entries = crate::activity::paper_trail(task);
+    if entries.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let expanded = form.block.trail_expanded;
     // Selection belongs to the page form; another seat's form never paints it.
     let selected = model.block_target().filter(|_| {
         model
@@ -1477,77 +1478,40 @@ fn trail_page_rows(
             .as_ref()
             .is_some_and(|own| std::ptr::eq(own, form))
     });
-    let mut rows: Vec<TrailPageRow> = Vec::new();
-    let mut stops = Vec::new();
-    // A lead (`└ @claude 2m  `) that would leave the text fewer than this many columns takes
-    // its own rows, and the text continues under it at a bounded indent.
-    const MIN_TEXT: usize = 12;
-    let push = |rows: &mut Vec<TrailPageRow>,
+    let mut rows: Vec<BlockPageRow> = Vec::new();
+    let mut stops = vec![(BlockTarget::TrailHeading, 0)];
+    let push = |rows: &mut Vec<BlockPageRow>,
                 lead: &str,
                 text: &str,
-                kind: BlockRowKind,
                 selected: bool,
                 target: Option<QueueHitTarget>| {
-        let mut row = |text: String, first: bool| {
-            rows.push(TrailPageRow {
-                row: BlockPageRow {
-                    text,
-                    kind,
-                    selected: first && selected,
-                    hint: String::new(),
-                },
+        for (index, text) in beside_lead(lead, 0, text, width).into_iter().enumerate() {
+            rows.push(BlockPageRow {
+                text,
+                kind: BlockRowKind::Dim,
+                selected: index == 0 && selected,
                 target,
             });
-        };
-        let lead = terminal_text(lead);
-        let mut indent = render::display_width(&lead);
-        let mut first_lead = lead.clone();
-        if !lead.trim().is_empty() && width.saturating_sub(indent) < MIN_TEXT {
-            let margin = lead.len() - lead.trim_start().len();
-            for (index, part) in wrap_text(lead.trim(), width.saturating_sub(margin).max(1))
-                .into_iter()
-                .enumerate()
-            {
-                row(format!("{}{}", " ".repeat(margin), part.text), index == 0);
-            }
-            indent = (margin + 2).min(width / 4);
-            first_lead = " ".repeat(indent);
-        }
-        let lead_on_own_rows = first_lead != lead;
-        for (index, part) in wrap_text(&terminal_text(text), width.saturating_sub(indent).max(1))
-            .into_iter()
-            .enumerate()
-        {
-            let lead = if index == 0 {
-                first_lead.clone()
-            } else {
-                " ".repeat(indent)
-            };
-            row(
-                format!("{lead}{}", part.text),
-                index == 0 && !lead_on_own_rows,
-            );
         }
     };
-
-    let earlier = hidden > 0 || (all && entries.len() > crate::activity::LATEST);
-    rows.push(TrailPageRow {
-        row: BlockPageRow {
-            text: "PAPER TRAIL".to_string(),
-            kind: BlockRowKind::Heading,
-            selected: false,
-            hint: match (earlier, all) {
-                (false, _) => String::new(),
-                (true, false) => "a all".to_string(),
-                (true, true) => "a latest".to_string(),
-            },
-        },
-        target: None,
-    });
+    push(
+        &mut rows,
+        "",
+        &format!(
+            "PAPER TRAIL · {} {}",
+            entries.len(),
+            if expanded { "▾" } else { "▸" }
+        ),
+        selected == Some(BlockTarget::TrailHeading),
+        Some(QueueHitTarget::TrailHeading),
+    );
+    if !expanded {
+        return (rows, stops);
+    }
     for entry in &entries {
         let line = entry.line(now);
         let Some(index) = entry.record else {
-            push(&mut rows, "", &line, BlockRowKind::Dim, false, None);
+            push(&mut rows, "", &line, false, None);
             continue;
         };
         let stop = BlockTarget::Trail(index);
@@ -1557,7 +1521,6 @@ fn trail_page_rows(
             &mut rows,
             "",
             &format!("{line} {}", if open { "▾" } else { "▸" }),
-            BlockRowKind::Plain,
             selected == Some(stop),
             Some(QueueHitTarget::TrailRecord(index)),
         );
@@ -1568,7 +1531,6 @@ fn trail_page_rows(
                         &mut rows,
                         &format!("  {}", detail.lead),
                         &detail.text,
-                        BlockRowKind::Plain,
                         false,
                         Some(QueueHitTarget::TrailRecord(index)),
                     );
@@ -1576,17 +1538,42 @@ fn trail_page_rows(
             }
         }
     }
-    if hidden > 0 {
-        push(
-            &mut rows,
-            "",
-            &format!("+ {hidden} earlier"),
-            BlockRowKind::Dim,
-            false,
-            Some(QueueHitTarget::TrailAll),
-        );
-    }
     (rows, stops)
+}
+
+/// `text` wrapped beside `lead`, the lead padded to `column` cells (at least its own width) and
+/// continuations aligned under the text. A lead that would leave the text fewer than a dozen
+/// columns takes its own rows instead, and the text continues under it at a small indent.
+fn beside_lead(lead: &str, column: usize, text: &str, width: usize) -> Vec<String> {
+    const MIN_TEXT: usize = 12;
+    let lead = terminal_text(lead);
+    let text = terminal_text(text);
+    let column = column.max(render::display_width(&lead));
+    if lead.trim().is_empty() || width.saturating_sub(column) >= MIN_TEXT {
+        let pad = " ".repeat(column - render::display_width(&lead));
+        return wrap_text(&text, width.saturating_sub(column).max(1))
+            .into_iter()
+            .enumerate()
+            .map(|(index, row)| {
+                if index == 0 {
+                    format!("{lead}{pad}{}", row.text)
+                } else {
+                    format!("{}{}", " ".repeat(column), row.text)
+                }
+            })
+            .collect();
+    }
+    let margin = lead.len() - lead.trim_start().len();
+    let indent = (margin + 2).min(width / 4);
+    wrap_text(lead.trim(), width.saturating_sub(margin).max(1))
+        .into_iter()
+        .map(|part| format!("{}{}", " ".repeat(margin), part.text))
+        .chain(
+            wrap_text(&text, width.saturating_sub(indent).max(1))
+                .into_iter()
+                .map(|part| format!("{}{}", " ".repeat(indent), part.text)),
+        )
+        .collect()
 }
 
 /// The BLOCKED or REVIEW section's rows, each ring stop's row, and the reply box caret.
@@ -1596,19 +1583,22 @@ type BlockPageRows = (
     Option<(usize, u16)>,
 );
 
-/// The BLOCKED section of a blocked task's page (heading, why, needs, options) or the REVIEW
-/// section of a task in review, then the replies (feedback), the reply box when open, then the
-/// closing rule. Also returns each ring stop's row and the
-/// reply box caret. Every text wraps at `width`.
+/// Gap between the thread's `name · age` column and the reply text.
+const THREAD_GAP: usize = 3;
+
+/// The BLOCKED section of a blocked task's page or the REVIEW section of a task in review: the
+/// top line (the row's live line), the body (why and needs, or done and next) as plain text, the
+/// numbered options or the checks, the thread with the reply box when open, then the dim action
+/// line and the closing rule. Also returns each ring stop's row and the reply box caret. Every
+/// text wraps at `width`.
 fn block_page_rows(
     model: &BoardModel,
     form: &BoardForm,
     task: &crate::domain::Task,
     width: usize,
 ) -> BlockPageRows {
-    use crate::domain::{BlockOn, OWNER};
+    use crate::domain::OWNER;
     use crate::ui::board::BlockTarget;
-    use crate::ui::queue::{block_wait, BlockWait};
     use render::{BlockPageRow, BlockRowKind};
 
     let Some(block) = task.block.as_ref() else {
@@ -1616,175 +1606,205 @@ fn block_page_rows(
     };
     let width = width.max(8);
     let now = model.now();
-    let selected = model.block_target();
+    // Selection belongs to the page form; another seat's form never paints it.
+    let own = model
+        .form
+        .as_ref()
+        .is_some_and(|own| std::ptr::eq(own, form));
+    let selected = model.block_target().filter(|_| own);
     let mut rows: Vec<BlockPageRow> = Vec::new();
     let mut stops = Vec::new();
-    let author = |by: &str| {
-        if by == OWNER {
-            OWNER.to_string()
-        } else {
-            format!("@{}", terminal_text(by))
-        }
+    let row = |text: String, kind: BlockRowKind, selected: bool| BlockPageRow {
+        text,
+        kind,
+        selected,
+        target: None,
     };
-    // `lead` paints on the first wrapped row; continuations align under the text after it.
+    // A click on a check cycles it; on the `N passed` line it shows or folds them.
+    let click = |stop: Option<BlockTarget>| match stop {
+        Some(BlockTarget::Check(index)) => Some(render::QueueHitTarget::PageCheck(index)),
+        Some(BlockTarget::PassedFold) => Some(render::QueueHitTarget::PassedFold),
+        _ => None,
+    };
+    // `lead` pads to `column` on the first wrapped row; continuations align under the text.
     let mut push = |rows: &mut Vec<BlockPageRow>,
                     lead: &str,
+                    column: usize,
                     text: &str,
                     kind: BlockRowKind,
                     stop: Option<BlockTarget>| {
-        let indent = render::display_width(lead);
-        let first = rows.len();
-        for (index, row) in wrap_text(&terminal_text(text), width.saturating_sub(indent).max(1))
+        if let Some(stop) = stop {
+            stops.push((stop, rows.len()));
+        }
+        for (index, text) in beside_lead(lead, column, text, width)
             .into_iter()
             .enumerate()
         {
-            let lead = if index == 0 {
-                lead.to_string()
-            } else {
-                " ".repeat(indent)
-            };
             rows.push(BlockPageRow {
-                text: format!("{lead}{}", row.text),
-                kind: if index > 0 && kind == BlockRowKind::Heading {
-                    BlockRowKind::Bold
-                } else {
-                    kind
-                },
-                selected: index == 0 && stop.is_some() && stop == selected,
-                hint: String::new(),
+                target: click(stop),
+                ..row(text, kind, index == 0 && stop.is_some() && stop == selected)
             });
         }
-        if let Some(stop) = stop {
-            stops.push((stop, first));
-        }
     };
+    let blank = |rows: &mut Vec<BlockPageRow>| rows.push(row(String::new(), BlockRowKind::Plain, false));
 
-    let on = match &block.on {
-        BlockOn::You => "on you".to_string(),
-        BlockOn::Task(number) => format!("on T{number}"),
-        BlockOn::Agent(name) => format!("on @{name}"),
-        BlockOn::Other(text) => format!("on {text}"),
-    };
-    if block.is_review() {
-        review_section_rows(
-            task,
-            block,
-            &on,
-            form.block.passed_open,
-            form.block.fold.as_ref(),
-            &author(&block.by),
-            now,
-            &mut rows,
-            &mut push,
-        );
+    let review = block.is_review();
+    let top = render::status_line(task, &model.tasks, now).unwrap_or_else(|| {
+        if review { "needs review" } else { "blocked" }.to_string()
+    });
+    push(
+        &mut rows,
+        "",
+        0,
+        &top,
+        BlockRowKind::Bold,
+        Some(BlockTarget::Heading),
+    );
+    let body: Vec<&str> = if review {
+        [block.done.as_deref(), block.next.as_deref()]
     } else {
-        let mut heading = format!(
-            "BLOCKED · {on} · {} {}",
-            author(&block.by),
-            render::format_age(now, block.at)
-        );
-        if block.edited_at.is_some() {
-            heading.push_str(" · edited");
+        [block.why.as_deref(), block.needs.as_deref()]
+    }
+    .into_iter()
+    .flatten()
+    .collect();
+    if !body.is_empty() {
+        blank(&mut rows);
+        for text in body {
+            push(&mut rows, "", 0, text, BlockRowKind::Plain, None);
         }
-        let first = rows.len();
-        push(
-            &mut rows,
-            "",
-            &heading,
-            BlockRowKind::Heading,
-            Some(BlockTarget::Heading),
-        );
-        rows[first].hint = "r reply".to_string();
-        match block_wait(task, &model.tasks) {
-            Some(BlockWait::BlockerDone(number)) => push(
+    }
+    if review {
+        let (shown, passed) =
+            crate::ui::board::block::review_check_order(block, form.block.fold.as_ref());
+        if !block.checks.is_empty() {
+            blank(&mut rows);
+            push(&mut rows, "", 0, "Check", BlockRowKind::Dim, None);
+        }
+        for index in shown {
+            let check = &block.checks[index];
+            push(
                 &mut rows,
-                "",
-                &format!("T{number} done, unblock? ctrl+b"),
-                BlockRowKind::Bold,
-                None,
-            ),
-            Some(BlockWait::BlockerGone(number)) => push(
+                &format!(" {} ", render::check_glyph(check.state)),
+                0,
+                &check.text,
+                BlockRowKind::Plain,
+                Some(BlockTarget::Check(index)),
+            );
+        }
+        if !passed.is_empty() {
+            let open = form.block.passed_open;
+            push(
                 &mut rows,
-                "",
-                &format!("T{number} is gone, unblock? ctrl+b"),
-                BlockRowKind::Bold,
-                None,
-            ),
-            _ => {}
+                " ",
+                0,
+                &format!("{} passed {}", passed.len(), if open { "▾" } else { "▸" }),
+                BlockRowKind::Dim,
+                Some(BlockTarget::PassedFold),
+            );
+            if open {
+                for index in passed {
+                    push(
+                        &mut rows,
+                        &format!("   {} ", render::check_glyph(block.checks[index].state)),
+                        0,
+                        &block.checks[index].text,
+                        BlockRowKind::Dim,
+                        Some(BlockTarget::Check(index)),
+                    );
+                }
+            }
         }
-        if let Some(why) = block.why.as_deref() {
-            push(&mut rows, "why    ", why, BlockRowKind::Plain, None);
-        }
-        if let Some(needs) = block.needs.as_deref() {
-            push(&mut rows, "needs  ", needs, BlockRowKind::Plain, None);
-        }
+    } else if !block.options.is_empty() {
+        blank(&mut rows);
         for (index, option) in block.options.iter().enumerate() {
             push(
                 &mut rows,
-                "○ ",
+                &format!("{:>2}  ", index + 1),
+                0,
                 option,
                 BlockRowKind::Plain,
                 Some(BlockTarget::Option(index)),
             );
         }
     }
-    for (index, reply) in block.replies.iter().enumerate() {
-        let mut lead = format!(
-            "└ {} {}  ",
-            author(&reply.by),
-            render::format_age(now, reply.at)
-        );
-        if reply.deleted {
-            push(&mut rows, &lead, "deleted", BlockRowKind::Dim, None);
-            continue;
+
+    // The thread: `name · age` in one column wide enough for every lead, the text beside it.
+    let name = |by: &str| {
+        if by == OWNER {
+            OWNER.to_string()
+        } else {
+            by.to_string()
         }
-        if reply.edited {
-            lead = format!(
-                "└ {} {} · edited  ",
-                author(&reply.by),
-                render::format_age(now, reply.at)
+    };
+    let leads: Vec<String> = block
+        .replies
+        .iter()
+        .map(|reply| {
+            let mut lead = format!("{} · {}", name(&reply.by), render::format_age(now, reply.at));
+            if reply.edited && !reply.deleted {
+                lead.push_str(" · edited");
+            }
+            lead
+        })
+        .collect();
+    let editor = form.block.reply.as_ref().filter(|_| own);
+    let editor_lead = editor.map(|editor| {
+        if editor.edit.is_some() {
+            format!("{OWNER} · edit")
+        } else {
+            OWNER.to_string()
+        }
+    });
+    let column = leads
+        .iter()
+        .chain(editor_lead.iter())
+        .map(|lead| render::display_width(&terminal_text(lead)))
+        .max()
+        .unwrap_or(0)
+        + THREAD_GAP;
+    if !leads.is_empty() || editor.is_some() {
+        blank(&mut rows);
+    }
+    for ((index, reply), lead) in block.replies.iter().enumerate().zip(&leads) {
+        if reply.deleted {
+            push(&mut rows, lead, column, "deleted", BlockRowKind::Dim, None);
+        } else {
+            push(
+                &mut rows,
+                lead,
+                column,
+                &reply.text,
+                BlockRowKind::Plain,
+                Some(BlockTarget::Reply(index)),
             );
         }
-        push(
-            &mut rows,
-            &lead,
-            &reply.text,
-            BlockRowKind::Plain,
-            Some(BlockTarget::Reply(index)),
-        );
     }
     let mut caret = None;
-    if let Some(editor) = form.block.reply.as_ref() {
-        let lead = if editor.edit.is_some() {
-            "└ you (edit)  "
-        } else {
-            "└ you  "
-        };
-        let indent = render::display_width(lead);
+    if let (Some(editor), Some(lead)) = (editor, editor_lead) {
+        // Too narrow for the column: the name takes its own row and the draft follows under it.
+        let beside = width.saturating_sub(column) >= THREAD_MIN_TEXT;
+        let indent = if beside { column } else { 2 };
         let field_width = width.saturating_sub(indent).max(1);
         editor.width.set(field_width);
         let (draft_rows, cursor_row, cursor_col) = wrapped_edit_rows(&editor.buffer, field_width);
+        if !beside {
+            rows.push(row(lead.clone(), BlockRowKind::Bold, false));
+        }
         let first = rows.len();
-        for (index, row) in draft_rows.iter().enumerate() {
-            let lead = if index == 0 {
-                lead.to_string()
+        let empty = editor.buffer.value().is_empty();
+        for (index, draft) in draft_rows.iter().enumerate() {
+            let lead = if index == 0 && beside {
+                format!("{lead}{}", " ".repeat(column - render::display_width(&lead)))
             } else {
                 " ".repeat(indent)
             };
-            let empty = editor.buffer.value().is_empty();
-            rows.push(BlockPageRow {
-                text: format!(
-                    "{lead}{}",
-                    if empty {
-                        editor.placeholder.as_str()
-                    } else {
-                        row
-                    }
-                ),
-                kind: BlockRowKind::Bold,
-                selected: false,
-                hint: String::new(),
-            });
+            let text = if empty {
+                editor.placeholder.as_str()
+            } else {
+                draft
+            };
+            rows.push(row(format!("{lead}{text}"), BlockRowKind::Bold, false));
         }
         if model.input_mode() == BoardInputMode::EditReply {
             caret = Some((
@@ -1796,142 +1816,126 @@ fn block_page_rows(
             push(
                 &mut rows,
                 &" ".repeat(indent),
+                0,
                 refusal,
                 BlockRowKind::Dim,
                 None,
             );
         }
     }
-    rows.push(BlockPageRow {
-        text: String::new(),
-        kind: BlockRowKind::Plain,
-        selected: false,
-        hint: String::new(),
-    });
-    rows.push(BlockPageRow {
-        text: String::new(),
-        kind: BlockRowKind::Rule,
-        selected: false,
-        hint: String::new(),
-    });
-    rows.push(BlockPageRow {
-        text: String::new(),
-        kind: BlockRowKind::Plain,
-        selected: false,
-        hint: String::new(),
-    });
+
+    blank(&mut rows);
+    let keys = section_action_keys(model, form, task, block, selected, own);
+    for line in pack_keys(&keys, width) {
+        rows.push(row(line, BlockRowKind::Dim, false));
+    }
+    rows.push(row(String::new(), BlockRowKind::Rule, false));
+    blank(&mut rows);
     (rows, stops, caret)
 }
 
-/// The REVIEW section's rows above the feedback: the heading (round, who it is on, author and
-/// age, the PR it names), done, the checks in place, the ones the page's fold holds under their
-/// `N passed ▸` line (unfolded `▾`), then next.
-#[allow(clippy::too_many_arguments)]
-fn review_section_rows(
+/// Narrowest reply text worth keeping beside the thread's name column.
+const THREAD_MIN_TEXT: usize = 12;
+
+/// The section's action line: only keys that work right now. It follows the cursor (a check,
+/// a step, the top line, your reply…) and gives way to the reply box's own keys while it is open.
+fn section_action_keys(
+    model: &BoardModel,
+    form: &BoardForm,
     task: &crate::domain::Task,
     block: &crate::domain::Block,
-    on: &str,
-    passed_open: bool,
-    fold: Option<&crate::ui::board::block::CheckFold>,
-    author: &str,
-    now: SystemTime,
-    rows: &mut Vec<render::BlockPageRow>,
-    push: &mut impl FnMut(
-        &mut Vec<render::BlockPageRow>,
-        &str,
-        &str,
-        render::BlockRowKind,
-        Option<crate::ui::board::BlockTarget>,
-    ),
-) {
+    selected: Option<crate::ui::board::BlockTarget>,
+    own: bool,
+) -> Vec<String> {
+    use crate::domain::OWNER;
     use crate::ui::board::BlockTarget;
-    use render::BlockRowKind;
+    use crate::ui::queue::{block_wait, BlockWait};
 
-    let mut heading = format!(
-        "REVIEW · round {} · {on} · {author} {}",
-        block.round.max(1),
-        render::format_age(now, block.at)
-    );
-    if block.edited_at.is_some() {
-        heading.push_str(" · edited");
+    let review = block.is_review();
+    if own && form.block.reply.is_some() {
+        return super::chrome::reply_box_keys(review)
+            .split(" · ")
+            .map(str::to_string)
+            .collect();
     }
-    let first = rows.len();
-    push(
-        rows,
-        "",
-        &heading,
-        BlockRowKind::Heading,
-        Some(BlockTarget::Heading),
-    );
-    rows[first].hint = match pull_request_number(task, block) {
-        Some(number) => format!("PR #{number} · r feedback"),
-        None => "r feedback".to_string(),
-    };
-    if let Some(done) = block.done.as_deref() {
-        push(rows, "done   ", done, BlockRowKind::Plain, None);
+    let mut keys: Vec<String> = Vec::new();
+    if review {
+        keys.push("tab next".to_string());
     }
-    let (shown, passed) = crate::ui::board::block::review_check_order(block, fold);
-    for index in shown {
-        let check = &block.checks[index];
-        push(
-            rows,
-            &format!("{} ", render::check_glyph(check.state)),
-            &check.text,
-            BlockRowKind::Plain,
-            Some(BlockTarget::Check(index)),
-        );
-    }
-    if !passed.is_empty() {
-        let arrow = if passed_open { "▾" } else { "▸" };
-        push(
-            rows,
-            "",
-            &format!("{} passed {arrow}", passed.len()),
-            BlockRowKind::Dim,
-            Some(BlockTarget::PassedFold),
-        );
-        if passed_open {
-            for index in passed {
-                push(
-                    rows,
-                    &format!("  {} ", render::check_glyph(block.checks[index].state)),
-                    &block.checks[index].text,
-                    BlockRowKind::Dim,
-                    Some(BlockTarget::Check(index)),
-                );
+    let cursor = if !own {
+        None
+    } else if form.steps.cursor.is_some() {
+        Some("enter toggle step")
+    } else if form.steps.add_selected {
+        Some("enter add step")
+    } else {
+        match selected {
+            Some(BlockTarget::Heading) => Some("ctrl+e edit"),
+            Some(BlockTarget::Option(_)) => Some("enter choose"),
+            Some(BlockTarget::Check(_)) => Some("enter mark"),
+            Some(BlockTarget::PassedFold) if form.block.passed_open => Some("enter fold passed"),
+            Some(BlockTarget::PassedFold) => Some("enter show passed"),
+            Some(BlockTarget::Reply(index))
+                if block
+                    .replies
+                    .get(index)
+                    .is_some_and(|reply| reply.by == OWNER) =>
+            {
+                Some("ctrl+e edit · ctrl+x delete")
             }
+            Some(BlockTarget::TrailHeading) if form.block.trail_expanded => Some("enter collapse"),
+            Some(BlockTarget::TrailHeading | BlockTarget::Trail(_)) => Some("enter expand"),
+            _ => None,
+        }
+    };
+    keys.extend(cursor.into_iter().flat_map(|keys| keys.split(" · ")).map(str::to_string));
+    if !review {
+        match block.options.len() {
+            0 => {}
+            1 => keys.push("1 choose".to_string()),
+            count => keys.push(format!("1-{} choose", count.min(9))),
         }
     }
-    if let Some(next) = block.next.as_deref() {
-        push(rows, "next   ", next, BlockRowKind::Plain, None);
+    keys.push(if review { "r feedback" } else { "r reply" }.to_string());
+    if review {
+        keys.push("ctrl+s send back".to_string());
+        keys.push("ctrl+d approve".to_string());
+    } else if block_wait(task, &model.tasks) == Some(BlockWait::You) {
+        keys.push("ctrl+s reply + unblock".to_string());
+    } else {
+        keys.push("ctrl+b unblock".to_string());
     }
+    keys
 }
 
-/// The pull request a review names: the first `/pull/<n>` link or `PR #<n>` in done, next, the
-/// checks, then the notes.
-fn pull_request_number(task: &crate::domain::Task, block: &crate::domain::Block) -> Option<u64> {
-    fn find(text: &str) -> Option<u64> {
-        let digits = |rest: &str| {
-            let number: String = rest.chars().take_while(char::is_ascii_digit).collect();
-            number.parse().ok()
+/// Pack key legends into rows joined by ` · `, a new row where the next would not fit. A legend
+/// wider than the row wraps on its own.
+fn pack_keys(keys: &[String], width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for key in keys {
+        let joined = if line.is_empty() {
+            key.clone()
+        } else {
+            format!("{line} · {key}")
         };
-        for marker in ["/pull/", "PR #", "PR#", "pr #"] {
-            if let Some(found) = text
-                .match_indices(marker)
-                .find_map(|(at, _)| digits(&text[at + marker.len()..]))
-            {
-                return Some(found);
-            }
+        if render::display_width(&joined) <= width {
+            line = joined;
+            continue;
         }
-        None
+        if !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+        }
+        if render::display_width(key) <= width {
+            line = key.clone();
+        } else {
+            lines.extend(wrap_text(key, width.max(1)).into_iter().map(|row| row.text));
+        }
     }
-    block
-        .done
-        .iter()
-        .chain(block.next.iter())
-        .chain(block.checks.iter().map(|check| &check.text))
-        .chain(task.notes.iter())
-        .find_map(|text| find(text))
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 /// The reply box open under a blocked board row, with the block's why and needs above it; on a

@@ -299,7 +299,7 @@ fn a_click_on_earlier_shows_every_entry_and_a_click_on_a_record_expands_it() {
     let earlier = hits
         .regions
         .iter()
-        .find(|hit| hit.target == QueueHitTarget::TrailAll)
+        .find(|hit| hit.target == QueueHitTarget::TrailHeading)
         .expect("+ N earlier is clickable");
     let click = crossterm::event::MouseEvent {
         kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
@@ -308,7 +308,7 @@ fn a_click_on_earlier_shows_every_entry_and_a_click_on_a_record_expands_it() {
         modifiers: KeyModifiers::NONE,
     };
     let intent = map_board_mouse(&model, &hits, click).expect("click maps");
-    assert_eq!(intent, BoardIntent::ToggleTrailAll);
+    assert_eq!(intent, BoardIntent::ToggleTrail);
     apply_intent(&mut domain, &mut model, intent, None).expect("apply");
     assert!(trail(&rows(&model, 100, 60))[0].ends_with("a latest"));
 

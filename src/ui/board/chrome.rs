@@ -33,6 +33,11 @@ impl BoardModel {
     }
 }
 
+/// The reply (feedback) box's own keys, its widest legend, for the task page's action line.
+pub(super) fn reply_box_keys(review: bool) -> &'static str {
+    edit_chrome_legends(BoardInputMode::EditReply, review)[0]
+}
+
 /// The legends an edit owns, widest first. `review` picks the feedback box and review card.
 fn edit_chrome_legends(mode: BoardInputMode, review: bool) -> [&'static str; 3] {
     match mode {

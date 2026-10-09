@@ -353,8 +353,12 @@ pub enum BoardIntent {
     CycleCheck,
     /// Task page `Enter` on the `N passed` line: unfold or fold the passed checks.
     TogglePassedChecks,
-    /// Task page `a`: show every PAPER TRAIL entry, or only the latest few.
-    ToggleTrailAll,
+    /// A click on a review check on the task page: select it and cycle it.
+    ClickCheck(usize),
+    /// A click on the task page's `N passed` line: select it and unfold or fold the checks.
+    ClickPassedFold,
+    /// Task page `g`, or `Enter` on (a click on) the PAPER TRAIL heading: expand or collapse it.
+    ToggleTrail,
     /// Task page `Enter` on a closed block or review round on the PAPER TRAIL (`None`), or a
     /// click on one (its `past_blocks` index): expand it in place or fold it.
     ToggleTrailRecord(Option<usize>),
@@ -362,6 +366,12 @@ pub enum BoardIntent {
     BeginReply,
     /// Task page `Enter` on a block option: open the reply box prefilled with it.
     ReplyWithOption,
+    /// Task page `1`…`9` on a blocked page: open the reply box prefilled with that option.
+    PickOption(usize),
+    /// Task page `ctrl+s` with the BLOCKED or REVIEW section showing: what the reply box's
+    /// `ctrl+s` does with an empty box (unblock, or send the review back). Resolved at the
+    /// keyboard boundary; the application boundary opens the box and saves it.
+    PageReplyUnblock,
     /// Reply box `shift+enter`: store the reply.
     ReplySave,
     /// Reply box `ctrl+s`: store the reply and unblock the task to ready.
@@ -2043,7 +2053,11 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::BlockCardNewline
         | BoardIntent::CycleCheck
         | BoardIntent::TogglePassedChecks
-        | BoardIntent::ToggleTrailAll
+        | BoardIntent::ClickCheck(_)
+        | BoardIntent::ClickPassedFold
+        | BoardIntent::ToggleTrail
+        | BoardIntent::PickOption(_)
+        | BoardIntent::PageReplyUnblock
         | BoardIntent::ToggleTrailRecord(_)
         | BoardIntent::BeginReply
         | BoardIntent::ReplyWithOption
@@ -2189,7 +2203,10 @@ fn map_task_page(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Char('?') if !extra => Some(BoardIntent::OpenHelp),
         KeyCode::Char('@') if !extra => Some(BoardIntent::OpenAssigneePicker),
         KeyCode::Char('r') if !extra => Some(BoardIntent::BeginReply),
-        KeyCode::Char('a') if !extra => Some(BoardIntent::ToggleTrailAll),
+        KeyCode::Char('g') if !extra => Some(BoardIntent::ToggleTrail),
+        KeyCode::Char(digit @ '1'..='9') if !extra => {
+            Some(BoardIntent::PickOption(digit as usize - '1' as usize))
+        }
         KeyCode::Tab if !extra => Some(BoardIntent::FormFocusNext),
         KeyCode::BackTab
             if !mods
