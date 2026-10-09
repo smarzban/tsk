@@ -1061,6 +1061,8 @@ pub struct BoardModel {
     pub pending_reply_delivery: Option<Uuid>,
     /// The block card while it owns input.
     pub(super) block_card: Option<super::block::BlockCard>,
+    /// The reply box open inline under a blocked board row.
+    pub(crate) row_reply: Option<super::block::RowReply>,
     /// A bulk dispatch whose launches are still landing. One slot shared by the outer board and
     /// its project preview, so dropping or rebinding the preview never loses a running batch.
     pub(super) bulk_dispatch: SharedBulkDispatch,
@@ -1725,6 +1727,7 @@ impl BoardModel {
             pending_reply_start: None,
             pending_reply_delivery: None,
             block_card: None,
+            row_reply: None,
             bulk_dispatch: SharedBulkDispatch::default(),
             pending_delete_bulk: false,
             popup: BoardPopup::None,
@@ -1955,17 +1958,17 @@ impl BoardModel {
 
     /// The task whose reply box is open, while it is open.
     pub fn reply_task_id(&self) -> Option<Uuid> {
-        let form = self.form.as_ref()?;
-        form.block.reply.as_ref()?;
-        form.task_id()
+        super::block::active_reply(self).map(|(id, _)| id)
     }
 
     /// The reply box's draft while it is open.
     pub fn reply_draft(&self) -> Option<&str> {
-        self.form
-            .as_ref()
-            .and_then(|form| form.block.reply.as_ref())
-            .map(|editor| editor.buffer.value())
+        super::block::active_reply(self).map(|(_, editor)| editor.buffer.value())
+    }
+
+    /// The task whose reply box is open inline under its board row.
+    pub fn row_reply_task(&self) -> Option<Uuid> {
+        self.row_reply.as_ref().map(|row| row.task)
     }
 
     pub fn dispatch_prompt(&self) -> Option<&DispatchPrompt> {
@@ -2792,6 +2795,7 @@ impl BoardModel {
             return true;
         }
         if self.task_session_dirty()
+            || self.row_reply.is_some()
             || self.quick_add_save.is_some()
             || self.task_edit_save.is_some()
         {

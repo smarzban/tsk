@@ -37,6 +37,7 @@ fn normal_mode_keymap_equals_the_readme_and_queue_board_v1_set() {
         (KeyCode::Esc, BoardIntent::CloseLayer, false),
         (KeyCode::Char('s'), BoardIntent::PrimaryVerb, true),
         (KeyCode::Char('@'), BoardIntent::OpenAssigneePicker, false),
+        (KeyCode::Char('r'), BoardIntent::BeginReply, false),
         (KeyCode::Char('d'), BoardIntent::Complete, true),
         (
             KeyCode::Char('n'),
@@ -90,8 +91,9 @@ fn normal_mode_keymap_equals_the_readme_and_queue_board_v1_set() {
         if needs_ctrl {
             assert_eq!(ctrl(key), Some(intent), "ctrl+{key:?}");
             // A bare mutating letter is dead unless the same letter carries a bare route
-            // of its own (`d` opens the done drawer, `g` folds groups).
-            if !matches!(key, KeyCode::Char('d' | 'g')) {
+            // of its own (`d` opens the done drawer, `g` folds groups, `r` opens the reply
+            // box under a blocked row).
+            if !matches!(key, KeyCode::Char('d' | 'g' | 'r')) {
                 assert_eq!(normal(key), None, "bare mutating key {key:?} must be dead");
             }
         } else {

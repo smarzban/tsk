@@ -410,6 +410,7 @@ fn fixture_model_on_tab<'a>(
         now: now(),
         overlay: QueueOverlay::None,
         detail_open: None,
+        row_reply: None,
         list_scroll: 0,
         follow_list: true,
         archived_collapsed: true,

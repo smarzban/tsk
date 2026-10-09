@@ -51,6 +51,15 @@ pub(crate) struct ReplyEditor {
     pub(crate) width: Cell<usize>,
 }
 
+/// The reply box opened inline under a blocked board row (`r` on the board).
+#[derive(Debug, Clone)]
+pub(crate) struct RowReply {
+    pub(crate) task: Uuid,
+    pub(crate) editor: ReplyEditor,
+    /// The mode the board was in when the box opened, restored when it closes.
+    pub(crate) return_mode: BoardInputMode,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReplySave {
     pub(crate) task: Uuid,
@@ -569,6 +578,82 @@ pub(super) fn begin_reply(model: &mut BoardModel, prefill: &str, edit: Option<us
     true
 }
 
+/// `r` on a board row: open the reply box inline under the cursor task. A marked set is
+/// ignored; the box answers the cursor row only. False when the row is not blocked.
+pub(super) fn begin_row_reply(model: &mut BoardModel) -> bool {
+    let Some(id) = model.selected_id() else {
+        return false;
+    };
+    let Some(block) = model
+        .tasks
+        .iter()
+        .find(|task| task.id == id)
+        .filter(|task| task.status == HumanStatus::Blocked && !task.archived)
+        .and_then(|task| task.block.as_ref())
+        .map(Block::key)
+    else {
+        return false;
+    };
+    model.row_reply = Some(RowReply {
+        task: id,
+        editor: ReplyEditor {
+            buffer: seeded_draft(""),
+            block,
+            edit: None,
+            refusal: None,
+            pending: None,
+            width: Cell::new(0),
+        },
+        return_mode: model.input_mode,
+    });
+    model.input_mode = BoardInputMode::EditReply;
+    model.clear_message();
+    true
+}
+
+/// The open reply box and its task: the task page's, or the board row's.
+pub(crate) fn active_reply(model: &BoardModel) -> Option<(Uuid, &ReplyEditor)> {
+    if let Some(form) = model.form.as_ref() {
+        if let (Some(editor), Some(id)) = (form.block.reply.as_ref(), form.task_id()) {
+            return Some((id, editor));
+        }
+    }
+    model.row_reply.as_ref().map(|row| (row.task, &row.editor))
+}
+
+fn active_reply_mut(model: &mut BoardModel) -> Option<&mut ReplyEditor> {
+    let page = model
+        .form
+        .as_ref()
+        .is_some_and(|form| form.block.reply.is_some());
+    if page {
+        return model.form.as_mut()?.block.reply.as_mut();
+    }
+    model.row_reply.as_mut().map(|row| &mut row.editor)
+}
+
+/// Close the open reply box: the page's returns to the page, the row's to the board mode it
+/// opened from.
+fn close_reply(model: &mut BoardModel, page_target: Option<BlockTarget>) {
+    if let Some(form) = model
+        .form
+        .as_mut()
+        .filter(|form| form.block.reply.is_some())
+    {
+        form.block.reply = None;
+        form.block.target = page_target;
+        if model.input_mode == BoardInputMode::EditReply {
+            model.input_mode = BoardInputMode::TaskPage;
+        }
+        return;
+    }
+    if let Some(row) = model.row_reply.take() {
+        if model.input_mode == BoardInputMode::EditReply {
+            model.input_mode = row.return_mode;
+        }
+    }
+}
+
 /// The text of the selected option, for `Enter`.
 pub(super) fn selected_option_text(model: &BoardModel) -> Option<String> {
     let BlockTarget::Option(index) = selected_block_target(model)? else {
@@ -636,27 +721,17 @@ pub(super) fn save_reply(
     model: &mut BoardModel,
     unblock: Option<HumanStatus>,
 ) -> Result<IntentOutcome, DomainError> {
-    let Some(form) = model.form.as_ref() else {
-        return Ok(IntentOutcome::None);
-    };
-    let Some(editor) = form.block.reply.as_ref() else {
+    let Some((id, editor)) = active_reply(model) else {
         return Ok(IntentOutcome::None);
     };
     if editor.pending.is_some() {
         return Ok(IntentOutcome::None);
     }
-    let Some(id) = form.task_id() else {
-        return Ok(IntentOutcome::None);
-    };
     let text = editor.buffer.value().trim().to_string();
     let edit = editor.edit;
     let opened_on = editor.block.clone();
     let refuse = |model: &mut BoardModel, refusal: String| {
-        if let Some(editor) = model
-            .form
-            .as_mut()
-            .and_then(|form| form.block.reply.as_mut())
-        {
+        if let Some(editor) = active_reply_mut(model) {
             editor.refusal = Some(refusal);
         }
         Ok(IntentOutcome::None)
@@ -695,11 +770,7 @@ pub(super) fn save_reply(
         }
         Err(error) => return Err(error),
     };
-    if let Some(editor) = model
-        .form
-        .as_mut()
-        .and_then(|form| form.block.reply.as_mut())
-    {
+    if let Some(editor) = active_reply_mut(model) {
         editor.refusal = None;
         editor.pending = Some(ReplySave {
             task: id,
@@ -711,23 +782,16 @@ pub(super) fn save_reply(
     Ok(IntentOutcome::Persist)
 }
 
-/// Esc in the reply box: discard the draft and return to the page.
+/// Esc in the reply box: discard the draft and return to the page, or to the board.
 pub(super) fn cancel_reply(model: &mut BoardModel) {
-    if let Some(form) = model.form.as_mut() {
-        form.block.reply = None;
-    }
-    model.input_mode = BoardInputMode::TaskPage;
+    let target = model.form.as_ref().and_then(|form| form.block.target);
+    close_reply(model, target);
     model.clear_message();
 }
 
 /// Release a held reply box once the synced task carries its reply (the confirmed landing).
 pub(super) fn finish_reply_save(model: &mut BoardModel) {
-    let Some(pending) = model
-        .form
-        .as_ref()
-        .and_then(|form| form.block.reply.as_ref())
-        .and_then(|editor| editor.pending.clone())
-    else {
+    let Some(pending) = active_reply(model).and_then(|(_, editor)| editor.pending.clone()) else {
         return;
     };
     let landed = model
@@ -748,29 +812,22 @@ pub(super) fn finish_reply_save(model: &mut BoardModel) {
     if !landed {
         return;
     }
-    if let Some(form) = model.form.as_mut() {
-        form.block.reply = None;
-        form.block.target = (!pending.unblock).then_some(BlockTarget::Reply(pending.index));
-    }
-    if model.input_mode == BoardInputMode::EditReply {
-        model.input_mode = BoardInputMode::TaskPage;
-    }
+    close_reply(
+        model,
+        (!pending.unblock).then_some(BlockTarget::Reply(pending.index)),
+    );
 }
 
 /// A cancelled failed save rolled the reply back: keep the box and its text, drop the hold.
 pub(super) fn release_cancelled_reply(model: &mut BoardModel) {
-    if let Some(editor) = model
-        .form
-        .as_mut()
-        .and_then(|form| form.block.reply.as_mut())
-    {
+    if let Some(editor) = active_reply_mut(model) {
         editor.pending = None;
     }
 }
 
 /// The reply box's draft, for the shared edit intents.
 pub(super) fn reply_buffer_mut(model: &mut BoardModel) -> Option<&mut EditBuffer> {
-    let editor = model.form.as_mut()?.block.reply.as_mut()?;
+    let editor = active_reply_mut(model)?;
     if editor.pending.is_some() {
         return None;
     }

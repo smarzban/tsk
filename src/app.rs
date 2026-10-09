@@ -8880,7 +8880,11 @@ mod tests {
         // form mapper would handle differently, so this is an allowlist regression guard rather
         // than a test of identical fallthroughs.
         for (mode, code, expected) in [
-            (BoardInputMode::Normal, KeyCode::Char('r'), None),
+            (
+                BoardInputMode::Normal,
+                KeyCode::Char('r'),
+                Some(BoardIntent::BeginReply),
+            ),
             (
                 BoardInputMode::TaskPage,
                 KeyCode::Char('e'),
@@ -10311,6 +10315,233 @@ mod quick_assign_tests {
         )
         .expect("type");
         assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+    }
+
+    /// Block `id` on you with a why and needs, save, and select its board row.
+    fn blocked_row(temp: &Temp, domain: &mut DomainState, model: &mut BoardModel, id: uuid::Uuid) {
+        domain
+            .block(
+                id,
+                crate::domain::BlockDraft::from_input(
+                    Some("which db?"),
+                    Some("a decision"),
+                    &[],
+                    Default::default(),
+                )
+                .expect("draft"),
+                "builder",
+            )
+            .expect("block");
+        temp.store.reload_merge_save(domain).expect("save");
+        model.sync_from_domain(domain);
+        select(domain, model, id);
+    }
+
+    fn board_screen(model: &BoardModel, width: u16, height: u16) -> (String, Option<(u16, u16)>) {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                crate::ui::board::draw_board(frame, model);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let text = (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let cursor = terminal
+            .get_cursor_position()
+            .ok()
+            .map(|position| (position.x, position.y));
+        (text, cursor)
+    }
+
+    /// `r` on a blocked board row opens the reply box under the row, with why and needs
+    /// above it; `ctrl+s` stores the reply, starts the task and sends it to the running agent,
+    /// then hands the keys back to the board.
+    #[test]
+    fn r_on_a_blocked_row_replies_inline_and_delivers() {
+        for width in [80, 140] {
+            let temp = Temp::new("row-reply", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["agent asks", "other work"]);
+            dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+            blocked_row(&temp, &mut domain, &mut model, ids[0]);
+            assert_eq!(model.input_mode(), BoardInputMode::Normal);
+            let intent = key(&model, KeyCode::Char('r'), KeyModifiers::NONE);
+            assert_eq!(intent, BoardIntent::BeginReply);
+            apply_intent(&mut domain, &mut model, intent, None).expect("open");
+            assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+            assert_eq!(model.row_reply_task(), Some(ids[0]));
+            apply_intent(
+                &mut domain,
+                &mut model,
+                BoardIntent::EditInsertText("postgres".into()),
+                None,
+            )
+            .expect("type");
+            let (screen, cursor) = board_screen(&model, width, 30);
+            let row = screen
+                .lines()
+                .position(|line| line.contains("agent asks"))
+                .expect("row painted");
+            let lines: Vec<&str> = screen.lines().collect();
+            assert!(lines[row + 1].contains("why    which db?"), "{screen}");
+            assert!(lines[row + 2].contains("needs  a decision"), "{screen}");
+            assert!(lines[row + 3].contains("└ you  postgres"), "{screen}");
+            let (_, y) = cursor.expect("caret placed");
+            assert_eq!(usize::from(y), row + 3, "the caret sits in the draft");
+
+            let mut host = fake_host(&temp);
+            host.agent = Some(true);
+            let save = key(&model, KeyCode::Char('s'), KeyModifiers::CONTROL);
+            assert_eq!(save, BoardIntent::ReplySaveUnblock);
+            handle(&temp, &mut domain, &mut model, save, &mut host);
+            assert_eq!(host.prompts.len(), 1);
+            assert!(host.prompts[0].1.ends_with("unblocked] postgres"));
+            assert_eq!(model.message(), Some("started · reply sent to @builder"));
+            assert_eq!(model.input_mode(), BoardInputMode::Normal);
+            assert_eq!(model.row_reply_task(), None, "the box closed on landing");
+            let saved = temp.store.load().expect("reload");
+            assert_eq!(
+                saved.get(ids[0]).expect("task").status,
+                HumanStatus::Started
+            );
+            assert_eq!(last_reply(&saved, ids[0]).as_deref(), Some("postgres"));
+        }
+    }
+
+    /// Shift+Enter on the row's box stores the reply only; Esc discards a draft. Both return
+    /// the keys to the board.
+    #[test]
+    fn the_row_reply_box_saves_without_sending_and_cancels() {
+        let temp = Temp::new("row-reply-save", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["agent asks"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        blocked_row(&temp, &mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("open");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText("later".into()),
+            None,
+        )
+        .expect("type");
+        apply_intent(&mut domain, &mut model, BoardIntent::CancelEdit, None).expect("esc");
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+        assert_eq!(model.row_reply_task(), None);
+
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("open");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText("postgres".into()),
+            None,
+        )
+        .expect("type");
+        let mut host = fake_host(&temp);
+        host.agent = Some(true);
+        let save = key(&model, KeyCode::Enter, KeyModifiers::SHIFT);
+        assert_eq!(save, BoardIntent::ReplySave);
+        handle(&temp, &mut domain, &mut model, save, &mut host);
+        assert!(host.prompts.is_empty());
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Blocked);
+        assert_eq!(last_reply(&saved, ids[0]).as_deref(), Some("postgres"));
+    }
+
+    /// The row's box outlives a failed save: Cancel keeps the draft open, Retry lands it.
+    #[cfg(unix)]
+    #[test]
+    fn the_row_reply_box_outlives_a_failed_save() {
+        use std::os::unix::fs::PermissionsExt;
+        for retry in [true, false] {
+            let temp = Temp::new("row-reply-recovery", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["agent asks"]);
+            blocked_row(&temp, &mut domain, &mut model, ids[0]);
+            apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("r");
+            apply_intent(
+                &mut domain,
+                &mut model,
+                BoardIntent::EditInsertText("postgres".into()),
+                None,
+            )
+            .expect("type");
+            let mut host = fake_host(&temp);
+            let mut recovery = SaveRecovery::new();
+            let mut step = |domain: &mut DomainState,
+                            model: &mut BoardModel,
+                            recovery: &mut SaveRecovery<DomainState>,
+                            intent: BoardIntent| {
+                handle_board_intent_with_host(
+                    &temp.store,
+                    domain,
+                    model,
+                    intent,
+                    recovery,
+                    false,
+                    true,
+                    &mut host,
+                    &mut |_| {},
+                )
+                .expect("intent");
+            };
+            std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o555))
+                .expect("lock the state dir");
+            step(
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                BoardIntent::ReplySave,
+            );
+            std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o700))
+                .expect("unlock");
+            assert!(recovery.is_pending());
+            assert_eq!(model.reply_draft(), Some("postgres"), "the box is held");
+            let answer = if retry {
+                BoardIntent::RetrySave
+            } else {
+                BoardIntent::CancelSave
+            };
+            step(&mut domain, &mut model, &mut recovery, answer);
+            assert!(!recovery.is_pending());
+            if retry {
+                assert_eq!(model.row_reply_task(), None, "the reply landed");
+                assert_eq!(model.input_mode(), BoardInputMode::Normal);
+            } else {
+                assert_eq!(model.reply_draft(), Some("postgres"), "the draft stays");
+                assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+            }
+        }
+    }
+
+    /// `r` on a row that is not blocked says so; with marks it answers the cursor row only.
+    #[test]
+    fn r_answers_the_cursor_row_only_and_refuses_unblocked_rows() {
+        let temp = Temp::new("row-reply-refuse", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["blocked one", "plain one"]);
+        blocked_row(&temp, &mut domain, &mut model, ids[0]);
+        select(&mut domain, &mut model, ids[1]);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("r");
+        assert_eq!(model.message(), Some("not blocked"));
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None).expect("M");
+        apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        assert!(!model.marked_ids().is_empty());
+        select(&mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("r");
+        assert_eq!(model.row_reply_task(), Some(ids[0]));
+        assert!(
+            !model.marked_ids().is_empty(),
+            "marks stay; the box ignores them"
+        );
     }
 
     fn last_reply(domain: &DomainState, id: uuid::Uuid) -> Option<String> {

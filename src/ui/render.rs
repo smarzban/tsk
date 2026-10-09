@@ -633,6 +633,21 @@ pub struct FormDropdown<'a> {
     pub anchor_x: u16,
 }
 
+/// The reply box open inline under a blocked board row: the block's why and needs, then
+/// the draft, then any refusal. Text arrives raw; the painter wraps it.
+#[derive(Debug, Clone, Copy)]
+pub struct RowReplyPaint<'a> {
+    pub task: Uuid,
+    pub why: Option<&'a str>,
+    pub needs: Option<&'a str>,
+    pub(crate) draft: &'a crate::ui::edit::EditBuffer,
+    /// The draft's wrap width, recorded for vertical caret movement.
+    pub width: &'a std::cell::Cell<usize>,
+    pub refusal: Option<&'a str>,
+    /// Place the terminal cursor in the draft (the box owns input).
+    pub caret: bool,
+}
+
 /// Pure paint input for one queue frame. No app-loop state machines.
 #[derive(Debug, Clone)]
 pub struct QueueFrameModel<'a> {
@@ -690,6 +705,8 @@ pub struct QueueFrameModel<'a> {
     /// Standard: expands inline under the selected row. Compact: full-viewport takeover.
     /// Only painted while `overlay` is `QueueOverlay::None`.
     pub detail_open: Option<Uuid>,
+    /// The reply box open under a blocked row (`r`), woven in like the peek.
+    pub row_reply: Option<RowReplyPaint<'a>>,
     /// List viewport offset. Scrollbar and the last paint persist this; row click leaves it.
     pub list_scroll: usize,
     /// Nudge `list_scroll` so the selection (or its peek) stays on screen.
@@ -1432,7 +1449,7 @@ fn draw_queue_frame_impl(
         // First pass measures overflow at the full row width; when a scrollbar is
         // needed, rebuild at the narrowed content width so wrapped titles and the
         // thumb share one consistent row count.
-        let (mut list_rows, mut anchor_last_idx, mut selected_idx) =
+        let (mut list_rows, mut anchor_last_idx, mut selected_idx, mut reply_caret) =
             build_list_rows(model, geo, rail);
         let top = geo.viewport_top;
         let viewport_h = geo.viewport_height as usize;
@@ -1445,6 +1462,7 @@ fn draw_queue_frame_impl(
             list_rows = rebuilt.0;
             anchor_last_idx = rebuilt.1;
             selected_idx = rebuilt.2;
+            reply_caret = rebuilt.3;
             narrowed
         } else {
             *geo
@@ -1514,6 +1532,21 @@ fn draw_queue_frame_impl(
                 content_width,
                 base_list_interactive,
             );
+        }
+        if let Some((row, column)) = reply_caret {
+            if row >= scroll && row < scroll + content_h {
+                let screen_y = y.saturating_add((row - scroll) as u16);
+                crate::ui::edit::place_edit_cursor(
+                    frame,
+                    Rect::new(
+                        surface.x,
+                        surface.y.saturating_add(screen_y),
+                        content_width,
+                        1,
+                    ),
+                    column,
+                );
+            }
         }
         if let Some(track) = track {
             let total = list_rows.len();
@@ -4804,6 +4837,79 @@ fn detail_lines_for_task(
     lines
 }
 
+/// The inline reply box's list rows, and its caret (row within them, column).
+fn row_reply_rows(
+    reply: &RowReplyPaint<'_>,
+    row_width: u16,
+) -> (Vec<ListRow>, Option<(usize, u16)>) {
+    const INDENT: &str = "    ";
+    let width = row_width as usize;
+    let mut rows = Vec::new();
+    let labelled = |label: &str, text: &str, style: Style, rows: &mut Vec<ListRow>| {
+        let lead = format!("{INDENT}{label}");
+        let indent = display_width(&lead);
+        let room = width.saturating_sub(indent).max(1);
+        for (index, wrapped) in crate::ui::edit::wrap_text(&super::terminal_text(text), room)
+            .into_iter()
+            .enumerate()
+        {
+            let head = if index == 0 {
+                lead.clone()
+            } else {
+                " ".repeat(indent)
+            };
+            rows.push(ListRow::Detail {
+                line: paint_bounded_line(&format!("{head}{}", wrapped.text), row_width, style),
+                content_x: u16::try_from(indent).unwrap_or(u16::MAX),
+                content_width: u16::try_from(display_width(&wrapped.text))
+                    .unwrap_or(u16::MAX)
+                    .max(1),
+            });
+        }
+    };
+    if let Some(why) = reply.why {
+        labelled("why    ", why, style_plain(), &mut rows);
+    }
+    if let Some(needs) = reply.needs {
+        labelled("needs  ", needs, style_plain(), &mut rows);
+    }
+    let lead = format!("{INDENT}└ you  ");
+    let indent = display_width(&lead);
+    let field_width = width.saturating_sub(indent).max(1);
+    reply.width.set(field_width);
+    let (draft_rows, cursor_row, cursor_col) =
+        crate::ui::edit::wrapped_edit_rows(reply.draft, field_width);
+    let first = rows.len();
+    let empty = reply.draft.value().is_empty();
+    for (index, row) in draft_rows.iter().enumerate() {
+        let head = if index == 0 {
+            lead.clone()
+        } else {
+            " ".repeat(indent)
+        };
+        let text = if empty {
+            "reply…".to_string()
+        } else {
+            super::terminal_text(row)
+        };
+        rows.push(ListRow::Detail {
+            line: paint_bounded_line(&format!("{head}{text}"), row_width, style_bold()),
+            content_x: u16::try_from(indent).unwrap_or(u16::MAX),
+            content_width: u16::try_from(display_width(&text))
+                .unwrap_or(u16::MAX)
+                .max(1),
+        });
+    }
+    let caret = (
+        first + cursor_row,
+        u16::try_from(indent + cursor_col).unwrap_or(u16::MAX),
+    );
+    if let Some(refusal) = reply.refusal {
+        labelled("       ", refusal, style_dim(), &mut rows);
+    }
+    (rows, Some(caret))
+}
+
 /// The peek's block lines, one per item before wrapping. Empty unless the task is blocked.
 fn peek_block_lines(task: &Task, tasks: &[Task]) -> Vec<(String, Style)> {
     use crate::ui::queue::{block_wait, BlockWait};
@@ -4840,10 +4946,16 @@ fn build_list_rows(
     model: &QueueFrameModel<'_>,
     geo: &TierGeometry,
     rail: bool,
-) -> (Vec<ListRow>, Option<usize>, Option<usize>) {
+) -> (
+    Vec<ListRow>,
+    Option<usize>,
+    Option<usize>,
+    Option<(usize, u16)>,
+) {
     let mut out = Vec::new();
     let mut anchor_last_idx: Option<usize> = None;
     let mut selected_idx: Option<usize> = None;
+    let reply_caret: std::cell::Cell<Option<(usize, u16)>> = std::cell::Cell::new(None);
     // Every section heading has one blank list row above it. This row remains ordinary list
     // content, so selection scrolling keeps the section and its first task reachable.
     out.push(ListRow::Blank);
@@ -4920,6 +5032,18 @@ fn build_list_rows(
             // never leave the selected task's tail below the fold.
             *selected_idx = Some(out.len() - 1);
         }
+        if let Some(reply) = model
+            .row_reply
+            .filter(|reply| reply.task == task.id && !rail)
+        {
+            let (rows, caret) = row_reply_rows(&reply, geo.row_width);
+            let first = out.len();
+            out.extend(rows);
+            if let Some((row, column)) = caret.filter(|_| reply.caret) {
+                reply_caret.set(Some((first + row, column)));
+            }
+            *anchor_last_idx = Some(out.len() - 1);
+        }
         if detail_target == Some(task.id) {
             let mut details = detail_lines_for_task(task, model.tasks, geo.row_width);
             if !peek_meta.is_empty() {
@@ -4962,7 +5086,7 @@ fn build_list_rows(
                 geo.row_width,
                 style_dim(),
             )));
-            return (out, anchor_last_idx, selected_idx);
+            return (out, anchor_last_idx, selected_idx, reply_caret.get());
         }
         for (index, _row) in model.projects.iter().enumerate() {
             let selected = index == model.projects_cursor;
@@ -4974,7 +5098,7 @@ fn build_list_rows(
                 selected_idx = Some(out.len() - 1);
             }
         }
-        return (out, anchor_last_idx, selected_idx);
+        return (out, anchor_last_idx, selected_idx, reply_caret.get());
     }
 
     if model.view.sections.is_empty() && !model.search_query.trim().is_empty() {
@@ -4984,7 +5108,7 @@ fn build_list_rows(
             geo.row_width,
             style_dim(),
         )));
-        return (out, anchor_last_idx, selected_idx);
+        return (out, anchor_last_idx, selected_idx, reply_caret.get());
     }
 
     if let Some(summary) = model.summary.as_deref() {
@@ -5070,7 +5194,7 @@ fn build_list_rows(
             push_task(id, &mut out, &mut selected_idx, &mut anchor_last_idx, false);
         }
     }
-    (out, anchor_last_idx, selected_idx)
+    (out, anchor_last_idx, selected_idx, reply_caret.get())
 }
 
 /// Column geometry of the projects index. The four count columns are anchored to the
@@ -6190,6 +6314,7 @@ mod tests {
             now: SystemTime::UNIX_EPOCH,
             overlay: QueueOverlay::None,
             detail_open: None,
+            row_reply: None,
             list_scroll: 0,
             follow_list: false,
             archived_collapsed: true,
@@ -6250,6 +6375,7 @@ mod tests {
             now: SystemTime::UNIX_EPOCH,
             overlay: QueueOverlay::None,
             detail_open: None,
+            row_reply: None,
             list_scroll: 0,
             follow_list: false,
             archived_collapsed: true,
@@ -6375,6 +6501,7 @@ mod tests {
             now: SystemTime::UNIX_EPOCH,
             overlay: QueueOverlay::None,
             detail_open: None,
+            row_reply: None,
             list_scroll: 0,
             follow_list: false,
             archived_collapsed: true,

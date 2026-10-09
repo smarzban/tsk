@@ -554,6 +554,14 @@ const NORMAL_KEYMAP: &[NormalKeyEntry] = &[
         help_label: "assign",
         modifier: NormalModifier::Bare,
     },
+    // `r` opens the reply box under a blocked row: an editor like `@`'s picker, so bare.
+    NormalKeyEntry {
+        code: KeyCode::Char('r'),
+        intent: BoardIntent::BeginReply,
+        help_chord: "r",
+        help_label: "reply (blocked)",
+        modifier: NormalModifier::Bare,
+    },
     NormalKeyEntry {
         code: KeyCode::Char('d'),
         intent: BoardIntent::Complete,
