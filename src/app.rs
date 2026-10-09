@@ -2704,30 +2704,42 @@ fn route_board_start(
     host: &mut impl DispatchHost,
     name_agent: &mut dyn FnMut(dispatch::AgentNaming),
 ) -> bool {
-    let targets = model.verb_target_ids();
-    let assigned = |domain: &DomainState| {
-        targets.iter().any(|id| {
-            domain
-                .get(*id)
-                .is_some_and(|task| task.assignee.is_some() && start_moves(task, any_status))
-        })
-    };
-    // Only an assigned start can launch; decide it against the durable record.
-    if !assigned(domain) {
-        return false;
-    }
+    // Decide against the durable record: an assignment made elsewhere must launch. The
+    // invoked targets are kept; if the refresh drops or reanchors them, the start is refused
+    // rather than handed to a reducer that would read the new cursor.
+    let mut targets = model.verb_target_ids();
+    targets.sort();
     domain.merge_tasks_from_disk(baseline);
     model.sync_from_domain(domain);
-    if !assigned(domain) {
-        return false;
+    let mut refreshed = model.verb_target_ids();
+    refreshed.sort();
+    if refreshed != targets {
+        model.clear_marks();
+        model.set_message(START_TARGET_CHANGED);
+        return true;
     }
+    let launches =
+        |task: &crate::domain::Task| start_moves(task, any_status) && start_launches(task);
     if model.bulk_verb_active() {
+        // A set where nothing would launch is the reducer's plain batch, with no card and no
+        // dispatch-only checks.
+        if !targets
+            .iter()
+            .filter_map(|id| domain.get(*id))
+            .any(launches)
+        {
+            return false;
+        }
         return open_bulk_start_card(domain, model, store, &targets, any_status, in_herdr, host);
     }
     let Some(task) = targets.first().and_then(|id| domain.get(*id)) else {
         return false;
     };
-    if task.status == HumanStatus::Done || task.archived {
+    if task.assignee.is_none()
+        || !start_moves(task, any_status)
+        || task.status == HumanStatus::Done
+        || task.archived
+    {
         return false;
     }
     match dispatch::start_route(task, crate::domain::OWNER, in_herdr, host) {
@@ -2750,11 +2762,14 @@ fn route_board_start(
         }
         dispatch::StartRoute::AgentGone { assignee } => {
             let target = task.id;
-            open_relaunch_card(domain, model, target, assignee);
+            open_relaunch_card(domain, model, target, assignee, any_status);
             true
         }
     }
 }
+
+/// The status row when a refresh before a start dropped or moved its target.
+const START_TARGET_CHANGED: &str = "that task changed elsewhere · nothing started";
 
 /// Ask before relaunching `target`'s gone agent: `y` relaunches, `n` only starts.
 fn open_relaunch_card(
@@ -2762,6 +2777,7 @@ fn open_relaunch_card(
     model: &mut BoardModel,
     target: uuid::Uuid,
     assignee: String,
+    any_status: bool,
 ) {
     let Some(task) = domain.get(target) else {
         return;
@@ -2769,6 +2785,7 @@ fn open_relaunch_card(
     let prompt = crate::ui::board::RelaunchPrompt {
         task_id: target,
         number: task.number.unwrap_or_default(),
+        any_status,
         assignee,
         worktree: task
             .dispatch
@@ -2799,8 +2816,13 @@ fn reply_unblock_route(
     ))
 }
 
-/// Start `ids` as a plain status change in one save: the relaunch card's `n`, and the
-/// start-only rows of the bulk card. Tasks already started (or gone) are left alone.
+/// Start `ids` as a plain status change in one save and one undo step: the relaunch card's
+/// `n`, and the start-only rows of the bulk card. Each row is rechecked against the refreshed
+/// board with the rule the card was opened under: a row that no longer moves (started, done,
+/// archived, deleted, or out of `ctrl+s`'s open/ready) is left alone, and a row that now
+/// needs a launch the card did not show (assigned meanwhile) is refused on the status row.
+/// Returns the refusals, or `None` when the save failed into recovery.
+#[allow(clippy::too_many_arguments)]
 fn start_plain_and_save(
     store: &TaskStore,
     domain: &mut DomainState,
@@ -2808,26 +2830,59 @@ fn start_plain_and_save(
     save_recovery: &mut SaveRecovery<DomainState>,
     baseline: DomainState,
     ids: &[uuid::Uuid],
-) -> bool {
-    let mut changed = false;
+    any_status: bool,
+    undoable: bool,
+) -> Option<Vec<String>> {
+    let mut moving = Vec::new();
+    let mut refused = Vec::new();
     for id in ids {
-        let moves = domain
-            .get(*id)
-            .is_some_and(|task| task.status != HumanStatus::Started && !task.soft_deleted);
-        if moves && domain.set_status(*id, HumanStatus::Started).is_ok() {
-            changed = true;
+        let Some(task) = domain.get(*id) else {
+            continue;
+        };
+        if task.soft_deleted
+            || task.archived
+            || task.status == HumanStatus::Done
+            || !start_moves(task, any_status)
+        {
+            continue;
         }
+        if start_launches(task) {
+            refused.push(
+                task.board_identifier()
+                    .unwrap_or_else(|| "task".to_string()),
+            );
+            continue;
+        }
+        moving.push(*id);
     }
-    if !changed {
-        return true;
+    if !refused.is_empty() {
+        model.set_message(format!(
+            "not started: {} assigned since the card opened · ctrl+s launches",
+            refused.join(", ")
+        ));
+    }
+    if moving.is_empty() {
+        return Some(refused);
+    }
+    let started = if undoable {
+        domain.start_batch(&moving)
+    } else {
+        moving
+            .iter()
+            .try_for_each(|id| domain.set_status(*id, HumanStatus::Started))
+            .map(|()| true)
+    };
+    if let Err(error) = started {
+        model.set_message(board_rejection_message(&error));
+        return Some(refused);
     }
     if let Err(error) = store.reload_merge_save(domain) {
         fail_board_save(domain, model, save_recovery, baseline, error.to_string());
-        return false;
+        return None;
     }
     model.sync_from_domain(domain);
     record_notice_dismissals_without_blocking_persist(store, domain);
-    true
+    Some(refused)
 }
 
 const BULK_DISPATCH_RUNNING: &str = "a bulk dispatch is still running";
@@ -2896,10 +2951,13 @@ fn open_bulk_start_card(
         model.set_message(CLEANUP_BUSY);
         return true;
     }
+    // Done and archived tasks never start from the card: `y` would refuse them anyway.
     let mut starting = targets
         .iter()
         .filter_map(|id| domain.get(*id))
-        .filter(|task| start_moves(task, any_status))
+        .filter(|task| {
+            start_moves(task, any_status) && task.status != HumanStatus::Done && !task.archived
+        })
         .collect::<Vec<_>>();
     starting.sort_by_key(|task| task.number);
     let (launching, start_only): (Vec<_>, Vec<_>) =
@@ -2927,17 +2985,19 @@ fn open_bulk_start_card(
         }
     };
     open_bulk_dispatch_card(
-        domain, model, launching, start_only, &profiles, in_herdr, host,
+        domain, model, launching, start_only, any_status, &profiles, in_herdr, host,
     );
     true
 }
 
 /// The bulk start card over `launching` (assigned, never dispatched) and `start_only`.
+#[allow(clippy::too_many_arguments)]
 pub fn open_bulk_dispatch_card(
     domain: &DomainState,
     model: &mut BoardModel,
     launching: Vec<uuid::Uuid>,
     start_only: Vec<(String, uuid::Uuid)>,
+    any_status: bool,
     profiles: &AgentProfiles,
     in_herdr: bool,
     host: &mut impl DispatchHost,
@@ -2958,6 +3018,7 @@ pub fn open_bulk_dispatch_card(
         launch,
         skipped,
         start_only,
+        any_status,
         relaunch: None,
         git_checks,
         scroll: 0,
@@ -3000,6 +3061,7 @@ fn start_bulk_dispatch(
         );
         return Ok(());
     }
+    let mut start_refused = Vec::new();
     if !prompt.start_only.is_empty() {
         let ids = prompt
             .start_only
@@ -3007,13 +3069,38 @@ fn start_bulk_dispatch(
             .map(|(_, id)| *id)
             .collect::<Vec<_>>();
         model.clear_marks();
-        if !start_plain_and_save(store, domain, model, save_recovery, baseline, &ids) {
+        let before = domain.clone();
+        let Some(refused) = start_plain_and_save(
+            store,
+            domain,
+            model,
+            save_recovery,
+            baseline,
+            &ids,
+            prompt.any_status,
+            true,
+        ) else {
             return Ok(());
-        }
+        };
         if prompt.launch.is_empty() {
-            model.set_message(format!("started {}", plural(ids.len(), "task")));
+            let started = ids
+                .iter()
+                .filter(|id| {
+                    domain.get(**id).map(|task| task.status)
+                        != before.get(**id).map(|task| task.status)
+                })
+                .count();
+            let mut message = format!("started {}", plural(started, "task"));
+            if !refused.is_empty() {
+                message.push_str(&format!(
+                    " · not started: {} assigned since the card opened",
+                    refused.join(", ")
+                ));
+            }
+            model.set_message(message);
             return Ok(());
         }
+        start_refused = refused;
     }
     let profiles = match AgentProfiles::load(store.path()) {
         Ok(profiles) => profiles,
@@ -3036,6 +3123,11 @@ fn start_bulk_dispatch(
     }
     let mut run = crate::ui::board::BulkDispatchRun::new(host.begin_launches(jobs), total);
     run.failed = failed;
+    run.failed.extend(
+        start_refused
+            .into_iter()
+            .map(|identifier| (identifier, "assigned since the card opened".to_string())),
+    );
     model.set_message(run.message());
     model.begin_bulk_dispatch(run);
     // A host that launched inline has every outcome ready now.
@@ -3476,6 +3568,8 @@ fn handle_board_intent_with_host(
                 save_recovery,
                 baseline,
                 &[relaunch.task_id],
+                relaunch.any_status,
+                false,
             );
         }
         return Ok(false);
@@ -3524,6 +3618,9 @@ fn handle_board_intent_with_host(
     // then dispatches, or asks before relaunching a gone agent.
     let mut after_reply = None;
     let intent = if intent == BoardIntent::ReplySaveUnblock && !save_recovery.is_pending() {
+        // Route against the durable record: an assignment made elsewhere must launch.
+        domain.merge_tasks_from_disk(&baseline);
+        model.sync_from_domain(domain);
         match reply_unblock_route(domain, model, in_herdr, host) {
             None => intent,
             Some((_, dispatch::StartRoute::Plain)) => BoardIntent::ReplySaveStart,
@@ -3534,6 +3631,12 @@ fn handle_board_intent_with_host(
         }
     } else {
         intent
+    };
+
+    let resolves_recovery = match intent {
+        BoardIntent::RetrySave => Some(true),
+        BoardIntent::CancelSave => Some(false),
+        _ => None,
     };
 
     let loaded_snapshot;
@@ -3559,14 +3662,55 @@ fn handle_board_intent_with_host(
                 .map_err(|error| error.to_string())
         },
     );
+    // A reply whose save failed keeps its start for save recovery: Retry resumes it, Cancel
+    // drops it with the rolled-back reply.
+    match resolves_recovery {
+        Some(false) => model.pending_reply_start = None,
+        Some(true) if outcome == IntentOutcome::Persisted && !save_recovery.is_pending() => {
+            if let Some(target) = model.pending_reply_start.take() {
+                after_reply = domain
+                    .get(target)
+                    .filter(|task| task.assignee.is_some() && !task.archived)
+                    .map(|task| {
+                        (
+                            target,
+                            dispatch::start_route(task, crate::domain::OWNER, in_herdr, host),
+                        )
+                    });
+            }
+        }
+        _ => {}
+    }
+    if save_recovery.is_pending() {
+        if let Some((target, _)) = after_reply.take() {
+            model.pending_reply_start = Some(target);
+        }
+    }
     if outcome == IntentOutcome::Persisted {
         record_notice_dismissals_without_blocking_persist(store, domain);
         if let Some((target, route)) = after_reply.filter(|_| !save_recovery.is_pending()) {
             match route {
                 dispatch::StartRoute::AgentGone { assignee } => {
-                    open_relaunch_card(domain, model, target, assignee);
+                    // The reply box unblocks: any status but started moves.
+                    open_relaunch_card(domain, model, target, assignee, true);
                 }
-                _ => {
+                // Only a resumed start lands here: its agent turned out to be running.
+                dispatch::StartRoute::Plain => {
+                    let Some(baseline) = load_baseline(store, model)? else {
+                        return Ok(false);
+                    };
+                    start_plain_and_save(
+                        store,
+                        domain,
+                        model,
+                        save_recovery,
+                        baseline,
+                        &[target],
+                        true,
+                        false,
+                    );
+                }
+                dispatch::StartRoute::Dispatch => {
                     let Some(baseline) = load_baseline(store, model)? else {
                         return Ok(false);
                     };
@@ -9746,6 +9890,10 @@ mod quick_assign_tests {
         agent: Option<bool>,
         /// Herdr no longer has the recorded workspace.
         workspace_gone: bool,
+        /// Herdr cannot answer the root-pane query at all.
+        root_failed: bool,
+        /// The last reply of each task as saved when a launch began.
+        replies_on_disk_at_launch: Vec<String>,
         /// Workspaces opened on a kept worktree (a relaunch after the workspace closed).
         reopened: usize,
     }
@@ -9767,6 +9915,11 @@ mod quick_assign_tests {
             _: &str,
         ) -> Result<CreatedWorktree, String> {
             let disk = self.store.load().expect("load during launch");
+            self.replies_on_disk_at_launch
+                .extend(disk.tasks().iter().filter_map(|task| {
+                    let block = task.block.as_ref().or(task.past_blocks.last())?;
+                    block.replies.last().map(|reply| reply.text.clone())
+                }));
             self.assignee_on_disk_at_launch.borrow_mut().extend(
                 disk.tasks()
                     .iter()
@@ -9792,9 +9945,14 @@ mod quick_assign_tests {
             })
         }
 
-        fn root_pane(&mut self, _: &str) -> Result<String, String> {
+        fn root_pane(&mut self, _: &str) -> Result<String, crate::dispatch::RootPaneError> {
             if self.workspace_gone {
-                return Err("workspace not found".into());
+                return Err(crate::dispatch::RootPaneError::WorkspaceGone(
+                    "workspace not found".into(),
+                ));
+            }
+            if self.root_failed {
+                return Err("could not run herdr".into());
             }
             Ok("w1:p1".into())
         }
@@ -9834,6 +9992,8 @@ mod quick_assign_tests {
             ran: 0,
             agent: None,
             workspace_gone: false,
+            root_failed: false,
+            replies_on_disk_at_launch: Vec::new(),
             reopened: 0,
         }
     }
@@ -9981,6 +10141,11 @@ mod quick_assign_tests {
             &mut host,
         );
         assert_eq!(host.ran, 1, "one launch");
+        assert_eq!(
+            host.replies_on_disk_at_launch,
+            ["postgres"],
+            "the reply was saved before the launch began"
+        );
         let saved = temp.store.load().expect("reload");
         let task = saved.get(ids[0]).expect("task");
         assert_eq!(task.status, HumanStatus::Started);
@@ -10099,6 +10264,269 @@ mod quick_assign_tests {
         let saved = temp.store.load().expect("reload");
         assert!(saved.get(ids[1]).expect("task").dispatch.is_some());
         assert!(saved.get(ids[0]).expect("task").dispatch.is_none());
+    }
+
+    /// Another writer's change on disk, saved through a fresh copy of the store.
+    fn elsewhere(temp: &Temp, change: impl FnOnce(&mut DomainState)) {
+        let mut other = temp.store.load().expect("load");
+        change(&mut other);
+        temp.store
+            .reload_merge_save(&mut other)
+            .expect("save elsewhere");
+    }
+
+    fn assigned_board(temp: &Temp, titles: &[&str]) -> (DomainState, BoardModel, Vec<uuid::Uuid>) {
+        let (mut domain, mut model, ids) = board(temp, titles);
+        for id in &ids {
+            domain.assign(*id, Some("builder".into())).expect("assign");
+        }
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        (domain, model, ids)
+    }
+
+    /// F-9: a refresh that drops the invoked task never starts the cursor's new task.
+    #[test]
+    fn a_start_whose_target_was_archived_elsewhere_starts_nothing() {
+        let temp = Temp::new("start-target-gone", &["builder"]);
+        let (mut domain, mut model, ids) = assigned_board(&temp, &["archived elsewhere", "next"]);
+        select(&mut domain, &mut model, ids[0]);
+        elsewhere(&temp, |other| {
+            other.archive_task(ids[0]).expect("archive");
+        });
+        let mut host = fake_host(&temp);
+        let intent = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        assert_eq!(model.message(), Some(super::START_TARGET_CHANGED));
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(saved.get(ids[1]).expect("task").status, HumanStatus::Open);
+        assert_eq!(saved.get(ids[0]).expect("task").status, HumanStatus::Open);
+        assert_eq!(host.ran, 0);
+    }
+
+    /// F-12: an assignment made elsewhere launches, though this board has not refreshed.
+    #[test]
+    fn a_start_on_a_task_assigned_elsewhere_launches() {
+        let temp = Temp::new("start-assigned-elsewhere", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["assigned by the cli"]);
+        select(&mut domain, &mut model, ids[0]);
+        elsewhere(&temp, |other| {
+            other
+                .assign(ids[0], Some("builder".into()))
+                .expect("assign");
+        });
+        let mut host = fake_host(&temp);
+        let intent = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        assert_eq!(host.ran, 1);
+        let saved = temp.store.load().expect("reload");
+        assert!(saved.get(ids[0]).expect("task").dispatch.is_some());
+    }
+
+    #[test]
+    fn a_reply_on_a_task_assigned_elsewhere_dispatches() {
+        let temp = Temp::new("reply-assigned-elsewhere", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["assigned by the cli"]);
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+        elsewhere(&temp, |other| {
+            other
+                .assign(ids[0], Some("builder".into()))
+                .expect("assign");
+        });
+        let mut host = fake_host(&temp);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut host,
+        );
+        assert_eq!(host.ran, 1);
+        assert_eq!(host.replies_on_disk_at_launch, ["postgres"]);
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(
+            saved.get(ids[0]).expect("task").status,
+            HumanStatus::Started
+        );
+    }
+
+    /// F-3/F-4/F-8: only Herdr's `workspace_not_found` means gone; any other root-pane failure
+    /// is a plain start, and an explicit relaunch refuses instead of opening a second workspace.
+    #[test]
+    fn a_failed_root_pane_query_is_a_plain_start_and_never_reopens() {
+        let temp = Temp::new("root-failed", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["herdr is busy"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Ready);
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        host.root_failed = true;
+        host.agent = Some(false);
+        let intent = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        assert_eq!(model.dispatch_prompt(), None, "no relaunch card");
+        assert_eq!(
+            domain.get(ids[0]).expect("task").status,
+            HumanStatus::Started
+        );
+
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::DispatchAgain,
+            &mut host,
+        );
+        assert_eq!(model.message(), Some("could not run herdr"));
+        assert_eq!((host.reopened, host.ran, host.launched), (0, 0, 0));
+    }
+
+    /// F-16: outside Herdr a dispatched task's start is plain; nothing is asked or launched.
+    #[test]
+    fn a_dispatched_start_outside_herdr_is_plain() {
+        let temp = Temp::new("dispatched-no-herdr", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["no herdr"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Ready);
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        host.agent = Some(false);
+        host.workspace_gone = true;
+        let mut recovery = SaveRecovery::new();
+        let intent = ctrl_s(&model);
+        handle_board_intent_with_host(
+            &temp.store,
+            &mut domain,
+            &mut model,
+            intent,
+            &mut recovery,
+            false,
+            false,
+            &mut host,
+            &mut |_| {},
+        )
+        .expect("start");
+        assert_eq!(model.dispatch_prompt(), None);
+        assert_eq!(host.ran, 0);
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(
+            saved.get(ids[0]).expect("task").status,
+            HumanStatus::Started
+        );
+    }
+
+    /// F-19: palette start on an assigned, never-dispatched done task is a plain correction.
+    #[test]
+    fn an_assigned_done_task_starts_without_a_launch() {
+        let temp = Temp::new("done-start", &["builder"]);
+        let (mut domain, mut model, ids) = assigned_board(&temp, &["finished"]);
+        domain.complete(ids[0]).expect("done");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer, None).expect("drawer");
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::SetStatus(HumanStatus::Started),
+            &mut host,
+        );
+        assert_eq!(host.ran, 0);
+        assert_eq!(model.dispatch_prompt(), None);
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        assert!(task.dispatch.is_none());
+    }
+
+    /// F-11: the relaunch card's `n` rechecks the task; one finished meanwhile stays done.
+    #[test]
+    fn n_on_the_relaunch_card_leaves_a_task_finished_meanwhile() {
+        let temp = Temp::new("relaunch-n-done", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["finished meanwhile"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Ready);
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        host.agent = Some(false);
+        let intent = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        assert!(model.dispatch_prompt().is_some());
+        elsewhere(&temp, |other| other.complete(ids[0]).expect("done"));
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::StartWithoutRelaunch,
+            &mut host,
+        );
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(saved.get(ids[0]).expect("task").status, HumanStatus::Done);
+    }
+
+    /// F-18 and F-1/F-6: a failed reply save launches nothing and keeps the box; Retry saves
+    /// the reply and then dispatches; Cancel drops the start.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_reply_save_launches_nothing_and_retry_resumes_the_start() {
+        use std::os::unix::fs::PermissionsExt;
+        for retry in [true, false] {
+            let temp = Temp::new("reply-save-fails", &["builder"]);
+            let (mut domain, mut model, ids) = assigned_board(&temp, &["answer then go"]);
+            reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+            let mut host = fake_host(&temp);
+            let mut recovery = SaveRecovery::new();
+            let step = |domain: &mut DomainState,
+                        model: &mut BoardModel,
+                        recovery: &mut SaveRecovery<DomainState>,
+                        host: &mut FakeHost,
+                        intent: BoardIntent| {
+                handle_board_intent_with_host(
+                    &temp.store,
+                    domain,
+                    model,
+                    intent,
+                    recovery,
+                    false,
+                    true,
+                    host,
+                    &mut |_| {},
+                )
+                .expect("intent");
+            };
+            std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o555))
+                .expect("lock the state dir");
+            step(
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                &mut host,
+                BoardIntent::ReplySaveUnblock,
+            );
+            std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o700))
+                .expect("unlock");
+            assert!(recovery.is_pending(), "the save failed into recovery");
+            assert_eq!(host.ran, 0, "nothing launches before the reply is saved");
+            assert_eq!(model.reply_draft(), Some("postgres"));
+
+            let answer = if retry {
+                BoardIntent::RetrySave
+            } else {
+                BoardIntent::CancelSave
+            };
+            step(&mut domain, &mut model, &mut recovery, &mut host, answer);
+            assert!(!recovery.is_pending());
+            assert_eq!(model.pending_reply_start, None);
+            let saved = temp.store.load().expect("reload");
+            let task = saved.get(ids[0]).expect("task");
+            if retry {
+                assert_eq!(host.ran, 1, "retry resumed the start");
+                assert_eq!(host.replies_on_disk_at_launch, ["postgres"]);
+                assert_eq!(task.status, HumanStatus::Started);
+            } else {
+                assert_eq!(host.ran, 0, "cancel dropped the start");
+                assert_eq!(task.status, HumanStatus::Blocked);
+            }
+        }
     }
 
     #[test]
@@ -10960,7 +11388,7 @@ mod quick_assign_tests {
         );
     }
 
-    /// Bulk dispatch (`ctrl+g` on a marked set).
+    /// The bulk start card (`ctrl+s` on a marked set where a start would launch).
     mod bulk_dispatch {
         use super::*;
         use crate::dispatch::{AgentNaming, EligibleDispatch, GitChecks, LaunchBatch};
@@ -11106,7 +11534,10 @@ mod quick_assign_tests {
             ) -> Result<CreatedWorktree, String> {
                 self.inner.create_worktree(project, branch, base, label)
             }
-            fn root_pane(&mut self, workspace: &str) -> Result<String, String> {
+            fn root_pane(
+                &mut self,
+                workspace: &str,
+            ) -> Result<String, crate::dispatch::RootPaneError> {
                 self.inner.root_pane(workspace)
             }
             fn run_in_pane(&mut self, pane: &str, command: &str) -> Result<(), String> {
@@ -11139,10 +11570,9 @@ mod quick_assign_tests {
             }
         }
 
-        /// Eligible, unassigned, already dispatched, and a desk task: `ctrl+g` opens one card
-        /// that launches only the first and names why it skips each other one. Nothing launches
-        /// and the marks stay while it is up. Without the bulk route `ctrl+g` cleared the marks
-        /// and launched the cursor task.
+        /// Assigned, unassigned, already dispatched, and a desk task: `ctrl+s` opens one card
+        /// that launches only the first and only starts the unassigned and dispatched ones.
+        /// Nothing changes and the marks stay while it is up; `y` starts and launches.
         #[test]
         fn ctrl_s_on_a_mixed_marked_set_opens_one_card_listing_launches_and_starts() {
             let temp = Temp::new("bulk-card", &["builder"]);
@@ -11243,6 +11673,137 @@ mod quick_assign_tests {
                 saved(&temp, ids[2]).dispatch,
                 domain.get(ids[2]).and_then(|task| task.dispatch.clone())
             );
+        }
+
+        /// F-2/F-10/F-11: `y` rechecks the start-only rows against the refreshed board. A row
+        /// assigned meanwhile is refused (its launch was never shown); a row finished meanwhile
+        /// stays done.
+        #[test]
+        fn y_rechecks_start_only_rows_changed_since_the_card_opened() {
+            let temp = Temp::new("bulk-recheck", &["builder"]);
+            let (mut domain, mut model, ids) = board(
+                &temp,
+                &["launches", "assigned meanwhile", "finished meanwhile"],
+            );
+            assign(&mut domain, ids[0]);
+            marked(&mut domain, &mut model, &temp, &ids);
+            let mut host = fake_host(&temp);
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::PrimaryVerb,
+                &mut host,
+            );
+            let prompt = model.dispatch_prompt().expect("card").clone();
+            assert_eq!(prompt.start_only.len(), 2);
+
+            let mut other = temp.store.load().expect("load");
+            other
+                .assign(ids[1], Some("builder".into()))
+                .expect("assign elsewhere");
+            other.complete(ids[2]).expect("done elsewhere");
+            temp.store
+                .reload_merge_save(&mut other)
+                .expect("save elsewhere");
+
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::ConfirmDispatch,
+                &mut host,
+            );
+            assert_eq!(host.ran, 1, "only the shown launch runs");
+            assert_eq!(saved(&temp, ids[0]).status, HumanStatus::Started);
+            assert_eq!(saved(&temp, ids[1]).status, HumanStatus::Open, "refused");
+            assert!(saved(&temp, ids[1]).dispatch.is_none());
+            assert_eq!(saved(&temp, ids[2]).status, HumanStatus::Done);
+            let message = model.message().unwrap_or_default().to_string();
+            assert!(
+                message.contains(&number(&domain, ids[1]))
+                    && message.contains("assigned since the card opened"),
+                "{message}"
+            );
+        }
+
+        /// F-7: a set where nothing would launch (unassigned, already dispatched) is the plain
+        /// batch: no card, and a broken config.toml is never read.
+        #[test]
+        fn a_set_with_nothing_to_launch_never_reads_config() {
+            let temp = Temp::new("bulk-no-launch", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["dispatched", "unassigned"]);
+            assign(&mut domain, ids[0]);
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            domain
+                .record_dispatch(ids[0], earlier_dispatch())
+                .expect("earlier dispatch");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            domain
+                .set_status(ids[0], HumanStatus::Ready)
+                .expect("ready");
+            marked(&mut domain, &mut model, &temp, &ids);
+            std::fs::write(temp.dir.join("config.toml"), "not toml [").expect("break config");
+            let mut host = fake_host(&temp);
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::PrimaryVerb,
+                &mut host,
+            );
+            assert_eq!(model.dispatch_prompt(), None);
+            assert_eq!(host.ran, 0);
+            for id in &ids {
+                assert_eq!(saved(&temp, *id).status, HumanStatus::Started);
+            }
+        }
+
+        /// F-15: the card's start-only rows are one undo step; launches add none.
+        #[test]
+        fn the_start_only_rows_undo_as_one_batch() {
+            let temp = Temp::new("bulk-undo", &["builder"]);
+            let (mut domain, mut model, ids) =
+                board(&temp, &["launches", "start only", "start only too"]);
+            assign(&mut domain, ids[0]);
+            domain
+                .set_status(ids[2], HumanStatus::Ready)
+                .expect("ready");
+            marked(&mut domain, &mut model, &temp, &ids);
+            let undo_before = domain.undo_len();
+            let mut host = fake_host(&temp);
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::PrimaryVerb,
+                &mut host,
+            );
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::ConfirmDispatch,
+                &mut host,
+            );
+            assert_eq!(host.ran, 1);
+            assert_eq!(
+                domain.undo_len(),
+                undo_before + 1,
+                "one entry for the whole card"
+            );
+            assert!(matches!(
+                domain.last_undo(),
+                Some(UndoEntry::Batch { entries }) if entries.len() == 2
+            ));
+            handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+            assert_eq!(
+                saved(&temp, ids[0]).status,
+                HumanStatus::Started,
+                "launch stays"
+            );
+            assert_eq!(saved(&temp, ids[1]).status, HumanStatus::Open);
+            assert_eq!(saved(&temp, ids[2]).status, HumanStatus::Ready);
         }
 
         /// The card opens at once without a git call on the board thread, and its rows say
@@ -11693,7 +12254,7 @@ mod quick_assign_tests {
                         root_pane_id: "w9:p1".into(),
                     })
                 }
-                fn root_pane(&mut self, _: &str) -> Result<String, String> {
+                fn root_pane(&mut self, _: &str) -> Result<String, crate::dispatch::RootPaneError> {
                     Ok("w9:p1".into())
                 }
                 fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
@@ -11717,7 +12278,7 @@ mod quick_assign_tests {
                 ) -> Result<CreatedWorktree, String> {
                     panic!("launches never run on the board thread")
                 }
-                fn root_pane(&mut self, _: &str) -> Result<String, String> {
+                fn root_pane(&mut self, _: &str) -> Result<String, crate::dispatch::RootPaneError> {
                     unreachable!()
                 }
                 fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
@@ -12561,7 +13122,7 @@ mod queued_cleanup_tests {
             self.deleted += 1;
             Ok(())
         }
-        fn root_pane(&mut self, _: &str) -> Result<String, String> {
+        fn root_pane(&mut self, _: &str) -> Result<String, crate::dispatch::RootPaneError> {
             Err("not used".into())
         }
         fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
@@ -13650,7 +14211,7 @@ mod bulk_cleanup_tests {
                 run_cleanup_job(&job, &plan, in_herdr, self);
             }
         }
-        fn root_pane(&mut self, _: &str) -> Result<String, String> {
+        fn root_pane(&mut self, _: &str) -> Result<String, crate::dispatch::RootPaneError> {
             Err("not used".into())
         }
         fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {

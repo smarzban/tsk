@@ -234,8 +234,7 @@ pub enum ListPickerKind {
     ThreadFilter,
     /// The projects index's View selector (bare `v`).
     ProjectsView,
-    /// The quick assignee picker (bare `@`, the task-page footer, palette **set assignee**,
-    /// and `ctrl+g` on an unassigned task).
+    /// The quick assignee picker (bare `@`, the task-page footer, palette **set assignee**).
     Assignee,
     /// Explicit dispatch base, including the leading remote-default choice.
     Base,
@@ -1054,6 +1053,9 @@ pub struct BoardModel {
     pub(super) cleanup_status: Option<String>,
     /// Bulk dispatch card over the marked set while it owns input.
     pub(super) dispatch_prompt: Option<DispatchPrompt>,
+    /// A reply-box `ctrl+s` whose reply save failed: the task to start once Retry saves it.
+    /// Cancel drops it. Session-only.
+    pub pending_reply_start: Option<Uuid>,
     /// The block card while it owns input.
     pub(super) block_card: Option<super::block::BlockCard>,
     /// A bulk dispatch whose launches are still landing. One slot shared by the outer board and
@@ -1217,6 +1219,9 @@ pub struct DispatchPrompt {
     /// Marked tasks `y` only starts, in board order: unassigned, or already dispatched
     /// (relaunching stays cursor-only).
     pub start_only: Vec<(String, Uuid)>,
+    /// Opened by the palette's absolute **set status: started** (any status but started
+    /// moves) rather than `ctrl+s` (open and ready only); `y` rechecks the rows by it.
+    pub any_status: bool,
     /// The relaunch card: one cursor task whose agent is gone. `y` relaunches it, `n` only
     /// starts it. `launch`, `skipped` and `start_only` are empty.
     pub relaunch: Option<RelaunchPrompt>,
@@ -1238,6 +1243,7 @@ impl DispatchPrompt {
             launch: Vec::new(),
             skipped: Vec::new(),
             start_only: Vec::new(),
+            any_status: prompt.any_status,
             relaunch: Some(prompt),
             git_checks: None,
             scroll: 0,
@@ -1250,6 +1256,9 @@ impl DispatchPrompt {
 pub struct RelaunchPrompt {
     pub task_id: Uuid,
     pub number: u64,
+    /// The start's rule: any status but started moves (palette, reply box), or only open and
+    /// ready (`ctrl+s`). `n` rechecks the task by it.
+    pub any_status: bool,
     pub assignee: String,
     pub worktree: String,
 }
@@ -1702,6 +1711,7 @@ impl BoardModel {
             quit_after_cleanup: None,
             cleanup_status: None,
             dispatch_prompt: None,
+            pending_reply_start: None,
             block_card: None,
             bulk_dispatch: SharedBulkDispatch::default(),
             pending_delete_bulk: false,

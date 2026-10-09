@@ -459,6 +459,36 @@ impl std::fmt::Display for DispatchError {
 
 impl std::error::Error for DispatchError {}
 
+/// Why a workspace's root pane could not be found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RootPaneError {
+    /// Herdr answered that the workspace does not exist (`workspace_not_found`).
+    WorkspaceGone(String),
+    /// Anything else: Herdr could not run, exited non-zero, or answered something unreadable.
+    /// This says nothing about whether the workspace or its agent is still there.
+    Failed(String),
+}
+
+impl std::fmt::Display for RootPaneError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WorkspaceGone(reason) | Self::Failed(reason) => write!(formatter, "{reason}"),
+        }
+    }
+}
+
+impl From<String> for RootPaneError {
+    fn from(reason: String) -> Self {
+        Self::Failed(reason)
+    }
+}
+
+impl From<&str> for RootPaneError {
+    fn from(reason: &str) -> Self {
+        Self::Failed(reason.to_string())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreatedWorktree {
     pub path: PathBuf,
@@ -561,7 +591,9 @@ pub trait DispatchHost {
     {
         run_cleanup_job(&job, &plan, in_herdr, self);
     }
-    fn root_pane(&mut self, workspace_id: &str) -> Result<String, String>;
+    /// The workspace's root pane. Only Herdr's own `workspace_not_found` is
+    /// [`RootPaneError::WorkspaceGone`].
+    fn root_pane(&mut self, workspace_id: &str) -> Result<String, RootPaneError>;
     fn run_in_pane(&mut self, pane_id: &str, command: &str) -> Result<(), String>;
     /// The platform whose launch line and cleanup rules apply. Test hosts default to Unix.
     fn platform(&self) -> HostPlatform {
@@ -1103,17 +1135,26 @@ impl DispatchHost for SystemDispatchHost {
         std::thread::spawn(move || run_cleanup_job(&job, &plan, in_herdr, &mut host));
     }
 
-    fn root_pane(&mut self, workspace_id: &str) -> Result<String, String> {
+    fn root_pane(&mut self, workspace_id: &str) -> Result<String, RootPaneError> {
         let output = Command::new("herdr")
             .args(["pane", "list", "--workspace", workspace_id])
             .output()
             .map_err(|error| format!("could not run herdr: {error}"))?;
+        if !output.status.success()
+            && herdr_error_code(&output.stderr).as_deref() == Some("workspace_not_found")
+        {
+            return Err(RootPaneError::WorkspaceGone(format!(
+                "herdr workspace {workspace_id} not found"
+            )));
+        }
         let value = herdr_json(output)?;
         value
             .pointer("/result/panes/0/pane_id")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .ok_or_else(|| format!("herdr workspace {workspace_id} has no root pane"))
+            .ok_or_else(|| {
+                RootPaneError::Failed(format!("herdr workspace {workspace_id} has no root pane"))
+            })
     }
 
     fn run_in_pane(&mut self, pane_id: &str, command: &str) -> Result<(), String> {
@@ -2356,8 +2397,8 @@ pub enum StartRoute {
 ///
 /// A dispatched task asks Herdr whether its agent still runs in the workspace's root pane.
 /// Uncertainty never launches and never prompts: outside Herdr, or when Herdr cannot answer
-/// whether an agent is there, the start is plain. A cleaned record or a workspace Herdr no
-/// longer has means the agent is gone.
+/// (any root-pane or agent query failure), the start is plain. A cleaned record, a workspace
+/// Herdr reports as not found, or a pane with no agent means the agent is gone.
 pub fn start_route(
     task: &Task,
     actor: &str,
@@ -2383,8 +2424,10 @@ pub fn start_route(
     if !in_herdr {
         return StartRoute::Plain;
     }
-    let Ok(pane) = host.root_pane(&record.herdr_workspace_id) else {
-        return gone;
+    let pane = match host.root_pane(&record.herdr_workspace_id) {
+        Ok(pane) => pane,
+        Err(RootPaneError::WorkspaceGone(_)) => return gone,
+        Err(RootPaneError::Failed(_)) => return StartRoute::Plain,
     };
     match host.pane_has_agent(&pane) {
         Ok(false) => gone,
@@ -2611,7 +2654,13 @@ pub fn launch_with_host(
                     recreated.workspace_id,
                     recreated.root_pane_id,
                 )
-            } else if let Ok(pane) = host.root_pane(&existing.herdr_workspace_id) {
+            } else if let Some(pane) = match host.root_pane(&existing.herdr_workspace_id) {
+                Ok(pane) => Some(pane),
+                // Only a workspace Herdr says is gone is reopened; any other failure may leave
+                // the agent running there, so nothing launches.
+                Err(RootPaneError::WorkspaceGone(_)) => None,
+                Err(RootPaneError::Failed(reason)) => return Err(DispatchError::Herdr(reason)),
+            } {
                 (
                     existing.worktree.clone(),
                     existing.branch.clone(),
@@ -3311,7 +3360,7 @@ mod tests {
             Ok(())
         }
 
-        fn root_pane(&mut self, _: &str) -> Result<String, String> {
+        fn root_pane(&mut self, _: &str) -> Result<String, crate::dispatch::RootPaneError> {
             self.roots += 1;
             Ok("w9:p1".into())
         }

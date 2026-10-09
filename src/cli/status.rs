@@ -389,6 +389,7 @@ mod start_tests {
     struct Host {
         ran: usize,
         agent: Option<bool>,
+        root: Option<crate::dispatch::RootPaneError>,
     }
 
     impl DispatchHost for Host {
@@ -415,8 +416,11 @@ mod start_tests {
             })
         }
 
-        fn root_pane(&mut self, _: &str) -> Result<String, String> {
-            Ok("w0:p1".into())
+        fn root_pane(&mut self, _: &str) -> Result<String, crate::dispatch::RootPaneError> {
+            match self.root.clone() {
+                Some(error) => Err(error),
+                None => Ok("w0:p1".into()),
+            }
         }
 
         fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
@@ -559,5 +563,78 @@ mod start_tests {
             host.ran, 1,
             "--again relaunches even an already started task"
         );
+    }
+
+    /// Herdr failing to answer (not a definitive `workspace_not_found`) and a start outside
+    /// Herdr are uncertainty: a plain start, never `agent-gone`, never a launch.
+    #[test]
+    fn uncertainty_about_a_dispatched_agent_is_a_plain_start() {
+        let temp = Temp::new("root-failed");
+        let number = temp.task(true, true, HumanStatus::Review);
+        let mut host = Host {
+            root: Some("could not run herdr".into()),
+            ..Host::default()
+        };
+        let outcome = temp.start(number, PLAIN, "you", &mut host).expect("start");
+        assert!(matches!(outcome, StartOutcome::Status(_)));
+        assert_eq!(host.ran, 0);
+
+        let temp = Temp::new("not-in-herdr-dispatched");
+        let number = temp.task(true, true, HumanStatus::Review);
+        let mut host = Host {
+            agent: Some(false),
+            root: Some(crate::dispatch::RootPaneError::WorkspaceGone("gone".into())),
+            ..Host::default()
+        };
+        let outcome = run_started_with_host(
+            TaskAddress::Number(number),
+            PLAIN,
+            Some(temp.0.clone()),
+            false,
+            "you",
+            &mut host,
+        )
+        .expect("start");
+        assert!(matches!(outcome, StartOutcome::Status(_)));
+        assert_eq!(host.ran, 0);
+        assert_eq!(temp.status(number), HumanStatus::Started);
+    }
+
+    #[test]
+    fn a_workspace_herdr_reports_gone_is_agent_gone() {
+        let temp = Temp::new("workspace-gone");
+        let number = temp.task(true, true, HumanStatus::Review);
+        let mut host = Host {
+            root: Some(crate::dispatch::RootPaneError::WorkspaceGone("gone".into())),
+            ..Host::default()
+        };
+        let error = temp
+            .start(number, PLAIN, "you", &mut host)
+            .expect_err("gone");
+        assert_eq!(error.code(), "agent-gone");
+    }
+
+    /// Starting an assigned done or archived task is a status correction: no launch, no
+    /// refusal.
+    #[test]
+    fn an_assigned_done_or_archived_start_is_a_plain_correction() {
+        let temp = Temp::new("done");
+        let number = temp.task(true, false, HumanStatus::Done);
+        let mut host = Host::default();
+        let outcome = temp.start(number, PLAIN, "you", &mut host).expect("start");
+        assert!(matches!(outcome, StartOutcome::Status(_)));
+        assert_eq!(temp.status(number), HumanStatus::Started);
+        assert_eq!(host.ran, 0);
+
+        let temp = Temp::new("archived");
+        let number = temp.task(true, false, HumanStatus::Ready);
+        let mut state = temp.store().load().expect("load");
+        let id = state.tasks()[0].id;
+        state.archive_task(id).expect("archive");
+        temp.store().reload_merge_save(&mut state).expect("save");
+        let outcome = temp.start(number, PLAIN, "you", &mut host).expect("start");
+        assert!(matches!(outcome, StartOutcome::Status(_)));
+        assert_eq!(temp.status(number), HumanStatus::Started);
+        assert_eq!(host.ran, 0);
     }
 }

@@ -202,7 +202,7 @@ impl DispatchHost for CleanupHost {
         Ok(())
     }
 
-    fn root_pane(&mut self, _: &str) -> Result<String, String> {
+    fn root_pane(&mut self, _: &str) -> Result<String, tsk_tui::dispatch::RootPaneError> {
         Err("not used".into())
     }
 
@@ -501,7 +501,7 @@ impl DispatchHost for MergeCheckHost {
         Ok(())
     }
 
-    fn root_pane(&mut self, _: &str) -> Result<String, String> {
+    fn root_pane(&mut self, _: &str) -> Result<String, tsk_tui::dispatch::RootPaneError> {
         Err("not used".into())
     }
 

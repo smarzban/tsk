@@ -36,8 +36,8 @@ pub enum UndoEntry {
         previous: HumanStatus,
         expected_revision: Uuid,
     },
-    /// A start that dispatched; reversing restores `previous` and leaves the agent and its
-    /// dispatch record in place.
+    /// A board start: one that dispatched, or a start-only row of the bulk start card (inside
+    /// a batch). Reversing restores `previous` and leaves any agent and dispatch record in place.
     Start {
         id: Uuid,
         previous: HumanStatus,

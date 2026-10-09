@@ -346,6 +346,12 @@ impl DomainState {
         self.undo_stack.last()
     }
 
+    /// How many undo entries the stack holds.
+    #[cfg(test)]
+    pub(crate) fn undo_len(&self) -> usize {
+        self.undo_stack.len()
+    }
+
     /// Pop the top undo entry after its revision guard has passed.
     pub(crate) fn pop_undo(&mut self) -> Option<UndoEntry> {
         self.undo_stack.pop()
@@ -1033,6 +1039,34 @@ impl DomainState {
             expected_revision,
         });
         Ok(())
+    }
+
+    /// Start `ids` (plain, no launch) as one undo step: one [`UndoEntry::Start`] per task in an
+    /// [`UndoEntry::Batch`]. Tasks already started are skipped. Returns whether any changed.
+    pub fn start_batch(&mut self, ids: &[Uuid]) -> Result<bool, DomainError> {
+        let ids: Vec<_> = self
+            .prevalidate_batch_ids(ids)?
+            .into_iter()
+            .filter(|id| {
+                self.get(*id)
+                    .is_some_and(|task| task.status != HumanStatus::Started)
+            })
+            .collect();
+        if ids.is_empty() {
+            return Ok(false);
+        }
+        let mut entries = Vec::with_capacity(ids.len());
+        for id in ids {
+            let previous = self.task_mut(id)?.status;
+            self.set_status(id, HumanStatus::Started)?;
+            entries.push(UndoEntry::Start {
+                id,
+                previous,
+                expected_revision: self.task_mut(id)?.revision,
+            });
+        }
+        self.undo_stack.push(UndoEntry::Batch { entries });
+        Ok(true)
     }
 
     /// Reverse a start that dispatched: restore the earlier status. A start out of `blocked`
