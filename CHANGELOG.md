@@ -11,7 +11,7 @@ the GitHub release notes verbatim.
 
 ### Breaking
 
-- Store format 8: tasks can carry an assignee, a base branch, a dispatch record, and blocks with replies, and undo can revert a start that dispatched. Rolling back refuses the file; restore `tsk.json.v5`.
+- Store format 9: tasks can carry an assignee, a base branch, a dispatch record, blocks with replies, and review rounds with checks and feedback, and undo can revert a start that dispatched. Rolling back refuses the file; restore `tsk.json.v5`.
 
 ### Added
 
@@ -21,7 +21,13 @@ the GitHub release notes verbatim.
 - Completing a dispatched task offers to remove its worktree and merged branch in the background, for one task or a marked set.
 - Dispatch on Windows (preview).
 - Block with a reason: `ctrl+b` asks why, what it waits on, and what it needs; agents block with `tsk status T12 blocked --why "…" --option "…"`, and you answer on the task page (`r`), inline under a blocked board row (`r`), or with `tsk reply`. Answering with `ctrl+s` while the task's dispatched agent still runs sends that reply, and only it, to that agent (`started · reply sent to @claude`), never to another agent in its pane; `tsk reply --send` does the same without unblocking.
+- Review with what was done: `ctrl+r` asks what was done, what to check (one per line), what is next, and who the review is on (you, an agent, or other text); agents hand back with `tsk status T12 review --done "…" --check "…" --next "…"`. On the task page `Enter` marks each check passed or failed (passed ones fold away), and `r` gives feedback: `shift+enter` saves, `ctrl+s` sends it back to started and delivers the feedback with the failed checks to the running agent (`[tsk T12 sent back] …`), `ctrl+d` approves it as done. Each send-back starts a new round; `tsk list --json` shows the open `review` and closed `past_reviews`. A review on another agent rides in IN MOTION as `△`.
 - `tsk dispatch` and `tsk clean`, plus `--assignee` and `--base` on `tsk add`/`tsk edit`. Agent skill 1.5.0; `tsk update` refreshes installed copies.
+
+### Changed
+
+- `ctrl+r` opens the review card instead of setting review at once; `Enter` on the empty card still sets it immediately, and `ctrl+r` on a task in review still returns it to ready.
+- `tsk reply` also adds feedback to a task in review; `not-blocked` now means the task is neither blocked nor in review.
 
 ### Fixed
 

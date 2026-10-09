@@ -125,7 +125,7 @@ Prefer the keyboard? A few keys for everyday use:
 | `ctrl+s` | Start an open or ready task |
 | `ctrl+n` | Pick a task, moving it to ready |
 | `ctrl+o` | Send a task to the open inbox |
-| `ctrl+r` | Send a task to review, or back to ready |
+| `ctrl+r` | Send a task to review with what was done and what to check, or back to ready |
 | `ctrl+d` | Mark the selected task done |
 | `p` | Switch projects |
 | `d` | Show or hide completed tasks |

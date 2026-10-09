@@ -17,7 +17,7 @@ Install the skill with `tsk setup pi`, or use your [agent's setup target](#setup
 1. Read the task with `tsk list T12`.
 2. Set its status with `tsk status T12 started --no-dispatch` when you are doing the work yourself (or `ready` to pick it from the inbox). A plain `started` on an assigned task launches its agent.
 3. Update notes or steps as work progresses.
-4. Set `review`, `blocked`, `open`, or `done` explicitly. Block with your question: `tsk status T12 blocked --why "…"`, and read the answers under `block.replies` in `tsk list T12 --json` (once it is unblocked or relaunched, in the last `past_blocks` entry).
+4. Set `review`, `blocked`, `open`, or `done` explicitly. Hand back with what you did and what to check: `tsk status T12 review --done "…" --check "…"`, and read feedback under `review.feedback` (once the review is sent back, in the last `past_reviews` entry). Block with your question: `tsk status T12 blocked --why "…"`, and read the answers under `block.replies` in `tsk list T12 --json` (once it is unblocked or relaunched, in the last `past_blocks` entry).
 
 The CLI can mark a task done with `tsk status <task> done`. Agent lifecycle does not change task status automatically.
 
@@ -31,8 +31,8 @@ Use `--json` on `add`, `list`, or `clean` for machine-readable output. Read the 
 | `tsk capture` | Open capture; save or discard exits |
 | `tsk add` | Add a task or JSON plan |
 | `tsk list` | Read tasks |
-| `tsk status` | Set task status, or block with a reason |
-| `tsk reply` | Answer a blocked task's open block |
+| `tsk status` | Set task status, block with a reason, or put work up for review |
+| `tsk reply` | Answer a blocked task, or give feedback on a review |
 | `tsk edit` | Replace title or notes; assign or unassign |
 | `tsk dispatch` | Launch an assigned task's agent in its own worktree |
 | `tsk clean` | Remove a dispatched worktree and its merged branch |
@@ -187,7 +187,7 @@ Human output groups by status in `STARTED`, `READY`, `OPEN`, `BLOCKED`, `REVIEW`
 
 Single-task output removes metadata from the title row and presents notes, steps, `@assignee`, `⎇ <base>` when explicitly set, then `#thread` as separate blocks. A blank line separates adjacent blocks that exist. Human step rows show state and text without machine-oriented short IDs.
 
-JSON returns an array with `id`, `number`, `title`, `status`, `project`, `assignee`, `base`, and `thread`. Direct lookup returns the complete task, including `notes` (`null` when absent) and `steps` (an empty array when absent). Its fields are ordered `id`, `number`, `project`, `status`, `title`, `notes`, `steps`, `assignee`, `base`, `thread`, then `dispatch` when a record exists; each JSON step retains its `short_id` for step commands. `base` is the task's explicit base branch or `null`. `dispatch` is the launch record: `argv`, `worktree`, `branch`, `base` (the ref it started from), `base_ref` (the same ref, fully qualified), `base_commit` (the starting commit), `base_remote` (when the base has a remote), `herdr_workspace_id`, `at`, and `cleaned` once cleaned up. A blocked task adds `block`: `why`, `needs` (`null` when absent), `options`, `on` (`you`, `task:<number>`, or `other:<text>`), `by` (`you` or the agent profile), `at`, `edited`, `replies` (each `at`, `by`, `text`, and `edited: true` once edited; deleted replies are left out), and `answered` (the last reply is yours). Closed blocks follow under `past_blocks`, each adding `closed_at` and `closed_by`. Filtered listings do not include `dispatch`, `block`, or `past_blocks`; human output prints `blocked: <why>` under a blocked row with a reason. Archived listings include an `archived` mark: `archived` or `project archived`.
+JSON returns an array with `id`, `number`, `title`, `status`, `project`, `assignee`, `base`, and `thread`. Direct lookup returns the complete task, including `notes` (`null` when absent) and `steps` (an empty array when absent). Its fields are ordered `id`, `number`, `project`, `status`, `title`, `notes`, `steps`, `assignee`, `base`, `thread`, then `dispatch` when a record exists; each JSON step retains its `short_id` for step commands. `base` is the task's explicit base branch or `null`. `dispatch` is the launch record: `argv`, `worktree`, `branch`, `base` (the ref it started from), `base_ref` (the same ref, fully qualified), `base_commit` (the starting commit), `base_remote` (when the base has a remote), `herdr_workspace_id`, `at`, and `cleaned` once cleaned up. A blocked task adds `block`: `why`, `needs` (`null` when absent), `options`, `on` (`you`, `task:<number>`, or `other:<text>`), `by` (`you` or the agent profile), `at`, `edited`, `replies` (each `at`, `by`, `text`, and `edited: true` once edited; deleted replies are left out), and `answered` (the last reply is yours). Closed blocks follow under `past_blocks`, each adding `closed_at` and `closed_by`. A task in review adds `review`: `round` (from 1), `done`, `checks` (each `text` and `state`: `open`, `passed`, or `failed`), `next` (`null` when absent), `on` (`you`, `agent:<profile>`, or `other:<text>`), `by`, `at`, `edited`, `feedback` (shaped like `replies`), and `answered`. Closed rounds follow under `past_reviews`, each adding `closed_at`, `closed_by`, and `resolution`: `sent_back` when the round closed with a start, `approved` when it closed with done, absent otherwise. Filtered listings do not include `dispatch`, `block`, `past_blocks`, `review`, or `past_reviews`; human output prints `blocked: <why>` under a blocked row with a reason. Archived listings include an `archived` mark: `archived` or `project archived`.
 
 ## status
 
@@ -245,7 +245,23 @@ The flags are accepted only with `blocked`; use `--why=-…` for a value that st
 
 A task blocked on you shows in the board's NEEDS YOU; one blocked on another task or on something else rides in IN MOTION until the blocking task is done. The command takes one task: the board blocks a marked set at once.
 
-The author of a block or reply is `you`, unless tsk runs inside a [dispatched](#dispatch) agent: dispatch sets `TSK_AGENT=<profile>` in the agent's environment, and blocks and replies made from there carry that profile name.
+### Review with what was done
+
+```sh
+tsk status T12 review --done "Opened PR #41" --check "tests pass" --check "no flicker at 80 columns" --next "docs"
+tsk status T12 review --on pi
+```
+
+| Flag | Value |
+| --- | --- |
+| `--done <text>` | What was done |
+| `--check <text>` | One thing the reviewer should check; repeat for more |
+| `--next <text>` | What comes after |
+| `--on <who>` | `you` (default), an agent profile from `config.toml` (`pi` or `@pi`), or any other text |
+
+The flags are accepted only with `review` (`--on` also with `blocked`); use `--done=-…` for a value that starts with `-`. Each text is at most 4 KB (`text-too-long`). Entering review opens a round; running the command again while the task is in review edits that round in place and marks it edited, replacing only the fields given (a check whose text is unchanged keeps its state). `review` without flags opens a round with nothing recorded. Leaving `review` closes the round into `past_reviews`; the next review opens round N+1. A review on you shows in NEEDS YOU; one on an agent or on something else rides in IN MOTION.
+
+The author of a block, review, or reply is `you`, unless tsk runs inside a [dispatched](#dispatch) agent: dispatch sets `TSK_AGENT=<profile>` in the agent's environment, and blocks, reviews, and replies made from there carry that profile name.
 
 ## reply
 
@@ -255,9 +271,9 @@ tsk reply T12 "Use postgres" --send
 tsk reply T12 -- "-5 degrees is fine"
 ```
 
-Adds a reply to the task's open block, authored as above. Put `--` before text that begins with `-`. A task without an open block refuses with `not-blocked`; empty text refuses with `empty-reply`, and text over 4 KB with `text-too-long`. Each run adds a reply, so read the task before retrying. The board's owner answers from the [task page](/docs/task-page/#blocked) or a [blocked row](/docs/board/#block-with-a-reason).
+Adds a reply to the task's open block, or feedback to its open review round, authored as above. Put `--` before text that begins with `-`. A task that is neither blocked nor in review refuses with `not-blocked`; empty text refuses with `empty-reply`, and text over 4 KB with `text-too-long`. Each run adds a reply, so read the task before retrying. The board's owner answers from the [task page](/docs/task-page/#blocked) or a [blocked row](/docs/board/#block-with-a-reason).
 
-`--send` also delivers the reply this run stored, and only it, to the task's running [dispatched](#dispatch) agent, as `[tsk T12 reply] <text>`. The task stays blocked; the board's reply box `ctrl+s` is the way to answer and unblock in one step. Only your own replies are sent, only inside Herdr, and only to the agent tsk dispatched: the pane's live agent must carry its dispatch name (`t12-claude`).
+`--send` also delivers the reply this run stored, and only it, to the task's running [dispatched](#dispatch) agent, as `[tsk T12 reply] <text>`. The status stays; the board's reply box `ctrl+s` is the way to answer and unblock (or send a review back) in one step. Only your own replies are sent, only inside Herdr, and only to the agent tsk dispatched: the pane's live agent must carry its dispatch name (`t12-claude`).
 
 Output: `replied T12 as <author> <title>`. With `--send`, a second line says `sent to @claude` or `not sent: <reason>`: the agent is waiting on a prompt, Herdr could not reach it, the agent is not in its pane (another or an unnamed agent holds it), the agent is gone, the task was never dispatched or has no assignee, not in Herdr, or the reply is an agent's. The reply is stored either way, so the exit is 0. Rerunning adds and sends another reply; it never resends an earlier one.
 
