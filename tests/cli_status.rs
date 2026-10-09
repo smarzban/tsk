@@ -424,3 +424,29 @@ fn blocked_on_another_task_records_it() {
     assert_eq!(output.code, 0, "{}", output.stderr);
     assert_eq!(listed(&dir, "T2")["block"]["on"], "other:legal sign-off");
 }
+
+#[test]
+fn a_legacy_blocked_task_without_a_block_gains_one_without_a_status_change() {
+    let dir = temp_state_dir("block-legacy");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "old store").code, 0);
+    // A v6 store's blocked task carries no block.
+    let path = dir.join("tsk.json");
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).expect("read")).expect("json");
+    document["tasks"][0]["status"] = serde_json::json!("blocked");
+    fs::write(&path, serde_json::to_vec_pretty(&document).expect("encode")).expect("write");
+    let (_, status_events) = loaded_status(&dir);
+
+    let output = cli(block_args(&dir, "T1", &["--why", "now with a reason"]));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    let state = TaskStore::new(&dir).load().expect("load");
+    let task = &state.tasks()[0];
+    assert_eq!(task.status, HumanStatus::Blocked);
+    assert_eq!(
+        task.block.as_ref().and_then(|block| block.why.as_deref()),
+        Some("now with a reason")
+    );
+    assert_eq!(loaded_status(&dir).1, status_events, "no status event");
+    assert_eq!(reply(&dir, "T1", "ok").code, 0);
+}
