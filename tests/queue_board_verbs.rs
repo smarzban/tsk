@@ -1869,8 +1869,7 @@ fn bulk_start_preserves_per_task_eligibility_and_toggle_verbs_are_all_or_nothing
     apply_intent(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer, None)
         .expect("open done drawer");
     mark_tasks(&mut domain, &mut model, &[open, blocked]);
-    apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None)
-        .expect("bulk block card");
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None).expect("bulk block card");
     apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
         .expect("bulk block includes a done target");
     assert!([open, blocked]

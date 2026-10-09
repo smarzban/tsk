@@ -4,7 +4,7 @@
 │                                                                                │
 │ NEEDS YOU ───────────────────────────────────────────────────────────────────2 │
 │                                                                                │
-│  ■ T5 Wire dispatch cleanup receipts                                           │
+│  ■ T5 Wire dispatch cleanup receipts                                @claude ?  │
 │  ▲ T6 Do┌─ help ▼ ────────────────────────────────────────────── [x]─┐         │
 │         │                                                            │         │
 │ IN MOTIO│  / search keys or actions…                                 │───────2 │

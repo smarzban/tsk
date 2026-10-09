@@ -144,13 +144,7 @@ pub fn paint_task_row_lines(
         .map(super::terminal_text)
         .filter(|text| !text.is_empty());
     let trailer_w = trailer.as_deref().map(display_width).unwrap_or(0);
-    // Beside the title when it leaves the title at least half the row; otherwise below.
-    let trailer_inline = trailer.is_some() && trailer_w + 2 <= full_room / 2;
-    let room = if trailer_inline {
-        full_room - trailer_w - 2
-    } else {
-        full_room
-    };
+    let room = full_room;
     let head_content_x = u16::try_from(prefix_cells).unwrap_or(u16::MAX);
     let head_content_width = u16::try_from(identifier_width + identifier_gap + room)
         .unwrap_or(u16::MAX)
@@ -168,18 +162,27 @@ pub fn paint_task_row_lines(
         .map(|wrapped| wrapped.text)
         .collect();
 
-    let mut lines = Vec::with_capacity(segments.len());
+    // The trailer sits at the right edge of the title's last row when both fit there, and
+    // otherwise takes its own right-aligned rows below the title.
+    let last_cells = title_x
+        + segments
+            .last()
+            .map(|segment| display_width(segment))
+            .unwrap_or(0);
+    let trailer_inline = trailer.is_some() && last_cells + 2 + trailer_w <= row_w;
+    let mut lines = Vec::with_capacity(segments.len() + 1);
     let head = TaskRowPaint {
         title: &segments[0],
         ..*row
     };
     let mut title_geo = *geo;
-    title_geo.row_width = (row_w - if trailer_inline { trailer_w + 2 } else { 0 }) as u16;
+    let inline_on_head = trailer_inline && segments.len() == 1;
+    title_geo.row_width = (row_w - if inline_on_head { trailer_w } else { 0 }) as u16;
     let mut head_line = paint_task_row_with_indent(&head, &title_geo, leading_indent);
-    if let (true, Some(trailer)) = (trailer_inline, trailer.as_deref()) {
+    if let (true, Some(trailer)) = (inline_on_head, trailer.as_deref()) {
         head_line
             .spans
-            .push(Span::styled(format!("  {trailer}"), style_dim()));
+            .push(Span::styled(trailer.to_string(), style_dim()));
         head_line = bound_line(head_line, row_w);
     }
     lines.push(TaskRowLine {
@@ -196,15 +199,25 @@ pub fn paint_task_row_lines(
     } else {
         style_plain()
     };
-    for segment in segments.iter().skip(1) {
+    let continuations = segments.len().saturating_sub(1);
+    for (index, segment) in segments.iter().skip(1).enumerate() {
+        let mut spans = vec![Span::styled(
+            format!("{indent}{segment}"),
+            continuation_style,
+        )];
+        if let (true, true, Some(trailer)) = (
+            trailer_inline,
+            index + 1 == continuations,
+            trailer.as_deref(),
+        ) {
+            let used = title_x + display_width(segment);
+            spans.push(Span::raw(
+                " ".repeat(row_w.saturating_sub(used + trailer_w)),
+            ));
+            spans.push(Span::styled(trailer.to_string(), style_dim()));
+        }
         lines.push(TaskRowLine {
-            line: bound_line(
-                Line::from(Span::styled(
-                    format!("{indent}{segment}"),
-                    continuation_style,
-                )),
-                row_w,
-            ),
+            line: bound_line(Line::from(spans), row_w),
             content_x: title_content_x,
             content_width: title_content_width,
             identifier: None,

@@ -934,8 +934,44 @@ fn help_bindings() -> Vec<HelpBinding> {
         help_binding(
             HelpGroup::TaskActions,
             "ctrl+x",
-            "delete step / task (task page)",
+            "delete step / reply / task (task page)",
             "remove checklist",
+        ),
+        help_binding(
+            HelpGroup::TaskActions,
+            "r",
+            "reply to a blocked task (task page)",
+            "answer question blocked",
+        ),
+        help_binding(
+            HelpGroup::TaskActions,
+            "enter (option)",
+            "reply with that option (task page)",
+            "answer question blocked",
+        ),
+        help_binding(
+            HelpGroup::CreateEdit,
+            "ctrl+e (blocked)",
+            "edit why, on, needs / your reply",
+            "block reason question",
+        ),
+        help_binding(
+            HelpGroup::SurfaceControls,
+            "shift+enter (reply)",
+            "save reply",
+            "answer blocked",
+        ),
+        help_binding(
+            HelpGroup::SurfaceControls,
+            "ctrl+s (reply)",
+            "save reply + unblock",
+            "answer blocked ready",
+        ),
+        help_binding(
+            HelpGroup::SurfaceControls,
+            "tab (block card)",
+            "why · on · needs",
+            "block reason question",
         ),
         help_binding(
             HelpGroup::Navigation,
