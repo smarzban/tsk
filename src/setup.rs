@@ -509,35 +509,62 @@ fn no_symlink(path: &Path) -> io::Result<()> {
 }
 /// Follow `path` while it is a symlink (dotfiles managers link the Herdr config and its
 /// directory). Relative targets resolve against the link's directory. A missing `path` is
-/// returned as is; a dangling or looping link is refused before anything is read or written.
-fn follow_links(path: &Path) -> io::Result<PathBuf> {
+/// returned as is; a dangling or looping link, including a loop or a non-directory along
+/// the target's path, is refused (naming `config`) before anything is read or written.
+fn follow_links(path: &Path, config: &Path) -> io::Result<PathBuf> {
+    let loops = || {
+        error(format!(
+            "Herdr config symlink {} loops; fix the link",
+            config.display()
+        ))
+    };
+    let missing = |at: &Path| {
+        error(format!(
+            "Herdr config symlink {} points at missing {}; create the target or remove the link",
+            config.display(),
+            at.display()
+        ))
+    };
     let mut current = path.to_path_buf();
     for _ in 0..40 {
-        match fs::symlink_metadata(&current) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                let target = fs::read_link(&current)?;
+        let step = fs::symlink_metadata(&current).and_then(|meta| {
+            if meta.file_type().is_symlink() {
+                fs::read_link(&current).map(Some)
+            } else {
+                Ok(None)
+            }
+        });
+        match step {
+            Ok(Some(target)) => {
                 current = current
                     .parent()
                     .map_or_else(|| target.clone(), |dir| dir.join(&target));
             }
-            Ok(_) => return Ok(current),
-            Err(e) if e.kind() == io::ErrorKind::NotFound && current == path => {
-                return Ok(current)
-            }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return Err(error(format!(
-                    "Herdr config symlink {} points at missing {}; create the target or remove the link",
-                    path.display(),
-                    current.display()
-                )))
+            Ok(None) => return Ok(current),
+            Err(e) if is_loop(&e) => return Err(loops()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound && current == path => return Ok(current),
+            Err(e)
+                if current != path
+                    && matches!(
+                        e.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                    ) =>
+            {
+                return Err(missing(&current))
             }
             Err(e) => return Err(e),
         }
     }
-    Err(error(format!(
-        "Herdr config symlink {} loops; fix the link",
-        path.display()
-    )))
+    Err(loops())
+}
+/// `io::ErrorKind::FilesystemLoop` is unstable; match the OS code instead.
+fn is_loop(e: &io::Error) -> bool {
+    #[cfg(unix)]
+    let code = libc::ELOOP;
+    // ERROR_CANT_RESOLVE_FILENAME: a reparse-point chain that never ends.
+    #[cfg(windows)]
+    let code = 1921;
+    e.raw_os_error() == Some(code)
 }
 /// Where setup actually edits: the config's directory with its link followed, then the
 /// config file within it with its link followed (and that target's directory, if linked).
@@ -551,15 +578,15 @@ fn resolve_config(config: &Path) -> io::Result<(PathBuf, PathBuf)> {
     let filename = config
         .file_name()
         .ok_or_else(|| error("config has no filename"))?;
-    let home = follow_links(parent)?;
-    let file = follow_links(&home.join(filename))?;
+    let home = follow_links(parent, config)?;
+    let file = follow_links(&home.join(filename), config)?;
     let (Some(dir), Some(name)) = (file.parent(), file.file_name()) else {
         return Err(error(format!(
             "Herdr config symlink {} must point at a file",
             config.display()
         )));
     };
-    Ok((home.clone(), follow_links(dir)?.join(name)))
+    Ok((home.clone(), follow_links(dir, config)?.join(name)))
 }
 fn read_config(path: &Path) -> io::Result<Option<String>> {
     no_symlink(path)?;

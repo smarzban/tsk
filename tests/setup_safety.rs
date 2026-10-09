@@ -444,20 +444,94 @@ fn symlinked_config_directory_is_followed() {
     assert!(dotfiles.join("tsk-plugins").is_dir());
     assert_eq!(ok(h.check()).trim(), "bound");
 }
+/// The link's target sits in a linked directory, and its basename is not config.toml:
+/// `config.toml -> dotlink/<name>`, `dotlink -> dotfiles/<dir>`. The edit, staging and
+/// backup land in the real directory; both links survive.
+#[test]
+fn config_link_into_a_linked_directory_edits_the_real_directory() {
+    for (which, real_dir, name) in [
+        ("linked dir", "dotfiles", "config.toml"),
+        ("other basename", "dotfiles/v2", "herdr.toml"),
+    ] {
+        let h = host();
+        let home = h.config.parent().unwrap().to_path_buf();
+        let real = h.root.join("outside").join(real_dir);
+        fs::create_dir_all(&real).unwrap();
+        let target = real.join(name);
+        fs::write(&target, "# real\n").unwrap();
+        let dir_link = h.root.join("outside/dotlink");
+        symlink(&real, &dir_link).unwrap();
+        let file_link = format!("../outside/dotlink/{name}");
+        symlink(&file_link, &h.config).unwrap();
+
+        assert_eq!(ok(h.check()).trim(), "unbound", "{which}");
+        let output = ok(h.run(""));
+
+        assert_eq!(
+            fs::read_link(&h.config).unwrap(),
+            std::path::PathBuf::from(&file_link)
+        );
+        assert_eq!(fs::read_link(&dir_link).unwrap(), real, "{which}");
+        let updated = fs::read_to_string(&target).unwrap();
+        assert!(updated.contains("# real") && updated.contains("herdr-tsk.quick-capture"));
+        let backups: Vec<_> = fs::read_dir(&real)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("config.toml.tsk-backup-"))
+            .collect();
+        assert_eq!(backups.len(), 1, "{which}: {backups:?}");
+        assert!(output.contains("tsk-backup-"), "{which}");
+        // Every path setup printed or staged resolves to the real directory, never a link.
+        let checked = fs::read_to_string(h.root.join("checked")).unwrap();
+        let checked_dir = std::path::Path::new(&checked).parent().unwrap();
+        assert!(
+            !fs::symlink_metadata(checked_dir).unwrap().is_symlink(),
+            "{which}: staged through a link: {checked}"
+        );
+        assert_eq!(
+            fs::canonicalize(checked_dir).unwrap(),
+            fs::canonicalize(&real).unwrap(),
+            "{which}"
+        );
+        let backup_line = output
+            .lines()
+            .find(|l| l.contains("tsk-backup-"))
+            .unwrap()
+            .trim()
+            .to_string();
+        assert!(
+            !fs::symlink_metadata(std::path::Path::new(&backup_line).parent().unwrap())
+                .unwrap()
+                .is_symlink(),
+            "{which}: backup reported through a link: {backup_line}"
+        );
+        assert!(backups_in(&home).is_empty(), "{which}");
+        assert!(home.join("tsk-plugins").is_dir(), "{which}");
+        assert_eq!(ok(h.check()).trim(), "bound", "{which}");
+    }
+}
 #[test]
 fn dangling_or_looping_config_link_is_refused_without_writes() {
-    for which in ["dangling", "self", "pair"] {
+    for which in ["dangling", "self", "pair", "loop dir", "file dir"] {
         let h = host();
         let outside = h.root.join("outside");
         match which {
             "dangling" => symlink(outside.join("missing.toml"), &h.config).unwrap(),
             "self" => symlink(&h.config, &h.config).unwrap(),
+            "loop dir" => {
+                symlink(outside.join("loopdir"), outside.join("loopdir")).unwrap();
+                symlink(outside.join("loopdir/config.toml"), &h.config).unwrap();
+            }
+            "file dir" => {
+                fs::write(outside.join("plain"), "").unwrap();
+                symlink(outside.join("plain/config.toml"), &h.config).unwrap();
+            }
             _ => {
                 symlink(outside.join("b.toml"), &h.config).unwrap();
                 symlink(&h.config, outside.join("b.toml")).unwrap();
             }
         }
-        let expected = if which == "dangling" {
+        let expected = if matches!(which, "dangling" | "file dir") {
             "points at missing"
         } else {
             "loops"
