@@ -235,7 +235,9 @@ fn expected_intent(action: &str) -> Option<BoardIntent> {
         BoardIntent::Complete
     } else if action.starts_with("toggle blocked") {
         BoardIntent::ToggleBlock
-    } else if action.starts_with("toggle review") {
+    } else if action.starts_with("toggle review")
+        || action.starts_with("review with the review card")
+    {
         BoardIntent::ToggleReview
     } else if action.starts_with("delete") {
         BoardIntent::SoftDelete
