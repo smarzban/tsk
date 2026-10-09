@@ -11026,6 +11026,35 @@ mod quick_assign_tests {
         assert!(at("next   docs") < at("see PR #41 for the diff"));
     }
 
+    /// The REVIEW section paints at 40 and 120 columns: the heading and the fold line stay,
+    /// long text wraps instead of truncating.
+    #[test]
+    fn the_review_section_paints_narrow_and_wide() {
+        use crate::domain::CheckState::Passed;
+        let temp = Temp::new("review-widths", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        review_page(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[0],
+            &["a check long enough to wrap at forty columns for sure", "b"],
+        );
+        domain.set_check(ids[0], 1, Passed).expect("pass");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        for width in [40, 120] {
+            let (screen, _) = board_screen(&model, width, 30);
+            assert!(screen.contains("REVIEW · round 1"), "{width}:\n{screen}");
+            assert!(screen.contains("1 passed ▸"), "{width}:\n{screen}");
+            assert!(screen.contains("wrap"), "{width}:\n{screen}");
+            assert!(
+                screen.contains("for sure"),
+                "wrapped, not cut ({width}):\n{screen}"
+            );
+        }
+    }
+
     /// The feedback box's keys: Esc discards, Shift+Enter stores and stays in review, and
     /// neither sends anything.
     #[test]
