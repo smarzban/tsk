@@ -2452,10 +2452,14 @@ fn check_inner(
     if !is_git_repo(&project) {
         return Err(DispatchError::NeedsGitProject);
     }
-    let profile = profiles
+    let mut profile = profiles
         .get(&assignee)
         .ok_or_else(|| DispatchError::UnknownAgent(assignee.clone()))?
         .clone();
+    // The launched agent's `tsk` calls sign blocks and replies with its profile name.
+    profile
+        .env
+        .insert(crate::domain::AGENT_ENV.to_string(), assignee.clone());
     if let Some(existing) = &task.dispatch {
         if !again {
             return Err(DispatchError::AlreadyDispatched(existing.worktree.clone()));
@@ -3516,7 +3520,16 @@ mod tests {
             script.is_ascii(),
             "task text is embedded encoded, never as PowerShell"
         );
-        assert_eq!(launcher_values(script), result.record.argv);
+        let mut expected = vec![
+            crate::domain::AGENT_ENV.to_string(),
+            result.assignee.clone(),
+        ];
+        expected.extend(result.record.argv.iter().cloned());
+        assert_eq!(
+            launcher_values(script),
+            expected,
+            "the launcher sets TSK_AGENT before it starts the argv"
+        );
         assert_eq!(
             host.runs,
             vec![(
@@ -3581,6 +3594,13 @@ mod tests {
         assert_eq!(result.warning, None);
         assert!(host.launchers.is_empty(), "Unix types the $SHELL line");
         assert!(host.runs[0].1.starts_with("$SHELL -lc "));
+        assert!(
+            host.runs[0]
+                .1
+                .contains(&format!("'\\''TSK_AGENT={}'\\''", result.assignee)),
+            "the agent's tsk calls know who they are: {}",
+            host.runs[0].1
+        );
         fs::remove_dir_all(path).expect("cleanup");
     }
 
@@ -5100,8 +5120,8 @@ mod tests {
     }
 
     #[test]
-    fn cleaned_marker_is_optional_and_store_format_stays_v6() {
-        assert_eq!(crate::domain::STORE_FORMAT_VERSION, 6);
+    fn cleaned_marker_is_optional_and_store_format_stays_v7() {
+        assert_eq!(crate::domain::STORE_FORMAT_VERSION, 7);
         let record = Dispatch {
             argv: vec!["agent".into()],
             worktree: "/tmp/worktree".into(),

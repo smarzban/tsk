@@ -241,3 +241,186 @@ fn status_help_names_statuses_and_done_token() {
         );
     }
 }
+
+fn block_args(dir: &Path, task: &str, flags: &[&str]) -> Vec<String> {
+    let mut args = vec![
+        "tsk".to_string(),
+        "status".into(),
+        task.into(),
+        "blocked".into(),
+    ];
+    args.extend(flags.iter().map(|flag| flag.to_string()));
+    args.extend(["--state-dir".into(), dir.to_string_lossy().into_owned()]);
+    args
+}
+
+fn reply(dir: &Path, task: &str, text: &str) -> CliOutput {
+    cli(vec![
+        "tsk".into(),
+        "reply".into(),
+        task.into(),
+        text.into(),
+        "--state-dir".into(),
+        dir.to_string_lossy().into_owned(),
+    ])
+}
+
+fn listed(dir: &Path, task: &str) -> serde_json::Value {
+    let output = cli(vec![
+        "tsk".into(),
+        "list".into(),
+        task.into(),
+        "--json".into(),
+        "--state-dir".into(),
+        dir.to_string_lossy().into_owned(),
+    ]);
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    serde_json::from_str::<serde_json::Value>(&output.stdout).expect("list json")[0].clone()
+}
+
+#[test]
+fn blocked_with_reasons_shows_in_list_json_and_a_repeat_edits_the_same_block() {
+    let dir = temp_state_dir("block-reasons");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "pick a db").code, 0);
+    let actor = tsk_tui::domain::actor_from_env();
+
+    let output = cli(block_args(
+        &dir,
+        "T1",
+        &[
+            "--why",
+            "Which database?",
+            "--needs",
+            "a decision",
+            "--option",
+            "postgres",
+            "--option=-sqlite",
+        ],
+    ));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    assert_eq!(output.stdout, "status T1 blocked pick a db\n");
+
+    let task = listed(&dir, "T1");
+    assert_eq!(task["status"], "blocked");
+    let block = &task["block"];
+    assert_eq!(block["why"], "Which database?");
+    assert_eq!(block["needs"], "a decision");
+    assert_eq!(block["options"], serde_json::json!(["postgres", "-sqlite"]));
+    assert_eq!(block["on"], "you");
+    assert_eq!(block["by"], actor);
+    assert_eq!(block["edited"], false);
+    assert_eq!(block["replies"], serde_json::json!([]));
+    assert_eq!(block["answered"], false);
+    assert!(task.get("past_blocks").is_none());
+
+    let output = cli(block_args(
+        &dir,
+        "T1",
+        &["--why", "Which database, really?"],
+    ));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    let state = TaskStore::new(&dir).load().expect("load");
+    let task = &state.tasks()[0];
+    assert!(task.past_blocks.is_empty(), "never a second open block");
+    let block = task.block.as_ref().expect("open block");
+    assert_eq!(block.why.as_deref(), Some("Which database, really?"));
+    assert_eq!(
+        block.needs.as_deref(),
+        Some("a decision"),
+        "unset flags stay"
+    );
+    assert_eq!(block.options.len(), 2);
+    assert_eq!(listed(&dir, "T1")["block"]["edited"], true);
+
+    let human = cli(vec![
+        "tsk".into(),
+        "list".into(),
+        "--desk".into(),
+        "--state-dir".into(),
+        dir.to_string_lossy().into_owned(),
+    ]);
+    assert!(
+        human.stdout.contains("blocked: Which database, really?"),
+        "{}",
+        human.stdout
+    );
+}
+
+#[test]
+fn plain_blocked_still_works_and_leaving_blocked_closes_the_block() {
+    let dir = temp_state_dir("block-plain");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "plain").code, 0);
+    assert_eq!(status(&dir, "T1", "blocked").code, 0);
+    let task = listed(&dir, "T1");
+    assert_eq!(task["block"]["why"], serde_json::Value::Null);
+    assert_eq!(reply(&dir, "T1", "noted").code, 0);
+    assert_eq!(listed(&dir, "T1")["block"]["answered"], true);
+
+    assert_eq!(status(&dir, "T1", "ready").code, 0);
+    let task = listed(&dir, "T1");
+    assert!(task.get("block").is_none());
+    let past = &task["past_blocks"][0];
+    assert_eq!(past["replies"][0]["text"], "noted");
+    assert!(past["closed_at"].is_array());
+    assert_eq!(past["closed_by"], tsk_tui::domain::actor_from_env());
+
+    let refused = reply(&dir, "T1", "too late");
+    assert_eq!(refused.code, 1);
+    assert!(
+        refused.stderr.starts_with("tsk reply: not-blocked: "),
+        "{}",
+        refused.stderr
+    );
+}
+
+#[test]
+fn block_flags_refuse_bad_input_without_mutation() {
+    let dir = temp_state_dir("block-refusals");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "one").code, 0);
+    let before = fs::read(dir.join("tsk.json")).expect("read");
+
+    let output = cli(block_args(&dir, "T1", &["--why", &"x".repeat(4097)]));
+    assert_eq!(output.code, 1);
+    assert!(
+        output.stderr.starts_with("tsk status: text-too-long: "),
+        "{}",
+        output.stderr
+    );
+    for on in ["T1", "T99"] {
+        let output = cli(block_args(&dir, "T1", &["--why", "w", "--on", on]));
+        assert_eq!(output.code, 1, "{on}");
+        assert!(
+            output.stderr.starts_with("tsk status: invalid-blocker: "),
+            "{}",
+            output.stderr
+        );
+    }
+    let mut args = block_args(&dir, "T1", &["--why", "w"]);
+    args[3] = "ready".into();
+    assert_eq!(cli(args).code, 2);
+    assert_eq!(fs::read(dir.join("tsk.json")).expect("read"), before);
+
+    assert_eq!(reply(&dir, "T1", "x").code, 1);
+    assert_eq!(fs::read(dir.join("tsk.json")).expect("read"), before);
+}
+
+#[test]
+fn blocked_on_another_task_records_it() {
+    let dir = temp_state_dir("block-on-task");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "api").code, 0);
+    assert_eq!(add_task(&dir, "client").code, 0);
+    let output = cli(block_args(
+        &dir,
+        "T2",
+        &["--why", "needs the api", "--on", "t1"],
+    ));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    assert_eq!(listed(&dir, "T2")["block"]["on"], "task:1");
+    let output = cli(block_args(&dir, "T2", &["--on", "legal sign-off"]));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    assert_eq!(listed(&dir, "T2")["block"]["on"], "other:legal sign-off");
+}

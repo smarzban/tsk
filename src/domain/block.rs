@@ -10,6 +10,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// The author name of the board's owner, for blocks, replies and closers.
 pub const OWNER: &str = "you";
 
+/// Set by dispatch in the launched agent's environment to its profile name.
+pub const AGENT_ENV: &str = "TSK_AGENT";
+
 /// Longest why, needs, option or reply text accepted, in bytes. Longer text is refused,
 /// never truncated.
 pub const BLOCK_TEXT_MAX: usize = 4096;
@@ -285,7 +288,7 @@ impl BlockPatch {
 /// The resolved author of a block or reply: the dispatched agent's profile from
 /// `TSK_AGENT`, or the owner.
 pub fn actor_from_env() -> String {
-    std::env::var("TSK_AGENT")
+    std::env::var(AGENT_ENV)
         .ok()
         .and_then(|value| super::normalize_thread(value.trim()).ok())
         .unwrap_or_else(|| OWNER.to_string())

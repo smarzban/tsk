@@ -395,6 +395,23 @@ pub struct FlagStatus {
     pub clean: bool,
     pub state_dir: Option<PathBuf>,
     pub help: bool,
+    /// Block reason flags, accepted only with `blocked`.
+    pub block: BlockFlags,
+}
+
+/// `--why`, `--needs`, `--option` (repeatable) and `--on` for `status <task> blocked`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BlockFlags {
+    pub why: Option<String>,
+    pub needs: Option<String>,
+    pub options: Vec<String>,
+    pub on: Option<String>,
+}
+
+impl BlockFlags {
+    pub fn is_empty(&self) -> bool {
+        self.why.is_none() && self.needs.is_none() && self.options.is_empty() && self.on.is_none()
+    }
 }
 
 /// Parse `tsk status <task> <status>` arguments, including argv0.
@@ -409,6 +426,7 @@ pub fn parse_flag_status(args: &[String]) -> Result<FlagStatus, String> {
         clean: false,
         state_dir: None,
         help: false,
+        block: BlockFlags::default(),
     };
     let mut positionals: Vec<&str> = Vec::new();
     let mut index = 2;
@@ -417,6 +435,19 @@ pub fn parse_flag_status(args: &[String]) -> Result<FlagStatus, String> {
             Some(value) if !value.starts_with('-') => Ok(value.clone()),
             _ => Err(format!("missing value for {name}")),
         };
+        if let Some((name, inline)) = flag
+            .split_once('=')
+            .filter(|(name, _)| BLOCK_FLAGS.contains(name))
+        {
+            set_block_flag(&mut parsed.block, name, inline.to_string())?;
+            index += 1;
+            continue;
+        }
+        if BLOCK_FLAGS.contains(&flag) {
+            set_block_flag(&mut parsed.block, flag, value(flag)?)?;
+            index += 2;
+            continue;
+        }
         match flag {
             "--clean" => {
                 parsed.clean = true;
@@ -462,6 +493,89 @@ pub fn parse_flag_status(args: &[String]) -> Result<FlagStatus, String> {
     if parsed.clean && parsed.status.is_some() && parsed.status != Some(HumanStatus::Done) {
         return Err("--clean requires done status".into());
     }
+    if !parsed.block.is_empty()
+        && parsed.status.is_some()
+        && parsed.status != Some(HumanStatus::Blocked)
+    {
+        return Err("--why, --needs, --option and --on require blocked status".into());
+    }
+    Ok(parsed)
+}
+
+const BLOCK_FLAGS: [&str; 4] = ["--why", "--needs", "--option", "--on"];
+
+fn set_block_flag(block: &mut BlockFlags, flag: &str, value: String) -> Result<(), String> {
+    let slot = match flag {
+        "--why" => &mut block.why,
+        "--needs" => &mut block.needs,
+        "--on" => &mut block.on,
+        _ => {
+            block.options.push(value);
+            return Ok(());
+        }
+    };
+    if slot.replace(value).is_some() {
+        return Err(format!("{flag} given more than once"));
+    }
+    Ok(())
+}
+
+/// Parsed `reply` input: the task address then the reply text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlagReply {
+    pub task: Option<TaskAddress>,
+    pub text: Option<String>,
+    pub state_dir: Option<PathBuf>,
+    pub help: bool,
+}
+
+/// Parse `tsk reply <task> <text>` arguments, including argv0. A text that begins with `-`
+/// goes after `--`.
+pub fn parse_flag_reply(args: &[String]) -> Result<FlagReply, String> {
+    if args.get(1).map(String::as_str) != Some("reply") {
+        return Err("expected reply command".into());
+    }
+    let mut parsed = FlagReply {
+        task: None,
+        text: None,
+        state_dir: None,
+        help: false,
+    };
+    let mut positionals: Vec<&str> = Vec::new();
+    let mut index = 2;
+    let mut literal = false;
+    while let Some(arg) = args.get(index).map(String::as_str) {
+        index += 1;
+        if literal || !arg.starts_with('-') {
+            if positionals.len() == 2 {
+                return Err(format!("unexpected reply argument {arg}"));
+            }
+            positionals.push(arg);
+            continue;
+        }
+        match arg {
+            "--" => literal = true,
+            "--help" => parsed.help = true,
+            flag if flag.starts_with("--state-dir=") => {
+                parsed.state_dir = Some(PathBuf::from(&flag["--state-dir=".len()..]));
+            }
+            "--state-dir" => match args.get(index) {
+                Some(value) if !value.starts_with('-') => {
+                    parsed.state_dir = Some(PathBuf::from(value));
+                    index += 1;
+                }
+                _ => return Err("missing value for --state-dir".into()),
+            },
+            flag => return Err(format!("unknown reply argument {flag}")),
+        }
+    }
+    if parsed.help {
+        return Ok(parsed);
+    }
+    if let Some(task) = positionals.first() {
+        parsed.task = Some(parse_task_address(task)?);
+    }
+    parsed.text = positionals.get(1).map(|text| text.to_string());
     Ok(parsed)
 }
 
@@ -667,6 +781,7 @@ mod tests {
                 clean: false,
                 state_dir: Some(std::path::PathBuf::from("/tmp/dir")),
                 help: false,
+                block: super::BlockFlags::default(),
             }
         );
         assert!(
@@ -689,6 +804,72 @@ mod tests {
             parse_flag_status(&["tsk".into(), "status".into(), "T4".into(), "open".into()])
                 .expect("open status");
         assert_eq!(parsed.status, Some(HumanStatus::Open));
+    }
+
+    #[test]
+    fn status_parse_reads_block_flags_and_their_equals_forms() {
+        let args = |rest: &[&str]| {
+            ["tsk", "status", "T4"]
+                .iter()
+                .chain(rest)
+                .map(|arg| arg.to_string())
+                .collect::<Vec<_>>()
+        };
+        let parsed = parse_flag_status(&args(&[
+            "blocked",
+            "--why",
+            "which db",
+            "--needs=-a decision",
+            "--option",
+            "postgres",
+            "--option=-sqlite",
+            "--on",
+            "T169",
+        ]))
+        .expect("parse");
+        assert_eq!(
+            parsed.block,
+            super::BlockFlags {
+                why: Some("which db".into()),
+                needs: Some("-a decision".into()),
+                options: vec!["postgres".into(), "-sqlite".into()],
+                on: Some("T169".into()),
+            }
+        );
+        assert!(parse_flag_status(&args(&["ready", "--why", "x"]))
+            .unwrap_err()
+            .contains("require blocked"));
+        assert!(
+            parse_flag_status(&args(&["blocked", "--why", "a", "--why", "b"]))
+                .unwrap_err()
+                .contains("more than once")
+        );
+        assert!(parse_flag_status(&args(&["blocked", "--why"]))
+            .unwrap_err()
+            .contains("missing value"));
+    }
+
+    #[test]
+    fn reply_parse_takes_a_task_and_text_with_a_literal_separator() {
+        let args = |rest: &[&str]| {
+            ["tsk", "reply"]
+                .iter()
+                .chain(rest)
+                .map(|arg| arg.to_string())
+                .collect::<Vec<_>>()
+        };
+        let parsed = super::parse_flag_reply(&args(&["T4", "go with postgres"])).expect("parse");
+        assert_eq!(parsed.task, Some(TaskAddress::Number(4)));
+        assert_eq!(parsed.text.as_deref(), Some("go with postgres"));
+        let parsed = super::parse_flag_reply(&args(&["T4", "--", "-5 degrees"])).expect("--");
+        assert_eq!(parsed.text.as_deref(), Some("-5 degrees"));
+        assert!(super::parse_flag_reply(&args(&["T4", "-x"])).is_err());
+        assert!(super::parse_flag_reply(&args(&["T4", "a", "b"])).is_err());
+        assert!(
+            super::parse_flag_reply(&args(&["--help"]))
+                .expect("help")
+                .help
+        );
     }
 
     #[test]
