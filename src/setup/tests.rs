@@ -590,3 +590,81 @@ fn old_herdr_is_refused_before_any_write_with_an_actionable_message() {
         );
     }
 }
+
+/// #129 on both platforms: a symlinked config file is edited through the link.
+#[test]
+fn a_symlinked_config_file_is_edited_in_place_and_the_link_kept() {
+    let temp = Temp::new();
+    let home = temp.0.join("herdr");
+    let dotfiles = temp.0.join("dotfiles");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&dotfiles).unwrap();
+    let target = dotfiles.join("config.toml");
+    fs::write(&target, "# dotfiles\n").unwrap();
+    let config = home.join("config.toml");
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(&target, &config);
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_file(&target, &config);
+    if let Err(error) = linked {
+        if cfg!(windows) && error.kind() == io::ErrorKind::PermissionDenied {
+            eprintln!("symlink privilege unavailable; linked-config assertion skipped");
+            return;
+        }
+        panic!("create config symlink: {error}");
+    }
+    let registered = RefCell::new(None::<PathBuf>);
+    let mut host = |args: &[&str], _: &Path| -> io::Result<String> {
+        if args == ["--version"] {
+            return Ok("herdr 0.9.0\n".into());
+        }
+        if args.starts_with(&["plugin", "link"]) {
+            *registered.borrow_mut() = Some(args[2].into());
+        }
+        Ok(serde_json::json!({"result":{"plugins":registered.borrow().iter().map(|p|serde_json::json!({"plugin_id":"herdr-tsk","plugin_root":p})).collect::<Vec<_>>()}}).to_string())
+    };
+    let result = run_at(
+        &config,
+        "0.5.0",
+        &mut io::Cursor::new(""),
+        &mut Vec::new(),
+        false,
+        &mut host,
+    )
+    .unwrap();
+    assert!(fs::symlink_metadata(&config)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(fs::read_link(&config).unwrap(), target);
+    let updated = fs::read_to_string(&target).unwrap();
+    assert!(updated.contains("# dotfiles") && updated.contains("herdr-tsk.quick-capture"));
+    assert_eq!(result.backup.unwrap().parent(), Some(dotfiles.as_path()));
+    assert!(result.root.starts_with(home.join("tsk-plugins")));
+    assert!(!dotfiles.join("tsk-plugins").exists());
+}
+
+#[test]
+fn follow_links_resolves_relative_targets_and_refuses_dangling_and_loops() {
+    let temp = Temp::new();
+    let missing = temp.0.join("absent.toml");
+    assert_eq!(follow_links(&missing).unwrap(), missing);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        fs::create_dir(temp.0.join("real")).unwrap();
+        fs::write(temp.0.join("real/config.toml"), "").unwrap();
+        fs::create_dir(temp.0.join("home")).unwrap();
+        symlink("../real/config.toml", temp.0.join("home/config.toml")).unwrap();
+        assert_eq!(
+            fs::canonicalize(follow_links(&temp.0.join("home/config.toml")).unwrap()).unwrap(),
+            fs::canonicalize(temp.0.join("real/config.toml")).unwrap()
+        );
+        symlink("nowhere.toml", temp.0.join("dangling.toml")).unwrap();
+        let error = follow_links(&temp.0.join("dangling.toml")).unwrap_err();
+        assert!(error.to_string().contains("points at missing"), "{error}");
+        symlink("loop.toml", temp.0.join("loop.toml")).unwrap();
+        let error = follow_links(&temp.0.join("loop.toml")).unwrap_err();
+        assert!(error.to_string().contains("loops"), "{error}");
+    }
+}

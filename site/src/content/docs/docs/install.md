@@ -166,6 +166,7 @@ Setup registers bundled plugin files using the installed executable. No source c
 - Shortcut conflicts ask for confirmation. Declining keeps the existing binding, and the output says so.
 - A noninteractive conflict stops before writing.
 - Config changes create a backup beside the config, `config.toml.tsk-backup-<YYYYMMDD-HHMMSS>` in UTC; a second setup within the same second appends `-1`, `-2`, ....
+- A symlinked `config.toml` or `herdr` directory (dotfiles) is followed: setup edits the real file, keeps the link, and writes the backup beside the real file. A dangling or looping link is refused before any change.
 - Rerunning setup updates the registration without duplicating bindings.
 - Use the stable command on PATH, not a versioned Homebrew Cellar path.
 
