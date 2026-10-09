@@ -1,5 +1,6 @@
 //! Queue Section Query: pure derivation of the board sections from a task snapshot.
 
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -839,35 +840,52 @@ fn task_matches_scope(task: &Task, path: &Path, identities: &PathIdentityCache) 
 /// never reorder a section. Ties break by `created_at` then `id` so the order is
 /// total and stable across reloads.
 fn sort_by_status_change_desc(tasks: &mut [&Task]) {
-    tasks.sort_by(|a, b| {
-        b.status_changed_at()
-            .cmp(&a.status_changed_at())
-            .then_with(|| a.created_at.cmp(&b.created_at))
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    tasks.sort_by(|a, b| cmp_status_change_desc(a, b));
+}
+
+fn cmp_status_change_desc(a: &Task, b: &Task) -> Ordering {
+    b.status_changed_at()
+        .cmp(&a.status_changed_at())
+        .then_with(|| a.created_at.cmp(&b.created_at))
+        .then_with(|| a.id.cmp(&b.id))
 }
 
 /// Backlogs are FIFO: oldest capture first, ties by id. Notice rows (the starter tour,
 /// release notes) lead regardless: they are seeded once and would otherwise sink under an
 /// existing user's backlog, unseen.
 fn sort_by_created_asc(tasks: &mut [&Task]) {
-    tasks.sort_by(|a, b| {
-        b.is_notice()
-            .cmp(&a.is_notice())
-            .then_with(|| a.created_at.cmp(&b.created_at))
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    tasks.sort_by(|a, b| cmp_created_asc(a, b));
+}
+
+fn cmp_created_asc(a: &Task, b: &Task) -> Ordering {
+    b.is_notice()
+        .cmp(&a.is_notice())
+        .then_with(|| a.created_at.cmp(&b.created_at))
+        .then_with(|| a.id.cmp(&b.id))
 }
 
 /// Ready picks: oldest `status_changed_at` first. Notices still lead.
 fn sort_ready_by_pick_asc(tasks: &mut [&Task]) {
-    tasks.sort_by(|a, b| {
-        b.is_notice()
-            .cmp(&a.is_notice())
-            .then_with(|| a.status_changed_at().cmp(&b.status_changed_at()))
-            .then_with(|| a.created_at.cmp(&b.created_at))
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    tasks.sort_by(|a, b| cmp_ready_pick_asc(a, b));
+}
+
+fn cmp_ready_pick_asc(a: &Task, b: &Task) -> Ordering {
+    b.is_notice()
+        .cmp(&a.is_notice())
+        .then_with(|| a.status_changed_at().cmp(&b.status_changed_at()))
+        .then_with(|| a.created_at.cmp(&b.created_at))
+        .then_with(|| a.id.cmp(&b.id))
+}
+
+/// The board's order between two tasks of the same status, for surfaces outside the
+/// board (`tsk list`) that group by status: ready by oldest pick, open by oldest
+/// capture, every other status by most recent status change.
+pub fn cmp_within_status(a: &Task, b: &Task) -> Ordering {
+    match a.status {
+        HumanStatus::Ready => cmp_ready_pick_asc(a, b),
+        HumanStatus::Open => cmp_created_asc(a, b),
+        _ => cmp_status_change_desc(a, b),
+    }
 }
 
 fn section_from(kind: SectionKind, project_label: Option<String>, tasks: &[&Task]) -> QueueSection {
