@@ -360,3 +360,72 @@ fn the_trail_wraps_without_truncating_at_40_and_120_columns() {
         );
     }
 }
+
+/// A 32-character profile name makes the `└ @<name> 2m  ` lead wider than a 40-column trail:
+/// the lead takes its own row and the reply text still shows, under a bounded indent.
+#[test]
+fn a_long_agent_lead_wraps_onto_its_own_row_and_keeps_the_reply_text_at_40_columns() {
+    let agent = "a-very-long-agent-profile-name-x";
+    assert_eq!(agent.len(), 32);
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "Long names",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    acting_as(agent, || {
+        domain
+            .block(
+                id,
+                BlockDraft::from_input(Some("need creds"), None, &[], BlockOn::You).expect("draft"),
+                agent,
+            )
+            .expect("block");
+        domain
+            .reply(id, "the reply text must stay visible", agent)
+            .expect("reply");
+    });
+    domain
+        .set_status(id, HumanStatus::Started)
+        .expect("unblock");
+    let mut model = BoardModel::from_domain(&domain, None);
+    model.sync_from_domain(&domain);
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ToggleTrailRecord(Some(0)),
+        None,
+    )
+    .expect("expand");
+    let page = rows(&model, 40, 60);
+    let entries = trail(&page);
+    let lead = entries
+        .iter()
+        .position(|row| row == "└")
+        .unwrap_or_else(|| panic!("the lead takes its own row: {entries:#?}"));
+    assert!(
+        entries[lead + 1].starts_with("@a-very-long-agent"),
+        "{entries:#?}"
+    );
+    assert_eq!(
+        entries[lead + 3..lead + 5].join(" "),
+        "the reply text must stay visible",
+        "{}",
+        page.join("\n")
+    );
+    let text_row = page
+        .iter()
+        .find(|row| row.trim_start().starts_with("the reply text"))
+        .expect("reply text row");
+    let indent = text_row.len() - text_row.trim_start().len();
+    assert!(
+        indent <= 8,
+        "the text continues under a bounded indent ({indent}):\n{}",
+        page.join("\n")
+    );
+}

@@ -129,6 +129,29 @@ for (const width of [40, 78, 109, 110])
     await expect(page.locator("[data-step]")).toHaveCount(3);
   });
 
+// The TUI keeps the paper trail painted through an edit session, so the page body never jumps;
+// its records take no Tab stops then.
+test("the paper trail stays painted while a field is edited", async ({
+  page,
+}) => {
+  await open(page, 78);
+  const column = page.locator(".tsk-task-column");
+  await expect(page.locator(".tsk-trail-heading")).toHaveText("PAPER TRAIL");
+  await expect(page.locator(".tsk-trail-entry").first()).toContainText(
+    "ready → started · you",
+  );
+  await page.keyboard.press("e");
+  await expect(column).toHaveAttribute("data-edit-field", "title");
+  await expect(page.locator(".tsk-trail-heading")).toHaveText("PAPER TRAIL");
+  await page.keyboard.press("Tab");
+  await expect(column).toHaveAttribute("data-edit-field", "notes");
+  await expect(page.locator(".tsk-trail-heading")).toHaveText("PAPER TRAIL");
+  await expect(page.locator(".tsk-trail-entry").last()).toContainText(
+    "created · you",
+  );
+  await page.keyboard.press("Escape");
+});
+
 test("landing project task page keeps its default base visible", async ({
   page,
 }) => {

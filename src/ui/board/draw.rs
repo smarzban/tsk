@@ -1413,31 +1413,54 @@ fn trail_page_rows(
     });
     let mut rows: Vec<TrailPageRow> = Vec::new();
     let mut stops = Vec::new();
+    // A lead (`└ @claude 2m  `) that would leave the text fewer than this many columns takes
+    // its own rows, and the text continues under it at a bounded indent.
+    const MIN_TEXT: usize = 12;
     let push = |rows: &mut Vec<TrailPageRow>,
                 lead: &str,
                 text: &str,
                 kind: BlockRowKind,
                 selected: bool,
                 target: Option<QueueHitTarget>| {
-        let indent = render::display_width(lead);
-        for (index, row) in wrap_text(&terminal_text(text), width.saturating_sub(indent).max(1))
-            .into_iter()
-            .enumerate()
-        {
-            let lead = if index == 0 {
-                lead.to_string()
-            } else {
-                " ".repeat(indent)
-            };
+        let mut row = |text: String, first: bool| {
             rows.push(TrailPageRow {
                 row: BlockPageRow {
-                    text: format!("{lead}{}", row.text),
+                    text,
                     kind,
-                    selected: index == 0 && selected,
+                    selected: first && selected,
                     hint: String::new(),
                 },
                 target,
             });
+        };
+        let lead = terminal_text(lead);
+        let mut indent = render::display_width(&lead);
+        let mut first_lead = lead.clone();
+        if !lead.trim().is_empty() && width.saturating_sub(indent) < MIN_TEXT {
+            let margin = lead.len() - lead.trim_start().len();
+            for (index, part) in wrap_text(lead.trim(), width.saturating_sub(margin).max(1))
+                .into_iter()
+                .enumerate()
+            {
+                row(format!("{}{}", " ".repeat(margin), part.text), index == 0);
+            }
+            indent = (margin + 2).min(width / 4);
+            first_lead = " ".repeat(indent);
+        }
+        let lead_on_own_rows = first_lead != lead;
+        for (index, part) in wrap_text(&terminal_text(text), width.saturating_sub(indent).max(1))
+            .into_iter()
+            .enumerate()
+        {
+            let lead = if index == 0 {
+                first_lead.clone()
+            } else {
+                " ".repeat(indent)
+            };
+            row(
+                format!("{lead}{}", part.text),
+                index == 0 && !lead_on_own_rows,
+            );
         }
     };
 
