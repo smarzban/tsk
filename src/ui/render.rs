@@ -4940,18 +4940,18 @@ fn peek_block_lines(task: &Task, tasks: &[Task]) -> Vec<(String, Style)> {
     lines
 }
 
-/// Builds the list rows plus the index of an open accordion detail or selected task, which
-/// must stay fully visible in the viewport.
-fn build_list_rows(
-    model: &QueueFrameModel<'_>,
-    geo: &TierGeometry,
-    rail: bool,
-) -> (
+/// The list rows, the last row to keep visible (peek or reply box), the selected row, and
+/// the reply box's caret (list row, column).
+type BuiltListRows = (
     Vec<ListRow>,
     Option<usize>,
     Option<usize>,
     Option<(usize, u16)>,
-) {
+);
+
+/// Builds the list rows plus the index of an open accordion detail or selected task, which
+/// must stay fully visible in the viewport.
+fn build_list_rows(model: &QueueFrameModel<'_>, geo: &TierGeometry, rail: bool) -> BuiltListRows {
     let mut out = Vec::new();
     let mut anchor_last_idx: Option<usize> = None;
     let mut selected_idx: Option<usize> = None;

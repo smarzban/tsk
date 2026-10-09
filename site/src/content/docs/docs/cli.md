@@ -251,12 +251,15 @@ The author of a block or reply is `you`, unless tsk runs inside a [dispatched](#
 
 ```sh
 tsk reply T12 "Use postgres"
+tsk reply T12 "Use postgres" --send
 tsk reply T12 -- "-5 degrees is fine"
 ```
 
-Adds a reply to the task's open block, authored as above. Put `--` before text that begins with `-`. A task without an open block refuses with `not-blocked`; empty text refuses with `empty-reply`, and text over 4 KB with `text-too-long`. Each run adds a reply, so read the task before retrying. The board's owner answers from the [task page](/docs/task-page/#blocked).
+Adds a reply to the task's open block, authored as above. Put `--` before text that begins with `-`. A task without an open block refuses with `not-blocked`; empty text refuses with `empty-reply`, and text over 4 KB with `text-too-long`. Each run adds a reply, so read the task before retrying. The board's owner answers from the [task page](/docs/task-page/#blocked) or a [blocked row](/docs/board/#block-with-a-reason).
 
-Output: `replied T12 as <author> <title>`.
+`--send` also delivers your replies since the agent's last one to the task's running [dispatched](#dispatch) agent, as `[tsk T12 reply] <text>`. The task stays blocked; the board's reply box `ctrl+s` is the way to answer and unblock in one step. Only your own replies are sent, and only inside Herdr.
+
+Output: `replied T12 as <author> <title>`. With `--send`, a second line says `sent to @claude` or `not sent: <reason>`: the agent is waiting on a prompt, Herdr could not reach it, the agent is gone, the task was never dispatched or has no assignee, not in Herdr, or the reply is an agent's. The reply is stored either way, so the exit is 0; never resend by rerunning, which adds another reply.
 
 ## edit
 

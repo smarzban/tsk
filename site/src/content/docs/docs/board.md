@@ -200,7 +200,19 @@ A blocked row's dim right edge says what it waits for: `@claude ?` while an agen
 
 `Tab` moves between fields, `Enter` blocks, and `Esc` cancels. `Enter` on an empty card blocks at once with no reason. A task number must be another task on the board; the card says so otherwise. With tasks marked, one card blocks the whole set as one save and one `ctrl+u` undo step, and `Esc` keeps the marks. `ctrl+b` on a blocked task unblocks it to ready, as do every other status change: leaving `blocked` closes its block. Palette **set status: blocked** opens the same card for the targets not yet blocked. If the save fails and you cancel, the card and the marks stay, ready to try again.
 
-Agents block with a question from [the CLI](/docs/cli/#status) (`--why`, `--needs`, `--option`, `--on`). Answer on the [task page](/docs/task-page/#blocked).
+Agents block with a question from [the CLI](/docs/cli/#status) (`--why`, `--needs`, `--option`, `--on`). Answer on the [task page](/docs/task-page/#blocked), or press `r` on a blocked row, in NEEDS YOU or IN MOTION at any width, to reply right under it: the block's why and needs stay above the reply box, and its keys are the task page's (`Shift+Enter` saves, `ctrl+s` saves and unblocks, `Enter` breaks the line, `Esc` cancels). With tasks marked, `r` answers the cursor row only. On a row that is not blocked the status row says `not blocked`.
+
+### Reply to a running agent
+
+When `ctrl+s` in a reply box starts an assigned task whose dispatched agent is still running, tsk sends your replies since the agent's last one to that agent once the start is saved, as one message: `[tsk T12 unblocked] <your reply>`. Multi-line replies arrive intact. The status row says how it went:
+
+| Status row | Meaning |
+| --- | --- |
+| `started · reply sent to @claude` | Herdr took the message; a busy agent gets it after its current turn |
+| `started · @claude is waiting on a prompt; reply kept on the task` | The agent is on a permission prompt or question, so nothing was sent |
+| `started · could not reach @claude; reply kept on the task` | Herdr failed or could not say whether the agent runs |
+
+The task stays started in every case and nothing relaunches or retries; the reply is on the task either way. `Shift+Enter` (save only) never sends. The other starts are unchanged: a task never dispatched dispatches, and its prompt points the agent at the answers; a gone agent asks before [relaunching](#relaunch); an unassigned task unblocks to ready. If the save fails, nothing is sent until [save recovery](#save-failures) retries it.
 
 On your desk, **ON DECK** contains only desk tasks. On a project board, it contains that project's ready and open tasks. Ready tasks are the picked queue; open tasks are the untriaged inbox below it. Ready tasks sort by oldest pick first, open tasks by oldest capture first, and notice tasks lead within each group. The **inbox** group starts expanded; press `Enter` on its heading or `g` while the done drawer is closed to fold or unfold it. With the drawer open and archived tasks available, `g` addresses its archived group; otherwise it addresses the inbox. Use the thread and assignee filter to narrow the tasks.
 
@@ -218,6 +230,7 @@ On a task-board list, `ctrl+s`, `ctrl+n`, `ctrl+o`, `ctrl+d`, `ctrl+b`, `ctrl+r`
 | `ctrl+d` | Mark done; for a live dispatch, offer [cleanup](#complete-and-clean-up) |
 | `ctrl+b` | Block with a reason (the [block card](#block-with-a-reason)); on a blocked task, return it to ready |
 | `ctrl+r` | Set review; press again to return to ready |
+| `r` | Reply to a blocked row inline ([reply](#block-with-a-reason)); cursor only |
 
 `ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Bulk block and review toggles are all-or-nothing: if every target already has that status they all return to ready, otherwise they all move to that status (blocking through one block card; tasks already blocked keep their block). Other status verbs are absolute, so repeating the current status does nothing. Done tasks can be sent directly to ready or open.
 
