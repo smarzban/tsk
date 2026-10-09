@@ -185,11 +185,8 @@ pub fn run_done_with_host(
         let launched = dispatch::launch_released_with_host(&mut state, &state_dir, in_herdr, host);
         let recorded = store.reload_merge_save(&mut state);
         released.extend(launched.into_iter().map(|mut released| {
-            if let (Err(error), dispatch::ReleasedStart::Dispatched(launch)) =
-                (&recorded, &released.start)
-            {
-                released.start =
-                    dispatch::ReleasedStart::Unrecorded(launch.clone(), error.to_string());
+            if let Err(error) = &recorded {
+                released.start = dispatch::unsaved(released.start, error.to_string());
             }
             released
         }));
@@ -577,6 +574,9 @@ mod start_tests {
         root: Option<crate::dispatch::RootPaneError>,
         /// Every pane command fails, as a launch Herdr refuses.
         refuse_launch: bool,
+        /// Another writer edits the task titled `second` in this store as its launch is refused,
+        /// so the save putting it back to ready meets a changed task.
+        edit_on_refusal: Option<PathBuf>,
     }
 
     impl DispatchHost for Host {
@@ -612,6 +612,20 @@ mod start_tests {
 
         fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
             if self.refuse_launch {
+                if let Some(dir) = self.edit_on_refusal.take() {
+                    let store = TaskStore::new(dir);
+                    let mut other = store.load().expect("load");
+                    let id = other
+                        .tasks()
+                        .iter()
+                        .find(|task| task.title == "second")
+                        .expect("second")
+                        .id;
+                    other
+                        .set_base(id, Some("other".into()))
+                        .expect("edit elsewhere");
+                    store.reload_merge_save(&mut other).expect("save elsewhere");
+                }
                 return Err("pane refused".into());
             }
             self.ran += 1;
@@ -953,6 +967,39 @@ mod start_tests {
             message.starts_with(&format!("T{second} back to ready: ")),
             "{message}"
         );
+    }
+
+    /// The launch fails and the save putting the task back to ready fails too: the task stays
+    /// started on disk with no agent, and the CLI warns instead of failing the durable done.
+    #[test]
+    fn a_failed_launch_whose_rollback_cannot_save_says_it_is_started() {
+        let temp = Temp::new("released-rollback");
+        let (first, second) = released_pair(&temp);
+        let mut host = Host {
+            refuse_launch: true,
+            edit_on_refusal: Some(temp.0.clone()),
+            ..Host::default()
+        };
+        let (_, released) = run_done_with_host(
+            TaskAddress::Number(first),
+            Some(temp.0.clone()),
+            true,
+            "you",
+            &mut host,
+        )
+        .expect("the done stands");
+        assert_eq!(temp.status(first), HumanStatus::Done);
+        assert_eq!(temp.status(second), HumanStatus::Started);
+        let warnings = dispatch::released_warnings(&released);
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].starts_with(&format!(
+                "T{second} is started but no agent launched; couldn't save it back to ready: "
+            )),
+            "{warnings:?}"
+        );
+        let message = dispatch::released_message(&released).expect("message");
+        assert!(message.starts_with(&warnings[0]), "{message}");
     }
 
     #[test]

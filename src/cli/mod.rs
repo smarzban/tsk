@@ -244,16 +244,12 @@ fn run_status(args: Vec<String>) -> CliOutput {
                 output.stdout.push_str(&crate::ui::terminal_text(&line));
                 output.stdout.push('\n');
             }
-            // The done and the start are durable; only the launch record is missing.
-            for released in &released {
-                if let crate::dispatch::ReleasedStart::Unrecorded(launch, error) = &released.start {
-                    output.stderr.push_str(&crate::ui::terminal_text(&format!(
-                        "tsk status: warning: T{}'s agent @{} is running but its record did not \
-                         save (worktree {}): {error}",
-                        released.number, launch.assignee, launch.record.worktree
-                    )));
-                    output.stderr.push('\n');
-                }
+            // The done and the start are durable: a lost record or rollback is a warning.
+            for warning in crate::dispatch::released_warnings(&released) {
+                output.stderr.push_str(&crate::ui::terminal_text(&format!(
+                    "tsk status: warning: {warning}"
+                )));
+                output.stderr.push('\n');
             }
             if input.clean {
                 share_fetch_window(&state_dir);

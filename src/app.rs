@@ -2604,15 +2604,10 @@ pub fn finish_queued_cleanup_with_host(
     Ok(())
 }
 
-/// The board's single-task launch: `ctrl+s` on an assigned task never dispatched, `y` on the
-/// relaunch card (`again`), or the palette's **dispatch again**. Launches `target` through
-/// the real host and saves its record with `started`. A start that moved the status is
-/// undoable: `ctrl+u` restores the status and leaves the agent running. A refusal or a
-/// failed launch changes nothing and says why on the status row.
 /// Save `domain` and start what its completions released, through the start route (plain, or
 /// a dispatch for an assigned task never dispatched), decided against the merged state under the
-/// save's lock. While a marked-set dispatch is landing nothing launches: a released task starts
-/// plainly and says why, since it may be in that batch.
+/// save's lock. While a marked-set dispatch is landing nothing launches: a released assigned
+/// task stays ready and says so, since it may be in that batch.
 fn save_releasing(
     store: &TaskStore,
     domain: &mut DomainState,
@@ -2655,6 +2650,11 @@ fn with_released(message: String, note: Option<String>) -> String {
     }
 }
 
+/// The board's single-task launch: `ctrl+s` on an assigned task never dispatched, `y` on the
+/// relaunch card (`again`), or the palette's **dispatch again**. Launches `target` through
+/// the real host and saves its record with `started`. A start that moved the status is
+/// undoable: `ctrl+u` restores the status and leaves the agent running. A refusal or a
+/// failed launch changes nothing and says why on the status row.
 #[allow(clippy::too_many_arguments)]
 fn run_board_dispatch(
     store: &TaskStore,
@@ -16288,6 +16288,51 @@ mod quick_assign_tests {
                 "T{second} started · @builder is running but its record did not save · worktree "
             )) && message.ends_with(&format!("T{first} done")),
             "{message}"
+        );
+    }
+
+    /// The launch fails and the save putting the task back to ready fails too: the done stands,
+    /// the task is started on disk with no agent, and the status row says so.
+    #[test]
+    fn a_failed_launch_whose_rollback_cannot_save_says_it_is_started() {
+        let temp = Temp::new("after-rollback-save", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        host.fail_launch = Some("herdr refused".into());
+        host.fail_save_at_launch = Some(temp.store.clone());
+        domain
+            .assign(ids[1], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Started);
+        assert_eq!(
+            model.message(),
+            Some(
+                format!(
+                    "T{second} is started but no agent launched; couldn't save it back to ready: \
+                     store I/O error: injected save failure · T{first} done"
+                )
+                .as_str()
+            )
         );
     }
 

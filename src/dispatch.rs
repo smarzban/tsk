@@ -2612,6 +2612,9 @@ pub enum ReleasedStart {
     Waits(&'static str),
     /// Started with the done, then its launch refused or failed: back to ready. The done stands.
     BackToReady(String),
+    /// The launch refused or failed, and the save putting the task back to ready failed too: it
+    /// is started on disk with no agent. Carries the launch reason and the save error.
+    NotLaunched(String, String),
     /// The agent launched, but the save recording it failed: the task is started on disk without
     /// its record. Carries the launch and the save error.
     Unrecorded(Box<DispatchResult>, String),
@@ -2770,8 +2773,8 @@ pub fn save_releasing_with_host(
     if !launched.is_empty() {
         let recorded = store.reload_merge_save(local);
         released.extend(launched.into_iter().map(|mut released| {
-            if let (Err(error), ReleasedStart::Dispatched(result)) = (&recorded, &released.start) {
-                released.start = ReleasedStart::Unrecorded(result.clone(), error.to_string());
+            if let Err(error) = &recorded {
+                released.start = unsaved(released.start, error.to_string());
             }
             released
         }));
@@ -2783,6 +2786,34 @@ pub fn save_releasing_with_host(
     }
     released.sort_by_key(|released| released.number);
     Ok(released)
+}
+
+/// What a released launch's outcome means once the save after it failed: the done and the start
+/// are durable, the record or the rollback to ready is not.
+pub fn unsaved(start: ReleasedStart, error: String) -> ReleasedStart {
+    match start {
+        ReleasedStart::Dispatched(result) => ReleasedStart::Unrecorded(result, error),
+        ReleasedStart::BackToReady(reason) => ReleasedStart::NotLaunched(reason, error),
+        other => other,
+    }
+}
+
+/// Warnings for releases whose save after the launch failed, without the `tsk status:` prefix.
+pub fn released_warnings(released: &[Released]) -> Vec<String> {
+    released
+        .iter()
+        .filter_map(|released| match &released.start {
+            ReleasedStart::Unrecorded(launch, error) => Some(format!(
+                "T{}'s agent @{} is running but its record did not save (worktree {}): {error}",
+                released.number, launch.assignee, launch.record.worktree
+            )),
+            ReleasedStart::NotLaunched(_, error) => Some(format!(
+                "T{} is started but no agent launched; couldn't save it back to ready: {error}",
+                released.number
+            )),
+            _ => None,
+        })
+        .collect()
 }
 
 /// One line for what a completion released: `T203 started · T202 done`, with any launch or
@@ -2815,6 +2846,10 @@ pub fn released_message(released: &[Released]) -> Option<String> {
                     format!("T{number} waits: {reason}; ctrl+s starts it")
                 }
                 ReleasedStart::BackToReady(reason) => format!("T{number} back to ready: {reason}"),
+                ReleasedStart::NotLaunched(_, error) => format!(
+                    "T{number} is started but no agent launched; couldn't save it back to ready: \
+                     {error}"
+                ),
                 ReleasedStart::Unrecorded(result, _) => format!(
                     "T{number} started · @{} is running but its record did not save · worktree {}",
                     result.assignee, result.record.worktree
