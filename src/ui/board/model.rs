@@ -1056,6 +1056,9 @@ pub struct BoardModel {
     /// A reply-box `ctrl+s` whose reply save failed: the task to start once Retry saves it.
     /// Cancel drops it. Session-only.
     pub pending_reply_start: Option<Uuid>,
+    /// A reply-box `ctrl+s` to a running agent whose save failed: the task whose reply goes
+    /// to its agent once Retry saves it. Cancel drops it. Session-only.
+    pub pending_reply_delivery: Option<Uuid>,
     /// The block card while it owns input.
     pub(super) block_card: Option<super::block::BlockCard>,
     /// A bulk dispatch whose launches are still landing. One slot shared by the outer board and
@@ -1720,6 +1723,7 @@ impl BoardModel {
             cleanup_status: None,
             dispatch_prompt: None,
             pending_reply_start: None,
+            pending_reply_delivery: None,
             block_card: None,
             bulk_dispatch: SharedBulkDispatch::default(),
             pending_delete_bulk: false,

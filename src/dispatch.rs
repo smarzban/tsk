@@ -489,6 +489,15 @@ impl From<&str> for RootPaneError {
     }
 }
 
+/// Why a prompt did not reach an agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptError {
+    /// The agent waits on a permission prompt or question (`agent_blocked`); nothing was sent.
+    AgentBlocked,
+    /// Anything else: Herdr could not run, the agent was not found, or Herdr failed.
+    Failed(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreatedWorktree {
     pub path: PathBuf,
@@ -671,6 +680,13 @@ pub trait DispatchHost {
     /// Whether Herdr currently detects an agent in `pane_id`.
     fn pane_has_agent(&mut self, _pane_id: &str) -> Result<bool, String> {
         Err("agent detection is not supported".into())
+    }
+    /// Submit `text` to the agent in `pane_id` (`herdr agent prompt`), as one message. Herdr
+    /// queues it behind a working turn; it refuses an agent waiting on a prompt.
+    fn prompt_agent(&mut self, _pane_id: &str, _text: &str) -> Result<(), PromptError> {
+        Err(PromptError::Failed(
+            "agent prompts are not supported".into(),
+        ))
     }
     /// Launch each task in order, off the event loop where the host can. Outcomes land on the
     /// returned batch one by one; nothing is recorded on any task here. The default runs every
@@ -1177,6 +1193,20 @@ impl DispatchHost for SystemDispatchHost {
             return Ok(false);
         }
         herdr_json(output).map(|_| true)
+    }
+
+    fn prompt_agent(&mut self, pane_id: &str, text: &str) -> Result<(), PromptError> {
+        let output = Command::new("herdr")
+            .args(["agent", "prompt", pane_id])
+            .arg(text)
+            .output()
+            .map_err(|error| PromptError::Failed(format!("could not run herdr: {error}")))?;
+        if !output.status.success()
+            && herdr_error_code(&output.stderr).as_deref() == Some("agent_blocked")
+        {
+            return Err(PromptError::AgentBlocked);
+        }
+        herdr_json(output).map(|_| ()).map_err(PromptError::Failed)
     }
 
     fn platform(&self) -> HostPlatform {
@@ -2431,36 +2461,137 @@ pub fn start_route(
     in_herdr: bool,
     host: &mut impl DispatchHost,
 ) -> StartRoute {
+    start_route_checked(task, actor, in_herdr, host).0
+}
+
+/// What the start route learned about a dispatched task's agent, for reply delivery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentCheck {
+    /// No live dispatched agent was asked about: unassigned, never dispatched, gone, the
+    /// assignee's own start, or outside Herdr.
+    NotChecked,
+    /// Herdr reports the agent running in this pane.
+    Running { pane: String },
+    /// Herdr could not answer; the start was plain.
+    Unreachable { reason: String },
+}
+
+/// [`start_route`], plus what it learned about the agent, so a caller can deliver to the
+/// running agent without asking Herdr again.
+pub fn start_route_checked(
+    task: &Task,
+    actor: &str,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> (StartRoute, AgentCheck) {
+    let plain = (StartRoute::Plain, AgentCheck::NotChecked);
     let Some(assignee) = task.assignee.as_deref() else {
-        return StartRoute::Plain;
+        return plain;
     };
     // An agent starting its own task never launches another copy of itself.
     if actor == assignee {
-        return StartRoute::Plain;
+        return plain;
     }
     let Some(record) = task.dispatch.as_ref() else {
-        return match launch_unavailable(task, in_herdr) {
+        let route = match launch_unavailable(task, in_herdr) {
             Some(reason) => StartRoute::NoLaunch { reason },
             None => StartRoute::Dispatch,
         };
+        return (route, AgentCheck::NotChecked);
     };
-    let gone = StartRoute::AgentGone {
-        assignee: assignee.to_string(),
-    };
+    let gone = (
+        StartRoute::AgentGone {
+            assignee: assignee.to_string(),
+        },
+        AgentCheck::NotChecked,
+    );
     if record.cleaned {
         return gone;
     }
     if !in_herdr {
-        return StartRoute::Plain;
+        return plain;
     }
     let pane = match host.root_pane(&record.herdr_workspace_id) {
         Ok(pane) => pane,
         Err(RootPaneError::WorkspaceGone(_)) => return gone,
-        Err(RootPaneError::Failed(_)) => return StartRoute::Plain,
+        Err(RootPaneError::Failed(reason)) => {
+            return (StartRoute::Plain, AgentCheck::Unreachable { reason })
+        }
     };
     match host.pane_has_agent(&pane) {
         Ok(false) => gone,
-        Ok(true) | Err(_) => StartRoute::Plain,
+        Ok(true) => (StartRoute::Plain, AgentCheck::Running { pane }),
+        Err(reason) => (StartRoute::Plain, AgentCheck::Unreachable { reason }),
+    }
+}
+
+/// How a reply delivery to a running agent ended. Nothing here changes the task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delivery {
+    Sent,
+    /// The agent waits on a permission prompt or question; nothing was sent.
+    AgentWaiting,
+    /// Herdr failed, before or during the send.
+    Unreachable(String),
+}
+
+/// The text a reply delivery submits: the owner's replies since the agent's last reply on
+/// the task's open block, or on the block that just closed, behind a `[tsk T<n> <label>]`
+/// tag. Multi-line replies stay intact; Herdr submits them as one message. `None` when
+/// there is nothing of the owner's to send.
+pub fn reply_delivery_text(task: &Task, label: &str) -> Option<String> {
+    let number = task.number?;
+    let block = match task.block.as_ref() {
+        Some(block) => block,
+        None => task.past_blocks.last()?,
+    };
+    let since = block
+        .replies
+        .iter()
+        .rposition(|reply| !reply.is_owner())
+        .map_or(0, |index| index + 1);
+    let replies: Vec<&str> = block.replies[since..]
+        .iter()
+        .filter(|reply| reply.is_owner() && !reply.deleted)
+        .map(|reply| reply.text.as_str())
+        .collect();
+    if replies.is_empty() {
+        return None;
+    }
+    Some(format!("[tsk T{number} {label}] {}", replies.join("\n\n")))
+}
+
+/// Deliver the owner's latest replies on `task` to its agent, when `check` found it running.
+/// `None` when nothing is delivered (no running agent, or nothing to send). Sends at most
+/// once and never retries: a refused or failed send keeps the reply on the task only.
+pub fn deliver_reply(
+    task: &Task,
+    check: &AgentCheck,
+    label: &str,
+    host: &mut impl DispatchHost,
+) -> Option<Delivery> {
+    let text = reply_delivery_text(task, label)?;
+    match check {
+        AgentCheck::NotChecked => None,
+        AgentCheck::Unreachable { reason } => Some(Delivery::Unreachable(reason.clone())),
+        AgentCheck::Running { pane } => Some(match host.prompt_agent(pane, &text) {
+            Ok(()) => Delivery::Sent,
+            Err(PromptError::AgentBlocked) => Delivery::AgentWaiting,
+            Err(PromptError::Failed(reason)) => Delivery::Unreachable(reason),
+        }),
+    }
+}
+
+/// The status-row line for a reply-and-start that delivered (or tried to).
+pub fn delivery_message(assignee: &str, delivery: &Delivery) -> String {
+    match delivery {
+        Delivery::Sent => format!("started · reply sent to @{assignee}"),
+        Delivery::AgentWaiting => {
+            format!("started · @{assignee} is waiting on a prompt; reply kept on the task")
+        }
+        Delivery::Unreachable(_) => {
+            format!("started · could not reach @{assignee}; reply kept on the task")
+        }
     }
 }
 
