@@ -359,6 +359,10 @@ pub enum BoardIntent {
     /// The application boundary's form of `ReplySaveUnblock` when the task's agent is still
     /// running: store the reply and start the task instead of making it ready. No key maps here.
     ReplySaveStart,
+    /// The application boundary's form of a review's `ctrl+s` when a dispatch or relaunch
+    /// starts the task after this save: store any feedback (an empty box needs a failed check)
+    /// and leave the status to the launch. No key maps here.
+    ReplySaveBeforeLaunch,
     /// Feedback box `ctrl+d` on a review: store any feedback and approve (done).
     ReplyApprove,
     /// The application boundary's form of `ReplyApprove` once the feedback is stored and no
@@ -1988,6 +1992,7 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::ReplySave
         | BoardIntent::ReplySaveUnblock
         | BoardIntent::ReplySaveStart
+        | BoardIntent::ReplySaveBeforeLaunch
         | BoardIntent::ReplyApprove
         | BoardIntent::ApproveReview(_)
         | BoardIntent::ToggleReview

@@ -102,7 +102,7 @@ Click a step to select it. Click **+ step** to add. Field clicks become editable
 
 In the reply box, `Enter` starts a new line, `Shift+Enter` saves the reply, `ctrl+s` saves it and unblocks the task, and `Esc` cancels. An unassigned task unblocks to ready; an assigned one starts, which dispatches it, asks before relaunching a gone agent, or sends the reply to its still-running agent. `r` on a blocked board row opens the same box under the row. An agent's replies cannot be edited or deleted.
 
-On a review, the same box takes feedback: `Shift+Enter` saves it and the task stays in review, `ctrl+s` sends the review back (started, and the feedback with the failed checks goes to its running agent), `ctrl+d` approves it (done, through the cleanup card when its dispatch is live; nothing is sent), and `Esc` cancels.
+On a review, the same box takes feedback: `Shift+Enter` saves it and the task stays in review, `ctrl+s` sends the review back (started, and the feedback with the failed checks goes to its running agent; an empty box needs a failed check), `ctrl+d` approves it (done, through the cleanup card when its dispatch is live; nothing is sent), and `Esc` cancels.
 
 ## Editing
 

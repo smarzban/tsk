@@ -215,7 +215,7 @@ Agents block with a question from [the CLI](/docs/cli/#status) (`--why`, `--need
 | next | What comes after (optional) |
 | on | `‹ you · agent · other ›`, cycled with `←` / `→`; `agent` takes a profile from [`config.toml`](/docs/storage/#agent-profiles), `other` any text |
 
-`Tab` moves between fields, `Enter` puts the work up for review, and `Esc` cancels. `Enter` on an empty card sets review at once. With tasks marked, one card covers the whole set as one save and one `ctrl+u` undo step; tasks already in review keep their round. `ctrl+r` on a task in review returns it to ready. Palette **set status: review** sets review without the card.
+`Tab` moves between fields, `Enter` puts the work up for review, and `Esc` cancels. `Enter` on an empty card sets review at once. With tasks marked, one card covers the whole set as one save and one `ctrl+u` undo step; tasks already in review keep their round. `ctrl+r` on a task in review returns it to ready. Palette **set status: review** opens the same card over the targets not yet in review.
 
 Each review is a **round**. Agents set one from [the CLI](/docs/cli/#status) (`--done`, `--check`, `--next`, `--on`); running it again while the task is in review updates the same round. On the [task page](/docs/task-page/#review) you mark each check passed or failed and give feedback with `r`, which also opens the feedback box under a review row on the board. In the feedback box:
 
@@ -226,7 +226,7 @@ Each review is a **round**. Agents set one from [the CLI](/docs/cli/#status) (`-
 | `ctrl+d` | Approve: save the feedback and mark the task done, through the [cleanup card](#complete-and-clean-up) when its dispatch is live. Nothing is sent |
 | `Esc` | Cancel |
 
-Sending back takes the same route as a reply's `ctrl+s` ([below](#reply-to-a-running-agent)), with `feedback` in place of `reply` on the status row, except that an unassigned task also goes to started. When the agent sets review again, round N closes into history and round N+1 opens. A round closed by a start is recorded as sent back, one closed by done as approved.
+Sending back takes the same route as a reply's `ctrl+s` ([below](#reply-to-a-running-agent)), with `feedback` in place of `reply` on the status row, except that an unassigned task also goes to started. An empty box sends back only when a check failed (`type feedback or fail a check first` otherwise). The round closes into history at the send-back, recorded as sent back; the agent's next review opens round N+1. A round closed by done is recorded as approved. A relaunched or newly dispatched agent finds the feedback and failed checks in the last `past_reviews` entry of `tsk list --json`.
 
 ### Reply to a running agent
 

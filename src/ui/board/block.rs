@@ -376,6 +376,9 @@ impl BlockCard {
     }
 }
 
+/// `ctrl+s` on an empty feedback box with no failed check.
+pub(crate) const NOTHING_TO_SEND_BACK: &str = "type feedback or fail a check first";
+
 /// The reply box's block was closed or replaced elsewhere; the draft stays.
 pub(crate) const BLOCK_REPLACED: &str = "this block was closed or replaced elsewhere; reply kept";
 
@@ -1029,11 +1032,14 @@ pub(super) fn delete_selected_reply(
 
 /// `shift+enter` stores the reply; `ctrl+s` stores it and unblocks the task to `unblock`
 /// (ready, or started when its agent is still running; the application boundary decides).
-/// The box and its mode stay until the synced task carries the reply.
+/// `send_back` is a review's `ctrl+s` whose start (a dispatch or relaunch) follows this save:
+/// like an unblock, it may store nothing. A review sent back with an empty box needs a failed
+/// check. The box and its mode stay until the synced task carries the reply.
 pub(super) fn save_reply(
     domain: &mut DomainState,
     model: &mut BoardModel,
     unblock: Option<HumanStatus>,
+    send_back: bool,
 ) -> Result<IntentOutcome, DomainError> {
     let Some((id, editor)) = active_reply(model) else {
         return Ok(IntentOutcome::None);
@@ -1062,9 +1068,17 @@ pub(super) fn save_reply(
         return refuse(model, BLOCK_REPLACED.to_string());
     }
     // `ctrl+s` on an empty new reply only unblocks; saving an empty reply is refused.
-    let unblock_only = text.is_empty() && unblock.is_some() && edit.is_none();
+    let unblock_only = text.is_empty() && (unblock.is_some() || send_back) && edit.is_none();
     if text.is_empty() && !unblock_only {
         return refuse(model, "type a reply first".to_string());
+    }
+    // An empty send-back says nothing unless a check failed.
+    let failed = domain
+        .get(id)
+        .and_then(|task| task.block.as_ref())
+        .is_some_and(|block| !block.failed_checks().is_empty());
+    if unblock_only && editor_review && !failed {
+        return refuse(model, NOTHING_TO_SEND_BACK.to_string());
     }
     if text.len() > BLOCK_TEXT_MAX {
         return refuse(model, too_long(BlockField::Reply));
@@ -1106,6 +1120,26 @@ pub(super) fn save_reply(
         });
     }
     Ok(IntentOutcome::Persist)
+}
+
+/// Whether the open reply box still answers the task's open block or review round. When a
+/// refresh closed or replaced it, the box says so and keeps its draft.
+pub(super) fn reply_box_current(domain: &DomainState, model: &mut BoardModel) -> bool {
+    let Some((id, editor)) = active_reply(model) else {
+        return false;
+    };
+    let current = domain
+        .get(id)
+        .and_then(|task| task.block.as_ref())
+        .map(Block::key);
+    if current.as_ref() == Some(&editor.block) {
+        return true;
+    }
+    model.set_message(BLOCK_REPLACED);
+    if let Some(editor) = active_reply_mut(model) {
+        editor.refusal = Some(BLOCK_REPLACED.to_string());
+    }
+    false
 }
 
 /// Esc in the reply box: discard the draft and return to the page, or to the board.

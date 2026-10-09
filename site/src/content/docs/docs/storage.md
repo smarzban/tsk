@@ -43,7 +43,7 @@ You were dispatched to T{number} ({title}) in worktree {worktree} on branch {bra
 3. Work only on {branch}. Run the project's checks before saying you are done.
 4. Push and open a pull request into {base}. Never merge it.
 5. Set the task to review with what you did and what to check: `tsk status {number} review --done "…" --check "…"`, one `--check` per thing to verify, adding `--next` for what comes after. When you need a human, block it with your question: `tsk status {number} blocked --why "…"`, adding `--needs` and one `--option` per choice, then stop.
-6. On a relaunch, read the answers to your last question first: a relaunch closes the block, so they are the `replies` of the last `past_blocks` entry in `tsk list {number} --json`.
+6. On a relaunch, first read whichever record closed last (`closed_at`) in `tsk list {number} --json`: the `replies` of the last `past_blocks` entry, or the `feedback` and failed `checks` of the last `past_reviews` entry when it was `sent_back`.
 7. A message `[tsk T{number} sent back] …` is review feedback, with any failed checks: address it, then set review again.
 ```
 

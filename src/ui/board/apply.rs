@@ -179,6 +179,7 @@ pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> boo
                 | BoardIntent::ReplySave
                 | BoardIntent::ReplySaveUnblock
                 | BoardIntent::ReplySaveStart
+                | BoardIntent::ReplySaveBeforeLaunch
                 | BoardIntent::ToggleReview
                 | BoardIntent::CycleCheck
                 | BoardIntent::ReplyApprove
@@ -1066,7 +1067,10 @@ fn apply_board_intent(
             }
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::ReplySave | BoardIntent::ReplySaveUnblock | BoardIntent::ReplySaveStart => {
+        BoardIntent::ReplySave
+        | BoardIntent::ReplySaveUnblock
+        | BoardIntent::ReplySaveStart
+        | BoardIntent::ReplySaveBeforeLaunch => {
             if model.input_mode != BoardInputMode::EditReply {
                 return Ok(IntentOutcome::None);
             }
@@ -1075,7 +1079,12 @@ fn apply_board_intent(
                 BoardIntent::ReplySaveStart => Some(HumanStatus::Started),
                 _ => None,
             };
-            return super::block::save_reply(domain, model, unblock);
+            return super::block::save_reply(
+                domain,
+                model,
+                unblock,
+                intent == BoardIntent::ReplySaveBeforeLaunch,
+            );
         }
         BoardIntent::BeginAddStep => {
             model.close_popup();
@@ -2734,6 +2743,28 @@ fn apply_board_intent(
                 .collect();
             if !targets.is_empty() {
                 super::block::open_block_card(model, targets);
+            }
+            return Ok(IntentOutcome::None);
+        }
+        // Palette **set status: review** asks what was done like `ctrl+r`, over the targets not
+        // yet in review; it never returns a review to ready.
+        BoardIntent::SetStatus(HumanStatus::Review) => {
+            model.close_popup();
+            let targets = model.verb_target_ids();
+            if targets.is_empty() {
+                model.set_message(NO_SELECTION);
+                return Ok(IntentOutcome::None);
+            }
+            let targets: Vec<Uuid> = targets
+                .into_iter()
+                .filter(|id| {
+                    domain
+                        .get(*id)
+                        .is_some_and(|task| task.status != HumanStatus::Review)
+                })
+                .collect();
+            if !targets.is_empty() {
+                super::block::open_review_card(model, targets);
             }
             return Ok(IntentOutcome::None);
         }

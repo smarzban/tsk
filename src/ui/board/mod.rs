@@ -9,6 +9,8 @@ mod model;
 
 pub use apply::{apply_intent, board_intent_may_persist, NO_AGENT_PROFILES};
 pub use block::{BlockCard, BlockCardField, BlockTarget, OnKind};
+#[cfg(test)]
+pub(crate) use block::{BLOCK_REPLACED, NOTHING_TO_SEND_BACK};
 pub use chrome::DELETE_NOTICE_UNDO;
 pub use commands::{resolve_board_command, BoardCommand, CommandSurface};
 pub use draw::{board_hit_map, board_verb_items, draw_board};

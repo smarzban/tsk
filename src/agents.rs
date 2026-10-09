@@ -64,9 +64,10 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 #      thing to verify, adding `--next` for what comes after. When you need a
 #      human, block it with your question: `tsk status {number} blocked
 #      --why "…"`, adding `--needs` and one `--option` per choice, then stop.
-#   6. On a relaunch, read the answers to your last question first: a
-#      relaunch closes the block, so they are the `replies` of the last
-#      `past_blocks` entry in `tsk list {number} --json`.
+#   6. On a relaunch, first read whichever record closed last (`closed_at`)
+#      in `tsk list {number} --json`: the `replies` of the last `past_blocks`
+#      entry, or the `feedback` and failed `checks` of the last `past_reviews`
+#      entry when it was `sent_back`.
 #   7. A message `[tsk T{number} sent back] …` is review feedback, with any
 #      failed checks: address it, then set review again.
 #
@@ -190,7 +191,7 @@ pub const DEFAULT_PROMPT: &str = "You were dispatched to T{number} ({title}) in 
 3. Work only on {branch}. Run the project's checks before saying you are done.
 4. Push and open a pull request into {base}. Never merge it.
 5. Set the task to review with what you did and what to check: `tsk status {number} review --done \"…\" --check \"…\"`, one `--check` per thing to verify, adding `--next` for what comes after. When you need a human, block it with your question: `tsk status {number} blocked --why \"…\"`, adding `--needs` and one `--option` per choice, then stop.
-6. On a relaunch, read the answers to your last question first: a relaunch closes the block, so they are the `replies` of the last `past_blocks` entry in `tsk list {number} --json`.
+6. On a relaunch, first read whichever record closed last (`closed_at`) in `tsk list {number} --json`: the `replies` of the last `past_blocks` entry, or the `feedback` and failed `checks` of the last `past_reviews` entry when it was `sent_back`.
 7. A message `[tsk T{number} sent back] …` is review feedback, with any failed checks: address it, then set review again.";
 
 /// All agent profiles loaded from one state directory.
@@ -897,7 +898,9 @@ tsk/t101-load-profiles, based on dispatch.
 \"…\" --check \"…\"`, one `--check` per thing to verify, adding `--next` for what comes after. \
 When you need a human, block it with your question: `tsk status 101 blocked --why \"…\"`, adding \
 `--needs` and one `--option` per choice, then stop.
-6. On a relaunch, read the answers to your last question first: a relaunch closes the block, so they are the `replies` of the last `past_blocks` entry in `tsk list 101 --json`.
+6. On a relaunch, first read whichever record closed last (`closed_at`) in `tsk list 101 --json`: \
+the `replies` of the last `past_blocks` entry, or the `feedback` and failed `checks` of the last \
+`past_reviews` entry when it was `sent_back`.
 7. A message `[tsk T101 sent back] …` is review feedback, with any failed checks: address it, \
 then set review again."
         );

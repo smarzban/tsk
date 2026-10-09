@@ -625,3 +625,51 @@ fn review_flags_refuse_bad_input_without_mutation() {
     assert!(output.stderr.contains("text-too-long"), "{}", output.stderr);
     assert_eq!(fs::read(dir.join("tsk.json")).expect("read"), before);
 }
+
+/// Closed blocks and closed review rounds each land only in their own list: `past_blocks` never
+/// carries a round and `past_reviews` never a block.
+#[test]
+fn past_blocks_and_past_reviews_never_mix() {
+    let dir = temp_state_dir("past-split");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "t").code, 0);
+    assert_eq!(cli(block_args(&dir, "T1", &["--why", "which db?"])).code, 0);
+    assert_eq!(status(&dir, "T1", "started").code, 0);
+    assert_eq!(
+        cli(review_args(&dir, "T1", &["--done", "built it"])).code,
+        0
+    );
+    assert_eq!(status(&dir, "T1", "started").code, 0);
+
+    let task = listed(&dir, "T1");
+    let blocks = task["past_blocks"].as_array().expect("closed block");
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0]["why"], "which db?");
+    assert!(blocks[0].get("round").is_none() && blocks[0].get("done").is_none());
+    let reviews = task["past_reviews"].as_array().expect("closed round");
+    assert_eq!(reviews.len(), 1);
+    assert_eq!(reviews[0]["done"], "built it");
+    assert_eq!(reviews[0]["resolution"], "sent_back");
+    assert!(reviews[0].get("why").is_none() && reviews[0].get("replies").is_none());
+
+    // A round alone leaves no past_blocks at all, and a block alone no past_reviews.
+    assert_eq!(add_task(&dir, "u").code, 0);
+    assert_eq!(cli(review_args(&dir, "T2", &["--done", "x"])).code, 0);
+    assert_eq!(status(&dir, "T2", "done").code, 0);
+    let output = cli(vec![
+        "tsk".into(),
+        "list".into(),
+        "T2".into(),
+        "--json".into(),
+        "--state-dir".into(),
+        dir.to_string_lossy().into_owned(),
+    ]);
+    let done = serde_json::from_str::<serde_json::Value>(&output.stdout).expect("json")[0].clone();
+    assert!(done.get("past_blocks").is_none(), "{done}");
+    assert_eq!(done["past_reviews"][0]["resolution"], "approved");
+    assert_eq!(add_task(&dir, "v").code, 0);
+    assert_eq!(cli(block_args(&dir, "T3", &["--why", "y"])).code, 0);
+    assert_eq!(status(&dir, "T3", "ready").code, 0);
+    let blocked = listed(&dir, "T3");
+    assert!(blocked.get("past_reviews").is_none(), "{blocked}");
+}

@@ -119,7 +119,9 @@ A message `[tsk T12 sent back] …` (with `Failed checks: …`) is the user's fe
 for what would unblock you and one `--option "…"` per choice the user can pick. `--on T9` waits on
 another task, `--on "<text>"` on anything else; the default is the user. Running it again edits the
 same block. Read answers in `tsk list T12 --json` under `block` (`replies`, `answered`). Unblocking
-or a relaunch closes the block: on a relaunch, read the answers in the last `past_blocks` entry.
+or a relaunch closes the block. On a relaunch, read whichever record closed last (`closed_at`): the
+last `past_blocks` entry's `replies`, or the last `past_reviews` entry's `feedback` and failed `checks`
+when it was `sent_back`.
 `tsk reply T12 "…"` adds a reply to the open block (`not-blocked` when there is no block or review); it is not
 idempotent, so read the task before retrying. When the user asks to send an answer to the task's
 running agent, add `--send`; it sends only that reply and prints `sent to @<agent>` or `not sent: <reason>`.

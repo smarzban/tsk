@@ -26,7 +26,7 @@ the GitHub release notes verbatim.
 
 ### Changed
 
-- `ctrl+r` opens the review card instead of setting review at once; `Enter` on the empty card still sets it immediately, and `ctrl+r` on a task in review still returns it to ready.
+- `ctrl+r` and palette **set status: review** open the review card instead of setting review at once; `Enter` on the empty card still sets it immediately, and `ctrl+r` on a task in review still returns it to ready.
 - `tsk reply` also adds feedback to a task in review; `not-blocked` now means the task is neither blocked nor in review.
 
 ### Fixed

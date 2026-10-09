@@ -1777,7 +1777,16 @@ fn status_verbs_target_all_marks_once_then_clear_them() {
         None,
     )
     .expect("review marked set");
+    assert_eq!(
+        outcome,
+        IntentOutcome::None,
+        "the palette asks first, like ctrl+r"
+    );
+    assert_eq!(model.input_mode(), BoardInputMode::BlockCard);
+    let outcome = apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
+        .expect("confirm the review card");
     assert_eq!(outcome, IntentOutcome::Persist);
+    model.sync_from_domain(&domain);
     assert_eq!(
         domain.get(first).expect("first").status,
         HumanStatus::Review
@@ -2196,6 +2205,9 @@ fn task_page_status_verbs_stay_cursor_only_and_clear_board_marks() {
         None,
     )
     .expect("apply status from task page");
+    apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
+        .expect("confirm the review card");
+    model.sync_from_domain(&domain);
     assert_eq!(
         domain.get(cursor).expect("cursor").status,
         HumanStatus::Review

@@ -2925,6 +2925,10 @@ fn approve_review(
         model.set_message(CLEANUP_BUSY);
         return Ok(());
     }
+    // The box approves the round it was opened on, never a newer one merged in meanwhile.
+    if !model.reply_box_current(domain) {
+        return Ok(());
+    }
     let has_feedback = model
         .reply_draft()
         .is_some_and(|draft| !draft.trim().is_empty());
@@ -3699,6 +3703,9 @@ fn handle_board_intent_with_host(
                     .is_some_and(|task| task.status == HumanStatus::Review)
         });
         if let Some(id) = target {
+            // Approve against the durable record: a round replaced elsewhere must refuse.
+            domain.merge_tasks_from_disk(&baseline);
+            model.sync_from_domain(domain);
             approve_review(
                 store,
                 domain,
@@ -3924,7 +3931,13 @@ fn handle_board_intent_with_host(
             }
             Some((id, route, _)) => {
                 after_reply = Some((id, route));
-                BoardIntent::ReplySave
+                // A review keeps its send-back through this save: an empty box with a failed
+                // check still launches.
+                if model.reply_is_feedback() {
+                    BoardIntent::ReplySaveBeforeLaunch
+                } else {
+                    BoardIntent::ReplySave
+                }
             }
         }
     } else {
@@ -10260,11 +10273,33 @@ mod quick_assign_tests {
         /// Every workspace whose root pane was asked for, and every pane asked about.
         root_queries: Vec<String>,
         agent_queries: Vec<String>,
+        /// Answer cleanup inspections with a clean, merged worktree.
+        cleanup: bool,
         /// The task's durable status and last reply on disk when each prompt was submitted.
         disk_at_prompt: Vec<(HumanStatus, Option<String>)>,
     }
 
     impl DispatchHost for FakeHost {
+        fn inspect_cleanup_cached(
+            &mut self,
+            _: &Path,
+            _: &crate::domain::Dispatch,
+            _: bool,
+        ) -> Result<crate::dispatch::CleanupInspection, String> {
+            if !self.cleanup {
+                return Err("cleanup inspection is not supported".into());
+            }
+            Ok(crate::dispatch::CleanupInspection {
+                unreachable_remote: None,
+                worktree_exists: true,
+                dirty: false,
+                branch_merged: true,
+                workspace_exists: true,
+                target_matches: true,
+                warning: None,
+                base_available: true,
+            })
+        }
         fn is_git_repo(&mut self, _: &Path) -> Result<bool, String> {
             Ok(true)
         }
@@ -10405,6 +10440,7 @@ mod quick_assign_tests {
             root_queries: Vec::new(),
             agent_queries: Vec::new(),
             disk_at_prompt: Vec::new(),
+            cleanup: false,
         }
     }
 
@@ -10440,7 +10476,11 @@ mod quick_assign_tests {
             &mut |_| {},
         )
         .expect("board intent");
-        assert!(!recovery.is_pending(), "no save failure expected");
+        assert!(
+            !recovery.is_pending(),
+            "no save failure expected: {:?}",
+            model.message()
+        );
     }
 
     /// A saved earlier launch on `id`, with the task left at `status`.
@@ -11219,9 +11259,8 @@ mod quick_assign_tests {
     fn sending_back_an_unassigned_review_starts_it() {
         let temp = Temp::new("review-send-back-plain", &["builder"]);
         let (mut domain, mut model, ids) = board(&temp, &["review me"]);
-        review_page(&temp, &mut domain, &mut model, ids[0], &[]);
+        failed_check_feedback_box(&temp, &mut domain, &mut model, ids[0]);
         let mut host = fake_host(&temp);
-        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("r");
         handle(
             &temp,
             &mut domain,
@@ -11518,6 +11557,337 @@ mod quick_assign_tests {
         assert!(ids
             .iter()
             .all(|id| saved.get(*id).expect("task").block.is_none()));
+    }
+
+    /// The agent-visible `tsk list <n> --json` row of task `id`.
+    fn agent_json(temp: &Temp, domain: &DomainState, id: uuid::Uuid) -> serde_json::Value {
+        let number = domain.get(id).and_then(|task| task.number).expect("number");
+        let output = crate::cli::run_with(
+            [
+                "tsk".to_string(),
+                "list".into(),
+                number.to_string(),
+                "--json".into(),
+                "--state-dir".into(),
+                temp.dir.to_string_lossy().into_owned(),
+            ],
+            std::io::Cursor::new(Vec::<u8>::new()),
+            true,
+        );
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        serde_json::from_str::<serde_json::Value>(&output.stdout).expect("json")[0].clone()
+    }
+
+    /// What a launched agent is told and can read after a send-back that launched it: the
+    /// prompt points at `past_reviews`, whose last entry holds this feedback and the failed
+    /// checks, and `past_blocks` holds no review round.
+    fn assert_send_back_visible(
+        temp: &Temp,
+        domain: &DomainState,
+        id: uuid::Uuid,
+        feedback: Option<&str>,
+    ) {
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(id).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        let prompt = task
+            .dispatch
+            .as_ref()
+            .and_then(|record| record.argv.last())
+            .expect("launch prompt");
+        assert!(prompt.contains("past_reviews"), "{prompt}");
+        let json = agent_json(temp, domain, id);
+        assert!(json.get("past_blocks").is_none(), "{json}");
+        let round = json["past_reviews"]
+            .as_array()
+            .and_then(|rounds| rounds.last())
+            .cloned()
+            .expect("closed round");
+        assert_eq!(round["resolution"], "sent_back");
+        assert_eq!(
+            round["checks"],
+            serde_json::json!([
+                {"text": "tests pass", "state": "open"},
+                {"text": "no flicker", "state": "failed"}
+            ])
+        );
+        match feedback {
+            Some(text) => assert_eq!(round["feedback"][0]["text"], text),
+            None => assert_eq!(round["feedback"], serde_json::json!([])),
+        }
+    }
+
+    /// Review `id` with two checks, fail the second, save, and open the empty feedback box.
+    fn failed_check_feedback_box(
+        temp: &Temp,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        id: uuid::Uuid,
+    ) {
+        review_page(temp, domain, model, id, &["tests pass", "no flicker"]);
+        domain
+            .set_check(id, 1, crate::domain::CheckState::Failed)
+            .expect("fail");
+        temp.store.reload_merge_save(domain).expect("save");
+        model.sync_from_domain(domain);
+        apply_intent(domain, model, BoardIntent::BeginReply, None).expect("r");
+    }
+
+    /// `ctrl+s` with an empty box on a review never dispatched: the failed check is enough, the
+    /// round closes as sent back and the dispatched agent is pointed at it.
+    #[test]
+    fn an_empty_send_back_with_a_failed_check_dispatches_the_agent() {
+        let temp = Temp::new("review-send-back-dispatch", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        domain
+            .assign(ids[0], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        failed_check_feedback_box(&temp, &mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut host,
+        );
+        assert_eq!(host.ran, 1, "one launch");
+        assert_eq!(
+            host.prompts,
+            [],
+            "a fresh launch is pointed at the record instead"
+        );
+        assert_eq!(model.reply_draft(), None, "the box closed");
+        assert_send_back_visible(&temp, &domain, ids[0], None);
+    }
+
+    /// `ctrl+s` on a review whose agent is gone saves the feedback, asks, and the relaunched
+    /// agent is pointed at the round with that feedback and the failed check.
+    #[test]
+    fn a_send_back_to_a_gone_agent_relaunches_it_onto_the_feedback() {
+        let temp = Temp::new("review-send-back-gone", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        failed_check_feedback_box(&temp, &mut domain, &mut model, ids[0]);
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText("fix the flicker".into()),
+            None,
+        )
+        .expect("type");
+        let mut host = fake_host(&temp);
+        host.agent = Some(false);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut host,
+        );
+        assert!(model
+            .dispatch_prompt()
+            .is_some_and(|prompt| prompt.relaunch.is_some()));
+        assert_eq!(
+            temp.store
+                .load()
+                .expect("reload")
+                .get(ids[0])
+                .expect("task")
+                .status,
+            HumanStatus::Review,
+            "nothing starts before the relaunch is confirmed"
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmDispatch,
+            &mut host,
+        );
+        assert_eq!(host.ran, 1);
+        assert_eq!(host.prompts, []);
+        assert_send_back_visible(&temp, &domain, ids[0], Some("fix the flicker"));
+    }
+
+    /// An empty send-back with no failed check says what is missing and keeps the box, on
+    /// every route; Shift+Enter keeps its own empty-reply refusal.
+    #[test]
+    fn an_empty_send_back_without_a_failed_check_is_refused() {
+        let temp = Temp::new("review-send-back-empty", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["plain", "assigned"]);
+        domain
+            .assign(ids[1], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        let mut host = fake_host(&temp);
+        for id in ids.clone() {
+            review_page(&temp, &mut domain, &mut model, id, &["tests pass"]);
+            apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("r");
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::ReplySaveUnblock,
+                &mut host,
+            );
+            assert_eq!(model.reply_draft(), Some(""), "the box stays");
+            let (screen, _) = board_screen(&model, 100, 30);
+            assert!(
+                screen.contains(crate::ui::board::NOTHING_TO_SEND_BACK),
+                "{screen}"
+            );
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::ReplySave,
+                &mut host,
+            );
+            let (screen, _) = board_screen(&model, 100, 30);
+            assert!(screen.contains("type a reply first"), "{screen}");
+            assert_eq!(
+                temp.store
+                    .load()
+                    .expect("reload")
+                    .get(id)
+                    .expect("task")
+                    .status,
+                HumanStatus::Review
+            );
+            apply_intent(&mut domain, &mut model, BoardIntent::CancelEdit, None).expect("esc");
+            apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close");
+        }
+        assert_eq!(host.ran, 0, "nothing launched");
+    }
+
+    /// `ctrl+d` with an empty box approves only the round the box was opened on: a newer round
+    /// merged in meanwhile is refused and the box stays.
+    #[test]
+    fn approving_an_empty_box_refuses_a_round_replaced_meanwhile() {
+        let temp = Temp::new("review-approve-stale", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        review_page(&temp, &mut domain, &mut model, ids[0], &["tests pass"]);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("r");
+        elsewhere(&temp, |other| {
+            other
+                .set_status_by(ids[0], HumanStatus::Started, "builder")
+                .expect("started elsewhere");
+        });
+        elsewhere(&temp, |other| {
+            other
+                .set_status_by(ids[0], HumanStatus::Review, "builder")
+                .expect("round 2 elsewhere");
+        });
+        let mut host = fake_host(&temp);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplyApprove,
+            &mut host,
+        );
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Review, "round 2 is not approved");
+        assert_eq!(task.block.as_ref().map(|round| round.round), Some(2));
+        assert_eq!(model.reply_draft(), Some(""), "the box stays");
+        assert_eq!(model.message(), Some(crate::ui::board::BLOCK_REPLACED));
+    }
+
+    /// `ctrl+d` on a dispatched review with its agent running: the feedback is stored, the
+    /// cleanup card asks, Esc approves nothing, and confirming closes the round as approved.
+    /// Nothing is ever sent to the agent.
+    #[test]
+    fn approving_a_dispatched_review_goes_through_the_cleanup_card() {
+        let temp = Temp::new("review-approve-dispatched", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        let worktree = temp.dir.join("worktree");
+        std::fs::create_dir_all(&worktree).expect("worktree");
+        domain
+            .assign(ids[0], Some("builder".into()))
+            .expect("assign builder");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        domain
+            .record_dispatch(
+                ids[0],
+                crate::domain::Dispatch {
+                    argv: vec!["true".into()],
+                    worktree: worktree.to_string_lossy().into_owned(),
+                    branch: "tsk/earlier".into(),
+                    base: Some("main".into()),
+                    base_ref: None,
+                    base_commit: None,
+                    base_remote: None,
+                    herdr_workspace_id: "w0".into(),
+                    at: std::time::SystemTime::now(),
+                    cleaned: false,
+                },
+            )
+            .expect("record the launch");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        review_page(&temp, &mut domain, &mut model, ids[0], &["tests pass"]);
+        let mut host = fake_host(&temp);
+        host.cleanup = true;
+        agent_running(&domain, &mut host, ids[0]);
+        let approve = |domain: &mut DomainState, model: &mut BoardModel, host: &mut FakeHost| {
+            apply_intent(domain, model, BoardIntent::BeginReply, None).expect("r");
+            apply_intent(
+                domain,
+                model,
+                BoardIntent::EditInsertText("ship it".into()),
+                None,
+            )
+            .expect("type");
+            handle(&temp, domain, model, BoardIntent::ReplyApprove, host);
+        };
+        approve(&mut domain, &mut model, &mut host);
+        assert!(
+            model.cleanup_prompt().is_some(),
+            "the cleanup card asks: {:?}",
+            model.message()
+        );
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(
+            task.status,
+            HumanStatus::Review,
+            "nothing changes before confirm"
+        );
+        assert_eq!(last_reply(&saved, ids[0]).as_deref(), Some("ship it"));
+
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::CancelCleanup,
+            &mut host,
+        );
+        assert!(model.cleanup_prompt().is_none());
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(
+            saved.get(ids[0]).expect("task").status,
+            HumanStatus::Review,
+            "cancel approves nothing"
+        );
+
+        approve(&mut domain, &mut model, &mut host);
+        assert!(model.cleanup_prompt().is_some());
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::KeepCleanup,
+            &mut host,
+        );
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Done);
+        let round = task.past_blocks.last().expect("closed round");
+        assert_eq!(round.resolution, Some(crate::domain::Resolution::Approved));
+        assert_eq!(host.prompts, [], "approving never sends");
     }
 
     #[test]

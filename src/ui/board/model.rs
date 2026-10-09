@@ -1972,6 +1972,12 @@ impl BoardModel {
         self.block_target() == Some(super::block::BlockTarget::PassedFold)
     }
 
+    /// Whether the open reply box still answers the task's open record; otherwise it says so
+    /// and keeps the draft.
+    pub fn reply_box_current(&mut self, domain: &crate::domain::DomainState) -> bool {
+        super::block::reply_box_current(domain, self)
+    }
+
     /// Close the reply box without saving, back to the page or the board.
     pub fn close_reply_box(&mut self) {
         super::block::cancel_reply(self);
