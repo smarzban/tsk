@@ -460,6 +460,7 @@ impl BoardForm {
         form.assignee = task.assignee.clone();
         form.base = task.base.clone();
         form.set_agent_names(agent_names);
+        form.block.fold = super::block::CheckFold::fresh(task);
         form.task_snapshot = Some(Box::new(task.clone()));
         form
     }

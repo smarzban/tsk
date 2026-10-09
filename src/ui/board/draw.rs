@@ -1605,6 +1605,7 @@ fn block_page_rows(
             block,
             &on,
             form.block.passed_open,
+            form.block.fold.as_ref(),
             &author(&block.by),
             now,
             &mut rows,
@@ -1757,14 +1758,15 @@ fn block_page_rows(
 }
 
 /// The REVIEW section's rows above the feedback: the heading (round, who it is on, author and
-/// age, the PR it names), done, the open and failed checks, the passed checks folded under
-/// their `N passed ▸` line (unfolded `▾`), then next.
+/// age, the PR it names), done, the checks in place, the ones the page's fold holds under their
+/// `N passed ▸` line (unfolded `▾`), then next.
 #[allow(clippy::too_many_arguments)]
 fn review_section_rows(
     task: &crate::domain::Task,
     block: &crate::domain::Block,
     on: &str,
     passed_open: bool,
+    fold: Option<&crate::ui::board::block::CheckFold>,
     author: &str,
     now: SystemTime,
     rows: &mut Vec<render::BlockPageRow>,
@@ -1802,7 +1804,7 @@ fn review_section_rows(
     if let Some(done) = block.done.as_deref() {
         push(rows, "done   ", done, BlockRowKind::Plain, None);
     }
-    let (shown, passed) = crate::ui::board::block::review_check_order(block);
+    let (shown, passed) = crate::ui::board::block::review_check_order(block, fold);
     for index in shown {
         let check = &block.checks[index];
         push(
@@ -1826,7 +1828,7 @@ fn review_section_rows(
             for index in passed {
                 push(
                     rows,
-                    "  ✓ ",
+                    &format!("  {} ", render::check_glyph(block.checks[index].state)),
                     &block.checks[index].text,
                     BlockRowKind::Dim,
                     Some(BlockTarget::Check(index)),

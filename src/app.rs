@@ -11013,11 +11013,13 @@ mod quick_assign_tests {
         assert_eq!(temp.store.load().expect("reload").tasks(), before.tasks());
     }
 
-    /// Enter on a check cycles it open → passed → failed; a passed check folds into the
-    /// `N passed ▸` line, whose Enter unfolds it (`▾`) so it can be cycled again.
+    /// Enter on a check cycles it open → passed → failed → open in its own row, and the cursor
+    /// never moves. Passed checks fold into the `N passed ▸` line only when the page is next
+    /// painted fresh; Enter on that line unfolds it (`▾`) so a folded check can be cycled again.
     #[test]
-    fn enter_cycles_checks_and_passed_checks_fold() {
+    fn enter_cycles_checks_in_place_and_passed_checks_fold_on_return() {
         use crate::domain::CheckState::{Failed, Open, Passed};
+        use crate::ui::board::BlockTarget::{Check, Heading, PassedFold};
         let temp = Temp::new("review-checks", &["builder"]);
         let (mut domain, mut model, ids) = board(&temp, &["review me"]);
         review_page(
@@ -11029,27 +11031,17 @@ mod quick_assign_tests {
         );
         let mut host = fake_host(&temp);
         let none = KeyModifiers::NONE;
-        let tab = |domain: &mut DomainState, model: &mut BoardModel, host: &mut FakeHost| {
-            page_key(&temp, domain, model, host, KeyCode::Tab, none);
-        };
-        tab(&mut domain, &mut model, &mut host);
-        assert_eq!(
-            model.block_target(),
-            Some(crate::ui::board::BlockTarget::Heading)
-        );
-        tab(&mut domain, &mut model, &mut host);
-        assert_eq!(
-            model.block_target(),
-            Some(crate::ui::board::BlockTarget::Check(0))
-        );
-        let enter = page_key(
-            &temp,
-            &mut domain,
-            &mut model,
-            &mut host,
-            KeyCode::Enter,
-            none,
-        );
+        let key =
+            |domain: &mut DomainState,
+             model: &mut BoardModel,
+             host: &mut FakeHost,
+             code: KeyCode| { page_key(&temp, domain, model, host, code, none) };
+        key(&mut domain, &mut model, &mut host, KeyCode::Tab);
+        assert_eq!(model.block_target(), Some(Heading));
+        key(&mut domain, &mut model, &mut host, KeyCode::Tab);
+        assert_eq!(model.block_target(), Some(Check(0)));
+
+        let enter = key(&mut domain, &mut model, &mut host, KeyCode::Enter);
         assert_eq!(enter, BoardIntent::CycleCheck);
         assert_eq!(checks_of(&domain, ids[0]), [Passed, Open]);
         assert_eq!(
@@ -11057,58 +11049,79 @@ mod quick_assign_tests {
             [Passed, Open],
             "the check is durable"
         );
+        assert_eq!(model.block_target(), Some(Check(0)), "the cursor stays");
+        let (screen, _) = board_screen(&model, 90, 30);
+        assert!(
+            screen.contains("✓ tests pass"),
+            "passed in place:\n{screen}"
+        );
+        assert!(!screen.contains("passed ▸"), "{screen}");
+        let at = |screen: &str, text: &str| {
+            screen
+                .find(text)
+                .unwrap_or_else(|| panic!("{text}:\n{screen}"))
+        };
+        assert!(at(&screen, "✓ tests pass") < at(&screen, "○ no flicker"));
+
+        key(&mut domain, &mut model, &mut host, KeyCode::Enter);
+        assert_eq!(checks_of(&domain, ids[0]), [Failed, Open]);
+        assert_eq!(model.block_target(), Some(Check(0)), "the cursor stays");
+        let (screen, _) = board_screen(&model, 90, 30);
+        assert!(at(&screen, "✗ tests pass") < at(&screen, "○ no flicker"));
+        key(&mut domain, &mut model, &mut host, KeyCode::Enter);
+        assert_eq!(checks_of(&domain, ids[0]), [Open, Open], "failed → open");
+        assert_eq!(model.block_target(), Some(Check(0)));
+        key(&mut domain, &mut model, &mut host, KeyCode::Enter);
+        assert_eq!(checks_of(&domain, ids[0]), [Passed, Open]);
+        key(&mut domain, &mut model, &mut host, KeyCode::Tab);
         assert_eq!(
             model.block_target(),
-            Some(crate::ui::board::BlockTarget::PassedFold),
-            "the passed check folded away under the cursor"
+            Some(Check(1)),
+            "the ring keeps page order"
         );
+
+        // Leave the page and come back: the passed check is folded now.
+        key(&mut domain, &mut model, &mut host, KeyCode::Esc);
+        assert_ne!(
+            model.input_mode(),
+            BoardInputMode::TaskPage,
+            "left the page"
+        );
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
         let (screen, _) = board_screen(&model, 90, 30);
         assert!(screen.contains("1 passed ▸"), "{screen}");
-        assert!(!screen.contains("✓ tests pass"), "{screen}");
-        assert!(screen.contains("○ no flicker"), "{screen}");
+        assert!(!screen.contains("tests pass"), "{screen}");
+        assert!(at(&screen, "○ no flicker") < at(&screen, "1 passed ▸"));
+        key(&mut domain, &mut model, &mut host, KeyCode::Tab);
+        key(&mut domain, &mut model, &mut host, KeyCode::Tab);
+        assert_eq!(model.block_target(), Some(Check(1)));
+        key(&mut domain, &mut model, &mut host, KeyCode::Tab);
+        assert_eq!(model.block_target(), Some(PassedFold));
 
-        let enter = page_key(
-            &temp,
-            &mut domain,
-            &mut model,
-            &mut host,
-            KeyCode::Enter,
-            none,
-        );
+        let enter = key(&mut domain, &mut model, &mut host, KeyCode::Enter);
         assert_eq!(enter, BoardIntent::TogglePassedChecks);
+        assert_eq!(model.block_target(), Some(PassedFold));
         let (screen, _) = board_screen(&model, 90, 30);
         assert!(screen.contains("1 passed ▾"), "{screen}");
         assert!(screen.contains("✓ tests pass"), "{screen}");
-        tab(&mut domain, &mut model, &mut host);
-        assert_eq!(
-            model.block_target(),
-            Some(crate::ui::board::BlockTarget::Check(0))
-        );
-        page_key(
-            &temp,
-            &mut domain,
-            &mut model,
-            &mut host,
-            KeyCode::Enter,
-            none,
-        );
+        key(&mut domain, &mut model, &mut host, KeyCode::Tab);
+        assert_eq!(model.block_target(), Some(Check(0)));
+        key(&mut domain, &mut model, &mut host, KeyCode::Enter);
         assert_eq!(checks_of(&domain, ids[0]), [Failed, Open]);
-        assert_eq!(
-            model.block_target(),
-            Some(crate::ui::board::BlockTarget::Check(0))
+        assert_eq!(model.block_target(), Some(Check(0)), "the cursor stays");
+        let (screen, _) = board_screen(&model, 90, 30);
+        assert!(
+            at(&screen, "1 passed ▾") < at(&screen, "✗ tests pass"),
+            "failed under the open fold, in place:\n{screen}"
         );
+
+        // Folding paints the fold fresh: the failed check leaves it.
+        key(&mut domain, &mut model, &mut host, KeyCode::BackTab);
+        assert_eq!(model.block_target(), Some(PassedFold));
+        key(&mut domain, &mut model, &mut host, KeyCode::Enter);
         let (screen, _) = board_screen(&model, 90, 30);
         assert!(screen.contains("✗ tests pass"), "{screen}");
-        assert!(!screen.contains("passed"), "{screen}");
-        page_key(
-            &temp,
-            &mut domain,
-            &mut model,
-            &mut host,
-            KeyCode::Enter,
-            none,
-        );
-        assert_eq!(checks_of(&domain, ids[0]), [Open, Open], "failed → open");
+        assert!(!screen.contains("passed ▸"), "{screen}");
         assert_eq!(host.prompts, [], "checks never send anything");
     }
 
@@ -11165,6 +11178,13 @@ mod quick_assign_tests {
         domain.set_check(ids[0], 1, Passed).expect("pass");
         temp.store.reload_merge_save(&mut domain).expect("save");
         model.sync_from_domain(&domain);
+        let (screen, _) = board_screen(&model, 120, 30);
+        assert!(
+            screen.contains("✓ b") && !screen.contains("passed ▸"),
+            "a check passed while the page is open keeps its row:\n{screen}"
+        );
+        apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close");
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
         for width in [40, 120] {
             let (screen, _) = board_screen(&model, width, 30);
             assert!(screen.contains("REVIEW · round 1"), "{width}:\n{screen}");
