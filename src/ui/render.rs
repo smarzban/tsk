@@ -5196,16 +5196,15 @@ fn row_reply_rows(
 
 /// The peek's block or review lines, one per item before wrapping: the live line, then why
 /// and `Decide:` the options (or the needs) for a block, the done text and every check on one
-/// line for a review. Empty unless the task is blocked or in review.
+/// line for a review. Empty unless the task is blocked or in review with a recorded block.
 fn peek_block_lines(task: &Task, tasks: &[Task], now: SystemTime) -> Vec<(String, Style)> {
     let mut lines = Vec::new();
     if !matches!(task.status, HumanStatus::Blocked | HumanStatus::Review) {
         return lines;
     }
     let one_line = |text: &str| super::terminal_text(&text.replace(['\n', '\r'], " "));
-    if let Some(live) = live_line(task, tasks, now) {
-        lines.push((super::terminal_text(&live), style_plain()));
-    }
+    // Gate on the record, not the status: a bare blocked or review task (a notice in review,
+    // say) peeks as today, notes and all.
     let review = task.status == HumanStatus::Review;
     let Some(block) = task
         .block
@@ -5214,6 +5213,9 @@ fn peek_block_lines(task: &Task, tasks: &[Task], now: SystemTime) -> Vec<(String
     else {
         return lines;
     };
+    if let Some(live) = live_line(task, tasks, now) {
+        lines.push((super::terminal_text(&live), style_plain()));
+    }
     if review {
         if let Some(done) = block.done.as_deref() {
             lines.push((one_line(done), style_plain()));

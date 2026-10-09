@@ -6919,6 +6919,11 @@ fn live_line_tasks() -> Vec<Task> {
         review(13, "Review on pi", BlockOn::Agent("pi".into()), 60),
         finished,
         deleted,
+        {
+            let mut bare = numbered(14, "Bare review", HumanStatus::Review, 9 * 3600);
+            bare.notes = Some("Read me first".into());
+            bare
+        },
         numbered(22, "Started prerequisite", HumanStatus::Started, 9 * 3600),
         numbered(23, "Open prerequisite", HumanStatus::Open, 9 * 3600),
     ]
@@ -7116,6 +7121,11 @@ fn blocked_and_review_peeks_lead_with_the_live_line_and_drop_notes() {
             );
         }
         assert!(!text.contains("done "), "no label: {review:?}");
+
+        // A review with no recorded round (a notice, say) peeks as today: notes, no live line.
+        let bare = joined(&peek(14));
+        assert!(bare.starts_with("Read me first"), "{width}: {bare}");
+        assert!(!bare.contains("needs your review"), "{width}: {bare}");
 
         // An after task keeps today's peek: its links, then the notes.
         let after = joined(&peek(8));

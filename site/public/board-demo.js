@@ -1574,13 +1574,12 @@ import { parseCapture } from "./capture.js";
     return "";
   }
 
-  // The peek of a blocked or review task: the live line, then why and `Decide:` the options
-  // (or the needs). No notes. Empty for any other task.
+  // The peek of a blocked task with a block: the live line, then why and `Decide:` the
+  // options (or the needs). No notes. Empty for any other task, which peeks its notes.
   function blockPeekLines(task) {
-    if (task.status !== "blocked" && task.status !== "review") return [];
-    const lines = [liveLine(task)];
     const block = task.status === "blocked" ? task.block : null;
-    if (!block) return lines;
+    if (!block) return [];
+    const lines = [liveLine(task)];
     if (block.why) lines.push(block.why);
     if (block.options?.length)
       lines.push(`Decide: ${block.options.join(" · ")}`);

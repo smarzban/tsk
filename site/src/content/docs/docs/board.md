@@ -200,7 +200,7 @@ A row with something to say carries a dim **live line** under it, in the peek's 
 
 The age is how long the row has been in that state: since the block or review round opened, or since the blocking task finished. A started task, a done or archived task, and a waiting task whose prerequisites are all done have no live line. When the blocking task is done, the blocked task returns to NEEDS YOU; tsk never changes the status itself.
 
-The [peek](#mouse) replaces the live line, and closing it brings the line back. A blocked task's peek opens with the live line's text, then the why, then `Decide: <option> · <option>` when there are options or else the needs, then the footer. A review's peek opens with the live line's text, then what was done, then every check on one wrapped line (`○` open, `✓` passed, `✗` failed), then the footer. Neither shows the notes; `Enter` opens the task page for them.
+The [peek](#mouse) replaces the live line, and closing it brings the line back. A blocked task's peek opens with the live line's text, then the why, then `Decide: <option> · <option>` when there are options or else the needs, then the footer. A review's peek opens with the live line's text, then what was done, then every check on one wrapped line (`○` open, `✓` passed, `✗` failed), then the footer. Neither shows the notes; `Enter` opens the task page for them. A blocked or review task with no recorded block or round, such as a release notice in review, peeks its notes as usual.
 
 ### Block with a reason
 
