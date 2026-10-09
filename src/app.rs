@@ -2830,6 +2830,7 @@ fn start_plain_and_save(
     save_recovery: &mut SaveRecovery<DomainState>,
     baseline: DomainState,
     ids: &[uuid::Uuid],
+    corrections: &[uuid::Uuid],
     any_status: bool,
     undoable: bool,
 ) -> Option<Vec<String>> {
@@ -2839,9 +2840,11 @@ fn start_plain_and_save(
         let Some(task) = domain.get(*id) else {
             continue;
         };
+        // A done or archived row starts only when the card listed it as a correction; one
+        // that finished or was archived after the card opened is left alone.
+        let corrected = corrections.contains(id);
         if task.soft_deleted
-            || task.archived
-            || task.status == HumanStatus::Done
+            || ((task.archived || task.status == HumanStatus::Done) && !corrected)
             || !start_moves(task, any_status)
         {
             continue;
@@ -2951,15 +2954,22 @@ fn open_bulk_start_card(
         model.set_message(CLEANUP_BUSY);
         return true;
     }
-    // Done and archived tasks never start from the card: `y` would refuse them anyway.
+    // The palette's absolute start corrects done and archived tasks to started, as its plain
+    // batch does: they are start-only rows, never launches. `ctrl+s` leaves them out.
     let mut starting = targets
         .iter()
         .filter_map(|id| domain.get(*id))
         .filter(|task| {
-            start_moves(task, any_status) && task.status != HumanStatus::Done && !task.archived
+            start_moves(task, any_status)
+                && (any_status || (task.status != HumanStatus::Done && !task.archived))
         })
         .collect::<Vec<_>>();
     starting.sort_by_key(|task| task.number);
+    let corrections = starting
+        .iter()
+        .filter(|task| task.status == HumanStatus::Done || task.archived)
+        .map(|task| task.id)
+        .collect::<Vec<_>>();
     let (launching, start_only): (Vec<_>, Vec<_>) =
         starting.into_iter().partition(|task| start_launches(task));
     let start_only = start_only
@@ -2985,7 +2995,15 @@ fn open_bulk_start_card(
         }
     };
     open_bulk_dispatch_card(
-        domain, model, launching, start_only, any_status, &profiles, in_herdr, host,
+        domain,
+        model,
+        launching,
+        start_only,
+        corrections,
+        any_status,
+        &profiles,
+        in_herdr,
+        host,
     );
     true
 }
@@ -2997,6 +3015,7 @@ pub fn open_bulk_dispatch_card(
     model: &mut BoardModel,
     launching: Vec<uuid::Uuid>,
     start_only: Vec<(String, uuid::Uuid)>,
+    corrections: Vec<uuid::Uuid>,
     any_status: bool,
     profiles: &AgentProfiles,
     in_herdr: bool,
@@ -3018,6 +3037,7 @@ pub fn open_bulk_dispatch_card(
         launch,
         skipped,
         start_only,
+        corrections,
         any_status,
         relaunch: None,
         git_checks,
@@ -3077,6 +3097,7 @@ fn start_bulk_dispatch(
             save_recovery,
             baseline,
             &ids,
+            &prompt.corrections,
             prompt.any_status,
             true,
         ) else {
@@ -3568,6 +3589,7 @@ fn handle_board_intent_with_host(
                 save_recovery,
                 baseline,
                 &[relaunch.task_id],
+                &[],
                 relaunch.any_status,
                 false,
             );
@@ -3706,6 +3728,7 @@ fn handle_board_intent_with_host(
                         save_recovery,
                         baseline,
                         &[target],
+                        &[],
                         true,
                         false,
                     );
@@ -11757,6 +11780,59 @@ mod quick_assign_tests {
             for id in &ids {
                 assert_eq!(saved(&temp, *id).status, HumanStatus::Started);
             }
+        }
+
+        /// The palette's absolute start on a set with a launch lists a done task as a status
+        /// correction and starts it on `y`, in the same undo batch, as its plain batch would.
+        #[test]
+        fn palette_start_on_a_launching_set_corrects_a_done_task() {
+            let temp = Temp::new("bulk-done-correction", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["launches", "was done"]);
+            assign(&mut domain, ids[0]);
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            domain.complete(ids[1]).expect("done");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            model.sync_from_domain(&domain);
+            apply_intent(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer, None)
+                .expect("drawer");
+            apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None)
+                .expect("mark mode");
+            for id in &ids {
+                select(&mut domain, &mut model, *id);
+                apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+            }
+            assert_eq!(model.marked_count(), 2);
+            let mut host = fake_host(&temp);
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::SetStatus(HumanStatus::Started),
+                &mut host,
+            );
+            let prompt = model.dispatch_prompt().expect("card").clone();
+            assert_eq!(prompt.launch.len(), 1);
+            assert_eq!(prompt.start_only, [(number(&domain, ids[1]), ids[1])]);
+            let painted = frame_text(&model, Rect::new(0, 0, 80, 30));
+            assert!(
+                painted.contains("status correction, no launch"),
+                "{painted}"
+            );
+            let undo_before = domain.undo_len();
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::ConfirmDispatch,
+                &mut host,
+            );
+            assert_eq!(host.ran, 1, "only the assigned task launches");
+            assert_eq!(saved(&temp, ids[0]).status, HumanStatus::Started);
+            assert_eq!(saved(&temp, ids[1]).status, HumanStatus::Started);
+            assert!(saved(&temp, ids[1]).dispatch.is_none());
+            assert_eq!(domain.undo_len(), undo_before + 1);
+            handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+            assert_eq!(saved(&temp, ids[1]).status, HumanStatus::Done);
         }
 
         /// F-15: the card's start-only rows are one undo step; launches add none.

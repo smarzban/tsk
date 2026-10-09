@@ -1219,6 +1219,9 @@ pub struct DispatchPrompt {
     /// Marked tasks `y` only starts, in board order: unassigned, or already dispatched
     /// (relaunching stays cursor-only).
     pub start_only: Vec<(String, Uuid)>,
+    /// Start-only rows that were done or archived when the card opened: the palette's absolute
+    /// start corrects them to started. Only these may start while done or archived.
+    pub corrections: Vec<Uuid>,
     /// Opened by the palette's absolute **set status: started** (any status but started
     /// moves) rather than `ctrl+s` (open and ready only); `y` rechecks the rows by it.
     pub any_status: bool,
@@ -1243,6 +1246,7 @@ impl DispatchPrompt {
             launch: Vec::new(),
             skipped: Vec::new(),
             start_only: Vec::new(),
+            corrections: Vec::new(),
             any_status: prompt.any_status,
             relaunch: Some(prompt),
             git_checks: None,
