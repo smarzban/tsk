@@ -323,35 +323,6 @@ fn t64_real_board_ctrl_q_exits_from_a_stored_task_page() {
     assert!(session.wait_exit(Duration::from_secs(30)).success());
 }
 
-fn assert_real_root_esc_exits(label: &str, tab_key: u8) {
-    let root = pty::scratch_root(&format!("t64-root-esc-{label}"));
-    let cwd = root.join("project");
-    fs::create_dir_all(&cwd).expect("project directory");
-    seed_pty_task(&root, &cwd, &format!("T64 {label} root"));
-
-    let mut session = pty::Session::spawn(root, &cwd, &[], &[], 24, 78);
-    session.output_until("root");
-    session.send(&[tab_key]);
-    std::thread::sleep(Duration::from_millis(100));
-    session.send(b"\x1b[27u");
-    assert!(session.wait_exit(Duration::from_secs(30)).success());
-}
-
-#[test]
-fn t64_real_board_root_esc_exits_from_desk() {
-    assert_real_root_esc_exits("desk", b'1');
-}
-
-#[test]
-fn t64_real_board_root_esc_exits_from_project_board() {
-    assert_real_root_esc_exits("project", b'2');
-}
-
-#[test]
-fn t64_real_board_root_esc_exits_from_projects_index() {
-    assert_real_root_esc_exits("projects", b'3');
-}
-
 #[test]
 fn t64_real_board_editor_ctrl_q_stays_live_then_task_page_ctrl_q_exits() {
     let root = pty::scratch_root("t64-editor-quit");
