@@ -315,7 +315,12 @@ impl DomainState {
             return entries;
         }
         for task in &mut self.tasks {
-            if ids.contains(&task.id) || !task.after.iter().any(|n| numbers.contains(n)) {
+            // A task already deleted keeps its links: undoing that delete must still match its
+            // revision, and trash purge drops them.
+            if ids.contains(&task.id)
+                || task.soft_deleted
+                || !task.after.iter().any(|n| numbers.contains(n))
+            {
                 continue;
             }
             let previous = task.after.clone();
@@ -377,7 +382,12 @@ impl DomainState {
         let at = SystemTime::now();
         let mut moved = Vec::new();
         for task in &mut self.tasks {
-            if ids.contains(&task.id) || !task.after.iter().any(|n| numbers.contains(n)) {
+            // A task already deleted keeps its links: undoing that delete must still match its
+            // revision, and trash purge drops them.
+            if ids.contains(&task.id)
+                || task.soft_deleted
+                || !task.after.iter().any(|n| numbers.contains(n))
+            {
                 continue;
             }
             let before = task.revision;
@@ -665,6 +675,21 @@ mod tests {
         assert!(!state.get(ids[0]).expect("task").soft_deleted);
         assert_eq!(after(&state, ids[2]), vec![1]);
         assert_eq!(after(&state, ids[3]), vec![1, 2]);
+    }
+
+    /// A dependent deleted first keeps its link when its prerequisite is deleted after it, so
+    /// both deletes undo in turn.
+    #[test]
+    fn deleting_a_prerequisite_leaves_an_already_deleted_dependent_undoable() {
+        let (mut state, ids) = board(3);
+        state.set_after(ids[2], &[1]).expect("set");
+        state.soft_delete(ids[2]).expect("delete the dependent");
+        state.soft_delete(ids[0]).expect("delete the prerequisite");
+        state.undo().expect("undo the prerequisite's delete");
+        state.undo().expect("undo the dependent's delete");
+        assert!(!state.get(ids[0]).expect("task").soft_deleted);
+        assert!(!state.get(ids[2]).expect("task").soft_deleted);
+        assert_eq!(after(&state, ids[2]), vec![1]);
     }
 
     #[test]
