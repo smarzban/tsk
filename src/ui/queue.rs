@@ -1067,6 +1067,7 @@ mod tests {
             assignee: None,
             base: None,
             dispatch: None,
+            after: Vec::new(),
             status,
             block: None,
             past_blocks: Vec::new(),

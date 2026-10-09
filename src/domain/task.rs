@@ -117,6 +117,10 @@ pub struct Task {
     /// Last successful dispatch. Status changes never alter this record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch: Option<Dispatch>,
+    /// Store-global numbers of the tasks this one runs after, in the order they were added.
+    /// The task waits while any of them is not done.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub after: Vec<u64>,
     pub status: HumanStatus,
     /// The open record: a block while the task is `blocked`, a review round while it is
     /// `review`. A task from an older store may have none; it reads as on you with no reason.
@@ -174,6 +178,14 @@ pub enum DomainError {
     NotInReview(Uuid),
     /// No check at this index on the open review round.
     UnknownCheck(usize),
+    /// A task cannot run after itself.
+    AfterSelf(u64),
+    /// No live task carries this number (unknown, deleted, or a notice).
+    AfterUnknown(u64),
+    /// The prerequisite is already done.
+    AfterDone(u64),
+    /// `waiting` already runs after `prerequisite`, directly or through other tasks.
+    AfterLoop { waiting: u64, prerequisite: u64 },
 }
 
 impl std::fmt::Display for DomainError {
@@ -200,6 +212,13 @@ impl std::fmt::Display for DomainError {
             DomainError::AlreadyBlocked(id) => write!(f, "task {id} already has an open block"),
             DomainError::NotInReview(id) => write!(f, "task {id} is not in review"),
             DomainError::UnknownCheck(index) => write!(f, "no check {index}"),
+            DomainError::AfterSelf(number) => write!(f, "T{number} cannot run after itself"),
+            DomainError::AfterUnknown(number) => write!(f, "T{number} is not on the board"),
+            DomainError::AfterDone(number) => write!(f, "T{number} is already done"),
+            DomainError::AfterLoop {
+                waiting,
+                prerequisite,
+            } => write!(f, "T{waiting} already runs after T{prerequisite}"),
         }
     }
 }
@@ -209,7 +228,7 @@ impl std::error::Error for DomainError {}
 /// Keep the open record in step with a status change: entering `blocked` opens an empty
 /// block and entering `review` an empty review round when none of that kind is open; a record
 /// of any other kind closes into `past_blocks`.
-fn sync_block_with_status(task: &mut Task, at: SystemTime, by: &str) {
+pub(super) fn sync_block_with_status(task: &mut Task, at: SystemTime, by: &str) {
     let want = BlockKind::for_status(task.status);
     if task
         .block
@@ -290,7 +309,7 @@ fn record_mutation_at(task: &mut Task, kind: TaskEventKind, at: SystemTime) {
 }
 
 /// Record one mutation: a new revision and an event by `by`, or by this thread's actor.
-fn record_event(
+pub(super) fn record_event(
     task: &mut Task,
     kind: TaskEventKind,
     at: SystemTime,
@@ -333,6 +352,9 @@ fn edited_fields(before: &Task, after: &Task) -> Vec<EditedField> {
     if before.scope != after.scope {
         fields.push(EditedField::Project);
     }
+    if before.after != after.after {
+        fields.push(EditedField::After);
+    }
     fields
 }
 
@@ -361,7 +383,7 @@ fn base_detail(base: &Option<String>) -> Option<EventDetail> {
 }
 
 /// Document version written by this binary.
-pub const STORE_FORMAT_VERSION: u32 = 10;
+pub const STORE_FORMAT_VERSION: u32 = 11;
 
 fn default_next_notice_number() -> u64 {
     1
@@ -439,7 +461,7 @@ pub struct DomainState {
     /// The next `N` number for notice rows. Absent from v2 documents, so it defaults.
     #[serde(default = "default_next_notice_number")]
     pub next_notice_number: u64,
-    tasks: Vec<Task>,
+    pub(super) tasks: Vec<Task>,
     /// Per-project records keyed by scope path. Always serialized: an empty map
     /// writes `"projects": {}` so the v2 wire shape is pinned.
     #[serde(default)]
@@ -451,7 +473,11 @@ pub struct DomainState {
     #[serde(skip)]
     project_intents: BTreeMap<String, bool>,
     /// LIFO undo records for soft-delete and complete.
-    undo_stack: Vec<UndoEntry>,
+    pub(super) undo_stack: Vec<UndoEntry>,
+    /// Tasks this process moved to `done` since the caller last took them, oldest first.
+    /// Transient: the board and CLI take them before saving to start what was waiting.
+    #[serde(skip)]
+    pub(super) completed: Vec<Uuid>,
 }
 
 impl Default for DomainState {
@@ -470,6 +496,7 @@ impl DomainState {
             projects: BTreeMap::new(),
             project_intents: BTreeMap::new(),
             undo_stack: Vec::new(),
+            completed: Vec::new(),
         }
     }
 
@@ -614,6 +641,7 @@ impl DomainState {
             assignee: None,
             base: None,
             dispatch: None,
+            after: Vec::new(),
             status: HumanStatus::Open,
             block: None,
             past_blocks: Vec::new(),
@@ -1079,6 +1107,7 @@ impl DomainState {
                 id,
                 expected_revision: task.revision,
             });
+            self.completed.push(id);
         }
         self.undo_stack.push(UndoEntry::Batch { entries });
         Ok(())
@@ -1109,15 +1138,24 @@ impl DomainState {
     /// Soft-delete: mark excluded from board views until restore. Stays in store.
     /// Pushes an undo entry so `undo` can restore.
     pub fn soft_delete(&mut self, id: Uuid) -> Result<(), DomainError> {
+        // One moment for the delete and the links it drops, so the unlinks never read as a
+        // later undoable action that would send the deleted task to trash at once.
+        let at = SystemTime::now();
         let expected_revision = {
             let task = self.task_mut(id)?;
             task.soft_deleted = true;
-            record_mutation(task, TaskEventKind::SoftDeleted);
+            record_mutation_at(task, TaskEventKind::SoftDeleted, at);
             task.revision
         };
-        self.undo_stack.push(UndoEntry::SoftDelete {
+        let mut entries = vec![UndoEntry::SoftDelete {
             id,
             expected_revision,
+        }];
+        entries.extend(self.unlink_deleted(&[id], at));
+        self.undo_stack.push(if entries.len() == 1 {
+            entries.pop().expect("one delete undo")
+        } else {
+            UndoEntry::Batch { entries }
         });
         Ok(())
     }
@@ -1135,7 +1173,7 @@ impl DomainState {
         }
         let at = SystemTime::now();
         let mut entries = Vec::with_capacity(ids.len());
-        for id in ids {
+        for id in ids.iter().copied() {
             let task = self.task_mut(id)?;
             task.soft_deleted = true;
             record_mutation_at(task, TaskEventKind::SoftDeleted, at);
@@ -1144,6 +1182,7 @@ impl DomainState {
                 expected_revision: task.revision,
             });
         }
+        entries.extend(self.unlink_deleted(&ids, at));
         self.undo_stack.push(UndoEntry::Batch { entries });
         Ok(())
     }
@@ -1769,10 +1808,13 @@ impl DomainState {
             Some(by),
             Some(EventDetail::status(from, status)),
         );
+        if status == HumanStatus::Done && from != HumanStatus::Done {
+            self.completed.push(id);
+        }
         Ok(())
     }
 
-    fn prevalidate_batch_ids(&self, ids: &[Uuid]) -> Result<Vec<Uuid>, DomainError> {
+    pub(super) fn prevalidate_batch_ids(&self, ids: &[Uuid]) -> Result<Vec<Uuid>, DomainError> {
         let mut seen = BTreeSet::new();
         let mut ordered = Vec::with_capacity(ids.len());
         for id in ids.iter().copied() {
@@ -1786,7 +1828,7 @@ impl DomainState {
         Ok(ordered)
     }
 
-    fn task_mut(&mut self, id: Uuid) -> Result<&mut Task, DomainError> {
+    pub(super) fn task_mut(&mut self, id: Uuid) -> Result<&mut Task, DomainError> {
         self.tasks
             .iter_mut()
             .find(|t| t.id == id)
@@ -2015,6 +2057,7 @@ impl DomainState {
                             UndoEntry::Start { .. } => {
                                 task.last_event_at(TaskEventKind::Dispatched)
                             }
+                            UndoEntry::SetAfter { .. } => task.last_event_at(TaskEventKind::Edited),
                             UndoEntry::Batch { .. } => unreachable!("batches are flattened"),
                         }
                     })
@@ -2044,6 +2087,7 @@ impl DomainState {
 
     /// Remove the given tasks and every undo entry targeting one of them.
     pub(crate) fn remove_tasks(&mut self, ids: &BTreeSet<Uuid>) {
+        self.unlink_removed(ids);
         self.tasks.retain(|task| !ids.contains(&task.id));
         self.undo_stack.retain(|entry| {
             entry

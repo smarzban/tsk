@@ -1,5 +1,6 @@
 //! Task Domain: lifecycle invariants and commands.
 
+mod after;
 mod block;
 mod events;
 mod task;

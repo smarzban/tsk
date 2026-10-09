@@ -2596,6 +2596,138 @@ pub fn start_route_checked(
     }
 }
 
+/// What starting one released task did: a task in `ready` whose last prerequisite just became
+/// done.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReleasedStart {
+    /// A plain start.
+    Started,
+    /// Assigned, but dispatch cannot work here: a plain start that says why.
+    NoLaunch(&'static str),
+    /// The start dispatched the assigned agent.
+    Dispatched(Box<DispatchResult>),
+    /// Its earlier agent is gone: a plain start. Relaunching stays a deliberate cursor action.
+    AgentGone(String),
+    /// The launch refused or failed: the task stays ready. The done stands.
+    Failed(String),
+}
+
+/// One task a completion released, and what its start did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Released {
+    pub number: u64,
+    /// The prerequisite whose completion released it.
+    pub after: u64,
+    pub start: ReleasedStart,
+}
+
+/// Start what the completions recorded in `state` since the last take released, through the
+/// same route as any start by `actor`: plain, or a dispatch for an assigned task never
+/// dispatched. Call it after the done and before the save, so every start lands in the same
+/// save as the done; a plain start also joins the done's undo entry. A launch that fails leaves
+/// its task ready and never blocks the done.
+pub fn start_released_with_host(
+    state: &mut DomainState,
+    state_dir: &Path,
+    actor: &str,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Vec<Released> {
+    let done = state.take_completed();
+    if done.is_empty() {
+        return Vec::new();
+    }
+    let mut profiles: Option<Result<AgentProfiles, String>> = None;
+    let mut out = Vec::new();
+    for (id, after) in state.released_by(&done) {
+        let Some(task) = state.get(id) else {
+            continue;
+        };
+        let Some(number) = task.number else {
+            continue;
+        };
+        let previous = task.status;
+        let plain =
+            |state: &mut DomainState, start: ReleasedStart| match state.start_released(id, after) {
+                Ok(()) => start,
+                Err(error) => ReleasedStart::Failed(error.to_string()),
+            };
+        let start = match start_route(task, actor, in_herdr, host) {
+            StartRoute::Plain => plain(state, ReleasedStart::Started),
+            StartRoute::NoLaunch { reason } => plain(state, ReleasedStart::NoLaunch(reason)),
+            StartRoute::AgentGone { assignee } => plain(state, ReleasedStart::AgentGone(assignee)),
+            StartRoute::Dispatch => {
+                let loaded = profiles.get_or_insert_with(|| {
+                    ensure_platform_supported()
+                        .map_err(|error| error.to_string())
+                        .and_then(|()| {
+                            AgentProfiles::load(state_dir).map_err(|error| error.to_string())
+                        })
+                });
+                match loaded {
+                    Err(reason) => ReleasedStart::Failed(reason.clone()),
+                    Ok(profiles) => match run_with_host(state, id, profiles, false, in_herdr, host)
+                    {
+                        Ok(result) => match state.note_released_dispatch(id, after, previous) {
+                            Ok(()) => ReleasedStart::Dispatched(Box::new(result)),
+                            Err(error) => ReleasedStart::Failed(error.to_string()),
+                        },
+                        Err(error) => ReleasedStart::Failed(error.to_string()),
+                    },
+                }
+            }
+        };
+        out.push(Released {
+            number,
+            after,
+            start,
+        });
+    }
+    out
+}
+
+/// One line for what a completion released: `T203 started · T202 done`, with any launch or
+/// refusal named per task.
+pub fn released_message(released: &[Released]) -> Option<String> {
+    if released.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<String> = released
+        .iter()
+        .map(|released| {
+            let number = released.number;
+            match &released.start {
+                ReleasedStart::Started => format!("T{number} started"),
+                ReleasedStart::NoLaunch(reason) => {
+                    format!("T{number} started · no launch: {reason}")
+                }
+                ReleasedStart::Dispatched(result) => {
+                    let mut text = format!("T{number} dispatched to @{}", result.assignee);
+                    if let Some(warning) = &result.warning {
+                        text.push_str(" · ");
+                        text.push_str(warning);
+                    }
+                    text
+                }
+                ReleasedStart::AgentGone(assignee) => {
+                    format!("T{number} started · @{assignee} gone, not relaunched")
+                }
+                ReleasedStart::Failed(reason) => format!("T{number} stays ready: {reason}"),
+            }
+        })
+        .collect();
+    let mut done: Vec<u64> = released.iter().map(|released| released.after).collect();
+    done.sort_unstable();
+    done.dedup();
+    let done = done
+        .iter()
+        .map(|number| format!("T{number}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    parts.push(format!("{done} done"));
+    Some(parts.join(" · "))
+}
+
 /// How a reply delivery ended. Nothing here changes the task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Delivery {
@@ -5556,8 +5688,8 @@ mod tests {
     }
 
     #[test]
-    fn cleaned_marker_is_optional_and_store_format_stays_v10() {
-        assert_eq!(crate::domain::STORE_FORMAT_VERSION, 10);
+    fn cleaned_marker_is_optional_and_store_format_stays_v11() {
+        assert_eq!(crate::domain::STORE_FORMAT_VERSION, 11);
         let record = Dispatch {
             argv: vec!["agent".into()],
             worktree: "/tmp/worktree".into(),
