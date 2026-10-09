@@ -188,13 +188,18 @@ fn the_trail_opens_collapsed_and_dim_and_g_shows_every_entry() {
         all[2].starts_with("review round 2 · approved · you") && all[2].ends_with('▸'),
         "{all:#?}"
     );
-    assert!(all.last().is_some_and(|row| row.starts_with("created · you")));
+    assert!(all
+        .last()
+        .is_some_and(|row| row.starts_with("created · you")));
     for entry in [
         "2 steps checked · you",
         "open → blocked · @claude",
         "blocked on you · need creds · 1 reply · you",
     ] {
-        assert!(all.iter().any(|row| row.starts_with(entry)), "{entry}: {all:#?}");
+        assert!(
+            all.iter().any(|row| row.starts_with(entry)),
+            "{entry}: {all:#?}"
+        );
     }
     assert!(!all.iter().any(|row| row.ends_with("earlier")), "{all:#?}");
 

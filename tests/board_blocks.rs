@@ -402,13 +402,20 @@ fn the_page_leads_with_the_blocked_section_and_a_rule_above_the_notes() {
     for gone in ["BLOCKED", "why ", "needs ", "○", "r reply ─"] {
         assert!(!joined.contains(gone), "{gone}:\n{joined}");
     }
-    assert_eq!(model.block_target(), None, "a blocked page opens with nothing selected");
+    assert_eq!(
+        model.block_target(),
+        None,
+        "a blocked page opens with nothing selected"
+    );
 }
 
 #[test]
 fn number_keys_pick_an_option_and_open_the_reply_box_prefilled() {
     let (mut domain, mut model, id) = blocked_page();
-    let three = map_key(model.input_mode(), key(KeyCode::Char('3'), KeyModifiers::NONE));
+    let three = map_key(
+        model.input_mode(),
+        key(KeyCode::Char('3'), KeyModifiers::NONE),
+    );
     assert_eq!(three, Some(BoardIntent::PickOption(2)));
     // No third option: inert, and nothing persists.
     assert!(!board_intent_may_persist(&model, &three.clone().unwrap()));
@@ -463,20 +470,35 @@ fn the_action_line_follows_the_cursor() {
             .expect("rule");
         page[rule - 1].trim().to_string()
     };
-    assert_eq!(action(&model), "1-2 choose · r reply · ctrl+s reply + unblock");
-    press(&mut domain, &mut model, key(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(
+        action(&model),
+        "1-2 choose · r reply · ctrl+s reply + unblock"
+    );
+    press(
+        &mut domain,
+        &mut model,
+        key(KeyCode::Tab, KeyModifiers::NONE),
+    );
     assert_eq!(model.block_target(), Some(BlockTarget::Heading));
     assert_eq!(
         action(&model),
         "ctrl+e edit · 1-2 choose · r reply · ctrl+s reply + unblock"
     );
-    press(&mut domain, &mut model, key(KeyCode::Tab, KeyModifiers::NONE));
+    press(
+        &mut domain,
+        &mut model,
+        key(KeyCode::Tab, KeyModifiers::NONE),
+    );
     assert_eq!(
         action(&model),
         "enter choose · 1-2 choose · r reply · ctrl+s reply + unblock"
     );
     for _ in 0..2 {
-        press(&mut domain, &mut model, key(KeyCode::Tab, KeyModifiers::NONE));
+        press(
+            &mut domain,
+            &mut model,
+            key(KeyCode::Tab, KeyModifiers::NONE),
+        );
     }
     assert!(model.stored_step_selected());
     assert_eq!(
@@ -490,7 +512,11 @@ fn the_thread_keeps_names_in_a_fixed_column_and_wraps_at_40_and_110() {
     let (mut domain, mut model, id) = blocked_page();
     tsk_tui::domain::acting_as("claude", || {
         domain
-            .reply(id, "Recommend postgres; it is the smaller change.", "claude")
+            .reply(
+                id,
+                "Recommend postgres; it is the smaller change.",
+                "claude",
+            )
             .unwrap();
     });
     domain
@@ -512,7 +538,9 @@ fn the_thread_keeps_names_in_a_fixed_column_and_wraps_at_40_and_110() {
         "one column:\n{}",
         wide.join("\n")
     );
-    assert!(!wide.iter().any(|row| row.contains('└') || row.contains("@claude ·")));
+    assert!(!wide
+        .iter()
+        .any(|row| row.contains('└') || row.contains("@claude ·")));
 
     let narrow = page_body(&rows(&model, 40, 60));
     let section: Vec<String> = narrow
@@ -558,8 +586,14 @@ fn a_block_on_another_task_says_so_on_top_and_offers_ctrl_b() {
     apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).unwrap();
     let page = page_body(&rows(&model, 80, 30));
     let joined = page.join("\n");
-    assert!(joined.contains("  waiting on T2\n\n  needs the schema"), "{joined}");
-    assert!(joined.contains("  r reply · ctrl+b unblock\n  ───"), "{joined}");
+    assert!(
+        joined.contains("  waiting on T2\n\n  needs the schema"),
+        "{joined}"
+    );
+    assert!(
+        joined.contains("  r reply · ctrl+b unblock\n  ───"),
+        "{joined}"
+    );
     assert!(!joined.contains("choose"), "{joined}");
 }
 

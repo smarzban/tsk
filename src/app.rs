@@ -6084,6 +6084,57 @@ mod tests {
         assert_refused(&mut domain, &mut model, BoardIntent::ConfirmListPicker);
     }
 
+    /// Number keys pick a block option on the page, including the wide task column while it
+    /// owns focus. While the board owns focus (stage 0 and the split) they stay its tab keys.
+    #[test]
+    fn number_keys_pick_an_option_in_the_focused_wide_task_column() {
+        use crate::ui::queue::NavTab;
+        let (mut domain, mut model) = board_fixture("digits wide", None);
+        let id = model.selected_id().expect("selection");
+        domain
+            .block(
+                id,
+                crate::domain::BlockDraft::from_input(
+                    Some("which one?"),
+                    None,
+                    &["one".into(), "two".into()],
+                    Default::default(),
+                )
+                .expect("draft"),
+                "builder",
+            )
+            .expect("block");
+        model.sync_from_domain(&domain);
+        let wide = Rect::new(0, 0, 130, 30);
+        let route = |model: &mut BoardModel, code| {
+            let mode = resolve_board_surface(wide, model);
+            board_keyboard_intent_for_area(
+                model,
+                wide,
+                mode,
+                KeyEvent::new(code, KeyModifiers::NONE),
+            )
+        };
+        assert_eq!(
+            route(&mut model, KeyCode::Char('2')),
+            Some(BoardIntent::SelectNavTab(NavTab::ProjectBoard))
+        );
+        stage_right(&mut domain, &mut model, 1);
+        assert_eq!(model.wide_stage(), crate::ui::tier::WideStage::Split);
+        assert_eq!(
+            route(&mut model, KeyCode::Char('2')),
+            Some(BoardIntent::SelectNavTab(NavTab::ProjectBoard)),
+            "the board column keeps its tab keys"
+        );
+        stage_right(&mut domain, &mut model, 1);
+        assert_eq!(model.wide_stage(), crate::ui::tier::WideStage::Rail);
+        let pick = route(&mut model, KeyCode::Char('2')).expect("mapped");
+        assert_eq!(pick, BoardIntent::PickOption(1));
+        apply_intent(&mut domain, &mut model, pick, None).expect("pick");
+        assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+        assert_eq!(model.reply_draft(), Some("two"));
+    }
+
     #[test]
     fn app_keyboard_route_owns_stage_slider_keys() {
         let (mut domain, mut model) = board_fixture("keyboard stage", None);
@@ -11490,7 +11541,9 @@ mod quick_assign_tests {
         assert!(at("docs") < at("Check"));
         assert!(at("Check") < at("○ tests pass"));
         assert!(
-            screen.lines().any(|line| line.starts_with("▸  ○ tests pass")),
+            screen
+                .lines()
+                .any(|line| line.starts_with("▸  ○ tests pass")),
             "the first unmarked check is selected:\n{screen}"
         );
         assert!(
@@ -11537,6 +11590,306 @@ mod quick_assign_tests {
                 "wrapped, not cut ({width}):\n{screen}"
             );
         }
+    }
+
+    /// The REVIEW section at 40 and 110 columns with every check state, the fold and a thread:
+    /// `✓`/`✗`/`○` under a small `Check` heading, `N passed ▸`, feedback as `name · age` in a
+    /// fixed column, the action line last. Text wraps, never truncates.
+    #[test]
+    fn the_review_section_paints_every_check_state_the_fold_and_feedback() {
+        use crate::domain::CheckState::{Failed, Passed};
+        let temp = Temp::new("review-states", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        review_page(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[0],
+            &[
+                "A works",
+                "B works on an empty input string",
+                "C works",
+                "D works",
+            ],
+        );
+        for (index, state) in [(0, Passed), (1, Failed), (3, Passed)] {
+            domain.set_check(ids[0], index, state).expect("mark");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+        }
+        crate::domain::acting_as("builder", || {
+            domain
+                .reply(
+                    ids[0],
+                    "B is fixed on my side, have another look.",
+                    "builder",
+                )
+                .expect("agent note");
+        });
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        domain
+            .reply(
+                ids[0],
+                "B still fails on an empty string.",
+                crate::domain::OWNER,
+            )
+            .expect("feedback");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close");
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        assert_eq!(
+            model.block_target(),
+            Some(crate::ui::board::BlockTarget::Check(2)),
+            "the first unmarked check"
+        );
+        for width in [40u16, 110] {
+            let (screen, _) = board_screen(&model, width, 50);
+            let section: Vec<&str> = screen
+                .lines()
+                .take_while(|line| !line.contains("no notes yet"))
+                .map(|line| line.trim_end_matches(['▌', ' ']))
+                .collect();
+            let joined = section.join("\n");
+            assert!(!joined.contains('…'), "{width}:\n{joined}");
+            let at = |text: &str| {
+                joined
+                    .find(text)
+                    .unwrap_or_else(|| panic!("{text} ({width}):\n{joined}"))
+            };
+            assert!(at("needs your review") < at("built the card"));
+            assert!(at("  Check\n") < at("   ✗ B works"));
+            assert!(at("   ✗ B works") < at("▸  ○ C works"));
+            assert!(at("▸  ○ C works") < at("   2 passed ▸"));
+            assert!(at("   2 passed ▸") < at("builder · "));
+            assert!(at("builder · ") < at("you · "));
+            assert!(at("you · ") < at("tab next · enter mark"));
+            assert!(at("ctrl+d approve\n  ───") > at("tab next"));
+            assert!(!joined.contains("A works"), "folded: {joined}");
+            let builder = section
+                .iter()
+                .find(|line| line.starts_with("  builder · "))
+                .expect("builder row");
+            let you = section
+                .iter()
+                .find(|line| line.starts_with("  you · "))
+                .expect("your row");
+            assert_eq!(
+                builder.find("B is"),
+                you.find("B still"),
+                "{width}:\n{joined}"
+            );
+            let words: Vec<&str> = joined.split_whitespace().collect();
+            for tail in [
+                ["another", "look."],
+                ["empty", "string."],
+                ["input", "string"],
+            ] {
+                assert!(
+                    words.windows(2).any(|pair| pair == tail),
+                    "{tail:?} ({width}):\n{joined}"
+                );
+            }
+        }
+    }
+
+    /// A review page opens on its first unmarked check. All marked: on the first check shown (a
+    /// failed one); all passed and folded: on the `N passed` line, never a hidden check.
+    #[test]
+    fn a_review_page_opens_on_its_first_unmarked_check() {
+        use crate::domain::CheckState::{Failed, Passed};
+        use crate::ui::board::BlockTarget::{Check, PassedFold};
+        let temp = Temp::new("review-initial", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        review_page(&temp, &mut domain, &mut model, ids[0], &["a", "b", "c"]);
+        assert_eq!(model.block_target(), Some(Check(0)));
+        let reopen = |domain: &mut DomainState, model: &mut BoardModel| {
+            temp.store.reload_merge_save(domain).expect("save");
+            model.sync_from_domain(domain);
+            apply_intent(domain, model, BoardIntent::CloseLayer, None).expect("close");
+            apply_intent(domain, model, BoardIntent::OpenTaskPage, None).expect("page");
+        };
+        for (index, state) in [(0, Passed), (1, Passed)] {
+            domain.set_check(ids[0], index, state).expect("mark");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+        }
+        domain.set_check(ids[0], 2, Failed).expect("c");
+        reopen(&mut domain, &mut model);
+        assert_eq!(
+            model.block_target(),
+            Some(Check(2)),
+            "all marked: the failed one"
+        );
+        domain.set_check(ids[0], 2, Passed).expect("c");
+        reopen(&mut domain, &mut model);
+        assert_eq!(
+            model.block_target(),
+            Some(PassedFold),
+            "all passed: the fold line"
+        );
+        let (screen, _) = board_screen(&model, 90, 30);
+        assert!(
+            screen.lines().any(|line| line.starts_with("▸  3 passed ▸")),
+            "{screen}"
+        );
+        // A blocked page opens with nothing selected.
+        let temp = Temp::new("blocked-initial", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["blocked"]);
+        blocked_row(&temp, &mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        assert_eq!(model.block_target(), None);
+    }
+
+    /// `ctrl+s` on a blocked page is the reply box's `ctrl+s` on an empty box: it unblocks. On
+    /// a review page it sends the round back, which needs a failed check: without one the box
+    /// opens and says so; with one the task goes back to work.
+    #[test]
+    fn ctrl_s_on_the_page_unblocks_or_sends_the_review_back() {
+        let temp = Temp::new("page-ctrl-s", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["blocked", "in review"]);
+        let mut host = fake_host(&temp);
+        blocked_row(&temp, &mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        let intent = page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Char('s'),
+            KeyModifiers::CONTROL,
+        );
+        assert_eq!(intent, BoardIntent::PageReplyUnblock);
+        let saved = temp.store.load().expect("load");
+        assert_eq!(saved.get(ids[0]).expect("task").status, HumanStatus::Ready);
+        assert!(saved.get(ids[0]).expect("task").block.is_none());
+        assert_eq!(
+            model.input_mode(),
+            BoardInputMode::TaskPage,
+            "no box left open"
+        );
+
+        apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close");
+        review_page(&temp, &mut domain, &mut model, ids[1], &["tests pass"]);
+        page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Char('s'),
+            KeyModifiers::CONTROL,
+        );
+        assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+        let (screen, _) = board_screen(&model, 100, 30);
+        assert!(
+            screen.contains("type feedback or fail a check first"),
+            "{screen}"
+        );
+        assert_eq!(
+            temp.store
+                .load()
+                .expect("load")
+                .get(ids[1])
+                .expect("task")
+                .status,
+            HumanStatus::Review
+        );
+        page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        );
+        // Fail the selected check, then ctrl+s sends the round back.
+        page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        );
+        page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        );
+        assert_eq!(
+            checks_of(&domain, ids[1]),
+            [crate::domain::CheckState::Failed]
+        );
+        page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Char('s'),
+            KeyModifiers::CONTROL,
+        );
+        assert_eq!(
+            temp.store
+                .load()
+                .expect("load")
+                .get(ids[1])
+                .expect("task")
+                .status,
+            HumanStatus::Started
+        );
+        // Off the section (no block or review) ctrl+s stays the task's primary verb.
+        assert_eq!(
+            board_keyboard_intent(
+                &model,
+                BoardInputMode::TaskPage,
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)
+            ),
+            Some(BoardIntent::PrimaryVerb)
+        );
+    }
+
+    /// A click on a check selects and cycles it; a click on the `N passed` line unfolds it. On
+    /// a review page number keys are inert.
+    #[test]
+    fn a_click_cycles_a_check_and_number_keys_are_inert_on_a_review_page() {
+        use crate::domain::CheckState::{Open, Passed};
+        let temp = Temp::new("review-click", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        review_page(&temp, &mut domain, &mut model, ids[0], &["a", "b"]);
+        let mut host = fake_host(&temp);
+        let area = ratatui::layout::Rect::new(0, 0, 90, 30);
+        let _ = board_screen(&model, 90, 30);
+        let hits = crate::ui::board::board_hit_map(area, &model);
+        let second = hits
+            .regions
+            .iter()
+            .find(|hit| hit.target == crate::ui::render::QueueHitTarget::PageCheck(1))
+            .expect("check b is clickable");
+        let click = crate::ui::mouse::left_click(second.area.x + 4, second.area.y);
+        let intent = crate::ui::mouse::map_board_mouse(&model, &hits, click).expect("click");
+        assert_eq!(intent, BoardIntent::ClickCheck(1));
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        assert_eq!(checks_of(&domain, ids[0]), [Open, Passed]);
+        assert_eq!(
+            checks_of(&temp.store.load().expect("load"), ids[0]),
+            [Open, Passed]
+        );
+        assert_eq!(
+            model.block_target(),
+            Some(crate::ui::board::BlockTarget::Check(1))
+        );
+
+        let digit = page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Char('1'),
+            KeyModifiers::NONE,
+        );
+        assert_eq!(digit, BoardIntent::PickOption(0));
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage, "no box opens");
     }
 
     /// The feedback box's keys: Esc discards, Shift+Enter stores and stays in review, and

@@ -1646,12 +1646,12 @@ fn block_page_rows(
             });
         }
     };
-    let blank = |rows: &mut Vec<BlockPageRow>| rows.push(row(String::new(), BlockRowKind::Plain, false));
+    let blank =
+        |rows: &mut Vec<BlockPageRow>| rows.push(row(String::new(), BlockRowKind::Plain, false));
 
     let review = block.is_review();
-    let top = render::status_line(task, &model.tasks, now).unwrap_or_else(|| {
-        if review { "needs review" } else { "blocked" }.to_string()
-    });
+    let top = render::status_line(task, &model.tasks, now)
+        .unwrap_or_else(|| if review { "needs review" } else { "blocked" }.to_string());
     push(
         &mut rows,
         "",
@@ -1741,7 +1741,11 @@ fn block_page_rows(
         .replies
         .iter()
         .map(|reply| {
-            let mut lead = format!("{} · {}", name(&reply.by), render::format_age(now, reply.at));
+            let mut lead = format!(
+                "{} · {}",
+                name(&reply.by),
+                render::format_age(now, reply.at)
+            );
             if reply.edited && !reply.deleted {
                 lead.push_str(" · edited");
             }
@@ -1795,7 +1799,10 @@ fn block_page_rows(
         let empty = editor.buffer.value().is_empty();
         for (index, draft) in draft_rows.iter().enumerate() {
             let lead = if index == 0 && beside {
-                format!("{lead}{}", " ".repeat(column - render::display_width(&lead)))
+                format!(
+                    "{lead}{}",
+                    " ".repeat(column - render::display_width(&lead))
+                )
             } else {
                 " ".repeat(indent)
             };
@@ -1888,7 +1895,12 @@ fn section_action_keys(
             _ => None,
         }
     };
-    keys.extend(cursor.into_iter().flat_map(|keys| keys.split(" · ")).map(str::to_string));
+    keys.extend(
+        cursor
+            .into_iter()
+            .flat_map(|keys| keys.split(" · "))
+            .map(str::to_string),
+    );
     if !review {
         match block.options.len() {
             0 => {}
