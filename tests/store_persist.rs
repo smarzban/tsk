@@ -1284,3 +1284,38 @@ fn v1_migration_strips_defensive_archived_keys() {
     );
     assert_eq!(task.status, HumanStatus::Done, "status is untouched");
 }
+
+/// A v10 store with everything optional populated (assignee, base, a live dispatch record, an
+/// open block with options and a reply, two review rounds, authored and detailed events, steps,
+/// an archived project, a batch undo entry) migrates losslessly: the first save writes it back
+/// unchanged but for the version, and backs up the original byte-identically.
+#[test]
+fn populated_v10_fixture_round_trips_losslessly_to_v11() {
+    let dir = temp_state_dir();
+    let _guard = TempDirGuard(dir.clone());
+    let v10 = include_str!("fixtures/populated_store_v10.json");
+    fs::write(dir.join("tsk.json"), v10).expect("install populated v10 fixture");
+    let store = TaskStore::new(&dir);
+
+    let loaded = store.load().expect("load populated v10 fixture");
+    assert_eq!(loaded.format_version(), 11);
+    let task = loaded
+        .tasks()
+        .iter()
+        .find(|task| task.number == Some(1))
+        .expect("T1");
+    assert!(task.dispatch.is_some() && task.assignee.is_some() && task.base.is_some());
+    store.save(&loaded).expect("save migrated state");
+    assert_eq!(
+        fs::read_to_string(dir.join("tsk.json.v10")).expect("read version backup"),
+        v10,
+        "the v10 document is backed up byte-identically"
+    );
+    let saved: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.join("tsk.json")).expect("read migrated live document"),
+    )
+    .expect("json");
+    let mut expected: serde_json::Value = serde_json::from_str(v10).expect("json");
+    expected["format_version"] = 11.into();
+    assert_eq!(saved, expected, "nothing but the version changes");
+}

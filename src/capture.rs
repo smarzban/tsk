@@ -291,6 +291,47 @@ mod tests {
         }
     }
 
+    /// `!w`: a task number with or without `T`, repeatable and deduplicated; no argument, a
+    /// word that is not a number, or another token in its place refuses, as do unknown and done
+    /// tasks.
+    #[test]
+    fn w_tokens_lift_task_numbers_and_refuse_bad_arguments() {
+        let mut state = DomainState::new();
+        let ids: Vec<_> = ["first", "second", "done"]
+            .iter()
+            .map(|title| {
+                state
+                    .create(
+                        title,
+                        None,
+                        TaskScope::Global,
+                        ProvenanceOrigin::Manual,
+                        None,
+                    )
+                    .expect("create")
+            })
+            .collect();
+        state.assign_numbers_for_persistence();
+        state.set_status(ids[2], HumanStatus::Done).expect("done");
+        let lift = |line: &str| lift_quick_add_tokens(line, &state, None, &TaskScope::Global, &[]);
+
+        let tokens = lift("Waits !w T1 !w 2 !w T1").expect("lift");
+        assert_eq!(tokens.title, "Waits");
+        assert_eq!(tokens.after, vec![1, 2], "repeatable, deduplicated");
+        let needs = "!w needs a task number like T12".to_string();
+        assert_eq!(lift("Waits !w").map(|_| ()), Err(needs.clone()));
+        assert_eq!(lift("Waits !w abc").map(|_| ()), Err(needs.clone()));
+        assert_eq!(lift("Waits !w !p").map(|_| ()), Err(needs));
+        assert_eq!(
+            lift("Waits !w T9").map(|_| ()),
+            Err("T9 is not on the board".to_string())
+        );
+        assert_eq!(
+            lift("Waits !w T3").map(|_| ()),
+            Err("T3 is already done".to_string())
+        );
+    }
+
     #[test]
     fn configured_capture_revalidates_base_against_final_scope_before_mutation() {
         let mut state = DomainState::new();
