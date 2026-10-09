@@ -110,9 +110,6 @@ pub struct TaskRowPaint<'a> {
     pub title_bold: bool,
     /// Dim every span (the archived group's rows). Glyph and identifier are kept.
     pub dim: bool,
-    /// Dim right-edge note (a block's `on T169`, `@claude ?`, `answered`). Wraps onto
-    /// its own right-aligned rows when it does not fit beside the title.
-    pub trailer: Option<&'a str>,
 }
 
 /// One painted task-row line plus the title-content cells a text selection may copy.
@@ -138,13 +135,7 @@ pub fn paint_task_row_lines(
     let identifier_width = row.identifier.map(display_width).unwrap_or(0);
     let identifier_gap = usize::from(identifier_width > 0);
     let title_x = prefix_cells.saturating_add(identifier_width + identifier_gap);
-    let full_room = title_budget.saturating_sub(title_x).max(1);
-    let trailer = row
-        .trailer
-        .map(super::terminal_text)
-        .filter(|text| !text.is_empty());
-    let trailer_w = trailer.as_deref().map(display_width).unwrap_or(0);
-    let room = full_room;
+    let room = title_budget.saturating_sub(title_x).max(1);
     let head_content_x = u16::try_from(prefix_cells).unwrap_or(u16::MAX);
     let head_content_width = u16::try_from(identifier_width + identifier_gap + room)
         .unwrap_or(u16::MAX)
@@ -162,31 +153,15 @@ pub fn paint_task_row_lines(
         .map(|wrapped| wrapped.text)
         .collect();
 
-    // The trailer sits at the right edge of the title's last row when both fit there, and
-    // otherwise takes its own right-aligned rows below the title.
-    let last_cells = title_x
-        + segments
-            .last()
-            .map(|segment| display_width(segment))
-            .unwrap_or(0);
-    let trailer_inline = trailer.is_some() && last_cells + 2 + trailer_w <= row_w;
-    let mut lines = Vec::with_capacity(segments.len() + 1);
+    let mut lines = Vec::with_capacity(segments.len());
     let head = TaskRowPaint {
         title: &segments[0],
         ..*row
     };
     let mut title_geo = *geo;
-    let inline_on_head = trailer_inline && segments.len() == 1;
-    title_geo.row_width = (row_w - if inline_on_head { trailer_w } else { 0 }) as u16;
-    let mut head_line = paint_task_row_with_indent(&head, &title_geo, leading_indent);
-    if let (true, Some(trailer)) = (inline_on_head, trailer.as_deref()) {
-        head_line
-            .spans
-            .push(Span::styled(trailer.to_string(), style_dim()));
-        head_line = bound_line(head_line, row_w);
-    }
+    title_geo.row_width = row_w as u16;
     lines.push(TaskRowLine {
-        line: head_line,
+        line: paint_task_row_with_indent(&head, &title_geo, leading_indent),
         content_x: head_content_x,
         content_width: head_content_width,
         identifier,
@@ -199,92 +174,95 @@ pub fn paint_task_row_lines(
     } else {
         style_plain()
     };
-    let continuations = segments.len().saturating_sub(1);
-    for (index, segment) in segments.iter().skip(1).enumerate() {
-        let mut spans = vec![Span::styled(
-            format!("{indent}{segment}"),
-            continuation_style,
-        )];
-        if let (true, true, Some(trailer)) = (
-            trailer_inline,
-            index + 1 == continuations,
-            trailer.as_deref(),
-        ) {
-            let used = title_x + display_width(segment);
-            spans.push(Span::raw(
-                " ".repeat(row_w.saturating_sub(used + trailer_w)),
-            ));
-            spans.push(Span::styled(trailer.to_string(), style_dim()));
-        }
+    for segment in segments.iter().skip(1) {
         lines.push(TaskRowLine {
-            line: bound_line(Line::from(spans), row_w),
+            line: bound_line(
+                Line::from(Span::styled(
+                    format!("{indent}{segment}"),
+                    continuation_style,
+                )),
+                row_w,
+            ),
             content_x: title_content_x,
             content_width: title_content_width,
             identifier: None,
         });
     }
-    if let (false, Some(trailer)) = (trailer_inline, trailer.as_deref()) {
-        for wrapped in crate::ui::edit::wrap_text(trailer, full_room) {
-            let cells = display_width(&wrapped.text);
-            let x = row_w.saturating_sub(cells);
-            lines.push(TaskRowLine {
-                line: bound_line(
-                    Line::from(Span::styled(
-                        format!("{}{}", " ".repeat(x), wrapped.text),
-                        style_dim(),
-                    )),
-                    row_w,
-                ),
-                content_x: u16::try_from(x).unwrap_or(u16::MAX),
-                content_width: u16::try_from(cells).unwrap_or(u16::MAX).max(1),
-                identifier: None,
-            });
-        }
-    }
     lines
 }
 
-/// The dim right-edge note of a blocked or review row: who it waits on, or whether you
-/// answered. A review on you shows its author and passed checks, `@claude · 1/2 ✓`, until you
-/// give feedback.
-pub fn block_trailer(task: &Task, tasks: &[Task]) -> Option<String> {
+/// The dim line under a board row that says in plain words what is going on: who a block or
+/// review waits on and for how long, or what an on-deck task still runs after. `None` for a
+/// row with nothing to say. The peek opens with the same text, and so does the task page.
+pub fn live_line(task: &Task, tasks: &[Task], now: SystemTime) -> Option<String> {
     use crate::ui::queue::{block_wait, BlockWait};
-    let block = task.block.as_ref();
-    let wait = block_wait(task, tasks)?;
-    if task.status == HumanStatus::Review {
-        let block = block.filter(|block| block.is_review())?;
-        if wait == BlockWait::Elsewhere {
-            return Some(format!("on {}", block.on.label()));
-        }
-        if block.answered() {
-            return Some("feedback".to_string());
-        }
-        let mut parts = Vec::new();
-        if block.by != crate::domain::OWNER {
-            parts.push(format!("@{}", block.by));
-        }
-        let (passed, total) = block.checks_passed();
-        if total > 0 {
-            parts.push(format!("{passed}/{total} ✓"));
-        }
-        return (!parts.is_empty()).then(|| parts.join(" · "));
+    if task.archived || task.status == HumanStatus::Done {
+        return None;
     }
-    match wait {
-        BlockWait::Elsewhere => block.map(|block| format!("on {}", block.on.label())),
-        BlockWait::BlockerDone(number) => Some(format!("T{number} done")),
-        BlockWait::BlockerGone(number) => Some(format!("T{number} gone")),
+    let age = |at: Option<SystemTime>| {
+        at.map(|at| format!(" · {}", format_age(now, at)))
+            .unwrap_or_default()
+    };
+    let review = task.status == HumanStatus::Review;
+    let block = task
+        .block
+        .as_ref()
+        .filter(|block| block.is_review() == review);
+    let Some(wait) = block_wait(task, tasks) else {
+        let waiting = waiting_after(task, tasks);
+        if waiting.is_empty() || !matches!(task.status, HumanStatus::Ready | HumanStatus::Open) {
+            return None;
+        }
+        let list = waiting
+            .into_iter()
+            .map(|number| {
+                let status = live_task(tasks, number)
+                    .map_or(HumanStatus::Open, |prerequisite| prerequisite.status);
+                format!("T{number} ({})", crate::domain::status_word(status))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Some(format!("after {list}"));
+    };
+    let blocker = |number: u64| {
+        tasks
+            .iter()
+            .find(|other| other.number == Some(number) && !other.is_notice())
+    };
+    Some(match wait {
         BlockWait::You => {
-            let block = block?;
-            if block.answered() {
-                return Some("answered".to_string());
-            }
             let asker = block
-                .last_reply()
-                .map(|reply| reply.by.as_str())
-                .unwrap_or(&block.by);
-            (asker != crate::domain::OWNER).then(|| format!("@{asker} ?"))
+                .map(|block| block.by.as_str())
+                .filter(|by| *by != crate::domain::OWNER)
+                .map(|by| format!("@{by} "))
+                .unwrap_or_default();
+            let what = if review {
+                "needs your review"
+            } else {
+                "blocked on you"
+            };
+            let since = block
+                .map(|block| block.at)
+                .unwrap_or_else(|| task.status_changed_at());
+            format!("{asker}{what}{}", age(Some(since)))
         }
-    }
+        BlockWait::BlockerDone(number) => format!(
+            "T{number} is done · unblock it{}",
+            age(blocker(number).map(Task::status_changed_at))
+        ),
+        BlockWait::BlockerGone(number) => format!(
+            "T{number} was deleted · unblock it{}",
+            age(blocker(number).and_then(Task::soft_deleted_at))
+        ),
+        BlockWait::Elsewhere => {
+            let on = block.map(|block| block.on.label()).unwrap_or_default();
+            if review {
+                format!("{on} reviewing")
+            } else {
+                format!("waiting on {on}")
+            }
+        }
+    })
 }
 
 /// The live task carrying `number`, from the board's task slice.
@@ -312,13 +290,6 @@ fn task_list(numbers: impl IntoIterator<Item = u64>) -> String {
         .map(|number| format!("T{number}"))
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-/// The dim right-edge `after T202` of a row that still waits; gone once every prerequisite is
-/// done.
-pub fn after_trailer(task: &Task, tasks: &[Task]) -> Option<String> {
-    let waiting = waiting_after(task, tasks);
-    (!waiting.is_empty()).then(|| format!("after {}", task_list(waiting)))
 }
 
 /// The peek's links: `after T202 · started, T205 · done` and the read-only `before T203`.
@@ -5040,7 +5011,28 @@ fn paint_list_row(
     }
 }
 
-/// Read-only accordion body under an expanded task: a short notes preview only.
+/// The live line's painted rows, in the peek footer's `└─` style and wrapped under itself.
+fn live_line_rows(text: &str, row_width: u16) -> Vec<TaskRowLine> {
+    let room = row_width.saturating_sub(9).max(1) as usize;
+    crate::ui::edit::wrap_text(text, room)
+        .into_iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let prefix = if index == 0 { "    └─ " } else { "       " };
+            TaskRowLine {
+                line: paint_bounded_line(&format!("{prefix}{}", row.text), row_width, style_dim()),
+                content_x: 7,
+                content_width: u16::try_from(display_width(&row.text))
+                    .unwrap_or(u16::MAX)
+                    .max(1),
+                identifier: None,
+            }
+        })
+        .collect()
+}
+
+/// Read-only accordion body under an expanded task: a block or review's own lines (led by
+/// the live line it replaces), or a short notes preview.
 ///
 /// The peek (`→`) shows up to [`PEEK_NOTES_LINE_LIMIT`] wrapped note lines; a dim
 /// "… N more lines" tail names whatever did not fit. A final corner closes the gutter,
@@ -5056,6 +5048,7 @@ fn detail_lines_for_task(
     task: &Task,
     tasks: &[Task],
     width: u16,
+    now: SystemTime,
 ) -> Vec<(Line<'static>, u16, u16)> {
     let indent = PEEK_DETAIL_INDENT;
     let content_x = u16::try_from(display_width(indent)).unwrap_or(0);
@@ -5064,14 +5057,17 @@ fn detail_lines_for_task(
     let push = |lines: &mut Vec<(Line<'static>, u16, u16)>, line: Line<'static>| {
         lines.push((line, content_x, content_width));
     };
-    // A block reads first: its prompt to unblock, then why, needs and the options.
+    // A block or review reads first and stands alone: the live line, then its own text. Every
+    // other task shows its links, then its notes.
     let room = (width as usize)
         .saturating_sub(display_width(indent) + 1)
         .max(1);
+    let block_lines = peek_block_lines(task, tasks, now);
+    let has_block = !block_lines.is_empty();
     let links = after_peek_lines(task, tasks)
         .into_iter()
         .map(|text| (text, style_dim()));
-    for (text, style) in peek_block_lines(task, tasks).into_iter().chain(links) {
+    for (text, style) in block_lines.into_iter().chain(links) {
         for row in crate::ui::edit::wrap_text(&text, room) {
             push(
                 &mut lines,
@@ -5080,7 +5076,9 @@ fn detail_lines_for_task(
         }
     }
     let notes_text = task.notes.as_deref().map(str::trim).unwrap_or_default();
-    if notes_text.is_empty() {
+    if has_block {
+        // A block or review peek has no notes: they stay behind `Enter`.
+    } else if notes_text.is_empty() {
         push(
             &mut lines,
             paint_bounded_line(&format!("{indent}no notes yet"), width, style_dim()),
@@ -5196,49 +5194,54 @@ fn row_reply_rows(
     (rows, Some(caret))
 }
 
-/// The peek's block or review lines, one per item before wrapping. Empty unless the task is
-/// blocked or in review.
-fn peek_block_lines(task: &Task, tasks: &[Task]) -> Vec<(String, Style)> {
-    use crate::ui::queue::{block_wait, BlockWait};
+/// The peek's block or review lines, one per item before wrapping: the live line, then why
+/// and `Decide:` the options (or the needs) for a block, the done text and every check on one
+/// line for a review. Empty unless the task is blocked or in review.
+fn peek_block_lines(task: &Task, tasks: &[Task], now: SystemTime) -> Vec<(String, Style)> {
     let mut lines = Vec::new();
-    if task.status == HumanStatus::Review {
-        let Some(block) = task.block.as_ref().filter(|block| block.is_review()) else {
-            return lines;
-        };
-        let one_line = |text: &str| super::terminal_text(&text.replace(['\n', '\r'], " "));
-        if let Some(done) = block.done.as_deref() {
-            lines.push((format!("done  {}", one_line(done)), style_plain()));
-        }
-        for check in &block.checks {
-            lines.push((
-                format!("{} {}", check_glyph(check.state), one_line(&check.text)),
-                style_plain(),
-            ));
-        }
+    if !matches!(task.status, HumanStatus::Blocked | HumanStatus::Review) {
         return lines;
     }
-    match block_wait(task, tasks) {
-        None => return lines,
-        Some(BlockWait::BlockerDone(number)) => {
-            lines.push((format!("T{number} done, unblock?"), style_bold()));
-        }
-        Some(BlockWait::BlockerGone(number)) => {
-            lines.push((format!("T{number} is gone, unblock?"), style_bold()));
-        }
-        Some(BlockWait::You | BlockWait::Elsewhere) => {}
+    let one_line = |text: &str| super::terminal_text(&text.replace(['\n', '\r'], " "));
+    if let Some(live) = live_line(task, tasks, now) {
+        lines.push((super::terminal_text(&live), style_plain()));
     }
-    let Some(block) = task.block.as_ref() else {
+    let review = task.status == HumanStatus::Review;
+    let Some(block) = task
+        .block
+        .as_ref()
+        .filter(|block| block.is_review() == review)
+    else {
         return lines;
     };
-    let one_line = |text: &str| super::terminal_text(&text.replace(['\n', '\r'], " "));
+    if review {
+        if let Some(done) = block.done.as_deref() {
+            lines.push((one_line(done), style_plain()));
+        }
+        if !block.checks.is_empty() {
+            let checks = block
+                .checks
+                .iter()
+                .map(|check| format!("{} {}", check_glyph(check.state), one_line(&check.text)))
+                .collect::<Vec<_>>()
+                .join("   ");
+            lines.push((checks, style_plain()));
+        }
+        return lines;
+    }
     if let Some(why) = block.why.as_deref() {
-        lines.push((format!("why  {}", one_line(why)), style_plain()));
+        lines.push((one_line(why), style_plain()));
     }
-    if let Some(needs) = block.needs.as_deref() {
-        lines.push((format!("needs  {}", one_line(needs)), style_plain()));
-    }
-    for option in &block.options {
-        lines.push((format!("○ {}", one_line(option)), style_plain()));
+    if !block.options.is_empty() {
+        let options = block
+            .options
+            .iter()
+            .map(|option| one_line(option))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        lines.push((format!("Decide: {options}"), style_plain()));
+    } else if let Some(needs) = block.needs.as_deref() {
+        lines.push((one_line(needs), style_plain()));
     }
     lines
 }
@@ -5342,13 +5345,6 @@ fn build_list_rows_inner(
                 0,
             )
         } else {
-            let trailer = match (
-                block_trailer(task, model.tasks),
-                after_trailer(task, model.tasks),
-            ) {
-                (Some(block), Some(after)) => Some(format!("{block} · {after}")),
-                (block, after) => block.or(after),
-            };
             paint_task_row_lines(
                 &TaskRowPaint {
                     glyph: task_status_glyph(task),
@@ -5359,16 +5355,22 @@ fn build_list_rows_inner(
                     title_bold: false,
                     // AC-41: every row of a read-only archived focus paints dim.
                     dim: dim || model.rows_dim,
-                    trailer: trailer.as_deref(),
                 },
                 geo,
                 0,
             )
         };
+        // The live line belongs to its row: every wrapped line is a task line, so a click on
+        // it acts on the task and selection follow keeps it in view. The peek replaces it.
+        let live = (!rail && detail_target != Some(task.id))
+            .then(|| live_line(task, model.tasks, model.now))
+            .flatten()
+            .map(|text| live_line_rows(&super::terminal_text(&text), geo.row_width))
+            .unwrap_or_default();
         if selected {
             *selected_idx = Some(out.len());
         }
-        for painted in lines {
+        for painted in lines.into_iter().chain(live) {
             out.push(ListRow::Task {
                 id: task.id,
                 line: painted.line,
@@ -5395,7 +5397,7 @@ fn build_list_rows_inner(
             *anchor_last_idx = Some(out.len() - 1);
         }
         if detail_target == Some(task.id) {
-            let mut details = detail_lines_for_task(task, model.tasks, geo.row_width);
+            let mut details = detail_lines_for_task(task, model.tasks, geo.row_width, model.now);
             if !peek_meta.is_empty() {
                 details.pop();
             }
@@ -6915,7 +6917,6 @@ mod tests {
                 marked: false,
                 title_bold: false,
                 dim: false,
-                trailer: None,
             };
             let lines = paint_task_row_lines(&row, &geo, 0);
             assert_eq!(lines.len(), 2);
@@ -6948,8 +6949,7 @@ mod tests {
                         marked: false,
                         title_bold: selected,
                         dim: false,
-                        trailer: None,
-                    };
+                            };
                     for line in paint_task_row_lines(&row, &geo, 0) {
                         assert!(
                             line.line.width() <= geo.row_width as usize,
@@ -6977,7 +6977,6 @@ mod tests {
                 marked: false,
                 title_bold: false,
                 dim: false,
-                trailer: None,
             },
             &geo,
         );
@@ -6998,7 +6997,6 @@ mod tests {
                 marked: false,
                 title_bold: false,
                 dim: false,
-                trailer: None,
             },
             &geo,
         );
@@ -7048,7 +7046,6 @@ mod tests {
                 marked: false,
                 title_bold: false,
                 dim: false,
-                trailer: None,
             },
             TaskRowPaint {
                 glyph: "▲",
@@ -7058,7 +7055,6 @@ mod tests {
                 marked: false,
                 title_bold: true,
                 dim: false,
-                trailer: None,
             },
             TaskRowPaint {
                 glyph: "◓",
@@ -7068,7 +7064,6 @@ mod tests {
                 marked: false,
                 title_bold: false,
                 dim: false,
-                trailer: None,
             },
         ];
 

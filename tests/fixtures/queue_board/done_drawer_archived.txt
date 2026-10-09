@@ -4,8 +4,10 @@
 │                                                                               ▌│
 │ NEEDS YOU ─────────────────────────────────────────────────────────────────2  ▌│
 │                                                                               ▌│
-│  ■ T5 Wire dispatch cleanup receipts                              @claude ?   ▌│
+│  ■ T5 Wire dispatch cleanup receipts                                          ▌│
+│    └─ @claude blocked on you · 41m                                            ▌│
 │  ▲ T6 Docs refresh pass after F9 ships                                        ▌│
+│    └─ needs your review · 3h                                                  ▌│
 │                                                                               ▌│
 │ IN MOTION ─────────────────────────────────────────────────────────────────2  ▌│
 │                                                                               ▌│
@@ -13,13 +15,11 @@
 │  ● T2 Edit target binding pin                                                 ▌│
 │                                                                               ▌│
 │ ON DECK · desk ────────────────────────────────────────────────────────────1  ▌│
-│                                                                               ▌│
-│  ○ T7 Global backlog note                                                     ▌│
-│                                                                               ▌│
-│ DONE ──────────────────────────────────────────────────────────────────────2  ▌│
 │                                                                                │
-│  ✓ T8 Ship the queue board milestone                                           │
-│  ✓ T9 Retire classic board chrome                                              │
+│  ○ T7 Global backlog note                                                      │
+│                                                                                │
+│ DONE ──────────────────────────────────────────────────────────────────────2   │
+│                                                                                │
 │────────────────────────────────────────────────────────────────────────────────│
 │ desk                                                                           │
 │ enter open · ctrl+d done · ctrl+n next · ctrl+o inbox · ctrl+b block · ? help  │

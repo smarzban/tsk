@@ -204,22 +204,30 @@ fn ctrl_b_card_blocks_on_another_task_which_rides_in_motion_until_that_task_is_d
 
     assert!(section_ids(&model, SectionKind::InMotion).contains(&client));
     let board = rows(&model, 80, 24);
-    let row = board
+    let at = board
         .iter()
-        .find(|row| row.contains("client"))
+        .position(|row| row.contains("client"))
         .expect("client row");
-    assert!(row.contains("□"), "{row}");
-    assert!(row.trim_end().ends_with("on T1"), "{row}");
+    assert!(board[at].contains("□"), "{}", board[at]);
+    assert!(board[at].trim_end().ends_with("client"), "{}", board[at]);
+    // The open peek leads with the live line's text, then the why.
+    assert_eq!(board[at + 1].trim_end(), "    │ waiting on T1");
+    assert_eq!(board[at + 2].trim_end(), "    │ needs the endpoint");
 
     domain.complete(api).unwrap();
     model.sync_from_domain(&domain);
     assert!(section_ids(&model, SectionKind::NeedsYou).contains(&client));
     assert_eq!(domain.get(client).unwrap().status, HumanStatus::Blocked);
     assert_eq!(model.selected_id(), Some(client));
-    apply_intent(&mut domain, &mut model, BoardIntent::PeekDetail, None).unwrap();
     let board = rows(&model, 80, 24).join("\n");
-    assert!(board.contains("T1 done, unblock?"), "{board}");
-    assert!(board.contains("why  needs the endpoint"), "{board}");
+    assert!(board.contains("│ T1 is done · unblock it · "), "{board}");
+    assert!(board.contains("│ needs the endpoint"), "{board}");
+    assert!(!board.contains("└─ T1 is done"), "the peek replaces the live line: {board}");
+    // Closing the peek brings the live line back.
+    apply_intent(&mut domain, &mut model, BoardIntent::CollapseDetail, None).unwrap();
+    let board = rows(&model, 80, 24).join("\n");
+    assert!(board.contains("    └─ T1 is done · unblock it · "), "{board}");
+    assert!(!board.contains("needs the endpoint"), "{board}");
 }
 
 #[test]
@@ -429,16 +437,22 @@ fn tab_reaches_an_option_enter_prefills_the_reply_and_shift_enter_answers() {
         &mut model,
         key(KeyCode::Esc, KeyModifiers::NONE),
     );
+    // The block is still yours to clear: the live line does not change after you answer.
     let board = rows(&model, 80, 24);
-    let row = board
+    let at = board
         .iter()
-        .find(|row| row.contains("pick a database"))
+        .position(|row| row.contains("pick a database"))
         .unwrap();
-    assert!(row.trim_end().ends_with("answered"), "{row}");
+    assert!(board[at].trim_end().ends_with("pick a database"), "{}", board[at]);
+    assert!(
+        board[at + 1].starts_with("    └─ @claude blocked on you · "),
+        "{}",
+        board[at + 1]
+    );
 }
 
 #[test]
-fn an_unanswered_agent_block_shows_who_asks_on_the_row() {
+fn an_agent_block_says_who_asks_on_the_live_line() {
     let (_domain, mut model, _) = blocked_page();
     let mut domain = _domain;
     press(
@@ -447,12 +461,17 @@ fn an_unanswered_agent_block_shows_who_asks_on_the_row() {
         key(KeyCode::Esc, KeyModifiers::NONE),
     );
     let board = rows(&model, 80, 24);
-    let row = board
+    let at = board
         .iter()
-        .find(|row| row.contains("pick a database"))
+        .position(|row| row.contains("pick a database"))
         .unwrap();
-    assert!(row.contains("■"), "{row}");
-    assert!(row.trim_end().ends_with("@claude ?"), "{row}");
+    assert!(board[at].contains("■"), "{}", board[at]);
+    assert!(board[at].trim_end().ends_with("pick a database"), "{}", board[at]);
+    assert!(
+        board[at + 1].starts_with("    └─ @claude blocked on you · "),
+        "{}",
+        board[at + 1]
+    );
 }
 
 #[test]

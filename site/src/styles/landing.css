@@ -730,9 +730,18 @@ html[data-theme="light"] .pane {
   color: var(--ink);
 }
 
-.tsk-row-trailer {
-  flex: 0 0 auto;
-  padding-right: 2ch;
+.tsk-row.has-live {
+  flex-wrap: wrap;
+  gap: 0;
+}
+
+.tsk-live {
+  flex: 0 0 100%;
+  text-align: left;
+}
+
+.tsk-live-line {
+  display: block;
   white-space: pre;
 }
 
