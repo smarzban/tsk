@@ -9479,6 +9479,12 @@ mod tests {
             Some(BoardIntent::OpenTaskPage)
         );
 
+        // Past `+ step` the collapsed PAPER TRAIL heading takes Enter, then Tab wraps.
+        apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("trail");
+        assert_eq!(
+            board_keyboard_intent(&model, BoardInputMode::TaskPage, enter),
+            Some(BoardIntent::ToggleTrail)
+        );
         // Shift+Enter never becomes a toggle.
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("wrap");
         assert!(model.stored_step_selected());
@@ -11127,9 +11133,10 @@ mod quick_assign_tests {
             .unwrap_or_default()
     }
 
-    /// A sent-back review round lands on the PAPER TRAIL: Tab past `+ step` selects it, Enter
-    /// (resolved at the keyboard boundary) expands it in place and folds it again, and bare `a`
-    /// never touches the store.
+    /// A sent-back review round lands on the PAPER TRAIL: Tab past `+ step` reaches the collapsed
+    /// heading, Enter (resolved at the keyboard boundary) expands the trail, Tab selects the
+    /// round and Enter expands it in place and folds it again; bare `g` collapses the trail
+    /// without touching the store.
     #[test]
     fn enter_on_a_paper_trail_record_expands_it_in_place() {
         let temp = Temp::new("paper-trail", &["builder"]);
@@ -11142,7 +11149,7 @@ mod quick_assign_tests {
         model.sync_from_domain(&domain);
         let mut host = fake_host(&temp);
         let none = KeyModifiers::NONE;
-        // `+ step`, then the round.
+        // `+ step`, then the collapsed heading.
         for _ in 0..2 {
             page_key(
                 &temp,
@@ -11153,6 +11160,29 @@ mod quick_assign_tests {
                 none,
             );
         }
+        assert_eq!(
+            model.block_target(),
+            Some(crate::ui::board::BlockTarget::TrailHeading)
+        );
+        let (screen, _) = board_screen(&model, 90, 40);
+        assert!(!screen.contains("review round 1"), "collapsed: {screen}");
+        let expand = page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Enter,
+            none,
+        );
+        assert_eq!(expand, BoardIntent::ToggleTrail);
+        page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Tab,
+            none,
+        );
         assert_eq!(
             model.block_target(),
             Some(crate::ui::board::BlockTarget::Trail(0))
@@ -11190,17 +11220,33 @@ mod quick_assign_tests {
         );
 
         let before = temp.store.load().expect("load");
-        let a = page_key(
+        let g = page_key(
             &temp,
             &mut domain,
             &mut model,
             &mut host,
-            KeyCode::Char('a'),
+            KeyCode::Char('g'),
             none,
         );
-        assert_eq!(a, BoardIntent::ToggleTrail);
-        assert!(!crate::ui::board::board_intent_may_persist(&model, &a));
+        assert_eq!(g, BoardIntent::ToggleTrail);
+        assert!(!crate::ui::board::board_intent_may_persist(&model, &g));
         assert_eq!(temp.store.load().expect("reload").tasks(), before.tasks());
+        let (screen, _) = board_screen(&model, 90, 40);
+        assert!(!screen.contains("review round 1"), "collapsed: {screen}");
+        assert_eq!(
+            model.block_target(),
+            Some(crate::ui::board::BlockTarget::TrailHeading),
+            "the hidden record hands its selection to the heading"
+        );
+        assert_eq!(
+            board_keyboard_intent(
+                &model,
+                BoardInputMode::TaskPage,
+                KeyEvent::new(KeyCode::Char('a'), none)
+            ),
+            None,
+            "bare a is free again"
+        );
     }
 
     /// Enter on a check cycles it open → passed → failed → open in its own row, and the cursor
@@ -11226,7 +11272,9 @@ mod quick_assign_tests {
              model: &mut BoardModel,
              host: &mut FakeHost,
              code: KeyCode| { page_key(&temp, domain, model, host, code, none) };
-        key(&mut domain, &mut model, &mut host, KeyCode::Tab);
+        // The page opens on the first unmarked check; Shift+Tab before it reaches the top line.
+        assert_eq!(model.block_target(), Some(Check(0)));
+        key(&mut domain, &mut model, &mut host, KeyCode::BackTab);
         assert_eq!(model.block_target(), Some(Heading));
         key(&mut domain, &mut model, &mut host, KeyCode::Tab);
         assert_eq!(model.block_target(), Some(Check(0)));
@@ -11282,9 +11330,11 @@ mod quick_assign_tests {
         assert!(screen.contains("1 passed ▸"), "{screen}");
         assert!(!screen.contains("tests pass"), "{screen}");
         assert!(at(&screen, "○ no flicker") < at(&screen, "1 passed ▸"));
-        key(&mut domain, &mut model, &mut host, KeyCode::Tab);
-        key(&mut domain, &mut model, &mut host, KeyCode::Tab);
-        assert_eq!(model.block_target(), Some(Check(1)));
+        assert_eq!(
+            model.block_target(),
+            Some(Check(1)),
+            "the page reopens on the first unmarked check"
+        );
         key(&mut domain, &mut model, &mut host, KeyCode::Tab);
         assert_eq!(model.block_target(), Some(PassedFold));
 
@@ -11402,8 +11452,9 @@ mod quick_assign_tests {
         assert!(!screen.contains("tests pass"), "{screen}");
     }
 
-    /// The REVIEW section leads the page: round, who it is on, author, the PR it names, then
-    /// done, the checks, next and the feedback, above the notes.
+    /// The REVIEW section leads the page: the row's live line on top, done and next as plain
+    /// text, the `Check` list, then the dim action line above the rule and the notes. No round
+    /// number and no field labels anywhere.
     #[test]
     fn the_review_section_leads_the_task_page() {
         let temp = Temp::new("review-page", &["builder"]);
@@ -11422,20 +11473,34 @@ mod quick_assign_tests {
         temp.store.reload_merge_save(&mut domain).expect("save");
         review_page(&temp, &mut domain, &mut model, ids[0], &["tests pass"]);
         let (screen, _) = board_screen(&model, 100, 30);
-        let heading = screen
-            .lines()
-            .find(|line| line.contains("REVIEW · round 1 · on you · @builder"))
-            .unwrap_or_else(|| panic!("heading:\n{screen}"));
-        assert!(heading.contains("PR #41 · r feedback"), "{heading}");
+        let live = crate::ui::render::live_line(
+            domain.get(ids[0]).expect("task"),
+            domain.tasks(),
+            model.now(),
+        )
+        .expect("live line");
+        assert!(live.starts_with("@builder needs your review"), "{live}");
         let at = |text: &str| {
             screen
                 .find(text)
                 .unwrap_or_else(|| panic!("{text}:\n{screen}"))
         };
-        assert!(at("REVIEW") < at("done   built the card"));
-        assert!(at("done   built the card") < at("○ tests pass"));
-        assert!(at("○ tests pass") < at("next   docs"));
-        assert!(at("next   docs") < at("see PR #41 for the diff"));
+        assert!(at(&live) < at("built the card"));
+        assert!(at("built the card") < at("docs"));
+        assert!(at("docs") < at("Check"));
+        assert!(at("Check") < at("○ tests pass"));
+        assert!(
+            screen.lines().any(|line| line.starts_with("▸  ○ tests pass")),
+            "the first unmarked check is selected:\n{screen}"
+        );
+        assert!(
+            at("○ tests pass")
+                < at("tab next · enter mark · r feedback · ctrl+s send back · ctrl+d approve")
+        );
+        assert!(at("ctrl+d approve") < at("see PR #41 for the diff"));
+        for gone in ["REVIEW", "round", "done   ", "next   "] {
+            assert!(!screen.contains(gone), "{gone}:\n{screen}");
+        }
     }
 
     /// The REVIEW section paints at 40 and 120 columns: the heading and the fold line stay,
@@ -11464,7 +11529,7 @@ mod quick_assign_tests {
         apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
         for width in [40, 120] {
             let (screen, _) = board_screen(&model, width, 30);
-            assert!(screen.contains("REVIEW · round 1"), "{width}:\n{screen}");
+            assert!(screen.contains("needs your review"), "{width}:\n{screen}");
             assert!(screen.contains("1 passed ▸"), "{width}:\n{screen}");
             assert!(screen.contains("wrap"), "{width}:\n{screen}");
             assert!(
