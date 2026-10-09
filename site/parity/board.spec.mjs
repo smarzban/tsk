@@ -222,13 +222,10 @@ for (const width of [40, 78, 109, 110]) {
     await open(page, width);
     await expect(page.locator(".tsk-attribution")).toHaveCount(0);
     await expect(page.locator(".tsk-sec")).not.toContainText(["IN MOTION"]);
-    // The blocked row's live line matches the app's, age aside (the app reads the clock).
-    const live = await row(page, 12)
-      .locator(".tsk-live-line")
-      .allTextContents();
-    expect(
-      live.map((line) => line.trimEnd().replace(/ · \d+[smhd]$/, "")),
-    ).toEqual(await readReference(`live-${width}`));
+    // The blocked row's live line matches the app's at the fixture's clock.
+    await expect(row(page, 12).locator(".tsk-live-line")).toHaveText(
+      await readReference(`live-${width}`),
+    );
     await capture(page, info, "initial");
     await page.keyboard.press("ArrowDown");
     await expect(row(page, 13)).toHaveClass(/is-sel/);
@@ -282,9 +279,17 @@ for (const width of [40, 78, 109])
     await expect(page.locator(".tsk-attribution")).toHaveText(
       "    └─ #release · tsk-parity",
     );
+    // A recorded block's peek replaces the live line: live text, why, Decide; no notes.
+    await expect(page.locator(".tsk-peek, .tsk-attribution")).toHaveText(
+      await readReference(`peek-${width}`),
+    );
+    await expect(row(page, 12).locator(".tsk-live-line")).toHaveCount(0);
     await capture(page, info, "project-peek");
     await page.keyboard.press("Escape");
     await expect(page.locator(".tsk-attribution")).toHaveCount(0);
+    await expect(row(page, 12).locator(".tsk-live-line")).toHaveText(
+      await readReference(`live-${width}`),
+    );
     await page.keyboard.press("2");
     await expect(page.locator(".tsk-tab")).toHaveCount(3);
     await page.keyboard.press("ArrowDown");
@@ -301,6 +306,33 @@ for (const width of [40, 78, 109])
     await expect(page.locator(".tsk-peek")).toContainText(["no notes yet"]);
     await capture(page, info, "unlabeled-peek");
   });
+for (const width of [110, 130])
+  test(`project preview live line and block peek at ${width}`, async ({
+    page,
+  }) => {
+    await open(page, width);
+    await page.keyboard.press("3");
+    await page.keyboard.press("ArrowDown");
+    await expect(page.locator(".tsk-wide-split.is-split")).toBeVisible();
+    await page.keyboard.press("l");
+    await expect(page.locator(".tsk-project-preview.is-live")).toBeVisible();
+    const previewRow = page.locator(`[data-preview-task="${id(12)}"]`);
+    await expect(previewRow.locator(".tsk-live-line")).toHaveText(
+      await readReference(`preview-live-${width}`),
+    );
+    await page.keyboard.press("l");
+    const preview = page.locator(".tsk-project-preview");
+    await expect(preview.locator(".tsk-peek, .tsk-attribution")).toHaveText(
+      await readReference(`preview-peek-${width}`),
+    );
+    await expect(previewRow.locator(".tsk-live-line")).toHaveCount(0);
+    await page.keyboard.press("h");
+    await expect(preview.locator(".tsk-peek")).toHaveCount(0);
+    await expect(previewRow.locator(".tsk-live-line")).toHaveText(
+      await readReference(`preview-closed-${width}`),
+    );
+  });
+
 test("110-column boundary and rail mouse return", async ({ page }, info) => {
   await open(page, 109);
   await page.keyboard.press("ArrowRight");
@@ -322,7 +354,7 @@ test("h and l mirror task-detail navigation in every demo board", async ({
 }) => {
   await open(page, 109);
   await page.keyboard.press("l");
-  await expect(page.locator(".tsk-peek")).toBeVisible();
+  await expect(page.locator(".tsk-peek").first()).toBeVisible();
   await page.keyboard.press("h");
   await expect(page.locator(".tsk-peek")).toHaveCount(0);
 
@@ -342,7 +374,7 @@ test("h and l mirror task-detail navigation in every demo board", async ({
   await page.keyboard.press("l");
   await expect(page.locator(".tsk-project-preview.is-live")).toBeVisible();
   await page.keyboard.press("l");
-  await expect(page.locator(".tsk-peek")).toBeVisible();
+  await expect(page.locator(".tsk-peek").first()).toBeVisible();
   await page.keyboard.press("h");
   await expect(page.locator(".tsk-peek")).toHaveCount(0);
   await page.keyboard.press("Enter");

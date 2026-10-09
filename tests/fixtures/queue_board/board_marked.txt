@@ -5,9 +5,9 @@
 │ NEEDS YOU ───────────────────────────────────────────────────────────────────2 │
 │                                                                                │
 │  ■ T5 Wire dispatch cleanup receipts                                           │
-│    └─ @claude blocked on you · 1059d                                           │
+│    └─ @claude blocked on you · 41m                                             │
 │  ▲ T6 Docs refresh pass after F9 ships                                         │
-│    └─ needs your review · 1060d                                                │
+│    └─ needs your review · 3h                                                   │
 │                                                                                │
 │ IN MOTION ───────────────────────────────────────────────────────────────────2 │
 │                                                                                │

@@ -297,16 +297,6 @@ impl Block {
         self.kind == BlockKind::Review
     }
 
-    /// Passed checks and all checks, for the board row's `1/2 ✓`.
-    pub fn checks_passed(&self) -> (usize, usize) {
-        let passed = self
-            .checks
-            .iter()
-            .filter(|check| check.state == CheckState::Passed)
-            .count();
-        (passed, self.checks.len())
-    }
-
     /// The texts of the failed checks, in order.
     pub fn failed_checks(&self) -> Vec<&str> {
         self.checks
@@ -942,7 +932,7 @@ mod review_tests {
         assert!(state.set_check(id, 0, CheckState::Failed).unwrap());
         assert!(!state.set_check(id, 0, CheckState::Failed).unwrap());
         assert_eq!(round(&state, id).failed_checks(), vec!["a"]);
-        assert_eq!(round(&state, id).checks_passed(), (0, 1));
+        assert_eq!(round(&state, id).checks[0].state, CheckState::Failed);
     }
 
     /// Send back (started) closes round N as sent back; the agent's next review opens round

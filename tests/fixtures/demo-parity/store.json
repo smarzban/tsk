@@ -10,6 +10,19 @@
       "notes": "Confirm the wording before release.",
       "thread": "release",
       "status": "blocked",
+      "block": {
+        "why": "Which changelog wording ships?",
+        "needs": "your pick",
+        "options": [
+          "Keep it",
+          "Rewrite"
+        ],
+        "by": "claude",
+        "at": [
+          1700000100,
+          0
+        ]
+      },
       "scope": {
         "project": {
           "path": "/tmp/tsk-parity"

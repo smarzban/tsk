@@ -193,10 +193,10 @@ pub fn paint_task_row_lines(
 
 /// The dim line under a board row that says in plain words what is going on: who a block or
 /// review waits on and for how long, or what an on-deck task still runs after. `None` for a
-/// row with nothing to say. The peek opens with the same text, and so does the task page.
+/// row with nothing to say, and for notices. A block or review peek opens with the same text.
 pub fn live_line(task: &Task, tasks: &[Task], now: SystemTime) -> Option<String> {
     use crate::ui::queue::{block_wait, BlockWait};
-    if task.archived || task.status == HumanStatus::Done {
+    if task.archived || task.status == HumanStatus::Done || task.is_notice() {
         return None;
     }
     let age = |at: Option<SystemTime>| {
@@ -1615,6 +1615,11 @@ fn draw_queue_frame_impl(
                         .saturating_sub(min_content)
                         .min(max_scroll);
                 }
+            }
+            // The pin keeps the selected task's tail (live line, peek) in view when it fits;
+            // when the whole row cannot fit, its head (the `▸` title line) wins.
+            if let (None, Some(head)) = (reply_caret, pinned_head(&list_rows, pin)) {
+                scroll = scroll.min(head);
             }
         }
         let sticky = sticky_header_at(&list_rows, scroll);
@@ -4909,6 +4914,23 @@ impl ListRow {
     }
 }
 
+/// The first painted line of the task the pin belongs to: its `▸` title line. The pin is the
+/// last line of a task's block (title, live line) or of the peek under it; any other row (a
+/// header, a project row) is its own head.
+fn pinned_head(rows: &[ListRow], pin: Option<usize>) -> Option<usize> {
+    let mut head = pin?;
+    while head > 0 && matches!(rows[head], ListRow::Detail { .. }) {
+        head -= 1;
+    }
+    let ListRow::Task { id, .. } = &rows[head] else {
+        return pin;
+    };
+    while head > 0 && matches!(&rows[head - 1], ListRow::Task { id: other, .. } if other == id) {
+        head -= 1;
+    }
+    Some(head)
+}
+
 /// Last section header strictly above `scroll`. None when `scroll` is already on a header
 /// (that header is naturally at the top) or nothing has been scrolled past.
 fn sticky_header_at(rows: &[ListRow], scroll: usize) -> Option<usize> {
@@ -5199,7 +5221,8 @@ fn row_reply_rows(
 /// line for a review. Empty unless the task is blocked or in review with a recorded block.
 fn peek_block_lines(task: &Task, tasks: &[Task], now: SystemTime) -> Vec<(String, Style)> {
     let mut lines = Vec::new();
-    if !matches!(task.status, HumanStatus::Blocked | HumanStatus::Review) {
+    // A notice peeks its notes, whatever its status: it has no live line to lead with.
+    if !matches!(task.status, HumanStatus::Blocked | HumanStatus::Review) || task.is_notice() {
         return lines;
     }
     let one_line = |text: &str| super::terminal_text(&text.replace(['\n', '\r'], " "));

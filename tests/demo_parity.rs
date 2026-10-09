@@ -1,7 +1,11 @@
 //! App-side reference states for site/parity. These are TestBackend frames, not terminal screenshots.
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{backend::TestBackend, Terminal};
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use tsk_tui::{
     domain::DomainState,
     ui::{
@@ -90,35 +94,34 @@ fn export_reference(text: &str, width: u16, name: &str) {
             )
             .unwrap();
         }
-        if name == "initial" {
-            // The blocked row's live line, without its age: the board reads the wall clock.
-            let live: Vec<_> = text
+        if name == "project-peek-or-split" && width < 110 {
+            write_json(
+                &dir,
+                &format!("peek-{width}.json"),
+                &under_row(text, "T12 ", 0),
+            );
+        }
+        if name.starts_with("preview-") {
+            // The project preview is the right column: drop the index column and its rule.
+            let column = text
                 .lines()
-                .skip_while(|line| !line.contains("T12 "))
-                .skip(1)
-                .take_while(|line| {
-                    line.starts_with("    └─ ")
-                        || (line.starts_with("       ") && !line.trim().is_empty())
-                })
-                .map(|line| {
-                    let line = line.trim_end();
-                    match line.rsplit_once(" · ") {
-                        Some((head, age))
-                            if age.len() > 1
-                                && age[..age.len() - 1].chars().all(|c| c.is_ascii_digit())
-                                && age.ends_with(['s', 'm', 'h', 'd']) =>
-                        {
-                            head.to_string()
-                        }
-                        _ => line.to_string(),
-                    }
-                })
-                .collect();
-            fs::write(
-                dir.join(format!("live-{width}.json")),
-                serde_json::to_string_pretty(&live).unwrap(),
-            )
-            .unwrap();
+                .find(|line| line.contains("T12 "))
+                .and_then(|line| line.chars().position(|c| c == '│'))
+                .expect("preview divider")
+                + 1;
+            write_json(
+                &dir,
+                &format!("{name}-{width}.json"),
+                &under_row(text, "T12 ", column),
+            );
+        }
+        if name == "initial" {
+            // The blocked row's live line, at the fixture's pinned clock.
+            write_json(
+                &dir,
+                &format!("live-{width}.json"),
+                &under_row(text, "T12 ", 0),
+            );
             let lines: Vec<_> = text
                 .lines()
                 .skip_while(|line| !line.contains("T13 "))
@@ -145,6 +148,50 @@ fn export_reference(text: &str, width: u16, name: &str) {
     }
 }
 
+/// The fixture's clock, matching the browser harness's `now`, so painted ages agree.
+fn fixture_clock() -> SystemTime {
+    UNIX_EPOCH + Duration::from_secs(1_700_000_200)
+}
+
+fn fixture_board() -> (DomainState, BoardModel) {
+    let state: DomainState =
+        serde_json::from_str(include_str!("fixtures/demo-parity/store.json")).unwrap();
+    let mut model = BoardModel::from_domain(&state, Some(PathBuf::from("/tmp/tsk-parity")));
+    model.set_clock(Some(fixture_clock()));
+    (state, model)
+}
+
+/// The lines painted under the first row containing `row`, from column `skip` on: its live
+/// line or its open peek, up to the peek's `└` footer or the first line of anything else.
+fn under_row(text: &str, row: &str, skip: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines().skip_while(|line| !line.contains(row)).skip(1) {
+        let line: String = line.chars().skip(skip).collect();
+        let line = line.trim_end().trim_end_matches(['▌', '█']).trim_end();
+        let line = if skip > 0 {
+            line.strip_prefix(' ').unwrap_or(line)
+        } else {
+            line
+        };
+        if line.starts_with("    │ ") || line.starts_with("    └") {
+            out.push(line.to_string());
+            // A peek ends at its `└` footer; a live line goes on to its continuations.
+            if line.starts_with("    └") && out.iter().any(|line| line.starts_with("    │ ")) {
+                break;
+            }
+        } else if line.starts_with("       ") && !line.trim().is_empty() && !out.is_empty() {
+            out.push(line.to_string());
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+fn write_json(dir: &Path, name: &str, lines: &[String]) {
+    fs::write(dir.join(name), serde_json::to_string_pretty(lines).unwrap()).unwrap();
+}
+
 #[test]
 fn shared_fixture_first_flow_and_peek_references() {
     fixture_flow(false);
@@ -165,9 +212,7 @@ fn fixture_flow(export: bool) {
         text
     };
     for width in [40, 78, 109, 110] {
-        let mut state: DomainState =
-            serde_json::from_str(include_str!("fixtures/demo-parity/store.json")).unwrap();
-        let mut model = BoardModel::from_domain(&state, Some(PathBuf::from("/tmp/tsk-parity")));
+        let (mut state, mut model) = fixture_board();
         apply_intent(
             &mut state,
             &mut model,
@@ -185,7 +230,12 @@ fn fixture_flow(export: bool) {
         );
         let peek = capture(&model, width, "project-peek-or-split");
         if width < 110 {
-            assert!(peek.contains("└─ #release · tsk-parity"));
+            // A recorded block's peek: live line, why, Decide; no notes, no collapsed line.
+            assert!(peek.contains("└─ #release · tsk-parity"), "{peek}");
+            assert!(peek.contains("│ @claude blocked on you · 1m"), "{peek}");
+            assert!(peek.contains("│ Decide: Keep it · Rewrite"), "{peek}");
+            assert!(!peek.contains("Confirm the wording"), "{peek}");
+            assert!(!peek.contains("└─ @claude"), "{peek}");
         }
         key(
             &mut state,
@@ -193,6 +243,11 @@ fn fixture_flow(export: bool) {
             KeyCode::Left,
             KeyModifiers::NONE,
             width,
+        );
+        let closed = capture(&model, width, "peek-closed");
+        assert!(
+            closed.contains("└─ @claude blocked on you · 1m"),
+            "{closed}"
         );
         key(
             &mut state,
@@ -306,14 +361,54 @@ fn fixture_flow(export: bool) {
             assert!(capture(&model, width, "unlabeled-peek").contains("└─ tsk-parity"));
         }
     }
+    // The project preview paints the same live line and block peek as the board.
+    for width in [110, 130] {
+        let (mut state, mut model) = fixture_board();
+        apply_intent(
+            &mut state,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .unwrap();
+        // Each capture paints the frame, which records the wide presentation keys route by.
+        capture(&model, width, "projects");
+        for code in [KeyCode::Down, KeyCode::Right, KeyCode::Right] {
+            key(&mut state, &mut model, code, KeyModifiers::NONE, width);
+            capture(&model, width, "projects");
+        }
+        let live = capture(&model, width, "preview-live");
+        assert!(live.contains("└─ @claude blocked on you · 1m"), "{live}");
+        apply_intent(
+            &mut state,
+            model.input_target_mut(),
+            BoardIntent::PeekDetail,
+            None,
+        )
+        .unwrap();
+        let peek = capture(&model, width, "preview-peek");
+        assert!(peek.contains("│ Decide: Keep it · Rewrite"), "{peek}");
+        assert!(!peek.contains("Confirm the wording"), "{peek}");
+        assert!(!peek.contains("└─ @claude"), "{peek}");
+        apply_intent(
+            &mut state,
+            model.input_target_mut(),
+            BoardIntent::CollapseDetail,
+            None,
+        )
+        .unwrap();
+        let closed = capture(&model, width, "preview-closed");
+        assert!(
+            closed.contains("└─ @claude blocked on you · 1m"),
+            "{closed}"
+        );
+    }
 }
 
 #[test]
 fn selection_uses_arrow_and_underlined_tab_without_reverse_fill() {
     use ratatui::style::Modifier;
-    let mut state: DomainState =
-        serde_json::from_str(include_str!("fixtures/demo-parity/store.json")).unwrap();
-    let mut model = BoardModel::from_domain(&state, Some(PathBuf::from("/tmp/tsk-parity")));
+    let (mut state, mut model) = fixture_board();
     apply_intent(
         &mut state,
         &mut model,

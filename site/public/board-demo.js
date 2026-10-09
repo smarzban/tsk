@@ -1587,6 +1587,46 @@ import { parseCapture } from "./capture.js";
     return lines;
   }
 
+  // The open peek under a row, `columns` wide: a block's lines, or up to five note lines,
+  // then the metadata footer. Shared by the board and the project preview.
+  function peekHtml(task, columns) {
+    const blockLines = blockPeekLines(task).flatMap((line) =>
+      wrapText(line, columns - 7),
+    );
+    const noteLines = blockLines.length
+      ? []
+      : wrapText((task.notes || "").trim() || "no notes yet", columns - 7);
+    const label = metaFor(task);
+    return [
+      ...[...blockLines, ...noteLines.slice(0, 5)].map(
+        (line) => `<div class="tsk-peek dim">    │ ${esc(line)}</div>`,
+      ),
+      ...(noteLines.length > 5
+        ? [
+            `<div class="tsk-peek dim">    │ … ${noteLines.length - 5} more lines</div>`,
+          ]
+        : []),
+      ...(label
+        ? wrapText(label, columns - 9).map(
+            (line, i) =>
+              `<div class="tsk-attribution dim">${i ? "       " : "    └─ "}${esc(line)}</div>`,
+          )
+        : [`<div class="tsk-peek dim">    └</div>`]),
+    ].join("");
+  }
+
+  // The live line inside its row's button (a click on it acts on the task), `columns` wide.
+  function liveHtml(task, columns) {
+    const live = liveLine(task);
+    if (!live) return "";
+    return `<span class="tsk-live dim">${wrapText(live, columns - 9)
+      .map(
+        (line, i) =>
+          `<span class="tsk-live-line">${i ? "       " : "    └─ "}${esc(line)}</span>`,
+      )
+      .join("")}</span>`;
+  }
+
   function setStatus(status) {
     const tasks = targetTasks();
     const changed = tasks.filter((task) => task.status !== status);
@@ -2620,34 +2660,10 @@ import { parseCapture } from "./capture.js";
         const title = titleLines
           .map((line) => `<span class="tsk-title-line">${esc(line)}</span>`)
           .join("");
-        const noteLines = wrapText(
-          (task.notes || "").trim() || "no notes yet",
-          Math.max(8, width - 7),
-        );
-        const label = metaFor(task);
-        const peek =
-          rail && preview.peekId === task.id
-            ? [
-                ...noteLines
-                  .slice(0, 5)
-                  .map(
-                    (line) =>
-                      `<div class="tsk-peek dim">    │ ${esc(line)}</div>`,
-                  ),
-                ...(noteLines.length > 5
-                  ? [
-                      `<div class="tsk-peek dim">    │ … ${noteLines.length - 5} more lines</div>`,
-                    ]
-                  : []),
-                ...(label
-                  ? wrapText(label, width - 9).map(
-                      (line, i) =>
-                        `<div class="tsk-attribution dim">${i ? "       " : "    └─ "}${esc(line)}</div>`,
-                    )
-                  : [`<div class="tsk-peek dim">    └</div>`]),
-              ].join("")
-            : "";
-        return `<button type="button" class="tsk-row ${row.dim ? "dim" : ""} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-preview-task="${esc(task.id)}"><span class="tsk-row-main"><span class="tsk-row-prefix">${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> </span><span class="tsk-row-title">${title}</span></span></button>${peek}`;
+        const peekOpen = rail && preview.peekId === task.id;
+        const peek = peekOpen ? peekHtml(task, width) : "";
+        const live = peekOpen ? "" : liveHtml(task, width);
+        return `<button type="button" class="tsk-row ${row.dim ? "dim" : ""} ${live ? "has-live" : ""} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-preview-task="${esc(task.id)}"><span class="tsk-row-main"><span class="tsk-row-prefix">${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> </span><span class="tsk-row-title">${title}</span></span>${live}</button>${peek}`;
       })
       .join("");
     const project = esc(preview.project || "project");
@@ -2810,49 +2826,12 @@ import { parseCapture } from "./capture.js";
         const title = titleLines
           .map((line) => `<span class="tsk-title-line">${esc(line)}</span>`)
           .join("");
-        const noteLines = wrapText(
-          (task.notes || "").trim() || "no notes yet",
-          columns - 7,
-        );
-        const blockLines = blockPeekLines(task).flatMap((line) =>
-          wrapText(line, columns - 7),
-        );
-        const label = metaFor(task);
         const peekOpen = state.peekId === task.id && !isWideSplit();
-        const peek = peekOpen
-          ? [
-              ...blockLines.map(
-                (line) => `<div class="tsk-peek dim">    │ ${esc(line)}</div>`,
-              ),
-              ...(blockLines.length ? [] : noteLines.slice(0, 5)).map(
-                (line) => `<div class="tsk-peek dim">    │ ${esc(line)}</div>`,
-              ),
-              ...(!blockLines.length && noteLines.length > 5
-                ? [
-                    `<div class="tsk-peek dim">    │ … ${noteLines.length - 5} more lines</div>`,
-                  ]
-                : []),
-              ...(label
-                ? wrapText(label, columns - 9).map(
-                    (line, i) =>
-                      `<div class="tsk-attribution dim">${i ? "       " : "    └─ "}${esc(line)}</div>`,
-                  )
-                : [`<div class="tsk-peek dim">    └</div>`]),
-            ].join("")
-          : "";
+        const peek = peekOpen ? peekHtml(task, columns) : "";
         const dimRow = row.dim ? "dim" : "";
-        // The live line is part of its row (a click on it acts on the task); the peek
-        // replaces it.
-        const live = peekOpen ? "" : liveLine(task);
-        const liveHtml = live
-          ? `<span class="tsk-live dim">${wrapText(live, columns - 9)
-              .map(
-                (line, i) =>
-                  `<span class="tsk-live-line">${i ? "       " : "    └─ "}${esc(line)}</span>`,
-              )
-              .join("")}</span>`
-          : "";
-        return `<button type="button" class="tsk-row ${dimRow} ${live ? "has-live" : ""} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-task="${task.id}"><span class="tsk-row-main"><span class="tsk-row-prefix">${indent}${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> </span><span class="tsk-row-title">${title}</span></span>${liveHtml}</button>${peek}`;
+        // The peek replaces the live line.
+        const live = peekOpen ? "" : liveHtml(task, columns);
+        return `<button type="button" class="tsk-row ${dimRow} ${live ? "has-live" : ""} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-task="${task.id}"><span class="tsk-row-main"><span class="tsk-row-prefix">${indent}${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> </span><span class="tsk-row-title">${title}</span></span>${live}</button>${peek}`;
       })
       .join("");
 

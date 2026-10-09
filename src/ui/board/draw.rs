@@ -1316,7 +1316,7 @@ fn build_task_page_overlay<'a>(
             if !notes_rows.is_empty() {
                 notes_rows.push(String::new());
             }
-            let when = render::format_age(SystemTime::now(), dispatch.at);
+            let when = render::format_age(model.now(), dispatch.at);
             let mut dispatch_lines = vec![
                 if dispatch.cleaned {
                     "dispatch · cleaned".to_string()
@@ -1467,7 +1467,7 @@ fn trail_page_rows(
     use render::{BlockPageRow, BlockRowKind, QueueHitTarget, TrailPageRow};
 
     let width = width.max(8);
-    let now = SystemTime::now();
+    let now = model.now();
     let all = form.block.trail_all;
     let (entries, hidden) = super::block::trail_view(task, all);
     // Selection belongs to the page form; another seat's form never paints it.
@@ -1615,7 +1615,7 @@ fn block_page_rows(
         return (Vec::new(), Vec::new(), None);
     };
     let width = width.max(8);
-    let now = SystemTime::now();
+    let now = model.now();
     let selected = model.block_target();
     let mut rows: Vec<BlockPageRow> = Vec::new();
     let mut stops = Vec::new();
@@ -2588,7 +2588,7 @@ fn draw_board_hits(frame: &mut Frame, model: &BoardModel) -> render::QueueHitMap
         status_undo_offset,
         status_undo_width,
         verb_items: &verbs,
-        now: SystemTime::now(),
+        now: model.now(),
         overlay,
         detail_open: model.detail_open,
         row_reply: row_reply_paint(model),
@@ -2769,7 +2769,7 @@ fn draw_wide_board(
         status_undo_offset,
         status_undo_width,
         verb_items: &verbs,
-        now: SystemTime::now(),
+        now: model.now(),
         overlay: if task_focus {
             QueueOverlay::None
         } else {
@@ -3017,7 +3017,7 @@ fn draw_projects_wide_board(
         status_undo_offset: outer_status.1,
         status_undo_width: outer_status.2,
         verb_items: &outer_verbs,
-        now: SystemTime::now(),
+        now: model.now(),
         overlay: outer_modal.clone().unwrap_or(QueueOverlay::None),
         detail_open: None,
         row_reply: None,
@@ -3054,7 +3054,7 @@ fn draw_projects_wide_board(
             status_undo_offset: status.1,
             status_undo_width: status.2,
             verb_items: verbs,
-            now: SystemTime::now(),
+            now: model.now(),
             overlay: right_overlay.clone().unwrap_or(QueueOverlay::None),
             detail_open: (stage == tier::WideStage::Rail)
                 .then_some(right.detail_open())

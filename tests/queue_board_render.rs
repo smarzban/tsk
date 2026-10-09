@@ -205,6 +205,8 @@ fn fixture_tasks() -> Vec<Task> {
 /// selection.
 fn base_board_model() -> BoardModel {
     let mut model = BoardModel::from_tasks(fixture_tasks(), Some(PathBuf::from("/repos/tsk")));
+    // Painted ages (the live line's `· 41m`) read this fixed clock, never today's date.
+    model.set_clock(Some(now()));
     // The desk's NEEDS YOU lane is global now, so seeding no longer lands on task 1
     // (the started /repos/tsk row): the render fixtures pin task 1's legend explicitly.
     let pinned_index = model
@@ -1008,15 +1010,14 @@ fn every_section_header_has_symmetric_spacing_and_scrolls_with_its_selected_task
     for &(width, height) in &[(78u16, 24u16), (77u16, 24u16), (40u16, 10u16)] {
         let dimensions = format!("{width}x{height}");
         for &(header, selected_id, selected_title) in &desk_cases {
-            if width == 40 && header == "NEEDS YOU" {
-                // The selected blocked row wraps its title and adds its live line, which
-                // fills a 10-row frame; the live line's wrap has its own render tests.
-                continue;
-            }
             let mut model = fixture_model(&tasks, &desk_view);
             model.selection_id = Some(selected_id);
             let (rows, geo) = paint(width, height, &model);
-            assert_exact_header_spacing(&rows, geo, header, selected_title, &dimensions);
+            // At 40x10 the selected blocked row wraps its title and adds its live line,
+            // which fills the frame: the header's spacing gives way, the title does not.
+            if !(width == 40 && header == "NEEDS YOU") {
+                assert_exact_header_spacing(&rows, geo, header, selected_title, &dimensions);
+            }
 
             let top = geo.viewport_top as usize;
             let bottom = top + geo.viewport_height as usize;
@@ -3219,7 +3220,11 @@ fn long_combined_filter_wraps_chip_and_footer_without_losing_either_choice() {
         let footer = rows[rows.len() - 4..].join("\n");
         assert!(footer.contains("#release-coordination"), "footer:\n{text}");
         assert!(footer.contains("@integration-agent"), "footer:\n{text}");
-        assert!(text.contains("board UI"), "the list keeps a row:\n{text}");
+        // A wrapped selected title that cannot fit keeps its head line, `▸` and number.
+        assert!(
+            text.contains("▸ ○ T3 Prototype"),
+            "the list keeps a row:\n{text}"
+        );
     }
     // Every wrapped chip row opens the picker.
     let hits = tsk_tui::ui::board::board_hit_map(Rect::new(0, 0, 40, 24), &model);
@@ -3424,6 +3429,9 @@ fn golden_scenes() -> Vec<GoldenScene> {
     let archived_view = fixture_view(&archived_tasks, true);
     let mut archived_model = fixture_model(&archived_tasks, &archived_view);
     archived_model.archived_collapsed = false;
+    // Live lines push the drawer below a 24-row fold: select the last archived row so the
+    // DONE rows and the archived group both show.
+    archived_model.selection_id = Some(Uuid::from_u128(7302));
     let (archived_rows, _) = paint(80, 24, &archived_model);
 
     let (filter_picker_rows, filtered_board_rows) = filter_golden_rows();
@@ -7168,6 +7176,112 @@ fn a_click_on_the_live_line_acts_on_its_row() {
                 && matches!(hit.target, QueueHitTarget::Task(id) if id == Uuid::from_u128(5))),
             "{}: {hits:?}",
             row_text(y)
+        );
+    }
+}
+
+#[test]
+fn a_tall_live_line_never_scrolls_its_selected_title_out_of_a_40x10_frame() {
+    let mut tasks = live_line_tasks();
+    // A short ready title whose live line names six unfinished prerequisites wraps to more
+    // rows than a 40x10 viewport holds.
+    let mut waits = task(30, "Waits", HumanStatus::Ready, project("/repos/tsk"), 60);
+    waits.number = Some(30);
+    waits.after = vec![22, 23, 31, 32, 33, 34];
+    tasks.push(waits);
+    for number in 31..=34 {
+        let mut prerequisite = task(
+            u128::from(number),
+            &format!("Prerequisite {number}"),
+            HumanStatus::Open,
+            project("/repos/tsk"),
+            60,
+        );
+        prerequisite.number = Some(number);
+        tasks.push(prerequisite);
+    }
+    let view = fixture_view_projects(&tasks, false);
+    let mut model = fixture_model_on_tab(&tasks, &view, NavTab::ProjectBoard);
+    model.selection_id = Some(Uuid::from_u128(30));
+    let (rows, geo) = paint(40, 10, &model);
+    let top = geo.viewport_top as usize;
+    let viewport = rows[top..top + geo.viewport_height as usize]
+        .iter()
+        .map(|row| list_body(row))
+        .collect::<Vec<_>>();
+    assert!(
+        viewport.iter().any(|row| row.starts_with("▸ ○ T30 Waits")),
+        "the selected title stays visible:\n{}",
+        viewport.join("\n")
+    );
+    assert!(
+        viewport
+            .iter()
+            .any(|row| row.starts_with("    └─ after T22 (started)")),
+        "and its live line starts under it:\n{}",
+        viewport.join("\n")
+    );
+    assert_visible_chrome(&rows, geo, "40x10");
+}
+
+#[test]
+fn notice_rows_carry_no_live_line_and_peek_their_notes() {
+    use tsk_tui::domain::{Block, BlockOn, ReviewDraft};
+    let mut tasks = live_line_tasks();
+    let mut notice = task(
+        40,
+        "What's new",
+        HumanStatus::Review,
+        project("/repos/tsk"),
+        60,
+    );
+    notice.notice = Some(Notice {
+        catalog_id: "release".into(),
+        number: Some(5),
+    });
+    notice.notes = Some("Release notes body.".into());
+    // Even with a recorded round, a notice stays a plain row and peeks its notes.
+    notice.block = Some(Block::open_review(
+        ReviewDraft {
+            done: Some("shipped".into()),
+            checks: Vec::new(),
+            next: None,
+            on: BlockOn::You,
+        },
+        "claude",
+        at_secs_ago(60),
+        1,
+    ));
+    assert_eq!(tsk_tui::ui::render::live_line(&notice, &tasks, now()), None);
+    tasks.push(notice);
+    let view = fixture_view_projects(&tasks, false);
+    for peek in [false, true] {
+        let mut model = fixture_model_on_tab(&tasks, &view, NavTab::ProjectBoard);
+        model.selection_id = Some(Uuid::from_u128(40));
+        model.detail_open = peek.then(|| Uuid::from_u128(40));
+        let body = paint(80, 80, &model)
+            .0
+            .iter()
+            .map(|row| list_body(row))
+            .collect::<Vec<_>>();
+        let at = body
+            .iter()
+            .position(|row| row.contains("N5 What's new"))
+            .expect("notice row");
+        if peek {
+            assert_eq!(body[at + 1], "    │ Release notes body.", "{body:#?}");
+        } else {
+            assert!(
+                !body[at + 1].starts_with("    └─"),
+                "no live line: {:?}",
+                body[at + 1]
+            );
+        }
+        assert!(
+            !body
+                .iter()
+                .any(|row| row.contains("needs your review · 1m")),
+            "{body:#?}"
         );
     }
 }

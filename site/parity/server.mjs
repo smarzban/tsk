@@ -11,6 +11,7 @@ const tasks = fixture.tasks.map((t) => ({
   project: t.scope.project?.path.split("/").pop() ?? null,
   createdAt: t.created_at[0] * 1000,
   updatedAt: t.updated_at[0] * 1000,
+  block: t.block && { ...t.block, at: t.block.at[0] * 1000 },
 }));
 const html = `<!doctype html><html data-theme="dark"><head><link rel="stylesheet" href="/src/styles/landing.css"><style>
 :root { --font-mono: monospace; } body { margin:0; padding:20px; background:var(--bg); } #board-demo { width:max-content; outline:0; } #tsk-demo { box-sizing:content-box; width:78ch; height:24lh; min-height:0; padding:0; font:14px/20px monospace; }
