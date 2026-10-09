@@ -39,6 +39,8 @@ pub(crate) struct BlockPageState {
     pub(crate) reply: Option<ReplyEditor>,
     /// The passed checks are unfolded under their `N passed ▾` line.
     pub(crate) passed_open: bool,
+    /// Which checks sit under the `N passed` line, frozen when the page is painted fresh.
+    pub(crate) fold: Option<CheckFold>,
     /// Absolute content row of each ring stop at the last painted width, recorded by the
     /// renderer so Tab can keep the selected stop inside the page viewport.
     pub(crate) rows: RefCell<Vec<(BlockTarget, usize)>>,
@@ -46,6 +48,33 @@ pub(crate) struct BlockPageState {
     pub(crate) trail_all: bool,
     /// Closed records expanded in place on the PAPER TRAIL, by `past_blocks` index.
     pub(crate) trail_open: BTreeSet<usize>,
+}
+
+/// The checks folded under the `N passed` line, as they stood when the page was painted fresh
+/// (opened, or folded with `Enter`). A check cycled on the page keeps its row until the page is
+/// left, so it can go passed → failed in one place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CheckFold {
+    /// The review round the fold was taken on. A different round paints fresh.
+    key: BlockKey,
+    folded: BTreeSet<usize>,
+}
+
+impl CheckFold {
+    /// The fresh fold of a review round: its passed checks. `None` for anything else.
+    pub(crate) fn fresh(task: &Task) -> Option<Self> {
+        let block = task.block.as_ref().filter(|block| block.is_review())?;
+        Some(Self {
+            key: block.key(),
+            folded: block
+                .checks
+                .iter()
+                .enumerate()
+                .filter(|(_, check)| check.state == CheckState::Passed)
+                .map(|(index, _)| index)
+                .collect(),
+        })
+    }
 }
 
 /// The reply box under the last reply.
@@ -693,29 +722,33 @@ fn page_block_task(model: &BoardModel) -> Option<&Task> {
         .filter(|task| has_open_section(task))
 }
 
-/// The review checks in page order: open and failed checks in place, then the passed ones,
-/// which fold under their `N passed` line.
-pub(crate) fn review_check_order(block: &Block) -> (Vec<usize>, Vec<usize>) {
-    let (shown, passed): (Vec<_>, Vec<_>) = block
-        .checks
-        .iter()
-        .enumerate()
-        .partition(|(_, check)| check.state != CheckState::Passed);
-    (
-        shown.into_iter().map(|(index, _)| index).collect(),
-        passed.into_iter().map(|(index, _)| index).collect(),
-    )
+/// The review checks in page order: the checks shown in place, then the ones folded under their
+/// `N passed` line. The page's frozen fold decides which fold; without one for this round, the
+/// passed checks do (a fresh paint).
+pub(crate) fn review_check_order(
+    block: &Block,
+    fold: Option<&CheckFold>,
+) -> (Vec<usize>, Vec<usize>) {
+    let frozen = fold.filter(|fold| fold.key == block.key());
+    (0..block.checks.len()).partition(|index| match frozen {
+        Some(fold) => !fold.folded.contains(index),
+        None => block.checks[*index].state != CheckState::Passed,
+    })
 }
 
 /// The ring stops of the page's open block or review round, in order.
-pub(super) fn block_ring(task: &Task, passed_open: bool) -> Vec<BlockTarget> {
+pub(super) fn block_ring(
+    task: &Task,
+    passed_open: bool,
+    fold: Option<&CheckFold>,
+) -> Vec<BlockTarget> {
     let Some(block) = task.block.as_ref() else {
         return Vec::new();
     };
     let mut ring = vec![BlockTarget::Heading];
     ring.extend((0..block.options.len()).map(BlockTarget::Option));
     if block.is_review() {
-        let (shown, passed) = review_check_order(block);
+        let (shown, passed) = review_check_order(block, fold);
         ring.extend(shown.into_iter().map(BlockTarget::Check));
         if !passed.is_empty() {
             ring.push(BlockTarget::PassedFold);
@@ -746,7 +779,7 @@ pub(super) fn selected_block_target(model: &BoardModel) -> Option<BlockTarget> {
         return trail_stops(model).contains(&target).then_some(target);
     }
     let task = page_block_task(model)?;
-    block_ring(task, form.block.passed_open)
+    block_ring(task, form.block.passed_open, form.block.fold.as_ref())
         .contains(&target)
         .then_some(target)
 }
@@ -918,7 +951,7 @@ pub(super) fn move_block_tab(model: &mut BoardModel, forward: bool) -> PageTab {
     let Some(task) = page_block_task(model) else {
         return PageTab::NotHandled;
     };
-    let ring = block_ring(task, passed_open(model));
+    let ring = page_ring(model, task);
     let Some(current) = selected_block_target(model) else {
         return PageTab::NotHandled;
     };
@@ -948,7 +981,7 @@ pub(super) fn enter_block_ring(model: &mut BoardModel, forward: bool) -> bool {
     let Some(task) = page_block_task(model) else {
         return false;
     };
-    let ring = block_ring(task, passed_open(model));
+    let ring = page_ring(model, task);
     let stop = if forward { ring.first() } else { ring.last() }.copied();
     if stop.is_none() {
         return false;
@@ -957,11 +990,40 @@ pub(super) fn enter_block_ring(model: &mut BoardModel, forward: bool) -> bool {
     true
 }
 
-fn passed_open(model: &BoardModel) -> bool {
-    model
+fn page_ring(model: &BoardModel, task: &Task) -> Vec<BlockTarget> {
+    let form = model.form.as_ref();
+    block_ring(
+        task,
+        form.is_some_and(|form| form.block.passed_open),
+        form.and_then(|form| form.block.fold.as_ref()),
+    )
+}
+
+/// Take a fresh fold when the page has none for the task's current review round: the round
+/// first appears on an open page, or a new round replaces it. Later refreshes keep the fold, so
+/// a check marked passed elsewhere keeps its row until the page is painted fresh.
+pub(super) fn freeze_check_fold(model: &mut BoardModel) {
+    let Some(id) = model
         .form
         .as_ref()
-        .is_some_and(|form| form.block.passed_open)
+        .filter(|form| form.is_task())
+        .and_then(|form| form.task_id())
+    else {
+        return;
+    };
+    let Some(fresh) = model
+        .tasks
+        .iter()
+        .find(|task| task.id == id)
+        .and_then(CheckFold::fresh)
+    else {
+        return;
+    };
+    if let Some(form) = model.form.as_mut() {
+        if form.block.fold.as_ref().map(|fold| &fold.key) != Some(&fresh.key) {
+            form.block.fold = Some(fresh);
+        }
+    }
 }
 
 /// `r`, or `Enter` on an option (prefilled), or `ctrl+e` on one of your replies (`edit`).
@@ -1055,8 +1117,8 @@ fn close_reply(model: &mut BoardModel, page_target: Option<BlockTarget>) {
     }
 }
 
-/// `Enter` on a review check: cycle it open → passed → failed. A check that passes folds away
-/// while the passed checks are folded, so the cursor moves to their `N passed` line.
+/// `Enter` on a review check: cycle it open → passed → failed → open. The check keeps its row
+/// and the cursor through the whole cycle; it folds only when the page is next painted fresh.
 pub(super) fn cycle_selected_check(
     domain: &mut DomainState,
     model: &mut BoardModel,
@@ -1076,6 +1138,7 @@ pub(super) fn cycle_selected_check(
     else {
         return Ok(IntentOutcome::None);
     };
+    freeze_check_fold(model);
     match domain.set_check(id, index, state) {
         Ok(true) => {}
         Ok(false) => return Ok(IntentOutcome::None),
@@ -1085,22 +1148,45 @@ pub(super) fn cycle_selected_check(
         }
         Err(error) => return Err(error),
     }
-    if let Some(form) = model.form.as_mut() {
-        if state == CheckState::Passed && !form.block.passed_open {
-            form.block.target = Some(BlockTarget::PassedFold);
-        }
-    }
     Ok(IntentOutcome::Persist)
 }
 
-/// `Enter` on the `N passed` line: show or fold the passed checks.
+/// `Enter` on the `N passed` line: show or fold the passed checks. Folding paints the fold
+/// fresh, so it takes in the checks passed in place and lets go of any no longer passed. When
+/// none is still passed the line goes away, and the cursor moves to the check that left the fold
+/// (else the stop before the line), never onto a row the page does not paint.
 pub(super) fn toggle_passed_checks(model: &mut BoardModel) {
     if selected_block_target(model) != Some(BlockTarget::PassedFold) {
         return;
     }
-    if let Some(form) = model.form.as_mut() {
-        form.block.passed_open = !form.block.passed_open;
+    let Some(task) = page_block_task(model) else {
+        return;
+    };
+    let fresh = CheckFold::fresh(task);
+    let before = page_ring(model, task);
+    let Some(form) = model.form.as_mut() else {
+        return;
+    };
+    form.block.passed_open = !form.block.passed_open;
+    if form.block.passed_open {
+        return;
     }
+    let old = std::mem::replace(&mut form.block.fold, fresh);
+    if form
+        .block
+        .fold
+        .as_ref()
+        .is_some_and(|fold| !fold.folded.is_empty())
+    {
+        return;
+    }
+    let left = old.and_then(|fold| fold.folded.first().copied());
+    let previous = before
+        .iter()
+        .position(|stop| *stop == BlockTarget::PassedFold)
+        .and_then(|at| at.checked_sub(1))
+        .map(|at| before[at]);
+    form.block.target = left.map(BlockTarget::Check).or(previous);
 }
 
 /// The text of the selected option, for `Enter`.

@@ -84,7 +84,7 @@ These keys apply in **view mode**:
 | Select the BLOCKED or REVIEW heading, options or checks, and replies, then steps, **+ step**, and the paper trail's closed records | `Tab` / `Shift+Tab` |
 | Reply to a blocked task, or give feedback on a review | `r` |
 | Reply with the selected option, prefilled | `Enter` on an option |
-| Cycle the selected check: open → passed → failed | `Enter` on a check |
+| Cycle the selected check in place: open → passed → failed → open | `Enter` on a check |
 | Show or fold the passed checks | `Enter` on the `N passed` line |
 | Show the whole paper trail, or only the latest five | `a` |
 | Expand or fold a closed block or review round on the paper trail | `Enter` on it |

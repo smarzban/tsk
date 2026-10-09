@@ -90,13 +90,13 @@ The reply box opens under the last reply and wraps like the notes. It belongs to
 
 ## Review
 
-A task in review opens with a REVIEW section in the same place. Its heading reads, for example, `REVIEW · round 2 · on you · @claude 40m ── PR #41 · r feedback`: the round, who it is on, who set it and when, and the pull request it names (the first `/pull/<n>` link or `PR #<n>` in done, next, the checks, or the notes). Below it come `done`, the checks, `next`, and your feedback as `└ you 5m  <text>`. Checks show `○` open or `✗` failed; passed checks fold into a dim `N passed ▸` line under them. The section shows only while the task is in review; closed rounds stay in `tsk list --json` under `past_reviews`. Checks are the review's own list and never become steps.
+A task in review opens with a REVIEW section in the same place. Its heading reads, for example, `REVIEW · round 2 · on you · @claude 40m ── PR #41 · r feedback`: the round, who it is on, who set it and when, and the pull request it names (the first `/pull/<n>` link or `PR #<n>` in done, next, the checks, or the notes). Below it come `done`, the checks, `next`, and your feedback as `└ you 5m  <text>`. Checks show `○` open or `✗` failed; passed checks fold into a dim `N passed ▸` line under them. The fold is taken when the page opens: a check you cycle on the page keeps its row and the cursor (`○` → `✓` → `✗` → `○`), so you can pass and then fail it in one place, and it folds the next time you open the page. Folding the line with `Enter` takes in the checks passed since. The section shows only while the task is in review; closed rounds stay in `tsk list --json` under `past_reviews`. Checks are the review's own list and never become steps.
 
 In view mode `Tab` walks the heading, the checks, the `N passed` line (and the passed checks when unfolded), and the feedback before the steps and **+ step**.
 
 | Action | Key |
 | --- | --- |
-| Cycle a check: open → passed → failed | `Enter` on the check |
+| Cycle a check in place: open → passed → failed → open | `Enter` on the check |
 | Show or fold the passed checks (`▸` / `▾`) | `Enter` on the `N passed` line |
 | Give feedback | `r` |
 | Save the feedback; stay in review | `Shift+Enter` |
