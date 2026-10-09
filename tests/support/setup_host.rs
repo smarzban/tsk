@@ -69,6 +69,9 @@ esac
     pub fn run(&self, scenario: &str) -> Output {
         self.command().env("SCENARIO", scenario).output().unwrap()
     }
+    pub fn check(&self) -> Output {
+        self.command().arg("--check").output().unwrap()
+    }
     pub fn calls(&self) -> String {
         fs::read_to_string(self.root.join("calls")).unwrap_or_default()
     }

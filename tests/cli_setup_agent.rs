@@ -1282,12 +1282,17 @@ fn herdr_check_reports_bound_only_when_both_commands_are_in_the_config() {
         .expect("outside config");
         fs::remove_file(&config).expect("remove config");
         symlink(&outside, &config).expect("linked config");
+        // A dotfiles-linked config is followed (#129).
         let linked = cli_non_tty(&["tsk", "setup", "herdr", "--check"]);
-        assert_ne!(
-            linked.code, 0,
-            "a linked final config must be refused: {linked:?}"
+        assert_eq!(
+            (linked.code, linked.stdout.trim()),
+            (0, "bound"),
+            "{linked:?}"
         );
-        assert!(linked.stdout.trim().is_empty(), "{linked:?}");
+        fs::remove_file(&outside).expect("dangle the link");
+        let dangling = cli_non_tty(&["tsk", "setup", "herdr", "--check"]);
+        assert_ne!(dangling.code, 0, "a dangling link is refused: {dangling:?}");
+        assert!(dangling.stdout.trim().is_empty(), "{dangling:?}");
     }
 
     match previous {

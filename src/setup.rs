@@ -260,7 +260,7 @@ pub fn commands_bound(source: &str) -> bool {
 /// `tsk setup herdr --check`: is the plugin already wired into the resolved Herdr config?
 /// A missing config is simply not bound.
 pub fn herdr_setup_present() -> io::Result<bool> {
-    let path = config_path()?;
+    let (_, path) = resolve_config(&config_path()?)?;
     let parent = path
         .parent()
         .ok_or_else(|| error("Herdr config path has no parent directory"))?;
@@ -507,6 +507,60 @@ fn no_symlink(path: &Path) -> io::Result<()> {
         Err(e) => Err(e),
     }
 }
+/// Follow `path` while it is a symlink (dotfiles managers link the Herdr config and its
+/// directory). Relative targets resolve against the link's directory. A missing `path` is
+/// returned as is; a dangling or looping link is refused before anything is read or written.
+fn follow_links(path: &Path) -> io::Result<PathBuf> {
+    let mut current = path.to_path_buf();
+    for _ in 0..40 {
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                let target = fs::read_link(&current)?;
+                current = current
+                    .parent()
+                    .map_or_else(|| target.clone(), |dir| dir.join(&target));
+            }
+            Ok(_) => return Ok(current),
+            Err(e) if e.kind() == io::ErrorKind::NotFound && current == path => {
+                return Ok(current)
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(error(format!(
+                    "Herdr config symlink {} points at missing {}; create the target or remove the link",
+                    path.display(),
+                    current.display()
+                )))
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(error(format!(
+        "Herdr config symlink {} loops; fix the link",
+        path.display()
+    )))
+}
+/// Where setup actually edits: the config's directory with its link followed, then the
+/// config file within it with its link followed (and that target's directory, if linked).
+/// Returns `(asset_dir, config_target)`. Generated assets and the setup lock stay beside the
+/// configured path; the staged edit, backup, and rename land beside the real file, so the
+/// link itself is never replaced.
+fn resolve_config(config: &Path) -> io::Result<(PathBuf, PathBuf)> {
+    let parent = config
+        .parent()
+        .ok_or_else(|| error("config has no parent directory"))?;
+    let filename = config
+        .file_name()
+        .ok_or_else(|| error("config has no filename"))?;
+    let home = follow_links(parent)?;
+    let file = follow_links(&home.join(filename))?;
+    let (Some(dir), Some(name)) = (file.parent(), file.file_name()) else {
+        return Err(error(format!(
+            "Herdr config symlink {} must point at a file",
+            config.display()
+        )));
+    };
+    Ok((home.clone(), follow_links(dir)?.join(name)))
+}
 fn read_config(path: &Path) -> io::Result<Option<String>> {
     no_symlink(path)?;
     match fs::read_to_string(path) {
@@ -687,11 +741,12 @@ fn run_at(
     interactive: bool,
     host: &mut impl FnMut(&[&str], &Path) -> io::Result<String>,
 ) -> io::Result<SetupResult> {
-    let parent_path = config
+    let (home_path, target) = resolve_config(config)?;
+    let parent_path = target
         .parent()
         .ok_or_else(|| error("config has no parent directory"))?;
     let filename = Path::new(
-        config
+        target
             .file_name()
             .ok_or_else(|| error("config has no filename"))?,
     );
@@ -704,7 +759,7 @@ fn run_at(
     let before = if let Some(dir) = &existing {
         dir.read(filename)?
     } else {
-        read_config(config)?
+        read_config(&target)?
     };
     let declined_conflicts = std::cell::Cell::new(false);
     let edited = edit_bindings(
@@ -723,10 +778,18 @@ fn run_at(
         Some(dir) => dir,
         None => Dir::open(parent_path, true)?,
     };
+    let home = if home_path == parent_path {
+        None
+    } else {
+        Some(Dir::open(&home_path, true)?)
+    };
+    let home = home.as_ref().unwrap_or(&parent);
     parent.validate()?;
-    let _lock = parent.lock()?;
+    home.validate()?;
+    let _lock = home.lock()?;
     let unchanged = || -> io::Result<()> {
         parent.validate()?;
+        home.validate()?;
         if parent.read(filename)? != before {
             return Err(error("Herdr config changed during setup; retry"));
         }
@@ -751,7 +814,7 @@ fn run_at(
         )?;
     }
     unchanged()?;
-    let base = parent.child(Path::new("tsk-plugins"), true)?;
+    let base = home.child(Path::new("tsk-plugins"), true)?;
     let root = base.child(Path::new(&asset_root_name(&assets)), true)?;
     for (name, contents) in &assets {
         let path = Path::new(name);
