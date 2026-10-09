@@ -1322,7 +1322,7 @@ pub fn status_help() -> CliOutput {
 
 pub fn reply_help() -> CliOutput {
     help(HelpDoc {
-        usage: vec!["tsk reply <task> <text> [--state-dir <dir>]".into()],
+        usage: vec!["tsk reply <task> <text> [--send] [--state-dir <dir>]".into()],
         purpose: "Add a reply to a blocked task's open block. Not idempotent: each run adds one."
             .into(),
         groups: vec![group(
@@ -1330,11 +1330,16 @@ pub fn reply_help() -> CliOutput {
             &[
                 ("<task>", "a task number or UUID"),
                 ("<text>", "the reply; put -- before text that begins with -"),
+                (
+                    "--send",
+                    "also send your replies since the agent's last one to its running agent; the task stays blocked",
+                ),
                 ("--state-dir <dir>", "use another board store"),
             ],
         )],
         examples: vec![
             "tsk reply T12 \"Use postgres\"".into(),
+            "tsk reply T12 \"Use postgres\" --send".into(),
             "tsk reply T12 -- \"-5 degrees is fine\"".into(),
         ],
         refusals: vec![
@@ -1350,6 +1355,18 @@ pub fn reply_help() -> CliOutput {
             true,
         ),
     })
+}
+
+/// A stored reply, then whether `--send` reached the agent. Exit 0 either way: the reply is
+/// on the task.
+pub fn replied_and_sent(
+    result: crate::cli::reply::ReplyResult,
+    outcome: &crate::cli::reply::SendOutcome,
+) -> CliOutput {
+    let mut output = replied(result);
+    output.stdout.push_str(&terminal_text(&outcome.line()));
+    output.stdout.push('\n');
+    output
 }
 
 pub fn replied(result: crate::cli::reply::ReplyResult) -> CliOutput {
@@ -1369,7 +1386,7 @@ pub fn reply_usage(reason: &str) -> CliOutput {
     CliOutput {
         stdout: String::new(),
         stderr: format!(
-            "tsk reply: {}\nusage: tsk reply <task> <text> [--state-dir <dir>]\n",
+            "tsk reply: {}\nusage: tsk reply <task> <text> [--send] [--state-dir <dir>]\n",
             human_reason(reason)
         ),
         code: 2,

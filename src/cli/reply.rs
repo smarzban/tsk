@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::cli::parser::TaskAddress;
-use crate::domain::{actor_from_env, DomainError, DomainState};
+use crate::dispatch::{self, AgentCheck, Delivery, DispatchHost, StartRoute};
+use crate::domain::{actor_from_env, DomainError, DomainState, OWNER};
 use crate::store::{default_state_dir, TaskStore};
 
 /// A stored reply.
@@ -40,6 +41,106 @@ impl ReplyError {
     }
 }
 
+/// What `--send` did with a stored reply. The task's status never changes here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendOutcome {
+    /// Submitted to the agent `@assignee`.
+    Sent { assignee: String },
+    /// Herdr refused or failed; the reply stays on the task only.
+    NotDelivered {
+        assignee: String,
+        delivery: Delivery,
+    },
+    /// Nothing was tried, and why.
+    Skipped(String),
+}
+
+impl SendOutcome {
+    /// The CLI line under the reply acknowledgement.
+    pub fn line(&self) -> String {
+        match self {
+            Self::Sent { assignee } => format!("sent to @{assignee}"),
+            Self::NotDelivered {
+                assignee,
+                delivery: Delivery::AgentWaiting,
+            } => format!("not sent: @{assignee} is waiting on a prompt"),
+            Self::NotDelivered { assignee, .. } => format!("not sent: could not reach @{assignee}"),
+            Self::Skipped(reason) => format!("not sent: {reason}"),
+        }
+    }
+}
+
+/// `tsk reply --send`: store the reply, then deliver the owner's replies since the agent's
+/// last one to the task's running dispatched agent. The task stays blocked.
+pub fn run_send(
+    target: TaskAddress,
+    text: &str,
+    state_dir: Option<PathBuf>,
+) -> Result<(ReplyResult, SendOutcome), ReplyError> {
+    let (state_dir, mut host) = crate::cli::dispatch::system_host(state_dir);
+    run_send_with_host(
+        target,
+        text,
+        Some(state_dir),
+        &actor_from_env(),
+        dispatch::running_inside_herdr(),
+        &mut host,
+    )
+}
+
+pub fn run_send_with_host(
+    target: TaskAddress,
+    text: &str,
+    state_dir: Option<PathBuf>,
+    by: &str,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<(ReplyResult, SendOutcome), ReplyError> {
+    let result = run_as(target, text, state_dir.clone(), by)?;
+    let store = TaskStore::new(state_dir.unwrap_or_else(default_state_dir));
+    let outcome = match store.load() {
+        Ok(state) => match state.tasks().iter().find(|task| target.matches(task)) {
+            Some(task) => send(task, &result.by, in_herdr, host),
+            None => SendOutcome::Skipped("the task is gone".into()),
+        },
+        Err(error) => SendOutcome::Skipped(format!("could not read the board: {error}")),
+    };
+    Ok((result, outcome))
+}
+
+fn send(
+    task: &crate::domain::Task,
+    by: &str,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> SendOutcome {
+    let skip = |reason: &str| SendOutcome::Skipped(reason.to_string());
+    let Some(assignee) = task.assignee.clone() else {
+        return skip("the task has no assignee");
+    };
+    if by != OWNER {
+        return skip("only your replies are sent");
+    }
+    if task.dispatch.is_none() {
+        return skip("never dispatched; a start dispatches it");
+    }
+    if !in_herdr {
+        return skip(dispatch::NO_LAUNCH_NOT_IN_HERDR);
+    }
+    let check = match dispatch::start_route_checked(task, OWNER, in_herdr, host) {
+        (StartRoute::AgentGone { .. }, _) => {
+            return SendOutcome::Skipped(format!("@{assignee} is gone"))
+        }
+        (_, check) => check,
+    };
+    match dispatch::deliver_reply(task, &check, "reply", host) {
+        Some(Delivery::Sent) => SendOutcome::Sent { assignee },
+        Some(delivery) => SendOutcome::NotDelivered { assignee, delivery },
+        None if check == AgentCheck::NotChecked => skip("no running agent"),
+        None => skip("nothing of yours to send"),
+    }
+}
+
 /// Add a reply to the task's open block. The author is the dispatched agent named by
 /// `TSK_AGENT`, or `you`. Not idempotent: each run adds a reply.
 pub fn run(
@@ -47,8 +148,16 @@ pub fn run(
     text: &str,
     state_dir: Option<PathBuf>,
 ) -> Result<ReplyResult, ReplyError> {
+    run_as(target, text, state_dir, &actor_from_env())
+}
+
+fn run_as(
+    target: TaskAddress,
+    text: &str,
+    state_dir: Option<PathBuf>,
+    by: &str,
+) -> Result<ReplyResult, ReplyError> {
     let store = TaskStore::new(state_dir.unwrap_or_else(default_state_dir));
-    let by = actor_from_env();
     store
         .locked_transition_if_changed(|state: &mut DomainState| {
             let found = state
@@ -56,7 +165,7 @@ pub fn run(
                 .iter()
                 .find(|task| target.matches(task))
                 .map(|task| (task.id, task.number, task.title.clone(), task.soft_deleted));
-            Ok(apply(state, found, text, &by))
+            Ok(apply(state, found, text, by))
         })
         .map_err(ReplyError::Store)?
 }
@@ -87,5 +196,254 @@ fn apply(
         Err(DomainError::TextTooLong(_)) => (Err(ReplyError::TextTooLong), false),
         Err(DomainError::UnknownId(_)) => (Err(ReplyError::UnknownTask), false),
         Err(other) => (Err(ReplyError::Store(other.to_string())), false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::{run_send_with_host, SendOutcome};
+    use crate::cli::parser::TaskAddress;
+    use crate::dispatch::{CreatedWorktree, Delivery, DispatchHost, PromptError, RootPaneError};
+    use crate::domain::{
+        BlockDraft, Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope,
+    };
+    use crate::store::TaskStore;
+
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+
+    struct Temp(PathBuf);
+
+    impl Temp {
+        fn new(label: &str) -> Self {
+            let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!("tsk-cli-reply-{label}-{nanos}-{seq}"));
+            std::fs::create_dir_all(&dir).expect("state dir");
+            Temp(dir)
+        }
+
+        /// A blocked project task assigned to `builder`, optionally dispatched before.
+        fn blocked(&self, dispatched: bool) -> u64 {
+            let store = TaskStore::new(&self.0);
+            let mut state = DomainState::new();
+            let id = state
+                .create_assigned(
+                    "agent asks",
+                    None,
+                    TaskScope::Project {
+                        path: "/repos/app".into(),
+                    },
+                    ProvenanceOrigin::Manual,
+                    None,
+                    Some("builder".into()),
+                )
+                .expect("create");
+            store.reload_merge_save(&mut state).expect("save");
+            if dispatched {
+                state
+                    .record_dispatch(
+                        id,
+                        Dispatch {
+                            argv: vec!["true".into()],
+                            worktree: "/tmp/tsk-cli-reply-earlier".into(),
+                            branch: "tsk/earlier".into(),
+                            base: Some("main".into()),
+                            base_ref: None,
+                            base_commit: None,
+                            base_remote: None,
+                            herdr_workspace_id: "w0".into(),
+                            at: std::time::SystemTime::now(),
+                            cleaned: false,
+                        },
+                    )
+                    .expect("record");
+                store.reload_merge_save(&mut state).expect("save");
+            }
+            let draft = BlockDraft::from_input(Some("which db?"), None, &[], Default::default())
+                .expect("draft");
+            state.block(id, draft, "builder").expect("block");
+            store.reload_merge_save(&mut state).expect("save");
+            state.get(id).and_then(|task| task.number).expect("number")
+        }
+
+        fn status(&self, number: u64) -> HumanStatus {
+            TaskStore::new(&self.0)
+                .load()
+                .expect("load")
+                .tasks()
+                .iter()
+                .find(|task| task.number == Some(number))
+                .expect("task")
+                .status
+        }
+    }
+
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[derive(Default)]
+    struct Host {
+        agent: Option<bool>,
+        gone: bool,
+        prompt_error: Option<PromptError>,
+        prompts: Vec<(String, String)>,
+    }
+
+    impl DispatchHost for Host {
+        fn is_git_repo(&mut self, _: &Path) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        fn create_worktree(
+            &mut self,
+            _: &Path,
+            _: &str,
+            _: Option<&str>,
+            _: &str,
+        ) -> Result<CreatedWorktree, String> {
+            Err("no launches here".into())
+        }
+
+        fn root_pane(&mut self, _: &str) -> Result<String, RootPaneError> {
+            if self.gone {
+                return Err(RootPaneError::WorkspaceGone("gone".into()));
+            }
+            Ok("w0:p1".into())
+        }
+
+        fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
+            Err("no launches here".into())
+        }
+
+        fn pane_has_agent(&mut self, _: &str) -> Result<bool, String> {
+            self.agent.ok_or_else(|| "herdr did not answer".to_string())
+        }
+
+        fn prompt_agent(&mut self, pane: &str, text: &str) -> Result<(), PromptError> {
+            self.prompts.push((pane.into(), text.into()));
+            self.prompt_error.clone().map_or(Ok(()), Err)
+        }
+    }
+
+    fn send(temp: &Temp, number: u64, by: &str, in_herdr: bool, host: &mut Host) -> SendOutcome {
+        run_send_with_host(
+            TaskAddress::Number(number),
+            "use postgres",
+            Some(temp.0.clone()),
+            by,
+            in_herdr,
+            host,
+        )
+        .expect("reply stored")
+        .1
+    }
+
+    #[test]
+    fn send_delivers_to_the_running_agent_and_leaves_the_task_blocked() {
+        let temp = Temp::new("sent");
+        let number = temp.blocked(true);
+        let mut host = Host {
+            agent: Some(true),
+            ..Host::default()
+        };
+        let outcome = send(&temp, number, "you", true, &mut host);
+        assert_eq!(outcome.line(), "sent to @builder");
+        assert_eq!(
+            host.prompts,
+            [(
+                "w0:p1".to_string(),
+                format!("[tsk T{number} reply] use postgres")
+            )]
+        );
+        assert_eq!(temp.status(number), HumanStatus::Blocked);
+    }
+
+    #[test]
+    fn send_says_why_nothing_went_out() {
+        let cases: [(bool, &str, bool, Host, &str, usize); 6] = [
+            (
+                true,
+                "you",
+                true,
+                Host {
+                    agent: Some(true),
+                    prompt_error: Some(PromptError::AgentBlocked),
+                    ..Host::default()
+                },
+                "not sent: @builder is waiting on a prompt",
+                1,
+            ),
+            (
+                true,
+                "you",
+                true,
+                Host {
+                    agent: Some(true),
+                    prompt_error: Some(PromptError::Failed("herdr: boom".into())),
+                    ..Host::default()
+                },
+                "not sent: could not reach @builder",
+                1,
+            ),
+            (
+                true,
+                "you",
+                true,
+                Host {
+                    gone: true,
+                    ..Host::default()
+                },
+                "not sent: @builder is gone",
+                0,
+            ),
+            (
+                false,
+                "you",
+                true,
+                Host::default(),
+                "not sent: never dispatched; a start dispatches it",
+                0,
+            ),
+            (
+                true,
+                "you",
+                false,
+                Host::default(),
+                "not sent: not in Herdr",
+                0,
+            ),
+            (
+                true,
+                "reviewer",
+                true,
+                Host {
+                    agent: Some(true),
+                    ..Host::default()
+                },
+                "not sent: only your replies are sent",
+                0,
+            ),
+        ];
+        for (dispatched, by, in_herdr, mut host, line, sends) in cases {
+            let temp = Temp::new("not-sent");
+            let number = temp.blocked(dispatched);
+            let outcome = send(&temp, number, by, in_herdr, &mut host);
+            assert_eq!(outcome.line(), line);
+            assert_eq!(host.prompts.len(), sends, "{line}");
+            assert_eq!(temp.status(number), HumanStatus::Blocked);
+            if sends == 1 {
+                assert!(matches!(outcome, SendOutcome::NotDelivered { delivery, .. }
+                    if delivery != Delivery::Sent));
+            }
+        }
     }
 }

@@ -549,6 +549,8 @@ pub struct FlagReply {
     pub task: Option<TaskAddress>,
     pub text: Option<String>,
     pub state_dir: Option<PathBuf>,
+    /// `--send`: also deliver the reply to the task's running agent.
+    pub send: bool,
     pub help: bool,
 }
 
@@ -562,6 +564,7 @@ pub fn parse_flag_reply(args: &[String]) -> Result<FlagReply, String> {
         task: None,
         text: None,
         state_dir: None,
+        send: false,
         help: false,
     };
     let mut positionals: Vec<&str> = Vec::new();
@@ -579,6 +582,7 @@ pub fn parse_flag_reply(args: &[String]) -> Result<FlagReply, String> {
         match arg {
             "--" => literal = true,
             "--help" => parsed.help = true,
+            "--send" => parsed.send = true,
             flag if flag.starts_with("--state-dir=") => {
                 parsed.state_dir = Some(PathBuf::from(&flag["--state-dir=".len()..]));
             }
@@ -900,6 +904,13 @@ mod tests {
         let parsed = super::parse_flag_reply(&args(&["T4", "go with postgres"])).expect("parse");
         assert_eq!(parsed.task, Some(TaskAddress::Number(4)));
         assert_eq!(parsed.text.as_deref(), Some("go with postgres"));
+        let sent = super::parse_flag_reply(&args(&["T4", "go", "--send"])).expect("--send");
+        assert!(sent.send);
+        assert!(
+            !super::parse_flag_reply(&args(&["T4", "go"]))
+                .expect("plain")
+                .send
+        );
         let parsed = super::parse_flag_reply(&args(&["T4", "--", "-5 degrees"])).expect("--");
         assert_eq!(parsed.text.as_deref(), Some("-5 degrees"));
         assert!(super::parse_flag_reply(&args(&["T4", "-x"])).is_err());
