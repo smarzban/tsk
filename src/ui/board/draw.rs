@@ -1545,6 +1545,25 @@ fn block_page_rows(
     (rows, stops, caret)
 }
 
+/// The reply box open under a blocked board row, with the block's why and needs above it.
+fn row_reply_paint(model: &BoardModel) -> Option<render::RowReplyPaint<'_>> {
+    let row = model.row_reply.as_ref()?;
+    let block = model
+        .tasks
+        .iter()
+        .find(|task| task.id == row.task)
+        .and_then(|task| task.block.as_ref());
+    Some(render::RowReplyPaint {
+        task: row.task,
+        why: block.and_then(|block| block.why.as_deref()),
+        needs: block.and_then(|block| block.needs.as_deref()),
+        draft: &row.editor.buffer,
+        width: &row.editor.width,
+        refusal: row.editor.refusal.as_deref(),
+        caret: model.input_mode() == BoardInputMode::EditReply,
+    })
+}
+
 /// Idle status-row context for the active lens. Stored paths and thread names reach the
 /// renderer only through its `present_line` path before they are painted.
 fn status_idle(model: &BoardModel, surface: BoardSurface, has_message: bool) -> String {
@@ -2168,6 +2187,7 @@ fn draw_board_hits(frame: &mut Frame, model: &BoardModel) -> render::QueueHitMap
         now: SystemTime::now(),
         overlay,
         detail_open: model.detail_open,
+        row_reply: row_reply_paint(model),
         list_scroll: model.list_scroll.get(),
         follow_list: model.follow_list.get(),
         archived_collapsed: model.archived_collapsed,
@@ -2352,6 +2372,7 @@ fn draw_wide_board(
             modal.clone().unwrap_or(QueueOverlay::None)
         },
         detail_open: None,
+        row_reply: row_reply_paint(model),
         list_scroll: model.list_scroll.get(),
         follow_list: model.follow_list.get(),
         archived_collapsed: model.archived_collapsed,
@@ -2595,6 +2616,7 @@ fn draw_projects_wide_board(
         now: SystemTime::now(),
         overlay: outer_modal.clone().unwrap_or(QueueOverlay::None),
         detail_open: None,
+        row_reply: None,
         list_scroll: model.list_scroll.get(),
         follow_list: model.follow_list.get(),
         archived_collapsed: model.archived_collapsed,
@@ -2633,6 +2655,7 @@ fn draw_projects_wide_board(
             detail_open: (stage == tier::WideStage::Rail)
                 .then_some(right.detail_open())
                 .flatten(),
+            row_reply: row_reply_paint(right),
             list_scroll: right.list_scroll.get(),
             follow_list: right.follow_list.get(),
             archived_collapsed: right.archived_collapsed,

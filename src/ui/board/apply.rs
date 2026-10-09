@@ -1017,7 +1017,12 @@ fn apply_board_intent(
             return Ok(IntentOutcome::None);
         }
         BoardIntent::BeginReply => {
-            if model.input_mode == BoardInputMode::TaskPage
+            if model.input_mode() == BoardInputMode::Normal {
+                // `r` on a board row answers the cursor task inline, whatever is marked.
+                if !super::block::begin_row_reply(model) {
+                    model.set_message("not blocked");
+                }
+            } else if model.input_mode == BoardInputMode::TaskPage
                 && !super::block::begin_reply(model, "", None)
             {
                 model.set_message("only a blocked task takes replies");
@@ -1190,12 +1195,9 @@ fn apply_board_intent(
             } else {
                 -1
             };
-            let reply = model
-                .form
-                .as_ref()
+            let reply = super::block::active_reply(model)
                 .filter(|_| model.input_mode == BoardInputMode::EditReply)
-                .and_then(|form| form.block.reply.as_ref())
-                .and_then(|editor| {
+                .and_then(|(_, editor)| {
                     crate::ui::edit::wrapped_vertical_move(
                         &editor.buffer,
                         editor.width.get(),
@@ -1246,13 +1248,10 @@ fn apply_board_intent(
                 model.leave_archived_focus();
                 return Ok(IntentOutcome::None);
             }
-            // The reply box cancels to page view, its draft discarded.
+            // The reply box cancels to page view (or the board), its draft discarded.
             if model.input_mode == BoardInputMode::EditReply {
-                if model
-                    .form
-                    .as_ref()
-                    .and_then(|form| form.block.reply.as_ref())
-                    .is_some_and(|editor| editor.pending.is_none())
+                if super::block::active_reply(model)
+                    .is_some_and(|(_, editor)| editor.pending.is_none())
                 {
                     super::block::cancel_reply(model);
                 }

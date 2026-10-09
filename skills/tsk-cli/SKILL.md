@@ -114,7 +114,10 @@ another task, `--on "<text>"` on anything else; the default is the user. Running
 same block. Read answers in `tsk list T12 --json` under `block` (`replies`, `answered`). Unblocking
 or a relaunch closes the block: on a relaunch, read the answers in the last `past_blocks` entry.
 `tsk reply T12 "…"` adds a reply to the open block (`not-blocked` when there is none); it is not
-idempotent, so read the task before retrying. Text over 4 KB refuses with `text-too-long`. Never unblock a task yourself unless the user said so.
+idempotent, so read the task before retrying. When the user asks to send an answer to the task's
+running agent, add `--send`; it sends only that reply and prints `sent to @<agent>` or `not sent: <reason>`.
+A message `[tsk T12 unblocked] …` or `[tsk T12 reply] …` in your session is the user's answer to your
+block. Text over 4 KB refuses with `text-too-long`. Never unblock a task yourself unless the user said so.
 
 **Plan as steps.** When the user wants order of work tracked on the task: `tsk steps T12 add
 "…"` per step, in order. Do not add steps for your own bookkeeping.

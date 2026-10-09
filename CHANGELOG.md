@@ -20,7 +20,7 @@ the GitHub release notes verbatim.
 - Dispatch: starting an assigned task (`ctrl+s`, or `tsk status T12 started`) launches its agent in its own Git worktree and Herdr workspace; `ctrl+u` reverts the status and leaves the agent running. A dispatched task whose agent is gone asks before relaunching, reopening a closed workspace on the kept worktree (`--again` in the CLI; `--no-dispatch` only sets the status). Outside Herdr or on a desk task, an assigned start is a plain start that says why nothing launched. Mark several tasks to start them together; `!b branch` picks the base branch.
 - Completing a dispatched task offers to remove its worktree and merged branch in the background, for one task or a marked set.
 - Dispatch on Windows (preview).
-- Block with a reason: `ctrl+b` asks why, what it waits on, and what it needs; agents block with `tsk status T12 blocked --why "…" --option "…"`, and you answer on the task page (`r`) or with `tsk reply`.
+- Block with a reason: `ctrl+b` asks why, what it waits on, and what it needs; agents block with `tsk status T12 blocked --why "…" --option "…"`, and you answer on the task page (`r`), inline under a blocked board row (`r`), or with `tsk reply`. Answering with `ctrl+s` while the task's dispatched agent still runs sends that reply, and only it, to that agent (`started · reply sent to @claude`), never to another agent in its pane; `tsk reply --send` does the same without unblocking.
 - `tsk dispatch` and `tsk clean`, plus `--assignee` and `--base` on `tsk add`/`tsk edit`. Agent skill 1.5.0; `tsk update` refreshes installed copies.
 
 ### Fixed

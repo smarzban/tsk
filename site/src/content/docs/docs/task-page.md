@@ -79,14 +79,14 @@ In view mode `Tab` walks the heading, the options, and the replies before the st
 | Reply | `r` |
 | Reply with an option, prefilled | `Enter` on the option |
 | Save the reply | `Shift+Enter` |
-| Save the reply and unblock: to ready, or for an assigned task to started (a [start](/docs/board/#dispatch) that may dispatch or relaunch) | `ctrl+s` |
+| Save the reply and unblock: to ready, or for an assigned task to started (a [start](/docs/board/#dispatch) that may dispatch or relaunch, or [sends the reply](/docs/board/#reply-to-a-running-agent) to its running agent) | `ctrl+s` |
 | New line in the reply | `Enter` |
 | Cancel the reply | `Esc` |
 | Edit why, on, and needs (heading selected) | `ctrl+e` |
 | Edit your selected reply | `ctrl+e` |
 | Soft-delete your selected reply | `ctrl+x` |
 
-The reply box opens under the last reply and wraps like the notes. It belongs to the block it opened on: if that block is closed or replaced elsewhere while you type, saving refuses and keeps your draft. Agent blocks can be edited like your own; an agent's replies cannot be edited or deleted. A block on another task that is now done asks `T169 done, unblock? ctrl+b` under the heading.
+The reply box opens under the last reply and wraps like the notes. It belongs to the block it opened on: if that block is closed or replaced elsewhere while you type, saving refuses and keeps your draft. Agent blocks can be edited like your own; an agent's replies cannot be edited or deleted. The same reply box opens under a blocked row on the board with `r`. A block on another task that is now done asks `T169 done, unblock? ctrl+b` under the heading.
 
 ## Status and steps
 

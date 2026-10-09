@@ -29,6 +29,7 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 | Toggle review / ready | `ctrl+r` |
 | Delete, with a second press to confirm | `ctrl+x` or `ctrl+Delete` |
 | Undo completion/deletion/block; restore an archived selection | `ctrl+u` |
+| Reply to the blocked cursor row, inline under it | `r` |
 | Archive / restore selected task | `ctrl+f` |
 | Open / close done drawer | `d` |
 | Expand / collapse its archived group | `g` |
@@ -85,7 +86,7 @@ These keys apply in **view mode**:
 
 Click a step to select it. Click **+ step** to add. Field clicks become editable only after task editing starts.
 
-In the reply box, `Enter` starts a new line, `Shift+Enter` saves the reply, `ctrl+s` saves it and unblocks the task, and `Esc` cancels. An unassigned task unblocks to ready; an assigned one starts, which dispatches it, or asks before relaunching a gone agent. An agent's replies cannot be edited or deleted.
+In the reply box, `Enter` starts a new line, `Shift+Enter` saves the reply, `ctrl+s` saves it and unblocks the task, and `Esc` cancels. An unassigned task unblocks to ready; an assigned one starts, which dispatches it, asks before relaunching a gone agent, or sends the reply to its still-running agent. `r` on a blocked board row opens the same box under the row. An agent's replies cannot be edited or deleted.
 
 ## Editing
 

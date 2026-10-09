@@ -489,6 +489,25 @@ impl From<&str> for RootPaneError {
     }
 }
 
+/// What Herdr reports in a pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaneAgent {
+    Absent,
+    /// An agent, under its live Herdr name (`None` when unnamed).
+    Present {
+        name: Option<String>,
+    },
+}
+
+/// Why a prompt did not reach an agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptError {
+    /// The agent waits on a permission prompt or question (`agent_blocked`); nothing was sent.
+    AgentBlocked,
+    /// Anything else: Herdr could not run, the agent was not found, or Herdr failed.
+    Failed(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreatedWorktree {
     pub path: PathBuf,
@@ -671,6 +690,24 @@ pub trait DispatchHost {
     /// Whether Herdr currently detects an agent in `pane_id`.
     fn pane_has_agent(&mut self, _pane_id: &str) -> Result<bool, String> {
         Err("agent detection is not supported".into())
+    }
+    /// The agent Herdr detects in `pane_id`, with its live name. Hosts that only answer
+    /// [`Self::pane_has_agent`] report an unnamed agent, which never receives a reply.
+    fn pane_agent(&mut self, pane_id: &str) -> Result<PaneAgent, String> {
+        self.pane_has_agent(pane_id).map(|present| {
+            if present {
+                PaneAgent::Present { name: None }
+            } else {
+                PaneAgent::Absent
+            }
+        })
+    }
+    /// Submit `text` to the agent in `pane_id` (`herdr agent prompt`), as one message. Herdr
+    /// queues it behind a working turn; it refuses an agent waiting on a prompt.
+    fn prompt_agent(&mut self, _pane_id: &str, _text: &str) -> Result<(), PromptError> {
+        Err(PromptError::Failed(
+            "agent prompts are not supported".into(),
+        ))
     }
     /// Launch each task in order, off the event loop where the host can. Outcomes land on the
     /// returned batch one by one; nothing is recorded on any task here. The default runs every
@@ -1167,16 +1204,25 @@ impl DispatchHost for SystemDispatchHost {
     }
 
     fn pane_has_agent(&mut self, pane_id: &str) -> Result<bool, String> {
+        self.pane_agent(pane_id)
+            .map(|agent| matches!(agent, PaneAgent::Present { .. }))
+    }
+
+    fn pane_agent(&mut self, pane_id: &str) -> Result<PaneAgent, String> {
         let output = Command::new("herdr")
             .args(["agent", "get", pane_id])
             .output()
             .map_err(|error| format!("could not run herdr: {error}"))?;
-        if !output.status.success()
-            && herdr_error_code(&output.stderr).as_deref() == Some("agent_not_found")
-        {
-            return Ok(false);
-        }
-        herdr_json(output).map(|_| true)
+        pane_agent_outcome(output.status.success(), &output.stdout, &output.stderr)
+    }
+
+    fn prompt_agent(&mut self, pane_id: &str, text: &str) -> Result<(), PromptError> {
+        let output = Command::new("herdr")
+            .args(["agent", "prompt", pane_id])
+            .arg(text)
+            .output()
+            .map_err(|error| PromptError::Failed(format!("could not run herdr: {error}")))?;
+        prompt_outcome(output.status.success(), &output.stderr)
     }
 
     fn platform(&self) -> HostPlatform {
@@ -1763,6 +1809,45 @@ fn command_failure(name: &str, output: &Output) -> String {
     let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if detail.is_empty() {
         format!("{name} exited with {}", output.status)
+    } else {
+        detail
+    }
+}
+
+/// Classify `herdr agent get <pane>`: `agent_not_found` is no agent, a success names it.
+fn pane_agent_outcome(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<PaneAgent, String> {
+    if !success {
+        if herdr_error_code(stderr).as_deref() == Some("agent_not_found") {
+            return Ok(PaneAgent::Absent);
+        }
+        return Err(herdr_failure(stderr));
+    }
+    let value: Value = serde_json::from_slice(stdout)
+        .map_err(|error| format!("herdr returned invalid JSON: {error}"))?;
+    let name = value
+        .pointer("/result/agent/name")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Ok(PaneAgent::Present { name })
+}
+
+/// Classify `herdr agent prompt`: `agent_blocked` means the agent waits on a prompt and
+/// nothing was sent; any other failure is a Herdr failure.
+fn prompt_outcome(success: bool, stderr: &[u8]) -> Result<(), PromptError> {
+    if success {
+        return Ok(());
+    }
+    if herdr_error_code(stderr).as_deref() == Some("agent_blocked") {
+        return Err(PromptError::AgentBlocked);
+    }
+    Err(PromptError::Failed(herdr_failure(stderr)))
+}
+
+fn herdr_failure(stderr: &[u8]) -> String {
+    let detail = herdr_error_detail(stderr)
+        .unwrap_or_else(|| String::from_utf8_lossy(stderr).trim().to_string());
+    if detail.is_empty() {
+        "herdr failed".to_string()
     } else {
         detail
     }
@@ -2431,36 +2516,150 @@ pub fn start_route(
     in_herdr: bool,
     host: &mut impl DispatchHost,
 ) -> StartRoute {
+    start_route_checked(task, actor, in_herdr, host).0
+}
+
+/// What the start route learned about a dispatched task's agent, for reply delivery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentCheck {
+    /// No live dispatched agent was asked about: unassigned, never dispatched, gone, or the
+    /// assignee's own start.
+    NotChecked,
+    /// A live dispatch record, but tsk runs outside Herdr, so its agent cannot be asked.
+    NotInHerdr,
+    /// Herdr reports an agent in the recorded workspace's root pane, under its live name
+    /// (`None` when the agent is unnamed). Whether it is the dispatched agent is checked
+    /// before anything is sent.
+    Running { pane: String, name: Option<String> },
+    /// Herdr could not answer; the start was plain.
+    Unreachable { reason: String },
+}
+
+/// [`start_route`], plus what it learned about the agent, so a caller can deliver to the
+/// running agent without asking Herdr again for the route.
+pub fn start_route_checked(
+    task: &Task,
+    actor: &str,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> (StartRoute, AgentCheck) {
+    let plain = (StartRoute::Plain, AgentCheck::NotChecked);
     let Some(assignee) = task.assignee.as_deref() else {
-        return StartRoute::Plain;
+        return plain;
     };
     // An agent starting its own task never launches another copy of itself.
     if actor == assignee {
-        return StartRoute::Plain;
+        return plain;
     }
     let Some(record) = task.dispatch.as_ref() else {
-        return match launch_unavailable(task, in_herdr) {
+        let route = match launch_unavailable(task, in_herdr) {
             Some(reason) => StartRoute::NoLaunch { reason },
             None => StartRoute::Dispatch,
         };
+        return (route, AgentCheck::NotChecked);
     };
-    let gone = StartRoute::AgentGone {
-        assignee: assignee.to_string(),
-    };
+    let gone = (
+        StartRoute::AgentGone {
+            assignee: assignee.to_string(),
+        },
+        AgentCheck::NotChecked,
+    );
     if record.cleaned {
         return gone;
     }
     if !in_herdr {
-        return StartRoute::Plain;
+        return (StartRoute::Plain, AgentCheck::NotInHerdr);
     }
     let pane = match host.root_pane(&record.herdr_workspace_id) {
         Ok(pane) => pane,
         Err(RootPaneError::WorkspaceGone(_)) => return gone,
-        Err(RootPaneError::Failed(_)) => return StartRoute::Plain,
+        Err(RootPaneError::Failed(reason)) => {
+            return (StartRoute::Plain, AgentCheck::Unreachable { reason })
+        }
     };
-    match host.pane_has_agent(&pane) {
-        Ok(false) => gone,
-        Ok(true) | Err(_) => StartRoute::Plain,
+    match host.pane_agent(&pane) {
+        Ok(PaneAgent::Absent) => gone,
+        Ok(PaneAgent::Present { name }) => (StartRoute::Plain, AgentCheck::Running { pane, name }),
+        Err(reason) => (StartRoute::Plain, AgentCheck::Unreachable { reason }),
+    }
+}
+
+/// How a reply delivery ended. Nothing here changes the task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delivery {
+    Sent,
+    /// The agent waits on a permission prompt or question; nothing was sent.
+    AgentWaiting,
+    /// Herdr failed, before or during the send.
+    Unreachable(String),
+    /// The pane's agent is not the one tsk dispatched (another agent, or one Herdr never
+    /// named `t<n>-<profile>`); nothing was sent.
+    NotInPane,
+    /// tsk runs outside Herdr; nothing was sent.
+    NotInHerdr,
+}
+
+/// The message a reply delivery submits: `[tsk T<n> <label>]`, then the reply this action
+/// stored, if any. Multi-line text stays intact; Herdr submits it as one message.
+pub fn delivery_text(number: u64, label: &str, reply: Option<&str>) -> String {
+    match reply.map(str::trim).filter(|reply| !reply.is_empty()) {
+        Some(reply) => format!("[tsk T{number} {label}] {reply}"),
+        None => format!("[tsk T{number} {label}]"),
+    }
+}
+
+/// Deliver `reply` (the text this action stored, or nothing) to `task`'s dispatched agent,
+/// when `check` found one. The live agent must carry the name dispatch gave it
+/// ([`agent_name`]), both in `check` and again just before the send, so an answer never
+/// reaches another agent that took over the pane. `None` when no delivery applies (no live
+/// dispatch). Sends at most once and never retries.
+pub fn deliver_reply(
+    task: &Task,
+    check: &AgentCheck,
+    label: &str,
+    reply: Option<&str>,
+    host: &mut impl DispatchHost,
+) -> Option<Delivery> {
+    let number = task.number?;
+    let expected = agent_name(number, task.assignee.as_deref()?);
+    match check {
+        AgentCheck::NotChecked => None,
+        AgentCheck::NotInHerdr => Some(Delivery::NotInHerdr),
+        AgentCheck::Unreachable { reason } => Some(Delivery::Unreachable(reason.clone())),
+        AgentCheck::Running { name, .. } if name.as_deref() != Some(expected.as_str()) => {
+            Some(Delivery::NotInPane)
+        }
+        AgentCheck::Running { pane, .. } => {
+            // The route was read before the save: confirm the pane still holds this agent.
+            match host.pane_agent(pane) {
+                Ok(PaneAgent::Present { name: Some(name) }) if name == expected => {}
+                Ok(_) => return Some(Delivery::NotInPane),
+                Err(reason) => return Some(Delivery::Unreachable(reason)),
+            }
+            let text = delivery_text(number, label, reply);
+            Some(match host.prompt_agent(pane, &text) {
+                Ok(()) => Delivery::Sent,
+                Err(PromptError::AgentBlocked) => Delivery::AgentWaiting,
+                Err(PromptError::Failed(reason)) => Delivery::Unreachable(reason),
+            })
+        }
+    }
+}
+
+/// The status-row line for a reply-and-start that delivered (or tried to).
+pub fn delivery_message(assignee: &str, delivery: &Delivery) -> String {
+    match delivery {
+        Delivery::Sent => format!("started · reply sent to @{assignee}"),
+        Delivery::AgentWaiting => {
+            format!("started · @{assignee} is waiting on a prompt; reply kept on the task")
+        }
+        Delivery::Unreachable(_) => {
+            format!("started · could not reach @{assignee}; reply kept on the task")
+        }
+        Delivery::NotInPane => format!(
+            "started · reply not sent: @{assignee} is not in its pane; reply kept on the task"
+        ),
+        Delivery::NotInHerdr => format!("started · reply not sent: {NO_LAUNCH_NOT_IN_HERDR}"),
     }
 }
 
@@ -5805,5 +6004,59 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod herdr_outcome_tests {
+    use super::{pane_agent_outcome, prompt_outcome, PaneAgent, PromptError};
+
+    fn error(code: &str) -> Vec<u8> {
+        format!(r#"{{"error":{{"code":"{code}","message":"{code} happened"}}}}"#).into_bytes()
+    }
+
+    #[test]
+    fn a_prompt_outcome_separates_a_waiting_agent_from_other_failures() {
+        assert_eq!(prompt_outcome(true, b""), Ok(()));
+        assert_eq!(
+            prompt_outcome(false, &error("agent_blocked")),
+            Err(PromptError::AgentBlocked)
+        );
+        assert_eq!(
+            prompt_outcome(false, &error("agent_not_found")),
+            Err(PromptError::Failed(
+                "herdr: agent_not_found happened".into()
+            ))
+        );
+        assert_eq!(
+            prompt_outcome(false, b"plain text failure\n"),
+            Err(PromptError::Failed("plain text failure".into()))
+        );
+        assert_eq!(
+            prompt_outcome(false, b""),
+            Err(PromptError::Failed("herdr failed".into()))
+        );
+    }
+
+    #[test]
+    fn a_pane_agent_outcome_reads_the_live_name() {
+        let named = br#"{"result":{"agent":{"name":"t12-claude","pane_id":"w1:p1"}}}"#;
+        assert_eq!(
+            pane_agent_outcome(true, named, b""),
+            Ok(PaneAgent::Present {
+                name: Some("t12-claude".into())
+            })
+        );
+        let unnamed = br#"{"result":{"agent":{"pane_id":"w1:p1"}}}"#;
+        assert_eq!(
+            pane_agent_outcome(true, unnamed, b""),
+            Ok(PaneAgent::Present { name: None })
+        );
+        assert_eq!(
+            pane_agent_outcome(false, b"", &error("agent_not_found")),
+            Ok(PaneAgent::Absent)
+        );
+        assert!(pane_agent_outcome(false, b"", &error("server_down")).is_err());
+        assert!(pane_agent_outcome(true, b"not json", b"").is_err());
     }
 }

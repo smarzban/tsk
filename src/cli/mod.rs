@@ -259,6 +259,12 @@ fn run_reply(args: Vec<String>) -> CliOutput {
             "reply text is required"
         });
     };
+    if input.send {
+        return match reply::run_send(task, &text, input.state_dir) {
+            Ok((result, outcome)) => presenter::replied_and_sent(result, &outcome),
+            Err(error) => presenter::reply_rejected(error, task),
+        };
+    }
     match reply::run(task, &text, input.state_dir) {
         Ok(result) => presenter::replied(result),
         Err(error) => presenter::reply_rejected(error, task),
