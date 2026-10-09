@@ -116,6 +116,21 @@ fn worked_task() -> (DomainState, BoardModel, Uuid) {
     (domain, model, id)
 }
 
+#[test]
+fn the_wide_task_column_beside_the_board_paints_the_trail_too() {
+    let (mut domain, mut model, _) = worked_task();
+    // Back to the board, then the details column beside it.
+    apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close page");
+    apply_intent(&mut domain, &mut model, BoardIntent::StageRight, None).expect("open column");
+    let page = rows(&model, 130, 40);
+    assert!(
+        page.iter().any(|row| row.contains("DONE"))
+            && page.iter().any(|row| row.contains("PAPER TRAIL")),
+        "{}",
+        page.join("\n")
+    );
+}
+
 fn trail(page: &[String]) -> Vec<String> {
     let start = page
         .iter()

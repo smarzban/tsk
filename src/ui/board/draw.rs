@@ -1293,7 +1293,9 @@ fn build_task_page_overlay<'a>(
         }
         _ => (Vec::new(), Vec::new(), None),
     };
-    let (trail_rows, trail_stops) = match super::block::page_trail_task(model) {
+    // The task's own form draws the trail, so the wide task column paints it too, through an
+    // edit session as well (the page body never jumps as one starts or ends).
+    let (trail_rows, trail_stops) = match bound_task.filter(|task| !task.is_notice()) {
         Some(task) => trail_page_rows(model, form, task, notes_width),
         None => (Vec::new(), Vec::new()),
     };
@@ -1402,7 +1404,13 @@ fn trail_page_rows(
     let now = SystemTime::now();
     let all = form.block.trail_all;
     let (entries, hidden) = super::block::trail_view(task, all);
-    let selected = model.block_target();
+    // Selection belongs to the page form; another seat's form never paints it.
+    let selected = model.block_target().filter(|_| {
+        model
+            .form
+            .as_ref()
+            .is_some_and(|own| std::ptr::eq(own, form))
+    });
     let mut rows: Vec<TrailPageRow> = Vec::new();
     let mut stops = Vec::new();
     let push = |rows: &mut Vec<TrailPageRow>,
