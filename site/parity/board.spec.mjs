@@ -222,6 +222,13 @@ for (const width of [40, 78, 109, 110]) {
     await open(page, width);
     await expect(page.locator(".tsk-attribution")).toHaveCount(0);
     await expect(page.locator(".tsk-sec")).not.toContainText(["IN MOTION"]);
+    // The blocked row's live line matches the app's, age aside (the app reads the clock).
+    const live = await row(page, 12)
+      .locator(".tsk-live-line")
+      .allTextContents();
+    expect(
+      live.map((line) => line.trimEnd().replace(/ · \d+[smhd]$/, "")),
+    ).toEqual(await readReference(`live-${width}`));
     await capture(page, info, "initial");
     await page.keyboard.press("ArrowDown");
     await expect(row(page, 13)).toHaveClass(/is-sel/);

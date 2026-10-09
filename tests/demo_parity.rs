@@ -91,6 +91,34 @@ fn export_reference(text: &str, width: u16, name: &str) {
             .unwrap();
         }
         if name == "initial" {
+            // The blocked row's live line, without its age: the board reads the wall clock.
+            let live: Vec<_> = text
+                .lines()
+                .skip_while(|line| !line.contains("T12 "))
+                .skip(1)
+                .take_while(|line| {
+                    line.starts_with("    └─ ")
+                        || (line.starts_with("       ") && !line.trim().is_empty())
+                })
+                .map(|line| {
+                    let line = line.trim_end();
+                    match line.rsplit_once(" · ") {
+                        Some((head, age))
+                            if age.len() > 1
+                                && age[..age.len() - 1].chars().all(|c| c.is_ascii_digit())
+                                && age.ends_with(['s', 'm', 'h', 'd']) =>
+                        {
+                            head.to_string()
+                        }
+                        _ => line.to_string(),
+                    }
+                })
+                .collect();
+            fs::write(
+                dir.join(format!("live-{width}.json")),
+                serde_json::to_string_pretty(&live).unwrap(),
+            )
+            .unwrap();
             let lines: Vec<_> = text
                 .lines()
                 .skip_while(|line| !line.contains("T13 "))
