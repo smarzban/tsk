@@ -2924,6 +2924,9 @@ fn apply_board_intent(
                     .and_then(|id| model.tasks.iter().find(|task| task.id == id))
                     .cloned();
                 if let (Some(form), Some(task)) = (model.form.as_mut(), saved) {
+                    // Still the same task: the PAPER TRAIL keeps how it was expanded.
+                    let trail_expanded = form.block.trail_expanded;
+                    let trail_open = std::mem::take(&mut form.block.trail_open);
                     *form = BoardForm::task(
                         &task,
                         model.this_repo.as_deref(),
@@ -2932,6 +2935,8 @@ fn apply_board_intent(
                         &model.archived_projects,
                         &model.agent_names,
                     );
+                    form.block.trail_expanded = trail_expanded;
+                    form.block.trail_open = trail_open;
                     model.input_mode = BoardInputMode::TaskPage;
                     model.clear_message();
                     return Ok(IntentOutcome::None);

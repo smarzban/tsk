@@ -463,3 +463,46 @@ fn a_long_agent_lead_wraps_onto_its_own_row_and_keeps_the_reply_text_at_40_colum
         page.join("\n")
     );
 }
+
+/// Leaving a task edit with `Esc` stays on the task, so an expanded trail and an expanded
+/// record stay expanded.
+#[test]
+fn esc_out_of_a_task_edit_keeps_the_trail_expanded() {
+    let (mut domain, mut model, _) = worked_task();
+    toggle(&mut domain, &mut model);
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ToggleTrailRecord(Some(0)),
+        None,
+    )
+    .expect("expand a record");
+    let expanded = trail(&rows(&model, 100, 80));
+    assert!(expanded[0].ends_with('▾'), "{expanded:#?}");
+    press(
+        &mut domain,
+        &mut model,
+        KeyCode::Char('e'),
+        KeyModifiers::CONTROL,
+    );
+    assert!(model.task_editing());
+    // The first Esc closes the title field, the second leaves the edit session.
+    for _ in 0..2 {
+        press(&mut domain, &mut model, KeyCode::Esc, KeyModifiers::NONE);
+    }
+    assert!(!model.task_editing());
+    assert_eq!(
+        model.input_mode(),
+        tsk_tui::ui::board::BoardInputMode::TaskPage
+    );
+    // The selection is the edit's to drop; the expansion stays.
+    let unselected = |rows: Vec<String>| -> Vec<String> {
+        rows.into_iter()
+            .map(|row| row.trim_start_matches("▸ ").to_string())
+            .collect()
+    };
+    assert_eq!(
+        unselected(trail(&rows(&model, 100, 80))),
+        unselected(expanded)
+    );
+}
