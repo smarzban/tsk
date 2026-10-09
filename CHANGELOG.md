@@ -11,7 +11,7 @@ the GitHub release notes verbatim.
 
 ### Breaking
 
-- Store format 9: tasks can carry an assignee, a base branch, a dispatch record, blocks with replies, and review rounds with checks and feedback, and undo can revert a start that dispatched. Rolling back refuses the file; restore `tsk.json.v5`.
+- Store format 10: tasks can carry an assignee, a base branch, a dispatch record, blocks with replies, and review rounds with checks and feedback; every change records who made it and what it changed; and undo can revert a start that dispatched. Rolling back refuses the file; restore `tsk.json.v5`.
 
 ### Added
 
@@ -22,10 +22,12 @@ the GitHub release notes verbatim.
 - Dispatch on Windows (preview).
 - Block with a reason: `ctrl+b` asks why, what it waits on, and what it needs; agents block with `tsk status T12 blocked --why "…" --option "…"`, and you answer on the task page (`r`), inline under a blocked board row (`r`), or with `tsk reply`. Answering with `ctrl+s` while the task's dispatched agent still runs sends that reply, and only it, to that agent (`started · reply sent to @claude`), never to another agent in its pane; `tsk reply --send` does the same without unblocking.
 - Review with what was done: `ctrl+r` asks what was done, what to check (one per line), what is next, and who the review is on (you, an agent, or other text); agents hand back with `tsk status T12 review --done "…" --check "…" --next "…"`. On the task page `Enter` marks each check passed or failed (passed ones fold away), and `r` gives feedback: `shift+enter` saves, `ctrl+s` sends it back to started and delivers the feedback with the failed checks to the running agent (`[tsk T12 sent back] …`), `ctrl+d` approves it as done. Each send-back starts a new round; `tsk list --json` shows the open `review` and closed `past_reviews`. A review on another agent rides in IN MOTION as `△`.
+- Paper trail: the task page lists who did what, newest first, below the steps (`open → started · @claude 2m`, `notes edited · you 1h`, `dispatched tsk/t12-fix from origin/main @ 3333b79`). It shows the latest five; `a` shows them all. Closed blocks and review rounds expand in place with `Enter` or a click, and repeats within a minute group (`3 steps checked`). `tsk list T12` prints the latest entries under `activity`, and `tsk list T12 --json` adds `activity` with `at`, `by`, `kind`, and `detail`.
 - `tsk dispatch` and `tsk clean`, plus `--assignee` and `--base` on `tsk add`/`tsk edit`. Agent skill 1.5.0; `tsk update` refreshes installed copies.
 
 ### Changed
 
+- The task page footer no longer shows created and updated dates; the paper trail has both.
 - `ctrl+r` and palette **set status: review** open the review card instead of setting review at once; `Enter` on the empty card still sets it immediately, and `ctrl+r` on a task in review still returns it to ready.
 - `tsk reply` also adds feedback to a task in review; `not-blocked` now means the task is neither blocked nor in review.
 

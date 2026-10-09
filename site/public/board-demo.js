@@ -535,6 +535,36 @@ import { parseCapture } from "./capture.js";
         })[c],
     );
 
+  // A status change, recorded on the task's paper trail as the TUI does (`open → started`).
+  function logStatus(task, status) {
+    const at = clock();
+    task.trail = [...(task.trail || []), { text: `${task.status} → ${status}`, at }];
+    task.status = status;
+    task.updatedAt = at;
+    task.statusAt = at;
+  }
+
+  // The task page's PAPER TRAIL: newest first, the latest five, then `+ N earlier`.
+  function paperTrail(task) {
+    const entries = [
+      ...(task.trail || []),
+      { text: "created", at: task.createdAt },
+    ]
+      .slice()
+      .sort((a, b) => b.at - a.at);
+    const shown = entries.slice(0, 5);
+    const rows = shown.map(
+      (entry) =>
+        `<div class="tsk-trail-entry dim">${esc(`${entry.text} · you ${age(entry.at)}`)}</div>`,
+    );
+    if (entries.length > shown.length) {
+      rows.push(
+        `<div class="tsk-trail-entry dim">+ ${entries.length - shown.length} earlier</div>`,
+      );
+    }
+    return `<div class="tsk-trail"><div class="tsk-trail-heading">PAPER TRAIL</div>${rows.join("")}</div>`;
+  }
+
   const age = (ts) => {
     const secs = Math.max(0, Math.floor((clock() - ts) / 1000));
     if (secs < 60) return `${secs}s`;
@@ -1549,9 +1579,7 @@ import { parseCapture } from "./capture.js";
     const changed = tasks.filter((task) => task.status !== status);
     if (status === "done" && changed.length) rememberUndo(state, changed);
     for (const task of changed) {
-      task.status = status;
-      task.updatedAt = clock();
-      task.statusAt = task.updatedAt;
+      logStatus(task, status);
       // Leaving blocked closes the block.
       if (status !== "blocked") delete task.block;
     }
@@ -2060,11 +2088,7 @@ import { parseCapture } from "./capture.js";
     const changed = tasks.filter(
       (task) => task.status === "open" || task.status === "ready",
     );
-    for (const task of changed) {
-      task.status = "started";
-      task.updatedAt = clock();
-      task.statusAt = task.updatedAt;
-    }
+    for (const task of changed) logStatus(task, "started");
     clearMarks();
     state.pendingDelete = null;
     state.message = "";
@@ -2075,11 +2099,7 @@ import { parseCapture } from "./capture.js";
     const tasks = targetTasks(preview);
     const changed = tasks.filter((task) => task.status !== status);
     if (status === "done" && changed.length) rememberUndo(preview, changed);
-    for (const task of changed) {
-      task.status = status;
-      task.updatedAt = clock();
-      task.statusAt = task.updatedAt;
-    }
+    for (const task of changed) logStatus(task, status);
     clearMarks(preview);
     preview.pendingDelete = null;
     preview.message = "";
@@ -2111,11 +2131,7 @@ import { parseCapture } from "./capture.js";
     const changed = tasks.filter(
       (task) => task.status === "open" || task.status === "ready",
     );
-    for (const task of changed) {
-      task.status = "started";
-      task.updatedAt = clock();
-      task.statusAt = task.updatedAt;
-    }
+    for (const task of changed) logStatus(task, "started");
     clearMarks(preview);
     preview.pendingDelete = null;
     preview.message = "";
@@ -2490,8 +2506,6 @@ import { parseCapture } from "./capture.js";
         text: task.thread ? `#${task.thread}` : "thread",
       },
       (previewMode || narrow || editing) && { field: "scope", text: project },
-      { text: `created ${age(task.createdAt)} ago` },
-      { text: `updated ${age(task.updatedAt)} ago` },
     ].filter(Boolean);
     let position = 0;
     const fields = parts.map((part) => {
@@ -2531,7 +2545,7 @@ import { parseCapture } from "./capture.js";
     const editTarget = editing?.startsWith("step:")
       ? editing.slice("step:".length)
       : "";
-    return `<div class="tsk-task-column tsk-surface ${narrow ? "is-narrow" : ""}" aria-label="T${task.number}${previewMode ? " project" : ""} task column" data-status="${esc(task.status)}" data-edit-state="${pageSteps.editor ? "editing" : pageSteps.dirty ? "unsaved" : "view"}" data-edit-field="${esc(editField)}" data-edit-target="${esc(editTarget)}">${header}<div class="tsk-task-surface tsk-page">${notes}${stepList}</div>${meta}</div>`;
+    return `<div class="tsk-task-column tsk-surface ${narrow ? "is-narrow" : ""}" aria-label="T${task.number}${previewMode ? " project" : ""} task column" data-status="${esc(task.status)}" data-edit-state="${pageSteps.editor ? "editing" : pageSteps.dirty ? "unsaved" : "view"}" data-edit-field="${esc(editField)}" data-edit-target="${esc(editTarget)}">${header}<div class="tsk-task-surface tsk-page">${notes}${stepList}${editing ? "" : paperTrail(task)}</div>${meta}</div>`;
   }
 
   function renderPage(embedded = false) {
