@@ -10802,6 +10802,11 @@ mod quick_assign_tests {
                 .position(|line| line.contains("agent asks"))
                 .expect("row painted");
             let lines: Vec<&str> = screen.lines().collect();
+            // The live line stays with its row and the reply box opens under it; an open
+            // peek replaces the live line and paints below the box.
+            let live = usize::from(lines[row + 1].contains("└─ @builder blocked on you · "));
+            assert_eq!(live == 1, !screen.contains("│ which db?"), "{screen}");
+            let row = row + live;
             assert!(lines[row + 1].contains("why    which db?"), "{screen}");
             assert!(lines[row + 2].contains("needs  a decision"), "{screen}");
             assert!(lines[row + 3].contains("└ you  postgres"), "{screen}");
@@ -11520,11 +11525,10 @@ mod quick_assign_tests {
         assert_eq!(last_reply(&saved, ids[0]).as_deref(), Some("looks close"));
         assert_eq!(model.reply_draft(), None, "the box closed on landing");
         assert_eq!(host.prompts, [], "shift+enter never sends");
-        // Your feedback is the last word: the row says so instead of the author and checks.
-        assert_eq!(
-            crate::ui::render::block_trailer(task, saved.tasks()).as_deref(),
-            Some("feedback")
-        );
+        // The round is still yours to decide: the live line keeps saying so after you reply.
+        let live = crate::ui::render::live_line(task, saved.tasks(), std::time::SystemTime::now())
+            .expect("live line");
+        assert!(live.contains("needs your review"), "{live}");
     }
 
     /// `ctrl+s` sends the review back: the round closes as sent back, the task starts, and the
@@ -11710,8 +11714,8 @@ mod quick_assign_tests {
         assert!(screen.contains("feedback to @builder…"), "{screen}");
     }
 
-    /// A review handed to another agent rides IN MOTION with `△` and `on @pi`; on you it is
-    /// `▲` in NEEDS YOU with the author and passed checks.
+    /// A review handed to another agent rides IN MOTION with `△` and `@pi reviewing` under it;
+    /// on you it is `▲` in NEEDS YOU with `@claude needs your review`. The right edge is empty.
     #[test]
     fn a_review_on_another_agent_rides_in_motion() {
         let temp = Temp::new("review-elsewhere", &["builder", "pi"]);
@@ -11743,22 +11747,28 @@ mod quick_assign_tests {
         let (screen, _) = board_screen(&model, 100, 24);
         let needs = screen.find("NEEDS YOU").expect("needs you");
         let motion = screen.find("IN MOTION").expect("in motion");
-        let mine = screen
-            .lines()
-            .find(|line| line.contains("T1 mine"))
-            .expect("mine row");
-        let theirs = screen
-            .lines()
-            .find(|line| line.contains("T2 theirs"))
-            .expect("theirs row");
+        let lines = screen.lines().collect::<Vec<_>>();
+        let row = |title: &str| {
+            lines
+                .iter()
+                .position(|line| line.contains(title))
+                .expect("row")
+        };
+        let (mine_at, theirs_at) = (row("T1 mine"), row("T2 theirs"));
+        let (mine, theirs) = (lines[mine_at], lines[theirs_at]);
         assert!(
-            mine.contains("▲") && mine.contains("@claude · 1/2 ✓"),
+            mine.contains("▲") && mine.trim_end().ends_with("mine"),
             "{mine}"
         );
         assert!(
-            theirs.contains("△") && theirs.contains("on @pi"),
+            lines[mine_at + 1].starts_with("    └─ @claude needs your review · "),
+            "{screen}"
+        );
+        assert!(
+            theirs.contains("△") && theirs.trim_end().ends_with("theirs"),
             "{theirs}"
         );
+        assert_eq!(lines[theirs_at + 1].trim_end(), "    └─ @pi reviewing");
         let at = |line: &str| screen.find(line).expect("row");
         assert!(needs < at(mine) && at(mine) < motion, "{screen}");
         assert!(motion < at(theirs), "{screen}");

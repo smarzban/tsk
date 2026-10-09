@@ -4,7 +4,7 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use ratatui::layout::Position;
 use uuid::Uuid;
@@ -1160,6 +1160,9 @@ pub struct BoardModel {
     /// Whether the last app-boundary presentation was wide enough to paint a split frame.
     /// A parked preview keeps its session while input returns to the painted index.
     pub(super) frame_wide: Cell<bool>,
+    /// A fixed clock for every age the board paints; `None` reads the wall clock. Tests and
+    /// goldens pin it so no frame depends on today's date.
+    clock: Option<SystemTime>,
 }
 
 /// One dispatched task on a cleanup card, captured before the modal opens.
@@ -1745,10 +1748,24 @@ pub enum SaveResolution {
 }
 
 impl BoardModel {
+    /// The time every painted age is measured against.
+    pub fn now(&self) -> SystemTime {
+        self.clock.unwrap_or_else(SystemTime::now)
+    }
+
+    /// Pin the board's clock (tests and goldens); `None` returns to the wall clock.
+    pub fn set_clock(&mut self, clock: Option<SystemTime>) {
+        self.clock = clock;
+        if let Some(right) = self.right_seat.as_deref_mut() {
+            right.set_clock(clock);
+        }
+    }
+
     /// Build a board model with queue-local session state only. The desk is the
     /// default destination; [`Self::from_domain`] applies directory-aware startup.
     pub fn from_tasks(tasks: Vec<Task>, this_repo: Option<PathBuf>) -> Self {
         let mut model = Self {
+            clock: None,
             tasks,
             archived_projects: BTreeSet::new(),
             agent_names: Vec::new(),
@@ -2730,7 +2747,9 @@ impl BoardModel {
     }
 
     /// Mutable board session that owns keyboard, mouse, and modal dispatch.
-    pub(crate) fn input_target_mut(&mut self) -> &mut BoardModel {
+    // Public only so tests/demo_parity.rs can drive the project preview seat.
+    #[doc(hidden)]
+    pub fn input_target_mut(&mut self) -> &mut BoardModel {
         if self.project_right_seat_focused() {
             self.right_seat
                 .as_deref_mut()
@@ -2778,6 +2797,7 @@ impl BoardModel {
         right.board_location = BoardLocation::Project(path.clone());
         right.selected_project = Some(path);
         right.preview_seat = true;
+        right.clock = self.clock;
         right.selection_id = None;
         right.update_notice = self.update_notice.clone();
         right.bulk_dispatch = self.bulk_dispatch.clone();

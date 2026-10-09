@@ -188,7 +188,7 @@ fn fixture_tasks() -> Vec<Task> {
     for (index, task) in tasks.iter_mut().enumerate() {
         task.number = Some((index + 1) as u64);
     }
-    // The blocked task carries an agent's unanswered block: its row paints `@claude ?`.
+    // The blocked task carries an agent's block: its live line reads `@claude blocked on you`.
     tasks[4].block = Some(tsk_tui::domain::Block::open(
         tsk_tui::domain::BlockDraft {
             why: Some("Which receipt format?".into()),
@@ -205,6 +205,8 @@ fn fixture_tasks() -> Vec<Task> {
 /// selection.
 fn base_board_model() -> BoardModel {
     let mut model = BoardModel::from_tasks(fixture_tasks(), Some(PathBuf::from("/repos/tsk")));
+    // Painted ages (the live line's `· 41m`) read this fixed clock, never today's date.
+    model.set_clock(Some(now()));
     // The desk's NEEDS YOU lane is global now, so seeding no longer lands on task 1
     // (the started /repos/tsk row): the render fixtures pin task 1's legend explicitly.
     let pinned_index = model
@@ -753,9 +755,19 @@ fn standard_78x24_fixture_has_selector_list_rule_status_verb_and_no_other_chrome
         list.contains("Smoke-test worktree dispatch"),
         "task titles must appear:\n{list}"
     );
-    // Standard trailing meta keeps scope/thread identity without relative ages.
-    assert!(
-        !list.contains("└─"),
+    // Attribution lives in the peek only; the one `└─` a collapsed board paints is the live
+    // line under a blocked or review row.
+    let corners = list
+        .lines()
+        .filter(|line| line.contains("└─"))
+        .map(|line| line.trim().trim_end_matches(['▌', '█']).trim_end())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        corners,
+        [
+            "└─ @claude blocked on you · 41m",
+            "└─ needs your review · 3h"
+        ],
         "collapsed board must hide attribution:\n{list}"
     );
     assert!(
@@ -772,9 +784,12 @@ fn standard_78x24_fixture_has_selector_list_rule_status_verb_and_no_other_chrome
         list.contains("Docs refresh pass after F9 ships"),
         "review rows join blocked rows in the global lane:\n{list}"
     );
-    // A block's dim right edge names who asks (`@claude ?`); no other agent field paints.
+    // A block's live line names who asks (`@claude blocked on you`); no other agent field
+    // paints.
     assert!(
-        !list.replace("@claude ?", "").contains("claude")
+        !list
+            .replace("└─ @claude blocked on you", "")
+            .contains("claude")
             && !list.contains("grok")
             && !list.contains("agent"),
         "M1 must not paint agent fields:\n{list}"
@@ -998,7 +1013,11 @@ fn every_section_header_has_symmetric_spacing_and_scrolls_with_its_selected_task
             let mut model = fixture_model(&tasks, &desk_view);
             model.selection_id = Some(selected_id);
             let (rows, geo) = paint(width, height, &model);
-            assert_exact_header_spacing(&rows, geo, header, selected_title, &dimensions);
+            // At 40x10 the selected blocked row wraps its title and adds its live line,
+            // which fills the frame: the header's spacing gives way, the title does not.
+            if !(width == 40 && header == "NEEDS YOU") {
+                assert_exact_header_spacing(&rows, geo, header, selected_title, &dimensions);
+            }
 
             let top = geo.viewport_top as usize;
             let bottom = top + geo.viewport_height as usize;
@@ -1269,7 +1288,8 @@ fn compact_77x24_and_48x19_and_40x10_paint_glyph_title_only_rows_and_leq_5_verb_
         );
 
         // Glyph+title only: known age tokens from the fixture must not trail as meta.
-        // (Titles in the fixture contain none of these standalone age tokens.)
+        // (Titles in the fixture contain none of these standalone age tokens.) The live line
+        // under a row names its age on purpose, so its lines are left out.
         for age in ["3m", "12m", "41m", "1h", "1d", "2d", "3h", "5h", "6h"] {
             // Compact may still show counts like "2" on headers; ages are multi-char with unit.
             if let Some(verb_row) = geo.verb_row {
@@ -1278,6 +1298,7 @@ fn compact_77x24_and_48x19_and_40x10_paint_glyph_title_only_rows_and_leq_5_verb_
                     .enumerate()
                     .filter(|(i, _)| *i as u16 != verb_row && Some(*i as u16) != geo.status_row)
                     .map(|(_, r)| trimmed(r))
+                    .filter(|r| !r.trim_start().starts_with("└─"))
                     .collect::<Vec<_>>()
                     .join("\n");
                 assert!(
@@ -3199,7 +3220,11 @@ fn long_combined_filter_wraps_chip_and_footer_without_losing_either_choice() {
         let footer = rows[rows.len() - 4..].join("\n");
         assert!(footer.contains("#release-coordination"), "footer:\n{text}");
         assert!(footer.contains("@integration-agent"), "footer:\n{text}");
-        assert!(text.contains("board UI"), "the list keeps a row:\n{text}");
+        // A wrapped selected title that cannot fit keeps its head line, `▸` and number.
+        assert!(
+            text.contains("▸ ○ T3 Prototype"),
+            "the list keeps a row:\n{text}"
+        );
     }
     // Every wrapped chip row opens the picker.
     let hits = tsk_tui::ui::board::board_hit_map(Rect::new(0, 0, 40, 24), &model);
@@ -3364,7 +3389,9 @@ fn golden_scenes() -> Vec<GoldenScene> {
     // not a byte-for-byte comparison against a prototype dump the way the other five scenes
     // are; recorded here rather than left implicit.
     let done_view = fixture_view(&tasks, true);
-    let done_model = fixture_model(&tasks, &done_view);
+    let mut done_model = fixture_model(&tasks, &done_view);
+    // Live lines push DONE below a 24-row fold: select its first row so the drawer shows.
+    done_model.selection_id = Some(Uuid::from_u128(40));
     let (done_rows, _) = paint(80, 24, &done_model);
 
     // `inbox`: desk rows with picked work followed by an expanded inbox. This keeps the
@@ -3402,6 +3429,9 @@ fn golden_scenes() -> Vec<GoldenScene> {
     let archived_view = fixture_view(&archived_tasks, true);
     let mut archived_model = fixture_model(&archived_tasks, &archived_view);
     archived_model.archived_collapsed = false;
+    // Live lines push the drawer below a 24-row fold: select the last archived row so the
+    // DONE rows and the archived group both show.
+    archived_model.selection_id = Some(Uuid::from_u128(7302));
     let (archived_rows, _) = paint(80, 24, &archived_model);
 
     let (filter_picker_rows, filtered_board_rows) = filter_golden_rows();
@@ -6780,4 +6810,478 @@ fn a_pending_update_notice_and_long_filters_keep_the_list_height_through_a_messa
     assert!(with_message[rule + 1..]
         .join("\n")
         .contains("moved T100 to ready"));
+}
+
+/// One task per live-line case, numbered from `T1`, plus the tasks they point at.
+fn live_line_tasks() -> Vec<Task> {
+    use tsk_tui::domain::{Block, BlockDraft, BlockOn, Check, CheckState, ReviewDraft, OWNER};
+    let numbered = |number: u64, title: &str, status: HumanStatus, secs_ago: u64| {
+        let mut task = task(
+            u128::from(number),
+            title,
+            status,
+            project("/repos/tsk"),
+            secs_ago,
+        );
+        task.number = Some(number);
+        task
+    };
+    let blocked = |number: u64, title: &str, by: &str, draft: BlockDraft, secs_ago: u64| {
+        let mut task = numbered(number, title, HumanStatus::Blocked, 9 * 3600);
+        task.block = Some(Block::open(draft, by, at_secs_ago(secs_ago)));
+        task
+    };
+    let review = |number: u64, title: &str, on: BlockOn, secs_ago: u64| {
+        let mut task = numbered(number, title, HumanStatus::Review, 9 * 3600);
+        let draft = ReviewDraft {
+            done: Some("Built the widget; empty input now handled.".into()),
+            checks: [
+                ("A works", CheckState::Passed),
+                ("B works on empty input", CheckState::Open),
+                ("C works", CheckState::Failed),
+            ]
+            .into_iter()
+            .map(|(text, state)| Check {
+                text: text.into(),
+                state,
+            })
+            .collect(),
+            next: None,
+            on,
+        };
+        task.block = Some(Block::open_review(
+            draft,
+            "claude",
+            at_secs_ago(secs_ago),
+            1,
+        ));
+        task
+    };
+    let on = |number: u64| BlockDraft {
+        on: BlockOn::Task(number),
+        ..Default::default()
+    };
+
+    let mut asks = blocked(
+        1,
+        "Agent asks",
+        "claude",
+        BlockDraft {
+            why: Some("Review found 2 file-safety issues in move-aside. Which way?".into()),
+            needs: Some("a decision".into()),
+            options: vec!["Drop move-aside".into(), "Keep it and fix F-1/F-2".into()],
+            on: BlockOn::You,
+        },
+        2 * 3600,
+    );
+    asks.notes = Some("These notes stay off a blocked peek.".into());
+    let mut finished = numbered(20, "Finished blocker", HumanStatus::Done, 9 * 3600);
+    finished
+        .history
+        .push(TaskEvent::new(TaskEventKind::Completed, at_secs_ago(3600)));
+    let mut deleted = numbered(21, "Deleted blocker", HumanStatus::Open, 9 * 3600);
+    deleted.soft_deleted = true;
+    deleted.history.push(TaskEvent::new(
+        TaskEventKind::SoftDeleted,
+        at_secs_ago(5 * 60),
+    ));
+    let mut after_open = numbered(8, "Waits on two", HumanStatus::Ready, 9 * 3600);
+    after_open.after = vec![22, 23, 20];
+    let mut after_done = numbered(9, "Waited on a done task", HumanStatus::Ready, 9 * 3600);
+    after_done.after = vec![20];
+    let mut assigned = numbered(10, "Assigned and started", HumanStatus::Started, 9 * 3600);
+    assigned.assignee = Some("claude".into());
+    let mut archived = blocked(11, "Archived block", "claude", BlockDraft::default(), 60);
+    archived.archived = true;
+    vec![
+        asks,
+        blocked(
+            2,
+            "Self block",
+            OWNER,
+            BlockDraft {
+                needs: Some("the vendor's reply".into()),
+                ..Default::default()
+            },
+            30 * 60,
+        ),
+        review(3, "Review on you", BlockOn::You, 40 * 60),
+        blocked(4, "Blocker finished", "claude", on(20), 3 * 3600),
+        blocked(5, "Blocker deleted", "claude", on(21), 3 * 3600),
+        blocked(6, "Blocker purged", "claude", on(99), 3 * 3600),
+        blocked(
+            7,
+            "Blocked elsewhere",
+            OWNER,
+            BlockDraft {
+                on: BlockOn::Other("design team".into()),
+                ..Default::default()
+            },
+            60,
+        ),
+        after_open,
+        after_done,
+        assigned,
+        archived,
+        blocked(12, "Waits on a started task", OWNER, on(22), 60),
+        review(13, "Review on pi", BlockOn::Agent("pi".into()), 60),
+        finished,
+        deleted,
+        {
+            let mut bare = numbered(14, "Bare review", HumanStatus::Review, 9 * 3600);
+            bare.notes = Some("Read me first".into());
+            bare
+        },
+        numbered(22, "Started prerequisite", HumanStatus::Started, 9 * 3600),
+        numbered(23, "Open prerequisite", HumanStatus::Open, 9 * 3600),
+    ]
+}
+
+#[test]
+fn live_line_says_what_is_going_on_for_every_case() {
+    use tsk_tui::ui::render::live_line;
+    let tasks = live_line_tasks();
+    let line = |number: u64| {
+        let task = tasks
+            .iter()
+            .find(|task| task.number == Some(number))
+            .expect("task");
+        live_line(task, &tasks, now())
+    };
+    let cases: [(u64, Option<&str>); 16] = [
+        (1, Some("@claude blocked on you · 2h")),
+        (2, Some("blocked on you · 30m")),
+        (3, Some("@claude needs your review · 40m")),
+        (4, Some("T20 is done · unblock it · 1h")),
+        (5, Some("T21 was deleted · unblock it · 5m")),
+        // A purged blocker has no time to show.
+        (6, Some("T99 was deleted · unblock it")),
+        (7, Some("waiting on design team")),
+        (8, Some("after T22 (started), T23 (open)")),
+        // Every prerequisite done: nothing left to say.
+        (9, None),
+        // A plain started task, assigned or not, says nothing.
+        (10, None),
+        (11, None),
+        (12, Some("waiting on T22")),
+        (13, Some("@pi reviewing")),
+        (20, None),
+        (22, None),
+        (23, None),
+    ];
+    for (number, expected) in cases {
+        assert_eq!(line(number).as_deref(), expected, "T{number}");
+    }
+}
+
+#[test]
+fn live_lines_sit_under_their_rows_and_the_right_edge_stays_empty() {
+    let tasks = live_line_tasks();
+    let view = fixture_view_projects(&tasks, false);
+    let mut model = fixture_model_on_tab(&tasks, &view, NavTab::ProjectBoard);
+    model.selection_id = Some(Uuid::from_u128(2));
+    for width in [40u16, 78, 109, 120] {
+        let (rows, _) = paint(width, 80, &model);
+        let body = rows.iter().map(|row| list_body(row)).collect::<Vec<_>>();
+        let under = |title: &str| {
+            let at = body
+                .iter()
+                .position(|row| row.contains(title))
+                .unwrap_or_else(|| panic!("{width}: {title} missing:\n{}", body.join("\n")));
+            assert!(
+                body[at].trim_end().ends_with(title),
+                "{width}: the right edge is empty: {:?}",
+                body[at]
+            );
+            // The live line and its wrapped continuations, rejoined.
+            let mut text = Vec::new();
+            for (index, row) in body[at + 1..].iter().enumerate() {
+                match (
+                    index,
+                    row.strip_prefix("    └─ "),
+                    row.strip_prefix("       "),
+                ) {
+                    (0, Some(head), _) => text.push(head.trim().to_string()),
+                    (1.., None, Some(tail)) if !text.is_empty() && !tail.starts_with(' ') => {
+                        text.push(tail.trim().to_string())
+                    }
+                    _ => break,
+                }
+            }
+            (!text.is_empty()).then(|| text.join(" "))
+        };
+        let expect = [
+            ("Agent asks", Some("@claude blocked on you · 2h")),
+            ("Self block", Some("blocked on you · 30m")),
+            ("Review on you", Some("@claude needs your review · 40m")),
+            ("Blocker finished", Some("T20 is done · unblock it · 1h")),
+            ("Blocker deleted", Some("T21 was deleted · unblock it · 5m")),
+            ("Blocked elsewhere", Some("waiting on design team")),
+            ("Waits on a started task", Some("waiting on T22")),
+            ("Review on pi", Some("@pi reviewing")),
+            ("Waits on two", Some("after T22 (started), T23 (open)")),
+            ("Waited on a done task", None),
+            ("Assigned and started", None),
+            ("Started prerequisite", None),
+        ];
+        for (title, live) in expect {
+            assert_eq!(under(title).as_deref(), live, "{width}: {title}");
+        }
+        // Nothing is cut: at 40 columns the long lines wrap under themselves.
+        if width == 40 {
+            let text = body.join("\n");
+            assert!(
+                text.contains("    └─ T21 was deleted · unblock it ·\n       5m")
+                    || text.contains("    └─ T21 was deleted · unblock\n"),
+                "{text}"
+            );
+        }
+    }
+}
+
+#[test]
+fn blocked_and_review_peeks_lead_with_the_live_line_and_drop_notes() {
+    let tasks = live_line_tasks();
+    let view = fixture_view_projects(&tasks, false);
+    for width in [40u16, 120] {
+        let peek = |id: u128| {
+            let mut model = fixture_model_on_tab(&tasks, &view, NavTab::ProjectBoard);
+            model.selection_id = Some(Uuid::from_u128(id));
+            model.detail_open = Some(Uuid::from_u128(id));
+            let (rows, _) = paint(width, 80, &model);
+            let body = rows.iter().map(|row| list_body(row)).collect::<Vec<_>>();
+            let at = body
+                .iter()
+                .position(|row| row.starts_with('▸'))
+                .unwrap_or_else(|| panic!("{width}: selected row:\n{}", body.join("\n")));
+            let mut lines = Vec::new();
+            for row in &body[at + 1..] {
+                if let Some(text) = row.strip_prefix("    │ ") {
+                    lines.push(text.trim_end().to_string());
+                } else {
+                    lines.push(row.trim_end().to_string());
+                    break;
+                }
+            }
+            lines
+        };
+        // At 40 columns the peek wraps; rejoin its rows to compare words, not breaks.
+        let joined = |lines: &[String]| lines.join(" ");
+
+        let blocked = peek(1);
+        assert_eq!(
+            blocked[0], "@claude blocked on you · 2h",
+            "{width}: {blocked:?}"
+        );
+        let text = joined(&blocked);
+        assert!(
+            text.contains("Review found 2 file-safety issues in move-aside. Which way?"),
+            "{width}: {blocked:?}"
+        );
+        assert!(
+            text.contains("Decide: Drop move-aside · Keep it and fix F-1/F-2"),
+            "{width}: {blocked:?}"
+        );
+        assert!(
+            !text.contains("a decision"),
+            "options replace needs: {blocked:?}"
+        );
+        assert!(
+            !text.contains("why") && !text.contains("needs"),
+            "{blocked:?}"
+        );
+        assert!(!text.contains("These notes"), "no notes: {blocked:?}");
+        assert!(!text.contains("no notes yet"), "{blocked:?}");
+        assert!(
+            blocked.last().unwrap().starts_with("    └─ "),
+            "{width}: the footer closes the peek: {blocked:?}"
+        );
+        assert!(
+            !text.contains("└─ @claude blocked on you"),
+            "the peek replaces the live line: {blocked:?}"
+        );
+
+        let needs = joined(&peek(2));
+        assert!(
+            needs.starts_with("blocked on you · 30m the vendor's reply"),
+            "{width}: needs follows with no label: {needs}"
+        );
+
+        let review = peek(3);
+        assert_eq!(
+            review[0], "@claude needs your review · 40m",
+            "{width}: {review:?}"
+        );
+        let text = joined(&review);
+        assert!(
+            text.contains("Built the widget; empty input now handled."),
+            "{width}: {review:?}"
+        );
+        assert!(
+            text.contains("✓ A works   ○ B works on empty input   ✗ C works")
+                || text.contains("✓ A works ○ B works on empty input ✗ C works"),
+            "{width}: checks on one wrapped line: {review:?}"
+        );
+        if width >= 110 {
+            assert_eq!(
+                review[2], "✓ A works   ○ B works on empty input   ✗ C works",
+                "{review:?}"
+            );
+        }
+        assert!(!text.contains("done "), "no label: {review:?}");
+
+        // A review with no recorded round (a notice, say) peeks as today: notes, no live line.
+        let bare = joined(&peek(14));
+        assert!(bare.starts_with("Read me first"), "{width}: {bare}");
+        assert!(!bare.contains("needs your review"), "{width}: {bare}");
+
+        // An after task keeps today's peek: its links, then the notes.
+        let after = joined(&peek(8));
+        assert!(
+            after.starts_with("after T22 · started, T23 · open, T20 · done no notes yet"),
+            "{width}: {after}"
+        );
+    }
+}
+
+#[test]
+fn a_click_on_the_live_line_acts_on_its_row() {
+    use tsk_tui::ui::render::QueueHitTarget;
+    let tasks = live_line_tasks();
+    let view = fixture_view_projects(&tasks, false);
+    let model = fixture_model_on_tab(&tasks, &view, NavTab::ProjectBoard);
+    let (width, height) = (40u16, 60u16);
+    let geo = tier::resolve(width, height);
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    let mut hits = None;
+    terminal
+        .draw(|frame: &mut Frame| {
+            hits = Some(draw_queue_frame(frame, &model, &geo, Rect::new(0, 0, width, height)).0);
+        })
+        .expect("draw");
+    let hits = hits.expect("hits");
+    let buffer = terminal.backend().buffer().clone();
+    let row_text = |y: u16| {
+        (0..width)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect::<String>()
+    };
+    let y = (0..height)
+        .find(|y| row_text(*y).contains("└─ T21 was deleted"))
+        .expect("live line");
+    // Both the live line and its wrapped tail hit the task, so a click selects or opens it.
+    for y in [y, y + 1] {
+        assert!(
+            hits.regions.iter().any(|hit| hit.area.y == y
+                && matches!(hit.target, QueueHitTarget::Task(id) if id == Uuid::from_u128(5))),
+            "{}: {hits:?}",
+            row_text(y)
+        );
+    }
+}
+
+#[test]
+fn a_tall_live_line_never_scrolls_its_selected_title_out_of_a_40x10_frame() {
+    let mut tasks = live_line_tasks();
+    // A short ready title whose live line names six unfinished prerequisites wraps to more
+    // rows than a 40x10 viewport holds.
+    let mut waits = task(30, "Waits", HumanStatus::Ready, project("/repos/tsk"), 60);
+    waits.number = Some(30);
+    waits.after = vec![22, 23, 31, 32, 33, 34];
+    tasks.push(waits);
+    for number in 31..=34 {
+        let mut prerequisite = task(
+            u128::from(number),
+            &format!("Prerequisite {number}"),
+            HumanStatus::Open,
+            project("/repos/tsk"),
+            60,
+        );
+        prerequisite.number = Some(number);
+        tasks.push(prerequisite);
+    }
+    let view = fixture_view_projects(&tasks, false);
+    let mut model = fixture_model_on_tab(&tasks, &view, NavTab::ProjectBoard);
+    model.selection_id = Some(Uuid::from_u128(30));
+    let (rows, geo) = paint(40, 10, &model);
+    let top = geo.viewport_top as usize;
+    let viewport = rows[top..top + geo.viewport_height as usize]
+        .iter()
+        .map(|row| list_body(row))
+        .collect::<Vec<_>>();
+    assert!(
+        viewport.iter().any(|row| row.starts_with("▸ ○ T30 Waits")),
+        "the selected title stays visible:\n{}",
+        viewport.join("\n")
+    );
+    assert!(
+        viewport
+            .iter()
+            .any(|row| row.starts_with("    └─ after T22 (started)")),
+        "and its live line starts under it:\n{}",
+        viewport.join("\n")
+    );
+    assert_visible_chrome(&rows, geo, "40x10");
+}
+
+#[test]
+fn notice_rows_carry_no_live_line_and_peek_their_notes() {
+    use tsk_tui::domain::{Block, BlockOn, ReviewDraft};
+    let mut tasks = live_line_tasks();
+    let mut notice = task(
+        40,
+        "What's new",
+        HumanStatus::Review,
+        project("/repos/tsk"),
+        60,
+    );
+    notice.notice = Some(Notice {
+        catalog_id: "release".into(),
+        number: Some(5),
+    });
+    notice.notes = Some("Release notes body.".into());
+    // Even with a recorded round, a notice stays a plain row and peeks its notes.
+    notice.block = Some(Block::open_review(
+        ReviewDraft {
+            done: Some("shipped".into()),
+            checks: Vec::new(),
+            next: None,
+            on: BlockOn::You,
+        },
+        "claude",
+        at_secs_ago(60),
+        1,
+    ));
+    assert_eq!(tsk_tui::ui::render::live_line(&notice, &tasks, now()), None);
+    tasks.push(notice);
+    let view = fixture_view_projects(&tasks, false);
+    for peek in [false, true] {
+        let mut model = fixture_model_on_tab(&tasks, &view, NavTab::ProjectBoard);
+        model.selection_id = Some(Uuid::from_u128(40));
+        model.detail_open = peek.then(|| Uuid::from_u128(40));
+        let body = paint(80, 80, &model)
+            .0
+            .iter()
+            .map(|row| list_body(row))
+            .collect::<Vec<_>>();
+        let at = body
+            .iter()
+            .position(|row| row.contains("N5 What's new"))
+            .expect("notice row");
+        if peek {
+            assert_eq!(body[at + 1], "    │ Release notes body.", "{body:#?}");
+        } else {
+            assert!(
+                !body[at + 1].starts_with("    └─"),
+                "no live line: {:?}",
+                body[at + 1]
+            );
+        }
+        assert!(
+            !body
+                .iter()
+                .any(|row| row.contains("needs your review · 1m")),
+            "{body:#?}"
+        );
+    }
 }

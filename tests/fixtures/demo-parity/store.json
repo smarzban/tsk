@@ -10,6 +10,19 @@
       "notes": "Confirm the wording before release.",
       "thread": "release",
       "status": "blocked",
+      "block": {
+        "why": "Which changelog wording ships?",
+        "needs": "your pick",
+        "options": [
+          "Keep it",
+          "Rewrite"
+        ],
+        "by": "claude",
+        "at": [
+          1700000100,
+          0
+        ]
+      },
       "scope": {
         "project": {
           "path": "/tmp/tsk-parity"
@@ -176,28 +189,6 @@
       ],
       "updated_at": [
         1700000019,
-        0
-      ]
-    },
-    {
-      "id": "00000000-0000-4000-8000-000000000019",
-      "number": 19,
-      "revision": "10000000-0000-4000-8000-000000000019",
-      "title": "Record the retry runbook",
-      "notes": "",
-      "thread": null,
-      "status": "open",
-      "scope": "global",
-      "provenance": "selection",
-      "history": [],
-      "steps": [],
-      "soft_deleted": false,
-      "created_at": [
-        1700000020,
-        0
-      ],
-      "updated_at": [
-        1700000020,
         0
       ]
     },

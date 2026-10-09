@@ -4,19 +4,19 @@
 │                                                                                │
 │ NEEDS YOU ───────────────────────────────────────────────────────────────────2 │
 │                                                                                │
-│  ■ T5 Wire dispatch cleanup receipts                                @claude ?  │
-│  ▲ T6 Do┌─ help ▼ ────────────────────────────────────────────── [x]─┐         │
-│         │                                                            │         │
-│ IN MOTIO│  / search keys or actions…                                 │───────2 │
+│  ■ T5 Wire dispatch cleanup receipts                                           │
+│    └─ @c┌─ help ▼ ────────────────────────────────────────────── [x]─┐         │
+│  ▲ T6 Do│                                                            │         │
+│    └─ ne│  / search keys or actions…                                 │         │
 │         │ ────────────────────────────────────────────────────────── │         │
-│▸ ● T1 Sm│  NAVIGATION                                                │         │
-│  ● T2 Ed│  ↑↓ / jk            move                                   │         │
-│         │  shift+M            multi-select                           │         │
-│ ON DECK │  shift+↑↓           mark and move (multi-select)           │───────1 │
+│ IN MOTIO│  NAVIGATION                                                │───────2 │
+│         │  ↑↓ / jk            move                                   │         │
+│▸ ● T1 Sm│  shift+M            multi-select                           │         │
+│  ● T2 Ed│  shift+↑↓           mark and move (multi-select)           │         │
 │         │                                                            │         │
-│  ○ T7 Gl├────────────────────────────────────────────────────────────┤         │
+│ ON DECK ├────────────────────────────────────────────────────────────┤───────1 │
 │         │ type search · ↑↓ scroll · esc clear/close                  │         │
-│         └────────────────────────────────────────────────────────────┘         │
+│  ○ T7 Gl└────────────────────────────────────────────────────────────┘         │
 │                                                                                │
 │                                                                                │
 │                                                                                │

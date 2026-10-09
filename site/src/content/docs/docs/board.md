@@ -186,9 +186,21 @@ Cleanup closes the dispatch's Herdr workspace, removes its recorded worktree, an
 
 Status glyphs are `◌` open, `○` ready, `●` started, `■` blocked, `▲` review, and `✓` done. A started task with a live [dispatch](#dispatch) shows `◉` instead of `●`; any other status, or a cleaned dispatch, shows the normal glyph. A task blocked on another task or on something else shows `□`; a review on an agent or on something else shows `△`.
 
-A blocked row's dim right edge says what it waits for: `@claude ?` while an agent's question is unanswered, `answered` once you have the last reply, or `on T169` / `on <text>` for a block waiting elsewhere. When the blocking task is done, the blocked task returns to NEEDS YOU, its row reads `T169 done`, and its peek asks `T169 done, unblock?`. tsk never changes the status itself. A blocked task's peek lists its why, needs, and options above the notes.
+A row with something to say carries a dim **live line** under it, in the peek's `└─` style, wrapped and never cut. It is part of its row: selection never stops on it and a click on it acts on the task. The right edge of a row stays empty.
 
-A review row's right edge shows its author and passed checks, `@claude · 1/2 ✓`, until you give feedback, then `feedback`; a review handed elsewhere reads `on @pi` or `on <text>`. Its peek lists what was done and each check (`○` open, `✓` passed, `✗` failed) above the notes.
+| Row | Live line |
+| --- | --- |
+| Blocked on you | `@claude blocked on you · 2h`, or `blocked on you · 2h` when you set it yourself |
+| Review on you | `@claude needs your review · 40m` / `needs your review · 40m` |
+| Blocking task done | `T169 is done · unblock it · 1h` |
+| Blocking task deleted | `T169 was deleted · unblock it · 1h` |
+| Blocked elsewhere | `waiting on T169` / `waiting on design team` |
+| Review handed elsewhere | `@pi reviewing` |
+| Ready or open, running [after](#after) unfinished tasks | `after T202 (started), T205 (open)` |
+
+The age is how long the row has been in that state: since the block or review round opened, or since the blocking task finished. A started task, a done or archived task, a [notice](#notices), and a waiting task whose prerequisites are all done have no live line. When the blocking task is done, the blocked task returns to NEEDS YOU; tsk never changes the status itself.
+
+The [peek](#mouse) replaces the live line, and closing it brings the line back. A blocked task's peek opens with the live line's text, then the why, then `Decide: <option> · <option>` when there are options or else the needs, then the footer. A review's peek opens with the live line's text, then what was done, then every check on one wrapped line (`○` open, `✓` passed, `✗` failed), then the footer. Neither shows the notes; `Enter` opens the task page for them. A notice, or a blocked or review task with no recorded block or round, peeks its notes as usual.
 
 ### Block with a reason
 
@@ -202,7 +214,7 @@ A review row's right edge shows its author and passed checks, `@claude · 1/2 �
 
 `Tab` moves between fields, `Enter` blocks, and `Esc` cancels. `Enter` on an empty card blocks at once with no reason. A task number must be another task on the board; the card says so otherwise. With tasks marked, one card blocks the whole set as one save and one `ctrl+u` undo step, and `Esc` keeps the marks. `ctrl+b` on a blocked task unblocks it to ready, as do every other status change: leaving `blocked` closes its block. Palette **set status: blocked** opens the same card for the targets not yet blocked. If the save fails and you cancel, the card and the marks stay, ready to try again.
 
-Agents block with a question from [the CLI](/docs/cli/#status) (`--why`, `--needs`, `--option`, `--on`). Answer on the [task page](/docs/task-page/#blocked), or press `r` on a blocked row, in NEEDS YOU or IN MOTION at any width, to reply right under it: the block's why and needs stay above the reply box, and its keys are the task page's (`Shift+Enter` saves, `ctrl+s` saves and unblocks, `Enter` breaks the line, `Esc` cancels). With tasks marked, `r` answers the cursor row only. On a row that is not blocked the status row says `not blocked`. The list scrolls to keep the caret in view. If the task leaves the list while you type (unblocked or finished elsewhere), the box moves below the list under the task's name, keeps your draft, and says `this block was closed or replaced elsewhere; reply kept`.
+Agents block with a question from [the CLI](/docs/cli/#status) (`--why`, `--needs`, `--option`, `--on`). Answer on the [task page](/docs/task-page/#blocked), or press `r` on a blocked row, in NEEDS YOU or IN MOTION at any width, to reply right under it and its live line: the block's why and needs stay above the reply box, and its keys are the task page's (`Shift+Enter` saves, `ctrl+s` saves and unblocks, `Enter` breaks the line, `Esc` cancels). With tasks marked, `r` answers the cursor row only. On a row that is not blocked the status row says `not blocked`. The list scrolls to keep the caret in view. If the task leaves the list while you type (unblocked or finished elsewhere), the box moves below the list under the task's name, keeps your draft, and says `this block was closed or replaced elsewhere; reply kept`.
 
 ### Review with what was done
 
@@ -268,7 +280,7 @@ Agents can set any status with [the CLI](/docs/cli/#status). Task status does no
 
 ## After
 
-A task can run **after** other tasks: it waits while any of them is not done. Task numbers are board-wide, so a prerequisite can be in any project or on the desk. A waiting row shows a dim `after T202` at its right edge, gone once every prerequisite is done; nothing moves sections. Its peek lists each prerequisite with its status, `after T202 · started`, and a prerequisite's peek lists what waits on it, `before T203, T204`. The [task page](/docs/task-page/#after) footer shows the same.
+A task can run **after** other tasks: it waits while any of them is not done. Task numbers are board-wide, so a prerequisite can be in any project or on the desk. A waiting ready or open row's live line reads `after T202 (started)`, gone once every prerequisite is done; nothing moves sections. Its peek lists each prerequisite with its status, `after T202 · started`, and a prerequisite's peek lists what waits on it, `before T203, T204`. The [task page](/docs/task-page/#after) footer shows the same.
 
 Set it from the task page's **After** field, with **set after…** in the palette (the cursor task, or every marked task), with `!w T202` in [quick-add](/docs/capture/#title-tokens), or with [`tsk edit --after`](/docs/cli/#edit). The task picker lists the tasks that are not done, the task's own project first and then the others with their project. Type to filter by number or title, `Space` ticks several, `Enter` applies the ticked tasks (or the highlighted one when nothing is ticked), and **none** clears the list. A task cannot run after itself, and a choice that would close a loop is refused, for example `T202 already runs after T205`.
 
@@ -298,7 +310,7 @@ Your first board open seeds four desk tasks with `N` ids (not `T`). They teach t
 | Wheel or drag a scrollbar | Scroll |
 | Drag across text | Select and copy on release |
 
-Open peeks show notes, followed by one metadata footer ordered `@assignee · ⎇ <base> · #thread · project`, omitting unset parts and hiding the default base. A task with [after](#after) links lists them above the notes. Below 110 columns, `→` or `l` opens a peek and `←` or `h` closes it. Peeks show up to five wrapped note lines; the [task page](/docs/task-page/) shows the rest.
+Open peeks show notes, followed by one metadata footer ordered `@assignee · ⎇ <base> · #thread · project`, omitting unset parts and hiding the default base. A task with [after](#after) links lists them above the notes. A blocked or review task's peek shows its [live line and block or review](#status) instead of the notes. Below 110 columns, `→` or `l` opens a peek and `←` or `h` closes it. Peeks show up to five wrapped note lines; the [task page](/docs/task-page/) shows the rest.
 
 ## Wide stage slider
 

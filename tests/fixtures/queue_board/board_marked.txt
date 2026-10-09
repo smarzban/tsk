@@ -4,8 +4,10 @@
 │                                                                                │
 │ NEEDS YOU ───────────────────────────────────────────────────────────────────2 │
 │                                                                                │
-│  ■ T5 Wire dispatch cleanup receipts                                @claude ?  │
+│  ■ T5 Wire dispatch cleanup receipts                                           │
+│    └─ @claude blocked on you · 41m                                             │
 │  ▲ T6 Docs refresh pass after F9 ships                                         │
+│    └─ needs your review · 3h                                                   │
 │                                                                                │
 │ IN MOTION ───────────────────────────────────────────────────────────────────2 │
 │                                                                                │
@@ -17,8 +19,6 @@
 │ ON DECK · desk ──────────────────────────────────────────────────────────────1 │
 │                                                                                │
 │  ○ T7 Global backlog note                                                      │
-│                                                                                │
-│                                                                                │
 │                                                                                │
 │────────────────────────────────────────────────────────────────────────────────│
 │ multi-select · 2 selected · esc clears                                         │
