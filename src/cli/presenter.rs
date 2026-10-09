@@ -1303,7 +1303,6 @@ pub fn status_help() -> CliOutput {
             "text-too-long".into(),
             "invalid-blocker".into(),
             "agent-gone".into(),
-            "not-in-herdr".into(),
             "needs-git-project".into(),
             "unknown-agent".into(),
             "unknown-base".into(),

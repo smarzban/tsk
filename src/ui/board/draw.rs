@@ -379,14 +379,17 @@ pub(crate) fn dispatch_overlay<'a>(
     if !prompt.start_only.is_empty() {
         lines.push(CleanupCardLine::Text("start only".into()));
         for (identifier, id) in &prompt.start_only {
-            let value = if prompt.corrections.contains(id) {
-                "status correction, no launch"
-            } else {
-                "started, no launch"
-            };
+            let value =
+                if let Some((_, reason)) = prompt.no_launch.iter().find(|(row, _)| row == id) {
+                    format!("started · no launch: {reason}")
+                } else if prompt.corrections.contains(id) {
+                    "status correction, no launch".to_string()
+                } else {
+                    "started, no launch".to_string()
+                };
             lines.push(CleanupCardLine::Field {
                 label: identifier.clone(),
-                value: value.into(),
+                value,
             });
         }
     }

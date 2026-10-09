@@ -2391,6 +2391,32 @@ pub enum StartRoute {
     Dispatch,
     /// Dispatched before, and the agent is gone: relaunch only when asked.
     AgentGone { assignee: String },
+    /// Assigned and never dispatched, but dispatch cannot work here: a plain start that says
+    /// why nothing launched ([`launch_unavailable`]).
+    NoLaunch { reason: &'static str },
+}
+
+/// The no-launch reason when tsk runs outside Herdr.
+pub const NO_LAUNCH_NOT_IN_HERDR: &str = "not in Herdr";
+/// The no-launch reason for a desk task.
+pub const NO_LAUNCH_DESK: &str = "desk task has no repository";
+
+/// Why an assigned task's start cannot launch at all, so it is a plain start instead of a
+/// refusal: tsk is outside Herdr, or the task is on the desk. Every other launch refusal
+/// (profile, base, git, Herdr failures) still leaves the task unstarted.
+pub fn launch_unavailable(task: &Task, in_herdr: bool) -> Option<&'static str> {
+    if !in_herdr {
+        Some(NO_LAUNCH_NOT_IN_HERDR)
+    } else if task.scope == TaskScope::Global {
+        Some(NO_LAUNCH_DESK)
+    } else {
+        None
+    }
+}
+
+/// The status row (and CLI line) for a start that could not launch.
+pub fn no_launch_message(reason: &str) -> String {
+    format!("started · no launch: {reason}")
 }
 
 /// Route a start of `task` by `actor` (`you`, or the agent profile named by `TSK_AGENT`).
@@ -2413,7 +2439,10 @@ pub fn start_route(
         return StartRoute::Plain;
     }
     let Some(record) = task.dispatch.as_ref() else {
-        return StartRoute::Dispatch;
+        return match launch_unavailable(task, in_herdr) {
+            Some(reason) => StartRoute::NoLaunch { reason },
+            None => StartRoute::Dispatch,
+        };
     };
     let gone = StartRoute::AgentGone {
         assignee: assignee.to_string(),

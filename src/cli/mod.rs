@@ -206,6 +206,11 @@ fn run_status(args: Vec<String>) -> CliOutput {
         };
         return match status::run_started(task, flags, input.state_dir) {
             Ok(status::StartOutcome::Status(result)) => presenter::status(result),
+            Ok(status::StartOutcome::NoLaunch(result, reason)) => {
+                let mut output = presenter::status(result);
+                output.stdout.push_str(&format!("no launch: {reason}\n"));
+                output
+            }
             Ok(status::StartOutcome::Dispatched(result, dispatched)) => {
                 presenter::status_dispatched(result, *dispatched)
             }

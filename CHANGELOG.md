@@ -17,7 +17,7 @@ the GitHub release notes verbatim.
 
 - Agent profiles in `config.toml`: the first board open writes a commented starter with examples for Claude Code, Codex, Pi, and Grok.
 - Assign tasks to an agent with `@` or `!a name`, and filter a project board by assignee (`t`, then `Tab`).
-- Dispatch: starting an assigned task (`ctrl+s`, or `tsk status T12 started`) launches its agent in its own Git worktree and Herdr workspace; `ctrl+u` reverts the status and leaves the agent running. A dispatched task whose agent is gone asks before relaunching, reopening a closed workspace on the kept worktree (`--again` in the CLI; `--no-dispatch` only sets the status). Mark several tasks to start them together; `!b branch` picks the base branch.
+- Dispatch: starting an assigned task (`ctrl+s`, or `tsk status T12 started`) launches its agent in its own Git worktree and Herdr workspace; `ctrl+u` reverts the status and leaves the agent running. A dispatched task whose agent is gone asks before relaunching, reopening a closed workspace on the kept worktree (`--again` in the CLI; `--no-dispatch` only sets the status). Outside Herdr or on a desk task, an assigned start is a plain start that says why nothing launched. Mark several tasks to start them together; `!b branch` picks the base branch.
 - Completing a dispatched task offers to remove its worktree and merged branch in the background, for one task or a marked set.
 - Dispatch on Windows (preview).
 - Block with a reason: `ctrl+b` asks why, what it waits on, and what it needs; agents block with `tsk status T12 blocked --why "…" --option "…"`, and you answer on the task page (`r`) or with `tsk reply`.

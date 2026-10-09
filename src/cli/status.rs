@@ -85,6 +85,9 @@ pub fn run(
 pub enum StartOutcome {
     /// A plain status change (or the task was already started).
     Status(StatusResult),
+    /// An assigned task started without a launch because dispatch cannot work here (outside
+    /// Herdr, or a desk task); the reason is printed, not refused.
+    NoLaunch(StatusResult, &'static str),
     /// The start dispatched (or, with `--again`, relaunched) the task's agent, which set it
     /// started.
     Dispatched(StatusResult, Box<DispatchResult>),
@@ -125,7 +128,8 @@ pub fn run_started(
 ///
 /// - unassigned, already started, done, archived, `--no-dispatch`, or the caller is the
 ///   assigned agent itself: a plain status change;
-/// - assigned and never dispatched: dispatch it, which sets started;
+/// - assigned and never dispatched: dispatch it, which sets started; outside Herdr or on the
+///   desk it cannot launch, so it starts plainly and says why ([`StartOutcome::NoLaunch`]);
 /// - dispatched and the agent still running (or Herdr cannot say): a plain status change;
 /// - dispatched and the agent gone: refuse with `agent-gone`, unless `--again` relaunches.
 pub fn run_started_with_host(
@@ -166,6 +170,12 @@ pub fn run_started_with_host(
     }
     let again = match dispatch::start_route(task, actor, in_herdr, host) {
         StartRoute::Plain => return plain(state_dir),
+        StartRoute::NoLaunch { reason } => {
+            return plain(state_dir).map(|outcome| match outcome {
+                StartOutcome::Status(result) => StartOutcome::NoLaunch(result, reason),
+                other => other,
+            })
+        }
         StartRoute::Dispatch => false,
         StartRoute::AgentGone { .. } if flags.again => true,
         StartRoute::AgentGone { assignee } => return Err(StatusError::AgentGone(assignee)),
@@ -473,11 +483,11 @@ mod start_tests {
     }
 
     #[test]
-    fn an_assigned_start_outside_herdr_refuses_and_leaves_the_task_unstarted() {
+    fn an_assigned_start_outside_herdr_or_on_the_desk_starts_and_says_why() {
         let temp = Temp::new("no-herdr");
         let number = temp.task(true, false, HumanStatus::Ready);
         let mut host = Host::default();
-        let error = run_started_with_host(
+        let outcome = run_started_with_host(
             TaskAddress::Number(number),
             PLAIN,
             Some(temp.0.clone()),
@@ -485,9 +495,34 @@ mod start_tests {
             "you",
             &mut host,
         )
-        .expect_err("dispatch needs herdr");
-        assert_eq!(error.code(), "not-in-herdr");
-        assert_eq!(temp.status(number), HumanStatus::Ready);
+        .expect("plain start");
+        assert!(matches!(
+            outcome,
+            StartOutcome::NoLaunch(_, crate::dispatch::NO_LAUNCH_NOT_IN_HERDR)
+        ));
+        assert_eq!(temp.status(number), HumanStatus::Started);
+        assert_eq!(host.ran, 0);
+
+        let desk = Temp::new("desk");
+        let mut state = DomainState::new();
+        state
+            .create_assigned(
+                "desk errand",
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+                Some("builder".into()),
+            )
+            .expect("create");
+        desk.store().reload_merge_save(&mut state).expect("save");
+        let outcome = desk.start(1, PLAIN, "you", &mut host).expect("plain start");
+        assert!(matches!(
+            outcome,
+            StartOutcome::NoLaunch(_, crate::dispatch::NO_LAUNCH_DESK)
+        ));
+        assert_eq!(desk.status(1), HumanStatus::Started);
+        assert_eq!(host.ran, 0);
     }
 
     /// The agent's own `tsk status N started` never launches another copy, whatever Herdr

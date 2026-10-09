@@ -1222,6 +1222,9 @@ pub struct DispatchPrompt {
     /// Start-only rows that were done or archived when the card opened: the palette's absolute
     /// start corrects them to started. Only these may start while done or archived.
     pub corrections: Vec<Uuid>,
+    /// Start-only rows assigned and never dispatched that cannot launch here, with why (not
+    /// in Herdr, a desk task): `y` starts them plainly.
+    pub no_launch: Vec<(Uuid, &'static str)>,
     /// Opened by the palette's absolute **set status: started** (any status but started
     /// moves) rather than `ctrl+s` (open and ready only); `y` rechecks the rows by it.
     pub any_status: bool,
@@ -1247,6 +1250,7 @@ impl DispatchPrompt {
             skipped: Vec::new(),
             start_only: Vec::new(),
             corrections: Vec::new(),
+            no_launch: Vec::new(),
             any_status: prompt.any_status,
             relaunch: Some(prompt),
             git_checks: None,

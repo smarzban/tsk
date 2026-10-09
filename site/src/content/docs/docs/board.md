@@ -91,6 +91,7 @@ What a start does depends on the task:
 | Assigned, never dispatched | Dispatches it, which sets started |
 | Dispatched, agent still running | Sets started; Herdr is asked whether the agent is still in its pane, and when it cannot say, the start is plain |
 | Dispatched, agent gone | Asks first: [relaunch](#relaunch) |
+| Assigned, outside Herdr or on the desk | Sets started; the status row says why nothing launched |
 | Done or archived | Sets started; never launches |
 
 Names come from the task number and title. For T12 `Fix login timeout`:
@@ -108,7 +109,7 @@ A started task with a live dispatch shows `◉` instead of `●`.
 
 To hand a task to an agent, assign it with `@`, then press `ctrl+s`.
 
-Dispatch needs Herdr, a task in a project that is a Git repository, and an assignee with a profile. Outside Herdr, or on a desk task, starting an assigned task refuses and leaves it unstarted; unassign it to start it yourself.
+Dispatch needs Herdr, a task in a project that is a Git repository, and an assignee with a profile. Where it cannot work at all, outside Herdr or on a desk task, starting an assigned task is a plain start and the status row says why: `started · no launch: not in Herdr` or `started · no launch: desk task has no repository`. Other launch refusals (an unknown agent, a base that cannot be resolved, a Git or Herdr failure) leave the task unstarted.
 
 ### Dispatch on Windows (preview)
 
@@ -137,7 +138,7 @@ Set a base with **set base** in the palette, the task page's `⎇` footer or **B
 
 ### Start a marked set
 
-With tasks marked, `ctrl+s` (or **set status: started** in the palette) starts the set as usual when no task in it would launch. When any would, it opens one card first. The card lists each task it will launch with its assignee and base (`from dispatch`, or `from default (main)`), then under **start only** the tasks it only starts (unassigned, already dispatched: relaunching stays one task at a time, and with **set status: started** done or archived tasks, listed as a status correction), then under **not started** each assigned task it cannot launch and why: unknown agent, not a project in a git repo, or not in Herdr. Those stay unstarted. Rows show `checking…` while repositories are checked in the background. When nothing can launch, the card is titled `Start N tasks?` and `y` only starts.
+With tasks marked, `ctrl+s` (or **set status: started** in the palette) starts the set as usual when no task in it would launch; assigned tasks that cannot launch here are named on the status row, such as `started · no launch: not in Herdr (T3, T4)`. When any would, it opens one card first. The card lists each task it will launch with its assignee and base (`from dispatch`, or `from default (main)`), then under **start only** the tasks it only starts (unassigned, already dispatched: relaunching stays one task at a time, an assigned desk task with `started · no launch: desk task has no repository`, and with **set status: started** done or archived tasks, listed as a status correction), then under **not started** each assigned task it cannot launch and why: unknown agent, or not a project in a git repo. Those stay unstarted. Rows show `checking…` while repositories are checked in the background. When nothing can launch, the card is titled `Start N tasks?` and `y` only starts.
 
 `y` starts the start-only tasks in one save, then launches every listed task in the background, each exactly as a single dispatch. The board stays usable while the status row counts `dispatching 2/3…`. Each task is saved as its launch lands, a failed launch does not stop the others, and the status row ends with what launched and what failed. A status you change while launches land is kept (`T12 kept done (changed meanwhile)`). If a save fails and you cancel [save recovery](#save-failures), the status row names the workspace each unrecorded agent is running in. `Esc` or `[x]` closes the card and keeps the marks; `y` clears them. Further dispatches and quitting wait until the launches finish. One `ctrl+u` undoes the start-only tasks; launches from a marked set are not undoable. `y` rechecks the start-only tasks first: one finished or archived after the card opened is left alone, and one assigned meanwhile is not started (`not started: T14 assigned since the card opened`), since the card never showed its launch.
 

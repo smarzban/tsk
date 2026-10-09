@@ -251,7 +251,8 @@ migration or design work they imply. What the behaviour *is* lives in the docs
   Herdr) never launches; a gone agent asks (board) or refuses `agent-gone` (CLI). Dispatch sets
   `started` in the same save as the record; a failed launch leaves the task unstarted. Only a
   single-task start that dispatched is undoable (`UndoEntry::Start`, status only, the agent keeps
-  running). Outside `HERDR_ENV=1` a launch refuses. A marked set gets one confirm card, then every
+  running). Outside `HERDR_ENV=1` `tsk dispatch` refuses; a start there, or on a desk task, is
+  plain and says why (`dispatch::launch_unavailable`). A marked set gets one confirm card, then every
   listed task takes the single-task path (check, launch, commit in `src/dispatch.rs`) off the
   event loop and is saved as it lands. Quit and further dispatches wait for a running batch, or
   launched agents lose their record. Relaunch (the relaunch card, `dispatch again`) stays

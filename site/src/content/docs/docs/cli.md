@@ -216,6 +216,7 @@ Output: `status T12 <status> <title>`. The output uses `started`, even when the 
 | Assigned, never dispatched | [Dispatches](#dispatch) it, which sets `started`, and prints a second line, `dispatched T12 to @claude in /path/to/worktree` |
 | Dispatched, agent still running, or Herdr cannot say | Sets the status |
 | Dispatched, agent gone | Refuses with `agent-gone` and changes nothing |
+| Assigned, never dispatched, but outside Herdr or a desk task | Sets the status, exits 0, and prints a second line, `no launch: not in Herdr` or `no launch: desk task has no repository` |
 | Run by the task's own dispatched agent (`TSK_AGENT` names the assignee) | Sets the status; never launches another copy |
 
 | Flag | Effect |
@@ -223,7 +224,7 @@ Output: `status T12 <status> <title>`. The output uses `started`, even when the 
 | `--no-dispatch` | Only set the status, never launch |
 | `--again` | Relaunch a dispatched task whose agent is gone, as `tsk dispatch --again` does |
 
-Both flags are valid only with `started`, and not together. A launch refusal (such as `not-in-herdr` or `needs-git-project`) leaves the task unstarted and exits 1. `tsk dispatch` remains the explicit form, with `--base`.
+Both flags are valid only with `started`, and not together. Any other launch refusal (such as `unknown-agent` or `needs-git-project`) leaves the task unstarted and exits 1. `tsk dispatch` remains the explicit form, with `--base`.
 
 ### Block with a reason
 
@@ -466,7 +467,7 @@ After an uncertain add, inspect `tsk list --all --json`. Also check `--done` and
 | Dispatch | `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `unsupported-platform`, `unsafe-state-dir`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, `unknown-base`, `no-default-base`, `herdr-failed` |
 | Clean | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`, `herdr-failed` |
 | Steps | `empty-step-text`, `invalid-step-text`, `unknown-task`, `soft-deleted-task`, `unknown-step`, `ambiguous-step` |
-| Status | `unknown-task`, `soft-deleted-task`, `text-too-long`, `invalid-blocker`; `started` adds `agent-gone` and the launch codes `unknown-agent`, `agent-config`, `not-in-herdr`, `unsupported-platform`, `unsafe-state-dir`, `needs-git-project`, `unknown-base`, `no-default-base`, `herdr-failed`; with `--clean`, cleanup codes above except `not-dispatched` and `already-cleaned` |
+| Status | `unknown-task`, `soft-deleted-task`, `text-too-long`, `invalid-blocker`; `started` adds `agent-gone` and the launch codes `unknown-agent`, `agent-config`, `unsupported-platform`, `unsafe-state-dir`, `needs-git-project`, `unknown-base`, `no-default-base`, `herdr-failed`; with `--clean`, cleanup codes above except `not-dispatched` and `already-cleaned` |
 | Reply | `unknown-task`, `soft-deleted-task`, `not-blocked`, `empty-reply`, `text-too-long` |
 | Archive / unarchive | `unknown-task`, `soft-deleted-task` |
 
