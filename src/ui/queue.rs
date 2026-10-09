@@ -1072,10 +1072,7 @@ mod tests {
             past_blocks: Vec::new(),
             scope,
             provenance: ProvenanceOrigin::Manual,
-            history: vec![TaskEvent {
-                kind: TaskEventKind::Created,
-                at,
-            }],
+            history: vec![TaskEvent::new(TaskEventKind::Created, at)],
             steps: Vec::new(),
             soft_deleted,
             archived: false,
@@ -1094,10 +1091,10 @@ mod tests {
     /// reorder a section.
     fn with_status_event(task: Task, kind: TaskEventKind, at_secs: u64) -> Task {
         let mut task = task;
-        task.history.push(TaskEvent {
+        task.history.push(TaskEvent::new(
             kind,
-            at: SystemTime::UNIX_EPOCH + Duration::from_secs(at_secs),
-        });
+            SystemTime::UNIX_EPOCH + Duration::from_secs(at_secs),
+        ));
         task
     }
 
@@ -1107,10 +1104,7 @@ mod tests {
     fn mutated(task: Task, kind: TaskEventKind, at_secs: u64) -> Task {
         let mut task = task;
         task.updated_at = SystemTime::UNIX_EPOCH + Duration::from_secs(at_secs);
-        task.history.push(TaskEvent {
-            kind,
-            at: task.updated_at,
-        });
+        task.history.push(TaskEvent::new(kind, task.updated_at));
         task
     }
 

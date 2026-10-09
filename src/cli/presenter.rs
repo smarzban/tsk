@@ -315,6 +315,7 @@ fn list_json(result: &ListResult) -> String {
             review: Option<ReviewJson<'a>>,
             #[serde(skip_serializing_if = "Vec::is_empty")]
             past_reviews: Vec<ReviewJson<'a>>,
+            activity: Vec<ActivityJson<'a>>,
         }
         let blocks = |record: &&crate::domain::Block| !record.is_review();
         let reviews = |record: &&crate::domain::Block| record.is_review();
@@ -344,6 +345,12 @@ fn list_json(result: &ListResult) -> String {
                 .filter(reviews)
                 .map(ReviewJson::from)
                 .collect(),
+            activity: direct
+                .history
+                .iter()
+                .rev()
+                .map(ActivityJson::from)
+                .collect(),
         };
         return format!(
             "{}\n",
@@ -353,6 +360,28 @@ fn list_json(result: &ListResult) -> String {
 
     let value = serde_json::to_value(&result.rows).expect("list rows are serializable");
     format!("{value}\n")
+}
+
+/// One history event, newest first: when, who (`null` on an event an older store recorded),
+/// what kind, and the kind's detail (`null` when it carries none).
+#[derive(serde::Serialize)]
+struct ActivityJson<'a> {
+    #[serde(with = "crate::domain::time_serde")]
+    at: std::time::SystemTime,
+    by: Option<&'a str>,
+    kind: crate::domain::TaskEventKind,
+    detail: Option<&'a crate::domain::EventDetail>,
+}
+
+impl<'a> From<&'a crate::domain::TaskEvent> for ActivityJson<'a> {
+    fn from(event: &'a crate::domain::TaskEvent) -> Self {
+        Self {
+            at: event.at,
+            by: event.by.as_deref(),
+            kind: event.kind,
+            detail: event.detail.as_ref(),
+        }
+    }
 }
 
 /// The agent-facing block shape: deleted replies are left out, and `answered` says whether
@@ -541,6 +570,7 @@ fn list_human(result: &ListResult, terminal_width: Option<usize>) -> String {
                     " ",
                     output_width,
                 );
+                append_activity(&mut output, &direct.trail, " ", output_width);
             }
         }
     }
@@ -681,6 +711,40 @@ fn append_direct_details(
             &detail_prefix,
             &detail_prefix,
             &thread,
+            output_width,
+        );
+    }
+}
+
+/// The latest paper-trail entries under an `activity` heading, newest first.
+fn append_activity(
+    output: &mut String,
+    trail: &[crate::activity::TrailEntry],
+    indent: &str,
+    output_width: usize,
+) {
+    if trail.is_empty() {
+        return;
+    }
+    let now = std::time::SystemTime::now();
+    let prefix = format!("{indent}  ");
+    output.push('\n');
+    append_wrapped(output, &prefix, &prefix, "activity", output_width);
+    for entry in trail.iter().take(crate::activity::LATEST) {
+        append_wrapped(
+            output,
+            &format!("{prefix}  "),
+            &format!("{prefix}  "),
+            &terminal_text(&entry.line(now)),
+            output_width,
+        );
+    }
+    if trail.len() > crate::activity::LATEST {
+        append_wrapped(
+            output,
+            &format!("{prefix}  "),
+            &format!("{prefix}  "),
+            &format!("+ {} earlier", trail.len() - crate::activity::LATEST),
             output_width,
         );
     }

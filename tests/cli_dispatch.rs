@@ -1198,7 +1198,9 @@ fn status_done_clean_keeps_the_branch_when_the_remote_is_unreachable() {
 fn status_done_clean_on_an_already_cleaned_dispatch_succeeds_with_nothing_to_clean() {
     let repo = CleanupRepo::new();
     let (mut state, id) = repo.state("base", None);
-    state.record_dispatch_cleaned(id).unwrap();
+    state
+        .record_dispatch_cleaned(id, tsk_tui::domain::CleanupOutcome::Removed)
+        .unwrap();
     let dir = repo.root.join("state");
     TaskStore::new(dir.clone()).save(&state).unwrap();
     let output = run_with(

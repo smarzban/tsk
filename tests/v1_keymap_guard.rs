@@ -180,8 +180,16 @@ fn bare_page_keys_never_mutate_steps() {
     let mut model = BoardModel::from_domain(&domain, None);
     apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
     let before = domain.get(id).expect("task").clone();
+    // Bare `a` only shows or folds the paper trail; it never adds a step (`ctrl+a` does).
+    assert_eq!(
+        map_key(
+            BoardInputMode::TaskPage,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)
+        ),
+        Some(BoardIntent::ToggleTrailAll)
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleTrailAll, None).expect("toggle");
     for key in [
-        KeyCode::Char('a'),
         KeyCode::Char('s'),
         KeyCode::Char(' '),
         KeyCode::Char('x'),

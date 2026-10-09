@@ -584,7 +584,7 @@ fn dispatch_exact_base_ref_is_optional_in_v6_and_round_trips() {
         "herdr_workspace_id": "unused", "at": [0, 0]
     });
     let mut dispatch: Dispatch = serde_json::from_value(old).unwrap();
-    assert_eq!(STORE_FORMAT_VERSION, 9);
+    assert_eq!(STORE_FORMAT_VERSION, 10);
     assert_eq!(dispatch.base_ref, None);
     assert!(serde_json::to_value(&dispatch)
         .unwrap()

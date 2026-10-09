@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-    block_text, Block, BlockDraft, BlockField, BlockKind, BlockPatch, CheckState, ProvenanceOrigin,
-    Reply, Resolution, ReviewDraft, ReviewPatch, TaskEvent, TaskEventKind, UndoEntry, OWNER,
-    UNDO_CAP,
+    block_text, current_actor, Block, BlockDraft, BlockField, BlockKind, BlockPatch, CheckState,
+    CleanupOutcome, EditedField, EventDetail, ProvenanceOrigin, Reply, Resolution, ReviewDraft,
+    ReviewPatch, TaskEvent, TaskEventKind, UndoEntry, UNDO_CAP,
 };
 use crate::scope::paths_equivalent;
 
@@ -286,14 +286,82 @@ fn record_mutation(task: &mut Task, kind: TaskEventKind) {
 }
 
 fn record_mutation_at(task: &mut Task, kind: TaskEventKind, at: SystemTime) {
+    record_event(task, kind, at, None, None);
+}
+
+/// Record one mutation: a new revision and an event by `by`, or by this thread's actor.
+fn record_event(
+    task: &mut Task,
+    kind: TaskEventKind,
+    at: SystemTime,
+    by: Option<&str>,
+    detail: Option<EventDetail>,
+) {
     task.merge_base_revision = Some(task.revision);
     task.revision = Uuid::new_v4();
     task.updated_at = at;
-    task.history.push(TaskEvent { kind, at });
+    task.history.push(event(kind, at, by, detail));
+}
+
+/// One event by `by`, or by this thread's actor.
+fn event(
+    kind: TaskEventKind,
+    at: SystemTime,
+    by: Option<&str>,
+    detail: Option<EventDetail>,
+) -> TaskEvent {
+    TaskEvent {
+        kind,
+        at,
+        by: Some(by.map_or_else(current_actor, str::to_string)),
+        detail,
+    }
+}
+
+/// The task fields that differ between `before` and `after`.
+fn edited_fields(before: &Task, after: &Task) -> Vec<EditedField> {
+    let mut fields = Vec::new();
+    if before.title != after.title {
+        fields.push(EditedField::Title);
+    }
+    if before.notes != after.notes {
+        fields.push(EditedField::Notes);
+    }
+    if before.thread != after.thread {
+        fields.push(EditedField::Thread);
+    }
+    if before.scope != after.scope {
+        fields.push(EditedField::Project);
+    }
+    fields
+}
+
+/// Detail of an `edited` event, or none when no field changed text.
+fn edited_detail(fields: Vec<EditedField>) -> Option<EventDetail> {
+    Some(EventDetail {
+        fields,
+        ..EventDetail::default()
+    })
+}
+
+/// Detail of an `assigned` event.
+fn assigned_detail(assignee: &Option<String>) -> Option<EventDetail> {
+    Some(EventDetail {
+        assignee: assignee.clone(),
+        ..EventDetail::default()
+    })
+}
+
+/// Detail of a `base_set` event.
+fn base_detail(base: &Option<String>) -> Option<EventDetail> {
+    Some(EventDetail {
+        base: base.clone(),
+        ..EventDetail::default()
+    })
 }
 
 /// Document version written by this binary.
-pub const STORE_FORMAT_VERSION: u32 = 9;
+pub const STORE_FORMAT_VERSION: u32 = 10;
 
 fn default_next_notice_number() -> u64 {
     1
@@ -551,10 +619,7 @@ impl DomainState {
             past_blocks: Vec::new(),
             scope,
             provenance,
-            history: vec![TaskEvent {
-                kind: TaskEventKind::Created,
-                at: now,
-            }],
+            history: vec![event(TaskEventKind::Created, now, None, None)],
             steps: Vec::new(),
             soft_deleted: false,
             archived: false,
@@ -654,14 +719,18 @@ impl DomainState {
         }
         let at = SystemTime::now();
         close_record(task, at, by);
-        let kind = if task.status == HumanStatus::Blocked {
-            TaskEventKind::BlockEdited
+        let from = task.status;
+        let (kind, detail) = if from == HumanStatus::Blocked {
+            (TaskEventKind::BlockEdited, None)
         } else {
-            TaskEventKind::StatusSet
+            (
+                TaskEventKind::StatusSet,
+                Some(EventDetail::status(from, HumanStatus::Blocked)),
+            )
         };
         task.status = HumanStatus::Blocked;
         task.block = Some(Block::open(draft, by, at));
-        record_mutation_at(task, kind, at);
+        record_event(task, kind, at, Some(by), detail);
         Ok(())
     }
 
@@ -707,10 +776,17 @@ impl DomainState {
         previous: HumanStatus,
     ) -> Result<(), DomainError> {
         let task = self.task_mut(id)?;
+        let from = task.status;
         task.block = None;
         task.status = previous;
         reopen_last_record(task, previous);
-        record_mutation(task, TaskEventKind::StatusSet);
+        record_event(
+            task,
+            TaskEventKind::StatusSet,
+            SystemTime::now(),
+            None,
+            Some(EventDetail::status(from, previous)),
+        );
         Ok(())
     }
 
@@ -724,14 +800,18 @@ impl DomainState {
         }
         let at = SystemTime::now();
         close_record(task, at, by);
-        let kind = if task.status == HumanStatus::Review {
-            TaskEventKind::ReviewEdited
+        let from = task.status;
+        let (kind, detail) = if from == HumanStatus::Review {
+            (TaskEventKind::ReviewEdited, None)
         } else {
-            TaskEventKind::StatusSet
+            (
+                TaskEventKind::StatusSet,
+                Some(EventDetail::status(from, HumanStatus::Review)),
+            )
         };
         task.status = HumanStatus::Review;
         task.block = Some(Block::open_review(draft, by, at, next_round(task)));
-        record_mutation_at(task, kind, at);
+        record_event(task, kind, at, Some(by), detail);
         Ok(())
     }
 
@@ -983,10 +1063,18 @@ impl DomainState {
         let at = SystemTime::now();
         let mut entries = Vec::with_capacity(ids.len());
         for id in ids {
+            let by = current_actor();
             let task = self.task_mut(id)?;
+            let from = task.status;
             task.status = HumanStatus::Done;
-            sync_block_with_status(task, at, OWNER);
-            record_mutation_at(task, TaskEventKind::Completed, at);
+            sync_block_with_status(task, at, &by);
+            record_event(
+                task,
+                TaskEventKind::Completed,
+                at,
+                Some(&by),
+                Some(EventDetail::status(from, HumanStatus::Done)),
+            );
             entries.push(UndoEntry::Complete {
                 id,
                 expected_revision: task.revision,
@@ -1123,7 +1211,13 @@ impl DomainState {
             let task = self.task_mut(id)?;
             let previous = task.assignee.clone();
             task.assignee = assignee.clone();
-            record_mutation_at(task, TaskEventKind::Assigned, at);
+            record_event(
+                task,
+                TaskEventKind::Assigned,
+                at,
+                None,
+                assigned_detail(&assignee),
+            );
             entries.push(UndoEntry::Assign {
                 id,
                 previous,
@@ -1144,8 +1238,15 @@ impl DomainState {
         assignee: Option<String>,
     ) -> Result<(), DomainError> {
         let task = self.task_mut(id)?;
+        let detail = assigned_detail(&assignee);
         task.assignee = assignee;
-        record_mutation(task, TaskEventKind::Assigned);
+        record_event(
+            task,
+            TaskEventKind::Assigned,
+            SystemTime::now(),
+            None,
+            detail,
+        );
         Ok(())
     }
 
@@ -1174,7 +1275,7 @@ impl DomainState {
             let task = self.task_mut(id)?;
             let previous = task.base.clone();
             task.base = base.clone();
-            record_mutation_at(task, TaskEventKind::BaseSet, at);
+            record_event(task, TaskEventKind::BaseSet, at, None, base_detail(&base));
             entries.push(UndoEntry::SetBase {
                 id,
                 previous,
@@ -1195,8 +1296,15 @@ impl DomainState {
         base: Option<String>,
     ) -> Result<(), DomainError> {
         let task = self.task_mut(id)?;
+        let detail = base_detail(&base);
         task.base = base;
-        record_mutation(task, TaskEventKind::BaseSet);
+        record_event(
+            task,
+            TaskEventKind::BaseSet,
+            SystemTime::now(),
+            None,
+            detail,
+        );
         Ok(())
     }
 
@@ -1214,15 +1322,29 @@ impl DomainState {
         mut dispatch: Dispatch,
         start: bool,
     ) -> Result<(), DomainError> {
+        let by = current_actor();
         let task = self.task_mut(id)?;
         dispatch.cleaned = false;
         let at = dispatch.at;
+        let from = task.status;
         if start {
             task.status = HumanStatus::Started;
-            sync_block_with_status(task, at, OWNER);
+            sync_block_with_status(task, at, &by);
         }
+        let detail = EventDetail {
+            from: (task.status != from).then_some(from),
+            to: (task.status != from).then_some(task.status),
+            base: dispatch.base.clone(),
+            branch: Some(dispatch.branch.clone()),
+            sha: dispatch
+                .base_commit
+                .as_deref()
+                .map(|commit| commit.chars().take(7).collect()),
+            relaunch: task.dispatch.is_some(),
+            ..EventDetail::default()
+        };
         task.dispatch = Some(dispatch);
-        record_mutation_at(task, TaskEventKind::Dispatched, at);
+        record_event(task, TaskEventKind::Dispatched, at, Some(&by), Some(detail));
         Ok(())
     }
 
@@ -1273,20 +1395,43 @@ impl DomainState {
         id: Uuid,
         previous: HumanStatus,
     ) -> Result<(), DomainError> {
+        let by = current_actor();
         let task = self.task_mut(id)?;
+        let from = task.status;
         task.status = previous;
         reopen_last_record(task, previous);
-        sync_block_with_status(task, SystemTime::now(), OWNER);
-        record_mutation(task, TaskEventKind::StatusSet);
+        let at = SystemTime::now();
+        sync_block_with_status(task, at, &by);
+        record_event(
+            task,
+            TaskEventKind::StatusSet,
+            at,
+            Some(&by),
+            Some(EventDetail::status(from, previous)),
+        );
         Ok(())
     }
 
-    /// Mark the retained dispatch record cleaned without changing human status.
-    pub fn record_dispatch_cleaned(&mut self, id: Uuid) -> Result<(), DomainError> {
+    /// Mark the retained dispatch record cleaned without changing human status, recording what
+    /// the cleanup did.
+    pub fn record_dispatch_cleaned(
+        &mut self,
+        id: Uuid,
+        outcome: CleanupOutcome,
+    ) -> Result<(), DomainError> {
         let task = self.task_mut(id)?;
         let dispatch = task.dispatch.as_mut().ok_or(DomainError::UnknownId(id))?;
         dispatch.cleaned = true;
-        record_mutation(task, TaskEventKind::Cleaned);
+        record_event(
+            task,
+            TaskEventKind::Cleaned,
+            SystemTime::now(),
+            None,
+            Some(EventDetail {
+                outcome: Some(outcome),
+                ..EventDetail::default()
+            }),
+        );
         Ok(())
     }
 
@@ -1294,9 +1439,13 @@ impl DomainState {
     /// was saved (the board cleans off the event loop). Cleaned is host bookkeeping, not a user
     /// action: undo entries that expected the pre-cleanup revision follow it, so undo still
     /// reverses the completion.
-    pub fn record_dispatch_cleaned_keeping_undo(&mut self, id: Uuid) -> Result<(), DomainError> {
+    pub fn record_dispatch_cleaned_keeping_undo(
+        &mut self,
+        id: Uuid,
+        outcome: CleanupOutcome,
+    ) -> Result<(), DomainError> {
         let before = self.task_mut(id)?.revision;
-        self.record_dispatch_cleaned(id)?;
+        self.record_dispatch_cleaned(id, outcome)?;
         let after = self.task_mut(id)?.revision;
         for entry in &mut self.undo_stack {
             entry.retarget(id, before, after);
@@ -1318,11 +1467,19 @@ impl DomainState {
             return Err(DomainError::EmptyTitle);
         }
         let task = self.task_mut(id)?;
+        let before = task.clone();
         task.title = title.to_string();
         task.notes = notes;
         task.scope = scope;
         task.thread = thread;
-        record_mutation(task, TaskEventKind::Edited);
+        let fields = edited_fields(&before, task);
+        record_event(
+            task,
+            TaskEventKind::Edited,
+            SystemTime::now(),
+            None,
+            edited_detail(fields),
+        );
         Ok(())
     }
 
@@ -1342,21 +1499,21 @@ impl DomainState {
         let changed_base = self.get(id).is_some_and(|task| task.base != base);
         self.edit(id, title, notes, scope, thread)?;
         let task = self.task_mut(id)?;
-        task.assignee = assignee;
-        task.base = base;
         let at = task.updated_at;
         if changed_assignee {
-            task.history.push(TaskEvent {
-                kind: TaskEventKind::Assigned,
+            task.history.push(event(
+                TaskEventKind::Assigned,
                 at,
-            });
+                None,
+                assigned_detail(&assignee),
+            ));
         }
         if changed_base {
-            task.history.push(TaskEvent {
-                kind: TaskEventKind::BaseSet,
-                at,
-            });
+            task.history
+                .push(event(TaskEventKind::BaseSet, at, None, base_detail(&base)));
         }
+        task.assignee = assignee;
+        task.base = base;
         Ok(())
     }
 
@@ -1446,6 +1603,7 @@ impl DomainState {
             .map(|step| step.id)
             .collect::<Vec<_>>();
 
+        let before = task.clone();
         task.title = title.to_string();
         task.notes = notes;
         let changed_assignee = task.assignee != assignee;
@@ -1470,34 +1628,37 @@ impl DomainState {
             .collect();
         let added_count = added.len();
         task.steps.extend(added);
-        record_mutation(task, TaskEventKind::Edited);
+        let fields = edited_fields(&before, task);
+        record_event(
+            task,
+            TaskEventKind::Edited,
+            SystemTime::now(),
+            None,
+            edited_detail(fields),
+        );
         let at = task.updated_at;
         if changed_assignee {
-            task.history.push(TaskEvent {
-                kind: TaskEventKind::Assigned,
-                at,
-            });
+            let detail = assigned_detail(&task.assignee);
+            task.history
+                .push(event(TaskEventKind::Assigned, at, None, detail));
         }
         if changed_base {
-            task.history.push(TaskEvent {
-                kind: TaskEventKind::BaseSet,
-                at,
-            });
+            let detail = base_detail(&task.base);
+            task.history
+                .push(event(TaskEventKind::BaseSet, at, None, detail));
         }
+        task.history.extend(
+            actual_renames
+                .iter()
+                .map(|_| event(TaskEventKind::StepRenamed, at, None, None)),
+        );
+        task.history.extend(
+            actual_removals
+                .iter()
+                .map(|_| event(TaskEventKind::StepRemoved, at, None, None)),
+        );
         task.history
-            .extend(actual_renames.iter().map(|_| TaskEvent {
-                kind: TaskEventKind::StepRenamed,
-                at,
-            }));
-        task.history
-            .extend(actual_removals.iter().map(|_| TaskEvent {
-                kind: TaskEventKind::StepRemoved,
-                at,
-            }));
-        task.history.extend((0..added_count).map(|_| TaskEvent {
-            kind: TaskEventKind::StepAdded,
-            at,
-        }));
+            .extend((0..added_count).map(|_| event(TaskEventKind::StepAdded, at, None, None)));
         Ok(())
     }
 
@@ -1586,7 +1747,7 @@ impl DomainState {
         status: HumanStatus,
         kind: TaskEventKind,
     ) -> Result<(), DomainError> {
-        self.apply_status_by(id, status, kind, OWNER)
+        self.apply_status_by(id, status, kind, &current_actor())
     }
 
     fn apply_status_by(
@@ -1598,9 +1759,16 @@ impl DomainState {
     ) -> Result<(), DomainError> {
         let task = self.task_mut(id)?;
         let at = SystemTime::now();
+        let from = task.status;
         task.status = status;
         sync_block_with_status(task, at, by);
-        record_mutation_at(task, kind, at);
+        record_event(
+            task,
+            kind,
+            at,
+            Some(by),
+            Some(EventDetail::status(from, status)),
+        );
         Ok(())
     }
 

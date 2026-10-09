@@ -1107,6 +1107,9 @@ fn board_keyboard_intent(
         if model.passed_checks_selected() {
             return Some(BoardIntent::TogglePassedChecks);
         }
+        if model.trail_record_selected() {
+            return Some(BoardIntent::ToggleTrailRecord(None));
+        }
     }
     // Bare Enter on a stored step toggles it. Resolved here, where the model is in reach,
     // so the persisting intent is classified before the save boundary sees it.
@@ -2070,7 +2073,7 @@ pub fn offer_cleanup_prompt_with_host(
     if !preview.inspection.worktree_exists {
         let workspace = dispatch::untouched_workspace(in_herdr, &preview.inspection);
         domain
-            .record_dispatch_cleaned(id)
+            .record_dispatch_cleaned(id, crate::domain::CleanupOutcome::Missing)
             .and_then(|()| domain.complete_after_cleanup(id))
             .map_err(|error| CleanupError::Store(error.to_string()))?;
         return Ok(CleanupOffer::MissingConverged(CleanupResult {
@@ -2236,7 +2239,7 @@ pub fn offer_bulk_cleanup_prompt_with_host(
     if rows.is_empty() && bulk.refused.is_empty() {
         let missing = bulk.missing.len();
         for (id, _, _) in &bulk.missing {
-            domain.record_dispatch_cleaned(*id)?;
+            domain.record_dispatch_cleaned(*id, crate::domain::CleanupOutcome::Missing)?;
         }
         domain.complete_batch_after_cleanup(&targets)?;
         model.clear_marks();
@@ -2345,7 +2348,7 @@ pub fn confirm_cleanup_with_host(
                 && dispatch::inspect_cleanup_cached_with_host(domain, *id, in_herdr, host)
                     .is_ok_and(|preview| !preview.inspection.worktree_exists);
             if still_missing {
-                domain.record_dispatch_cleaned(*id)?;
+                domain.record_dispatch_cleaned(*id, crate::domain::CleanupOutcome::Missing)?;
                 missing += 1;
             }
         }
@@ -2512,7 +2515,10 @@ pub fn poll_cleanup_runs(
                                 // The pre-mutation state, for save recovery.
                                 baseline.get_or_insert_with(|| domain.clone());
                                 if domain
-                                    .record_dispatch_cleaned_keeping_undo(row.task_id)
+                                    .record_dispatch_cleaned_keeping_undo(
+                                        row.task_id,
+                                        result.outcome(),
+                                    )
                                     .is_ok()
                                 {
                                     mutated = true;
@@ -10931,6 +10937,82 @@ mod quick_assign_tests {
             .unwrap_or_default()
     }
 
+    /// A sent-back review round lands on the PAPER TRAIL: Tab past `+ step` selects it, Enter
+    /// (resolved at the keyboard boundary) expands it in place and folds it again, and bare `a`
+    /// never touches the store.
+    #[test]
+    fn enter_on_a_paper_trail_record_expands_it_in_place() {
+        let temp = Temp::new("paper-trail", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["trail me"]);
+        review_page(&temp, &mut domain, &mut model, ids[0], &["tests pass"]);
+        domain
+            .set_status(ids[0], HumanStatus::Started)
+            .expect("send back");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        let mut host = fake_host(&temp);
+        let none = KeyModifiers::NONE;
+        // `+ step`, then the round.
+        for _ in 0..2 {
+            page_key(
+                &temp,
+                &mut domain,
+                &mut model,
+                &mut host,
+                KeyCode::Tab,
+                none,
+            );
+        }
+        assert_eq!(
+            model.block_target(),
+            Some(crate::ui::board::BlockTarget::Trail(0))
+        );
+        let enter = page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Enter,
+            none,
+        );
+        assert_eq!(enter, BoardIntent::ToggleTrailRecord(None));
+        let (screen, _) = board_screen(&model, 90, 40);
+        assert!(
+            screen.contains("review round 1 · sent back · you"),
+            "{screen}"
+        );
+        assert!(screen.contains("○ tests pass"), "{screen}");
+        assert!(screen.contains("done   built the card"), "{screen}");
+        page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Enter,
+            none,
+        );
+        let (screen, _) = board_screen(&model, 90, 40);
+        assert!(!screen.contains("done   built the card"), "{screen}");
+        assert_eq!(
+            model.input_mode(),
+            BoardInputMode::TaskPage,
+            "the page stays open"
+        );
+
+        let before = temp.store.load().expect("load");
+        let a = page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Char('a'),
+            none,
+        );
+        assert_eq!(a, BoardIntent::ToggleTrailAll);
+        assert!(!crate::ui::board::board_intent_may_persist(&model, &a));
+        assert_eq!(temp.store.load().expect("reload").tasks(), before.tasks());
+    }
+
     /// Enter on a check cycles it open → passed → failed; a passed check folds into the
     /// `N passed ▸` line, whose Enter unfolds it (`▾`) so it can be cycled again.
     #[test]
@@ -13196,7 +13278,9 @@ mod quick_assign_tests {
             .expect("review");
         temp.store.reload_merge_save(&mut domain).expect("save");
 
-        domain.record_dispatch_cleaned(ids[0]).expect("cleaned");
+        domain
+            .record_dispatch_cleaned(ids[0], crate::domain::CleanupOutcome::Removed)
+            .expect("cleaned");
         temp.store.reload_merge_save(&mut domain).expect("save");
         model.sync_from_domain(&domain);
         host.workspace_gone = false;
@@ -16360,7 +16444,9 @@ mod queued_cleanup_tests {
 
         // The CLI cleans and relaunches the task while the card is open.
         let mut other = store.load().expect("load");
-        other.record_dispatch_cleaned(id).expect("cleaned");
+        other
+            .record_dispatch_cleaned(id, crate::domain::CleanupOutcome::Removed)
+            .expect("cleaned");
         store.reload_merge_save(&mut other).expect("save cleaned");
         let mut other = store.load().expect("load");
         let mut relaunched = other.get(id).unwrap().dispatch.clone().unwrap();
@@ -17146,7 +17232,7 @@ mod bulk_cleanup_tests {
 
         let mut other = board.store.load().expect("load");
         other
-            .record_dispatch_cleaned(board.ids[0])
+            .record_dispatch_cleaned(board.ids[0], crate::domain::CleanupOutcome::Removed)
             .expect("cleaned");
         board
             .store
@@ -17186,7 +17272,7 @@ mod bulk_cleanup_tests {
         for index in [0, 1] {
             board
                 .domain
-                .record_dispatch_cleaned(board.ids[index])
+                .record_dispatch_cleaned(board.ids[index], crate::domain::CleanupOutcome::Removed)
                 .expect("cleaned");
         }
         board

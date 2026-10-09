@@ -673,7 +673,7 @@ fn task_page_scope_dropdown_sits_above_the_footer_with_short_names() {
     let rows: Vec<String> = (0..height).map(|y| row_text(&terminal, width, y)).collect();
     let footer_y = rows
         .iter()
-        .position(|row| row.contains("created"))
+        .position(|row| row.contains("⎇ default · thread · tsk"))
         .expect("the page footer paints its meta row");
     // Options sit directly above the footer, never down in the corner or below it.
     let option_rows: Vec<(usize, &String)> = rows[..footer_y]
@@ -855,11 +855,11 @@ fn scope_and_thread_are_selected_controls_with_enter_activation() {
         "selected Scope must reverse without retaining dim"
     );
     assert!(
-        terminal.backend().buffer()[(scope_hit.area.right() + 3, scope_hit.area.y)]
+        terminal.backend().buffer()[(scope_hit.area.x - 2, scope_hit.area.y)]
             .style()
             .add_modifier
             .contains(Modifier::DIM),
-        "the unselected created footer text stays dim"
+        "the unselected footer text before Scope stays dim"
     );
 
     let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
@@ -908,11 +908,11 @@ fn scope_and_thread_are_selected_controls_with_enter_activation() {
         "selected Thread must reverse without retaining dim"
     );
     assert!(
-        terminal.backend().buffer()[(scope_hit.area.right() + 3, scope_hit.area.y)]
+        terminal.backend().buffer()[(scope_hit.area.x, scope_hit.area.y)]
             .style()
             .add_modifier
             .contains(Modifier::DIM),
-        "the unselected created footer text stays dim"
+        "the unselected Scope stays dim"
     );
     assert_eq!(
         map_key(BoardInputMode::SelectThread, enter),
@@ -1232,7 +1232,7 @@ fn editing_an_unthreaded_task_paints_a_labeled_thread_footer_slot() {
         .map(|cell| cell.symbol())
         .collect();
     assert!(
-        painted.contains("thread · app · created"),
+        painted.contains("assignee · ⎇ default · thread · app "),
         "the unthreaded edit footer must label the leading Thread target: {painted}"
     );
     assert!(

@@ -57,10 +57,7 @@ fn task(id: u128, title: &str, status: HumanStatus, scope: TaskScope, secs_ago: 
         past_blocks: Vec::new(),
         scope,
         provenance: ProvenanceOrigin::Manual,
-        history: vec![TaskEvent {
-            kind: TaskEventKind::Created,
-            at,
-        }],
+        history: vec![TaskEvent::new(TaskEventKind::Created, at)],
         steps: Vec::new(),
         soft_deleted: false,
         archived: false,
@@ -1561,22 +1558,18 @@ fn task_page_footer_wraps_long_base_and_keeps_all_metadata_at_fifty_columns() {
     let rows = board_rows(&model, 50, 24);
     let first = rows
         .iter()
-        .position(|row| row.contains("@审"))
+        .position(|row| row.trim_start().starts_with("@审"))
         .expect("assignee");
     let footer: String = rows[first..]
         .iter()
         .take_while(|row| !row.contains('─'))
         .flat_map(|row| row.chars().filter(|ch| !ch.is_whitespace()))
         .collect();
-    let expected = format!("@审阅者·⎇{base}·#release·界desk·created");
-    assert!(
-        footer.starts_with(&expected),
-        "entire ordered footer must wrap:\n{}",
-        rows.join("\n")
-    );
-    assert!(
-        footer.contains("ago·updated") && footer.ends_with("ago"),
-        "both dates must remain visible:\n{}",
+    let expected = format!("@审阅者·⎇{base}·#release·界desk");
+    assert_eq!(
+        footer,
+        expected,
+        "entire ordered footer must wrap, and the dates are gone:\n{}",
         rows.join("\n")
     );
     assert!(rows[..first]
@@ -1722,6 +1715,7 @@ fn task_page_header_shows_identifier_not_footer() {
         inline_step_editor: None,
         block_rows: Vec::new(),
         block_cursor: None,
+        trail_rows: Vec::new(),
         bottom_input: None,
         meta: "desk · created 1m ago · updated 1m ago".to_string(),
         meta_assignee_x: None,
@@ -1836,6 +1830,7 @@ fn task_page_renders_header_notes_and_meta_as_a_full_takeover_in_both_tiers() {
         inline_step_editor: None,
         block_rows: Vec::new(),
         block_cursor: None,
+        trail_rows: Vec::new(),
         bottom_input: None,
         meta: "tsk \u{b7} created 1h ago \u{b7} updated 1h ago".to_string(),
         meta_assignee_x: None,
@@ -2514,7 +2509,10 @@ fn task_page_scrolls_notes_and_steps_as_one_content_region() {
         shown[1].contains("Scrollable page"),
         "header must stay fixed"
     );
-    assert!(shown[20].contains("created"), "footer must stay fixed");
+    assert!(
+        shown[20].contains("⎇ default · desk"),
+        "footer must stay fixed"
+    );
     assert!(
         shown.iter().any(|row| row.contains('▌')),
         "overflow needs a scrollbar"
@@ -2541,7 +2539,10 @@ fn task_page_scrolls_notes_and_steps_as_one_content_region() {
         shown[1].contains("Scrollable page"),
         "header must stay fixed"
     );
-    assert!(shown[20].contains("created"), "footer must stay fixed");
+    assert!(
+        shown[20].contains("⎇ default · desk"),
+        "footer must stay fixed"
+    );
     assert!(shown.iter().any(|row| row.contains("steps 0/1")));
     let step_row = shown
         .iter()

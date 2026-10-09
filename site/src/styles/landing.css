@@ -2747,6 +2747,9 @@ html[data-theme="light"] .pane {
 .tsk-page-meta { flex: none; min-height: 1lh; white-space: pre-wrap; overflow-wrap: anywhere; }
 .tsk-page-meta .tsk-meta-selected { color: var(--bg); background: var(--ink); }
 .tsk-steps { margin-top: 2lh; }
+.tsk-trail { margin-top: 1lh; }
+.tsk-trail-heading { font-weight: bold; }
+.tsk-trail-entry { white-space: pre-wrap; overflow-wrap: anywhere; }
 .tsk-step { display: flex; align-items: start; cursor: pointer; }
 .tsk-step-glyph { flex: none; white-space: pre; }
 .tsk-step-text { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }

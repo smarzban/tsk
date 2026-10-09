@@ -1055,7 +1055,9 @@ fn dispatched_task_page_renders_the_record_and_assigned_legend() {
     assert!(screen.contains("branch tsk/t1-send-it"), "{screen}");
     assert!(screen.contains("when"), "{screen}");
 
-    domain.record_dispatch_cleaned(id).expect("mark cleaned");
+    domain
+        .record_dispatch_cleaned(id, tsk_tui::domain::CleanupOutcome::Removed)
+        .expect("mark cleaned");
     model.sync_from_domain(&domain);
     let cleaned = rendered_board(&model, 100, 30);
     assert!(cleaned.contains("dispatch · cleaned"), "{cleaned}");
@@ -1098,7 +1100,7 @@ fn dispatched_task_page_hides_record_during_notes_edit_and_restores_it_in_view_m
     let editing = rendered_board(&model, 100, 30);
     assert!(
         !editing.contains("notes-edit-dispatch-worktree")
-            && !editing.contains("tsk/t1-notes-edit-dispatch"),
+            && !editing.contains("branch tsk/t1-notes-edit-dispatch"),
         "notes edit must not paint uneditable dispatch rows: {editing}"
     );
 
@@ -3288,7 +3290,7 @@ fn help_card_lists_every_binding_scrolls_and_closes_on_esc() {
         .expect("clear scroll query");
     }
     let mut scrolled_help = rendered_board(&scroll_model, 40, 10);
-    for _ in 0..200 {
+    for _ in 0..300 {
         apply_intent(
             &mut domain,
             &mut scroll_model,
@@ -5269,7 +5271,7 @@ fn page_scroll_up_reverses_the_shared_content_region() {
     apply_intent(&mut domain, &mut model, BoardIntent::PageScrollUp, None).expect("scroll up");
     let up = rendered_board(&model, 80, 24);
     assert_ne!(down, up, "Up must move the shared body back");
-    assert!(up.contains("Deactivate witness") && up.contains("created"));
+    assert!(up.contains("Deactivate witness") && up.contains("⎇ default"));
 }
 
 /// T-10 (AC-17, AC-18, AC-26): keys own the active cursor before they move the

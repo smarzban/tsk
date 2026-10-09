@@ -17,6 +17,37 @@ use tsk_tui::domain::{Dispatch, DomainState, HumanStatus, ProvenanceOrigin, Task
 use tsk_tui::store::TaskStore;
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// A direct human listing without its trailing `activity` block, whose ages follow the clock.
+fn without_activity(stdout: &str) -> String {
+    match stdout.find("\n\n   activity\n") {
+        Some(index) => format!("{}\n", &stdout[..index]),
+        None => stdout.to_string(),
+    }
+}
+
+/// The `activity` block's entries, each trailing age (`0s`, `2m`) replaced by `<age>`.
+fn activity_lines(stdout: &str) -> Vec<String> {
+    let Some(index) = stdout.find("\n   activity\n") else {
+        return Vec::new();
+    };
+    stdout[index..]
+        .lines()
+        .skip(2)
+        .map(|line| {
+            let line = line.trim();
+            match line.rsplit_once(' ') {
+                Some((head, age))
+                    if age.len() > 1
+                        && age[..age.len() - 1].bytes().all(|b| b.is_ascii_digit()) =>
+                {
+                    format!("{head} <age>")
+                }
+                _ => line.to_string(),
+            }
+        })
+        .collect()
+}
 static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn env_lock() -> MutexGuard<'static, ()> {
@@ -1025,7 +1056,7 @@ fn direct_human_list_wraps_notes_with_a_hanging_indent() {
 
     assert_eq!(output.code, 0);
     assert_eq!(
-        output.stdout,
+        without_activity(&output.stdout),
         "OPEN\n - 1 wrap target with a title long enough to wrap \n     at fifty columns\n   alpha beta gamma delta epsilon zeta eta theta \n   iota kappa lambda\n\n   [ ] implement the surprisingly long step and \n       verify every continuation remains aligned\n\n   #release-2026-long-thread\n"
     );
     assert!(
@@ -1277,7 +1308,7 @@ fn direct_human_list_keeps_note_lines_and_escapes_other_controls() {
     ]);
     assert_eq!(human.code, 0);
     assert_eq!(
-        human.stdout,
+        without_activity(&human.stdout),
         "OPEN\n - 1 notes target\n   first\\u{0009}cell\n   second\\u{001b}]52;c;clipboard\\u{0007}\n\n   #release\n"
     );
     assert!(!human.stdout.contains('\t'));
@@ -1705,9 +1736,18 @@ fn list_task_prints_step_lines_with_state_and_short_id() {
     assert_eq!(output.code, 0, "{}", output.stderr);
     assert!(output.stderr.is_empty());
     assert_eq!(
-        output.stdout,
+        without_activity(&output.stdout),
         "OPEN\n - 1 steps target\n   First note\n   Second note\n\n   [x] First step\n   [ ] Second step\n\n   #release\n",
         "direct detail separates notes, steps, and the trailing thread"
+    );
+    assert_eq!(
+        activity_lines(&output.stdout),
+        vec![
+            "step checked · you <age>",
+            "2 steps added · you <age>",
+            "created · you <age>",
+        ],
+        "the activity block lists the latest entries, newest first, grouped"
     );
     assert!(
         first_step.id.to_string().starts_with("aaa1"),
@@ -1724,13 +1764,32 @@ fn list_task_prints_step_lines_with_state_and_short_id() {
     ]);
     assert_eq!(json.code, 0);
     let expected_json = format!(
-        "[{{\"id\":\"{}\",\"number\":1,\"project\":null,\"status\":\"open\",\"title\":\"steps target\",\"notes\":\"First note\\nSecond note\",\"steps\":[{{\"id\":\"{}\",\"done\":true,\"short_id\":\"aaa1\",\"text\":\"First step\"}},{{\"id\":\"aaa22222-0000-4000-8000-000000000002\",\"done\":false,\"short_id\":\"aaa2\",\"text\":\"Second step\"}}],\"assignee\":null,\"base\":null,\"thread\":\"release\"}}]\n",
+        "[{{\"id\":\"{}\",\"number\":1,\"project\":null,\"status\":\"open\",\"title\":\"steps target\",\"notes\":\"First note\\nSecond note\",\"steps\":[{{\"id\":\"{}\",\"done\":true,\"short_id\":\"aaa1\",\"text\":\"First step\"}},{{\"id\":\"aaa22222-0000-4000-8000-000000000002\",\"done\":false,\"short_id\":\"aaa2\",\"text\":\"Second step\"}}],\"assignee\":null,\"base\":null,\"thread\":\"release\",\"activity\":",
         task, first_step.id
     );
     assert_eq!(
-        json.stdout, expected_json,
-        "direct JSON keeps title, notes, steps, and thread together in contract order"
+        json.stdout.split_once("\"activity\":").map(|(head, _)| head.to_string() + "\"activity\":"),
+        Some(expected_json),
+        "direct JSON keeps title, notes, steps, and thread together in contract order, then activity"
     );
+    let value: serde_json::Value = serde_json::from_str(&json.stdout).expect("direct JSON");
+    let activity = value[0]["activity"].as_array().expect("activity list");
+    assert_eq!(
+        activity
+            .iter()
+            .map(|event| (event["kind"].as_str(), event["by"].as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (Some("step_checked"), Some("you")),
+            (Some("step_added"), Some("you")),
+            (Some("step_added"), Some("you")),
+            (Some("created"), Some("you")),
+        ],
+        "activity lists every event newest first with its author"
+    );
+    assert!(activity
+        .iter()
+        .all(|event| event["at"].is_array() && event.get("detail").is_some()));
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -1804,7 +1863,10 @@ fn list_task_without_steps_keeps_task_rows_and_rejects_conflicting_flags() {
         state_dir_arg(&dir),
     ]);
     assert_eq!(plain.code, 0);
-    assert_eq!(plain.stdout, "READY\n - 1 plain target\n");
+    assert_eq!(
+        without_activity(&plain.stdout),
+        "READY\n - 1 plain target\n"
+    );
 
     let plain_json = list(&[
         "tsk".into(),
@@ -2328,7 +2390,7 @@ fn human_output_appends_thread_marker_iff_row_threaded_snapshots() {
         state_dir_arg(&dir),
     ]);
     assert_eq!(
-        single.stdout,
+        without_activity(&single.stdout),
         "DONE\n - 4 step threaded\n   [ ] Keep this line\n\n   #steps\n"
     );
 
@@ -2859,5 +2921,106 @@ fn list_from_an_aliased_launch_repo_matches_the_stored_project() {
     );
     let _ = std::fs::remove_dir_all(root);
     let _ = std::fs::remove_dir_all(other);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A verb run by a dispatched agent (`TSK_AGENT`) records the agent as the author, with what
+/// changed; the same verb without it records you. JSON lists both, newest first.
+#[test]
+fn activity_records_the_agent_from_tsk_agent_and_you_otherwise() {
+    let _lock = env_lock();
+    let dir = temp_state_dir("activity-author");
+    let mut state = DomainState::new();
+    create_task(
+        &mut state,
+        "authored target",
+        TaskScope::Global,
+        HumanStatus::Open,
+    );
+    TaskStore::new(&dir).save(&state).expect("seed store");
+    let status = |to: &str| {
+        run_with(
+            [
+                "tsk",
+                "status",
+                "1",
+                to,
+                "--state-dir",
+                &state_dir_arg(&dir),
+            ],
+            Cursor::new(Vec::<u8>::new()),
+            true,
+        )
+    };
+    {
+        let _agent = EnvironmentGuard::set("TSK_AGENT", "claude");
+        assert_eq!(status("started").code, 0);
+    }
+    {
+        let _agent = EnvironmentGuard::set("TSK_AGENT", "");
+        assert_eq!(status("ready").code, 0);
+    }
+    {
+        // `edit` names no author itself: the whole verb runs as the agent.
+        let _agent = EnvironmentGuard::set("TSK_AGENT", "claude");
+        let edit = run_with(
+            [
+                "tsk",
+                "edit",
+                "1",
+                "--notes",
+                "from the agent",
+                "--state-dir",
+                &state_dir_arg(&dir),
+            ],
+            Cursor::new(Vec::<u8>::new()),
+            true,
+        );
+        assert_eq!(edit.code, 0, "{}", edit.stderr);
+    }
+    let json = list(&[
+        "tsk".into(),
+        "list".into(),
+        "1".into(),
+        "--json".into(),
+        "--state-dir".into(),
+        state_dir_arg(&dir),
+    ]);
+    let value: serde_json::Value = serde_json::from_str(&json.stdout).expect("json");
+    let activity = value[0]["activity"].as_array().expect("activity");
+    assert_eq!(activity[0]["by"], "claude");
+    assert_eq!(activity[0]["kind"], "edited");
+    assert_eq!(
+        activity[0]["detail"],
+        serde_json::json!({"fields": ["notes"]})
+    );
+    let activity = &activity[1..];
+    assert_eq!(activity[0]["by"], "you");
+    assert_eq!(
+        activity[0]["detail"],
+        serde_json::json!({"from": "started", "to": "ready"})
+    );
+    assert_eq!(activity[1]["by"], "claude");
+    assert_eq!(activity[1]["kind"], "status_set");
+    assert_eq!(
+        activity[1]["detail"],
+        serde_json::json!({"from": "open", "to": "started"})
+    );
+
+    let plain = list(&[
+        "tsk".into(),
+        "list".into(),
+        "1".into(),
+        "--state-dir".into(),
+        state_dir_arg(&dir),
+    ]);
+    assert_eq!(
+        activity_lines(&plain.stdout)[..3],
+        [
+            "notes edited · @claude <age>".to_string(),
+            "started → ready · you <age>".to_string(),
+            "open → started · @claude <age>".to_string(),
+        ]
+    );
     let _ = std::fs::remove_dir_all(dir);
 }

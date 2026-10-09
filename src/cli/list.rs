@@ -77,6 +77,10 @@ pub(crate) struct DirectTaskDetails {
     pub(crate) dispatch: Option<crate::domain::Dispatch>,
     pub(crate) block: Option<crate::domain::Block>,
     pub(crate) past_blocks: Vec<crate::domain::Block>,
+    /// Every event, oldest first, for the JSON `activity` list.
+    pub(crate) history: Vec<crate::domain::TaskEvent>,
+    /// The paper trail, newest first, for the human listing.
+    pub(crate) trail: Vec<crate::activity::TrailEntry>,
 }
 
 /// Read-only result for the list command.
@@ -279,6 +283,8 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
                 dispatch: task.dispatch.clone(),
                 block: task.block.clone(),
                 past_blocks: task.past_blocks.clone(),
+                history: task.history.clone(),
+                trail: crate::activity::paper_trail(task),
             }),
         });
     }

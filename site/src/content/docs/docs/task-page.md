@@ -11,7 +11,7 @@ Double-click a task or select it and press `Enter`. A double-click follows the t
 
 At 110 usable columns or wider, click a task or press `→` / `l` to open details beside the board, keeping board focus. Use `→` / `l` and `←` / `h` to move between [board and task views](/docs/board/#wide-stage-slider). From the board-focused split, `Esc` closes the details column, keeping any parked draft. Press `Enter` from the board for full screen; `Esc` or click **esc close** returns. In view mode, `ctrl+q` quits the whole board rather than closing the page; save or cancel unsaved edits first.
 
-Click the task's `T` number to copy it. The page shows its status, notes, steps, assignee, base, project, thread, and dates. After a [dispatch](/docs/board/#dispatch) it also shows the worktree, branch, `from <ref> @ <short sha>`, when it was dispatched, and whether the worktree has been cleaned up. Its footer is ordered `@assignee · ⎇ <base> · #thread · project`, then created and updated dates. The base slot is always visible: an unset base shows the repository's default branch, for example `⎇ main (default)`, or `⎇ default` until that name is known. Long text and the metadata footer wrap, and footer controls remain clickable on each wrapped row.
+Click the task's `T` number to copy it. The page shows its status, notes, steps, assignee, base, project, thread, and its [paper trail](#paper-trail). After a [dispatch](/docs/board/#dispatch) it also shows the worktree, branch, `from <ref> @ <short sha>`, when it was dispatched, and whether the worktree has been cleaned up. Its footer is ordered `@assignee · ⎇ <base> · #thread · project`; when the task was created and last changed is on the paper trail. The base slot is always visible: an unset base shows the repository's default branch, for example `⎇ main (default)`, or `⎇ default` until that name is known. Long text and the metadata footer wrap, and footer controls remain clickable on each wrapped row.
 
 ## Edit
 
@@ -32,7 +32,7 @@ In view mode the footer's assignee is a quick control: click `@name` to open the
 
 Click the footer's `⎇` slot to choose the [base branch](/docs/board/#base-branch) a dispatch starts from. The same picker opens from palette **set base** or the **Base** field during editing. It lists the repository default first, for example **default (main)**, then local and `origin/*` branches, and refreshes in place after a background fetch. Type to filter, select a branch, or choose **default** to clear the base.
 
-In view mode, `Tab` selects steps and **+ step**. It does not cycle task fields. Status shortcuts remain available on the task page; use `ctrl+e`, then `Tab` to reach Notes.
+In view mode, `Tab` selects steps, **+ step**, then the paper trail's closed blocks and review rounds. It does not cycle task fields. Status shortcuts remain available on the task page; use `ctrl+e`, then `Tab` to reach Notes.
 
 During task editing, the forward order is Title → Notes → steps → **+ step** → Assignee → Base → Thread → Scope → Title. `Shift+Tab` reverses the ring. The footer follows the same left-to-right order: Assignee, Base, Thread, Scope. A field click moves the cursor and retains staged changes.
 
@@ -109,6 +109,37 @@ In view mode `Tab` walks the heading, the checks, the `N passed` line (and the p
 | Soft-delete your selected feedback | `ctrl+x` |
 
 The feedback box reads `feedback to @claude…` while empty and belongs to the round it opened on, like the reply box. Editing the checks keeps the state of any check whose text is unchanged.
+
+## Paper trail
+
+Below the steps, the PAPER TRAIL lists who did what to the task, newest first: `open → started · @claude 2m`, `assigned @claude · you 1h`, `created · you 3d`. An entry by an agent names its profile (`@claude`, from the `TSK_AGENT` its dispatch set); everything else is `you`.
+
+| Entry | Example |
+| --- | --- |
+| Created | `created` |
+| Status change | `review → started`, `review → done` |
+| Assignee, base | `assigned @claude`, `unassigned`, `base ⎇ origin/dev`, `base cleared` |
+| Dispatch | `dispatched tsk/t12-fix from origin/main @ 3333b79`, or `relaunched …` |
+| Cleanup | `cleaned · worktree removed, branch kept` |
+| Edits | `title edited`, `notes edited`, `title and notes edited` (which fields, never the text) |
+| Steps | `step added`, `step checked` |
+| Archive and delete | `archived`, `unarchived`, `deleted`, `restored` |
+| A closed block | `blocked on you · need creds · 1 reply ▸` |
+| A closed review round | `review round 2 · sent back · 1 failed ▸` |
+
+The same entry repeated by the same author within a minute groups into one: `3 steps checked`. The open block or review round stays in its BLOCKED or REVIEW section above the notes; once it closes, it moves here.
+
+Status changes, edits, and the other automatic entries are dim; closed blocks and review rounds are normal weight and end in `▸`.
+
+| Action | Key |
+| --- | --- |
+| Show every entry, or only the latest five | `a`, or click `+ N earlier` |
+| Expand a closed block or review round in place (`▾`), or fold it | `Enter` on it, or click it |
+| Select the closed records | `Tab` past **+ step** |
+
+An expanded block shows who blocked it and when, `why`, `needs`, the options, every reply, and who closed it. An expanded review round shows who set it, who it was on, `done`, each check with `○` open, `✓` passed, or `✗` failed, `next`, and the feedback.
+
+Entries recorded before this version (store v9 and older) show what happened and when, without who or what changed: `status changed`, `edited`, `assignee changed`.
 
 ## Status and steps
 

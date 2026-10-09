@@ -30,7 +30,7 @@ and stop. Never run an installer, package manager, or source build unless they a
 | inbox, untriaged | `open` | `tsk list --open --json` |
 | other projects, everything live | the five live statuses | `tsk list --all --json`, `--desk`, `-p <project>` |
 | done, archived, deleted | | `tsk list --done --json`, `--archived`, `--deleted` (each may combine with a scope flag) |
-| one task, in full | | `tsk list T12 --json` (notes, steps with `short_id`, assignee, base, thread, dispatch) |
+| one task, in full | | `tsk list T12 --json` (notes, steps with `short_id`, assignee, base, thread, dispatch, `activity`: who did what, newest first) |
 
 `T12`, `t12`, `12`, and the UUID all address the same task. Prefer `T12`, it is what the user sees.
 New tasks start `open` in the inbox; `ready` means the user picked it.
