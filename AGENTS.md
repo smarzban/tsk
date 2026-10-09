@@ -173,7 +173,14 @@ migration or design work they imply. What the behaviour *is* lives in the docs
 
 ### Store and state
 
-- Human status is source of truth. Never auto-complete tasks from agent status.
+- Human status is source of truth. Never auto-complete tasks from agent status. The one automatic
+  status change is a `ready` task whose last `after` prerequisite became done: it starts in the
+  same save as that done, through `dispatch::start_route` (`start_released_with_host`), and joins
+  the done's undo entry. Every done path (reducer, cleanup card, missing-worktree converge, CLI)
+  calls it before its save; completions queue on `DomainState` (`take_completed`) until then.
+- A delete drops its number from every other task's `after` in the same undo entry
+  (`UndoEntry::SetAfter` leaves); trash purge drops leftovers as bookkeeping. A number no live task
+  carries waits on nothing.
 - The projectless scope displays as `desk` but serializes as `global` and is
   `TaskScope::Global` internally. Do not rename either without a store migration.
 - Existing task scopes never move when scope resolution rules change.

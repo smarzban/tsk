@@ -3,7 +3,7 @@ title: Storage
 description: Task data, backups, deleted tasks, and update checks.
 ---
 
-The board, CLI, and Herdr plugin share one store. The current store format is v10.
+The board, CLI, and Herdr plugin share one store. The current store format is v11.
 
 ## Location
 
@@ -59,12 +59,12 @@ The command and prompt templates support `{number}`, `{title}`, `{notes}`, `{ste
 | --- | --- |
 | `tsk.json` | Current tasks and archived-project records |
 | `tsk.json.1` | Previous valid task document |
-| `tsk.json.v<N>` | Backup made when migrating an older store format, such as `tsk.json.v9` for the v9 → v10 migration |
+| `tsk.json.v<N>` | Backup made when migrating an older store format, such as `tsk.json.v10` for the v10 → v11 migration |
 | `config.toml` | Settings, including agent launch profiles, seeded with commented examples on the first full board open |
 | `delivery.json` | Which starter tasks this install has received or dismissed, and the newest release note it has seen |
 | `launchers\`, `cleanups\` | Windows only: dispatch launchers and cleanup progress |
 
-An older binary refuses a newer or unversioned store instead of rewriting it. Use a compatible tsk version to open it. On first save, older stores migrate to v10. v6 added task assignees, dispatch base branches, and dispatch records; v7 added blocks (why, needs, options, what the block waits on, and replies) and the block undo step; v8 added the undo step for a start that dispatched; v9 added review rounds (done, checks, next, who the review is on, feedback, and how each round closed); v10 adds who made each change (`by`) and what it changed (`detail`) to every new task event. Events from an older store keep their kind and time and show on the [paper trail](/docs/task-page/#paper-trail) without who or what. The original document is saved as `tsk.json.v<N>`, for example `tsk.json.v5` from v0.11. A blocked task from an older store keeps its status with no block and reads as blocked on you; a task in review keeps its status with no round and reads as in review on you. Earlier stores still run through each migration in order, including v5 batch undo and the v3 to v4 move from ready to open.
+An older binary refuses a newer or unversioned store instead of rewriting it. Use a compatible tsk version to open it. On first save, older stores migrate to v11. v6 added task assignees, dispatch base branches, and dispatch records; v7 added blocks (why, needs, options, what the block waits on, and replies) and the block undo step; v8 added the undo step for a start that dispatched; v9 added review rounds (done, checks, next, who the review is on, feedback, and how each round closed); v10 added who made each change (`by`) and what it changed (`detail`) to every new task event; v11 adds `after`, the task numbers a task runs after, the prerequisite that started a task on its event, and the undo step that puts an `after` list back. A task from an older store runs after nothing. Events from an older store keep their kind and time and show on the [paper trail](/docs/task-page/#paper-trail) without who or what. The original document is saved as `tsk.json.v<N>`, for example `tsk.json.v5` from v0.11. A blocked task from an older store keeps its status with no block and reads as blocked on you; a task in review keeps its status with no round and reads as in review on you. Earlier stores still run through each migration in order, including v5 batch undo and the v3 to v4 move from ready to open.
 
 Archived tasks stay in the task document with their existing status. [Archive and restore](/docs/board/#archive).
 
@@ -76,7 +76,7 @@ After an upgrade, the first board open adds one `What's new in tsk` task to your
 
 ## Deleted tasks
 
-Deleted tasks move to `trash.jsonl` once undo can no longer restore them, or after seven days. They are purged 30 days after deletion.
+Deleted tasks move to `trash.jsonl` once undo can no longer restore them, or after seven days. A delete already drops the task from every other task's `after`; any link left over is dropped when it moves to trash. They are purged 30 days after deletion.
 
 ```sh
 tsk list --deleted --all

@@ -178,6 +178,7 @@ pub fn add_help() -> CliOutput {
             "invalid-title".into(),
             "invalid-thread (JSON plan)".into(),
             "invalid-item (JSON plan)".into(),
+            "invalid-after (JSON plan)".into(),
             "unknown-project".into(),
             "unknown-agent".into(),
             "unknown-base".into(),

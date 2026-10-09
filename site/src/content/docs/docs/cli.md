@@ -119,7 +119,7 @@ Blank notes are omitted. C0 control characters in titles are rejected before tri
 ```json
 [
   {"title": "Reproduce login timeout", "project": "atlas", "thread": "auth", "assignee": "reviewer", "base": "main"},
-  {"title": "Draft release notes", "notes": "Include migration instructions"}
+  {"title": "Draft release notes", "notes": "Include migration instructions", "after": [202]}
 ]
 ```
 
@@ -141,6 +141,8 @@ cat plan.json | tsk add
 | `assignee` string | Exact configured agent profile name |
 | `base` omitted or `null` | Dispatch from the repository's default branch |
 | `base` string | Existing local or remote branch in the task's project repository |
+| `after` omitted, `null`, or `[]` | Runs after nothing |
+| `after` array | Task numbers it runs after, such as `[202]` or `["T202"]`, in any project; an unknown or done task refuses the item with `invalid-after` |
 
 Output contains `created`, `existing`, and `failed` arrays. Items carry their input index `i`; failures include `code` and `error`. Successful entries include task ID, number, and title. Notes and assignees are not echoed; read the task back when needed.
 
@@ -185,9 +187,9 @@ A direct task address searches the main store, including done, archived, and rec
 
 Human output groups by status in `STARTED`, `READY`, `OPEN`, `BLOCKED`, `REVIEW` order; filtered rows include the task number, assignee, base, and thread, and `--all` adds scope labels using a unique concise trailing path or desk. List output and errors wrap to the attached terminal width with hanging indentation. Task rows, scope labels, notes, steps, archived marks, and threads use the same wrapping behavior, supported from 50 columns. Redirected output keeps stored logical lines. Command help is reference text and instead always wraps at 80 columns.
 
-Single-task output removes metadata from the title row and presents notes, steps, `@assignee`, `⎇ <base>` when explicitly set, `#thread`, then `activity` (the latest five [paper trail](/docs/task-page/#paper-trail) entries, newest first, such as `open → started · @claude 2m`, and `+ N earlier`) as separate blocks. A blank line separates adjacent blocks that exist. Human step rows show state and text without machine-oriented short IDs.
+Single-task output removes metadata from the title row and presents notes, steps, `@assignee`, `⎇ <base>` when explicitly set, `after T202, T205 (done)` and `before T203` when it has them, `#thread`, then `activity` (the latest five [paper trail](/docs/task-page/#paper-trail) entries, newest first, such as `open → started · @claude 2m`, and `+ N earlier`) as separate blocks. A blank line separates adjacent blocks that exist. Human step rows show state and text without machine-oriented short IDs.
 
-JSON returns an array with `id`, `number`, `title`, `status`, `project`, `assignee`, `base`, and `thread`. Direct lookup returns the complete task, including `notes` (`null` when absent) and `steps` (an empty array when absent). Its fields are ordered `id`, `number`, `project`, `status`, `title`, `notes`, `steps`, `assignee`, `base`, `thread`, then `dispatch` when a record exists; each JSON step retains its `short_id` for step commands. `base` is the task's explicit base branch or `null`. `dispatch` is the launch record: `argv`, `worktree`, `branch`, `base` (the ref it started from), `base_ref` (the same ref, fully qualified), `base_commit` (the starting commit), `base_remote` (when the base has a remote), `herdr_workspace_id`, `at`, and `cleaned` once cleaned up. A blocked task adds `block`: `why`, `needs` (`null` when absent), `options`, `on` (`you`, `task:<number>`, or `other:<text>`), `by` (`you` or the agent profile), `at`, `edited`, `replies` (each `at`, `by`, `text`, and `edited: true` once edited; deleted replies are left out), and `answered` (the last reply is yours). Closed blocks follow under `past_blocks`, each adding `closed_at` and `closed_by`. A task in review adds `review`: `round` (from 1), `done`, `checks` (each `text` and `state`: `open`, `passed`, or `failed`), `next` (`null` when absent), `on` (`you`, `agent:<profile>`, or `other:<text>`), `by`, `at`, `edited`, `feedback` (shaped like `replies`), and `answered`. Closed rounds follow under `past_reviews`, each adding `closed_at`, `closed_by`, and `resolution`: `sent_back` when the round closed with a start, `approved` when it closed with done, absent otherwise. Last comes `activity`: every event on the task, newest first, each `at`, `by` (`you`, the agent profile `TSK_AGENT` named, or `null` for an event recorded before store v10), `kind` (`created`, `edited`, `status_set`, `completed`, `reopened`, `soft_deleted`, `restored`, `archived`, `unarchived`, `step_added`, `step_checked`, `step_unchecked`, `step_renamed`, `step_removed`, `assigned`, `base_set`, `dispatched`, `cleaned`, `block_edited`, `replied`, `reply_edited`, `reply_deleted`, `review_edited`, or `check_set`), and `detail` (`null` when the event carries none): `from` and `to` for a status change; `assignee` for `assigned` (absent: unassigned); `base` for `base_set` (absent: cleared); `branch`, `base`, `sha` (short), and `relaunch: true` for a relaunch on `dispatched`; `outcome` (`removed`, `branch_kept`, or `missing`) for `cleaned`; and `fields` (`title`, `notes`, `thread`, `project`) for `edited` (an edit that changed none of them, only steps, the assignee, or the base, has an empty `detail` and stays off the paper trail). Filtered listings do not include `dispatch`, `block`, `past_blocks`, `review`, `past_reviews`, or `activity`; human output prints `blocked: <why>` under a blocked row with a reason. Archived listings include an `archived` mark: `archived` or `project archived`.
+JSON returns an array with `id`, `number`, `title`, `status`, `project`, `assignee`, `base`, `thread`, `after`, and `before`. `after` lists the tasks this one [runs after](/docs/board/#after), in its own order, each `{"task": 202, "done": false}`; a task that is no longer on the board reads as done. `before` is the read-only list of task numbers that run after this one, derived from their `after`. Both are `[]` when empty. There is no `waiting` field: a task waits while any `after` entry has `done: false`. Direct lookup returns the complete task, including `notes` (`null` when absent) and `steps` (an empty array when absent). Its fields are ordered `id`, `number`, `project`, `status`, `title`, `notes`, `steps`, `assignee`, `base`, `thread`, `after`, `before`, then `dispatch` when a record exists; each JSON step retains its `short_id` for step commands. `base` is the task's explicit base branch or `null`. `dispatch` is the launch record: `argv`, `worktree`, `branch`, `base` (the ref it started from), `base_ref` (the same ref, fully qualified), `base_commit` (the starting commit), `base_remote` (when the base has a remote), `herdr_workspace_id`, `at`, and `cleaned` once cleaned up. A blocked task adds `block`: `why`, `needs` (`null` when absent), `options`, `on` (`you`, `task:<number>`, or `other:<text>`), `by` (`you` or the agent profile), `at`, `edited`, `replies` (each `at`, `by`, `text`, and `edited: true` once edited; deleted replies are left out), and `answered` (the last reply is yours). Closed blocks follow under `past_blocks`, each adding `closed_at` and `closed_by`. A task in review adds `review`: `round` (from 1), `done`, `checks` (each `text` and `state`: `open`, `passed`, or `failed`), `next` (`null` when absent), `on` (`you`, `agent:<profile>`, or `other:<text>`), `by`, `at`, `edited`, `feedback` (shaped like `replies`), and `answered`. Closed rounds follow under `past_reviews`, each adding `closed_at`, `closed_by`, and `resolution`: `sent_back` when the round closed with a start, `approved` when it closed with done, absent otherwise. Last comes `activity`: every event on the task, newest first, each `at`, `by` (`you`, the agent profile `TSK_AGENT` named, or `null` for an event recorded before store v10), `kind` (`created`, `edited`, `status_set`, `completed`, `reopened`, `soft_deleted`, `restored`, `archived`, `unarchived`, `step_added`, `step_checked`, `step_unchecked`, `step_renamed`, `step_removed`, `assigned`, `base_set`, `dispatched`, `cleaned`, `block_edited`, `replied`, `reply_edited`, `reply_deleted`, `review_edited`, or `check_set`), and `detail` (`null` when the event carries none): `from` and `to` for a status change, plus `after` (the prerequisite whose completion started it) on a start a done released, also on such a `dispatched`; `assignee` for `assigned` (absent: unassigned); `base` for `base_set` (absent: cleared); `branch`, `base`, `sha` (short), and `relaunch: true` for a relaunch on `dispatched`; `outcome` (`removed`, `branch_kept`, or `missing`) for `cleaned`; and `fields` (`title`, `notes`, `thread`, `project`, `after`) for `edited` (an edit that changed none of them, only steps, the assignee, or the base, has an empty `detail` and stays off the paper trail). Filtered listings do not include `dispatch`, `block`, `past_blocks`, `review`, `past_reviews`, or `activity`; human output prints `blocked: <why>` under a blocked row with a reason. Archived listings include an `archived` mark: `archived` or `project archived`.
 
 ## status
 
@@ -198,6 +200,7 @@ tsk status T12 started
 tsk status T12 started --no-dispatch
 tsk status T12 review
 tsk status T12 done --clean
+tsk status T13 started --force
 ```
 
 Accepts `open`, `ready`, `started` (or `start`), `blocked`, `review`, and `done`.
@@ -205,6 +208,8 @@ Accepts `open`, `ready`, `started` (or `start`), `blocked`, `review`, and `done`
 Unlike keyboard toggles, this command sets the requested status directly. Repeating the same value is safe. `--clean` is valid only with `done`: tsk saves done first, then runs [`tsk clean`](#clean) when the task has a live dispatch. With no dispatch, or one already cleaned, it exits 0 and prints `nothing to clean`. A real cleanup refusal (such as `dirty-worktree`) exits 1 and leaves the task done.
 
 Output: `status T12 <status> <title>`. The output uses `started`, even when the input was `start`.
+
+`done` also starts what it releases: each task that [runs after](/docs/board/#after) this one, is `ready`, and now has every prerequisite done starts in the same save, the way `started` below starts it (an assigned task never dispatched dispatches). A second line says what happened, such as `T13 started · T12 done`, `T13 dispatched to @claude · T12 done`, or `T13 stays ready: <reason> · T12 done` when a launch fails; the done stands either way. Tasks in `open`, `blocked`, or `review` do not move, and `review` is not done.
 
 ### Start
 
@@ -218,13 +223,15 @@ Output: `status T12 <status> <title>`. The output uses `started`, even when the 
 | Dispatched, agent gone | Refuses with `agent-gone` and changes nothing |
 | Assigned, never dispatched, but outside Herdr or a desk task | Sets the status, exits 0, and prints a second line, `no launch: not in Herdr` or `no launch: desk task has no repository` |
 | Run by the task's own dispatched agent (`TSK_AGENT` names the assignee) | Sets the status; never launches another copy |
+| Runs after a task that is not done | Refuses with `after-not-done` (`T13 runs after T12 (started)`) and changes nothing, unless `--force` |
 
 | Flag | Effect |
 | --- | --- |
 | `--no-dispatch` | Only set the status, never launch |
 | `--again` | Relaunch a dispatched task whose agent is gone, as `tsk dispatch --again` does |
+| `--force` | Start even though tasks it runs after are not done |
 
-Both flags are valid only with `started`, and not together. Any other launch refusal (such as `unknown-agent` or `needs-git-project`) leaves the task unstarted and exits 1. `tsk dispatch` remains the explicit form, with `--base`.
+These flags are valid only with `started`; `--again` and `--no-dispatch` not together. Any other launch refusal (such as `unknown-agent` or `needs-git-project`) leaves the task unstarted and exits 1. `tsk dispatch` remains the explicit form, with `--base`.
 
 ### Block with a reason
 
@@ -286,9 +293,11 @@ tsk edit T12 --assignee reviewer
 tsk edit T12 --unassign
 tsk edit T12 --base dispatch
 tsk edit T12 --clear-base
+tsk edit T13 --after T12 --after T9
+tsk edit T13 --clear-after
 ```
 
-Requires `--title`, `--notes`, `--assignee`, `--unassign`, `--base`, `--clear-base`, or a combination. `--assignee` and `--unassign` conflict; so do `--base` and `--clear-base`. Scope and thread stay unchanged. `--base` must be an existing branch in the task's repository, not a tag or commit; an unknown branch refuses with `unknown-base`. `--clear-base` returns the task to the repository's default branch.
+Requires `--title`, `--notes`, `--assignee`, `--unassign`, `--base`, `--clear-base`, `--after`, `--clear-after`, or a combination. `--assignee` and `--unassign` conflict; so do `--base` and `--clear-base`. Scope and thread stay unchanged. `--base` must be an existing branch in the task's repository, not a tag or commit; an unknown branch refuses with `unknown-base`. `--clear-base` returns the task to the repository's default branch. `--after <task>` (repeatable, `T12` or `12`) replaces the list of tasks this one [runs after](/docs/board/#after), in any project; `--clear-after` empties it, and the two conflict. A task cannot run after itself, a task not on the board, or one already done (`invalid-after`), and a link that would close a loop refuses with `after-loop`: `T12 already runs after T13`. There is no `--before`: set the other task's `--after`.
 
 Blank notes clear the field. Notes preserve newlines and tabs. Use `--title=...` or `--notes=...` for values starting with `-`.
 
@@ -481,12 +490,12 @@ After an uncertain add, inspect `tsk list --all --json`. Also check `--done` and
 
 | Command | Refusal codes |
 | --- | --- |
-| Add | `empty-title`, `invalid-title`, `invalid-thread`, `invalid-item`, `unknown-project`, `unknown-agent`, `unknown-base`, `project-archived` |
-| Edit | `empty-title`, `invalid-title`, `unknown-task`, `soft-deleted-task`, `unknown-agent`, `unknown-base` |
+| Add | `empty-title`, `invalid-title`, `invalid-thread`, `invalid-item`, `unknown-project`, `unknown-agent`, `unknown-base`, `project-archived`, `invalid-after` |
+| Edit | `empty-title`, `invalid-title`, `unknown-task`, `soft-deleted-task`, `unknown-agent`, `unknown-base`, `invalid-after`, `after-loop` |
 | Dispatch | `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `unsupported-platform`, `unsafe-state-dir`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, `unknown-base`, `no-default-base`, `herdr-failed` |
 | Clean | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`, `herdr-failed` |
 | Steps | `empty-step-text`, `invalid-step-text`, `unknown-task`, `soft-deleted-task`, `unknown-step`, `ambiguous-step` |
-| Status | `unknown-task`, `soft-deleted-task`, `text-too-long`, `invalid-blocker`; `started` adds `agent-gone` and the launch codes `unknown-agent`, `agent-config`, `unsupported-platform`, `unsafe-state-dir`, `needs-git-project`, `unknown-base`, `no-default-base`, `herdr-failed`; with `--clean`, cleanup codes above except `not-dispatched` and `already-cleaned` |
+| Status | `unknown-task`, `soft-deleted-task`, `text-too-long`, `invalid-blocker`; `started` adds `after-not-done`, `agent-gone`, and the launch codes `unknown-agent`, `agent-config`, `unsupported-platform`, `unsafe-state-dir`, `needs-git-project`, `unknown-base`, `no-default-base`, `herdr-failed`; with `--clean`, cleanup codes above except `not-dispatched` and `already-cleaned` |
 | Reply | `unknown-task`, `soft-deleted-task`, `not-blocked`, `empty-reply`, `text-too-long` |
 | Archive / unarchive | `unknown-task`, `soft-deleted-task` |
 

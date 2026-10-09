@@ -7,7 +7,7 @@ use std::time::SystemTime;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tsk_tui::domain::{Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope};
-use tsk_tui::ui::board::{BoardInputMode, BoardModel};
+use tsk_tui::ui::board::{apply_intent, BoardInputMode, BoardModel};
 use tsk_tui::ui::input::{map_key, BoardIntent};
 
 fn docs_dir() -> PathBuf {
@@ -57,7 +57,7 @@ fn promised_labels(cell: &str) -> Vec<String> {
     let mut labels = Vec::new();
     for part in cell.split(',') {
         let part = part.trim().to_lowercase();
-        if matches!(part.as_str(), "set assignee" | "set base") {
+        if matches!(part.as_str(), "set assignee" | "set base" | "set after…") {
             labels.push(part);
         } else if let Some(rest) = part.strip_prefix("set ") {
             // "Set open/ready/started/blocked/review" is five status commands.
@@ -107,6 +107,33 @@ fn selected_model(dispatched: bool) -> BoardModel {
     model
 }
 
+/// Two tasks, both marked in multi-select.
+fn marked_model() -> BoardModel {
+    let mut domain = DomainState::new();
+    for title in ["first marked", "second marked"] {
+        domain
+            .create(
+                title,
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("seed task");
+    }
+    let mut model = BoardModel::from_tasks(domain.tasks().to_vec(), None);
+    for intent in [
+        BoardIntent::ToggleMarkMode,
+        BoardIntent::MarkToggle,
+        BoardIntent::SelectNext,
+        BoardIntent::MarkToggle,
+    ] {
+        apply_intent(&mut domain, &mut model, intent, None).expect("mark");
+    }
+    assert_eq!(model.marked_count(), 2, "two tasks must be marked");
+    model
+}
+
 fn labels(model: &BoardModel) -> Vec<String> {
     model
         .available_commands()
@@ -129,6 +156,7 @@ fn board_md_palette_table_matches_the_palette_catalog() {
     let mut model = selected_model(false);
     let with_selection = labels(&model);
     let with_dispatch = labels(&selected_model(true));
+    let with_marks = labels(&marked_model());
 
     model.begin_save_recovery("disk full");
     let recovery = labels(&model);
@@ -142,6 +170,7 @@ fn board_md_palette_table_matches_the_palette_catalog() {
                 &with_selection
             }
             "A task with a dispatch record is selected" => &with_dispatch,
+            "Two or more tasks are marked" => &with_marks,
             "A save has failed" => &recovery,
             other => panic!("unknown palette condition {other:?} in board.md"),
         };
@@ -160,7 +189,8 @@ fn board_md_palette_table_matches_the_palette_catalog() {
         match *when {
             "A task is selected"
             | "An assigned task without a dispatch record is selected"
-            | "A task with a dispatch record is selected" => assert!(
+            | "A task with a dispatch record is selected"
+            | "Two or more tasks are marked" => assert!(
                 !always.contains(label),
                 "{label:?} is documented as selection-only but the empty board offers it"
             ),
@@ -209,6 +239,19 @@ fn board_md_palette_table_matches_the_palette_catalog() {
                 ]
             ),
             "a dispatched board offers {label:?} but board.md's table does not list it"
+        );
+    }
+    for label in &with_marks {
+        assert!(
+            covers(
+                label,
+                &[
+                    "Always",
+                    "A task is selected",
+                    "Two or more tasks are marked"
+                ]
+            ),
+            "a marked board offers {label:?} but board.md's table does not list it"
         );
     }
     for label in &recovery {

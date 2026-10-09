@@ -254,7 +254,7 @@ On a task-board list, `ctrl+s`, `ctrl+n`, `ctrl+o`, `ctrl+d`, `ctrl+b`, `ctrl+r`
 
 | Key | Action |
 | --- | --- |
-| `ctrl+s` | Start an open or ready task; an assigned one [dispatches](#dispatch) |
+| `ctrl+s` | Start an open or ready task; an assigned one [dispatches](#dispatch); a task that still waits [asks first](#after) |
 | `ctrl+n` | Set ready, the picked on-deck queue |
 | `ctrl+o` | Set open, the inbox |
 | `ctrl+d` | Mark done; for a live dispatch, offer [cleanup](#complete-and-clean-up) |
@@ -264,7 +264,21 @@ On a task-board list, `ctrl+s`, `ctrl+n`, `ctrl+o`, `ctrl+d`, `ctrl+b`, `ctrl+r`
 
 `ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Bulk block and review toggles are all-or-nothing: if every target already has that status they all return to ready, otherwise they all move to that status (blocking through one block card and review through one review card; tasks already blocked keep their block, tasks in review their round). Other status verbs are absolute, so repeating the current status does nothing. Done tasks can be sent directly to ready or open.
 
-Agents can set any status with [the CLI](/docs/cli/#status). Task status does not change automatically when steps are checked or an agent stops.
+Agents can set any status with [the CLI](/docs/cli/#status). Task status does not change automatically when steps are checked or an agent stops; the one automatic start is a ready task whose last [prerequisite](#after) is done.
+
+## After
+
+A task can run **after** other tasks: it waits while any of them is not done. Task numbers are board-wide, so a prerequisite can be in any project or on the desk. A waiting row shows a dim `after T202` at its right edge, gone once every prerequisite is done; nothing moves sections. Its peek lists each prerequisite with its status, `after T202 · started`, and a prerequisite's peek lists what waits on it, `before T203, T204`. The [task page](/docs/task-page/#after) footer shows the same.
+
+Set it from the task page's **After** field, with **set after…** in the palette (the cursor task, or every marked task), with `!w T202` in [quick-add](/docs/capture/#title-tokens), or with [`tsk edit --after`](/docs/cli/#edit). The task picker lists the tasks that are not done, the task's own project first and then the others with their project. Type to filter by number or title, `Space` ticks several, `Enter` applies the ticked tasks (or the highlighted one when nothing is ticked), and **none** clears the list. A task cannot run after itself, and a choice that would close a loop is refused, for example `T202 already runs after T205`.
+
+With tasks marked in order, **chain in order** makes each marked task run after the one marked before it, on top of what it already runs after. One save, one `ctrl+u`.
+
+When the last prerequisite becomes **done** (review does not count), each waiting task in **ready** starts in the same save, the way `ctrl+s` starts it: an assigned task never dispatched [dispatches](#dispatch). The status row says `T203 started · T202 done`, and the started task's paper trail reads `started · after T202`. This happens from the board, the [cleanup card](#complete-and-clean-up), and [`tsk status N done`](/docs/cli/#status). Waiting tasks in open, blocked, or review do not move. A launch that fails never blocks the done: the task stays ready and the status row says why (`T203 stays ready: …`). A task whose earlier agent is gone starts without a relaunch (`@claude gone, not relaunched`). `ctrl+u` on the done reverts the statuses only, `done undone · T203 back to ready · @claude kept running`; a launched agent keeps running.
+
+Starting a waiting task yourself asks first: `T203 runs after T202 (started). Start anyway?` `y` starts it, `Esc` cancels. With tasks marked, the card lists each waiting one.
+
+Deleting a task drops it from every other task's after list in the same save, and one `ctrl+u` puts the links back. A ready task left waiting on nothing does not start; the status row says `T203 no longer waits (T202 deleted)`. A task purged from trash leaves no links behind.
 
 ## Notices
 
@@ -284,7 +298,7 @@ Your first board open seeds four desk tasks with `N` ids (not `T`). They teach t
 | Wheel or drag a scrollbar | Scroll |
 | Drag across text | Select and copy on release |
 
-Open peeks show notes, followed by one metadata footer ordered `@assignee · ⎇ <base> · #thread · project`, omitting unset parts and hiding the default base. Below 110 columns, `→` or `l` opens a peek and `←` or `h` closes it. Peeks show up to five wrapped note lines; the [task page](/docs/task-page/) shows the rest.
+Open peeks show notes, followed by one metadata footer ordered `@assignee · ⎇ <base> · #thread · project`, omitting unset parts and hiding the default base. A task with [after](#after) links lists them above the notes. Below 110 columns, `→` or `l` opens a peek and `←` or `h` closes it. Peeks show up to five wrapped note lines; the [task page](/docs/task-page/) shows the rest.
 
 ## Wide stage slider
 
@@ -340,7 +354,7 @@ tsk asks whether to restore it. Choose `y` to restore, or `n`/`Esc` to keep it a
 
 Press `ctrl+x` twice to delete the marked tasks, or the cursored task when nothing is marked. The confirmation and recovery messages show the task count for a marked set. `ctrl+Delete` is an alternative.
 
-One `ctrl+u` undoes the whole marked deletion, completion, or block. If another writer has changed any task in that batch since the action, undo refuses without changing any of them and remains available to retry. On an archived cursor with no marks, `ctrl+u` restores that task instead.
+One `ctrl+u` undoes the whole marked deletion, completion, or block, including the [after](#after) links a deletion dropped and the starts a completion made. If another writer has changed any task in that batch since the action, undo refuses without changing any of them and remains available to retry. On an archived cursor with no marks, `ctrl+u` restores that task instead.
 
 Deleted tasks remain available through [trash commands](/docs/cli/#trash) for a limited time. They do not appear on the board.
 
@@ -352,11 +366,12 @@ Press `:` and type to find an action. Use arrows or `Tab` to select, `Enter` to 
 | --- | --- |
 | New task, undo, done drawer, help, quit | Always |
 | Set open/ready/started/blocked/review, edit notes, change scope, delete | A task is selected |
-| Set assignee, set base | A task is selected |
+| Set assignee, set base, set after… | A task is selected |
 | Dispatch again | A task with a dispatch record is selected |
+| Chain in order | Two or more tasks are marked |
 | Retry save, cancel save | A save has failed |
 
-**Set assignee** opens the same picker as `@`; **set base** opens the branch picker. Both apply to the marked set when marks are present, with one save and one undo. **Set status: started** takes the same route as `ctrl+s`, including on blocked and review tasks: an assigned task dispatches, and with marks the [start card](#start-a-marked-set) opens. **Dispatch again** ignores and clears marks, then relaunches only the cursor.
+**Set assignee** opens the same picker as `@`; **set base** opens the branch picker; **set after…** opens the [task picker](#after). Each applies to the marked set when marks are present, with one save and one undo. **Chain in order** makes each marked task run after the one marked before it. **Set status: started** takes the same route as `ctrl+s`, including on blocked and review tasks: an assigned task dispatches, and with marks the [start card](#start-a-marked-set) opens. **Dispatch again** ignores and clears marks, then relaunches only the cursor.
 
 Search matches letters in order: `ssr` finds `set status: review`.
 
