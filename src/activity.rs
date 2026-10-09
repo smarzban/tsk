@@ -11,7 +11,7 @@ use crate::domain::{
     TaskEvent, TaskEventKind, OWNER,
 };
 
-/// Entries shown before `+ N earlier` on the page, and by the plain single-task listing.
+/// Entries the plain single-task listing (`tsk list T`) shows before `+ N earlier`.
 pub const LATEST: usize = 5;
 
 /// Consecutive repeats closer than this read as one grouped entry.
