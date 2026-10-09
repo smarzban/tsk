@@ -628,12 +628,13 @@ pub(super) fn delete_selected_reply(
     Ok(IntentOutcome::Persist)
 }
 
-/// `shift+enter` stores the reply; `ctrl+s` stores it and unblocks the task to ready. The box
-/// and its mode stay until the synced task carries the reply.
+/// `shift+enter` stores the reply; `ctrl+s` stores it and unblocks the task to `unblock`
+/// (ready, or started when its agent is still running; the application boundary decides).
+/// The box and its mode stay until the synced task carries the reply.
 pub(super) fn save_reply(
     domain: &mut DomainState,
     model: &mut BoardModel,
-    unblock: bool,
+    unblock: Option<HumanStatus>,
 ) -> Result<IntentOutcome, DomainError> {
     let Some(form) = model.form.as_ref() else {
         return Ok(IntentOutcome::None);
@@ -682,8 +683,8 @@ pub(super) fn save_reply(
             Some(index) => domain.edit_reply(id, index, &text).map(|()| index)?,
             None => domain.reply(id, &text, OWNER)?,
         };
-        if unblock {
-            domain.set_status(id, HumanStatus::Ready)?;
+        if let Some(status) = unblock {
+            domain.set_status(id, status)?;
         }
         Ok(index)
     });
@@ -704,7 +705,7 @@ pub(super) fn save_reply(
             task: id,
             index,
             text,
-            unblock,
+            unblock: unblock.is_some(),
         });
     }
     Ok(IntentOutcome::Persist)

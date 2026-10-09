@@ -1244,9 +1244,10 @@ pub fn status_help() -> CliOutput {
     help(HelpDoc {
         usage: vec![
             "tsk status <task> <status> [--clean] [--state-dir <dir>]".into(),
+            "tsk status <task> started [--again | --no-dispatch] [--state-dir <dir>]".into(),
             "tsk status <task> blocked --why <text> [--needs <text>] [--option <text>]... [--on you|T<n>|<text>]".into(),
         ],
-        purpose: "Set a task's human status, optionally cleaning its dispatch after done persists. Block with a reason so the owner can answer it."
+        purpose: "Set a task's human status, optionally cleaning its dispatch after done persists. Block with a reason so the owner can answer it. Starting an assigned task that was never dispatched dispatches it, like tsk dispatch."
             .into(),
         groups: vec![
             group(
@@ -1260,6 +1261,14 @@ pub fn status_help() -> CliOutput {
                     (
                         "--clean",
                         "after setting done, safely clean its dispatch if it has a live one",
+                    ),
+                    (
+                        "--again",
+                        "with started, relaunch a dispatched task whose agent is gone",
+                    ),
+                    (
+                        "--no-dispatch",
+                        "with started, only set the status, never launch an agent",
                     ),
                     ("--state-dir <dir>", "use another board store"),
                 ],
@@ -1284,6 +1293,7 @@ pub fn status_help() -> CliOutput {
         examples: vec![
             "tsk status T12 ready".into(),
             "tsk status T12 review".into(),
+            "tsk status T12 started --no-dispatch".into(),
             "tsk status T12 blocked --why \"Which database?\" --option postgres --option sqlite".into(),
             "tsk status T12 blocked --why \"Needs the API from T9\" --on T9".into(),
         ],
@@ -1292,6 +1302,15 @@ pub fn status_help() -> CliOutput {
             "soft-deleted-task".into(),
             "text-too-long".into(),
             "invalid-blocker".into(),
+            "agent-gone".into(),
+            "needs-git-project".into(),
+            "unknown-agent".into(),
+            "unknown-base".into(),
+            "no-default-base".into(),
+            "agent-config".into(),
+            "herdr-failed".into(),
+            "unsupported-platform".into(),
+            "unsafe-state-dir".into(),
         ],
         exit: exit_line(
             "status set, or it already had the value",
@@ -1382,6 +1401,21 @@ pub fn status(result: StatusResult) -> CliOutput {
     }
 }
 
+/// A start that dispatched: the status line, then where the agent runs.
+pub fn status_dispatched(result: StatusResult, dispatched: DispatchResult) -> CliOutput {
+    let mut output = status(result);
+    output.stdout.push_str(&format!(
+        "dispatched T{} to @{} in {}\n",
+        dispatched.number,
+        terminal_text(&dispatched.assignee),
+        terminal_text(&dispatched.record.worktree)
+    ));
+    if let Some(warning) = dispatched.warning {
+        output.stderr = format!("tsk status: warning: {}\n", terminal_text(&warning));
+    }
+    output
+}
+
 pub fn status_usage(reason: &str) -> CliOutput {
     CliOutput {
         stdout: String::new(),
@@ -1396,6 +1430,27 @@ pub fn status_usage(reason: &str) -> CliOutput {
 pub fn status_rejected(error: StatusError, task: TaskAddress) -> CliOutput {
     let (detail, code) = match error {
         StatusError::Store(detail) => (detail, 3),
+        StatusError::AgentGone(assignee) => (
+            format!(
+                "agent-gone: @{} is no longer running for {}; --again relaunches it, --no-dispatch only sets the status",
+                terminal_text(&assignee),
+                task.display()
+            ),
+            1,
+        ),
+        StatusError::Dispatch(error) => {
+            let detail = match &error {
+                DispatchError::UnknownTask => format!("{} is not on the board", task.display()),
+                other => human_reason(&other.to_string()),
+            };
+            (
+                format!(
+                    "{}: {detail}; --no-dispatch only sets the status",
+                    error.code()
+                ),
+                1,
+            )
+        }
         other => (task_refusal_message(other.code(), task), 1),
     };
     CliOutput {

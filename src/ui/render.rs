@@ -3813,8 +3813,10 @@ pub enum CleanupFooter {
     Running,
     /// The run finished with something kept: Esc closes the card.
     Finished,
-    /// The bulk dispatch card launching this many tasks.
+    /// The bulk start card launching this many tasks (none: it only starts).
     Dispatch(usize),
+    /// The relaunch card for one task whose agent is gone.
+    Relaunch,
 }
 
 impl CleanupFooter {
@@ -3828,12 +3830,14 @@ impl CleanupFooter {
             (Self::Running, _) => RUNNING_CLEANUP_FOOTER,
             (Self::Finished, _) => FINISHED_CLEANUP_FOOTER,
             (Self::Dispatch(_), _) => SHORT_DISPATCH_FOOTER,
+            (Self::Relaunch, _) => RELAUNCH_FOOTER,
         }
     }
 
     /// The `y` label when it carries a count (`dispatch 3`).
     fn counted_label(self) -> Option<String> {
         match self {
+            Self::Dispatch(0) => Some("start".to_string()),
             Self::Dispatch(count) => Some(format!("dispatch {count}")),
             _ => None,
         }
@@ -3849,6 +3853,21 @@ pub(crate) const FINISHED_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[VerbEntry {
     key: "esc",
     label: "close",
 }];
+const RELAUNCH_FOOTER: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "y",
+        label: "relaunch",
+    },
+    VerbEntry {
+        key: "n",
+        label: "just start",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "cancel",
+    },
+];
+
 const SHORT_DISPATCH_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "y",

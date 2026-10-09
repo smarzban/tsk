@@ -459,6 +459,36 @@ impl std::fmt::Display for DispatchError {
 
 impl std::error::Error for DispatchError {}
 
+/// Why a workspace's root pane could not be found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RootPaneError {
+    /// Herdr answered that the workspace does not exist (`workspace_not_found`).
+    WorkspaceGone(String),
+    /// Anything else: Herdr could not run, exited non-zero, or answered something unreadable.
+    /// This says nothing about whether the workspace or its agent is still there.
+    Failed(String),
+}
+
+impl std::fmt::Display for RootPaneError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WorkspaceGone(reason) | Self::Failed(reason) => write!(formatter, "{reason}"),
+        }
+    }
+}
+
+impl From<String> for RootPaneError {
+    fn from(reason: String) -> Self {
+        Self::Failed(reason)
+    }
+}
+
+impl From<&str> for RootPaneError {
+    fn from(reason: &str) -> Self {
+        Self::Failed(reason.to_string())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreatedWorktree {
     pub path: PathBuf,
@@ -502,6 +532,15 @@ pub trait DispatchHost {
         base: Option<&str>,
         label: &str,
     ) -> Result<CreatedWorktree, String>;
+    /// Open a Herdr workspace on an existing worktree: a relaunch whose workspace was closed.
+    fn open_worktree(
+        &mut self,
+        _project: &Path,
+        _worktree: &Path,
+        _label: &str,
+    ) -> Result<CreatedWorktree, String> {
+        Err("reopening a worktree is not supported".into())
+    }
     fn inspect_cleanup(
         &mut self,
         _project: &Path,
@@ -552,7 +591,9 @@ pub trait DispatchHost {
     {
         run_cleanup_job(&job, &plan, in_herdr, self);
     }
-    fn root_pane(&mut self, workspace_id: &str) -> Result<String, String>;
+    /// The workspace's root pane. Only Herdr's own `workspace_not_found` is
+    /// [`RootPaneError::WorkspaceGone`].
+    fn root_pane(&mut self, workspace_id: &str) -> Result<String, RootPaneError>;
     fn run_in_pane(&mut self, pane_id: &str, command: &str) -> Result<(), String>;
     /// The platform whose launch line and cleanup rules apply. Test hosts default to Unix.
     fn platform(&self) -> HostPlatform {
@@ -933,6 +974,23 @@ impl DispatchHost for SystemDispatchHost {
         created_worktree_from_value(herdr_json(output)?)
     }
 
+    fn open_worktree(
+        &mut self,
+        project: &Path,
+        worktree: &Path,
+        label: &str,
+    ) -> Result<CreatedWorktree, String> {
+        let output = Command::new("herdr")
+            .args(["worktree", "open", "--cwd"])
+            .arg(project)
+            .arg("--path")
+            .arg(worktree)
+            .args(["--label", label, "--no-focus"])
+            .output()
+            .map_err(|error| format!("could not run herdr: {error}"))?;
+        created_worktree_from_value(herdr_json(output)?)
+    }
+
     fn branch_taken(&mut self, project: &Path, branch: &str) -> Result<bool, String> {
         // Herdr keeps worktrees under the user's home: `%USERPROFILE%` on Windows.
         let home =
@@ -1077,17 +1135,26 @@ impl DispatchHost for SystemDispatchHost {
         std::thread::spawn(move || run_cleanup_job(&job, &plan, in_herdr, &mut host));
     }
 
-    fn root_pane(&mut self, workspace_id: &str) -> Result<String, String> {
+    fn root_pane(&mut self, workspace_id: &str) -> Result<String, RootPaneError> {
         let output = Command::new("herdr")
             .args(["pane", "list", "--workspace", workspace_id])
             .output()
             .map_err(|error| format!("could not run herdr: {error}"))?;
+        if !output.status.success()
+            && herdr_error_code(&output.stderr).as_deref() == Some("workspace_not_found")
+        {
+            return Err(RootPaneError::WorkspaceGone(format!(
+                "herdr workspace {workspace_id} not found"
+            )));
+        }
         let value = herdr_json(output)?;
         value
             .pointer("/result/panes/0/pane_id")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .ok_or_else(|| format!("herdr workspace {workspace_id} has no root pane"))
+            .ok_or_else(|| {
+                RootPaneError::Failed(format!("herdr workspace {workspace_id} has no root pane"))
+            })
     }
 
     fn run_in_pane(&mut self, pane_id: &str, command: &str) -> Result<(), String> {
@@ -2314,6 +2381,89 @@ pub fn run_with_host(
     run_with_host_base(state, id, profiles, again, in_herdr, None, host)
 }
 
+/// What starting a task does, decided before any status change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartRoute {
+    /// A plain status change: the task is unassigned, its agent is still running, or the
+    /// caller is that agent.
+    Plain,
+    /// Assigned and never dispatched: dispatch it, which starts it.
+    Dispatch,
+    /// Dispatched before, and the agent is gone: relaunch only when asked.
+    AgentGone { assignee: String },
+    /// Assigned and never dispatched, but dispatch cannot work here: a plain start that says
+    /// why nothing launched ([`launch_unavailable`]).
+    NoLaunch { reason: &'static str },
+}
+
+/// The no-launch reason when tsk runs outside Herdr.
+pub const NO_LAUNCH_NOT_IN_HERDR: &str = "not in Herdr";
+/// The no-launch reason for a desk task.
+pub const NO_LAUNCH_DESK: &str = "desk task has no repository";
+
+/// Why an assigned task's start cannot launch at all, so it is a plain start instead of a
+/// refusal: tsk is outside Herdr, or the task is on the desk. Every other launch refusal
+/// (profile, base, git, Herdr failures) still leaves the task unstarted.
+pub fn launch_unavailable(task: &Task, in_herdr: bool) -> Option<&'static str> {
+    if !in_herdr {
+        Some(NO_LAUNCH_NOT_IN_HERDR)
+    } else if task.scope == TaskScope::Global {
+        Some(NO_LAUNCH_DESK)
+    } else {
+        None
+    }
+}
+
+/// The status row (and CLI line) for a start that could not launch.
+pub fn no_launch_message(reason: &str) -> String {
+    format!("started · no launch: {reason}")
+}
+
+/// Route a start of `task` by `actor` (`you`, or the agent profile named by `TSK_AGENT`).
+///
+/// A dispatched task asks Herdr whether its agent still runs in the workspace's root pane.
+/// Uncertainty never launches and never prompts: outside Herdr, or when Herdr cannot answer
+/// (any root-pane or agent query failure), the start is plain. A cleaned record, a workspace
+/// Herdr reports as not found, or a pane with no agent means the agent is gone.
+pub fn start_route(
+    task: &Task,
+    actor: &str,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> StartRoute {
+    let Some(assignee) = task.assignee.as_deref() else {
+        return StartRoute::Plain;
+    };
+    // An agent starting its own task never launches another copy of itself.
+    if actor == assignee {
+        return StartRoute::Plain;
+    }
+    let Some(record) = task.dispatch.as_ref() else {
+        return match launch_unavailable(task, in_herdr) {
+            Some(reason) => StartRoute::NoLaunch { reason },
+            None => StartRoute::Dispatch,
+        };
+    };
+    let gone = StartRoute::AgentGone {
+        assignee: assignee.to_string(),
+    };
+    if record.cleaned {
+        return gone;
+    }
+    if !in_herdr {
+        return StartRoute::Plain;
+    }
+    let pane = match host.root_pane(&record.herdr_workspace_id) {
+        Ok(pane) => pane,
+        Err(RootPaneError::WorkspaceGone(_)) => return gone,
+        Err(RootPaneError::Failed(_)) => return StartRoute::Plain,
+    };
+    match host.pane_has_agent(&pane) {
+        Ok(false) => gone,
+        Ok(true) | Err(_) => StartRoute::Plain,
+    }
+}
+
 /// One-off base overrides do not edit the task's saved preference or an existing dispatch.
 #[allow(clippy::too_many_arguments)]
 pub fn run_with_host_base(
@@ -2533,10 +2683,13 @@ pub fn launch_with_host(
                     recreated.workspace_id,
                     recreated.root_pane_id,
                 )
-            } else {
-                let pane = host
-                    .root_pane(&existing.herdr_workspace_id)
-                    .map_err(DispatchError::Herdr)?;
+            } else if let Some(pane) = match host.root_pane(&existing.herdr_workspace_id) {
+                Ok(pane) => Some(pane),
+                // Only a workspace Herdr says is gone is reopened; any other failure may leave
+                // the agent running there, so nothing launches.
+                Err(RootPaneError::WorkspaceGone(_)) => None,
+                Err(RootPaneError::Failed(reason)) => return Err(DispatchError::Herdr(reason)),
+            } {
                 (
                     existing.worktree.clone(),
                     existing.branch.clone(),
@@ -2546,6 +2699,22 @@ pub fn launch_with_host(
                     existing.base_remote.clone(),
                     existing.herdr_workspace_id.clone(),
                     pane,
+                )
+            } else {
+                // The workspace was closed but the worktree is kept: open a new workspace on it.
+                let label = workspace_label(number, &task.title);
+                let reopened = host
+                    .open_worktree(project, Path::new(&existing.worktree), &label)
+                    .map_err(DispatchError::Herdr)?;
+                (
+                    reopened.path.to_string_lossy().into_owned(),
+                    existing.branch.clone(),
+                    existing.base.clone(),
+                    existing.base_ref.clone(),
+                    existing.base_commit.clone(),
+                    existing.base_remote.clone(),
+                    reopened.workspace_id,
+                    reopened.root_pane_id,
                 )
             }
         } else {
@@ -3220,7 +3389,7 @@ mod tests {
             Ok(())
         }
 
-        fn root_pane(&mut self, _: &str) -> Result<String, String> {
+        fn root_pane(&mut self, _: &str) -> Result<String, crate::dispatch::RootPaneError> {
             self.roots += 1;
             Ok("w9:p1".into())
         }
@@ -5164,8 +5333,8 @@ mod tests {
     }
 
     #[test]
-    fn cleaned_marker_is_optional_and_store_format_stays_v7() {
-        assert_eq!(crate::domain::STORE_FORMAT_VERSION, 7);
+    fn cleaned_marker_is_optional_and_store_format_stays_v8() {
+        assert_eq!(crate::domain::STORE_FORMAT_VERSION, 8);
         let record = Dispatch {
             argv: vec!["agent".into()],
             worktree: "/tmp/worktree".into(),

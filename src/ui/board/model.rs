@@ -234,8 +234,7 @@ pub enum ListPickerKind {
     ThreadFilter,
     /// The projects index's View selector (bare `v`).
     ProjectsView,
-    /// The quick assignee picker (bare `@`, the task-page footer, palette **set assignee**,
-    /// and `ctrl+g` on an unassigned task).
+    /// The quick assignee picker (bare `@`, the task-page footer, palette **set assignee**).
     Assignee,
     /// Explicit dispatch base, including the leading remote-default choice.
     Base,
@@ -275,8 +274,6 @@ pub enum ListPickerValue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct AssigneePickerTarget {
     pub ids: Vec<Uuid>,
-    /// Opened by `ctrl+g` on an unassigned task: a profile choice assigns, then dispatches.
-    pub dispatch_after: bool,
 }
 
 /// What the branch picker applies to. An edit-ring picker updates only its retained draft;
@@ -1043,8 +1040,6 @@ pub struct BoardModel {
     pub(super) suspended_delete_notice_count: Option<usize>,
     /// First ctrl+x arms this exact target set; a second press on the same set deletes it.
     pub(super) pending_delete: Option<BTreeSet<Uuid>>,
-    /// First ctrl+g on an existing dispatch arms one exact cursor task for relaunch.
-    pub(super) pending_dispatch_again: Option<Uuid>,
     /// Cursor-pinned dispatch cleanup details while the confirmation modal owns input.
     pub(super) cleanup_prompt: Option<CleanupPrompt>,
     /// A confirmed cleanup whose host work runs off the event loop. Outlives its card: Esc
@@ -1058,6 +1053,9 @@ pub struct BoardModel {
     pub(super) cleanup_status: Option<String>,
     /// Bulk dispatch card over the marked set while it owns input.
     pub(super) dispatch_prompt: Option<DispatchPrompt>,
+    /// A reply-box `ctrl+s` whose reply save failed: the task to start once Retry saves it.
+    /// Cancel drops it. Session-only.
+    pub pending_reply_start: Option<Uuid>,
     /// The block card while it owns input.
     pub(super) block_card: Option<super::block::BlockCard>,
     /// A bulk dispatch whose launches are still landing. One slot shared by the outer board and
@@ -1208,13 +1206,31 @@ pub struct BulkCleanup {
     pub refused: Vec<(String, String)>,
 }
 
-/// Session-only bulk dispatch confirmation for a marked set, checked when `ctrl+g` opened it.
+/// Session-only start confirmation: the bulk card over a marked set where a start would
+/// launch an agent, checked when `ctrl+s` opened it, or the relaunch card for one cursor task
+/// whose agent is gone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchPrompt {
     /// The tasks `y` launches, in board order.
     pub launch: Vec<crate::dispatch::EligibleDispatch>,
-    /// Marked tasks the card skips: the board identifier and the single-task refusal.
+    /// Marked tasks the card skips: the board identifier and the single-task refusal. They
+    /// stay unstarted.
     pub skipped: Vec<(String, String)>,
+    /// Marked tasks `y` only starts, in board order: unassigned, or already dispatched
+    /// (relaunching stays cursor-only).
+    pub start_only: Vec<(String, Uuid)>,
+    /// Start-only rows that were done or archived when the card opened: the palette's absolute
+    /// start corrects them to started. Only these may start while done or archived.
+    pub corrections: Vec<Uuid>,
+    /// Start-only rows assigned and never dispatched that cannot launch here, with why (not
+    /// in Herdr, a desk task): `y` starts them plainly.
+    pub no_launch: Vec<(Uuid, &'static str)>,
+    /// Opened by the palette's absolute **set status: started** (any status but started
+    /// moves) rather than `ctrl+s` (open and ready only); `y` rechecks the rows by it.
+    pub any_status: bool,
+    /// The relaunch card: one cursor task whose agent is gone. `y` relaunches it, `n` only
+    /// starts it. `launch`, `skipped` and `start_only` are empty.
+    pub relaunch: Option<RelaunchPrompt>,
     /// The git-repository check of the listed tasks, running off the event loop; rows show
     /// `checking…` until it lands.
     pub git_checks: Option<crate::dispatch::GitChecks>,
@@ -1226,6 +1242,33 @@ impl DispatchPrompt {
     pub fn checking(&self) -> bool {
         self.git_checks.is_some()
     }
+
+    /// The relaunch card for one cursor task whose agent is gone.
+    pub fn relaunch(prompt: RelaunchPrompt) -> Self {
+        Self {
+            launch: Vec::new(),
+            skipped: Vec::new(),
+            start_only: Vec::new(),
+            corrections: Vec::new(),
+            no_launch: Vec::new(),
+            any_status: prompt.any_status,
+            relaunch: Some(prompt),
+            git_checks: None,
+            scroll: 0,
+        }
+    }
+}
+
+/// A cursor task whose dispatched agent is gone, asking before a relaunch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelaunchPrompt {
+    pub task_id: Uuid,
+    pub number: u64,
+    /// The start's rule: any status but started moves (palette, reply box), or only open and
+    /// ready (`ctrl+s`). `n` rechecks the task by it.
+    pub any_status: bool,
+    pub assignee: String,
+    pub worktree: String,
 }
 
 /// A launch recorded on its task whose save has not been confirmed yet.
@@ -1671,12 +1714,12 @@ impl BoardModel {
             suspended_delete_notice: None,
             suspended_delete_notice_count: None,
             pending_delete: None,
-            pending_dispatch_again: None,
             cleanup_prompt: None,
             cleanup_run: SharedCleanupRun::default(),
             quit_after_cleanup: None,
             cleanup_status: None,
             dispatch_prompt: None,
+            pending_reply_start: None,
             block_card: None,
             bulk_dispatch: SharedBulkDispatch::default(),
             pending_delete_bulk: false,
@@ -1883,7 +1926,6 @@ impl BoardModel {
         self.cleanup_max_scroll.set(usize::MAX);
         self.close_help();
         self.close_command_surface();
-        self.clear_dispatch_again();
         self.dispatch_prompt = Some(prompt);
         self.popup = BoardPopup::DispatchConfirm;
         self.clear_message();
@@ -1905,6 +1947,13 @@ impl BoardModel {
             self.block_target(),
             Some(super::block::BlockTarget::Option(_))
         )
+    }
+
+    /// The task whose reply box is open, while it is open.
+    pub fn reply_task_id(&self) -> Option<Uuid> {
+        let form = self.form.as_ref()?;
+        form.block.reply.as_ref()?;
+        form.task_id()
     }
 
     /// The reply box's draft while it is open.
@@ -1971,7 +2020,8 @@ impl BoardModel {
                 .strip_prefix('T')
                 .and_then(|number| number.parse::<u64>().ok())
         });
-        if prompt.launch.is_empty() {
+        // With nothing left to launch, the card stays only for what `y` still starts.
+        if prompt.launch.is_empty() && prompt.start_only.is_empty() {
             let message = nothing_to_dispatch(&prompt.skipped);
             self.close_popup();
             self.set_message(message);
@@ -2066,18 +2116,6 @@ impl BoardModel {
         } else {
             scroll.saturating_sub(1)
         };
-    }
-
-    pub fn arm_dispatch_again(&mut self, id: Uuid) {
-        self.pending_dispatch_again = Some(id);
-    }
-
-    pub fn take_dispatch_again(&mut self, id: Uuid) -> bool {
-        self.pending_dispatch_again.take() == Some(id)
-    }
-
-    pub fn clear_dispatch_again(&mut self) {
-        self.pending_dispatch_again = None;
     }
 
     /// Present a failed board save without replacing its visible working state.
@@ -3504,12 +3542,7 @@ impl BoardModel {
     /// Open the assignee picker over `ids`: every defined profile, then **none** last.
     /// `current` (the cursor task's assignee) is preselected, else the first profile. Nothing changes
     /// until Enter.
-    pub(super) fn open_assignee_picker(
-        &mut self,
-        ids: Vec<Uuid>,
-        current: Option<String>,
-        dispatch_after: bool,
-    ) {
+    pub(super) fn open_assignee_picker(&mut self, ids: Vec<Uuid>, current: Option<String>) {
         let mut options: Vec<ListPickerOption> = self
             .agent_names
             .iter()
@@ -3538,10 +3571,7 @@ impl BoardModel {
             selected,
             query: String::new(),
             return_mode: self.input_mode,
-            assignee_target: Some(AssigneePickerTarget {
-                ids,
-                dispatch_after,
-            }),
+            assignee_target: Some(AssigneePickerTarget { ids }),
             base_target: None,
             active: None,
             tabs: None,
@@ -3780,28 +3810,6 @@ impl BoardModel {
     /// return `default` for this frame.
     pub fn default_branch_name(&self, project: &Path) -> String {
         self.default_branches.get_or_request(project)
-    }
-
-    /// `ctrl+g` on an unassigned task: the picker for that one task, armed to dispatch once a
-    /// profile choice is saved.
-    pub fn open_dispatch_assignee_picker(&mut self, target: Uuid) {
-        self.open_assignee_picker(vec![target], None, true);
-    }
-
-    /// The task the open picker would dispatch after assigning, when confirming `visible`
-    /// (an index into the filtered options) lands on a profile. `None` for every other
-    /// picker, for **none**, and for an assign-only picker.
-    pub fn assignee_picker_dispatch_target(&self, visible: usize) -> Option<Uuid> {
-        let picker = self.list_picker.as_ref()?;
-        let target = picker.assignee_target.as_ref()?;
-        if !target.dispatch_after {
-            return None;
-        }
-        let options = self.visible_list_picker_options();
-        let (_, option) = options.get(visible.min(options.len().saturating_sub(1)))?;
-        matches!(option.value, ListPickerValue::Assignee(Some(_)))
-            .then(|| target.ids.first().copied())
-            .flatten()
     }
 
     /// Close the assignee picker after its choice was applied (or refused), restoring the
@@ -4217,7 +4225,7 @@ impl BoardModel {
     }
 
     /// Mark targets when the task list owns input, otherwise the cursor target.
-    pub(super) fn verb_target_ids(&self) -> Vec<Uuid> {
+    pub fn verb_target_ids(&self) -> Vec<Uuid> {
         if self.task_list_owns_input() && self.mark_mode && !self.marked_ids.is_empty() {
             self.marked_ids.iter().copied().collect()
         } else {
@@ -6487,7 +6495,7 @@ mod tests {
         let id = create(&mut domain, "a1", project(REPO_A));
         let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(REPO_A)));
         model.agent_names = vec!["claude".to_string(), "pi".to_string()];
-        model.open_assignee_picker(vec![id], None, false);
+        model.open_assignee_picker(vec![id], None);
         assert_eq!(model.list_picker_tab(), None);
         crate::ui::board::apply_intent(
             &mut domain,

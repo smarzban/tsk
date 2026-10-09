@@ -461,3 +461,70 @@ fn a_dispatched_agent_signs_its_block_and_reply_with_tsk_agent() {
     assert!(!block.answered());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// `tsk status N started` on an assigned task that was never dispatched goes through the start
+/// route, not the old plain status flip: the task's own agent (`TSK_AGENT` names the assignee)
+/// gets a plain start, and anyone else outside Herdr gets a plain start that says why nothing
+/// launched.
+#[test]
+fn an_assigned_start_outside_herdr_starts_plainly_and_says_why() {
+    let dir = temp_state_dir("assigned-start");
+    std::fs::create_dir_all(&dir).expect("state dir");
+    std::fs::write(
+        dir.join("config.toml"),
+        "[agent.builder]\ncommand = [\"true\"]\n",
+    )
+    .expect("profiles");
+    let mut state = DomainState::new();
+    state
+        .create_assigned(
+            "assigned work",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+            Some("builder".into()),
+        )
+        .expect("seed task");
+    TaskStore::new(&dir).save(&state).expect("seed state");
+    let run = |agent: Option<&str>| {
+        let mut command = Command::new(binary());
+        command
+            .args(["status", "T1", "started"])
+            .args(["--state-dir", dir.to_str().expect("UTF-8 state dir")])
+            .env_remove("TSK_AGENT")
+            .env_remove("HERDR_ENV")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(agent) = agent {
+            command.env("TSK_AGENT", agent);
+        }
+        wait_with_output_before_deadline(command.spawn().expect("spawn"), "tsk")
+    };
+    let status = || TaskStore::new(&dir).load().expect("load").tasks()[0].status;
+
+    let own = run(Some("builder"));
+    assert_eq!(own.status.code(), Some(0), "{own:?}");
+    assert!(
+        !String::from_utf8_lossy(&own.stdout).contains("no launch"),
+        "{own:?}"
+    );
+    assert_eq!(status(), tsk_tui::domain::HumanStatus::Started);
+
+    let mut state = TaskStore::new(&dir).load().expect("load");
+    let id = state.tasks()[0].id;
+    state
+        .set_status(id, tsk_tui::domain::HumanStatus::Open)
+        .expect("reopen");
+    TaskStore::new(&dir).save(&state).expect("save");
+
+    let started = run(None);
+    assert_eq!(started.status.code(), Some(0), "{started:?}");
+    let stdout = String::from_utf8_lossy(&started.stdout);
+    assert!(stdout.starts_with("status T1 started"), "{stdout}");
+    assert!(stdout.contains("no launch: not in Herdr"), "{stdout}");
+    assert!(started.stderr.is_empty(), "{started:?}");
+    assert_eq!(status(), tsk_tui::domain::HumanStatus::Started);
+    let _ = std::fs::remove_dir_all(dir);
+}

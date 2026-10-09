@@ -169,15 +169,16 @@ pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> boo
                 | BoardIntent::File
                 | BoardIntent::LaunchUnarchive
                 | BoardIntent::PrimaryVerb
-                | BoardIntent::Dispatch
                 | BoardIntent::DispatchAgain
                 | BoardIntent::ConfirmDispatch
+                | BoardIntent::StartWithoutRelaunch
                 | BoardIntent::ConfirmCleanup
                 | BoardIntent::KeepCleanup
                 | BoardIntent::ToggleBlock
                 | BoardIntent::BlockCardConfirm
                 | BoardIntent::ReplySave
                 | BoardIntent::ReplySaveUnblock
+                | BoardIntent::ReplySaveStart
                 | BoardIntent::ToggleReview
                 | BoardIntent::ToggleStep
                 | BoardIntent::QuickAddSave
@@ -1029,15 +1030,16 @@ fn apply_board_intent(
             }
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::ReplySave | BoardIntent::ReplySaveUnblock => {
+        BoardIntent::ReplySave | BoardIntent::ReplySaveUnblock | BoardIntent::ReplySaveStart => {
             if model.input_mode != BoardInputMode::EditReply {
                 return Ok(IntentOutcome::None);
             }
-            return super::block::save_reply(
-                domain,
-                model,
-                intent == BoardIntent::ReplySaveUnblock,
-            );
+            let unblock = match intent {
+                BoardIntent::ReplySaveUnblock => Some(HumanStatus::Ready),
+                BoardIntent::ReplySaveStart => Some(HumanStatus::Started),
+                _ => None,
+            };
+            return super::block::save_reply(domain, model, unblock);
         }
         BoardIntent::BeginAddStep => {
             model.close_popup();
@@ -1633,7 +1635,7 @@ fn apply_board_intent(
                 .and_then(|id| domain.get(id))
                 .and_then(|task| task.assignee.clone());
             model.clear_message();
-            model.open_assignee_picker(ids, current, false);
+            model.open_assignee_picker(ids, current);
             return Ok(IntentOutcome::None);
         }
         BoardIntent::OpenBasePicker => {
@@ -1801,10 +1803,6 @@ fn apply_board_intent(
             let Some(target) = model.close_assignee_picker() else {
                 return Ok(IntentOutcome::None);
             };
-            // `ctrl+g` on an unassigned task: **none** leaves it exactly as it was.
-            if target.dispatch_after && assignee.is_none() {
-                return Ok(IntentOutcome::None);
-            }
             let changed = domain.assign_batch(&target.ids, assignee.clone())?;
             model.clear_marks();
             if !changed {
@@ -2056,7 +2054,7 @@ fn apply_board_intent(
             };
             domain.toggle_step(task_id, step_id)?;
         }
-        BoardIntent::Dispatch | BoardIntent::DispatchAgain => {
+        BoardIntent::DispatchAgain => {
             // Host work and its one durable save are owned by the application boundary.
             return Ok(IntentOutcome::None);
         }
@@ -2068,8 +2066,8 @@ fn apply_board_intent(
             model.cancel_cleanup_card();
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::ConfirmDispatch => {
-            // Launches and their saves are owned by the application boundary.
+        BoardIntent::ConfirmDispatch | BoardIntent::StartWithoutRelaunch => {
+            // Launches, starts, and their saves are owned by the application boundary.
             return Ok(IntentOutcome::None);
         }
         BoardIntent::CancelDispatch => {
@@ -2975,6 +2973,15 @@ fn apply_board_intent(
                     return Ok(IntentOutcome::Persist);
                 }
             }
+            // A start that dispatched comes back as a status change only: its agent is not
+            // stopped and its worktree stays.
+            let kept_running = match domain.last_undo() {
+                Some(crate::domain::UndoEntry::Start { id, .. }) => domain
+                    .get(*id)
+                    .and_then(|task| task.assignee.clone())
+                    .map(|assignee| format!("start undone · @{assignee} kept running")),
+                _ => None,
+            };
             if let Err(error) = domain.undo() {
                 if let DomainError::StaleUndo(id) = error {
                     model.sync_from_domain(domain);
@@ -2987,6 +2994,11 @@ fn apply_board_intent(
                     return Ok(IntentOutcome::None);
                 }
                 return Err(error);
+            }
+            if let Some(message) = kept_running {
+                model.sync_from_domain(domain);
+                model.set_message(message);
+                return Ok(IntentOutcome::Persist);
             }
         }
     }

@@ -225,7 +225,7 @@ fn record_mutation_at(task: &mut Task, kind: TaskEventKind, at: SystemTime) {
 }
 
 /// Document version written by this binary.
-pub const STORE_FORMAT_VERSION: u32 = 7;
+pub const STORE_FORMAT_VERSION: u32 = 8;
 
 fn default_next_notice_number() -> u64 {
     1
@@ -344,6 +344,12 @@ impl DomainState {
     /// Inspect the top undo entry without consuming it.
     pub(crate) fn last_undo(&self) -> Option<&UndoEntry> {
         self.undo_stack.last()
+    }
+
+    /// How many undo entries the stack holds.
+    #[cfg(test)]
+    pub(crate) fn undo_len(&self) -> usize {
+        self.undo_stack.len()
     }
 
     /// Pop the top undo entry after its revision guard has passed.
@@ -1023,6 +1029,67 @@ impl DomainState {
         Ok(())
     }
 
+    /// Make a start that dispatched undoable: call right after the launch is recorded. Undo
+    /// restores `previous` only; the agent keeps running and the record stays.
+    pub fn push_start_undo(&mut self, id: Uuid, previous: HumanStatus) -> Result<(), DomainError> {
+        let expected_revision = self.task_mut(id)?.revision;
+        self.undo_stack.push(UndoEntry::Start {
+            id,
+            previous,
+            expected_revision,
+        });
+        Ok(())
+    }
+
+    /// Start `ids` (plain, no launch) as one undo step: one [`UndoEntry::Start`] per task in an
+    /// [`UndoEntry::Batch`]. Tasks already started are skipped. Returns whether any changed.
+    pub fn start_batch(&mut self, ids: &[Uuid]) -> Result<bool, DomainError> {
+        let ids: Vec<_> = self
+            .prevalidate_batch_ids(ids)?
+            .into_iter()
+            .filter(|id| {
+                self.get(*id)
+                    .is_some_and(|task| task.status != HumanStatus::Started)
+            })
+            .collect();
+        if ids.is_empty() {
+            return Ok(false);
+        }
+        let mut entries = Vec::with_capacity(ids.len());
+        for id in ids {
+            let previous = self.task_mut(id)?.status;
+            self.set_status(id, HumanStatus::Started)?;
+            entries.push(UndoEntry::Start {
+                id,
+                previous,
+                expected_revision: self.task_mut(id)?.revision,
+            });
+        }
+        self.undo_stack.push(UndoEntry::Batch { entries });
+        Ok(true)
+    }
+
+    /// Reverse a start that dispatched: restore the earlier status. A start out of `blocked`
+    /// closed the block, so going back reopens that block rather than an empty one.
+    pub(crate) fn restore_unstarted(
+        &mut self,
+        id: Uuid,
+        previous: HumanStatus,
+    ) -> Result<(), DomainError> {
+        let task = self.task_mut(id)?;
+        task.status = previous;
+        if previous == HumanStatus::Blocked && task.block.is_none() {
+            if let Some(mut block) = task.past_blocks.pop() {
+                block.closed_at = None;
+                block.closed_by = None;
+                task.block = Some(block);
+            }
+        }
+        sync_block_with_status(task, SystemTime::now(), OWNER);
+        record_mutation(task, TaskEventKind::StatusSet);
+        Ok(())
+    }
+
     /// Mark the retained dispatch record cleaned without changing human status.
     pub fn record_dispatch_cleaned(&mut self, id: Uuid) -> Result<(), DomainError> {
         let task = self.task_mut(id)?;
@@ -1586,6 +1653,9 @@ impl DomainState {
                             UndoEntry::Assign { .. } => task.last_event_at(TaskEventKind::Assigned),
                             UndoEntry::SetBase { .. } => task.last_event_at(TaskEventKind::BaseSet),
                             UndoEntry::Block { .. } => task.block.as_ref().map(|block| block.at),
+                            UndoEntry::Start { .. } => {
+                                task.last_event_at(TaskEventKind::Dispatched)
+                            }
                             UndoEntry::Batch { .. } => unreachable!("batches are flattened"),
                         }
                     })

@@ -1514,7 +1514,7 @@ fn assigned_task_renders_on_the_row_and_before_thread_in_the_page_footer() {
 }
 
 #[test]
-fn assigned_task_legend_shows_dispatch_with_its_ctrl_chord() {
+fn assigned_task_legend_shows_start_and_no_dispatch_chord() {
     let mut domain = DomainState::new();
     domain
         .create_assigned(
@@ -1529,14 +1529,14 @@ fn assigned_task_legend_shows_dispatch_with_its_ctrl_chord() {
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from("/repos/atlas")));
     let board = board_rows(&model, 100, 24).join("\n");
     assert!(
-        board.contains("ctrl+s start · ctrl+g dispatch · "),
-        "the board legend must show dispatch's ctrl chord beside its siblings:\n{board}"
+        board.contains("ctrl+s start · ") && !board.contains("ctrl+g"),
+        "starting an assigned task dispatches it; there is no ctrl+g:\n{board}"
     );
     apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
     let page = board_rows(&model, 100, 24).join("\n");
     assert!(
-        page.contains("ctrl+s start · ctrl+g dispatch · "),
-        "the task page legend must show dispatch's ctrl chord:\n{page}"
+        page.contains("ctrl+s start · ") && !page.contains("ctrl+g"),
+        "the task page legend has no dispatch chord:\n{page}"
     );
 }
 

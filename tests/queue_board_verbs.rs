@@ -13,8 +13,7 @@ use ratatui::layout::Rect;
 use ratatui::Terminal;
 use tsk_tui::agents::AgentProfiles;
 use tsk_tui::app::{
-    confirm_cleanup_with_host, offer_cleanup_prompt_with_host, poll_cleanup_runs,
-    resolve_dispatch_again, CleanupOffer,
+    confirm_cleanup_with_host, offer_cleanup_prompt_with_host, poll_cleanup_runs, CleanupOffer,
 };
 use tsk_tui::context::InvocationSnapshot;
 use tsk_tui::dispatch::{
@@ -203,7 +202,7 @@ impl DispatchHost for CleanupHost {
         Ok(())
     }
 
-    fn root_pane(&mut self, _: &str) -> Result<String, String> {
+    fn root_pane(&mut self, _: &str) -> Result<String, tsk_tui::dispatch::RootPaneError> {
         Err("not used".into())
     }
 
@@ -228,7 +227,7 @@ fn mark_tasks(domain: &mut DomainState, model: &mut BoardModel, ids: &[uuid::Uui
 }
 
 #[test]
-fn dispatch_key_and_palette_route_to_the_cursor_only_verb() {
+fn ctrl_g_is_retired_and_the_palette_lists_no_dispatch_before_a_launch() {
     let (mut domain, mut model, id) = board_with_task("send it", HumanStatus::Ready);
     set_agent_profiles(&mut model, &["implementer"]);
     domain
@@ -236,24 +235,21 @@ fn dispatch_key_and_palette_route_to_the_cursor_only_verb() {
         .expect("assign task");
     model.sync_from_domain(&domain);
 
-    assert_eq!(
-        map_key(BoardInputMode::Normal, ctrl(KeyCode::Char('g'))),
-        Some(BoardIntent::Dispatch)
-    );
-    assert_eq!(
-        map_key(BoardInputMode::TaskPage, ctrl(KeyCode::Char('g'))),
-        Some(BoardIntent::Dispatch)
-    );
+    for mode in [BoardInputMode::Normal, BoardInputMode::TaskPage] {
+        assert_eq!(map_key(mode, ctrl(KeyCode::Char('g'))), None);
+        assert_eq!(
+            map_key(mode, ctrl(KeyCode::Char('s'))),
+            Some(BoardIntent::PrimaryVerb)
+        );
+    }
     let labels = model
         .available_commands()
         .into_iter()
         .map(|command| command.label)
         .collect::<Vec<_>>();
     assert!(
-        labels
-            .iter()
-            .any(|label| label == "dispatch to @implementer"),
-        "{labels:?}"
+        !labels.iter().any(|label| label.starts_with("dispatch")),
+        "starting dispatches; the palette has no dispatch entry before a launch: {labels:?}"
     );
     assert!(labels.iter().any(|label| label == "set base"), "{labels:?}");
 }
@@ -505,7 +501,7 @@ impl DispatchHost for MergeCheckHost {
         Ok(())
     }
 
-    fn root_pane(&mut self, _: &str) -> Result<String, String> {
+    fn root_pane(&mut self, _: &str) -> Result<String, tsk_tui::dispatch::RootPaneError> {
         Err("not used".into())
     }
 
@@ -1021,10 +1017,8 @@ fn dispatched_task_page_renders_the_record_and_assigned_legend() {
     model.sync_from_domain(&domain);
     let verbs = board_verb_items(&model);
     assert!(
-        verbs
-            .windows(2)
-            .any(|pair| pair[0].key == "s" && pair[1].key == "g"),
-        "assigned legend should pair start and dispatch: {verbs:?}"
+        verbs.iter().any(|verb| verb.key == "s") && verbs.iter().all(|verb| verb.key != "g"),
+        "an assigned task starts (which dispatches) with no separate dispatch verb: {verbs:?}"
     );
 
     domain
@@ -1052,20 +1046,6 @@ fn dispatched_task_page_renders_the_record_and_assigned_legend() {
     assert!(commands
         .iter()
         .all(|command| !command.label.starts_with("dispatch to @")));
-    assert_eq!(resolve_dispatch_again(&domain, &mut model, id, false), None);
-    assert_eq!(
-        model.message(),
-        Some("already dispatched at /tmp/dispatch-worktree · ctrl+g again relaunches")
-    );
-    assert_eq!(
-        resolve_dispatch_again(&domain, &mut model, id, false),
-        Some(true)
-    );
-    assert_eq!(
-        resolve_dispatch_again(&domain, &mut model, id, true),
-        Some(true),
-        "the explicit palette command does not need a second confirmation"
-    );
     apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
     let screen = rendered_board(&model, 100, 30);
     assert!(

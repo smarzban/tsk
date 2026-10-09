@@ -29,8 +29,9 @@ run `tsk` in your terminal.
 ### From task to implementation
 
 Define your agents once in `config.toml`, press `@` to assign a task, and press
-`ctrl+g` to dispatch it: tsk opens a Git worktree and Herdr workspace for the task
-and launches the agent there with the task as its brief. When the pull request is
+`ctrl+s` to start it: starting an assigned task dispatches it. tsk opens a Git
+worktree and Herdr workspace for the task and launches the agent there with the
+task as its brief. When the pull request is
 merged, `ctrl+d` completes the task and cleans up the worktree and branch, never
 touching uncommitted or unmerged work. Dispatch runs in Herdr on macOS and Linux.
 

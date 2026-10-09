@@ -26,7 +26,7 @@ use super::commands::CommandSurface;
 use super::model::{
     project_option_label, project_scope_option_label, BoardForm, BoardInputMode, BoardLocation,
     BoardModel, CleanupPrompt, CleanupRow, CleanupRowState, CleanupRun, DispatchPrompt, PickerTab,
-    ProjectScopeOption, ProjectsView,
+    ProjectScopeOption, ProjectsView, RelaunchPrompt,
 };
 use crate::ui::render::{CleanupCardLine, CleanupFooter, CleanupTitle};
 
@@ -335,13 +335,27 @@ pub(crate) fn dispatch_overlay<'a>(
     prompt: &DispatchPrompt,
     default_branch: impl Fn(&Path) -> String,
 ) -> QueueOverlay<'a> {
+    if let Some(relaunch) = &prompt.relaunch {
+        return relaunch_overlay(relaunch, prompt.scroll);
+    }
     let count = prompt.launch.len();
     let noun = if count == 1 { "task" } else { "tasks" };
-    let title = CleanupTitle {
-        full: format!("Dispatch {count} {noun}?"),
-        short: format!("Dispatch {count}?"),
-        bare: "Dispatch".into(),
-        question: format!("Dispatch {count} {noun}?"),
+    let title = if count == 0 {
+        let starts = prompt.start_only.len();
+        let noun = if starts == 1 { "task" } else { "tasks" };
+        CleanupTitle {
+            full: format!("Start {starts} {noun}?"),
+            short: format!("Start {starts}?"),
+            bare: "Start".into(),
+            question: format!("Start {starts} {noun}?"),
+        }
+    } else {
+        CleanupTitle {
+            full: format!("Dispatch {count} {noun}?"),
+            short: format!("Dispatch {count}?"),
+            bare: "Dispatch".into(),
+            question: format!("Dispatch {count} {noun}?"),
+        }
     };
     let mut lines = Vec::new();
     for eligible in &prompt.launch {
@@ -362,8 +376,25 @@ pub(crate) fn dispatch_overlay<'a>(
             value: format!("@{}  {base}{checking}", eligible.assignee),
         });
     }
+    if !prompt.start_only.is_empty() {
+        lines.push(CleanupCardLine::Text("start only".into()));
+        for (identifier, id) in &prompt.start_only {
+            let value =
+                if let Some((_, reason)) = prompt.no_launch.iter().find(|(row, _)| row == id) {
+                    format!("started · no launch: {reason}")
+                } else if prompt.corrections.contains(id) {
+                    "status correction, no launch".to_string()
+                } else {
+                    "started, no launch".to_string()
+                };
+            lines.push(CleanupCardLine::Field {
+                label: identifier.clone(),
+                value,
+            });
+        }
+    }
     if !prompt.skipped.is_empty() {
-        lines.push(CleanupCardLine::Text("skipped".into()));
+        lines.push(CleanupCardLine::Text("not started".into()));
         for (identifier, reason) in &prompt.skipped {
             lines.push(CleanupCardLine::Field {
                 label: identifier.clone(),
@@ -376,6 +407,31 @@ pub(crate) fn dispatch_overlay<'a>(
         lines,
         footer: CleanupFooter::Dispatch(count),
         scroll: prompt.scroll,
+    }
+}
+
+/// The relaunch card: one cursor task whose dispatched agent is gone.
+fn relaunch_overlay<'a>(prompt: &RelaunchPrompt, scroll: usize) -> QueueOverlay<'a> {
+    let number = prompt.number;
+    let assignee = &prompt.assignee;
+    let title = CleanupTitle {
+        full: format!("T{number} · relaunch @{assignee}?"),
+        short: format!("Relaunch @{assignee}?"),
+        bare: format!("T{number}"),
+        question: format!("Relaunch @{assignee}?"),
+    };
+    let lines = vec![
+        CleanupCardLine::Text(format!("@{assignee} is no longer running.")),
+        CleanupCardLine::Field {
+            label: "worktree".into(),
+            value: prompt.worktree.clone(),
+        },
+    ];
+    QueueOverlay::CleanupConfirm {
+        title,
+        lines,
+        footer: CleanupFooter::Relaunch,
+        scroll,
     }
 }
 
@@ -621,7 +677,7 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
     let mut entries = Vec::with_capacity(6);
     if let Some(task) = selected_task {
         entries.push(OPEN);
-        entries.extend(task_status_verbs(task));
+        entries.extend(status_verbs(task.status));
         // Add is useful from the backlog and inbox, but the status-heavy in-motion and
         // done legends use that seat for their truthful lifecycle actions.
         if !matches!(task.status, HumanStatus::Started | HumanStatus::Done) {
@@ -690,24 +746,6 @@ fn status_verbs(status: HumanStatus) -> Vec<VerbEntry<'static>> {
     }
 }
 
-fn task_status_verbs(task: &crate::domain::Task) -> Vec<VerbEntry<'static>> {
-    let mut verbs = status_verbs(task.status);
-    if task.assignee.is_some() && task.status != HumanStatus::Done {
-        let after_start = verbs
-            .iter()
-            .position(|verb| verb.key == "s")
-            .map_or(verbs.len(), |index| index + 1);
-        verbs.insert(
-            after_start,
-            VerbEntry {
-                key: "g",
-                label: "dispatch",
-            },
-        );
-    }
-    verbs
-}
-
 fn task_page_verb_items(model: &BoardModel, task: &crate::domain::Task) -> Vec<VerbEntry<'static>> {
     // A parked edit session (dirty draft, no editor open) is about saving or discarding.
     if model.task_editing() {
@@ -731,7 +769,7 @@ fn task_page_verb_items(model: &BoardModel, task: &crate::domain::Task) -> Vec<V
         key: "e",
         label: "edit",
     });
-    entries.extend(task_status_verbs(task));
+    entries.extend(status_verbs(task.status));
     entries.push(VerbEntry {
         key: "esc",
         label: "close",

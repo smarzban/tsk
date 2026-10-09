@@ -91,7 +91,10 @@ impl DispatchHost for FakeHost {
         Ok(())
     }
 
-    fn root_pane(&mut self, _workspace_id: &str) -> Result<String, String> {
+    fn root_pane(
+        &mut self,
+        _workspace_id: &str,
+    ) -> Result<String, tsk_tui::dispatch::RootPaneError> {
         Ok("pane-1".into())
     }
 
@@ -811,7 +814,10 @@ impl DispatchHost for AgentWritesOnClose {
     ) -> Result<CreatedWorktree, String> {
         self.inner.create_worktree(project, branch, base, label)
     }
-    fn root_pane(&mut self, workspace_id: &str) -> Result<String, String> {
+    fn root_pane(
+        &mut self,
+        workspace_id: &str,
+    ) -> Result<String, tsk_tui::dispatch::RootPaneError> {
         self.inner.root_pane(workspace_id)
     }
     fn run_in_pane(&mut self, pane_id: &str, command: &str) -> Result<(), String> {
@@ -1403,7 +1409,7 @@ impl DispatchHost for AdvancingCleanupHost {
     ) -> Result<CreatedWorktree, String> {
         unreachable!()
     }
-    fn root_pane(&mut self, _: &str) -> Result<String, String> {
+    fn root_pane(&mut self, _: &str) -> Result<String, tsk_tui::dispatch::RootPaneError> {
         unreachable!()
     }
     fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {

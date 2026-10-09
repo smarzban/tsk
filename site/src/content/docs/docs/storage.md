@@ -3,7 +3,7 @@ title: Storage
 description: Task data, backups, deleted tasks, and update checks.
 ---
 
-The board, CLI, and Herdr plugin share one store. The current store format is v7.
+The board, CLI, and Herdr plugin share one store. The current store format is v8.
 
 ## Location
 
@@ -58,12 +58,12 @@ The command and prompt templates support `{number}`, `{title}`, `{notes}`, `{ste
 | --- | --- |
 | `tsk.json` | Current tasks and archived-project records |
 | `tsk.json.1` | Previous valid task document |
-| `tsk.json.v<N>` | Backup made when migrating an older store format, such as `tsk.json.v6` for the v6 → v7 migration |
+| `tsk.json.v<N>` | Backup made when migrating an older store format, such as `tsk.json.v7` for the v7 → v8 migration |
 | `config.toml` | Settings, including agent launch profiles, seeded with commented examples on the first full board open |
 | `delivery.json` | Which starter tasks this install has received or dismissed, and the newest release note it has seen |
 | `launchers\`, `cleanups\` | Windows only: dispatch launchers and cleanup progress |
 
-An older binary refuses a newer or unversioned store instead of rewriting it. Use a compatible tsk version to open it. On first save, older stores migrate to v7. v6 added task assignees, dispatch base branches, and dispatch records; v7 adds blocks (why, needs, options, what the block waits on, and replies) and the block undo step. The original document is saved as `tsk.json.v<N>`, for example `tsk.json.v5` from v0.11. A blocked task from an older store keeps its status with no block and reads as blocked on you. Earlier stores still run through each migration in order, including v5 batch undo and the v3 to v4 move from ready to open.
+An older binary refuses a newer or unversioned store instead of rewriting it. Use a compatible tsk version to open it. On first save, older stores migrate to v8. v6 added task assignees, dispatch base branches, and dispatch records; v7 added blocks (why, needs, options, what the block waits on, and replies) and the block undo step; v8 adds the undo step for a start that dispatched. The original document is saved as `tsk.json.v<N>`, for example `tsk.json.v5` from v0.11. A blocked task from an older store keeps its status with no block and reads as blocked on you. Earlier stores still run through each migration in order, including v5 batch undo and the v3 to v4 move from ready to open.
 
 Archived tasks stay in the task document with their existing status. [Archive and restore](/docs/board/#archive).
 

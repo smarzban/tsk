@@ -315,7 +315,6 @@ fn verb_intent(model: &BoardModel, index: usize) -> Option<BoardIntent> {
         "enter" if model.input_mode() == BoardInputMode::EditStep => Some(BoardIntent::ConfirmEdit),
         "enter" if model.input_mode() == BoardInputMode::Search => Some(BoardIntent::PinSearch),
         "s" => Some(BoardIntent::PrimaryVerb),
-        "g" => Some(BoardIntent::Dispatch),
         "enter" => Some(BoardIntent::OpenTaskPage),
         "d" => Some(BoardIntent::Complete),
         "n" => Some(BoardIntent::SetStatus(HumanStatus::Ready)),
@@ -959,6 +958,21 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::CleanupOption(0)) => Some(BoardIntent::KeepCleanup),
             _ => None,
         },
+        // The relaunch card: `y relaunch`, `n just start`, `esc cancel`.
+        BoardInputMode::DispatchConfirm
+            if model
+                .dispatch_prompt()
+                .is_some_and(|prompt| prompt.relaunch.is_some()) =>
+        {
+            match hit_at(hits, pos) {
+                Some(QueueHitTarget::ModalClose | QueueHitTarget::CleanupOption(2)) => {
+                    Some(BoardIntent::CancelDispatch)
+                }
+                Some(QueueHitTarget::CleanupOption(0)) => Some(BoardIntent::ConfirmDispatch),
+                Some(QueueHitTarget::CleanupOption(1)) => Some(BoardIntent::StartWithoutRelaunch),
+                _ => None,
+            }
+        }
         // `[x]` and `esc cancel` cancel, `y dispatch` launches.
         BoardInputMode::DispatchConfirm => match hit_at(hits, pos) {
             Some(QueueHitTarget::ModalClose | QueueHitTarget::CleanupOption(1)) => {

@@ -21,7 +21,6 @@ The page opens in view mode.
 | --- | --- |
 | Edit title, or the selected step | `ctrl+e` |
 | Edit notes | `ctrl+e`, then `Tab` |
-| Dispatch to the assigned agent; press twice to relaunch. Unassigned: pick an agent, then dispatch | `ctrl+g` |
 | Assign: pick an agent profile or **none** | `@` |
 | Move through editable fields | `Tab` / `Shift+Tab`, after starting an edit |
 | Save the task edit | `Shift+Enter` |
@@ -80,7 +79,7 @@ In view mode `Tab` walks the heading, the options, and the replies before the st
 | Reply | `r` |
 | Reply with an option, prefilled | `Enter` on the option |
 | Save the reply | `Shift+Enter` |
-| Save the reply and unblock to ready | `ctrl+s` |
+| Save the reply and unblock: to ready, or for an assigned task to started (a [start](/docs/board/#dispatch) that may dispatch or relaunch) | `ctrl+s` |
 | New line in the reply | `Enter` |
 | Cancel the reply | `Esc` |
 | Edit why, on, and needs (heading selected) | `ctrl+e` |
@@ -91,7 +90,7 @@ The reply box opens under the last reply and wraps like the notes. It belongs to
 
 ## Status and steps
 
-In task view, status shortcuts act on the open task even when a step is selected. `ctrl+g` dispatches that task to its assigned agent; on an existing dispatch, the first press asks and the second relaunches. `ctrl+d` on a live dispatch offers [cleanup](/docs/board/#complete-and-clean-up) as it completes the task. Multi-select and marks retained from the board are ignored and clear when an action runs. `ctrl+n` sets ready and `ctrl+o` sets open; `ctrl+s` starts an open or ready task. `Enter` toggles the selected step only.
+In task view, status shortcuts act on the open task even when a step is selected. `ctrl+s` on an assigned task dispatches it to its agent; on a dispatched task whose agent is gone it asks before relaunching ([Relaunch](/docs/board/#relaunch)). To hand the task over, assign it with `@`, then press `ctrl+s`. `ctrl+d` on a live dispatch offers [cleanup](/docs/board/#complete-and-clean-up) as it completes the task. Multi-select and marks retained from the board are ignored and clear when an action runs. `ctrl+n` sets ready and `ctrl+o` sets open; `ctrl+s` starts an open or ready task. `Enter` toggles the selected step only.
 
 While editing a field, use its edit keys. Save or cancel to return to the task's status actions.
 

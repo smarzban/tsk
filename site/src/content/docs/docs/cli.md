@@ -15,7 +15,7 @@ tsk list
 Install the skill with `tsk setup pi`, or use your [agent's setup target](#setup). `tsk guide` prints the workflow.
 
 1. Read the task with `tsk list T12`.
-2. Set its status with `tsk status T12 started` (or `ready` to pick it from the inbox).
+2. Set its status with `tsk status T12 started --no-dispatch` when you are doing the work yourself (or `ready` to pick it from the inbox). A plain `started` on an assigned task launches its agent.
 3. Update notes or steps as work progresses.
 4. Set `review`, `blocked`, `open`, or `done` explicitly. Block with your question: `tsk status T12 blocked --why "…"`, and read the answers under `block.replies` in `tsk list T12 --json` (once it is unblocked or relaunched, in the last `past_blocks` entry).
 
@@ -195,6 +195,7 @@ JSON returns an array with `id`, `number`, `title`, `status`, `project`, `assign
 tsk status T12 open
 tsk status T12 ready
 tsk status T12 started
+tsk status T12 started --no-dispatch
 tsk status T12 review
 tsk status T12 done --clean
 ```
@@ -204,6 +205,26 @@ Accepts `open`, `ready`, `started` (or `start`), `blocked`, `review`, and `done`
 Unlike keyboard toggles, this command sets the requested status directly. Repeating the same value is safe. `--clean` is valid only with `done`: tsk saves done first, then runs [`tsk clean`](#clean) when the task has a live dispatch. With no dispatch, or one already cleaned, it exits 0 and prints `nothing to clean`. A real cleanup refusal (such as `dirty-worktree`) exits 1 and leaves the task done.
 
 Output: `status T12 <status> <title>`. The output uses `started`, even when the input was `start`.
+
+### Start
+
+`started` does what `ctrl+s` does on the board, so starting an assigned task gets its agent going:
+
+| Task | `tsk status T12 started` |
+| --- | --- |
+| Unassigned, already started, done, or archived | Sets the status |
+| Assigned, never dispatched | [Dispatches](#dispatch) it, which sets `started`, and prints a second line, `dispatched T12 to @claude in /path/to/worktree` |
+| Dispatched, agent still running, or Herdr cannot say | Sets the status |
+| Dispatched, agent gone | Refuses with `agent-gone` and changes nothing |
+| Assigned, never dispatched, but outside Herdr or a desk task | Sets the status, exits 0, and prints a second line, `no launch: not in Herdr` or `no launch: desk task has no repository` |
+| Run by the task's own dispatched agent (`TSK_AGENT` names the assignee) | Sets the status; never launches another copy |
+
+| Flag | Effect |
+| --- | --- |
+| `--no-dispatch` | Only set the status, never launch |
+| `--again` | Relaunch a dispatched task whose agent is gone, as `tsk dispatch --again` does |
+
+Both flags are valid only with `started`, and not together. Any other launch refusal (such as `unknown-agent` or `needs-git-project`) leaves the task unstarted and exits 1. `tsk dispatch` remains the explicit form, with `--base`.
 
 ### Block with a reason
 
@@ -264,11 +285,11 @@ tsk dispatch T12 --base dispatch
 
 Launches an assigned task's agent in its own Git worktree and Herdr workspace, then sets the task to `started`. It needs Herdr (on Windows a [preview](/docs/board/#dispatch-on-windows-preview) that runs a PowerShell launcher and refuses with `unsupported-platform` when Windows PowerShell is missing, and with `unsafe-state-dir`, naming the character, when the state directory holds one the pane's shell would expand), a task in a project that is a Git repository, and an assignee with a profile in [`config.toml`](/docs/storage/#agent-profiles).
 
-tsk creates a branch and worktree from the base, opens a Herdr workspace there, and runs the profile's rendered command in its root pane. Only after the launch succeeds does it save the dispatch record and set `started`, in one write. Dispatch is not undoable. Names follow the task number and title, as on the [board](/docs/board/#dispatch): branch `tsk/t12-fix-login-timeout`, worktree directory `tsk-t12-fix-login-timeout`, workspace `T12 Fix login timeout`, with `-2`, `-3` appended when a name is taken. tsk then names the agent `t12-<assignee>` once Herdr detects it, so `herdr agent get t12-claude` finds it. The command returns right away and a background tsk process does the naming; an agent Herdr does not detect within 30 seconds stays unnamed and the dispatch still succeeds.
+tsk creates a branch and worktree from the base, opens a Herdr workspace there, and runs the profile's rendered command in its root pane. Only after the launch succeeds does it save the dispatch record and set `started`, in one write. `tsk dispatch` is not undoable. [`tsk status T12 started`](#start) dispatches an assigned task the same way. Names follow the task number and title, as on the [board](/docs/board/#dispatch): branch `tsk/t12-fix-login-timeout`, worktree directory `tsk-t12-fix-login-timeout`, workspace `T12 Fix login timeout`, with `-2`, `-3` appended when a name is taken. tsk then names the agent `t12-<assignee>` once Herdr detects it, so `herdr agent get t12-claude` finds it. The command returns right away and a background tsk process does the naming; an agent Herdr does not detect within 30 seconds stays unnamed and the dispatch still succeeds.
 
 The base is the one-off `--base <branch>` when given, then the task's `base`, otherwise the repository's default branch (`origin/HEAD`), never the branch checked out where you run the command. `--base` does not change the task. A base must be an existing local or remote branch in the task's repository, not a tag or commit; an unknown branch refuses with `unknown-base`, and with no base given, a repository without `origin/HEAD` refuses with `no-default-base`. tsk fetches the base's remote first unless it was fetched in the last 60 seconds ([fetch window](/docs/storage/#fetch-window)), so a newly pushed branch works; this also applies when `tsk add` or `tsk edit` sets a remote branch as the base. A local branch that tracks a remote starts from the remote branch. Offline, dispatch starts from the local copy and says so. `{base}` in agent templates is the short branch name, such as `dispatch` for `origin/dispatch`.
 
-A dispatched task refuses with `already-dispatched`. `--again` relaunches deliberately: it reruns the command in the recorded workspace and keeps the recorded base, ignoring `--base` and later changes to the task's base. After a cleanup it recreates the worktree, reopening the kept branch or recreating a deleted one from its original starting commit. Status changes never remove the record.
+A dispatched task refuses with `already-dispatched`. `--again` relaunches deliberately: it reruns the command in the recorded workspace (or, if that workspace was closed, a new one on the kept worktree) and keeps the recorded base, ignoring `--base` and later changes to the task's base. After a cleanup it recreates the worktree, reopening the kept branch or recreating a deleted one from its original starting commit. Status changes never remove the record.
 
 Output: `dispatched T12 to @implementer in /path/to/worktree`. On Windows with Git's `core.longpaths` off, a warning line says how to turn it on; the dispatch still succeeds.
 
@@ -446,7 +467,7 @@ After an uncertain add, inspect `tsk list --all --json`. Also check `--done` and
 | Dispatch | `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `unsupported-platform`, `unsafe-state-dir`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, `unknown-base`, `no-default-base`, `herdr-failed` |
 | Clean | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`, `herdr-failed` |
 | Steps | `empty-step-text`, `invalid-step-text`, `unknown-task`, `soft-deleted-task`, `unknown-step`, `ambiguous-step` |
-| Status | `unknown-task`, `soft-deleted-task`, `text-too-long`, `invalid-blocker`; with `--clean`, cleanup codes above except `not-dispatched` and `already-cleaned` |
+| Status | `unknown-task`, `soft-deleted-task`, `text-too-long`, `invalid-blocker`; `started` adds `agent-gone` and the launch codes `unknown-agent`, `agent-config`, `unsupported-platform`, `unsafe-state-dir`, `needs-git-project`, `unknown-base`, `no-default-base`, `herdr-failed`; with `--clean`, cleanup codes above except `not-dispatched` and `already-cleaned` |
 | Reply | `unknown-task`, `soft-deleted-task`, `not-blocked`, `empty-reply`, `text-too-long` |
 | Archive / unarchive | `unknown-task`, `soft-deleted-task` |
 

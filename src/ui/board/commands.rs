@@ -67,7 +67,7 @@ impl BoardModel {
         let mut commands = Vec::new();
         if self.selected_id().is_some() {
             // the tail: set status x4, edit notes, change scope, assignment and optional
-            // dispatch, then shared tail. No park / resume / link entries.
+            // relaunch, then shared tail. No park / resume / link entries.
             commands.extend([
                 command(
                     "set status: ready",
@@ -94,27 +94,14 @@ impl BoardModel {
                 command("set assignee", BoardIntent::OpenAssigneePicker),
                 command("set base", BoardIntent::OpenBasePicker),
             ]);
-            // With marks, dispatch opens the bulk card for the set; dispatch again stays
-            // cursor-only.
-            let marked = self.mark_mode_active() && self.marked_count() > 0;
-            if marked {
-                commands.push(command(
-                    format!("dispatch {} marked", self.marked_count()),
-                    BoardIntent::Dispatch,
-                ));
-            }
-            if let Some(task) = self
+            // Starting dispatches an assigned task (`set status: started`, `ctrl+s`); dispatch
+            // again is the explicit, cursor-only relaunch.
+            if self
                 .selected_id()
                 .and_then(|id| self.tasks.iter().find(|task| task.id == id))
+                .is_some_and(|task| task.dispatch.is_some())
             {
-                if task.dispatch.is_some() {
-                    commands.push(command("dispatch again", BoardIntent::DispatchAgain));
-                } else if let (false, Some(assignee)) = (marked, task.assignee.as_deref()) {
-                    commands.push(command(
-                        format!("dispatch to @{assignee}"),
-                        BoardIntent::Dispatch,
-                    ));
-                }
+                commands.push(command("dispatch again", BoardIntent::DispatchAgain));
             }
         }
         // Always-available board commands, then selection-gated delete when present.
