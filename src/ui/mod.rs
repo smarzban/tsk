@@ -67,7 +67,7 @@ pub(crate) fn present_line(value: &str, max_width: usize) -> String {
 /// ([`present_lines`] and [`edit::escaped_draft_rows`]), the paste flattening
 /// ([`edit::flatten_line_breaks`]), and the line movements, which bound the current
 /// line by the same characters so Home and End stay on the row the draft is painted on.
-/// They have to agree, because stores a pasted break
+/// They have to agree, because the store keeps a pasted break
 /// **verbatim** in a Notes draft: a note pasted from a CRLF source is stored with its pairs,
 /// so a presenter that only knew `'\n'` would leave a `\u{000d}` escape dangling at the end
 /// of every rendered line, and would not split a lone-`\r` note at all.
