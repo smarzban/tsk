@@ -1,17 +1,4 @@
 //! Selection Anchor: keep the selected task id stable across section rebuilds.
-//!
-//! # `reanchor` signature
-//!
-//! ```text
-//! reanchor(previous: Option<Uuid>, previous_visible: &[Uuid], new_visible: &[Uuid]) -> Option<Uuid>
-//! ```
-//!
-//! Three arguments (not the two-arg plan sketch) so "nearest" can use the prior
-//! visible order: when `previous` left the set, scan outward from its prior index
-//! for a surviving id, preferring the preceding id when distances tie. If the
-//! prior anchor is absent, fall back to the first new id. Seeding when `previous`
-//! is `None` is deferred to BoardModel open and is out of this pure helper
-//! (returns `None`).
 
 use uuid::Uuid;
 

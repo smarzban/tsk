@@ -2,7 +2,7 @@
 
 use ratatui::layout::Rect;
 
-/// Layout tier for the queue board (the: standard + compact; wide is not returned).
+/// Layout tier for the queue board: Standard or Compact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
     Standard,
@@ -153,7 +153,7 @@ const STANDARD_META_COLUMN_WIDTH: u16 = 36;
 /// Map terminal dimensions to a tier and frame geometry.
 ///
 /// Standard when width ≥ 78 and height ≥ 24; otherwise compact. Width ≥ 120 still
-/// reports standard in the (wide is not returned). Any size yields a geometry;
+/// reports Standard; there is no wide tier here. Any size yields a geometry;
 /// callers may pass values below 1×1 and still receive a non-panicking result.
 pub fn resolve(width: u16, height: u16) -> TierGeometry {
     let tier = if width >= STANDARD_MIN_WIDTH && height >= 24 {
@@ -414,7 +414,7 @@ mod tests {
                 narrowed.row_width,
                 "{w}x{h} scrollbar shrink must rebalance title+meta"
             );
-            // Width ≥ 120 still reports standard in the (wide deferred).
+            // Width ≥ 120 still reports Standard; there is no wide tier here.
             if w >= 120 {
                 assert_eq!(g.tier, Tier::Standard, "wide not returned in M1 at {w}x{h}");
             }

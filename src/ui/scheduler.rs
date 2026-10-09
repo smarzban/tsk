@@ -1,6 +1,4 @@
 //! Frame Scheduler: adaptive input-wait duration.
-//!
-//! Pure helper only — app loop wiring is.
 
 use std::time::Duration;
 
@@ -150,7 +148,6 @@ mod tests {
 
     #[test]
     fn no_sustained_sub_25ms_wait_while_animation_set_empty() {
-        // Sweep bases because a sustained-loop property is verified by.
         for base in [
             Duration::from_millis(5),
             Duration::from_millis(25),
