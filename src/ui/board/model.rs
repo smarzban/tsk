@@ -1748,8 +1748,6 @@ pub enum SaveResolution {
 }
 
 impl BoardModel {
-    /// Build a board model with queue-local session state only. The desk is the
-    /// default destination; [`Self::from_domain`] applies directory-aware startup.
     /// The time every painted age is measured against.
     pub fn now(&self) -> SystemTime {
         self.clock.unwrap_or_else(SystemTime::now)
@@ -1763,6 +1761,8 @@ impl BoardModel {
         }
     }
 
+    /// Build a board model with queue-local session state only. The desk is the
+    /// default destination; [`Self::from_domain`] applies directory-aware startup.
     pub fn from_tasks(tasks: Vec<Task>, this_repo: Option<PathBuf>) -> Self {
         let mut model = Self {
             clock: None,
@@ -2747,6 +2747,8 @@ impl BoardModel {
     }
 
     /// Mutable board session that owns keyboard, mouse, and modal dispatch.
+    // Public only so tests/demo_parity.rs can drive the project preview seat.
+    #[doc(hidden)]
     pub fn input_target_mut(&mut self) -> &mut BoardModel {
         if self.project_right_seat_focused() {
             self.right_seat
