@@ -707,7 +707,10 @@ fn list_all_groups_each_status_by_concise_scope_for_every_filter() {
                 .keys()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
-            vec!["assignee", "base", "id", "number", "project", "status", "thread", "title"]
+            vec![
+                "after", "assignee", "base", "before", "id", "number", "project", "status",
+                "thread", "title"
+            ]
         );
     }
     let done_human = list(&[
@@ -1579,6 +1582,8 @@ fn list_equals_project_form_accepts_dash_leading_scope() {
             "assignee": null,
             "base": null,
             "thread": null,
+            "after": [],
+            "before": [],
         })]
     );
 
@@ -1764,7 +1769,7 @@ fn list_task_prints_step_lines_with_state_and_short_id() {
     ]);
     assert_eq!(json.code, 0);
     let expected_json = format!(
-        "[{{\"id\":\"{}\",\"number\":1,\"project\":null,\"status\":\"open\",\"title\":\"steps target\",\"notes\":\"First note\\nSecond note\",\"steps\":[{{\"id\":\"{}\",\"done\":true,\"short_id\":\"aaa1\",\"text\":\"First step\"}},{{\"id\":\"aaa22222-0000-4000-8000-000000000002\",\"done\":false,\"short_id\":\"aaa2\",\"text\":\"Second step\"}}],\"assignee\":null,\"base\":null,\"thread\":\"release\",\"activity\":",
+        "[{{\"id\":\"{}\",\"number\":1,\"project\":null,\"status\":\"open\",\"title\":\"steps target\",\"notes\":\"First note\\nSecond note\",\"steps\":[{{\"id\":\"{}\",\"done\":true,\"short_id\":\"aaa1\",\"text\":\"First step\"}},{{\"id\":\"aaa22222-0000-4000-8000-000000000002\",\"done\":false,\"short_id\":\"aaa2\",\"text\":\"Second step\"}}],\"assignee\":null,\"base\":null,\"thread\":\"release\",\"after\":[],\"before\":[],\"activity\":",
         task, first_step.id
     );
     assert_eq!(
