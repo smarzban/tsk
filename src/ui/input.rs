@@ -342,6 +342,12 @@ pub enum BoardIntent {
     /// Block card `←`/`→`: cycle the on choice on that field, move the caret elsewhere.
     BlockCardLeft,
     BlockCardRight,
+    /// Review card `shift+enter` in the check field: start the next check.
+    BlockCardNewline,
+    /// Task page `Enter` on a review check: cycle it open → passed → failed.
+    CycleCheck,
+    /// Task page `Enter` on the `N passed` line: unfold or fold the passed checks.
+    TogglePassedChecks,
     /// Task page `r`: open the reply box under the last reply of the open block.
     BeginReply,
     /// Task page `Enter` on a block option: open the reply box prefilled with it.
@@ -353,7 +359,16 @@ pub enum BoardIntent {
     /// The application boundary's form of `ReplySaveUnblock` when the task's agent is still
     /// running: store the reply and start the task instead of making it ready. No key maps here.
     ReplySaveStart,
-    /// `ctrl+r` — toggle review ↔ ready. Reducer lands in.
+    /// The application boundary's form of a review's `ctrl+s` when a dispatch or relaunch
+    /// starts the task after this save: store any feedback (an empty box needs a failed check)
+    /// and leave the status to the launch. No key maps here.
+    ReplySaveBeforeLaunch,
+    /// Feedback box `ctrl+d` on a review: store any feedback and approve (done).
+    ReplyApprove,
+    /// The application boundary's form of `ReplyApprove` once the feedback is stored and no
+    /// cleanup card applies: complete this one task. No key maps here.
+    ApproveReview(uuid::Uuid),
+    /// `ctrl+r` — put work up for review with the review card, or return a review to ready.
     ToggleReview,
     /// Help card: edit its focused search query or scroll the filtered key list.
     HelpQueryInsert(char),
@@ -554,12 +569,13 @@ const NORMAL_KEYMAP: &[NormalKeyEntry] = &[
         help_label: "assign",
         modifier: NormalModifier::Bare,
     },
-    // `r` opens the reply box under a blocked row: an editor like `@`'s picker, so bare.
+    // `r` opens the reply box under a blocked row (the feedback box under a review row): an
+    // editor like `@`'s picker, so bare.
     NormalKeyEntry {
         code: KeyCode::Char('r'),
         intent: BoardIntent::BeginReply,
         help_chord: "r",
-        help_label: "reply (blocked)",
+        help_label: "reply (blocked) / feedback (review)",
         modifier: NormalModifier::Bare,
     },
     NormalKeyEntry {
@@ -955,10 +971,28 @@ fn help_bindings() -> Vec<HelpBinding> {
             "answer question blocked",
         ),
         help_binding(
+            HelpGroup::TaskActions,
+            "enter (check)",
+            "cycle open → passed → failed",
+            "review check pass fail",
+        ),
+        help_binding(
+            HelpGroup::TaskActions,
+            "enter (n passed)",
+            "show or fold passed checks (task page)",
+            "review check",
+        ),
+        help_binding(
             HelpGroup::CreateEdit,
             "ctrl+e (blocked)",
             "edit why, on, needs / your reply",
             "block reason question",
+        ),
+        help_binding(
+            HelpGroup::CreateEdit,
+            "ctrl+e (review)",
+            "edit the review / your feedback",
+            "review check",
         ),
         help_binding(
             HelpGroup::SurfaceControls,
@@ -974,9 +1008,33 @@ fn help_bindings() -> Vec<HelpBinding> {
         ),
         help_binding(
             HelpGroup::SurfaceControls,
+            "ctrl+s (feedback)",
+            "send back to the agent (started)",
+            "review send back started",
+        ),
+        help_binding(
+            HelpGroup::SurfaceControls,
+            "ctrl+d (feedback)",
+            "approve: done",
+            "review approve done",
+        ),
+        help_binding(
+            HelpGroup::SurfaceControls,
             "tab (block card)",
             "why · on · needs",
             "block reason question",
+        ),
+        help_binding(
+            HelpGroup::SurfaceControls,
+            "tab (review card)",
+            "done · check · next · on",
+            "review check",
+        ),
+        help_binding(
+            HelpGroup::SurfaceControls,
+            "shift+enter (review card)",
+            "new check line",
+            "review check",
         ),
         help_binding(
             HelpGroup::Navigation,
@@ -1926,11 +1984,17 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::BlockCardPrevField
         | BoardIntent::BlockCardLeft
         | BoardIntent::BlockCardRight
+        | BoardIntent::BlockCardNewline
+        | BoardIntent::CycleCheck
+        | BoardIntent::TogglePassedChecks
         | BoardIntent::BeginReply
         | BoardIntent::ReplyWithOption
         | BoardIntent::ReplySave
         | BoardIntent::ReplySaveUnblock
         | BoardIntent::ReplySaveStart
+        | BoardIntent::ReplySaveBeforeLaunch
+        | BoardIntent::ReplyApprove
+        | BoardIntent::ApproveReview(_)
         | BoardIntent::ToggleReview
         | BoardIntent::HelpQueryInsert(_)
         | BoardIntent::HelpQueryInsertText(_)
@@ -2090,6 +2154,9 @@ fn map_block_card(key: KeyEvent) -> Option<BoardIntent> {
             Some(BoardIntent::BlockCardCancel)
         }
         KeyCode::Esc if !extra => Some(BoardIntent::BlockCardCancel),
+        KeyCode::Enter if !extra && mods.contains(KeyModifiers::SHIFT) => {
+            Some(BoardIntent::BlockCardNewline)
+        }
         KeyCode::Enter if !extra => Some(BoardIntent::BlockCardConfirm),
         KeyCode::Tab if !extra => Some(BoardIntent::BlockCardNextField),
         KeyCode::BackTab if !extra => Some(BoardIntent::BlockCardPrevField),
@@ -2100,7 +2167,8 @@ fn map_block_card(key: KeyEvent) -> Option<BoardIntent> {
 }
 
 /// The reply box: a multi-line draft. Shift+Enter stores the reply, Ctrl+S stores it and
-/// unblocks the task, Enter breaks the line, Esc cancels.
+/// unblocks the task (sends a review back), Ctrl+D approves a review, Enter breaks the line,
+/// Esc cancels.
 fn map_reply_edit(key: KeyEvent) -> Option<BoardIntent> {
     let mods = key.modifiers;
     let only_ctrl = mods.contains(KeyModifiers::CONTROL)
@@ -2115,6 +2183,7 @@ fn map_reply_edit(key: KeyEvent) -> Option<BoardIntent> {
             Some(BoardIntent::ReplySave)
         }
         KeyCode::Char('s') if only_ctrl => Some(BoardIntent::ReplySaveUnblock),
+        KeyCode::Char('d') if only_ctrl => Some(BoardIntent::ReplyApprove),
         _ => map_form_edit_key(CaptureField::Notes, FormEditNavigation::None, false, key),
     }
 }

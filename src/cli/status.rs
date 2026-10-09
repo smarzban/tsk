@@ -2,11 +2,12 @@
 
 use std::path::PathBuf;
 
+use crate::agents::AgentProfiles;
 use crate::cli::parser::{BlockFlags, TaskAddress};
 use crate::dispatch::{self, DispatchError, DispatchHost, DispatchResult, StartRoute};
 use crate::domain::{
-    actor_from_env, BlockDraft, BlockField, BlockOn, BlockPatch, DomainError, DomainState,
-    HumanStatus,
+    actor_from_env, normalize_thread, BlockDraft, BlockField, BlockKind, BlockOn, BlockPatch,
+    DomainError, DomainState, HumanStatus, ReviewDraft, ReviewPatch, OWNER,
 };
 use crate::store::{default_state_dir, TaskStore};
 use uuid::Uuid;
@@ -52,6 +53,7 @@ impl StatusError {
 /// Set one task's human status. Repeating the same status is idempotent.
 ///
 /// With `blocked`, the block flags open a block, or edit the task's open block in place.
+/// With `review`, the review flags open a review round, or edit the open round in place.
 /// Soft-deleted and unknown tasks refuse the same way as archive.
 pub fn run(
     target: TaskAddress,
@@ -59,7 +61,13 @@ pub fn run(
     block: BlockFlags,
     state_dir: Option<PathBuf>,
 ) -> Result<StatusResult, StatusError> {
-    let store = TaskStore::new(state_dir.unwrap_or_else(default_state_dir));
+    let state_dir = state_dir.unwrap_or_else(default_state_dir);
+    // A review handed to another agent names its profile. A malformed config never blocks
+    // the status change: the name is then kept as plain text.
+    let review_on = (status == HumanStatus::Review)
+        .then(|| block.on.as_deref().map(|on| review_on(on, &state_dir)))
+        .flatten();
+    let store = TaskStore::new(state_dir);
     let actor = actor_from_env();
     store
         .locked_transition_if_changed(|state: &mut DomainState| {
@@ -73,9 +81,16 @@ pub fn run(
                     title: task.title.clone(),
                     current: task.status,
                     soft_deleted: task.soft_deleted,
-                    has_block: task.block.is_some(),
+                    open: task.block.as_ref().map(|block| block.kind),
                 });
-            Ok(apply(state, found, status, &block, &actor))
+            Ok(apply(
+                state,
+                found,
+                status,
+                &block,
+                review_on.clone(),
+                &actor,
+            ))
         })
         .map_err(StatusError::Store)?
 }
@@ -199,7 +214,23 @@ struct Found {
     title: String,
     current: HumanStatus,
     soft_deleted: bool,
-    has_block: bool,
+    open: Option<BlockKind>,
+}
+
+/// Read a review's `--on`: `you`, an agent profile (with or without `@`), or any other text.
+fn review_on(value: &str, state_dir: &std::path::Path) -> BlockOn {
+    let value = value.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case(OWNER) {
+        return BlockOn::You;
+    }
+    let name = value.strip_prefix('@').unwrap_or(value);
+    let profile = normalize_thread(name).ok().filter(|name| {
+        AgentProfiles::load(state_dir).is_ok_and(|profiles| profiles.get(name).is_some())
+    });
+    match profile {
+        Some(name) => BlockOn::Agent(name),
+        None => BlockOn::Other(value.to_string()),
+    }
 }
 
 fn apply(
@@ -207,6 +238,7 @@ fn apply(
     found: Option<Found>,
     status: HumanStatus,
     flags: &BlockFlags,
+    review_on: Option<BlockOn>,
     actor: &str,
 ) -> (Result<StatusResult, StatusError>, bool) {
     let Some(found) = found else {
@@ -228,10 +260,25 @@ fn apply(
             Ok(draft) => draft,
             Err(error) => return (Err(error), false),
         };
-        if found.has_block {
+        if found.open == Some(BlockKind::Blocked) {
             state.edit_block(found.id, patch_from(flags, draft))
         } else {
             state.block(found.id, draft, actor).map(|()| true)
+        }
+    } else if status == HumanStatus::Review && !flags.is_empty() {
+        let draft = match ReviewDraft::from_input(
+            flags.done.as_deref(),
+            &flags.checks,
+            flags.next.as_deref(),
+            review_on.unwrap_or_default(),
+        ) {
+            Ok(draft) => draft,
+            Err(field) => return (Err(StatusError::TextTooLong(field)), false),
+        };
+        if found.open == Some(BlockKind::Review) {
+            state.edit_review(found.id, review_patch_from(flags, draft))
+        } else {
+            state.review(found.id, draft, actor).map(|()| true)
         }
     } else if found.current == status {
         Ok(false)
@@ -280,6 +327,16 @@ fn patch_from(flags: &BlockFlags, draft: BlockDraft) -> BlockPatch {
         why: flags.why.is_some().then_some(draft.why),
         needs: flags.needs.is_some().then_some(draft.needs),
         options: (!flags.options.is_empty()).then_some(draft.options),
+        on: flags.on.is_some().then_some(draft.on),
+    }
+}
+
+/// Re-running review replaces only the fields that were given.
+fn review_patch_from(flags: &BlockFlags, draft: ReviewDraft) -> ReviewPatch {
+    ReviewPatch {
+        done: flags.done.is_some().then_some(draft.done),
+        checks: (!flags.checks.is_empty()).then_some(draft.checks),
+        next: flags.next.is_some().then_some(draft.next),
         on: flags.on.is_some().then_some(draft.on),
     }
 }

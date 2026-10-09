@@ -1777,7 +1777,16 @@ fn status_verbs_target_all_marks_once_then_clear_them() {
         None,
     )
     .expect("review marked set");
+    assert_eq!(
+        outcome,
+        IntentOutcome::None,
+        "the palette asks first, like ctrl+r"
+    );
+    assert_eq!(model.input_mode(), BoardInputMode::BlockCard);
+    let outcome = apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
+        .expect("confirm the review card");
     assert_eq!(outcome, IntentOutcome::Persist);
+    model.sync_from_domain(&domain);
     assert_eq!(
         domain.get(first).expect("first").status,
         HumanStatus::Review
@@ -1835,7 +1844,10 @@ fn bulk_start_preserves_per_task_eligibility_and_toggle_verbs_are_all_or_nothing
 
     mark_tasks(&mut domain, &mut model, &[open, blocked]);
     apply_intent(&mut domain, &mut model, BoardIntent::ToggleReview, None)
+        .expect("mixed set opens the review card");
+    apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
         .expect("mixed set goes review");
+    model.sync_from_domain(&domain);
     assert!([open, blocked]
         .into_iter()
         .all(|id| domain.get(id).expect("task").status == HumanStatus::Review));
@@ -2193,6 +2205,9 @@ fn task_page_status_verbs_stay_cursor_only_and_clear_board_marks() {
         None,
     )
     .expect("apply status from task page");
+    apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
+        .expect("confirm the review card");
+    model.sync_from_domain(&domain);
     assert_eq!(
         domain.get(cursor).expect("cursor").status,
         HumanStatus::Review
@@ -4746,7 +4761,8 @@ fn ctrl_d_with_a_step_selected_completes_the_task_and_enter_toggles_the_step() {
     assert_eq!(dones, vec![false, false, false], "no step flipped");
 }
 
-/// `ctrl+r` walks review ↔ ready and rides the persist path; a done task refuses.
+/// `ctrl+r` opens the review card (an empty Enter puts the work up for review at once), on a
+/// task in review returns it to ready, and rides the persist path; a done task refuses.
 #[test]
 fn ctrl_r_toggles_review_and_ready_and_refuses_on_done() {
     let (mut domain, mut model, id) = board_with_task("Review me", HumanStatus::Ready);
@@ -4757,8 +4773,18 @@ fn ctrl_r_toggles_review_and_ready_and_refuses_on_done() {
         "review is a durable status change"
     );
 
-    let outcome = apply_intent(&mut domain, &mut model, review.clone(), None).expect("to review");
+    let outcome = apply_intent(&mut domain, &mut model, review.clone(), None).expect("card");
+    assert_eq!(outcome, IntentOutcome::None, "the card asks first");
+    assert_eq!(model.input_mode(), BoardInputMode::BlockCard);
+    let outcome = apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
+        .expect("to review");
     assert_eq!(outcome, IntentOutcome::Persist);
+    model.sync_from_domain(&domain);
+    assert_eq!(
+        model.input_mode(),
+        BoardInputMode::Normal,
+        "the card closed"
+    );
     assert_eq!(domain.get(id).expect("task").status, HumanStatus::Review);
 
     // Review lives in NEEDS YOU, so the row stays selected and the bar keeps done/block.
@@ -4771,7 +4797,10 @@ fn ctrl_r_toggles_review_and_ready_and_refuses_on_done() {
     for from in [HumanStatus::Started, HumanStatus::Blocked] {
         domain.set_status(id, from).expect("seed status");
         model.sync_from_domain(&domain);
-        apply_intent(&mut domain, &mut model, review.clone(), None).expect("to review");
+        apply_intent(&mut domain, &mut model, review.clone(), None).expect("card");
+        apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
+            .expect("to review");
+        model.sync_from_domain(&domain);
         assert_eq!(
             domain.get(id).expect("task").status,
             HumanStatus::Review,

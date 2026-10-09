@@ -39,6 +39,8 @@ pub enum TaskEventKind {
     Replied,
     ReplyEdited,
     ReplyDeleted,
+    ReviewEdited,
+    CheckSet,
 }
 
 /// One append-only history record on a task.

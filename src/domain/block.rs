@@ -1,7 +1,9 @@
-//! Blocks: why a task is blocked, what it needs, and the replies that answer it.
+//! Blocks and reviews: why a task is blocked or what is up for review, and the replies that
+//! answer it.
 //!
-//! A task carries at most one open block while its human status is `blocked`. Leaving
-//! `blocked` by any route closes it; closed blocks stay on the task, read-only.
+//! A task carries at most one open record: a block while its human status is `blocked`, a
+//! review round while it is `review`. Leaving that status by any route closes the record;
+//! closed records stay on the task, read-only.
 
 use std::time::SystemTime;
 
@@ -17,27 +19,99 @@ pub const AGENT_ENV: &str = "TSK_AGENT";
 /// never truncated.
 pub const BLOCK_TEXT_MAX: usize = 4096;
 
-/// What a block record is. Only `blocked` exists today; the field is kept so a later
-/// record kind (a review card) can reuse the shape without another schema change.
+/// What a record is: a block (`blocked`) or one review round (`review`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BlockKind {
     #[default]
     Blocked,
+    Review,
 }
 
 impl BlockKind {
     fn is_blocked(&self) -> bool {
         *self == BlockKind::Blocked
     }
+
+    /// The record kind a human status keeps open, if any.
+    pub fn for_status(status: super::HumanStatus) -> Option<Self> {
+        match status {
+            super::HumanStatus::Blocked => Some(BlockKind::Blocked),
+            super::HumanStatus::Review => Some(BlockKind::Review),
+            _ => None,
+        }
+    }
 }
 
-/// Who or what the block waits on. Serialized as `you`, `task:<number>` or `other:<text>`.
+/// The state of one review check. Enter on the task page cycles open → passed → failed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckState {
+    #[default]
+    Open,
+    Passed,
+    Failed,
+}
+
+impl CheckState {
+    fn is_open(&self) -> bool {
+        *self == CheckState::Open
+    }
+
+    pub fn cycle(self) -> Self {
+        match self {
+            CheckState::Open => CheckState::Passed,
+            CheckState::Passed => CheckState::Failed,
+            CheckState::Failed => CheckState::Open,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            CheckState::Open => "open",
+            CheckState::Passed => "passed",
+            CheckState::Failed => "failed",
+        }
+    }
+}
+
+/// One thing the reviewer should check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Check {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "CheckState::is_open")]
+    pub state: CheckState,
+}
+
+/// How a review round closed: approved (it went to done) or sent back (it went to started).
+/// Any other route out of review closes the round without one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Resolution {
+    Approved,
+    SentBack,
+}
+
+impl Resolution {
+    pub fn name(self) -> &'static str {
+        match self {
+            Resolution::Approved => "approved",
+            Resolution::SentBack => "sent_back",
+        }
+    }
+}
+
+/// Who or what the record waits on. Serialized as `you`, `task:<number>`, `agent:<profile>`
+/// or `other:<text>`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum BlockOn {
     #[default]
     You,
     Task(u64),
+    /// An agent profile (a review handed to another agent). Validated against `config.toml`
+    /// at the boundary; a removed profile keeps its name.
+    Agent(String),
     Other(String),
 }
 
@@ -51,6 +125,7 @@ impl BlockOn {
         match self {
             BlockOn::You => OWNER.to_string(),
             BlockOn::Task(number) => format!("task:{number}"),
+            BlockOn::Agent(name) => format!("agent:{name}"),
             BlockOn::Other(text) => format!("other:{text}"),
         }
     }
@@ -61,6 +136,9 @@ impl BlockOn {
         }
         if let Some(number) = value.strip_prefix("task:") {
             return number.parse().ok().map(BlockOn::Task);
+        }
+        if let Some(name) = value.strip_prefix("agent:") {
+            return (!name.is_empty()).then(|| BlockOn::Agent(name.to_string()));
         }
         value
             .strip_prefix("other:")
@@ -86,11 +164,12 @@ impl BlockOn {
         BlockOn::Other(value.to_string())
     }
 
-    /// The short label painted on board rows: `T169` or the free text.
+    /// The short label painted on board rows: `T169`, `@pi` or the free text.
     pub fn label(&self) -> String {
         match self {
             BlockOn::You => OWNER.to_string(),
             BlockOn::Task(number) => format!("T{number}"),
+            BlockOn::Agent(name) => format!("@{name}"),
             BlockOn::Other(text) => text.clone(),
         }
     }
@@ -143,6 +222,18 @@ pub struct Block {
     pub needs: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
+    /// Review: what was done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done: Option<String>,
+    /// Review: what the reviewer should check. Never moves into steps.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<Check>,
+    /// Review: what comes after.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
+    /// Review: the round number, from 1. Zero on a block.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub round: u32,
     #[serde(default, skip_serializing_if = "BlockOn::is_you")]
     pub on: BlockOn,
     /// `you` or the agent profile that made the block.
@@ -157,6 +248,13 @@ pub struct Block {
     pub closed_at: Option<SystemTime>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_by: Option<String>,
+    /// Review: how the owner closed the round, when they decided it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<Resolution>,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 impl Block {
@@ -167,6 +265,10 @@ impl Block {
             why: draft.why,
             needs: draft.needs,
             options: draft.options,
+            done: None,
+            checks: Vec::new(),
+            next: None,
+            round: 0,
             on: draft.on,
             by: by.to_string(),
             at,
@@ -174,7 +276,44 @@ impl Block {
             replies: Vec::new(),
             closed_at: None,
             closed_by: None,
+            resolution: None,
         }
+    }
+
+    /// A fresh open review round from validated draft fields.
+    pub fn open_review(draft: ReviewDraft, by: &str, at: SystemTime, round: u32) -> Self {
+        Self {
+            kind: BlockKind::Review,
+            done: draft.done,
+            checks: draft.checks,
+            next: draft.next,
+            round,
+            on: draft.on,
+            ..Self::open(BlockDraft::default(), by, at)
+        }
+    }
+
+    pub fn is_review(&self) -> bool {
+        self.kind == BlockKind::Review
+    }
+
+    /// Passed checks and all checks, for the board row's `1/2 ✓`.
+    pub fn checks_passed(&self) -> (usize, usize) {
+        let passed = self
+            .checks
+            .iter()
+            .filter(|check| check.state == CheckState::Passed)
+            .count();
+        (passed, self.checks.len())
+    }
+
+    /// The texts of the failed checks, in order.
+    pub fn failed_checks(&self) -> Vec<&str> {
+        self.checks
+            .iter()
+            .filter(|check| check.state == CheckState::Failed)
+            .map(|check| check.text.as_str())
+            .collect()
     }
 
     /// The last reply that was not deleted.
@@ -212,7 +351,7 @@ pub struct BlockDraft {
     pub on: BlockOn,
 }
 
-/// Which block text was too long.
+/// Which block or review text was too long.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockField {
     Why,
@@ -220,6 +359,9 @@ pub enum BlockField {
     Option,
     Reply,
     On,
+    Done,
+    Check,
+    Next,
 }
 
 impl BlockField {
@@ -230,6 +372,9 @@ impl BlockField {
             BlockField::Option => "option",
             BlockField::Reply => "reply",
             BlockField::On => "on",
+            BlockField::Done => "done",
+            BlockField::Check => "check",
+            BlockField::Next => "next",
         }
     }
 }
@@ -272,6 +417,80 @@ impl BlockDraft {
                 .collect(),
             on,
         })
+    }
+}
+
+/// Validated content for a review round.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReviewDraft {
+    pub done: Option<String>,
+    pub checks: Vec<Check>,
+    pub next: Option<String>,
+    pub on: BlockOn,
+}
+
+impl ReviewDraft {
+    /// Build a draft from raw input, trimming every value and dropping empty checks. Every
+    /// check starts open.
+    pub fn from_input(
+        done: Option<&str>,
+        checks: &[String],
+        next: Option<&str>,
+        on: BlockOn,
+    ) -> Result<Self, BlockField> {
+        let on = match on {
+            BlockOn::Other(text) => match block_text(Some(&text), BlockField::On)? {
+                Some(text) => BlockOn::Other(text),
+                None => BlockOn::You,
+            },
+            on => on,
+        };
+        Ok(Self {
+            done: block_text(done, BlockField::Done)?,
+            checks: checks
+                .iter()
+                .map(|check| block_text(Some(check), BlockField::Check))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .map(|text| Check {
+                    text,
+                    state: CheckState::Open,
+                })
+                .collect(),
+            next: block_text(next, BlockField::Next)?,
+            on,
+        })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.done.is_none() && self.checks.is_empty() && self.next.is_none() && self.on.is_you()
+    }
+}
+
+/// Changes to an open review round. `None` keeps a field; `Some` replaces it. Replaced checks
+/// keep the state of a check with the same text.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReviewPatch {
+    pub done: Option<Option<String>>,
+    pub checks: Option<Vec<Check>>,
+    pub next: Option<Option<String>>,
+    pub on: Option<BlockOn>,
+}
+
+impl ReviewPatch {
+    pub fn is_empty(&self) -> bool {
+        self.done.is_none() && self.checks.is_none() && self.next.is_none() && self.on.is_none()
+    }
+
+    /// Every field of `draft`, replacing the round's content wholesale.
+    pub fn replace_with(draft: ReviewDraft) -> Self {
+        Self {
+            done: Some(draft.done),
+            checks: Some(draft.checks),
+            next: Some(draft.next),
+            on: Some(draft.on),
+        }
     }
 }
 
@@ -625,5 +844,263 @@ mod state_tests {
         state.block_batch(&[id], &draft("why"), OWNER).unwrap();
         state.reply(id, "answer", OWNER).unwrap();
         assert_eq!(state.undo(), Err(DomainError::StaleUndo(id)));
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::domain::{DomainError, DomainState, HumanStatus, ProvenanceOrigin, TaskScope};
+    use uuid::Uuid;
+
+    fn task(state: &mut DomainState) -> Uuid {
+        state
+            .create("t", None, TaskScope::Global, ProvenanceOrigin::Manual, None)
+            .expect("create")
+    }
+
+    fn draft(done: &str, checks: &[&str]) -> ReviewDraft {
+        let checks: Vec<String> = checks.iter().map(|check| check.to_string()).collect();
+        ReviewDraft::from_input(Some(done), &checks, Some("docs"), BlockOn::You).expect("draft")
+    }
+
+    fn round(state: &DomainState, id: Uuid) -> Block {
+        state.get(id).unwrap().block.clone().expect("open round")
+    }
+
+    #[test]
+    fn review_opens_round_one_and_re_running_it_edits_the_same_round() {
+        let mut state = DomainState::new();
+        let id = task(&mut state);
+        state
+            .review(
+                id,
+                draft("built it", &["tests pass", "no flicker"]),
+                "claude",
+            )
+            .expect("review");
+        let first = round(&state, id);
+        assert!(first.is_review());
+        assert_eq!(first.round, 1);
+        assert_eq!(first.by, "claude");
+        assert_eq!(state.get(id).unwrap().status, HumanStatus::Review);
+        assert_eq!(
+            state.review(id, draft("again", &[]), "claude"),
+            Err(DomainError::AlreadyBlocked(id)),
+            "an open round is edited, not reopened"
+        );
+
+        state.set_check(id, 0, CheckState::Passed).expect("pass");
+        let changed = state
+            .edit_review(
+                id,
+                ReviewPatch {
+                    done: Some(Some("built it, fixed flicker".into())),
+                    checks: Some(draft("", &["tests pass", "docs build"]).checks),
+                    ..ReviewPatch::default()
+                },
+            )
+            .expect("edit");
+        assert!(changed);
+        let edited = round(&state, id);
+        assert_eq!(edited.round, 1, "the same round");
+        assert_eq!(edited.key(), first.key());
+        assert_eq!(edited.done.as_deref(), Some("built it, fixed flicker"));
+        assert_eq!(edited.next.as_deref(), Some("docs"), "untouched field kept");
+        assert_eq!(
+            edited
+                .checks
+                .iter()
+                .map(|check| (check.text.as_str(), check.state))
+                .collect::<Vec<_>>(),
+            vec![
+                ("tests pass", CheckState::Passed),
+                ("docs build", CheckState::Open)
+            ],
+            "a check with unchanged text keeps its state"
+        );
+        assert!(edited.edited_at.is_some());
+        assert!(state.get(id).unwrap().past_blocks.is_empty());
+    }
+
+    #[test]
+    fn a_check_cycles_open_passed_failed_and_refuses_outside_review() {
+        assert_eq!(CheckState::Open.cycle(), CheckState::Passed);
+        assert_eq!(CheckState::Passed.cycle(), CheckState::Failed);
+        assert_eq!(CheckState::Failed.cycle(), CheckState::Open);
+        let mut state = DomainState::new();
+        let id = task(&mut state);
+        assert_eq!(
+            state.set_check(id, 0, CheckState::Passed),
+            Err(DomainError::NotInReview(id))
+        );
+        state.review(id, draft("x", &["a"]), "claude").unwrap();
+        assert_eq!(
+            state.set_check(id, 3, CheckState::Passed),
+            Err(DomainError::UnknownCheck(3))
+        );
+        assert!(state.set_check(id, 0, CheckState::Failed).unwrap());
+        assert!(!state.set_check(id, 0, CheckState::Failed).unwrap());
+        assert_eq!(round(&state, id).failed_checks(), vec!["a"]);
+        assert_eq!(round(&state, id).checks_passed(), (0, 1));
+    }
+
+    /// Send back (started) closes round N as sent back; the agent's next review opens round
+    /// N+1; done closes it as approved; any other route closes it without a resolution.
+    #[test]
+    fn rounds_close_into_history_with_how_they_ended() {
+        let mut state = DomainState::new();
+        let id = task(&mut state);
+        state
+            .review(id, draft("first", &["a", "b"]), "claude")
+            .unwrap();
+        state.set_check(id, 1, CheckState::Failed).unwrap();
+        state.reply(id, "fix b", OWNER).unwrap();
+        state
+            .set_status(id, HumanStatus::Started)
+            .expect("send back");
+        let task_now = state.get(id).unwrap();
+        assert_eq!(task_now.block, None);
+        let closed = task_now.past_blocks.last().unwrap();
+        assert_eq!(closed.round, 1);
+        assert_eq!(closed.resolution, Some(Resolution::SentBack));
+        assert_eq!(closed.failed_checks(), vec!["b"]);
+        assert_eq!(closed.replies[0].text, "fix b");
+
+        state
+            .set_status_by(id, HumanStatus::Review, "claude")
+            .expect("plain review opens a round");
+        assert_eq!(round(&state, id).round, 2);
+        assert_eq!(round(&state, id).by, "claude");
+        state
+            .set_status(id, HumanStatus::Ready)
+            .expect("back to ready");
+        assert_eq!(
+            state
+                .get(id)
+                .unwrap()
+                .past_blocks
+                .last()
+                .unwrap()
+                .resolution,
+            None
+        );
+
+        state.review(id, draft("third", &[]), "claude").unwrap();
+        assert_eq!(round(&state, id).round, 3);
+        state.complete(id).expect("approve");
+        let history = &state.get(id).unwrap().past_blocks;
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[2].resolution, Some(Resolution::Approved));
+        assert!(history.iter().all(Block::is_review));
+    }
+
+    #[test]
+    fn blocking_a_review_closes_the_round_and_review_closes_a_block() {
+        let mut state = DomainState::new();
+        let id = task(&mut state);
+        state.review(id, draft("x", &[]), "claude").unwrap();
+        state
+            .block(id, BlockDraft::default(), "claude")
+            .expect("block a review");
+        let task_now = state.get(id).unwrap();
+        assert!(!task_now.block.as_ref().unwrap().is_review());
+        assert!(task_now.past_blocks[0].is_review());
+        assert_eq!(task_now.past_blocks[0].resolution, None);
+        state.review(id, draft("y", &[]), "claude").unwrap();
+        let task_now = state.get(id).unwrap();
+        assert!(task_now.block.as_ref().unwrap().is_review());
+        assert_eq!(task_now.block.as_ref().unwrap().round, 2);
+        assert!(!task_now.past_blocks[1].is_review());
+        assert_eq!(
+            state.edit_block(id, BlockPatch::default()),
+            Err(DomainError::NotBlocked(id)),
+            "a review round is not a block"
+        );
+    }
+
+    /// A marked set put up for review is one undo entry; undo restores each status and
+    /// reopens a block the review closed.
+    #[test]
+    fn review_batch_is_one_undo_entry_that_restores_each_status() {
+        let mut state = DomainState::new();
+        let ready = task(&mut state);
+        let blocked = task(&mut state);
+        let already = task(&mut state);
+        state.set_status(ready, HumanStatus::Ready).unwrap();
+        state
+            .block(
+                blocked,
+                BlockDraft::from_input(Some("why"), None, &[], BlockOn::You).unwrap(),
+                "claude",
+            )
+            .unwrap();
+        state.review(already, draft("kept", &[]), "claude").unwrap();
+        let undo_before = state.last_undo().cloned();
+
+        assert!(state
+            .review_batch(&[ready, blocked, already], &draft("shared", &["c"]), OWNER)
+            .expect("batch"));
+        for id in [ready, blocked] {
+            assert_eq!(state.get(id).unwrap().status, HumanStatus::Review);
+            assert_eq!(round(&state, id).done.as_deref(), Some("shared"));
+        }
+        assert_eq!(round(&state, already).done.as_deref(), Some("kept"));
+        assert!(matches!(
+            state.last_undo(),
+            Some(crate::domain::UndoEntry::Batch { entries }) if entries.len() == 2
+        ));
+
+        state.undo().expect("undo");
+        assert_eq!(state.get(ready).unwrap().status, HumanStatus::Ready);
+        assert_eq!(state.get(ready).unwrap().block, None);
+        assert!(state.get(ready).unwrap().past_blocks.is_empty());
+        let restored = state.get(blocked).unwrap();
+        assert_eq!(restored.status, HumanStatus::Blocked);
+        assert_eq!(
+            restored
+                .block
+                .as_ref()
+                .and_then(|block| block.why.as_deref()),
+            Some("why"),
+            "the block the review closed is open again"
+        );
+        assert!(restored.past_blocks.is_empty());
+        assert_eq!(state.last_undo().cloned(), undo_before);
+    }
+
+    #[test]
+    fn review_wire_round_trips_and_agent_on_spells_its_profile() {
+        let mut block = Block::open_review(
+            ReviewDraft::from_input(
+                Some("done"),
+                &["a".into()],
+                None,
+                BlockOn::Agent("pi".into()),
+            )
+            .unwrap(),
+            "claude",
+            SystemTime::UNIX_EPOCH,
+            2,
+        );
+        block.checks[0].state = CheckState::Failed;
+        block.resolution = Some(Resolution::SentBack);
+        let value = serde_json::to_value(&block).expect("encode");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "kind": "review",
+                "done": "done",
+                "checks": [{"text": "a", "state": "failed"}],
+                "round": 2,
+                "on": "agent:pi",
+                "by": "claude",
+                "at": [0, 0],
+                "resolution": "sent_back"
+            })
+        );
+        assert_eq!(serde_json::from_value::<Block>(value).unwrap(), block);
+        assert_eq!(BlockOn::Agent("pi".into()).label(), "@pi");
+        assert!(serde_json::from_str::<BlockOn>("\"agent:\"").is_err());
     }
 }

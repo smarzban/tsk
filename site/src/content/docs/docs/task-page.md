@@ -88,6 +88,28 @@ In view mode `Tab` walks the heading, the options, and the replies before the st
 
 The reply box opens under the last reply and wraps like the notes. It belongs to the block it opened on: if that block is closed or replaced elsewhere while you type, saving refuses and keeps your draft. Agent blocks can be edited like your own; an agent's replies cannot be edited or deleted. The same reply box opens under a blocked row on the board with `r`. A block on another task that is now done asks `T169 done, unblock? ctrl+b` under the heading.
 
+## Review
+
+A task in review opens with a REVIEW section in the same place. Its heading reads, for example, `REVIEW · round 2 · on you · @claude 40m ── PR #41 · r feedback`: the round, who it is on, who set it and when, and the pull request it names (the first `/pull/<n>` link or `PR #<n>` in done, next, the checks, or the notes). Below it come `done`, the checks, `next`, and your feedback as `└ you 5m  <text>`. Checks show `○` open or `✗` failed; passed checks fold into a dim `N passed ▸` line under them. The section shows only while the task is in review; closed rounds stay in `tsk list --json` under `past_reviews`. Checks are the review's own list and never become steps.
+
+In view mode `Tab` walks the heading, the checks, the `N passed` line (and the passed checks when unfolded), and the feedback before the steps and **+ step**.
+
+| Action | Key |
+| --- | --- |
+| Cycle a check: open → passed → failed | `Enter` on the check |
+| Show or fold the passed checks (`▸` / `▾`) | `Enter` on the `N passed` line |
+| Give feedback | `r` |
+| Save the feedback; stay in review | `Shift+Enter` |
+| Send back: started, and the feedback with the failed checks [goes to the running agent](/docs/board/#review-with-what-was-done) | `ctrl+s` |
+| Approve: done (cleanup card when the dispatch is live); nothing is sent | `ctrl+d` |
+| New line in the feedback | `Enter` |
+| Cancel the feedback | `Esc` |
+| Edit done, checks, next, and on (heading selected) | `ctrl+e` |
+| Edit your selected feedback | `ctrl+e` |
+| Soft-delete your selected feedback | `ctrl+x` |
+
+The feedback box reads `feedback to @claude…` while empty and belongs to the round it opened on, like the reply box. Editing the checks keeps the state of any check whose text is unchanged.
+
 ## Status and steps
 
 In task view, status shortcuts act on the open task even when a step is selected. `ctrl+s` on an assigned task dispatches it to its agent; on a dispatched task whose agent is gone it asks before relaunching ([Relaunch](/docs/board/#relaunch)). To hand the task over, assign it with `@`, then press `ctrl+s`. `ctrl+d` on a live dispatch offers [cleanup](/docs/board/#complete-and-clean-up) as it completes the task. Multi-select and marks retained from the board are ignored and clear when an action runs. `ctrl+n` sets ready and `ctrl+o` sets open; `ctrl+s` starts an open or ready task. `Enter` toggles the selected step only.

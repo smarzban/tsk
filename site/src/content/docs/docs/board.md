@@ -178,15 +178,17 @@ Cleanup closes the dispatch's Herdr workspace, removes its recorded worktree, an
 
 | Section | Status |
 | --- | --- |
-| **NEEDS YOU** | `blocked` on you, `review` |
-| **IN MOTION** | `started`, and `blocked` on another task or on something else |
+| **NEEDS YOU** | `blocked` on you, `review` on you |
+| **IN MOTION** | `started`, `blocked` on another task or on something else, and `review` on an agent or on something else |
 | **ON DECK** | `ready`, `open` |
 | ↳ **inbox** | `open` |
 | Done drawer | `done` |
 
-Status glyphs are `◌` open, `○` ready, `●` started, `■` blocked, `▲` review, and `✓` done. A started task with a live [dispatch](#dispatch) shows `◉` instead of `●`; any other status, or a cleaned dispatch, shows the normal glyph. A task blocked on another task or on something else shows `□`.
+Status glyphs are `◌` open, `○` ready, `●` started, `■` blocked, `▲` review, and `✓` done. A started task with a live [dispatch](#dispatch) shows `◉` instead of `●`; any other status, or a cleaned dispatch, shows the normal glyph. A task blocked on another task or on something else shows `□`; a review on an agent or on something else shows `△`.
 
 A blocked row's dim right edge says what it waits for: `@claude ?` while an agent's question is unanswered, `answered` once you have the last reply, or `on T169` / `on <text>` for a block waiting elsewhere. When the blocking task is done, the blocked task returns to NEEDS YOU, its row reads `T169 done`, and its peek asks `T169 done, unblock?`. tsk never changes the status itself. A blocked task's peek lists its why, needs, and options above the notes.
+
+A review row's right edge shows its author and passed checks, `@claude · 1/2 ✓`, until you give feedback, then `feedback`; a review handed elsewhere reads `on @pi` or `on <text>`. Its peek lists what was done and each check (`○` open, `✓` passed, `✗` failed) above the notes.
 
 ### Block with a reason
 
@@ -201,6 +203,30 @@ A blocked row's dim right edge says what it waits for: `@claude ?` while an agen
 `Tab` moves between fields, `Enter` blocks, and `Esc` cancels. `Enter` on an empty card blocks at once with no reason. A task number must be another task on the board; the card says so otherwise. With tasks marked, one card blocks the whole set as one save and one `ctrl+u` undo step, and `Esc` keeps the marks. `ctrl+b` on a blocked task unblocks it to ready, as do every other status change: leaving `blocked` closes its block. Palette **set status: blocked** opens the same card for the targets not yet blocked. If the save fails and you cancel, the card and the marks stay, ready to try again.
 
 Agents block with a question from [the CLI](/docs/cli/#status) (`--why`, `--needs`, `--option`, `--on`). Answer on the [task page](/docs/task-page/#blocked), or press `r` on a blocked row, in NEEDS YOU or IN MOTION at any width, to reply right under it: the block's why and needs stay above the reply box, and its keys are the task page's (`Shift+Enter` saves, `ctrl+s` saves and unblocks, `Enter` breaks the line, `Esc` cancels). With tasks marked, `r` answers the cursor row only. On a row that is not blocked the status row says `not blocked`. The list scrolls to keep the caret in view. If the task leaves the list while you type (unblocked or finished elsewhere), the box moves below the list under the task's name, keeps your draft, and says `this block was closed or replaced elsewhere; reply kept`.
+
+### Review with what was done
+
+`ctrl+r` on a task that is not in review opens the review card:
+
+| Field | Value |
+| --- | --- |
+| done | What was done (optional) |
+| check | One thing to verify per line; `Shift+Enter` starts the next check |
+| next | What comes after (optional) |
+| on | `‹ you · agent · other ›`, cycled with `←` / `→`; `agent` takes a profile from [`config.toml`](/docs/storage/#agent-profiles), `other` any text |
+
+`Tab` moves between fields, `Enter` puts the work up for review, and `Esc` cancels. `Enter` on an empty card sets review at once. With tasks marked, one card covers the whole set as one save and one `ctrl+u` undo step; tasks already in review keep their round. `ctrl+r` on a task in review returns it to ready. Palette **set status: review** opens the same card over the targets not yet in review.
+
+Each review is a **round**. Agents set one from [the CLI](/docs/cli/#status) (`--done`, `--check`, `--next`, `--on`); running it again while the task is in review updates the same round. On the [task page](/docs/task-page/#review) you mark each check passed or failed and give feedback with `r`, which also opens the feedback box under a review row on the board. In the feedback box:
+
+| Key | Action |
+| --- | --- |
+| `Shift+Enter` | Save the feedback; the task stays in review |
+| `ctrl+s` | Send back: save the feedback and start the task. A running dispatched agent gets this feedback and the failed checks as one message: `[tsk T12 sent back] <feedback> Failed checks: <check>; <check>` |
+| `ctrl+d` | Approve: save the feedback and mark the task done, through the [cleanup card](#complete-and-clean-up) when its dispatch is live. Nothing is sent |
+| `Esc` | Cancel |
+
+Sending back takes the same route as a reply's `ctrl+s` ([below](#reply-to-a-running-agent)), with `feedback` in place of `reply` on the status row, except that an unassigned task also goes to started. An empty box sends back only when a check failed (`type feedback or fail a check first` otherwise). The round closes into history at the send-back, recorded as sent back; the agent's next review opens round N+1. A round closed by done is recorded as approved. A relaunched or newly dispatched agent finds the feedback and failed checks in the last `past_reviews` entry of `tsk list --json`.
 
 ### Reply to a running agent
 
@@ -233,10 +259,10 @@ On a task-board list, `ctrl+s`, `ctrl+n`, `ctrl+o`, `ctrl+d`, `ctrl+b`, `ctrl+r`
 | `ctrl+o` | Set open, the inbox |
 | `ctrl+d` | Mark done; for a live dispatch, offer [cleanup](#complete-and-clean-up) |
 | `ctrl+b` | Block with a reason (the [block card](#block-with-a-reason)); on a blocked task, return it to ready |
-| `ctrl+r` | Set review; press again to return to ready |
-| `r` | Reply to a blocked row inline ([reply](#block-with-a-reason)); cursor only |
+| `ctrl+r` | Review with what was done (the [review card](#review-with-what-was-done)); on a task in review, return it to ready |
+| `r` | Reply to a blocked row, or give feedback on a review row, inline ([reply](#block-with-a-reason)); cursor only |
 
-`ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Bulk block and review toggles are all-or-nothing: if every target already has that status they all return to ready, otherwise they all move to that status (blocking through one block card; tasks already blocked keep their block). Other status verbs are absolute, so repeating the current status does nothing. Done tasks can be sent directly to ready or open.
+`ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Bulk block and review toggles are all-or-nothing: if every target already has that status they all return to ready, otherwise they all move to that status (blocking through one block card and review through one review card; tasks already blocked keep their block, tasks in review their round). Other status verbs are absolute, so repeating the current status does nothing. Done tasks can be sent directly to ready or open.
 
 Agents can set any status with [the CLI](/docs/cli/#status). Task status does not change automatically when steps are checked or an agent stops.
 

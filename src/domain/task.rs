@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-    block_text, Block, BlockDraft, BlockField, BlockPatch, ProvenanceOrigin, Reply, TaskEvent,
-    TaskEventKind, UndoEntry, OWNER, UNDO_CAP,
+    block_text, Block, BlockDraft, BlockField, BlockKind, BlockPatch, CheckState, ProvenanceOrigin,
+    Reply, Resolution, ReviewDraft, ReviewPatch, TaskEvent, TaskEventKind, UndoEntry, OWNER,
+    UNDO_CAP,
 };
 use crate::scope::paths_equivalent;
 
@@ -117,11 +118,11 @@ pub struct Task {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch: Option<Dispatch>,
     pub status: HumanStatus,
-    /// The open block while the task is `blocked`. A blocked task from an older store may
-    /// have none; it reads as blocked on you with no reason.
+    /// The open record: a block while the task is `blocked`, a review round while it is
+    /// `review`. A task from an older store may have none; it reads as on you with no reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub block: Option<Block>,
-    /// Closed blocks, oldest first. Read-only history.
+    /// Closed blocks and review rounds, oldest first. Read-only history.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub past_blocks: Vec<Block>,
     pub scope: TaskScope,
@@ -169,6 +170,10 @@ pub enum DomainError {
     EmptyReply,
     /// The task already has an open block; edit it instead.
     AlreadyBlocked(Uuid),
+    /// The task has no open review round.
+    NotInReview(Uuid),
+    /// No check at this index on the open review round.
+    UnknownCheck(usize),
 }
 
 impl std::fmt::Display for DomainError {
@@ -193,23 +198,86 @@ impl std::fmt::Display for DomainError {
             DomainError::UnknownReply(index) => write!(f, "no reply {index} of yours"),
             DomainError::EmptyReply => write!(f, "reply must be non-empty after trim"),
             DomainError::AlreadyBlocked(id) => write!(f, "task {id} already has an open block"),
+            DomainError::NotInReview(id) => write!(f, "task {id} is not in review"),
+            DomainError::UnknownCheck(index) => write!(f, "no check {index}"),
         }
     }
 }
 
 impl std::error::Error for DomainError {}
 
-/// Keep the block in step with a status change: entering `blocked` opens an empty block
-/// when none is open; leaving it closes the open block into `past_blocks`.
+/// Keep the open record in step with a status change: entering `blocked` opens an empty
+/// block and entering `review` an empty review round when none of that kind is open; a record
+/// of any other kind closes into `past_blocks`.
 fn sync_block_with_status(task: &mut Task, at: SystemTime, by: &str) {
-    if task.status == HumanStatus::Blocked {
-        if task.block.is_none() {
-            task.block = Some(Block::open(BlockDraft::default(), by, at));
+    let want = BlockKind::for_status(task.status);
+    if task
+        .block
+        .as_ref()
+        .is_some_and(|block| Some(block.kind) != want)
+    {
+        close_record(task, at, by);
+    }
+    if task.block.is_none() {
+        match want {
+            Some(BlockKind::Blocked) => {
+                task.block = Some(Block::open(BlockDraft::default(), by, at));
+            }
+            Some(BlockKind::Review) => {
+                task.block = Some(Block::open_review(
+                    ReviewDraft::default(),
+                    by,
+                    at,
+                    next_round(task),
+                ));
+            }
+            None => {}
         }
-    } else if let Some(mut block) = task.block.take() {
+    }
+}
+
+/// Close the open record into `past_blocks`. A review round closed by a start was sent back,
+/// one closed by done was approved.
+fn close_record(task: &mut Task, at: SystemTime, by: &str) {
+    if let Some(mut block) = task.block.take() {
         block.closed_at = Some(at);
         block.closed_by = Some(by.to_string());
+        if block.is_review() {
+            block.resolution = match task.status {
+                HumanStatus::Started => Some(Resolution::SentBack),
+                HumanStatus::Done => Some(Resolution::Approved),
+                _ => None,
+            };
+        }
         task.past_blocks.push(block);
+    }
+}
+
+/// The number of the next review round: one past the last closed round.
+fn next_round(task: &Task) -> u32 {
+    task.past_blocks
+        .iter()
+        .filter(|block| block.is_review())
+        .map(|block| block.round)
+        .max()
+        .unwrap_or(0)
+        + 1
+}
+
+/// Reopen the last closed record when going back to the status that kept it open, so an undo
+/// restores the block or review round rather than an empty one.
+fn reopen_last_record(task: &mut Task, previous: HumanStatus) {
+    let Some(kind) = BlockKind::for_status(previous) else {
+        return;
+    };
+    if task.block.is_some() || task.past_blocks.last().map(|block| block.kind) != Some(kind) {
+        return;
+    }
+    if let Some(mut block) = task.past_blocks.pop() {
+        block.closed_at = None;
+        block.closed_by = None;
+        block.resolution = None;
+        task.block = Some(block);
     }
 }
 
@@ -225,7 +293,7 @@ fn record_mutation_at(task: &mut Task, kind: TaskEventKind, at: SystemTime) {
 }
 
 /// Document version written by this binary.
-pub const STORE_FORMAT_VERSION: u32 = 8;
+pub const STORE_FORMAT_VERSION: u32 = 9;
 
 fn default_next_notice_number() -> u64 {
     1
@@ -581,10 +649,11 @@ impl DomainState {
     /// already has an open block is refused: edit it with [`Self::edit_block`].
     pub fn block(&mut self, id: Uuid, draft: BlockDraft, by: &str) -> Result<(), DomainError> {
         let task = self.task_mut(id)?;
-        if task.block.is_some() {
+        if task.block.as_ref().is_some_and(|block| !block.is_review()) {
             return Err(DomainError::AlreadyBlocked(id));
         }
         let at = SystemTime::now();
+        close_record(task, at, by);
         let kind = if task.status == HumanStatus::Blocked {
             TaskEventKind::BlockEdited
         } else {
@@ -608,7 +677,10 @@ impl DomainState {
         let ids: Vec<_> = self
             .prevalidate_batch_ids(ids)?
             .into_iter()
-            .filter(|id| self.get(*id).is_some_and(|task| task.block.is_none()))
+            .filter(|id| {
+                self.get(*id)
+                    .is_some_and(|task| task.block.as_ref().is_none_or(Block::is_review))
+            })
             .collect();
         if ids.is_empty() {
             return Ok(false);
@@ -627,8 +699,8 @@ impl DomainState {
         Ok(true)
     }
 
-    /// Reverse [`Self::block_batch`] for one task: drop the block it opened and restore the
-    /// earlier status.
+    /// Reverse [`Self::block_batch`] or [`Self::review_batch`] for one task: drop the record
+    /// it opened and restore the earlier status, reopening the record that status had.
     pub(crate) fn restore_unblocked(
         &mut self,
         id: Uuid,
@@ -637,14 +709,139 @@ impl DomainState {
         let task = self.task_mut(id)?;
         task.block = None;
         task.status = previous;
+        reopen_last_record(task, previous);
         record_mutation(task, TaskEventKind::StatusSet);
         Ok(())
+    }
+
+    /// Put a task up for review with what was done, what to check and what is next. A task
+    /// not in review enters it with a new round; one in review without an open round (an older
+    /// store's) gains one. An open round is refused: edit it with [`Self::edit_review`].
+    pub fn review(&mut self, id: Uuid, draft: ReviewDraft, by: &str) -> Result<(), DomainError> {
+        let task = self.task_mut(id)?;
+        if task.block.as_ref().is_some_and(Block::is_review) {
+            return Err(DomainError::AlreadyBlocked(id));
+        }
+        let at = SystemTime::now();
+        close_record(task, at, by);
+        let kind = if task.status == HumanStatus::Review {
+            TaskEventKind::ReviewEdited
+        } else {
+            TaskEventKind::StatusSet
+        };
+        task.status = HumanStatus::Review;
+        task.block = Some(Block::open_review(draft, by, at, next_round(task)));
+        record_mutation_at(task, kind, at);
+        Ok(())
+    }
+
+    /// Put an ordered set up for review with one draft as one atomic, undoable action. Tasks
+    /// that already have an open round are left as they are. Returns whether any changed.
+    pub fn review_batch(
+        &mut self,
+        ids: &[Uuid],
+        draft: &ReviewDraft,
+        by: &str,
+    ) -> Result<bool, DomainError> {
+        let ids: Vec<_> = self
+            .prevalidate_batch_ids(ids)?
+            .into_iter()
+            .filter(|id| {
+                self.get(*id)
+                    .is_some_and(|task| !task.block.as_ref().is_some_and(Block::is_review))
+            })
+            .collect();
+        if ids.is_empty() {
+            return Ok(false);
+        }
+        let mut entries = Vec::with_capacity(ids.len());
+        for id in ids {
+            let previous = self.task_mut(id)?.status;
+            self.review(id, draft.clone(), by)?;
+            entries.push(UndoEntry::Block {
+                id,
+                previous,
+                expected_revision: self.task_mut(id)?.revision,
+            });
+        }
+        self.undo_stack.push(UndoEntry::Batch { entries });
+        Ok(true)
+    }
+
+    /// Change the open review round's content and mark it edited: re-running review while the
+    /// task is in review updates the same round. A replaced check list keeps the state of each
+    /// check whose text is unchanged. An empty patch changes nothing.
+    pub fn edit_review(&mut self, id: Uuid, patch: ReviewPatch) -> Result<bool, DomainError> {
+        let task = self.task_mut(id)?;
+        let block = task
+            .block
+            .as_mut()
+            .filter(|block| block.is_review())
+            .ok_or(DomainError::NotInReview(id))?;
+        let mut next = block.clone();
+        if let Some(done) = patch.done {
+            next.done = done;
+        }
+        if let Some(checks) = patch.checks {
+            next.checks = checks
+                .into_iter()
+                .map(|mut check| {
+                    if let Some(old) = block.checks.iter().find(|old| old.text == check.text) {
+                        check.state = old.state;
+                    }
+                    check
+                })
+                .collect();
+        }
+        if let Some(value) = patch.next {
+            next.next = value;
+        }
+        if let Some(on) = patch.on {
+            next.on = on;
+        }
+        if next == *block {
+            return Ok(false);
+        }
+        let at = SystemTime::now();
+        next.edited_at = Some(at);
+        *block = next;
+        record_mutation_at(task, TaskEventKind::ReviewEdited, at);
+        Ok(true)
+    }
+
+    /// Set one check of the open review round. Returns whether it changed.
+    pub fn set_check(
+        &mut self,
+        id: Uuid,
+        index: usize,
+        state: CheckState,
+    ) -> Result<bool, DomainError> {
+        let task = self.task_mut(id)?;
+        let block = task
+            .block
+            .as_mut()
+            .filter(|block| block.is_review())
+            .ok_or(DomainError::NotInReview(id))?;
+        let check = block
+            .checks
+            .get_mut(index)
+            .ok_or(DomainError::UnknownCheck(index))?;
+        if check.state == state {
+            return Ok(false);
+        }
+        check.state = state;
+        record_mutation(task, TaskEventKind::CheckSet);
+        Ok(true)
     }
 
     /// Change the open block's content and mark it edited. An empty patch changes nothing.
     pub fn edit_block(&mut self, id: Uuid, patch: BlockPatch) -> Result<bool, DomainError> {
         let task = self.task_mut(id)?;
-        let block = task.block.as_mut().ok_or(DomainError::NotBlocked(id))?;
+        let block = task
+            .block
+            .as_mut()
+            .filter(|block| !block.is_review())
+            .ok_or(DomainError::NotBlocked(id))?;
         let mut next = block.clone();
         if let Some(why) = patch.why {
             next.why = why;
@@ -1078,13 +1275,7 @@ impl DomainState {
     ) -> Result<(), DomainError> {
         let task = self.task_mut(id)?;
         task.status = previous;
-        if previous == HumanStatus::Blocked && task.block.is_none() {
-            if let Some(mut block) = task.past_blocks.pop() {
-                block.closed_at = None;
-                block.closed_by = None;
-                task.block = Some(block);
-            }
-        }
+        reopen_last_record(task, previous);
         sync_block_with_status(task, SystemTime::now(), OWNER);
         record_mutation(task, TaskEventKind::StatusSet);
         Ok(())

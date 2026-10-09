@@ -26,10 +26,10 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 | Set open, the inbox | `ctrl+o` |
 | Mark done; confirm cleanup for a live dispatched worktree | `ctrl+d` |
 | Toggle blocked / ready; blocking opens the block card | `ctrl+b` |
-| Toggle review / ready | `ctrl+r` |
+| Review with the review card; on a task in review, return it to ready | `ctrl+r` |
 | Delete, with a second press to confirm | `ctrl+x` or `ctrl+Delete` |
 | Undo completion/deletion/block; restore an archived selection | `ctrl+u` |
-| Reply to the blocked cursor row, inline under it | `r` |
+| Reply to the blocked cursor row, or give feedback on a review row, inline under it | `r` |
 | Archive / restore selected task | `ctrl+f` |
 | Open / close done drawer | `d` |
 | Expand / collapse its archived group | `g` |
@@ -50,7 +50,7 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 
 `Shift+M` enters or leaves multi-select while the board owns input. While it is active, `Space`, shifted arrows, and a plain task click change marks instead of opening a task. Removing the last mark leaves the mode active. `Shift+M` again from the board, `Esc`, a task action, or a lens change leaves it and clears the set. Text entry keeps `Shift+M` as a capital `M`; `Esc` leaves multi-select before cancelling that surface, except in a filter, view, assignee, or base picker, where it closes the picker first.
 
-When tasks are marked, the status, delete, archive, and `@` shortcuts act on that set; without marks they act on the cursor. `Enter` and `ctrl+e` remain cursor-only. `ctrl+s` on an assigned task that was never dispatched dispatches it; on a dispatched task whose agent is gone it asks first (`y` relaunch, `n` just start, `Esc` cancel). On a marked set where any task would launch, `ctrl+s` opens one card listing what launches, what only starts, and what stays unstarted; `y` starts and launches them all, `Esc` cancels and keeps the marks. `ctrl+u` right after a start that dispatched restores the status and leaves the agent running. `ctrl+d` on a task with a live dispatch, or a marked set holding some, opens a cleanup card: `y` completes and cleans in the background, `n` completes and keeps everything, and `Esc` cancels (a bulk card keeps the marks). After `y`, `Esc` hides the card while cleanup continues, or closes a finished one. When nothing listed can be cleaned (uncommitted changes) there is no `y` choice. See [Agents](/docs/board/#agents). `ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Bulk block and review toggles send every target to blocked or review unless all targets already have that status, in which case they all return to ready. `ctrl+n` and `ctrl+o` can send done tasks directly to ready or open. One `ctrl+u` reverses an entire marked completion, deletion, or block.
+When tasks are marked, the status, delete, archive, and `@` shortcuts act on that set; without marks they act on the cursor. `Enter` and `ctrl+e` remain cursor-only. `ctrl+s` on an assigned task that was never dispatched dispatches it; on a dispatched task whose agent is gone it asks first (`y` relaunch, `n` just start, `Esc` cancel). On a marked set where any task would launch, `ctrl+s` opens one card listing what launches, what only starts, and what stays unstarted; `y` starts and launches them all, `Esc` cancels and keeps the marks. `ctrl+u` right after a start that dispatched restores the status and leaves the agent running. `ctrl+d` on a task with a live dispatch, or a marked set holding some, opens a cleanup card: `y` completes and cleans in the background, `n` completes and keeps everything, and `Esc` cancels (a bulk card keeps the marks). After `y`, `Esc` hides the card while cleanup continues, or closes a finished one. When nothing listed can be cleaned (uncommitted changes) there is no `y` choice. See [Agents](/docs/board/#agents). `ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Bulk block and review toggles send every target to blocked or review (through one card) unless all targets already have that status, in which case they all return to ready. `ctrl+n` and `ctrl+o` can send done tasks directly to ready or open. One `ctrl+u` reverses an entire marked completion, deletion, block, or review.
 
 ## Block card
 
@@ -63,16 +63,30 @@ When tasks are marked, the status, delete, archive, and `@` shortcuts act on tha
 | Block (an empty card blocks with no reason) | `Enter` |
 | Cancel, keeping marks | `Esc` |
 
+## Review card
+
+`ctrl+r` on work that is not in review opens the card. One card covers a marked set.
+
+| Action | Key |
+| --- | --- |
+| Next / previous field (done · check · next · on) | `Tab` / `Shift+Tab` |
+| New check line | `Shift+Enter` in the check field |
+| Cycle on: you · agent · other | `←` / `→` on the on field |
+| Review (an empty card sets review at once) | `Enter` |
+| Cancel, keeping marks | `Esc` |
+
 ## Task page
 
 These keys apply in **view mode**:
 
 | Action | Key |
 | --- | --- |
-| Select the BLOCKED heading, options, and replies, then steps and **+ step** | `Tab` / `Shift+Tab` |
-| Reply to a blocked task | `r` |
+| Select the BLOCKED or REVIEW heading, options or checks, and replies, then steps and **+ step** | `Tab` / `Shift+Tab` |
+| Reply to a blocked task, or give feedback on a review | `r` |
 | Reply with the selected option, prefilled | `Enter` on an option |
-| Edit why, on, and needs (heading selected) or your selected reply | `ctrl+e` |
+| Cycle the selected check: open → passed → failed | `Enter` on a check |
+| Show or fold the passed checks | `Enter` on the `N passed` line |
+| Edit why, on, and needs, or done, checks, next, and on (heading selected), or your selected reply | `ctrl+e` |
 | Activate first step, then move among steps | `↓`, then `↑` / `↓` |
 | Toggle selected step | `Enter` |
 | Add step | `ctrl+a` |
@@ -87,6 +101,8 @@ These keys apply in **view mode**:
 Click a step to select it. Click **+ step** to add. Field clicks become editable only after task editing starts.
 
 In the reply box, `Enter` starts a new line, `Shift+Enter` saves the reply, `ctrl+s` saves it and unblocks the task, and `Esc` cancels. An unassigned task unblocks to ready; an assigned one starts, which dispatches it, asks before relaunching a gone agent, or sends the reply to its still-running agent. `r` on a blocked board row opens the same box under the row. An agent's replies cannot be edited or deleted.
+
+On a review, the same box takes feedback: `Shift+Enter` saves it and the task stays in review, `ctrl+s` sends the review back (started, and the feedback with the failed checks goes to its running agent; an empty box needs a failed check), `ctrl+d` approves it (done, through the cleanup card when its dispatch is live; nothing is sent), and `Esc` cancels.
 
 ## Editing
 

@@ -503,3 +503,173 @@ fn reply_on_a_blocked_task_refuses_empty_and_oversized_text_by_bytes() {
         "stored whole, never truncated"
     );
 }
+
+fn review_args(dir: &Path, task: &str, flags: &[&str]) -> Vec<String> {
+    let mut args = block_args(dir, task, flags);
+    args[3] = "review".into();
+    args
+}
+
+/// `status review` with done, checks, next and on opens round 1; a repeat edits the same
+/// round; feedback lands in `feedback`; a send-back (started) closes it into `past_reviews`
+/// and the next review opens round 2.
+#[test]
+fn review_with_done_and_checks_shows_in_list_json_and_rounds_close_into_past_reviews() {
+    let dir = temp_state_dir("review-rounds");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "build the card").code, 0);
+    fs::write(
+        dir.join("config.toml"),
+        "[agent.pi]\ncommand = [\"true\"]\n",
+    )
+    .expect("profiles");
+    let actor = tsk_tui::domain::actor_from_env();
+
+    let output = cli(review_args(
+        &dir,
+        "T1",
+        &[
+            "--done",
+            "Opened PR #41",
+            "--check",
+            "tests pass",
+            "--check=-no flicker",
+            "--next",
+            "docs",
+        ],
+    ));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    assert_eq!(output.stdout, "status T1 review build the card\n");
+    let task = listed(&dir, "T1");
+    assert_eq!(task["status"], "review");
+    assert!(task.get("block").is_none(), "a round is not a block");
+    let review = &task["review"];
+    assert_eq!(review["round"], 1);
+    assert_eq!(review["done"], "Opened PR #41");
+    assert_eq!(
+        review["checks"],
+        serde_json::json!([
+            {"text": "tests pass", "state": "open"},
+            {"text": "-no flicker", "state": "open"}
+        ])
+    );
+    assert_eq!(review["next"], "docs");
+    assert_eq!(review["on"], "you");
+    assert_eq!(review["by"], actor);
+    assert_eq!(review["feedback"], serde_json::json!([]));
+    assert_eq!(review["answered"], false);
+
+    // A repeat edits the same round; `--on` names an agent profile.
+    let output = cli(review_args(&dir, "T1", &["--next", "ship", "--on", "@pi"]));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    let review = listed(&dir, "T1")["review"].clone();
+    assert_eq!(review["round"], 1);
+    assert_eq!(review["done"], "Opened PR #41", "unset flags stay");
+    assert_eq!(review["next"], "ship");
+    assert_eq!(review["on"], "agent:pi");
+    assert_eq!(review["edited"], true);
+    let output = cli(review_args(&dir, "T1", &["--on", "legal"]));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    assert_eq!(listed(&dir, "T1")["review"]["on"], "other:legal");
+    let output = cli(review_args(&dir, "T1", &["--on", "you"]));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+
+    // Feedback is a reply on the open round.
+    let output = reply(&dir, "T1", "the flicker is back");
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    let review = listed(&dir, "T1")["review"].clone();
+    assert_eq!(review["feedback"][0]["text"], "the flicker is back");
+    assert_eq!(review["feedback"][0]["by"], "you");
+    assert_eq!(review["answered"], true);
+
+    // Send back, then review again: round 1 closes as sent back, round 2 opens.
+    assert_eq!(status(&dir, "T1", "started").code, 0);
+    let output = cli(review_args(&dir, "T1", &["--done", "fixed it"]));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    let task = listed(&dir, "T1");
+    assert_eq!(task["review"]["round"], 2);
+    assert_eq!(task["review"]["done"], "fixed it");
+    let past = task["past_reviews"].as_array().expect("past rounds");
+    assert_eq!(past.len(), 1);
+    assert_eq!(past[0]["round"], 1);
+    assert_eq!(past[0]["resolution"], "sent_back");
+    assert_eq!(past[0]["feedback"][0]["text"], "the flicker is back");
+    assert!(past[0]["closed_at"].is_array());
+
+    // Done closes round 2 as approved.
+    assert_eq!(status(&dir, "T1", "done").code, 0);
+    let output = cli(vec![
+        "tsk".into(),
+        "list".into(),
+        "T1".into(),
+        "--json".into(),
+        "--state-dir".into(),
+        dir.to_string_lossy().into_owned(),
+    ]);
+    let task = serde_json::from_str::<serde_json::Value>(&output.stdout).expect("json")[0].clone();
+    assert!(task.get("review").is_none());
+    assert_eq!(task["past_reviews"][1]["resolution"], "approved");
+}
+
+#[test]
+fn review_flags_refuse_bad_input_without_mutation() {
+    let dir = temp_state_dir("review-refuse");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "t").code, 0);
+    let before = fs::read(dir.join("tsk.json")).expect("read");
+    let output = cli(block_args(&dir, "T1", &["--done", "x"]));
+    assert_eq!(output.code, 2, "--done needs review: {}", output.stderr);
+    let long = "x".repeat(tsk_tui::domain::BLOCK_TEXT_MAX + 1);
+    let output = cli(review_args(&dir, "T1", &["--check", &long]));
+    assert_eq!(output.code, 1, "{}", output.stderr);
+    assert!(output.stderr.contains("text-too-long"), "{}", output.stderr);
+    assert_eq!(fs::read(dir.join("tsk.json")).expect("read"), before);
+}
+
+/// Closed blocks and closed review rounds each land only in their own list: `past_blocks` never
+/// carries a round and `past_reviews` never a block.
+#[test]
+fn past_blocks_and_past_reviews_never_mix() {
+    let dir = temp_state_dir("past-split");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "t").code, 0);
+    assert_eq!(cli(block_args(&dir, "T1", &["--why", "which db?"])).code, 0);
+    assert_eq!(status(&dir, "T1", "started").code, 0);
+    assert_eq!(
+        cli(review_args(&dir, "T1", &["--done", "built it"])).code,
+        0
+    );
+    assert_eq!(status(&dir, "T1", "started").code, 0);
+
+    let task = listed(&dir, "T1");
+    let blocks = task["past_blocks"].as_array().expect("closed block");
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0]["why"], "which db?");
+    assert!(blocks[0].get("round").is_none() && blocks[0].get("done").is_none());
+    let reviews = task["past_reviews"].as_array().expect("closed round");
+    assert_eq!(reviews.len(), 1);
+    assert_eq!(reviews[0]["done"], "built it");
+    assert_eq!(reviews[0]["resolution"], "sent_back");
+    assert!(reviews[0].get("why").is_none() && reviews[0].get("replies").is_none());
+
+    // A round alone leaves no past_blocks at all, and a block alone no past_reviews.
+    assert_eq!(add_task(&dir, "u").code, 0);
+    assert_eq!(cli(review_args(&dir, "T2", &["--done", "x"])).code, 0);
+    assert_eq!(status(&dir, "T2", "done").code, 0);
+    let output = cli(vec![
+        "tsk".into(),
+        "list".into(),
+        "T2".into(),
+        "--json".into(),
+        "--state-dir".into(),
+        dir.to_string_lossy().into_owned(),
+    ]);
+    let done = serde_json::from_str::<serde_json::Value>(&output.stdout).expect("json")[0].clone();
+    assert!(done.get("past_blocks").is_none(), "{done}");
+    assert_eq!(done["past_reviews"][0]["resolution"], "approved");
+    assert_eq!(add_task(&dir, "v").code, 0);
+    assert_eq!(cli(block_args(&dir, "T3", &["--why", "y"])).code, 0);
+    assert_eq!(status(&dir, "T3", "ready").code, 0);
+    let blocked = listed(&dir, "T3");
+    assert!(blocked.get("past_reviews").is_none(), "{blocked}");
+}

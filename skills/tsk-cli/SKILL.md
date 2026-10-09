@@ -106,14 +106,23 @@ running in. Cleanup removes a clean worktree and deletes the branch only when it
 recorded base; otherwise it keeps the branch and says why (`branch.reason` in `--json`). Uncommitted
 work refuses with `dirty-worktree`. Deleting a kept branch is the user's decision.
 
-**Hand back.** `tsk status T12 review`, and say in one line what you did and what to look at.
+**Hand back.** `tsk status T12 review --done "…" --check "…" [--check "…"] [--next "…"]`: what you
+did, one `--check` per thing the user should verify (they mark each passed or failed), and what comes
+after. `--on <agent>` hands the review to another agent profile instead of the user. Running it again
+while the task is in review updates the same round; say in one line what to look at. Read the round
+in `tsk list T12 --json` under `review` (`round`, `checks` with `state`, `feedback`, `answered`).
+A message `[tsk T12 sent back] …` (with `Failed checks: …`) is the user's feedback: the task is
+`started` again, the round is closed in `past_reviews`; address it, then set review again (round N+1).
+`tsk reply T12 "…"` adds feedback to the open round. Never approve (set done) yourself.
 
 **Block on the user.** `tsk status T12 blocked --why "…"` with your question; add `--needs "…"`
 for what would unblock you and one `--option "…"` per choice the user can pick. `--on T9` waits on
 another task, `--on "<text>"` on anything else; the default is the user. Running it again edits the
 same block. Read answers in `tsk list T12 --json` under `block` (`replies`, `answered`). Unblocking
-or a relaunch closes the block: on a relaunch, read the answers in the last `past_blocks` entry.
-`tsk reply T12 "…"` adds a reply to the open block (`not-blocked` when there is none); it is not
+or a relaunch closes the block. On a relaunch, read whichever record closed last (`closed_at`): the
+last `past_blocks` entry's `replies`, or the last `past_reviews` entry's `feedback` and failed `checks`
+when it was `sent_back`.
+`tsk reply T12 "…"` adds a reply to the open block (`not-blocked` when there is no block or review); it is not
 idempotent, so read the task before retrying. When the user asks to send an answer to the task's
 running agent, add `--send`; it sends only that reply and prints `sent to @<agent>` or `not sent: <reason>`.
 A message `[tsk T12 unblocked] …` or `[tsk T12 reply] …` in your session is the user's answer to your

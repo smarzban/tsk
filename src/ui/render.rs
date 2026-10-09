@@ -244,11 +244,32 @@ pub fn paint_task_row_lines(
     lines
 }
 
-/// The dim right-edge note of a blocked row: who it waits on, or whether you answered.
+/// The dim right-edge note of a blocked or review row: who it waits on, or whether you
+/// answered. A review on you shows its author and passed checks, `@claude · 1/2 ✓`, until you
+/// give feedback.
 pub fn block_trailer(task: &Task, tasks: &[Task]) -> Option<String> {
     use crate::ui::queue::{block_wait, BlockWait};
     let block = task.block.as_ref();
-    match block_wait(task, tasks)? {
+    let wait = block_wait(task, tasks)?;
+    if task.status == HumanStatus::Review {
+        let block = block.filter(|block| block.is_review())?;
+        if wait == BlockWait::Elsewhere {
+            return Some(format!("on {}", block.on.label()));
+        }
+        if block.answered() {
+            return Some("feedback".to_string());
+        }
+        let mut parts = Vec::new();
+        if block.by != crate::domain::OWNER {
+            parts.push(format!("@{}", block.by));
+        }
+        let (passed, total) = block.checks_passed();
+        if total > 0 {
+            parts.push(format!("{passed}/{total} ✓"));
+        }
+        return (!parts.is_empty()).then(|| parts.join(" · "));
+    }
+    match wait {
         BlockWait::Elsewhere => block.map(|block| format!("on {}", block.on.label())),
         BlockWait::BlockerDone(number) => Some(format!("T{number} done")),
         BlockWait::BlockerGone(number) => Some(format!("T{number} gone")),
@@ -411,18 +432,21 @@ pub struct StepView {
     pub rows: Vec<String>,
 }
 
-/// One painted row of the task page's BLOCKED section. Rows come pre-wrapped.
+/// One painted row of the task page's BLOCKED or REVIEW section. Rows come pre-wrapped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockPageRow {
     pub text: String,
     pub kind: BlockRowKind,
     /// The first row of the selected ring stop carries the `▸` gutter.
     pub selected: bool,
+    /// The heading's dim right edge: `r reply`, or `PR #41 · r feedback`.
+    pub hint: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockRowKind {
-    /// `BLOCKED · on you · @claude 1h ──── r reply`, the dashes filled to the width.
+    /// `BLOCKED · on you · @claude 1h ──── r reply`, the dashes filled to the width, then the
+    /// row's hint.
     Heading,
     Plain,
     Dim,
@@ -606,17 +630,24 @@ pub enum QueueOverlay<'a> {
     },
 }
 
-/// Paint input for the block card. Field text arrives raw; the painter wraps it.
+/// Paint input for the block or review card. Field text arrives raw; the painter wraps it.
 #[derive(Debug, Clone)]
 pub struct BlockCardPaint {
     pub title: String,
+    /// The review card: done, check, next and on instead of why, on and needs.
+    pub review: bool,
     pub why: String,
     pub needs: String,
-    /// `you`, `task` or `other`.
+    pub done: String,
+    /// One check per line.
+    pub checks: String,
+    pub next: String,
+    /// `you`, `task`, `agent` or `other`.
     pub on_kind: &'static str,
-    /// The typed task number or text, for `task` and `other`.
+    /// The typed task number, agent or text, for `task`, `agent` and `other`.
     pub on_text: String,
-    /// Focused field (0 why, 1 on, 2 needs) and its caret, counted in characters.
+    /// Focused field and its caret, counted in characters: 0 why, 1 on, 2 needs on a block
+    /// card; 0 done, 1 check, 2 next, 3 on on a review card.
     pub focus: usize,
     pub cursor: usize,
     pub refusal: Option<String>,
@@ -633,13 +664,15 @@ pub struct FormDropdown<'a> {
     pub anchor_x: u16,
 }
 
-/// The reply box open inline under a blocked board row: the block's why and needs, then
-/// the draft, then any refusal. Text arrives raw; the painter wraps it.
+/// The reply box open inline under a blocked or review board row: two labelled context lines
+/// (why and needs, or done and next), then the draft, then any refusal. Text arrives raw; the
+/// painter wraps it.
 #[derive(Debug, Clone, Copy)]
 pub struct RowReplyPaint<'a> {
     pub task: Uuid,
-    pub why: Option<&'a str>,
-    pub needs: Option<&'a str>,
+    pub context: [Option<(&'static str, &'a str)>; 2],
+    /// The empty draft's hint: `reply…`, or `feedback to @claude…`.
+    pub placeholder: &'a str,
     pub(crate) draft: &'a crate::ui::edit::EditBuffer,
     /// The draft's wrap width, recorded for vertical caret movement.
     pub width: &'a std::cell::Cell<usize>,
@@ -962,6 +995,15 @@ fn local_rect(area: Rect, local: Rect) -> Rect {
     )
 }
 
+/// The glyph a review check paints with: open `○`, passed `✓`, failed `✗`.
+pub fn check_glyph(state: crate::domain::CheckState) -> &'static str {
+    match state {
+        crate::domain::CheckState::Open => "○",
+        crate::domain::CheckState::Passed => "✓",
+        crate::domain::CheckState::Failed => "✗",
+    }
+}
+
 /// Status glyph for a human status (the: static; no agent spin).
 pub fn status_glyph(status: HumanStatus) -> &'static str {
     match status {
@@ -977,12 +1019,19 @@ pub fn status_glyph(status: HumanStatus) -> &'static str {
 /// Glyph for a task blocked on another task or on something other than you.
 pub const BLOCKED_ELSEWHERE_GLYPH: &str = "□";
 
+/// Glyph for a task in review on an agent or on something other than you.
+pub const REVIEW_ELSEWHERE_GLYPH: &str = "△";
+
 /// Status glyph derived only from durable task state.
 pub fn task_status_glyph(task: &Task) -> &'static str {
-    if task.status == HumanStatus::Blocked
-        && task.block.as_ref().is_some_and(|block| !block.on.is_you())
-    {
+    let elsewhere = task.block.as_ref().is_some_and(|block| !block.on.is_you());
+    if task.status == HumanStatus::Blocked && elsewhere {
         BLOCKED_ELSEWHERE_GLYPH
+    } else if task.status == HumanStatus::Review
+        && elsewhere
+        && task.block.as_ref().is_some_and(|block| block.is_review())
+    {
+        REVIEW_ELSEWHERE_GLYPH
     } else if task.status == HumanStatus::Started
         && task
             .dispatch
@@ -3358,17 +3407,16 @@ fn paint_task_page(
             let room = (content_width as usize).saturating_sub(2);
             let line = match row.kind {
                 BlockRowKind::Heading => {
-                    const REPLY_HINT: &str = "r reply";
                     let left = present_line(&row.text, room);
                     let used = display_width(&left);
-                    let fill = room.saturating_sub(used + display_width(REPLY_HINT) + 2);
+                    let fill = room.saturating_sub(used + display_width(&row.hint) + 2);
                     let mut spans = vec![
                         Span::styled(gutter.to_string(), style_plain()),
                         Span::styled(left, style_bold()),
                     ];
                     if fill >= 2 {
                         spans.push(Span::styled(format!(" {} ", "─".repeat(fill)), style_dim()));
-                        spans.push(Span::styled(REPLY_HINT.to_string(), style_dim()));
+                        spans.push(Span::styled(row.hint.clone(), style_dim()));
                     }
                     bound_line(Line::from(spans), content_width as usize)
                 }
@@ -4227,7 +4275,45 @@ const BLOCK_EDIT_FOOTER: &[VerbEntry<'static>] = &[
     },
 ];
 
-/// Wrapped rows of the block card body, with the caret's (row, column) when focused.
+const REVIEW_CARD_FOOTER: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "enter",
+        label: "review",
+    },
+    VerbEntry {
+        key: "shift+enter",
+        label: "new check",
+    },
+    VerbEntry {
+        key: "tab",
+        label: "next field",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "cancel",
+    },
+];
+
+const REVIEW_EDIT_FOOTER: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "enter",
+        label: "save",
+    },
+    VerbEntry {
+        key: "shift+enter",
+        label: "new check",
+    },
+    VerbEntry {
+        key: "tab",
+        label: "next field",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "cancel",
+    },
+];
+
+/// Wrapped rows of the block or review card body, with the caret's (row, column) when focused.
 pub(crate) fn block_card_rows(
     card: &BlockCardPaint,
     width: usize,
@@ -4270,62 +4356,102 @@ pub(crate) fn block_card_rows(
             ]));
         }
     };
-    field(
-        &mut rows,
-        &mut caret,
-        "why",
-        &card.why,
-        "optional",
-        card.focus == 0,
-        card.cursor,
-    );
-    let mut on_spans = vec![
-        Span::styled(format!("{:<LABEL$}", "on"), label_style(card.focus == 1)),
-        Span::styled("‹ ".to_string(), style_dim()),
-    ];
-    for (index, kind) in ["you", "task", "other"].into_iter().enumerate() {
-        if index > 0 {
-            on_spans.push(Span::styled(" · ".to_string(), style_dim()));
+    let on_row = |rows: &mut Vec<Line<'static>>,
+                  caret: &mut Option<(u16, u16)>,
+                  focus: usize,
+                  kinds: [&str; 3]| {
+        let mut on_spans = vec![
+            Span::styled(
+                format!("{:<LABEL$}", "on"),
+                label_style(card.focus == focus),
+            ),
+            Span::styled("‹ ".to_string(), style_dim()),
+        ];
+        for (index, kind) in kinds.into_iter().enumerate() {
+            if index > 0 {
+                on_spans.push(Span::styled(" · ".to_string(), style_dim()));
+            }
+            let style = if kind == card.on_kind {
+                style_bold().add_modifier(Modifier::UNDERLINED)
+            } else {
+                style_dim()
+            };
+            on_spans.push(Span::styled(kind.to_string(), style));
         }
-        let style = if kind == card.on_kind {
-            style_bold().add_modifier(Modifier::UNDERLINED)
-        } else {
-            style_dim()
-        };
-        on_spans.push(Span::styled(kind.to_string(), style));
-    }
-    on_spans.push(Span::styled(" ›".to_string(), style_dim()));
-    rows.push(Line::from(on_spans));
-    if card.on_kind != "you" {
-        let placeholder = if card.on_kind == "task" {
-            "task number, like T12"
-        } else {
-            "what it waits on"
-        };
+        on_spans.push(Span::styled(" ›".to_string(), style_dim()));
+        rows.push(Line::from(on_spans));
+        if card.on_kind != "you" {
+            let placeholder = match card.on_kind {
+                "task" => "task number, like T12",
+                "agent" => "agent profile, like pi",
+                _ => "what it waits on",
+            };
+            field(
+                rows,
+                caret,
+                "",
+                &card.on_text,
+                placeholder,
+                card.focus == focus,
+                card.cursor,
+            );
+        } else if card.focus == focus {
+            *caret = Some((
+                u16::try_from(rows.len() - 1).unwrap_or(u16::MAX),
+                u16::try_from(LABEL).unwrap_or(u16::MAX),
+            ));
+        }
+    };
+    if card.review {
         field(
             &mut rows,
             &mut caret,
-            "",
-            &card.on_text,
-            placeholder,
+            "done",
+            &card.done,
+            "what was done",
+            card.focus == 0,
+            card.cursor,
+        );
+        field(
+            &mut rows,
+            &mut caret,
+            "check",
+            &card.checks,
+            "one per line",
             card.focus == 1,
             card.cursor,
         );
-    } else if card.focus == 1 {
-        caret = Some((
-            u16::try_from(rows.len() - 1).unwrap_or(u16::MAX),
-            u16::try_from(LABEL).unwrap_or(u16::MAX),
-        ));
+        field(
+            &mut rows,
+            &mut caret,
+            "next",
+            &card.next,
+            "optional",
+            card.focus == 2,
+            card.cursor,
+        );
+        on_row(&mut rows, &mut caret, 3, ["you", "agent", "other"]);
+    } else {
+        field(
+            &mut rows,
+            &mut caret,
+            "why",
+            &card.why,
+            "optional",
+            card.focus == 0,
+            card.cursor,
+        );
+        on_row(&mut rows, &mut caret, 1, ["you", "task", "other"]);
+        field(
+            &mut rows,
+            &mut caret,
+            "needs",
+            &card.needs,
+            "optional",
+            card.focus == 2,
+            card.cursor,
+        );
     }
-    field(
-        &mut rows,
-        &mut caret,
-        "needs",
-        &card.needs,
-        "optional",
-        card.focus == 2,
-        card.cursor,
-    );
     if let Some(refusal) = card.refusal.as_deref() {
         for row in crate::ui::edit::wrap_text(refusal, width.max(1)) {
             rows.push(Line::from(Span::styled(row.text, style_bold())));
@@ -4357,10 +4483,11 @@ fn paint_block_card(
             title: &card.title,
             content_rows: u16::try_from(rows.len()).unwrap_or(u16::MAX),
             min_content_width: 0,
-            legend: if card.edit {
-                BLOCK_EDIT_FOOTER
-            } else {
-                BLOCK_CARD_FOOTER
+            legend: match (card.review, card.edit) {
+                (true, true) => REVIEW_EDIT_FOOTER,
+                (true, false) => REVIEW_CARD_FOOTER,
+                (false, true) => BLOCK_EDIT_FOOTER,
+                (false, false) => BLOCK_CARD_FOOTER,
             },
             dismiss: None,
             legend_hits: None,
@@ -4871,11 +4998,8 @@ fn row_reply_rows(
             });
         }
     };
-    if let Some(why) = reply.why {
-        labelled("why    ", why, style_plain(), &mut rows);
-    }
-    if let Some(needs) = reply.needs {
-        labelled("needs  ", needs, style_plain(), &mut rows);
+    for (label, text) in reply.context.into_iter().flatten() {
+        labelled(label, text, style_plain(), &mut rows);
     }
     let lead = format!("{INDENT}└ you  ");
     let indent = display_width(&lead);
@@ -4892,7 +5016,7 @@ fn row_reply_rows(
             " ".repeat(indent)
         };
         let text = if empty {
-            "reply…".to_string()
+            reply.placeholder.to_string()
         } else {
             super::terminal_text(row)
         };
@@ -4914,10 +5038,27 @@ fn row_reply_rows(
     (rows, Some(caret))
 }
 
-/// The peek's block lines, one per item before wrapping. Empty unless the task is blocked.
+/// The peek's block or review lines, one per item before wrapping. Empty unless the task is
+/// blocked or in review.
 fn peek_block_lines(task: &Task, tasks: &[Task]) -> Vec<(String, Style)> {
     use crate::ui::queue::{block_wait, BlockWait};
     let mut lines = Vec::new();
+    if task.status == HumanStatus::Review {
+        let Some(block) = task.block.as_ref().filter(|block| block.is_review()) else {
+            return lines;
+        };
+        let one_line = |text: &str| super::terminal_text(&text.replace(['\n', '\r'], " "));
+        if let Some(done) = block.done.as_deref() {
+            lines.push((format!("done  {}", one_line(done)), style_plain()));
+        }
+        for check in &block.checks {
+            lines.push((
+                format!("{} {}", check_glyph(check.state), one_line(&check.text)),
+                style_plain(),
+            ));
+        }
+        return lines;
+    }
     match block_wait(task, tasks) {
         None => return lines,
         Some(BlockWait::BlockerDone(number)) => {

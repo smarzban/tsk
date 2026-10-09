@@ -3,7 +3,7 @@ title: Storage
 description: Task data, backups, deleted tasks, and update checks.
 ---
 
-The board, CLI, and Herdr plugin share one store. The current store format is v8.
+The board, CLI, and Herdr plugin share one store. The current store format is v9.
 
 ## Location
 
@@ -42,11 +42,12 @@ You were dispatched to T{number} ({title}) in worktree {worktree} on branch {bra
 2. Read the repo's agent instructions (AGENTS.md or CLAUDE.md) if present.
 3. Work only on {branch}. Run the project's checks before saying you are done.
 4. Push and open a pull request into {base}. Never merge it.
-5. Set the task to review with one line on what to look at. When you need a human, block it with your question: `tsk status {number} blocked --why "…"`, adding `--needs` and one `--option` per choice, then stop.
-6. On a relaunch, read the answers to your last question first: a relaunch closes the block, so they are the `replies` of the last `past_blocks` entry in `tsk list {number} --json`.
+5. Set the task to review with what you did and what to check: `tsk status {number} review --done "…" --check "…"`, one `--check` per thing to verify, adding `--next` for what comes after. When you need a human, block it with your question: `tsk status {number} blocked --why "…"`, adding `--needs` and one `--option` per choice, then stop.
+6. On a relaunch, first read whichever record closed last (`closed_at`) in `tsk list {number} --json`: the `replies` of the last `past_blocks` entry, or the `feedback` and failed `checks` of the last `past_reviews` entry when it was `sent_back`.
+7. A message `[tsk T{number} sent back] …` is review feedback, with any failed checks: address it, then set review again.
 ```
 
-A profile with its own `prompt` replaces the default entirely. The rendered prompt is always appended to the command as its last argument. `env` is an optional table of string values passed to the launched command unchanged. tsk also sets `TSK_AGENT` to the profile name, so the agent's blocks and replies carry its name.
+A profile with its own `prompt` replaces the default entirely. The rendered prompt is always appended to the command as its last argument. `env` is an optional table of string values passed to the launched command unchanged. tsk also sets `TSK_AGENT` to the profile name, so the agent's blocks, reviews, and replies carry its name.
 
 A malformed `config.toml` does not block the board or CLI work that does not assign a task. The board opens without profiles and shows the error on its status row. `tsk add` and `tsk edit` read the file only when an assignee is supplied; a configuration error then exits 2 without saving.
 
@@ -58,12 +59,12 @@ The command and prompt templates support `{number}`, `{title}`, `{notes}`, `{ste
 | --- | --- |
 | `tsk.json` | Current tasks and archived-project records |
 | `tsk.json.1` | Previous valid task document |
-| `tsk.json.v<N>` | Backup made when migrating an older store format, such as `tsk.json.v7` for the v7 → v8 migration |
+| `tsk.json.v<N>` | Backup made when migrating an older store format, such as `tsk.json.v8` for the v8 → v9 migration |
 | `config.toml` | Settings, including agent launch profiles, seeded with commented examples on the first full board open |
 | `delivery.json` | Which starter tasks this install has received or dismissed, and the newest release note it has seen |
 | `launchers\`, `cleanups\` | Windows only: dispatch launchers and cleanup progress |
 
-An older binary refuses a newer or unversioned store instead of rewriting it. Use a compatible tsk version to open it. On first save, older stores migrate to v8. v6 added task assignees, dispatch base branches, and dispatch records; v7 added blocks (why, needs, options, what the block waits on, and replies) and the block undo step; v8 adds the undo step for a start that dispatched. The original document is saved as `tsk.json.v<N>`, for example `tsk.json.v5` from v0.11. A blocked task from an older store keeps its status with no block and reads as blocked on you. Earlier stores still run through each migration in order, including v5 batch undo and the v3 to v4 move from ready to open.
+An older binary refuses a newer or unversioned store instead of rewriting it. Use a compatible tsk version to open it. On first save, older stores migrate to v9. v6 added task assignees, dispatch base branches, and dispatch records; v7 added blocks (why, needs, options, what the block waits on, and replies) and the block undo step; v8 added the undo step for a start that dispatched; v9 adds review rounds (done, checks, next, who the review is on, feedback, and how each round closed). The original document is saved as `tsk.json.v<N>`, for example `tsk.json.v5` from v0.11. A blocked task from an older store keeps its status with no block and reads as blocked on you; a task in review keeps its status with no round and reads as in review on you. Earlier stores still run through each migration in order, including v5 batch undo and the v3 to v4 move from ready to open.
 
 Archived tasks stay in the task document with their existing status. [Archive and restore](/docs/board/#archive).
 

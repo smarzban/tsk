@@ -2646,20 +2646,32 @@ pub fn deliver_reply(
     }
 }
 
-/// The status-row line for a reply-and-start that delivered (or tried to).
-pub fn delivery_message(assignee: &str, delivery: &Delivery) -> String {
+/// The status-row line for a reply-and-start that delivered (or tried to). `noun` names what
+/// was sent: `reply` for an unblock, `feedback` for a send-back.
+pub fn delivery_message(assignee: &str, noun: &str, delivery: &Delivery) -> String {
     match delivery {
-        Delivery::Sent => format!("started · reply sent to @{assignee}"),
+        Delivery::Sent => format!("started · {noun} sent to @{assignee}"),
         Delivery::AgentWaiting => {
-            format!("started · @{assignee} is waiting on a prompt; reply kept on the task")
+            format!("started · @{assignee} is waiting on a prompt; {noun} kept on the task")
         }
         Delivery::Unreachable(_) => {
-            format!("started · could not reach @{assignee}; reply kept on the task")
+            format!("started · could not reach @{assignee}; {noun} kept on the task")
         }
         Delivery::NotInPane => format!(
-            "started · reply not sent: @{assignee} is not in its pane; reply kept on the task"
+            "started · {noun} not sent: @{assignee} is not in its pane; {noun} kept on the task"
         ),
-        Delivery::NotInHerdr => format!("started · reply not sent: {NO_LAUNCH_NOT_IN_HERDR}"),
+        Delivery::NotInHerdr => format!("started · {noun} not sent: {NO_LAUNCH_NOT_IN_HERDR}"),
+    }
+}
+
+/// The message a send-back delivers: this action's feedback, then the round's failed checks.
+pub fn send_back_text(feedback: Option<&str>, failed: &[&str]) -> Option<String> {
+    let feedback = feedback.map(str::trim).filter(|text| !text.is_empty());
+    let failed = (!failed.is_empty()).then(|| format!("Failed checks: {}", failed.join("; ")));
+    match (feedback, failed) {
+        (Some(feedback), Some(failed)) => Some(format!("{feedback} {failed}")),
+        (Some(feedback), None) => Some(feedback.to_string()),
+        (None, failed) => failed,
     }
 }
 
@@ -5532,8 +5544,8 @@ mod tests {
     }
 
     #[test]
-    fn cleaned_marker_is_optional_and_store_format_stays_v8() {
-        assert_eq!(crate::domain::STORE_FORMAT_VERSION, 8);
+    fn cleaned_marker_is_optional_and_store_format_stays_v9() {
+        assert_eq!(crate::domain::STORE_FORMAT_VERSION, 9);
         let record = Dispatch {
             argv: vec!["agent".into()],
             worktree: "/tmp/worktree".into(),
