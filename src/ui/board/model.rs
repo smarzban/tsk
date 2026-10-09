@@ -4554,6 +4554,19 @@ impl BoardModel {
         self.task_list_owns_input() && self.mark_mode && !self.marked_ids.is_empty()
     }
 
+    /// Marked tasks a palette command would act on: the task list under an open palette owns
+    /// the marks exactly as [`Self::bulk_verb_active`] would once the palette closes.
+    pub(super) fn marks_under_palette(&self) -> usize {
+        let list_underneath = self.input_mode == BoardInputMode::Normal
+            && self.popup == BoardPopup::None
+            && !self.projects_overview();
+        if list_underneath && self.mark_mode {
+            self.marked_ids.len()
+        } else {
+            0
+        }
+    }
+
     /// Mark targets when the task list owns input, otherwise the cursor target.
     pub fn verb_target_ids(&self) -> Vec<Uuid> {
         if self.task_list_owns_input() && self.mark_mode && !self.marked_ids.is_empty() {

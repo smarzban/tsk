@@ -16112,11 +16112,24 @@ mod quick_assign_tests {
             select(&mut domain, &mut model, id);
             apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
         }
+        // Through the palette, which owns input while it lists the command.
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenCommandPalette,
+            None,
+        )
+        .expect("palette");
+        let index = model
+            .visible_commands()
+            .iter()
+            .position(|command| command.label == "chain in order")
+            .expect("the open palette offers chain in order");
         handle(
             &temp,
             &mut domain,
             &mut model,
-            BoardIntent::ChainAfter,
+            BoardIntent::SelectCommand(index),
             &mut host,
         );
         let disk = temp.store.load().expect("load");
