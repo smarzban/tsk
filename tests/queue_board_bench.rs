@@ -1,4 +1,4 @@
-//! Performance harness for (Frame Scheduler): cold start to first frame, and
+//! Performance harness for the frame scheduler: cold start to first frame, and
 //! keypress-to-repaint latency during navigation, both at the 80x24 standard tier with a
 //! 100-task fixture.
 //!
@@ -13,12 +13,12 @@
 //! measured sample; the assertions read the design's own numbers (worst-of-N cold starts,
 //! p99 of many navigation frames), not a mean standing in for either.
 //!
-//! Both are `#[ignore]`d by default: an unoptimized debug build is not the profile's
-//! bounds describe (a debug build of `keypress_to_repaint_...` measures a ~22ms p99 against
+//! Both are `#[ignore]`d by default: an unoptimized debug build is not the profile
+//! these bounds describe (a debug build of `keypress_to_repaint_...` measures a ~22ms p99 against
 //! the 16ms bound -- noise from the missing optimizer, not a renderer regression -- observed
 //! at 22.22ms locally and 22ms in the build report), so leaving them unignored would make the
 //! ordinary debug `cargo test` green bar flaky for a reason this task has no business fixing.
-//! Run them explicitly, in release, to get the numbers the AC is about:
+//! Run them explicitly, in release, to get the numbers these bounds check:
 //!
 //! cargo test --release --test queue_board_bench -- --ignored --test-threads=1 --nocapture
 //!
@@ -252,8 +252,8 @@ fn keypress_to_repaint_p99_under_16ms_during_navigation_at_80x24_with_100_tasks(
 
     let mut for_stats = samples.clone();
     let measured_p99 = p99(&mut for_stats);
-    // `worst` is reported but deliberately not asserted: p99 is the AC's own
-    // statistic, and across four release runs the observed worst single frame breached the
+    // `worst` is reported but deliberately not asserted: p99 is the statistic
+    // this bench checks, and across four release runs the observed worst single frame breached the
     // 16ms bound in three of them while p99 stayed under it -- asserting on `worst` here
     // would make this suite permanently flaky on a shared host, not catch a real regression.
     let worst = *samples.iter().max().expect("at least one sample");

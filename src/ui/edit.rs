@@ -147,7 +147,7 @@ impl EditBuffer {
 
 /// per character: a line break is a `\r\n` pair, a lone `\n`, or a lone `\r`, so
 /// either character ends a line. The one definition of a break ([`super::split_line_breaks`])
-/// read from the cursor's side of it: the AC's current line is the maximal run around the
+/// read from the cursor's side of it: the current line is the maximal run around the
 /// cursor holding no break, and the presenters cut their rows on the very same characters,
 /// so the line Home and End move along is the row the draft is painted on.
 fn is_line_break(character: char) -> bool {
