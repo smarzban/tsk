@@ -2687,3 +2687,55 @@ fn list_orders_each_status_group_like_its_board_section() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn list_all_groups_interleaved_scopes_by_first_row_and_keeps_board_order_inside() {
+    let _env = env_lock();
+    let dir = temp_state_dir("interleaved-scopes");
+    let other = TaskScope::Project {
+        path: "/projects/other".into(),
+    };
+    let mut state = DomainState::new();
+    for number in 1..=8 {
+        let scope = if number % 2 == 1 {
+            TaskScope::Global
+        } else {
+            other.clone()
+        };
+        state
+            .create(
+                format!("task {number}"),
+                None,
+                scope,
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create task");
+    }
+    TaskStore::new(&dir).save(&state).expect("seed store");
+
+    // Started in capture order (newest change first lists 4, 3, 2, 1); picked in
+    // reverse capture order (oldest pick first lists 8, 7, 6, 5).
+    for task in ["T1", "T2", "T3", "T4"] {
+        set_status(&dir, task, "started");
+    }
+    for task in ["T8", "T7", "T6", "T5"] {
+        set_status(&dir, task, "ready");
+    }
+
+    // JSON is the flat board order, scopes interleaved.
+    assert_eq!(
+        listed_numbers(&dir, &["--all"]),
+        vec![4, 3, 2, 1, 8, 7, 6, 5]
+    );
+    // Human output groups each status by scope: groups ordered by their first row,
+    // rows inside a group in board order.
+    let human = cli(&dir, &["list", "--all"]);
+    assert_eq!(human.code, 0, "{}", human.stderr);
+    assert_eq!(
+        human.stdout,
+        "STARTED\n  other\n    - 4 task 4\n    - 2 task 2\n  desk\n    - 3 task 3\n    - 1 task 1\n\nREADY\n  other\n    - 8 task 8\n    - 6 task 6\n  desk\n    - 7 task 7\n    - 5 task 5\n"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}

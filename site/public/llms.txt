@@ -22,6 +22,7 @@ The quit shortcut exits from non-editor board surfaces, including task pages, He
 - `tsk guide` prints the workflow; `tsk setup` detects agents and can install the skill; `tsk setup <agent>` targets one agent
 - The skill covers rules of engagement, board language, the exit contract, and workflows, and points at `tsk help <command>` for syntax; its `Refine a task` section shapes a rough task into a brief on the board (propose, then write)
 - `tsk list T<n>` returns the complete task, including notes, steps, and thread, in human-readable or JSON form
+- `tsk list` orders rows within each status like the board: `ready` oldest pick first, `open` oldest capture first, everything else most recent status change first. `--json` is that flat board order; with `--all`, human output groups each status by scope, ordering the groups by their first row and keeping the board order inside each group
 - Guide: https://gettsk.sh/docs/agents.md
 - CLI: https://gettsk.sh/docs/cli.md
 - `tsk help [<command>]` prints the CLI or one command's syntax reference.
