@@ -771,6 +771,12 @@ fn expanded_page_stashes_notes_and_scope_across_esc_and_saves_like_quick_add() {
         Some(tsk_tui::ui::capture::CaptureField::Base)
     );
     apply(&mut domain, &mut model, BoardIntent::FormFocusNext, None);
+    assert_eq!(model.input_mode(), BoardInputMode::SelectAfter);
+    assert_eq!(
+        model.form_focus(),
+        Some(tsk_tui::ui::capture::CaptureField::After)
+    );
+    apply(&mut domain, &mut model, BoardIntent::FormFocusNext, None);
     assert_eq!(model.input_mode(), BoardInputMode::EditThread);
     assert_eq!(
         model.form_focus(),
@@ -1464,6 +1470,12 @@ fn expanded_quick_add_sets_thread_and_steps() {
     assert_eq!(
         model.form_focus(),
         Some(tsk_tui::ui::capture::CaptureField::Base)
+    );
+    apply(&mut domain, &mut model, BoardIntent::FormFocusNext, None);
+    assert_eq!(model.input_mode(), BoardInputMode::SelectAfter);
+    assert_eq!(
+        model.form_focus(),
+        Some(tsk_tui::ui::capture::CaptureField::After)
     );
     apply(&mut domain, &mut model, BoardIntent::FormFocusNext, None);
     assert_eq!(model.input_mode(), BoardInputMode::EditThread);

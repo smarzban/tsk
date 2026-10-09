@@ -2886,6 +2886,7 @@ fn palette_lists_exactly_m1_commands_for_selection_filters_by_subsequence_and_di
         "change scope",
         "set assignee",
         "set base",
+        "set after…",
         "new task",
         "delete",
         "undo",
@@ -4549,7 +4550,10 @@ fn view_tab_selection_wraps_without_starting_task_edit_and_ctrl_e_opens_inline_s
         .expect("Tab leaves Assignee for Base");
     assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
-        .expect("Tab leaves Base for Thread");
+        .expect("Tab leaves Base for After");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectAfter);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("Tab leaves After for Thread");
     assert_eq!(model.input_mode(), BoardInputMode::SelectThread);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
         .expect("Tab leaves Thread for Scope");
@@ -4594,7 +4598,10 @@ fn task_edit_tab_cycles_every_step_before_assignee_thread_and_scope() {
         .expect("Tab leaves Assignee for Base");
     assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
-        .expect("Tab leaves Base for Thread");
+        .expect("Tab leaves Base for After");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectAfter);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("Tab leaves After for Thread");
     assert_eq!(model.input_mode(), BoardInputMode::SelectThread);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
         .expect("Tab reaches Scope");
