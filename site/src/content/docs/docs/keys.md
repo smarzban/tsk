@@ -20,8 +20,7 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 | Move through wide views | `→` / `←` or `l` / `h` |
 | Add task | `+` |
 | Edit title | `ctrl+e` |
-| Start open or ready task | `ctrl+s` |
-| Dispatch assigned task; press twice to relaunch an existing dispatch. On an unassigned task, pick an agent first | `ctrl+g` |
+| Start open or ready task; an assigned one dispatches to its agent | `ctrl+s` |
 | Assign: pick an agent profile or **none** | `@` |
 | Set ready, the picked queue | `ctrl+n` |
 | Set open, the inbox | `ctrl+o` |
@@ -50,7 +49,7 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 
 `Shift+M` enters or leaves multi-select while the board owns input. While it is active, `Space`, shifted arrows, and a plain task click change marks instead of opening a task. Removing the last mark leaves the mode active. `Shift+M` again from the board, `Esc`, a task action, or a lens change leaves it and clears the set. Text entry keeps `Shift+M` as a capital `M`; `Esc` leaves multi-select before cancelling that surface, except in a filter, view, assignee, or base picker, where it closes the picker first.
 
-When tasks are marked, the status, delete, archive, and `@` shortcuts act on that set; without marks they act on the cursor. `Enter` and `ctrl+e` remain cursor-only. `ctrl+g` on a marked set opens one card listing the tasks it will launch and the ones it skips; `y` launches them all, `Esc` cancels and keeps the marks. Without marks, `ctrl+g` dispatches the cursor task; on a dispatched task, the first press asks and the second relaunches. `ctrl+d` on a task with a live dispatch, or a marked set holding some, opens a cleanup card: `y` completes and cleans in the background, `n` completes and keeps everything, and `Esc` cancels (a bulk card keeps the marks). After `y`, `Esc` hides the card while cleanup continues, or closes a finished one. When nothing listed can be cleaned (uncommitted changes) there is no `y` choice. See [Agents](/docs/board/#agents). `ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Bulk block and review toggles send every target to blocked or review unless all targets already have that status, in which case they all return to ready. `ctrl+n` and `ctrl+o` can send done tasks directly to ready or open. One `ctrl+u` reverses an entire marked completion, deletion, or block.
+When tasks are marked, the status, delete, archive, and `@` shortcuts act on that set; without marks they act on the cursor. `Enter` and `ctrl+e` remain cursor-only. `ctrl+s` on an assigned task that was never dispatched dispatches it; on a dispatched task whose agent is gone it asks first (`y` relaunch, `n` just start, `Esc` cancel). On a marked set where any task would launch, `ctrl+s` opens one card listing what launches, what only starts, and what stays unstarted; `y` starts and launches them all, `Esc` cancels and keeps the marks. `ctrl+u` right after a start that dispatched restores the status and leaves the agent running. `ctrl+d` on a task with a live dispatch, or a marked set holding some, opens a cleanup card: `y` completes and cleans in the background, `n` completes and keeps everything, and `Esc` cancels (a bulk card keeps the marks). After `y`, `Esc` hides the card while cleanup continues, or closes a finished one. When nothing listed can be cleaned (uncommitted changes) there is no `y` choice. See [Agents](/docs/board/#agents). `ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Bulk block and review toggles send every target to blocked or review unless all targets already have that status, in which case they all return to ready. `ctrl+n` and `ctrl+o` can send done tasks directly to ready or open. One `ctrl+u` reverses an entire marked completion, deletion, or block.
 
 ## Block card
 
@@ -78,7 +77,6 @@ These keys apply in **view mode**:
 | Add step | `ctrl+a` |
 | Edit title or selected step | `ctrl+e` |
 | Change task status | Board status shortcuts above |
-| Dispatch assigned task; on an unassigned task, pick an agent first | `ctrl+g` |
 | Assign: pick an agent profile or **none** | `@` or click the footer's `@name` / `+ assign` |
 | Mark/remove selected step; soft-delete your selected reply; otherwise confirm/delete task | `ctrl+x` |
 | All shortcuts | `?` |
@@ -87,7 +85,7 @@ These keys apply in **view mode**:
 
 Click a step to select it. Click **+ step** to add. Field clicks become editable only after task editing starts.
 
-In the reply box, `Enter` starts a new line, `Shift+Enter` saves the reply, `ctrl+s` saves it and unblocks the task to ready, and `Esc` cancels. An agent's replies cannot be edited or deleted.
+In the reply box, `Enter` starts a new line, `Shift+Enter` saves the reply, `ctrl+s` saves it and unblocks the task, and `Esc` cancels. An unassigned task unblocks to ready; an assigned one starts, which dispatches it, or asks before relaunching a gone agent. An agent's replies cannot be edited or deleted.
 
 ## Editing
 
@@ -136,10 +134,11 @@ In Herdr quick capture, `Shift+Enter` saves and closes the popup. `Esc` closes a
 | Assignee picker | Type to filter; arrows or `Tab` select; `Enter` applies; `Esc` closes with no change |
 | Base picker | Open from palette **set base**, task footer `⎇`, or edit **Base** field; type to filter; arrows or `Tab` select; `Enter` applies; `Esc` closes with no change. No dedicated key |
 | Board search | Type or paste; `Backspace` edits; `Enter` pins; `Esc` clears and closes |
-| Palette | Type to filter; arrows or `Tab` select; `Enter` runs; `Esc` closes. **set assignee** opens the assignee picker; **set base** opens the branch picker (both support marked sets); tasks offer **dispatch to @name** or **dispatch again** |
+| Palette | Type to filter; arrows or `Tab` select; `Enter` runs; `Esc` closes. **set assignee** opens the assignee picker; **set base** opens the branch picker (both support marked sets); a dispatched task offers **dispatch again** |
 | Help | Type or paste to filter by key or action; arrows, page keys, or wheel scroll; `Esc` clears the search, then closes |
 | Archived-project launch prompt | `y` restores; `n` or `Esc` keeps archived; `?` opens Help |
-| Bulk dispatch card | `y` launches every listed task; `Esc` or `[x]` cancels and keeps the marks; `↑`/`↓` or page keys scroll a long set |
+| Start card (marked set) | `y` starts and launches every listed task; `Esc` or `[x]` cancels and keeps the marks; `↑`/`↓` or page keys scroll a long set |
+| Relaunch card | `y` relaunches the gone agent; `n` just starts; `Esc` or `[x]` cancels |
 | Dispatch cleanup prompt | `y` completes and cleans in the background; `n` completes only; `Esc` or `[x]` cancels; `↑`/`↓` or page keys scroll a long marked set. Nothing cleanable omits `y`. After `y`, `Esc` or `[x]` hides the card and cleanup continues; on a finished card it closes |
 | Failed save | `r` or `Enter` retries; `c` or `Esc` cancels |
 

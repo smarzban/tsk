@@ -238,19 +238,24 @@ migration or design work they imply. What the behaviour *is* lives in the docs
 ### Assignee and dispatch
 
 - Assignee is a label naming a `config.toml` profile; it never changes status or triggers
-  anything. Names normalize with the thread normalizer and exact-match a defined profile at the
+  anything by itself, it only decides what a start does (below). Names normalize with the thread normalizer and exact-match a defined profile at the
   boundary; a task keeps a name whose profile was removed and renders it as-is.
 - Profiles are argv templates plus an optional prompt. tsk substitutes `{number} {title} {notes}
   {steps} {worktree} {branch} {base}` and nothing else; the prompt is appended as the last argument;
   the launch is `$SHELL -lc '<quoted argv>'`, one command line, never chained. tsk carries no
   knowledge of any harness's flags. A malformed `config.toml` never blocks the board or CLI work
   that does not assign.
-- Dispatch is its own verb, never a side effect of `started`: not undoable, and it sets `started`
-  in the same save as the record. Outside `HERDR_ENV=1` it refuses. A marked set gets one confirm
-  card, then every listed task takes the single-task path (check, launch, commit in
-  `src/dispatch.rs`) off the event loop and is saved as it lands. Quit and further dispatches wait
-  for a running batch, or launched agents lose their record. Relaunch (`dispatch again`) stays
-  cursor-only.
+- Starting an assigned task that was never dispatched dispatches it (ADR-0005; `ctrl+g` is gone).
+  Every start goes through `dispatch::start_route`: unassigned, a running agent, or the assignee's
+  own start (`TSK_AGENT`) is a plain status change; uncertainty (Herdr cannot answer, not in
+  Herdr) never launches; a gone agent asks (board) or refuses `agent-gone` (CLI). Dispatch sets
+  `started` in the same save as the record; a failed launch leaves the task unstarted. Only a
+  single-task start that dispatched is undoable (`UndoEntry::Start`, status only, the agent keeps
+  running). Outside `HERDR_ENV=1` a launch refuses. A marked set gets one confirm card, then every
+  listed task takes the single-task path (check, launch, commit in `src/dispatch.rs`) off the
+  event loop and is saved as it lands. Quit and further dispatches wait for a running batch, or
+  launched agents lose their record. Relaunch (the relaunch card, `dispatch again`) stays
+  cursor-only; dispatched tasks in a marked set only start.
 - The dispatch record stays on the task through every later status change. `◉` is derived only
   from `record present && !record.cleaned && status == started`, never from agent or pane
   state.

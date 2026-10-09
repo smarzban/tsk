@@ -502,6 +502,15 @@ pub trait DispatchHost {
         base: Option<&str>,
         label: &str,
     ) -> Result<CreatedWorktree, String>;
+    /// Open a Herdr workspace on an existing worktree: a relaunch whose workspace was closed.
+    fn open_worktree(
+        &mut self,
+        _project: &Path,
+        _worktree: &Path,
+        _label: &str,
+    ) -> Result<CreatedWorktree, String> {
+        Err("reopening a worktree is not supported".into())
+    }
     fn inspect_cleanup(
         &mut self,
         _project: &Path,
@@ -928,6 +937,23 @@ impl DispatchHost for SystemDispatchHost {
         }
         let output = command
             .args(["--label", label])
+            .output()
+            .map_err(|error| format!("could not run herdr: {error}"))?;
+        created_worktree_from_value(herdr_json(output)?)
+    }
+
+    fn open_worktree(
+        &mut self,
+        project: &Path,
+        worktree: &Path,
+        label: &str,
+    ) -> Result<CreatedWorktree, String> {
+        let output = Command::new("herdr")
+            .args(["worktree", "open", "--cwd"])
+            .arg(project)
+            .arg("--path")
+            .arg(worktree)
+            .args(["--label", label, "--no-focus"])
             .output()
             .map_err(|error| format!("could not run herdr: {error}"))?;
         created_worktree_from_value(herdr_json(output)?)
@@ -2314,6 +2340,58 @@ pub fn run_with_host(
     run_with_host_base(state, id, profiles, again, in_herdr, None, host)
 }
 
+/// What starting a task does, decided before any status change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartRoute {
+    /// A plain status change: the task is unassigned, its agent is still running, or the
+    /// caller is that agent.
+    Plain,
+    /// Assigned and never dispatched: dispatch it, which starts it.
+    Dispatch,
+    /// Dispatched before, and the agent is gone: relaunch only when asked.
+    AgentGone { assignee: String },
+}
+
+/// Route a start of `task` by `actor` (`you`, or the agent profile named by `TSK_AGENT`).
+///
+/// A dispatched task asks Herdr whether its agent still runs in the workspace's root pane.
+/// Uncertainty never launches and never prompts: outside Herdr, or when Herdr cannot answer
+/// whether an agent is there, the start is plain. A cleaned record or a workspace Herdr no
+/// longer has means the agent is gone.
+pub fn start_route(
+    task: &Task,
+    actor: &str,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> StartRoute {
+    let Some(assignee) = task.assignee.as_deref() else {
+        return StartRoute::Plain;
+    };
+    // An agent starting its own task never launches another copy of itself.
+    if actor == assignee {
+        return StartRoute::Plain;
+    }
+    let Some(record) = task.dispatch.as_ref() else {
+        return StartRoute::Dispatch;
+    };
+    let gone = StartRoute::AgentGone {
+        assignee: assignee.to_string(),
+    };
+    if record.cleaned {
+        return gone;
+    }
+    if !in_herdr {
+        return StartRoute::Plain;
+    }
+    let Ok(pane) = host.root_pane(&record.herdr_workspace_id) else {
+        return gone;
+    };
+    match host.pane_has_agent(&pane) {
+        Ok(false) => gone,
+        Ok(true) | Err(_) => StartRoute::Plain,
+    }
+}
+
 /// One-off base overrides do not edit the task's saved preference or an existing dispatch.
 #[allow(clippy::too_many_arguments)]
 pub fn run_with_host_base(
@@ -2533,10 +2611,7 @@ pub fn launch_with_host(
                     recreated.workspace_id,
                     recreated.root_pane_id,
                 )
-            } else {
-                let pane = host
-                    .root_pane(&existing.herdr_workspace_id)
-                    .map_err(DispatchError::Herdr)?;
+            } else if let Ok(pane) = host.root_pane(&existing.herdr_workspace_id) {
                 (
                     existing.worktree.clone(),
                     existing.branch.clone(),
@@ -2546,6 +2621,22 @@ pub fn launch_with_host(
                     existing.base_remote.clone(),
                     existing.herdr_workspace_id.clone(),
                     pane,
+                )
+            } else {
+                // The workspace was closed but the worktree is kept: open a new workspace on it.
+                let label = workspace_label(number, &task.title);
+                let reopened = host
+                    .open_worktree(project, Path::new(&existing.worktree), &label)
+                    .map_err(DispatchError::Herdr)?;
+                (
+                    reopened.path.to_string_lossy().into_owned(),
+                    existing.branch.clone(),
+                    existing.base.clone(),
+                    existing.base_ref.clone(),
+                    existing.base_commit.clone(),
+                    existing.base_remote.clone(),
+                    reopened.workspace_id,
+                    reopened.root_pane_id,
                 )
             }
         } else {
@@ -5164,8 +5255,8 @@ mod tests {
     }
 
     #[test]
-    fn cleaned_marker_is_optional_and_store_format_stays_v7() {
-        assert_eq!(crate::domain::STORE_FORMAT_VERSION, 7);
+    fn cleaned_marker_is_optional_and_store_format_stays_v8() {
+        assert_eq!(crate::domain::STORE_FORMAT_VERSION, 8);
         let record = Dispatch {
             argv: vec!["agent".into()],
             worktree: "/tmp/worktree".into(),

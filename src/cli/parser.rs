@@ -393,6 +393,10 @@ pub struct FlagStatus {
     pub task: Option<TaskAddress>,
     pub status: Option<HumanStatus>,
     pub clean: bool,
+    /// `--again`: with `started`, relaunch a dispatched task whose agent is gone.
+    pub again: bool,
+    /// `--no-dispatch`: with `started`, change the status only, never launch.
+    pub no_dispatch: bool,
     pub state_dir: Option<PathBuf>,
     pub help: bool,
     /// Block reason flags, accepted only with `blocked`.
@@ -424,6 +428,8 @@ pub fn parse_flag_status(args: &[String]) -> Result<FlagStatus, String> {
         task: None,
         status: None,
         clean: false,
+        again: false,
+        no_dispatch: false,
         state_dir: None,
         help: false,
         block: BlockFlags::default(),
@@ -451,6 +457,14 @@ pub fn parse_flag_status(args: &[String]) -> Result<FlagStatus, String> {
         match flag {
             "--clean" => {
                 parsed.clean = true;
+                index += 1;
+            }
+            "--again" => {
+                parsed.again = true;
+                index += 1;
+            }
+            "--no-dispatch" => {
+                parsed.no_dispatch = true;
                 index += 1;
             }
             "--help" => {
@@ -492,6 +506,15 @@ pub fn parse_flag_status(args: &[String]) -> Result<FlagStatus, String> {
     }
     if parsed.clean && parsed.status.is_some() && parsed.status != Some(HumanStatus::Done) {
         return Err("--clean requires done status".into());
+    }
+    if (parsed.again || parsed.no_dispatch)
+        && parsed.status.is_some()
+        && parsed.status != Some(HumanStatus::Started)
+    {
+        return Err("--again and --no-dispatch require started status".into());
+    }
+    if parsed.again && parsed.no_dispatch {
+        return Err("--again and --no-dispatch cannot be combined".into());
     }
     if !parsed.block.is_empty()
         && parsed.status.is_some()
@@ -779,6 +802,8 @@ mod tests {
                 task: Some(TaskAddress::Number(4)),
                 status: Some(HumanStatus::Blocked),
                 clean: false,
+                again: false,
+                no_dispatch: false,
                 state_dir: Some(std::path::PathBuf::from("/tmp/dir")),
                 help: false,
                 block: super::BlockFlags::default(),
@@ -804,6 +829,20 @@ mod tests {
             parse_flag_status(&["tsk".into(), "status".into(), "T4".into(), "open".into()])
                 .expect("open status");
         assert_eq!(parsed.status, Some(HumanStatus::Open));
+        let args = |rest: &[&str]| {
+            ["tsk", "status", "T4"]
+                .iter()
+                .chain(rest)
+                .map(|arg| arg.to_string())
+                .collect::<Vec<_>>()
+        };
+        let parsed = parse_flag_status(&args(&["started", "--no-dispatch"])).expect("no dispatch");
+        assert!(parsed.no_dispatch && !parsed.again);
+        let parsed = parse_flag_status(&args(&["started", "--again"])).expect("again");
+        assert!(parsed.again && !parsed.no_dispatch);
+        assert!(parse_flag_status(&args(&["ready", "--again"])).is_err());
+        assert!(parse_flag_status(&args(&["review", "--no-dispatch"])).is_err());
+        assert!(parse_flag_status(&args(&["started", "--again", "--no-dispatch"])).is_err());
     }
 
     #[test]

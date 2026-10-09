@@ -22,5 +22,5 @@
 │────────────────────────────────────────│
 │                                        │
 │ moved T3 to started                    │
-│ enter open · ctrl+s start · ctrl+g dis…│
+│ enter open · ctrl+s start · ctrl+o inb…│
 └────────────────────────────────────────┘

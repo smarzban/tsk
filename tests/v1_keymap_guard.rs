@@ -36,7 +36,6 @@ fn normal_mode_keymap_equals_the_readme_and_queue_board_v1_set() {
         (KeyCode::Char('h'), BoardIntent::CollapseDetail, false),
         (KeyCode::Esc, BoardIntent::CloseLayer, false),
         (KeyCode::Char('s'), BoardIntent::PrimaryVerb, true),
-        (KeyCode::Char('g'), BoardIntent::Dispatch, true),
         (KeyCode::Char('@'), BoardIntent::OpenAssigneePicker, false),
         (KeyCode::Char('d'), BoardIntent::Complete, true),
         (
@@ -137,8 +136,8 @@ fn normal_mode_keymap_equals_the_readme_and_queue_board_v1_set() {
     }
     assert_eq!(
         ctrl(KeyCode::Char('g')),
-        Some(BoardIntent::Dispatch),
-        "ctrl+g dispatch remains distinct from bare g group folding"
+        None,
+        "ctrl+g is retired: starting an assigned task dispatches it"
     );
 }
 

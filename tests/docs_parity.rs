@@ -227,8 +227,6 @@ fn expected_intent(action: &str) -> Option<BoardIntent> {
         BoardIntent::BeginEditTitle
     } else if action.starts_with("start") {
         BoardIntent::PrimaryVerb
-    } else if action.starts_with("dispatch") {
-        BoardIntent::Dispatch
     } else if action.starts_with("set ready") {
         BoardIntent::SetStatus(HumanStatus::Ready)
     } else if action.starts_with("set open") {

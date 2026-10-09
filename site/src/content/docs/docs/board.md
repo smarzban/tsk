@@ -81,7 +81,17 @@ You can also assign with `!a name` in [quick-add](/docs/capture/#title-tokens), 
 
 ### Dispatch
 
-Press `ctrl+g`, or choose **dispatch to @name** in the palette, to send the cursor task to its assignee. tsk creates a branch and Git worktree from the task's [base](#base-branch), opens a Herdr workspace there, and runs the profile's command. It then records the dispatch on the task and sets it to started, in one save. If the launch fails, the task records no dispatch and keeps its status. Dispatch is not undoable.
+Starting an assigned task dispatches it: `ctrl+s`, the palette's **set status: started**, or [`tsk status N started`](/docs/cli/#status). tsk creates a branch and Git worktree from the task's [base](#base-branch), opens a Herdr workspace there, and runs the profile's command. It then records the dispatch on the task and sets it to started, in one save. If the launch fails, the task records no dispatch, keeps its status, and the status row says why. `ctrl+u` right after undoes the start only: the status goes back and the status row says `start undone · @claude kept running`; the agent and its worktree stay.
+
+What a start does depends on the task:
+
+| Task | Start |
+| --- | --- |
+| Unassigned | Sets started; to work on a task yourself, leave it unassigned |
+| Assigned, never dispatched | Dispatches it, which sets started |
+| Dispatched, agent still running | Sets started; Herdr is asked whether the agent is still in its pane, and when it cannot say, the start is plain |
+| Dispatched, agent gone | Asks first: [relaunch](#relaunch) |
+| Done or archived | Sets started; never launches |
 
 Names come from the task number and title. For T12 `Fix login timeout`:
 
@@ -96,9 +106,9 @@ The slug lowercases the title, joins its words (letters and digits in any script
 
 A started task with a live dispatch shows `◉` instead of `●`.
 
-On an unassigned task `ctrl+g` opens the assignee picker first: choosing a profile saves the assignment, then dispatches; **none** or `Esc` changes nothing. With no profile defined, `ctrl+g` refuses: "no agent assigned: press @ or add a profile to config.toml".
+To hand a task to an agent, assign it with `@`, then press `ctrl+s`.
 
-Dispatch needs a task in a project that is a Git repository, an assignee with a profile, and a status other than done; archived tasks are refused.
+Dispatch needs Herdr, a task in a project that is a Git repository, and an assignee with a profile. Outside Herdr, or on a desk task, starting an assigned task refuses and leaves it unstarted; unassign it to start it yourself.
 
 ### Dispatch on Windows (preview)
 
@@ -123,17 +133,25 @@ Cleanup on Windows can stop with one of these, and keeps the task's dispatch unt
 
 Dispatch starts from the task's base branch when one is set, otherwise from the repository's default branch (`origin/HEAD`), never from whatever your board or CLI has checked out. A local branch that tracks a remote starts from the remote branch. tsk fetches the remote first unless it was fetched in the last minute (the [fetch window](/docs/storage/#fetch-window)); offline, it starts from the local copy and says so. The task page then shows where the dispatch started, as `from <ref> @ <short sha>`.
 
-Set a base with **set base** in the palette, the task page's `⎇` footer or **Base** field, `!b branch` in quick-add, or `tsk add --base` and `tsk edit --base`. The branch picker lists the repository default first, for example **default (main)**, then local and `origin/*` branches. It opens at once on the branches already on disk and shows **refreshing…** while a background fetch updates the list in place, keeping your selection; if the fetch fails it reads **offline, showing cached branches**. **default** clears the base. With tasks marked, one choice sets the whole set as one undo. A base must be an existing branch in the task's repository, not a tag or commit. There is no base key, and `ctrl+g` never asks for one.
+Set a base with **set base** in the palette, the task page's `⎇` footer or **Base** field, `!b branch` in quick-add, or `tsk add --base` and `tsk edit --base`. The branch picker lists the repository default first, for example **default (main)**, then local and `origin/*` branches. It opens at once on the branches already on disk and shows **refreshing…** while a background fetch updates the list in place, keeping your selection; if the fetch fails it reads **offline, showing cached branches**. **default** clears the base. With tasks marked, one choice sets the whole set as one undo. A base must be an existing branch in the task's repository, not a tag or commit. There is no base key, and starting never asks for one.
 
-### Dispatch a marked set
+### Start a marked set
 
-With tasks marked, `ctrl+g` (or **dispatch N marked** in the palette) opens one card. It lists each task it will launch with its assignee and base (`from dispatch`, or `from default (main)`), then each task it skips and why: unassigned, unknown agent, already dispatched, not a project in a git repo, done, or archived. Rows show `checking…` while repositories are checked in the background. Unassigned tasks are skipped, not prompted; assign the set with `@` first. If nothing can be dispatched, `ctrl+g` says why on the status row, such as "nothing to dispatch: unassigned", and opens no card.
+With tasks marked, `ctrl+s` (or **set status: started** in the palette) starts the set as usual when no task in it would launch. When any would, it opens one card first. The card lists each task it will launch with its assignee and base (`from dispatch`, or `from default (main)`), then under **start only** the tasks it only starts (unassigned, or already dispatched: relaunching stays one task at a time), then under **not started** each assigned task it cannot launch and why: unknown agent, not a project in a git repo, or not in Herdr. Those stay unstarted. Rows show `checking…` while repositories are checked in the background. When nothing can launch, the card is titled `Start N tasks?` and `y` only starts.
 
-`y` launches every listed task in the background, each exactly as a single dispatch. The board stays usable while the status row counts `dispatching 2/3…`. Each task is saved as its launch lands, a failed launch does not stop the others, and the status row ends with what launched and what failed. A status you change while launches land is kept (`T12 kept done (changed meanwhile)`). If a save fails and you cancel [save recovery](#save-failures), the status row names the workspace each unrecorded agent is running in. `Esc` or `[x]` closes the card and keeps the marks; `y` clears them. Further dispatches and quitting wait until the launches finish.
+`y` starts the start-only tasks in one save, then launches every listed task in the background, each exactly as a single dispatch. The board stays usable while the status row counts `dispatching 2/3…`. Each task is saved as its launch lands, a failed launch does not stop the others, and the status row ends with what launched and what failed. A status you change while launches land is kept (`T12 kept done (changed meanwhile)`). If a save fails and you cancel [save recovery](#save-failures), the status row names the workspace each unrecorded agent is running in. `Esc` or `[x]` closes the card and keeps the marks; `y` clears them. Further dispatches and quitting wait until the launches finish. Launches from a marked set are not undoable.
 
 ### Relaunch
 
-On a dispatched task, the first `ctrl+g` names its worktree and asks for another press; the second relaunches the agent there. In the palette this is **dispatch again**, which acts on the cursor task only. A relaunch keeps the recorded base and names, even if the task's base changed since. After a cleanup it recreates the worktree, reopening the kept branch or recreating a deleted one from its original starting commit.
+Starting a dispatched task whose agent is gone (its Herdr workspace was closed, its pane has no agent, or its worktree was cleaned up) opens a card: `T12 · relaunch @claude?`.
+
+| Key | Result |
+| --- | --- |
+| `y` | Relaunch the agent in the recorded worktree and start the task |
+| `n` | Just start the task |
+| `Esc` | Change nothing |
+
+In the palette, **dispatch again** relaunches the cursor task without asking. Both act on the cursor task only. A relaunch keeps the recorded base and names, even if the task's base changed since. If the Herdr workspace was closed, it opens a new one on the kept worktree. After a cleanup it recreates the worktree, reopening the kept branch or recreating a deleted one from its original starting commit.
 
 ### Complete and clean up
 
@@ -189,11 +207,11 @@ Sections hold their order while you work: NEEDS YOU, IN MOTION, DONE, and the dr
 
 Move the cursor with `↑`/`↓` or `j`/`k`. Press `Shift+M` to enter multi-select. While it is active, press `Space` to toggle the cursored task, hold `Shift` with `↑`/`↓` to mark the current task before moving, or click a task to toggle it. Marked rows show `▪`; the cursor remains `▸`. Removing the last mark leaves the mode active. `Shift+M` again while the board owns input, a task action, `Esc`, or a view change such as folding a group or switching tabs, projects, threads, or the done drawer exits the mode and clears the session-only set. Text entry keeps `Shift+M` as a capital `M`; `Esc` leaves multi-select before cancelling that surface, except in a filter, view, assignee, or base picker, where it closes the picker first.
 
-On a task-board list, `ctrl+s`, `ctrl+n`, `ctrl+o`, `ctrl+d`, `ctrl+b`, `ctrl+r`, `ctrl+x`, and `ctrl+f` act on the marked set when it is non-empty. With no marks they act on the cursor. `Enter`, `ctrl+e`, and actions from the task page always use only the cursor; `ctrl+g` on a marked set opens the [bulk dispatch card](#dispatch-a-marked-set).
+On a task-board list, `ctrl+s`, `ctrl+n`, `ctrl+o`, `ctrl+d`, `ctrl+b`, `ctrl+r`, `ctrl+x`, and `ctrl+f` act on the marked set when it is non-empty. With no marks they act on the cursor. `Enter`, `ctrl+e`, and actions from the task page always use only the cursor; `ctrl+s` on a marked set with assigned tasks opens the [start card](#start-a-marked-set).
 
 | Key | Action |
 | --- | --- |
-| `ctrl+s` | Start an open or ready task |
+| `ctrl+s` | Start an open or ready task; an assigned one [dispatches](#dispatch) |
 | `ctrl+n` | Set ready, the picked on-deck queue |
 | `ctrl+o` | Set open, the inbox |
 | `ctrl+d` | Mark done; for a live dispatch, offer [cleanup](#complete-and-clean-up) |
@@ -291,11 +309,10 @@ Press `:` and type to find an action. Use arrows or `Tab` to select, `Enter` to 
 | New task, undo, done drawer, help, quit | Always |
 | Set open/ready/started/blocked/review, edit notes, change scope, delete | A task is selected |
 | Set assignee, set base | A task is selected |
-| Dispatch to @name | An assigned task without a dispatch record is selected |
 | Dispatch again | A task with a dispatch record is selected |
 | Retry save, cancel save | A save has failed |
 
-**Set assignee** opens the same picker as `@`; **set base** opens the branch picker. Both apply to the marked set when marks are present, with one save and one undo. With marks, **dispatch N marked** opens the bulk dispatch card for the set; **dispatch again** ignores and clears marks, then relaunches only the cursor.
+**Set assignee** opens the same picker as `@`; **set base** opens the branch picker. Both apply to the marked set when marks are present, with one save and one undo. **Set status: started** takes the same route as `ctrl+s`, including on blocked and review tasks: an assigned task dispatches, and with marks the [start card](#start-a-marked-set) opens. **Dispatch again** ignores and clears marks, then relaunches only the cursor.
 
 Search matches letters in order: `ssr` finds `set status: review`.
 

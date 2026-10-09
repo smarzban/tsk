@@ -21,9 +21,9 @@ static CONFIG_TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 /// the quoted default prompt must stay equal to [`DEFAULT_PROMPT`] (pinned by a test).
 pub const STARTER_CONFIG: &str = r##"# tsk configuration
 #
-# Agent profiles let you assign a task to an agent (`!a name` or `@`) and
-# launch it with ctrl+g. tsk creates a git worktree for the task, opens a
-# Herdr workspace there, and runs the profile's command in it.
+# Agent profiles let you assign a task to an agent (`!a name` or `@`).
+# Starting an assigned task (ctrl+s) launches it: tsk creates a git worktree
+# for the task, opens a Herdr workspace there, and runs the profile's command.
 #
 # Any agent that runs in a terminal works, including ones not listed here.
 # A profile needs only:

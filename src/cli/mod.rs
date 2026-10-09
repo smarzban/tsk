@@ -197,6 +197,21 @@ fn run_status(args: Vec<String>) -> CliOutput {
             "status is required"
         });
     };
+    // A start may launch the assigned agent (`--again` and `--no-dispatch` only reach here).
+    if status == crate::domain::HumanStatus::Started {
+        share_fetch_window(&input.state_dir);
+        let flags = status::StartFlags {
+            again: input.again,
+            no_dispatch: input.no_dispatch,
+        };
+        return match status::run_started(task, flags, input.state_dir) {
+            Ok(status::StartOutcome::Status(result)) => presenter::status(result),
+            Ok(status::StartOutcome::Dispatched(result, dispatched)) => {
+                presenter::status_dispatched(result, *dispatched)
+            }
+            Err(error) => presenter::status_rejected(error, task),
+        };
+    }
     let state_dir = input.state_dir.clone();
     match status::run(task, status, input.block, input.state_dir) {
         Ok(result) => {

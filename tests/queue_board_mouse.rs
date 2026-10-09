@@ -725,7 +725,7 @@ fn assert_verb_parity(title: &str, status: HumanStatus, chord: &str, key: KeyCod
 }
 
 #[test]
-fn dispatch_chip_clicks_route_to_dispatch_on_board_and_task_page() {
+fn an_assigned_task_shows_no_dispatch_chip_only_start() {
     let (mut domain, mut model, id) = board_with_task("send it", HumanStatus::Ready);
     domain
         .assign(id, Some("implementer".into()))
@@ -739,11 +739,15 @@ fn dispatch_chip_clicks_route_to_dispatch_on_board_and_task_page() {
         }
         assert_eq!(model.input_mode(), mode);
         let hits = board_hit_map(STANDARD, &model);
-        let dispatch = verb_hit_for_chord(&model, &hits, "g");
+        let start = verb_hit_for_chord(&model, &hits, "s");
         assert_eq!(
-            click(dispatch, &model, &hits),
-            Some(BoardIntent::Dispatch),
-            "dispatch chip must match ctrl+g in {mode:?}"
+            click(start, &model, &hits),
+            Some(BoardIntent::PrimaryVerb),
+            "the start chip dispatches an assigned task in {mode:?}"
+        );
+        assert!(
+            !board_verb_items(&model).iter().any(|verb| verb.key == "g"),
+            "no dispatch chip in {mode:?}"
         );
     }
 }

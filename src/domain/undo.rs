@@ -1,4 +1,4 @@
-//! Undo stack for soft-delete and complete.
+//! Undo stack for soft-delete, complete, assignment, base, block, and a start that dispatched.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -36,6 +36,13 @@ pub enum UndoEntry {
         previous: HumanStatus,
         expected_revision: Uuid,
     },
+    /// A start that dispatched; reversing restores `previous` and leaves the agent and its
+    /// dispatch record in place.
+    Start {
+        id: Uuid,
+        previous: HumanStatus,
+        expected_revision: Uuid,
+    },
     Batch {
         entries: Vec<UndoEntry>,
     },
@@ -55,7 +62,8 @@ impl UndoEntry {
                 | UndoEntry::Complete { .. }
                 | UndoEntry::Assign { .. }
                 | UndoEntry::SetBase { .. }
-                | UndoEntry::Block { .. } => leaves.push(entry),
+                | UndoEntry::Block { .. }
+                | UndoEntry::Start { .. } => leaves.push(entry),
             }
         }
 
@@ -87,6 +95,11 @@ impl UndoEntry {
                     ..
                 }
                 | UndoEntry::Block {
+                    id,
+                    expected_revision,
+                    ..
+                }
+                | UndoEntry::Start {
                     id,
                     expected_revision,
                     ..
@@ -126,6 +139,11 @@ impl UndoEntry {
                 id: target,
                 expected_revision,
                 ..
+            }
+            | UndoEntry::Start {
+                id: target,
+                expected_revision,
+                ..
             } => {
                 if *target == id && *expected_revision == from {
                     *expected_revision = to;
@@ -141,6 +159,7 @@ impl UndoEntry {
             UndoEntry::Assign { id, previous, .. } => state.restore_assignee(id, previous),
             UndoEntry::SetBase { id, previous, .. } => state.restore_base(id, previous),
             UndoEntry::Block { id, previous, .. } => state.restore_unblocked(id, previous),
+            UndoEntry::Start { id, previous, .. } => state.restore_unstarted(id, previous),
             UndoEntry::Batch { entries } => {
                 for entry in entries.into_iter().rev() {
                     entry.reverse(state)?;

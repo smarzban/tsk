@@ -313,20 +313,22 @@ pub enum BoardIntent {
     /// The query is one search line, so the reducer folds each pasted break to a space.
     CommandQueryInsertText(String),
     CommandQueryBackspace,
-    /// `ctrl+s` — state-mapped primary verb. Reducer lands in.
+    /// `ctrl+s` — start. An assigned task that was never dispatched dispatches; a dispatched
+    /// task whose agent is gone asks before relaunching; a marked set where any start would
+    /// launch opens the bulk start card.
     PrimaryVerb,
-    /// `ctrl+g` — dispatch the cursor task to its assignee, or open the bulk dispatch card
-    /// over a marked set.
-    Dispatch,
     /// Palette-only explicit relaunch of an existing dispatch.
     DispatchAgain,
     /// Cleanup modal choices. y removes safely, n completes only, Esc cancels both.
     ConfirmCleanup,
     KeepCleanup,
     CancelCleanup,
-    /// Bulk dispatch card choices: y launches every eligible task, Esc changes nothing.
+    /// Start card choices: y launches every eligible task (or relaunches the gone agent) and
+    /// starts the rest, Esc changes nothing.
     ConfirmDispatch,
     CancelDispatch,
+    /// Relaunch card `n`: start the task without relaunching its agent.
+    StartWithoutRelaunch,
     /// Scroll a cleanup card whose rows outgrow the frame.
     CleanupScrollUp,
     CleanupScrollDown,
@@ -348,6 +350,9 @@ pub enum BoardIntent {
     ReplySave,
     /// Reply box `ctrl+s`: store the reply and unblock the task to ready.
     ReplySaveUnblock,
+    /// The application boundary's form of `ReplySaveUnblock` when the task's agent is still
+    /// running: store the reply and start the task instead of making it ready. No key maps here.
+    ReplySaveStart,
     /// `ctrl+r` — toggle review ↔ ready. Reducer lands in.
     ToggleReview,
     /// Help card: edit its focused search query or scroll the filtered key list.
@@ -538,13 +543,6 @@ const NORMAL_KEYMAP: &[NormalKeyEntry] = &[
         intent: BoardIntent::PrimaryVerb,
         help_chord: "s",
         help_label: "start",
-        modifier: NormalModifier::Ctrl,
-    },
-    NormalKeyEntry {
-        code: KeyCode::Char('g'),
-        intent: BoardIntent::Dispatch,
-        help_chord: "g",
-        help_label: "dispatch",
         modifier: NormalModifier::Ctrl,
     },
     // `@` opens the assignee picker, an input surface like `t`: nothing changes until its
@@ -819,7 +817,6 @@ fn board_help_group(intent: &BoardIntent) -> HelpGroup {
         | BoardIntent::PeekDetail
         | BoardIntent::CollapseDetail => HelpGroup::Navigation,
         BoardIntent::PrimaryVerb
-        | BoardIntent::Dispatch
         | BoardIntent::OpenAssigneePicker
         | BoardIntent::SetStatus(_)
         | BoardIntent::Complete
@@ -1905,13 +1902,13 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::CommandQueryInsertText(_)
         | BoardIntent::CommandQueryBackspace
         | BoardIntent::PrimaryVerb
-        | BoardIntent::Dispatch
         | BoardIntent::DispatchAgain
         | BoardIntent::ConfirmCleanup
         | BoardIntent::KeepCleanup
         | BoardIntent::CancelCleanup
         | BoardIntent::ConfirmDispatch
         | BoardIntent::CancelDispatch
+        | BoardIntent::StartWithoutRelaunch
         | BoardIntent::CleanupScrollUp
         | BoardIntent::CleanupScrollDown
         | BoardIntent::ToggleBlock
@@ -1925,6 +1922,7 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::ReplyWithOption
         | BoardIntent::ReplySave
         | BoardIntent::ReplySaveUnblock
+        | BoardIntent::ReplySaveStart
         | BoardIntent::ToggleReview
         | BoardIntent::HelpQueryInsert(_)
         | BoardIntent::HelpQueryInsertText(_)
@@ -2048,7 +2046,6 @@ fn map_task_page(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Char('q') if verb => Some(BoardIntent::Quit),
         KeyCode::Enter if !extra => Some(BoardIntent::OpenTaskPage),
         KeyCode::Char('s') if verb => Some(BoardIntent::PrimaryVerb),
-        KeyCode::Char('g') if verb => Some(BoardIntent::Dispatch),
         KeyCode::Char('a') if verb => Some(BoardIntent::BeginAddStep),
         KeyCode::Char('d') if verb => Some(BoardIntent::Complete),
         KeyCode::Char('n') if verb => Some(BoardIntent::SetStatus(HumanStatus::Ready)),
@@ -2152,7 +2149,8 @@ fn map_cleanup_confirm(key: KeyEvent) -> Option<BoardIntent> {
     }
 }
 
-/// Bulk dispatch card: `y` launches, `Esc` cancels. No `Enter` default.
+/// Start card: `y` launches (or relaunches), `n` on the relaunch card only starts, `Esc`
+/// cancels. No `Enter` default.
 fn map_dispatch_confirm(key: KeyEvent) -> Option<BoardIntent> {
     if key
         .modifiers
@@ -2162,6 +2160,7 @@ fn map_dispatch_confirm(key: KeyEvent) -> Option<BoardIntent> {
     }
     match key.code {
         KeyCode::Char('y') => Some(BoardIntent::ConfirmDispatch),
+        KeyCode::Char('n') => Some(BoardIntent::StartWithoutRelaunch),
         KeyCode::Esc => Some(BoardIntent::CancelDispatch),
         code => map_cleanup_scroll(code),
     }

@@ -85,12 +85,15 @@ New tasks start `open` in the inbox; `ready` means the user picked it.
 **What's on the board.** `tsk list --json` (this repo's project, or the desk outside Git). Group by
 `status` in board language, lead with what needs the user, then in motion, then on deck.
 
-**Start work on a task.** `tsk list T12 --json` for notes and steps. `tsk status T12 start`.
+**Start work on a task.** `tsk list T12 --json` for notes and steps. `tsk status T12 start
+--no-dispatch`: a plain `start` on an assigned task launches its agent, and you are doing the work.
 Tick steps as you go: `tsk steps T12 toggle <short_id>`.
 
-**Dispatch assigned work.** Only when the user asks. Read the task, then `tsk dispatch T12`: it
-launches the assignee's agent in a new worktree and Herdr workspace and sets the task `started`.
-`already-dispatched` means a launch exists; use `--again` only when the user wants it relaunched.
+**Dispatch assigned work.** Only when the user asks. Read the task, then `tsk dispatch T12` (or
+`tsk status T12 started`, which dispatches an assigned task never dispatched): it launches the
+assignee's agent in a new worktree and Herdr workspace and sets the task `started`.
+`already-dispatched` (or `agent-gone` from `status started`) means a launch exists; use `--again`
+only when the user wants it relaunched.
 After exit 3, read the task before retrying, since an agent may already be running. Watch it with
 `herdr agent get t12-<assignee>`. `tsk list T12 --json` shows the `dispatch` record (worktree,
 branch, base, starting commit). The default prompt tells the launched agent to work only on its

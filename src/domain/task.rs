@@ -225,7 +225,7 @@ fn record_mutation_at(task: &mut Task, kind: TaskEventKind, at: SystemTime) {
 }
 
 /// Document version written by this binary.
-pub const STORE_FORMAT_VERSION: u32 = 7;
+pub const STORE_FORMAT_VERSION: u32 = 8;
 
 fn default_next_notice_number() -> u64 {
     1
@@ -1023,6 +1023,39 @@ impl DomainState {
         Ok(())
     }
 
+    /// Make a start that dispatched undoable: call right after the launch is recorded. Undo
+    /// restores `previous` only; the agent keeps running and the record stays.
+    pub fn push_start_undo(&mut self, id: Uuid, previous: HumanStatus) -> Result<(), DomainError> {
+        let expected_revision = self.task_mut(id)?.revision;
+        self.undo_stack.push(UndoEntry::Start {
+            id,
+            previous,
+            expected_revision,
+        });
+        Ok(())
+    }
+
+    /// Reverse a start that dispatched: restore the earlier status. A start out of `blocked`
+    /// closed the block, so going back reopens that block rather than an empty one.
+    pub(crate) fn restore_unstarted(
+        &mut self,
+        id: Uuid,
+        previous: HumanStatus,
+    ) -> Result<(), DomainError> {
+        let task = self.task_mut(id)?;
+        task.status = previous;
+        if previous == HumanStatus::Blocked && task.block.is_none() {
+            if let Some(mut block) = task.past_blocks.pop() {
+                block.closed_at = None;
+                block.closed_by = None;
+                task.block = Some(block);
+            }
+        }
+        sync_block_with_status(task, SystemTime::now(), OWNER);
+        record_mutation(task, TaskEventKind::StatusSet);
+        Ok(())
+    }
+
     /// Mark the retained dispatch record cleaned without changing human status.
     pub fn record_dispatch_cleaned(&mut self, id: Uuid) -> Result<(), DomainError> {
         let task = self.task_mut(id)?;
@@ -1586,6 +1619,9 @@ impl DomainState {
                             UndoEntry::Assign { .. } => task.last_event_at(TaskEventKind::Assigned),
                             UndoEntry::SetBase { .. } => task.last_event_at(TaskEventKind::BaseSet),
                             UndoEntry::Block { .. } => task.block.as_ref().map(|block| block.at),
+                            UndoEntry::Start { .. } => {
+                                task.last_event_at(TaskEventKind::Dispatched)
+                            }
                             UndoEntry::Batch { .. } => unreachable!("batches are flattened"),
                         }
                     })
