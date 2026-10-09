@@ -566,7 +566,7 @@ const NORMAL_KEYMAP: &[NormalKeyEntry] = &[
         code: KeyCode::Char('f'),
         intent: BoardIntent::File,
         help_chord: "f",
-        help_label: "archive",
+        help_label: "archive / restore (archived: d drawer)",
         modifier: NormalModifier::Ctrl,
     },
     // `+` opens an input surface, like bare `:` palette, `z` drawer, and `?` help. It is
@@ -592,7 +592,7 @@ const NORMAL_KEYMAP: &[NormalKeyEntry] = &[
         code: KeyCode::Char('g'),
         intent: BoardIntent::ToggleAllGroups,
         help_chord: "g",
-        help_label: "inbox / archived",
+        help_label: "fold inbox; archived when drawer open",
         modifier: NormalModifier::Bare,
     },
     // The project slot is mouse-clickable; `p` gives the keyboard the same route.
