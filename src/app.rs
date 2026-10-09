@@ -15783,6 +15783,576 @@ mod quick_assign_tests {
             );
         }
     }
+
+    // ---- after: task dependencies (T207) ----
+
+    fn number_of(domain: &DomainState, id: uuid::Uuid) -> u64 {
+        domain.get(id).and_then(|task| task.number).expect("number")
+    }
+
+    fn status_of(domain: &DomainState, id: uuid::Uuid) -> HumanStatus {
+        domain.get(id).expect("task").status
+    }
+
+    /// `second` runs after `first`, saved, and is set to `status`.
+    fn link(
+        temp: &Temp,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        waiting: uuid::Uuid,
+        after: &[uuid::Uuid],
+        status: HumanStatus,
+    ) {
+        let numbers: Vec<u64> = after.iter().map(|id| number_of(domain, *id)).collect();
+        domain.set_after(waiting, &numbers).expect("after");
+        temp.store.reload_merge_save(domain).expect("save");
+        if status != HumanStatus::Open {
+            domain.set_status(waiting, status).expect("status");
+            temp.store.reload_merge_save(domain).expect("save");
+        }
+        model.sync_from_domain(domain);
+    }
+
+    #[test]
+    fn a_done_on_the_board_starts_the_ready_task_it_released_and_undo_reverts_both() {
+        let temp = Temp::new("after-done", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second", "third"]);
+        let mut host = fake_host(&temp);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[2],
+            &[ids[0]],
+            HumanStatus::Open,
+        );
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Started, "same save");
+        assert_eq!(
+            status_of(&disk, ids[2]),
+            HumanStatus::Open,
+            "open does not move"
+        );
+        assert_eq!(
+            model.message(),
+            Some(format!("T{second} started · T{first} done").as_str())
+        );
+        let trail = crate::activity::paper_trail(disk.get(ids[1]).expect("task"));
+        assert_eq!(trail[0].text, format!("started · after T{first}"));
+        assert_eq!(host.ran, 0, "unassigned: no launch");
+
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Open);
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Ready);
+        assert_eq!(
+            model.message(),
+            Some(format!("done undone · T{second} back to ready").as_str())
+        );
+    }
+
+    #[test]
+    fn a_done_dispatches_an_assigned_released_task_and_undo_keeps_its_agent() {
+        let temp = Temp::new("after-dispatch", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        domain
+            .assign(ids[1], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        assert_eq!(host.ran, 1, "the released task's agent launched");
+        let disk = temp.store.load().expect("load");
+        let task = disk.get(ids[1]).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        assert!(
+            task.dispatch.is_some(),
+            "dispatch recorded in the done's save"
+        );
+        assert_eq!(
+            model.message(),
+            Some(format!("T{second} dispatched to @builder · T{first} done").as_str())
+        );
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Ready);
+        assert!(disk.get(ids[1]).expect("task").dispatch.is_some());
+        assert_eq!(
+            model.message(),
+            Some(format!("done undone · T{second} back to ready · @builder kept running").as_str())
+        );
+    }
+
+    #[test]
+    fn a_failed_released_launch_keeps_the_task_ready_and_the_done() {
+        let temp = Temp::new("after-failed", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        host.fail_launch = Some("herdr refused".into());
+        domain
+            .assign(ids[1], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let second = number_of(&domain, ids[1]);
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Ready);
+        assert!(
+            model
+                .message()
+                .is_some_and(|message| message.starts_with(&format!("T{second} stays ready: "))),
+            "{:?}",
+            model.message()
+        );
+    }
+
+    #[test]
+    fn ctrl_s_on_a_waiting_task_asks_first_and_y_starts_it_esc_does_not() {
+        let temp = Temp::new("after-ask", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[1]);
+        let start = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, start.clone(), &mut host);
+        let waiting = model
+            .dispatch_prompt()
+            .and_then(|prompt| prompt.start_anyway.clone())
+            .expect("the start-anyway card")
+            .waiting;
+        assert_eq!(
+            waiting,
+            vec![format!("T{second} runs after T{first} (open)")]
+        );
+        assert_eq!(status_of(&domain, ids[1]), HumanStatus::Ready);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::CancelDispatch,
+            &mut host,
+        );
+        assert!(model.dispatch_prompt().is_none());
+        assert_eq!(
+            status_of(&temp.store.load().expect("load"), ids[1]),
+            HumanStatus::Ready
+        );
+
+        handle(&temp, &mut domain, &mut model, start, &mut host);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmDispatch,
+            &mut host,
+        );
+        assert_eq!(
+            status_of(&temp.store.load().expect("load"), ids[1]),
+            HumanStatus::Started
+        );
+        assert!(!model.start_anyway, "the pass is one start only");
+    }
+
+    #[test]
+    fn deleting_a_prerequisite_unlinks_says_so_and_undo_restores_the_link() {
+        let temp = Temp::new("after-delete", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::SoftDelete,
+            &mut host,
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::SoftDelete,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert!(disk.get(ids[0]).expect("task").soft_deleted);
+        assert!(disk.get(ids[1]).expect("task").after.is_empty());
+        assert_eq!(
+            status_of(&disk, ids[1]),
+            HumanStatus::Ready,
+            "no auto-start"
+        );
+        assert_eq!(
+            model.message(),
+            Some(format!("T{second} no longer waits (T{first} deleted)").as_str())
+        );
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let disk = temp.store.load().expect("load");
+        assert!(!disk.get(ids[0]).expect("task").soft_deleted);
+        assert_eq!(disk.get(ids[1]).expect("task").after, vec![first]);
+    }
+
+    #[test]
+    fn the_cleanup_card_starts_what_its_done_released() {
+        let temp = Temp::new("after-cleanup", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        host.cleanup = true;
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Review);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        assert!(model.cleanup_prompt().is_some(), "the cleanup card opens");
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::KeepCleanup,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Started);
+        assert_eq!(
+            model.message(),
+            Some(
+                format!("done T{first} · worktree kept · T{second} started · T{first} done")
+                    .as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn chain_in_order_follows_the_mark_order_as_one_undo() {
+        let temp = Temp::new("after-chain", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second", "third"]);
+        let mut host = fake_host(&temp);
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None).expect("marks");
+        for id in [ids[2], ids[0], ids[1]] {
+            select(&mut domain, &mut model, id);
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        }
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ChainAfter,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        let n = |id| number_of(&disk, id);
+        assert_eq!(disk.get(ids[0]).expect("task").after, vec![n(ids[2])]);
+        assert_eq!(disk.get(ids[1]).expect("task").after, vec![n(ids[0])]);
+        assert!(disk.get(ids[2]).expect("task").after.is_empty());
+        assert_eq!(
+            model.message(),
+            Some(format!("chained T{} → T{} → T{}", n(ids[2]), n(ids[0]), n(ids[1])).as_str())
+        );
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let disk = temp.store.load().expect("load");
+        assert!(ids
+            .iter()
+            .all(|id| disk.get(*id).expect("task").after.is_empty()));
+    }
+
+    #[test]
+    fn the_task_picker_ticks_several_and_refuses_a_loop() {
+        let temp = Temp::new("after-picker", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second", "third"]);
+        let mut host = fake_host(&temp);
+        let n = |domain: &DomainState, index: usize| number_of(domain, ids[index]);
+        select(&mut domain, &mut model, ids[1]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAfterPicker,
+            &mut host,
+        );
+        assert_eq!(model.list_picker_kind(), Some(ListPickerKind::After));
+        let labels: Vec<String> = model
+            .visible_list_picker_options()
+            .into_iter()
+            .map(|(_, option)| option.label)
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                format!("  T{} first", n(&domain, 0)),
+                format!("  T{} third", n(&domain, 2)),
+                "none".to_string()
+            ],
+            "the task itself is not offered"
+        );
+        for intent in [
+            BoardIntent::ListPickerQueryInsert(' '),
+            BoardIntent::ListPickerNext,
+            BoardIntent::ListPickerQueryInsert(' '),
+        ] {
+            handle(&temp, &mut domain, &mut model, intent, &mut host);
+        }
+        assert!(model
+            .visible_list_picker_options()
+            .iter()
+            .all(|(_, option)| option.label.starts_with("✓ ") || option.label == "none"));
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert_eq!(
+            disk.get(ids[1]).expect("task").after,
+            vec![n(&disk, 0), n(&disk, 2)]
+        );
+
+        // T1 after T2 would close a loop: refused, the picker stays open.
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAfterPicker,
+            &mut host,
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            &mut host,
+        );
+        assert_eq!(
+            model.message(),
+            Some(format!("T{} already runs after T{}", n(&domain, 1), n(&domain, 0)).as_str())
+        );
+        assert_eq!(model.list_picker_kind(), Some(ListPickerKind::After));
+        assert!(temp
+            .store
+            .load()
+            .expect("load")
+            .get(ids[0])
+            .expect("task")
+            .after
+            .is_empty());
+    }
+
+    #[test]
+    fn the_page_after_field_saves_with_the_edit() {
+        let temp = Temp::new("after-page", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        select(&mut domain, &mut model, ids[1]);
+        for intent in [
+            BoardIntent::OpenTaskPage,
+            BoardIntent::BeginEditTitle,
+            BoardIntent::FocusFormField(crate::ui::capture::CaptureField::After),
+        ] {
+            handle(&temp, &mut domain, &mut model, intent, &mut host);
+        }
+        assert_eq!(model.input_mode(), BoardInputMode::SelectAfter);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAfterPicker,
+            &mut host,
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            &mut host,
+        );
+        assert_eq!(
+            model.input_mode(),
+            BoardInputMode::SelectAfter,
+            "back on the field"
+        );
+        assert!(
+            temp.store
+                .load()
+                .expect("load")
+                .get(ids[1])
+                .expect("task")
+                .after
+                .is_empty(),
+            "a draft until the edit saves"
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmEdit,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        let task = disk.get(ids[1]).expect("task");
+        assert_eq!(task.after, vec![number_of(&disk, ids[0])]);
+        assert_eq!(
+            crate::activity::paper_trail(task)[0].text,
+            "after edited",
+            "one edit event names the field"
+        );
+    }
+
+    #[test]
+    fn quick_add_w_runs_after_a_task_and_refuses_unknown_or_done_keeping_the_draft() {
+        let temp = Temp::new("after-quick-add", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first"]);
+        let mut host = fake_host(&temp);
+        let first = number_of(&domain, ids[0]);
+        let type_line =
+            |domain: &mut DomainState, model: &mut BoardModel, host: &mut FakeHost, text: &str| {
+                handle(&temp, domain, model, BoardIntent::OpenCapture, host);
+                let text = BoardIntent::QuickAddInsertText(text.to_string());
+                handle(&temp, domain, model, text, host);
+                handle(&temp, domain, model, BoardIntent::QuickAddSave, host);
+            };
+        type_line(&mut domain, &mut model, &mut host, "Waits !w T99");
+        assert_eq!(model.message(), Some("T99 is not on the board"));
+        assert_eq!(
+            model.input_mode(),
+            BoardInputMode::QuickAdd,
+            "the draft stays"
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::CancelQuickAdd,
+            &mut host,
+        );
+        type_line(
+            &mut domain,
+            &mut model,
+            &mut host,
+            &format!("Waits !w {first}"),
+        );
+        let disk = temp.store.load().expect("load");
+        let created = disk
+            .tasks()
+            .iter()
+            .find(|task| task.title == "Waits")
+            .expect("created");
+        assert_eq!(created.after, vec![first]);
+    }
+
+    #[test]
+    fn a_waiting_row_shows_after_and_its_peek_shows_status_and_before() {
+        let temp = Temp::new("after-row", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let first = number_of(&domain, ids[0]);
+        let (screen, _) = board_screen(&model, 80, 24);
+        assert!(screen.contains(&format!("after T{first}")), "{screen}");
+        select(&mut domain, &mut model, ids[1]);
+        apply_intent(&mut domain, &mut model, BoardIntent::PeekDetail, None).expect("peek");
+        let (screen, _) = board_screen(&model, 80, 24);
+        assert!(
+            screen.contains(&format!("after T{first} · open")),
+            "{screen}"
+        );
+        domain.set_status(ids[0], HumanStatus::Done).expect("done");
+        model.sync_from_domain(&domain);
+        let (screen, _) = board_screen(&model, 80, 24);
+        assert!(
+            !screen
+                .lines()
+                .any(|line| line.contains("second") && line.contains("after T")),
+            "gone once every prerequisite is done: {screen}"
+        );
+    }
 }
 
 #[cfg(test)]
