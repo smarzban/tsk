@@ -565,18 +565,30 @@ impl TaskStore {
     /// changed from, merge sibling records, then durably write. Divergent same-task writes are
     /// rejected rather than ordered by wall clock or silently overwritten.
     pub fn reload_merge_save(&self, local: &mut DomainState) -> Result<(), StoreError> {
-        self.reload_merge_save_with(local, &StdFilesystem)
+        self.reload_merge_save_with(local, &StdFilesystem, |_| ())
+    }
+
+    /// [`Self::reload_merge_save`], with `merged` run on the caller's state after the merge and
+    /// before the write, under the same lock: a decision that must see every other writer's
+    /// changes (what a completion released) lands in the same save.
+    pub fn reload_merge_save_then<T>(
+        &self,
+        local: &mut DomainState,
+        merged: impl FnOnce(&mut DomainState) -> T,
+    ) -> Result<T, StoreError> {
+        self.reload_merge_save_with(local, &StdFilesystem, merged)
     }
 
     /// Internal filesystem seam for the merge-save durability boundary.
     ///
     /// The caller's state keeps its merge bases until the replacement succeeds, so Save
     /// Recovery can retry the same intended mutation after any write-stage failure.
-    fn reload_merge_save_with<F: AtomicFilesystem>(
+    fn reload_merge_save_with<F: AtomicFilesystem, T>(
         &self,
         local: &mut DomainState,
         filesystem: &F,
-    ) -> Result<(), StoreError> {
+        merged: impl FnOnce(&mut DomainState) -> T,
+    ) -> Result<T, StoreError> {
         check_format_version(local.format_version())?;
         let _guard = self.lock_exclusive()?;
         let disk = self.load_unlocked()?;
@@ -584,6 +596,7 @@ impl TaskStore {
         local
             .merge_for_save(&disk)
             .map_err(|message| StoreError::Io(io::Error::other(message)))?;
+        let result = merged(local);
         let mut durable = local.clone();
         durable.assign_numbers_for_persistence();
         durable.clear_merge_bases();
@@ -603,7 +616,7 @@ impl TaskStore {
         }
         local.sync_numbers_from_persisted(&durable);
         local.clear_merge_bases();
-        Ok(())
+        Ok(result)
     }
 
     fn load_unlocked(&self) -> Result<DomainState, StoreError> {
@@ -1412,7 +1425,7 @@ mod tests {
         let filesystem = RecordingFilesystem::new(Some(SaveStage::FileSync));
         assert!(
             store
-                .reload_merge_save_with(&mut local, &filesystem)
+                .reload_merge_save_with(&mut local, &filesystem, |_| ())
                 .is_err(),
             "the injected durable write failure must reach Save Recovery"
         );

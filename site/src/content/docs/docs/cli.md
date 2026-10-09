@@ -209,7 +209,7 @@ Unlike keyboard toggles, this command sets the requested status directly. Repeat
 
 Output: `status T12 <status> <title>`. The output uses `started`, even when the input was `start`.
 
-`done` also starts what it releases: each task that [runs after](/docs/board/#after) this one, is `ready`, and now has every prerequisite done starts in the same save, the way `started` below starts it (an assigned task never dispatched dispatches). A second line says what happened, such as `T13 started · T12 done`, `T13 dispatched to @claude · T12 done`, or `T13 stays ready: <reason> · T12 done` when a launch fails; the done stands either way. Tasks in `open`, `blocked`, or `review` do not move, and `review` is not done.
+`done` also starts what it releases: each task that [runs after](/docs/board/#after) this one, is `ready`, and now has every prerequisite done starts, the way `started` below starts it: a plain start lands in the same save as the done, decided under the store lock so a prerequisite completed concurrently counts, and an assigned task never dispatched dispatches right after it. A second line says what happened, such as `T13 started · T12 done`, `T13 dispatched to @claude · T12 done`, or `T13 stays ready: <reason> · T12 done` when a launch fails; the done stands either way. Tasks in `open`, `blocked`, or `review` do not move, and `review` is not done.
 
 ### Start
 

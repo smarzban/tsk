@@ -125,9 +125,11 @@ pub fn run_done(
 }
 
 /// Set a task done by `actor`. When that releases tasks waiting on it (`ready`, every
-/// prerequisite now done), each starts in the same save through the start route: plain, or a
-/// dispatch for an assigned task never dispatched. A failed launch leaves its task ready and
-/// never refuses the done. A done that releases nothing is the plain locked status change.
+/// prerequisite now done), each starts through the start route. What it released is decided
+/// inside the same locked transition as the done, so a prerequisite another process completed
+/// concurrently is never missed: a plain start lands in that save, and an assigned task never
+/// dispatched launches right after it. A failed launch leaves its task ready and never refuses
+/// the done.
 pub fn run_done_with_host(
     target: TaskAddress,
     state_dir: Option<PathBuf>,
@@ -135,47 +137,58 @@ pub fn run_done_with_host(
     actor: &str,
     host: &mut impl DispatchHost,
 ) -> Result<(StatusResult, Vec<dispatch::Released>), StatusError> {
-    let plain = |state_dir| {
-        run(target, HumanStatus::Done, BlockFlags::default(), state_dir)
-            .map(|result| (result, Vec::new()))
-    };
     let state_dir = state_dir.unwrap_or_else(default_state_dir);
     let store = TaskStore::new(&state_dir);
-    let mut state = store
-        .load()
-        .map_err(|error| StatusError::Store(error.to_string()))?;
-    let Some(task) = state.tasks().iter().find(|task| target.matches(task)) else {
-        return plain(Some(state_dir));
-    };
-    let (id, number, title) = (task.id, task.number, task.title.clone());
-    if task.soft_deleted || task.status == HumanStatus::Done || number.is_none() {
-        return plain(Some(state_dir));
+    let (result, plan) = store
+        .locked_transition_if_changed(|state: &mut DomainState| {
+            let found = state
+                .tasks()
+                .iter()
+                .find(|task| target.matches(task))
+                .map(|task| Found {
+                    id: task.id,
+                    number: task.number,
+                    title: task.title.clone(),
+                    current: task.status,
+                    soft_deleted: task.soft_deleted,
+                    open: task.block.as_ref().map(|block| block.kind),
+                });
+            let _ = state.take_completed();
+            let (result, changed) = apply(
+                state,
+                found,
+                HumanStatus::Done,
+                &BlockFlags::default(),
+                None,
+                actor,
+            );
+            let plan = if changed {
+                dispatch::plan_released_with_host(state, actor, in_herdr, None, host)
+            } else {
+                dispatch::ReleasePlan::default()
+            };
+            Ok(((result, plan), changed))
+        })
+        .map_err(StatusError::Store)?;
+    let result = result?;
+    let mut released = plan.released;
+    if !plan.launches.is_empty() {
+        let mut state = store
+            .load()
+            .map_err(|error| StatusError::Store(error.to_string()))?;
+        released.extend(dispatch::launch_released_with_host(
+            &mut state,
+            plan.launches,
+            &state_dir,
+            in_herdr,
+            host,
+        ));
+        store
+            .reload_merge_save(&mut state)
+            .map_err(|error| StatusError::Store(error.to_string()))?;
+        released.sort_by_key(|released| released.number);
     }
-    // Nothing waits on it: keep the plain locked status change.
-    let _ = state.take_completed();
-    let mut probe = state.clone();
-    if probe.set_status_by(id, HumanStatus::Done, actor).is_err() || {
-        let done = probe.take_completed();
-        probe.released_by(&done).is_empty()
-    } {
-        return plain(Some(state_dir));
-    }
-    state
-        .set_status_by(id, HumanStatus::Done, actor)
-        .map_err(|error| StatusError::Store(error.to_string()))?;
-    let released =
-        dispatch::start_released_with_host(&mut state, &state_dir, actor, in_herdr, host);
-    store
-        .reload_merge_save(&mut state)
-        .map_err(|error| StatusError::Store(error.to_string()))?;
-    Ok((
-        StatusResult {
-            number: number.expect("checked above"),
-            title,
-            status: HumanStatus::Done,
-        },
-        released,
-    ))
+    Ok((result, released))
 }
 
 /// What `tsk status <task> started` did.

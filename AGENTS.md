@@ -174,10 +174,16 @@ migration or design work they imply. What the behaviour *is* lives in the docs
 ### Store and state
 
 - Human status is source of truth. Never auto-complete tasks from agent status. The one automatic
-  status change is a `ready` task whose last `after` prerequisite became done: it starts in the
-  same save as that done, through `dispatch::start_route` (`start_released_with_host`), and joins
-  the done's undo entry. Every done path (reducer, cleanup card, missing-worktree converge, CLI)
-  calls it before its save; completions queue on `DomainState` (`take_completed`) until then.
+  status change is a `ready` task whose last `after` prerequisite became done: it starts through
+  `dispatch::start_route` and joins the done's undo entry. What a done released is decided on the
+  merged state under the save's lock (`plan_released_with_host` inside
+  `TaskStore::reload_merge_save_then`, or the CLI's locked transition), never on a stale copy, so
+  concurrent dones of a task's last two prerequisites still release it. Plain starts land in that
+  save; launches run after it (`launch_released_with_host`) and save again, and never while a
+  marked-set dispatch is landing (it may hold the same task). Every done path (reducer, cleanup
+  card, missing-worktree converge, CLI) saves through `save_releasing_with_host` or its CLI twin;
+  completions queue on `DomainState` (`take_completed`) until then. A delete never rewrites a task
+  already soft-deleted: its own delete's undo entry must keep matching.
 - A delete drops its number from every other task's `after` in the same undo entry
   (`UndoEntry::SetAfter` leaves); trash purge drops leftovers as bookkeeping. A number no live task
   carries waits on nothing.
