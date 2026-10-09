@@ -200,29 +200,6 @@ pub struct StartFlags {
     pub force: bool,
 }
 
-/// `T3 runs after T2 (started), T4 (open)`: what a task still waits on, or `None` when it waits
-/// on nothing.
-pub fn waiting_text(state: &DomainState, task: &crate::domain::Task) -> Option<String> {
-    let waiting = state.waiting_on(task);
-    if waiting.is_empty() {
-        return None;
-    }
-    let list = waiting
-        .iter()
-        .map(|number| {
-            let status = state.task_by_number(*number).map_or("open", |task| {
-                crate::cli::presenter::status_name(task.status)
-            });
-            format!("T{number} ({status})")
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    Some(format!(
-        "T{} runs after {list}",
-        task.number.unwrap_or_default()
-    ))
-}
-
 /// `tsk status <task> started` through the real host: launches where a start launches.
 pub fn run_started(
     target: TaskAddress,
@@ -271,7 +248,7 @@ pub fn run_started_with_host(
         if let Some(task) = state.tasks().iter().find(|task| {
             target.matches(task) && !task.soft_deleted && task.status != HumanStatus::Started
         }) {
-            if let Some(waiting) = waiting_text(&state, task) {
+            if let Some(waiting) = state.waiting_text(task) {
                 return Err(StatusError::AfterNotDone(waiting));
             }
         }

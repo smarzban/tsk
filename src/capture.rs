@@ -123,9 +123,11 @@ pub struct QuickAddTokens {
     pub thread: Option<String>,
     pub assignee: Option<String>,
     pub base: Option<String>,
+    /// `!w T202`, repeatable: the tasks the new task runs after.
+    pub after: Vec<u64>,
 }
 
-/// Lift and validate whitespace-delimited `!p`, `!t`, `!a`, and `!b` directives.
+/// Lift and validate whitespace-delimited `!p`, `!t`, `!a`, `!b`, and `!w` directives.
 ///
 /// Base validation uses the effective task destination, never the process checkout.
 pub fn lift_quick_add_tokens(
@@ -141,6 +143,7 @@ pub fn lift_quick_add_tokens(
     let mut thread = None;
     let mut assignee = None;
     let mut base = None;
+    let mut after = Vec::new();
     let mut index = 0;
 
     while let Some(word) = words.get(index) {
@@ -193,6 +196,19 @@ pub fn lift_quick_add_tokens(
                 base = argument.map(str::to_owned);
                 index += usize::from(argument.is_some()) + 1;
             }
+            // `!w T202`: run after T202 ("wait for"). Unknown or done tasks refuse.
+            "!w" => {
+                let number = quick_add_token_argument(&words, index)
+                    .and_then(|argument| crate::cli::parser::parse_after_number(argument).ok())
+                    .ok_or_else(|| "!w needs a task number like T12".to_string())?;
+                domain
+                    .check_new_after(&[number])
+                    .map_err(|error| error.to_string())?;
+                if !after.contains(&number) {
+                    after.push(number);
+                }
+                index += 2;
+            }
             _ => {
                 title.push(*word);
                 index += 1;
@@ -214,6 +230,7 @@ pub fn lift_quick_add_tokens(
         thread,
         assignee,
         base,
+        after,
     })
 }
 
@@ -221,7 +238,7 @@ fn quick_add_token_argument<'a>(words: &'a [&str], index: usize) -> Option<&'a s
     words
         .get(index + 1)
         .copied()
-        .filter(|word| !matches!(*word, "!p" | "!t" | "!a" | "!b") && !word.starts_with('#'))
+        .filter(|word| !matches!(*word, "!p" | "!t" | "!a" | "!b" | "!w") && !word.starts_with('#'))
 }
 
 #[cfg(test)]

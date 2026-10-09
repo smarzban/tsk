@@ -287,6 +287,79 @@ pub fn block_trailer(task: &Task, tasks: &[Task]) -> Option<String> {
     }
 }
 
+/// The live task carrying `number`, from the board's task slice.
+fn live_task(tasks: &[Task], number: u64) -> Option<&Task> {
+    tasks
+        .iter()
+        .find(|task| task.number == Some(number) && !task.soft_deleted && !task.is_notice())
+}
+
+/// The prerequisites `task` still waits on: live tasks not yet done.
+pub fn waiting_after(task: &Task, tasks: &[Task]) -> Vec<u64> {
+    task.after
+        .iter()
+        .copied()
+        .filter(|number| {
+            live_task(tasks, *number).is_some_and(|task| task.status != HumanStatus::Done)
+        })
+        .collect()
+}
+
+/// `T202, T205`.
+fn task_list(numbers: impl IntoIterator<Item = u64>) -> String {
+    numbers
+        .into_iter()
+        .map(|number| format!("T{number}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The dim right-edge `after T202` of a row that still waits; gone once every prerequisite is
+/// done.
+pub fn after_trailer(task: &Task, tasks: &[Task]) -> Option<String> {
+    let waiting = waiting_after(task, tasks);
+    (!waiting.is_empty()).then(|| format!("after {}", task_list(waiting)))
+}
+
+/// The peek's links: `after T202 · started, T205 · done` and the read-only `before T203`.
+pub fn after_peek_lines(task: &Task, tasks: &[Task]) -> Vec<String> {
+    let mut lines = Vec::new();
+    let after = task
+        .after
+        .iter()
+        .filter_map(|number| {
+            live_task(tasks, *number).map(|prerequisite| {
+                format!(
+                    "T{number} · {}",
+                    crate::domain::status_word(prerequisite.status)
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    if !after.is_empty() {
+        lines.push(format!("after {}", after.join(", ")));
+    }
+    let before = before_numbers(task, tasks);
+    if !before.is_empty() {
+        lines.push(format!("before {}", task_list(before)));
+    }
+    lines
+}
+
+/// The live tasks that run after `task`, by number.
+pub fn before_numbers(task: &Task, tasks: &[Task]) -> Vec<u64> {
+    let Some(number) = task.number else {
+        return Vec::new();
+    };
+    let mut before: Vec<u64> = tasks
+        .iter()
+        .filter(|other| !other.soft_deleted && !other.is_notice() && other.after.contains(&number))
+        .filter_map(|other| other.number)
+        .collect();
+    before.sort_unstable();
+    before
+}
+
 // Unit-test adapter: inspect the same first wrapped line the board paints.
 #[cfg(test)]
 fn paint_task_row(row: &TaskRowPaint<'_>, geo: &TierGeometry) -> Line<'static> {
@@ -876,6 +949,8 @@ pub enum QueueHitTarget {
     FormAssignee,
     /// Shared-form dispatch base portion of the task-page footer.
     FormBase,
+    /// Shared-form `after` portion of the task-page footer.
+    FormAfter,
     /// Shared-form thread portion of the task-page footer.
     FormThread,
     /// One painted steps step row on the open task page, indexed by the step's
@@ -2006,7 +2081,7 @@ pub(crate) fn form_verb_items(
         CaptureField::Thread => FORM_THREAD_VERBS,
         CaptureField::Scope => FORM_SCOPE_VERBS,
         CaptureField::Assignee => FORM_ASSIGNEE_VERBS,
-        CaptureField::Base => FORM_BASE_VERBS,
+        CaptureField::Base | CaptureField::After => FORM_BASE_VERBS,
     }
 }
 
@@ -3679,6 +3754,7 @@ fn paint_task_page(
 
         let mut component_x = 0u16;
         let mut thread_slot = None;
+        let mut after_slot = None;
         for component in meta.split(" · ") {
             if component_x >= meta_scope_x {
                 break;
@@ -3686,6 +3762,9 @@ fn paint_task_page(
             let component_width = u16::try_from(display_width(component)).unwrap_or(u16::MAX);
             if component == "thread" || component.starts_with('#') {
                 thread_slot = Some((component_x, component_width));
+            }
+            if component == "after" || component.starts_with("after T") {
+                after_slot = Some((component_x, component_width));
             }
             component_x = component_x
                 .saturating_add(component_width)
@@ -3706,6 +3785,7 @@ fn paint_task_page(
                 QueueHitTarget::FormBase,
                 meta_base_x.map(|x| (x, meta_base_width)),
             ),
+            (CaptureField::After, QueueHitTarget::FormAfter, after_slot),
             (
                 CaptureField::Thread,
                 QueueHitTarget::FormThread,
@@ -3963,6 +4043,8 @@ pub enum CleanupFooter {
     Dispatch(usize),
     /// The relaunch card for one task whose agent is gone.
     Relaunch,
+    /// The start-anyway card for a start whose targets still wait on other tasks.
+    StartAnyway,
 }
 
 impl CleanupFooter {
@@ -3977,6 +4059,7 @@ impl CleanupFooter {
             (Self::Finished, _) => FINISHED_CLEANUP_FOOTER,
             (Self::Dispatch(_), _) => SHORT_DISPATCH_FOOTER,
             (Self::Relaunch, _) => RELAUNCH_FOOTER,
+            (Self::StartAnyway, _) => START_ANYWAY_FOOTER,
         }
     }
 
@@ -4007,6 +4090,17 @@ const RELAUNCH_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "n",
         label: "just start",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "cancel",
+    },
+];
+
+const START_ANYWAY_FOOTER: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "y",
+        label: "start anyway",
     },
     VerbEntry {
         key: "esc",
@@ -4974,7 +5068,10 @@ fn detail_lines_for_task(
     let room = (width as usize)
         .saturating_sub(display_width(indent) + 1)
         .max(1);
-    for (text, style) in peek_block_lines(task, tasks) {
+    let links = after_peek_lines(task, tasks)
+        .into_iter()
+        .map(|text| (text, style_dim()));
+    for (text, style) in peek_block_lines(task, tasks).into_iter().chain(links) {
         for row in crate::ui::edit::wrap_text(&text, room) {
             push(
                 &mut lines,
@@ -5245,7 +5342,13 @@ fn build_list_rows_inner(
                 0,
             )
         } else {
-            let trailer = block_trailer(task, model.tasks);
+            let trailer = match (
+                block_trailer(task, model.tasks),
+                after_trailer(task, model.tasks),
+            ) {
+                (Some(block), Some(after)) => Some(format!("{block} · {after}")),
+                (block, after) => block.or(after),
+            };
             paint_task_row_lines(
                 &TaskRowPaint {
                     glyph: task_status_glyph(task),

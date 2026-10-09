@@ -1344,6 +1344,7 @@ pub fn apply_board_intent_with_save_recovery(
     model.sync_from_domain(domain);
     model.finish_form_assignee_sync(true);
     model.finish_form_base_sync(true);
+    model.finish_form_after_sync(true);
     Ok(IntentOutcome::Persisted)
 }
 
@@ -2608,6 +2609,41 @@ pub fn finish_queued_cleanup_with_host(
 /// undoable: `ctrl+u` restores the status and leaves the agent running. A refusal or a
 /// failed launch changes nothing and says why on the status row.
 #[allow(clippy::too_many_arguments)]
+/// Start what the unsaved completions in `domain` released, through the start route (plain, or
+/// a dispatch for an assigned task never dispatched). Call it right before the save that makes
+/// the done durable, so each start lands in that same save.
+fn start_released(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Vec<dispatch::Released> {
+    dispatch::start_released_with_host(domain, store.path(), crate::domain::OWNER, in_herdr, host)
+}
+
+/// Once the save that carried them landed: name each launched agent and say what started.
+fn report_released(
+    released: &[dispatch::Released],
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
+) -> Option<String> {
+    for released in released {
+        if let dispatch::ReleasedStart::Dispatched(result) = &released.start {
+            if let Some(naming) = result.naming.clone() {
+                name_agent(naming);
+            }
+        }
+    }
+    dispatch::released_message(released)
+}
+
+/// `message`, then what the completion released.
+fn with_released(message: String, note: Option<String>) -> String {
+    match note {
+        Some(note) => format!("{message} · {note}"),
+        None => message,
+    }
+}
+
 fn run_board_dispatch(
     store: &TaskStore,
     domain: &mut DomainState,
@@ -2884,6 +2920,37 @@ fn route_board_start(
     }
 }
 
+/// Open the start-anyway card when a start (`ctrl+s`, palette **set status: started**) would
+/// move a task that still waits on others: `T203 runs after T202 (started). Start anyway?`.
+/// The marks stay for the replay. `y` sets [`BoardModel::start_anyway`] for one pass.
+fn ask_before_starting_waiting(
+    domain: &DomainState,
+    model: &mut BoardModel,
+    intent: &BoardIntent,
+) -> bool {
+    if model.start_anyway {
+        return false;
+    }
+    let any_status = *intent != BoardIntent::PrimaryVerb;
+    let waiting: Vec<String> = model
+        .verb_target_ids()
+        .iter()
+        .filter_map(|id| domain.get(*id))
+        .filter(|task| !task.is_notice() && start_moves(task, any_status))
+        .filter_map(|task| domain.waiting_text(task))
+        .collect();
+    if waiting.is_empty() {
+        return false;
+    }
+    model.begin_dispatch_prompt(crate::ui::board::DispatchPrompt::start_anyway(
+        crate::ui::board::StartAnywayPrompt {
+            waiting,
+            intent: intent.clone(),
+        },
+    ));
+    true
+}
+
 /// The status row when a refresh before a start dropped or moved its target.
 const START_TARGET_CHANGED: &str = "that task changed elsewhere · nothing started";
 
@@ -2963,14 +3030,15 @@ fn approve_review(
             let Some(baseline) = load_baseline(store, model)? else {
                 return Ok(());
             };
+            let released = start_released(store, domain, in_herdr, host);
             if let Err(error) = store.reload_merge_save(domain) {
                 fail_board_save(domain, model, save_recovery, baseline, error.to_string());
                 return Ok(());
             }
             model.sync_from_domain(domain);
-            model.set_message(format!(
-                "done T{} · worktree missing · branch kept",
-                result.number
+            model.set_message(with_released(
+                format!("done T{} · worktree missing · branch kept", result.number),
+                report_released(&released, name_agent),
             ));
             record_notice_dismissals_without_blocking_persist(store, domain);
             return Ok(());
@@ -3284,6 +3352,7 @@ pub fn open_bulk_dispatch_card(
         no_launch,
         any_status,
         relaunch: None,
+        start_anyway: None,
         git_checks,
         scroll: 0,
     });
@@ -3738,14 +3807,15 @@ fn handle_board_intent_with_host(
         match offer_bulk_cleanup_prompt_with_host(domain, model, in_herdr, host) {
             Ok(BulkCleanupOffer::Prompted) => return Ok(false),
             Ok(BulkCleanupOffer::MissingConverged { done, missing }) => {
+                let released = start_released(store, domain, in_herdr, host);
                 if let Err(error) = store.reload_merge_save(domain) {
                     fail_board_save(domain, model, save_recovery, baseline, error.to_string());
                     return Ok(false);
                 }
                 model.sync_from_domain(domain);
-                model.set_message(format!(
-                    "done {done} · {} already gone",
-                    plural(missing, "worktree")
+                model.set_message(with_released(
+                    format!("done {done} · {} already gone", plural(missing, "worktree")),
+                    report_released(&released, name_agent),
                 ));
                 record_notice_dismissals_without_blocking_persist(store, domain);
                 return Ok(false);
@@ -3767,14 +3837,15 @@ fn handle_board_intent_with_host(
             match offer_cleanup_prompt_with_host(domain, model, target, in_herdr, host) {
                 Ok(CleanupOffer::Prompted) => return Ok(false),
                 Ok(CleanupOffer::MissingConverged(result)) => {
+                    let released = start_released(store, domain, in_herdr, host);
                     if let Err(error) = store.reload_merge_save(domain) {
                         fail_board_save(domain, model, save_recovery, baseline, error.to_string());
                         return Ok(false);
                     }
                     model.sync_from_domain(domain);
-                    model.set_message(format!(
-                        "done T{} · worktree missing · branch kept",
-                        result.number
+                    model.set_message(with_released(
+                        format!("done T{} · worktree missing · branch kept", result.number),
+                        report_released(&released, name_agent),
                     ));
                     record_notice_dismissals_without_blocking_persist(store, domain);
                     return Ok(false);
@@ -3807,6 +3878,8 @@ fn handle_board_intent_with_host(
                 return Ok(false);
             }
         };
+        // What the completion released starts in the same save.
+        let released = start_released(store, domain, in_herdr, host);
         // Completion is durable before any worktree is touched.
         if let Err(error) = store.reload_merge_save(domain) {
             model.close_popup();
@@ -3814,6 +3887,8 @@ fn handle_board_intent_with_host(
             return Ok(false);
         }
         model.sync_from_domain(domain);
+        // The cleanup card owns the status row: its summary carries what started.
+        model.released_note = report_released(&released, name_agent);
         match confirmed {
             Some(CleanupConfirmed { run: Some(run), .. }) => {
                 model.begin_cleanup_run(run);
@@ -3834,6 +3909,29 @@ fn handle_board_intent_with_host(
     // scope and provenance: the reducer stores it on `model.capture_snapshot` at
     // open and reads it back at ConfirmEdit, so a `None` here is what silently turned board
     // `a` into a no-op save that still reported success.
+    // `y` on the start-anyway card: replay the start that asked, past the after check once.
+    if intent == BoardIntent::ConfirmDispatch && !save_recovery.is_pending() {
+        if let Some(start) = model
+            .dispatch_prompt()
+            .and_then(|prompt| prompt.start_anyway.clone())
+        {
+            model.take_dispatch_prompt();
+            model.start_anyway = true;
+            let replayed = handle_board_intent_with_host(
+                store,
+                domain,
+                model,
+                start.intent,
+                save_recovery,
+                quick_capture,
+                in_herdr,
+                host,
+                name_agent,
+            );
+            model.start_anyway = false;
+            return replayed;
+        }
+    }
     if intent == BoardIntent::ConfirmDispatch && !save_recovery.is_pending() {
         start_bulk_dispatch(
             store,
@@ -3884,6 +3982,17 @@ fn handle_board_intent_with_host(
             host,
             name_agent,
         );
+        return Ok(false);
+    }
+
+    // A start of a task that still waits on others asks first.
+    if matches!(
+        intent,
+        BoardIntent::PrimaryVerb | BoardIntent::SetStatus(HumanStatus::Started)
+    ) && !save_recovery.is_pending()
+        && !model.focus_is_archived()
+        && ask_before_starting_waiting(domain, model, &intent)
+    {
         return Ok(false);
     }
 
@@ -3964,6 +4073,8 @@ fn handle_board_intent_with_host(
         None
     };
 
+    // A completion the reducer made starts what it released in the same save.
+    let mut released = Vec::new();
     let outcome = apply_board_intent_presenting_rejection(
         domain,
         model,
@@ -3974,11 +4085,17 @@ fn handle_board_intent_with_host(
             snapshot: snapshot_for_intent,
         },
         |state| {
+            released.extend(start_released(store, state, in_herdr, host));
             store
                 .reload_merge_save(state)
                 .map_err(|error| error.to_string())
         },
     );
+    if outcome == IntentOutcome::Persisted {
+        if let Some(note) = report_released(&released, name_agent) {
+            model.set_message(note);
+        }
+    }
     // A reply whose save failed keeps its start for save recovery: Retry resumes it, Cancel
     // drops it with the rolled-back reply.
     // A delivery waits on the same recovery: Retry sends it once, against a fresh check.
@@ -8875,6 +8992,7 @@ mod tests {
             BoardInputMode::TaskPage,
             BoardInputMode::EditAssignee,
             BoardInputMode::SelectBase,
+            BoardInputMode::SelectAfter,
             BoardInputMode::SelectThread,
             BoardInputMode::EditScope,
             BoardInputMode::EditTitle,
@@ -8885,6 +9003,7 @@ mod tests {
         for expected in [
             BoardInputMode::EditScope,
             BoardInputMode::SelectThread,
+            BoardInputMode::SelectAfter,
             BoardInputMode::SelectBase,
             BoardInputMode::EditAssignee,
             BoardInputMode::TaskPage,
@@ -8917,6 +9036,7 @@ mod tests {
             BoardInputMode::CapturePage,
             BoardInputMode::EditAssignee,
             BoardInputMode::SelectBase,
+            BoardInputMode::SelectAfter,
             BoardInputMode::EditThread,
             BoardInputMode::EditScope,
             BoardInputMode::EditTitle,

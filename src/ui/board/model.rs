@@ -84,6 +84,8 @@ pub enum BoardInputMode {
     SelectThread,
     /// The task page footer's dispatch base is selected. Enter opens the branch picker.
     SelectBase,
+    /// The task page footer's `after` list is selected. Enter opens the task picker.
+    SelectAfter,
     /// The task page footer's optional thread name owns its text cursor.
     EditThread,
     /// The scope row of an open task form owns focus.
@@ -238,6 +240,8 @@ pub enum ListPickerKind {
     Assignee,
     /// Explicit dispatch base, including the leading remote-default choice.
     Base,
+    /// The tasks a task runs after: tick several with Space, `none` clears.
+    After,
 }
 
 /// One choice inside a searchable list picker.
@@ -265,8 +269,21 @@ pub enum ListPickerValue {
     Assignee(Option<String>),
     /// Set this exact branch name, or clear the explicit base with `None`.
     Base(Option<String>),
+    /// One task the target may run after, by number.
+    After(u64),
+    /// Run after nothing.
+    AfterNone,
     /// Informational row, never a selectable or confirmable value.
     Unavailable,
+}
+
+/// The tick column a task-picker label leads with.
+const AFTER_TICKED: &str = "✓ ";
+const AFTER_UNTICKED: &str = "  ";
+
+fn after_option_label(ticked: bool, rest: &str) -> String {
+    let tick = if ticked { AFTER_TICKED } else { AFTER_UNTICKED };
+    format!("{tick}{rest}")
 }
 
 /// What the assignee picker applies to, captured when it opens so a refresh that moves the
@@ -288,7 +305,19 @@ pub(super) struct BasePickerTarget {
     selection_pending: bool,
 }
 
-/// An open searchable list picker (thread filter / projects view / assignee / base).
+/// What the task picker applies to, captured when it opens. An edit-ring picker updates only
+/// its form's draft; every other target is one atomic, undoable domain batch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AfterPickerTarget {
+    pub ids: Vec<Uuid>,
+    pub edit_draft: bool,
+    /// The ticked numbers, in the order they were ticked.
+    pub ticked: Vec<u64>,
+    /// Current links the picker does not list (a done prerequisite): kept unless `none`.
+    pub kept: Vec<u64>,
+}
+
+/// An open searchable list picker (thread filter / projects view / assignee / base / after).
 /// Session-only.
 #[derive(Debug, Clone)]
 pub(super) struct ListPickerState {
@@ -301,6 +330,7 @@ pub(super) struct ListPickerState {
     pub return_mode: BoardInputMode,
     pub assignee_target: Option<AssigneePickerTarget>,
     pub base_target: Option<BasePickerTarget>,
+    pub after_target: Option<AfterPickerTarget>,
     /// Source index of the option the board currently applies (painted `✓`).
     pub active: Option<usize>,
     /// The tabbed filter pickers keep the inactive tab here; `None` for single lists.
@@ -376,6 +406,7 @@ pub(super) struct TaskEditSave {
     pub(super) thread: Option<String>,
     pub(super) assignee: Option<String>,
     pub(super) base: Option<String>,
+    pub(super) after: Vec<u64>,
     /// Existing-step names staged alongside the ordinary task fields. They reach the
     /// domain only when the task session is confirmed with Shift+Enter.
     pub(super) step_renames: BTreeMap<Uuid, String>,
@@ -399,6 +430,8 @@ pub(super) struct BoardForm {
     pub(super) assignee: Option<String>,
     /// Optional explicit dispatch branch. `None` means the repository's remote default.
     pub(super) base: Option<String>,
+    /// The tasks this one runs after, by number, as the task picker last set them.
+    pub(super) after: Vec<u64>,
     pub(super) assignee_options: Vec<Option<String>>,
     pub(super) assignee_selected: usize,
     /// A task page starts view-only. Entering any field makes its steps selectable and editable
@@ -459,6 +492,7 @@ impl BoardForm {
         form.thread = seeded_draft(task.thread.as_deref().unwrap_or_default());
         form.assignee = task.assignee.clone();
         form.base = task.base.clone();
+        form.after = task.after.clone();
         form.set_agent_names(agent_names);
         form.block.fold = super::block::CheckFold::fresh(task);
         form.task_snapshot = Some(Box::new(task.clone()));
@@ -516,6 +550,7 @@ impl BoardForm {
             thread_refusal: None,
             assignee: None,
             base: None,
+            after: Vec::new(),
             assignee_options: vec![None],
             assignee_selected: 0,
             editing: false,
@@ -563,6 +598,7 @@ impl BoardForm {
             CaptureField::Scope => BoardInputMode::EditScope,
             CaptureField::Assignee => BoardInputMode::EditAssignee,
             CaptureField::Base => BoardInputMode::SelectBase,
+            CaptureField::After => BoardInputMode::SelectAfter,
         }
     }
 
@@ -586,6 +622,7 @@ impl BoardForm {
                 self.select_current_assignee();
             }
             CaptureField::Base => self.base = task.base.clone(),
+            CaptureField::After => self.after = task.after.clone(),
         }
         if let Some(snapshot) = self.task_snapshot.as_mut() {
             match field {
@@ -595,6 +632,7 @@ impl BoardForm {
                 CaptureField::Scope => snapshot.scope = task.scope.clone(),
                 CaptureField::Assignee => snapshot.assignee = task.assignee.clone(),
                 CaptureField::Base => snapshot.base = task.base.clone(),
+                CaptureField::After => snapshot.after = task.after.clone(),
             }
         }
     }
@@ -604,7 +642,8 @@ impl BoardForm {
             CaptureField::Title => CaptureField::Notes,
             CaptureField::Notes => CaptureField::Assignee,
             CaptureField::Assignee => CaptureField::Base,
-            CaptureField::Base => CaptureField::Thread,
+            CaptureField::Base => CaptureField::After,
+            CaptureField::After => CaptureField::Thread,
             CaptureField::Thread => CaptureField::Scope,
             CaptureField::Scope => CaptureField::Title,
         };
@@ -616,7 +655,8 @@ impl BoardForm {
             CaptureField::Notes => CaptureField::Title,
             CaptureField::Assignee => CaptureField::Notes,
             CaptureField::Base => CaptureField::Assignee,
-            CaptureField::Thread => CaptureField::Base,
+            CaptureField::After => CaptureField::Base,
+            CaptureField::Thread => CaptureField::After,
             CaptureField::Scope => CaptureField::Thread,
         };
     }
@@ -1062,6 +1102,16 @@ pub struct BoardModel {
     pub pending_reply_delivery: Option<Uuid>,
     /// The reply text a held start or delivery sends once Retry saves it. Session-only.
     pub pending_reply_text: Option<String>,
+    /// `y` on the start-anyway card: the replayed start skips the after check once.
+    pub start_anyway: bool,
+    /// What a completion's save released (`T203 started · T202 done`), joined onto the cleanup
+    /// summary that owns the status row once the cleanup lands.
+    pub released_note: Option<String>,
+    /// Marked tasks in the order they were marked, for **chain in order**.
+    pub(super) mark_order: Vec<Uuid>,
+    /// Tasks a quick task-picker change saved: an open page form bound to one adopts the new
+    /// list once the save lands, unless its own After draft changed.
+    pub(super) pending_form_after_sync: Option<Vec<Uuid>>,
     /// The block card while it owns input.
     pub(super) block_card: Option<super::block::BlockCard>,
     /// The reply box open inline under a blocked board row.
@@ -1239,6 +1289,9 @@ pub struct DispatchPrompt {
     /// The relaunch card: one cursor task whose agent is gone. `y` relaunches it, `n` only
     /// starts it. `launch`, `skipped` and `start_only` are empty.
     pub relaunch: Option<RelaunchPrompt>,
+    /// The start-anyway card: the start's targets still wait on tasks that are not done. `y`
+    /// starts them anyway, through the same start route. Everything else is empty.
+    pub start_anyway: Option<StartAnywayPrompt>,
     /// The git-repository check of the listed tasks, running off the event loop; rows show
     /// `checking…` until it lands.
     pub git_checks: Option<crate::dispatch::GitChecks>,
@@ -1261,10 +1314,37 @@ impl DispatchPrompt {
             no_launch: Vec::new(),
             any_status: prompt.any_status,
             relaunch: Some(prompt),
+            start_anyway: None,
             git_checks: None,
             scroll: 0,
         }
     }
+
+    /// The start-anyway card over a start whose targets still wait.
+    pub fn start_anyway(prompt: StartAnywayPrompt) -> Self {
+        Self {
+            launch: Vec::new(),
+            skipped: Vec::new(),
+            start_only: Vec::new(),
+            corrections: Vec::new(),
+            no_launch: Vec::new(),
+            any_status: prompt.intent != crate::ui::input::BoardIntent::PrimaryVerb,
+            relaunch: None,
+            start_anyway: Some(prompt),
+            git_checks: None,
+            scroll: 0,
+        }
+    }
+}
+
+/// A start (`ctrl+s`, palette **set status: started**) whose targets still wait on tasks that
+/// are not done, asking first. The marks stay, so `y` starts the same set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartAnywayPrompt {
+    /// One line per waiting target: `T203 runs after T202 (started)`.
+    pub waiting: Vec<String>,
+    /// The start that asked, replayed on `y`.
+    pub intent: crate::ui::input::BoardIntent,
 }
 
 /// A cursor task whose dispatched agent is gone, asking before a relaunch.
@@ -1730,6 +1810,10 @@ impl BoardModel {
             pending_reply_start: None,
             pending_reply_delivery: None,
             pending_reply_text: None,
+            start_anyway: false,
+            released_note: None,
+            mark_order: Vec::new(),
+            pending_form_after_sync: None,
             block_card: None,
             row_reply: None,
             bulk_dispatch: SharedBulkDispatch::default(),
@@ -1871,6 +1955,10 @@ impl BoardModel {
         // A refusal that only said the cleanup was still running is obsolete now: it must
         // neither stay up nor come back when an expiring summary restores what it covered.
         self.drop_cleanup_refusals();
+        let summary = match self.released_note.take() {
+            Some(note) => format!("{summary} · {note}"),
+            None => summary,
+        };
         if clean {
             self.set_ephemeral_message(summary, CLEANUP_SUMMARY_TTL);
         } else {
@@ -2544,6 +2632,8 @@ impl BoardModel {
         }
         let visible: BTreeSet<Uuid> = self.visible_ids().into_iter().collect();
         self.marked_ids.retain(|id| visible.contains(id));
+        let marked = &self.marked_ids;
+        self.mark_order.retain(|id| marked.contains(id));
     }
 
     /// Presenter / pane title string.
@@ -3434,6 +3524,7 @@ impl BoardModel {
             return_mode: BoardInputMode::Normal,
             assignee_target: None,
             base_target: None,
+            after_target: None,
             active: thread_active,
             tabs: Some(ListPickerTabs {
                 active_tab: FilterTab::Threads,
@@ -3545,6 +3636,7 @@ impl BoardModel {
             return_mode: BoardInputMode::Normal,
             assignee_target: None,
             base_target: None,
+            after_target: None,
             active,
             tabs: Some(ListPickerTabs {
                 active_tab: tab,
@@ -3624,6 +3716,7 @@ impl BoardModel {
             return_mode: self.input_mode,
             assignee_target: Some(AssigneePickerTarget { ids }),
             base_target: None,
+            after_target: None,
             active: None,
             tabs: None,
         });
@@ -3714,6 +3807,7 @@ impl BoardModel {
                 // user moves it to. Without one, the refresh selects the current base.
                 selection_pending: cached.is_err(),
             }),
+            after_target: None,
             active: None,
             tabs: None,
         });
@@ -3857,6 +3951,151 @@ impl BoardModel {
         picker.base_target
     }
 
+    /// Open the task picker over `ids` (or the open form's draft): the tasks not done, the
+    /// target's project first, then the rest with their project, then **none**. `current` is
+    /// ticked; a current link the picker does not list (a done task) is kept. Space ticks,
+    /// Enter applies.
+    pub(super) fn open_after_picker(
+        &mut self,
+        ids: Vec<Uuid>,
+        current: Vec<u64>,
+        scope: &TaskScope,
+        edit_draft: bool,
+        own: Option<u64>,
+    ) {
+        let mut candidates: Vec<&Task> = self
+            .tasks
+            .iter()
+            .filter(|task| {
+                !task.soft_deleted
+                    && !task.is_notice()
+                    && !task.archived
+                    && task.status != HumanStatus::Done
+                    && task.number.is_some()
+                    && task.number != own
+                    && !ids.contains(&task.id)
+            })
+            .collect();
+        candidates.sort_by_key(|task| (task.scope != *scope, task.number));
+        let listed: Vec<u64> = candidates.iter().filter_map(|task| task.number).collect();
+        let ticked: Vec<u64> = current
+            .iter()
+            .copied()
+            .filter(|number| listed.contains(number))
+            .collect();
+        let kept: Vec<u64> = current
+            .iter()
+            .copied()
+            .filter(|number| !listed.contains(number))
+            .collect();
+        let mut options: Vec<ListPickerOption> = candidates
+            .iter()
+            .map(|task| {
+                let number = task.number.expect("listed tasks are numbered");
+                let place = if task.scope == *scope {
+                    String::new()
+                } else {
+                    match &task.scope {
+                        TaskScope::Project { path } => {
+                            format!(" · {}", crate::ui::render::short_project(path))
+                        }
+                        TaskScope::Global => " · desk".to_string(),
+                    }
+                };
+                ListPickerOption {
+                    label: after_option_label(
+                        ticked.contains(&number),
+                        &format!("T{number} {}{place}", terminal_text(&task.title)),
+                    ),
+                    count: None,
+                    value: ListPickerValue::After(number),
+                }
+            })
+            .collect();
+        options.push(ListPickerOption {
+            label: "none".to_string(),
+            count: None,
+            value: ListPickerValue::AfterNone,
+        });
+        self.list_picker = Some(ListPickerState {
+            kind: ListPickerKind::After,
+            options,
+            selected: 0,
+            query: String::new(),
+            return_mode: self.input_mode,
+            assignee_target: None,
+            base_target: None,
+            after_target: Some(AfterPickerTarget {
+                ids,
+                edit_draft,
+                ticked,
+                kept,
+            }),
+            active: None,
+            tabs: None,
+        });
+        self.input_mode = BoardInputMode::ListPicker;
+    }
+
+    /// Space in the task picker: tick or untick the highlighted task.
+    pub(super) fn toggle_after_tick(&mut self) {
+        let Some((index, option)) = self.selected_list_picker_option() else {
+            return;
+        };
+        let ListPickerValue::After(number) = option.value else {
+            return;
+        };
+        let Some(picker) = self.list_picker.as_mut() else {
+            return;
+        };
+        let Some(target) = picker.after_target.as_mut() else {
+            return;
+        };
+        let ticked = if let Some(position) = target.ticked.iter().position(|n| *n == number) {
+            target.ticked.remove(position);
+            false
+        } else {
+            target.ticked.push(number);
+            true
+        };
+        if let Some(option) = picker.options.get_mut(index) {
+            let rest = option
+                .label
+                .strip_prefix(AFTER_TICKED)
+                .or_else(|| option.label.strip_prefix(AFTER_UNTICKED))
+                .unwrap_or(&option.label)
+                .to_string();
+            option.label = after_option_label(ticked, &rest);
+        }
+    }
+
+    /// What Enter in the task picker sets: `none` clears; otherwise the ticked tasks plus any
+    /// kept link, or the highlighted task when nothing is ticked.
+    pub fn after_picker_choice(&self) -> Option<Vec<u64>> {
+        let picker = self.list_picker.as_ref()?;
+        let target = picker.after_target.as_ref()?;
+        let (_, option) = self.selected_list_picker_option()?;
+        Some(match option.value {
+            ListPickerValue::AfterNone => Vec::new(),
+            ListPickerValue::After(number) => {
+                let mut chosen = target.kept.clone();
+                if target.ticked.is_empty() {
+                    chosen.push(number);
+                } else {
+                    chosen.extend(target.ticked.iter().copied());
+                }
+                chosen
+            }
+            _ => return None,
+        })
+    }
+
+    pub(super) fn close_after_picker(&mut self) -> Option<AfterPickerTarget> {
+        let picker = self.list_picker.take()?;
+        self.input_mode = picker.return_mode;
+        picker.after_target
+    }
+
     /// Cached remote-default label for the task footer. Cache misses schedule metadata lookup and
     /// return `default` for this frame.
     pub fn default_branch_name(&self, project: &Path) -> String {
@@ -3920,6 +4159,29 @@ impl BoardModel {
             .is_none_or(|snapshot| snapshot.base == form.base);
         if let (true, Some(task)) = (untouched, self.tasks.iter().find(|task| task.id == id)) {
             form.reset_field_to_saved(CaptureField::Base, task);
+        }
+    }
+
+    /// [`Self::finish_form_base_sync`] for a quick task-picker change.
+    pub fn finish_form_after_sync(&mut self, saved: bool) {
+        let Some(ids) = self.pending_form_after_sync.take() else {
+            return;
+        };
+        if !saved {
+            return;
+        }
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        let Some(id) = form.task_id().filter(|id| ids.contains(id)) else {
+            return;
+        };
+        let untouched = form
+            .task_snapshot
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.after == form.after);
+        if let (true, Some(task)) = (untouched, self.tasks.iter().find(|task| task.id == id)) {
+            form.reset_field_to_saved(CaptureField::After, task);
         }
     }
 
@@ -4222,6 +4484,15 @@ impl BoardModel {
         &self.marked_ids
     }
 
+    /// The marked tasks in the order they were marked.
+    pub fn marked_in_order(&self) -> Vec<Uuid> {
+        self.mark_order
+            .iter()
+            .copied()
+            .filter(|id| self.marked_ids.contains(id))
+            .collect()
+    }
+
     /// Number of tasks the next bulk verb will target.
     pub fn marked_count(&self) -> usize {
         self.marked_ids.len()
@@ -4234,8 +4505,11 @@ impl BoardModel {
         if !self.visible_ids().contains(&id) {
             return false;
         }
-        if !self.marked_ids.remove(&id) {
+        if self.marked_ids.remove(&id) {
+            self.mark_order.retain(|marked| *marked != id);
+        } else {
             self.marked_ids.insert(id);
+            self.mark_order.push(id);
         }
         true
     }
@@ -4247,7 +4521,11 @@ impl BoardModel {
         if !self.visible_ids().contains(&id) {
             return false;
         }
-        self.marked_ids.insert(id)
+        let inserted = self.marked_ids.insert(id);
+        if inserted {
+            self.mark_order.push(id);
+        }
+        inserted
     }
 
     pub(super) fn toggle_mark_mode(&mut self) {
@@ -4262,6 +4540,7 @@ impl BoardModel {
         let had_mark_state = self.mark_mode || !self.marked_ids.is_empty();
         self.mark_mode = false;
         self.marked_ids.clear();
+        self.mark_order.clear();
         had_mark_state
     }
 
@@ -4476,7 +4755,10 @@ impl BoardModel {
             return "";
         };
         match form.focus {
-            CaptureField::Title | CaptureField::Scope | CaptureField::Base => form.title.value(),
+            CaptureField::Title
+            | CaptureField::Scope
+            | CaptureField::Base
+            | CaptureField::After => form.title.value(),
             CaptureField::Notes => form.notes.value(),
             CaptureField::Thread => form.thread.value(),
             CaptureField::Assignee => "",
@@ -4489,7 +4771,10 @@ impl BoardModel {
             return 0;
         };
         match form.focus {
-            CaptureField::Title | CaptureField::Scope | CaptureField::Base => form.title.cursor(),
+            CaptureField::Title
+            | CaptureField::Scope
+            | CaptureField::Base
+            | CaptureField::After => form.title.cursor(),
             CaptureField::Notes => form.notes.cursor(),
             CaptureField::Thread => form.thread.cursor(),
             CaptureField::Assignee => 0,
@@ -4638,6 +4923,7 @@ impl BoardModel {
             form.thread_refusal = None;
             form.assignee = pending.assignee;
             form.base = pending.base;
+            form.after = pending.after;
             form.select_current_assignee();
             form.editing = false;
             form.steps.editor = None;
@@ -4955,6 +5241,7 @@ impl BoardModel {
             || form.thread.value() != snapshot.thread.as_deref().unwrap_or_default()
             || form.assignee != snapshot.assignee
             || form.base != snapshot.base
+            || form.after != snapshot.after
             || form.scope != snapshot.scope
             || !form.steps.removals.is_empty()
         {
@@ -5683,6 +5970,7 @@ mod tests {
                 current: None,
                 selection_pending: true,
             }),
+            after_target: None,
             active: None,
             tabs: None,
         }

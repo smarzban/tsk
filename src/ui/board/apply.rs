@@ -116,6 +116,59 @@ fn file_batch(domain: &mut DomainState, targets: &[Uuid]) -> Result<bool, Domain
     Ok(changed)
 }
 
+/// Undoing a done that started the tasks it released: `done undone · T203 back to ready ·
+/// @claude kept running`. `None` for any other batch.
+fn released_undo_message(domain: &DomainState, entry: &crate::domain::UndoEntry) -> Option<String> {
+    use crate::domain::UndoEntry;
+    let leaves = entry.leaf_entries();
+    if !leaves
+        .iter()
+        .any(|leaf| matches!(leaf, UndoEntry::Complete { .. }))
+    {
+        return None;
+    }
+    let started: Vec<&crate::domain::Task> = leaves
+        .iter()
+        .filter_map(|leaf| match leaf {
+            UndoEntry::Start { id, .. } => domain.get(*id),
+            _ => None,
+        })
+        .collect();
+    if started.is_empty() {
+        return None;
+    }
+    let numbers = started
+        .iter()
+        .filter_map(|task| task.number)
+        .map(|number| format!("T{number}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut message = format!("done undone · {numbers} back to ready");
+    let mut running: Vec<String> = started
+        .iter()
+        .filter(|task| task.dispatch.as_ref().is_some_and(|record| !record.cleaned))
+        .filter_map(|task| task.assignee.clone())
+        .collect();
+    running.sort();
+    running.dedup();
+    for assignee in running {
+        message.push_str(&format!(" · @{assignee} kept running"));
+    }
+    Some(message)
+}
+
+/// The refusal when **chain in order** has fewer than two marked tasks to chain.
+const CHAIN_NEEDS_MARKS: &str = "mark two or more tasks, in order, to chain them";
+
+/// `T202, T205`.
+fn after_list(numbers: &[u64]) -> String {
+    numbers
+        .iter()
+        .map(|number| format!("T{number}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// What the row says when an Undo is refused because its target moved on.
 ///
 /// The words are the domain's, taken from [`DomainError::StaleUndo`] rather than restated
@@ -153,7 +206,9 @@ pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> boo
         && matches!(
             model.list_picker_kind(),
             Some(
-                crate::ui::board::ListPickerKind::Assignee | crate::ui::board::ListPickerKind::Base
+                crate::ui::board::ListPickerKind::Assignee
+                    | crate::ui::board::ListPickerKind::Base
+                    | crate::ui::board::ListPickerKind::After
             )
         );
     picker_assignment
@@ -187,6 +242,7 @@ pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> boo
                 | BoardIntent::ToggleStep
                 | BoardIntent::QuickAddSave
                 | BoardIntent::QuickAddSaveNext
+                | BoardIntent::ChainAfter
         )
 }
 
@@ -255,6 +311,7 @@ fn read_only_focus_refuses(model: &BoardModel, intent: &BoardIntent) -> bool {
             | BoardIntent::BeginEditScope
             | BoardIntent::OpenAssigneePicker
             | BoardIntent::OpenBasePicker
+            | BoardIntent::OpenAfterPicker
             | BoardIntent::BeginAddStep
             | BoardIntent::ToggleThreadEditing
             | BoardIntent::FormCycleScope
@@ -400,6 +457,7 @@ fn apply_board_intent(
                 | BoardInputMode::EditScope
                 | BoardInputMode::EditAssignee
                 | BoardInputMode::SelectBase
+                | BoardInputMode::SelectAfter
                 | BoardInputMode::FormDropdown
         )
     {
@@ -622,6 +680,7 @@ fn apply_board_intent(
                 crate::ui::edit::seeded_draft(lifted.thread.as_deref().unwrap_or_default());
             form.assignee = lifted.assignee;
             form.base = lifted.base;
+            form.after = lifted.after;
             form.set_agent_names(&model.agent_names);
             form.focus = CaptureField::Notes;
             form.select_current_scope();
@@ -729,6 +788,8 @@ fn apply_board_intent(
             } else if model.input_mode == BoardInputMode::EditAssignee && model.form.is_some() {
                 model.focus_form_field(CaptureField::Base);
             } else if model.input_mode == BoardInputMode::SelectBase && model.form.is_some() {
+                model.focus_form_field(CaptureField::After);
+            } else if model.input_mode == BoardInputMode::SelectAfter && model.form.is_some() {
                 model.focus_form_field(CaptureField::Thread);
             } else if matches!(
                 model.input_mode,
@@ -808,6 +869,8 @@ fn apply_board_intent(
                 BoardInputMode::SelectThread | BoardInputMode::EditThread
             ) && model.form.is_some()
             {
+                model.focus_form_field(CaptureField::After);
+            } else if model.input_mode == BoardInputMode::SelectAfter && model.form.is_some() {
                 model.focus_form_field(CaptureField::Base);
             } else if model.input_mode == BoardInputMode::SelectBase && model.form.is_some() {
                 model.focus_form_field(CaptureField::Assignee);
@@ -1343,6 +1406,7 @@ fn apply_board_intent(
                     | BoardInputMode::EditScope
                     | BoardInputMode::EditAssignee
                     | BoardInputMode::SelectBase
+                    | BoardInputMode::SelectAfter
             ) && model.form.as_ref().is_some_and(BoardForm::is_task)
             {
                 let field = model
@@ -1430,6 +1494,11 @@ fn apply_board_intent(
                 };
                 let assignee = form.assignee.clone();
                 let base = form.base.clone();
+                let after = form.after.clone();
+                if let Err(error) = domain.check_new_after(&after) {
+                    model.set_message(error.to_string());
+                    return Ok(IntentOutcome::None);
+                }
                 let pending_adds = form.steps.pending_adds.clone();
                 return match crate::capture::capture_save_configured(
                     domain,
@@ -1443,6 +1512,7 @@ fn apply_board_intent(
                     base,
                 ) {
                     Ok(id) => {
+                        domain.set_after_on_create(id, &after)?;
                         for text in &pending_adds {
                             domain.add_step(id, text)?;
                         }
@@ -1760,6 +1830,147 @@ fn apply_board_intent(
             model.clear_message();
             model.open_base_picker(ids, current, &project, edit_draft);
             return Ok(IntentOutcome::None);
+        }
+        BoardIntent::OpenAfterPicker => {
+            if model.project_picker.is_some() || model.popup == BoardPopup::SaveRecovery {
+                return Ok(IntentOutcome::None);
+            }
+            model.close_popup();
+            model.close_help();
+            let task_page = model.input_mode == BoardInputMode::TaskPage
+                && model.form.as_ref().is_some_and(BoardForm::is_task);
+            let edit_draft =
+                (model.task_editing() || model.capture_draft_open()) && model.form.is_some();
+            if !(task_page || edit_draft || model.input_mode == BoardInputMode::Normal)
+                || model.projects_overview()
+            {
+                return Ok(IntentOutcome::None);
+            }
+            let ids: Vec<Uuid> = if edit_draft {
+                model
+                    .form
+                    .as_ref()
+                    .and_then(BoardForm::task_id)
+                    .into_iter()
+                    .collect()
+            } else {
+                model
+                    .verb_target_ids()
+                    .into_iter()
+                    .filter(|id| domain.get(*id).is_some_and(|task| !task.is_notice()))
+                    .collect()
+            };
+            if ids.is_empty() && !edit_draft {
+                model.set_message(NO_SELECTION);
+                return Ok(IntentOutcome::None);
+            }
+            let first = ids.first().and_then(|id| domain.get(*id));
+            let (current, scope) = if edit_draft {
+                let form = model.form.as_ref().expect("edit draft has a form");
+                (form.after.clone(), form.scope.clone())
+            } else {
+                (
+                    first
+                        .filter(|_| ids.len() == 1)
+                        .map(|task| task.after.clone())
+                        .unwrap_or_default(),
+                    first.map_or(TaskScope::Global, |task| task.scope.clone()),
+                )
+            };
+            let own = first
+                .and_then(|task| task.number)
+                .filter(|_| ids.len() == 1);
+            model.clear_message();
+            model.open_after_picker(ids, current, &scope, edit_draft, own);
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::ListPickerQueryInsert(' ')
+            if model.list_picker_kind() == Some(crate::ui::board::ListPickerKind::After) =>
+        {
+            model.toggle_after_tick();
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::ConfirmListPicker
+            if model.list_picker_kind() == Some(crate::ui::board::ListPickerKind::After) =>
+        {
+            let Some(after) = model.after_picker_choice() else {
+                return Ok(IntentOutcome::None);
+            };
+            let Some(target) = model
+                .list_picker
+                .as_ref()
+                .and_then(|picker| picker.after_target.clone())
+            else {
+                return Ok(IntentOutcome::None);
+            };
+            // A refusal (a loop, or a task done meanwhile) keeps the picker open.
+            let checked = match target.ids.as_slice() {
+                [] => domain.check_new_after(&after),
+                ids if target.edit_draft => domain.check_after(ids[0], &after),
+                ids => {
+                    let mut work = domain.clone();
+                    work.set_after_batch(ids, &after).map(|_| ())
+                }
+            };
+            if let Err(error) = checked {
+                model.set_message(error.to_string());
+                return Ok(IntentOutcome::None);
+            }
+            model.close_after_picker();
+            if target.edit_draft {
+                if let Some(form) = model.form.as_mut() {
+                    form.after = after;
+                    form.focus = CaptureField::After;
+                    form.editing = true;
+                    model.input_mode = BoardInputMode::SelectAfter;
+                }
+                return Ok(IntentOutcome::None);
+            }
+            let changed = domain.set_after_batch(&target.ids, &after)?;
+            model.clear_marks();
+            if !changed {
+                return Ok(IntentOutcome::None);
+            }
+            model.pending_form_after_sync = Some(target.ids.clone());
+            let subject = match target.ids.as_slice() {
+                [id] => domain
+                    .get(*id)
+                    .and_then(|task| task.number)
+                    .map_or_else(|| "task".to_string(), |number| format!("T{number}")),
+                ids => format!("{} tasks", ids.len()),
+            };
+            model.set_message(if after.is_empty() {
+                format!("{subject} runs after nothing")
+            } else {
+                format!("{subject} runs after {}", after_list(&after))
+            });
+            return Ok(IntentOutcome::Persist);
+        }
+        BoardIntent::ChainAfter => {
+            model.close_popup();
+            let ids = if model.bulk_verb_active() {
+                model.marked_in_order()
+            } else {
+                Vec::new()
+            };
+            if ids.len() < 2 {
+                model.set_message(CHAIN_NEEDS_MARKS);
+                return Ok(IntentOutcome::None);
+            }
+            if let Err(error) = domain.chain_after(&ids) {
+                model.set_message(error.to_string());
+                return Ok(IntentOutcome::None);
+            }
+            model.clear_marks();
+            let chain = ids
+                .iter()
+                .filter_map(|id| domain.get(*id).and_then(|task| task.number))
+                .map(|number| format!("T{number}"))
+                .collect::<Vec<_>>()
+                .join(" → ");
+            model.sync_from_domain(domain);
+            model.set_message(format!("chained {chain}"));
+            return Ok(IntentOutcome::Persist);
         }
         BoardIntent::ListPickerNext => {
             model.move_list_picker(true);
@@ -2904,6 +3115,8 @@ fn apply_board_intent(
                         .first()
                         .and_then(|id| domain.get(*id))
                         .map(|task| task.title.clone());
+                    // A ready task the delete leaves waiting on nothing stays ready: say so.
+                    let unwaited = domain.unwaited_by_delete(&targets);
                     if bulk {
                         domain.soft_delete_batch(&targets)?;
                         model.arm_bulk_delete_notice(targets.len());
@@ -2913,6 +3126,23 @@ fn apply_board_intent(
                         if let Some(title) = title {
                             model.arm_delete_notice(&title);
                         }
+                    }
+                    if !unwaited.is_empty() {
+                        let waiting = unwaited
+                            .iter()
+                            .map(|(waiting, _)| format!("T{waiting}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let mut deleted: Vec<u64> =
+                            unwaited.iter().map(|(_, deleted)| *deleted).collect();
+                        deleted.sort_unstable();
+                        deleted.dedup();
+                        let deleted = deleted
+                            .iter()
+                            .map(|number| format!("T{number}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        model.set_message(format!("{waiting} no longer waits ({deleted} deleted)"));
                     }
                     // Deleting from the page deletes the page's own task: the surface closes and
                     // the undo route back to it lives on the board row, same as the notice says.
@@ -3068,6 +3298,9 @@ fn apply_board_intent(
                     .get(*id)
                     .and_then(|task| task.assignee.clone())
                     .map(|assignee| format!("start undone · @{assignee} kept running")),
+                Some(entry @ crate::domain::UndoEntry::Batch { .. }) => {
+                    released_undo_message(domain, entry)
+                }
                 _ => None,
             };
             if let Err(error) = domain.undo() {
@@ -3145,7 +3378,8 @@ fn edit_draft(model: &mut BoardModel, operation: impl FnOnce(&mut EditBuffer)) {
             form.thread_refusal = None;
             operation(&mut form.thread);
         }
-        CaptureField::Scope | CaptureField::Assignee | CaptureField::Base => {}
+        CaptureField::Scope | CaptureField::Assignee | CaptureField::Base | CaptureField::After => {
+        }
     }
 }
 
@@ -3410,6 +3644,7 @@ fn quick_add_save(
         lifted.base,
     ) {
         Ok(id) => {
+            domain.set_after_on_create(id, &lifted.after)?;
             // Do not discard the draft until the app save boundary confirms persistence. A
             // failed save keeps this exact state behind SaveRecovery for retry or cancel.
             model.form = None;
@@ -3452,6 +3687,7 @@ fn confirm_edit(
     let scope = form.scope.clone();
     let assignee = form.assignee.clone();
     let base = form.base.clone();
+    let after = form.after.clone();
     let thread = match normalize_optional_thread(form.thread.value()) {
         Ok(thread) => thread,
         Err(error) => {
@@ -3494,6 +3730,14 @@ fn confirm_edit(
         }
     }
 
+    // Refused before anything changes: the draft stays for another choice.
+    if after != task.after {
+        if let Err(error) = domain.check_after(id, &after) {
+            model.set_message(error.to_string());
+            return Ok(IntentOutcome::None);
+        }
+    }
+
     // The full page session changes under one revision, then the app persists exactly once.
     // A chained `edit` plus `rename_step` sequence would advance the merge base after each
     // draft and make the store correctly refuse the later revision as a conflicting writer.
@@ -3516,6 +3760,7 @@ fn confirm_edit(
         &step_removals.iter().copied().collect::<Vec<_>>(),
         &extra_steps,
     )?;
+    domain.stage_after_in_edit(id, &after)?;
 
     // Retain the complete form and mode until the persistence boundary confirms this exact
     // task-session save. A failed save can then Retry or Cancel without orphaning drafts.
@@ -3527,6 +3772,7 @@ fn confirm_edit(
         thread,
         assignee,
         base,
+        after,
         step_renames,
         step_removals,
         selected_step,

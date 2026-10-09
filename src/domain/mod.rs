@@ -8,6 +8,7 @@ mod thread;
 pub(crate) mod time_serde;
 mod undo;
 
+pub use after::status_word;
 pub use block::*;
 pub use events::*;
 pub use task::*;

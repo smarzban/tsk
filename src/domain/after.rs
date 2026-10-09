@@ -21,6 +21,18 @@ fn after_detail() -> Option<EventDetail> {
     })
 }
 
+/// The status as the board and CLI print it.
+pub fn status_word(status: HumanStatus) -> &'static str {
+    match status {
+        HumanStatus::Open => "open",
+        HumanStatus::Ready => "ready",
+        HumanStatus::Started => "started",
+        HumanStatus::Blocked => "blocked",
+        HumanStatus::Review => "review",
+        HumanStatus::Done => "done",
+    }
+}
+
 /// `numbers` without repeats, first position kept.
 fn dedupe(numbers: &[u64]) -> Vec<u64> {
     let mut seen = BTreeSet::new();
@@ -50,6 +62,29 @@ impl DomainState {
                     .is_some_and(|prerequisite| prerequisite.status != HumanStatus::Done)
             })
             .collect()
+    }
+
+    /// `T3 runs after T2 (started), T4 (open)`: what `task` still waits on, or `None` when it
+    /// waits on nothing.
+    pub fn waiting_text(&self, task: &Task) -> Option<String> {
+        let waiting = self.waiting_on(task);
+        if waiting.is_empty() {
+            return None;
+        }
+        let list = waiting
+            .iter()
+            .map(|number| {
+                let status = self
+                    .task_by_number(*number)
+                    .map_or(HumanStatus::Open, |task| task.status);
+                format!("T{number} ({})", status_word(status))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(format!(
+            "T{} runs after {list}",
+            task.number.unwrap_or_default()
+        ))
     }
 
     /// The live tasks that run after `number`, by number: the read-only `before` side.
@@ -228,6 +263,30 @@ impl DomainState {
             after_detail(),
         );
         Ok(true)
+    }
+
+    /// Fold an `after` change into the edit just recorded on `id`: same revision, and its
+    /// `edited` event names the field. Checked first by [`Self::check_after`].
+    pub fn stage_after_in_edit(&mut self, id: Uuid, after: &[u64]) -> Result<(), DomainError> {
+        let after = dedupe(after);
+        if self.get(id).ok_or(DomainError::UnknownId(id))?.after == after {
+            return Ok(());
+        }
+        self.check_after(id, &after)?;
+        let task = self.task_mut(id)?;
+        task.after = after;
+        if let Some(detail) = task
+            .history
+            .iter_mut()
+            .rev()
+            .find(|event| event.kind == TaskEventKind::Edited)
+            .and_then(|event| event.detail.as_mut())
+        {
+            if !detail.fields.contains(&EditedField::After) {
+                detail.fields.push(EditedField::After);
+            }
+        }
+        Ok(())
     }
 
     /// Undo's half of [`Self::set_after`]: put back an earlier list.
