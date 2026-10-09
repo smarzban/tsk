@@ -730,6 +730,12 @@ html[data-theme="light"] .pane {
   color: var(--ink);
 }
 
+.tsk-row-trailer {
+  flex: 0 0 auto;
+  padding-right: 2ch;
+  white-space: pre;
+}
+
 .tsk-row-main {
   min-width: 0;
   overflow: hidden;

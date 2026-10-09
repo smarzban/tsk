@@ -17,7 +17,7 @@ Install the skill with `tsk setup pi`, or use your [agent's setup target](#setup
 1. Read the task with `tsk list T12`.
 2. Set its status with `tsk status T12 started` (or `ready` to pick it from the inbox).
 3. Update notes or steps as work progresses.
-4. Set `review`, `blocked`, `open`, or `done` explicitly.
+4. Set `review`, `blocked`, `open`, or `done` explicitly. Block with your question: `tsk status T12 blocked --why "…"`, and read the answers under `block.replies` in `tsk list T12 --json`.
 
 The CLI can mark a task done with `tsk status <task> done`. Agent lifecycle does not change task status automatically.
 
@@ -31,7 +31,8 @@ Use `--json` on `add`, `list`, or `clean` for machine-readable output. Read the 
 | `tsk capture` | Open capture; save or discard exits |
 | `tsk add` | Add a task or JSON plan |
 | `tsk list` | Read tasks |
-| `tsk status` | Set task status |
+| `tsk status` | Set task status, or block with a reason |
+| `tsk reply` | Answer a blocked task's open block |
 | `tsk edit` | Replace title or notes; assign or unassign |
 | `tsk dispatch` | Launch an assigned task's agent in its own worktree |
 | `tsk clean` | Remove a dispatched worktree and its merged branch |
@@ -186,7 +187,7 @@ Human output groups by status in `STARTED`, `READY`, `OPEN`, `BLOCKED`, `REVIEW`
 
 Single-task output removes metadata from the title row and presents notes, steps, `@assignee`, `⎇ <base>` when explicitly set, then `#thread` as separate blocks. A blank line separates adjacent blocks that exist. Human step rows show state and text without machine-oriented short IDs.
 
-JSON returns an array with `id`, `number`, `title`, `status`, `project`, `assignee`, `base`, and `thread`. Direct lookup returns the complete task, including `notes` (`null` when absent) and `steps` (an empty array when absent). Its fields are ordered `id`, `number`, `project`, `status`, `title`, `notes`, `steps`, `assignee`, `base`, `thread`, then `dispatch` when a record exists; each JSON step retains its `short_id` for step commands. `base` is the task's explicit base branch or `null`. `dispatch` is the launch record: `argv`, `worktree`, `branch`, `base` (the ref it started from), `base_ref` (the same ref, fully qualified), `base_commit` (the starting commit), `base_remote` (when the base has a remote), `herdr_workspace_id`, `at`, and `cleaned` once cleaned up. Filtered listings do not include `dispatch`. Archived listings include an `archived` mark: `archived` or `project archived`.
+JSON returns an array with `id`, `number`, `title`, `status`, `project`, `assignee`, `base`, and `thread`. Direct lookup returns the complete task, including `notes` (`null` when absent) and `steps` (an empty array when absent). Its fields are ordered `id`, `number`, `project`, `status`, `title`, `notes`, `steps`, `assignee`, `base`, `thread`, then `dispatch` when a record exists; each JSON step retains its `short_id` for step commands. `base` is the task's explicit base branch or `null`. `dispatch` is the launch record: `argv`, `worktree`, `branch`, `base` (the ref it started from), `base_ref` (the same ref, fully qualified), `base_commit` (the starting commit), `base_remote` (when the base has a remote), `herdr_workspace_id`, `at`, and `cleaned` once cleaned up. A blocked task adds `block`: `why`, `needs` (`null` when absent), `options`, `on` (`you`, `task:<number>`, or `other:<text>`), `by` (`you` or the agent profile), `at`, `edited`, `replies` (each `at`, `by`, `text`, and `edited: true` once edited; deleted replies are left out), and `answered` (the last reply is yours). Closed blocks follow under `past_blocks`, each adding `closed_at` and `closed_by`. Filtered listings do not include `dispatch`, `block`, or `past_blocks`; human output prints `blocked: <why>` under a blocked row with a reason. Archived listings include an `archived` mark: `archived` or `project archived`.
 
 ## status
 
@@ -203,6 +204,38 @@ Accepts `open`, `ready`, `started` (or `start`), `blocked`, `review`, and `done`
 Unlike keyboard toggles, this command sets the requested status directly. Repeating the same value is safe. `--clean` is valid only with `done`: tsk saves done first, then runs [`tsk clean`](#clean) when the task has a live dispatch. With no dispatch, or one already cleaned, it exits 0 and prints `nothing to clean`. A real cleanup refusal (such as `dirty-worktree`) exits 1 and leaves the task done.
 
 Output: `status T12 <status> <title>`. The output uses `started`, even when the input was `start`.
+
+### Block with a reason
+
+```sh
+tsk status T12 blocked --why "Which database?" --needs "A decision" --option postgres --option sqlite
+tsk status T12 blocked --why "Needs the API from T9" --on T9
+tsk status T12 blocked --why "Waiting for legal" --on "legal sign-off"
+```
+
+| Flag | Value |
+| --- | --- |
+| `--why <text>` | What stops the work |
+| `--needs <text>` | What would unblock it |
+| `--option <text>` | One suggested answer; repeat for more |
+| `--on <who>` | `you` (default), another task (`T9`, `t9`, or `9`), or any other text |
+
+The flags are accepted only with `blocked`; use `--why=-…` for a value that starts with `-`. Each text is at most 4 KB (`text-too-long`, never truncated). `--on` must name another task on the board (`invalid-blocker`). A task has at most one open block. Running the command again on a blocked task edits that block in place and marks it edited, replacing only the fields given. `blocked` without flags still works and opens a block with no reason. Leaving `blocked` by any route closes the block; it stays in `past_blocks`.
+
+A task blocked on you shows in the board's NEEDS YOU; one blocked on another task or on something else rides in IN MOTION until the blocking task is done. The command takes one task: the board blocks a marked set at once.
+
+The author of a block or reply is `you`, unless tsk runs inside a [dispatched](#dispatch) agent: dispatch sets `TSK_AGENT=<profile>` in the agent's environment, and blocks and replies made from there carry that profile name.
+
+## reply
+
+```sh
+tsk reply T12 "Use postgres"
+tsk reply T12 -- "-5 degrees is fine"
+```
+
+Adds a reply to the task's open block, authored as above. Put `--` before text that begins with `-`. A task without an open block refuses with `not-blocked`; empty text refuses with `empty-reply`, and text over 4 KB with `text-too-long`. Each run adds a reply, so read the task before retrying. The board's owner answers from the [task page](/docs/task-page/#blocked).
+
+Output: `replied T12 as <author> <title>`.
 
 ## edit
 
@@ -413,7 +446,8 @@ After an uncertain add, inspect `tsk list --all --json`. Also check `--done` and
 | Dispatch | `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `unsupported-platform`, `unsafe-state-dir`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, `unknown-base`, `no-default-base`, `herdr-failed` |
 | Clean | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`, `herdr-failed` |
 | Steps | `empty-step-text`, `invalid-step-text`, `unknown-task`, `soft-deleted-task`, `unknown-step`, `ambiguous-step` |
-| Status | `unknown-task`, `soft-deleted-task`; with `--clean`, cleanup codes above except `not-dispatched` and `already-cleaned` |
+| Status | `unknown-task`, `soft-deleted-task`, `text-too-long`, `invalid-blocker`; with `--clean`, cleanup codes above except `not-dispatched` and `already-cleaned` |
+| Reply | `unknown-task`, `soft-deleted-task`, `not-blocked`, `empty-reply`, `text-too-long` |
 | Archive / unarchive | `unknown-task`, `soft-deleted-task` |
 
 A refusal prints as `tsk <command>: <code>: <message>` on stderr, for example `tsk status: unknown-task: T99 is not on the board`. Branch on the code; the message is for people and may change.

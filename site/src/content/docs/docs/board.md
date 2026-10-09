@@ -159,13 +159,29 @@ Cleanup closes the dispatch's Herdr workspace, removes its recorded worktree, an
 
 | Section | Status |
 | --- | --- |
-| **NEEDS YOU** | `blocked`, `review` |
-| **IN MOTION** | `started` |
+| **NEEDS YOU** | `blocked` on you, `review` |
+| **IN MOTION** | `started`, and `blocked` on another task or on something else |
 | **ON DECK** | `ready`, `open` |
 | ↳ **inbox** | `open` |
 | Done drawer | `done` |
 
-Status glyphs are `◌` open, `○` ready, `●` started, `■` blocked, `▲` review, and `✓` done. A started task with a live [dispatch](#dispatch) shows `◉` instead of `●`; any other status, or a cleaned dispatch, shows the normal glyph.
+Status glyphs are `◌` open, `○` ready, `●` started, `■` blocked, `▲` review, and `✓` done. A started task with a live [dispatch](#dispatch) shows `◉` instead of `●`; any other status, or a cleaned dispatch, shows the normal glyph. A task blocked on another task or on something else shows `□`.
+
+A blocked row's dim right edge says what it waits for: `@claude ?` while an agent's question is unanswered, `answered` once you have the last reply, or `on T169` / `on <text>` for a block waiting elsewhere. When the blocking task is done, the blocked task returns to NEEDS YOU, its row reads `T169 done`, and its peek asks `T169 done, unblock?`. tsk never changes the status itself. A blocked task's peek lists its why, needs, and options above the notes.
+
+### Block with a reason
+
+`ctrl+b` on a task that is not blocked opens the block card:
+
+| Field | Value |
+| --- | --- |
+| why | What stops the work (optional) |
+| on | `‹ you · task · other ›`, cycled with `←` / `→`; `task` takes a number such as `T12`, `other` any text |
+| needs | What would unblock it (optional) |
+
+`Tab` moves between fields, `Enter` blocks, and `Esc` cancels. `Enter` on an empty card blocks at once with no reason. A task number must be another task on the board; the card says so otherwise. With tasks marked, one card blocks the whole set as one save and one `ctrl+u` undo step, and `Esc` keeps the marks. `ctrl+b` on a blocked task unblocks it to ready, as do every other status change: leaving `blocked` closes its block. Palette **set status: blocked** blocks without asking.
+
+Agents block with a question from [the CLI](/docs/cli/#status) (`--why`, `--needs`, `--option`, `--on`). Answer on the [task page](/docs/task-page/#blocked).
 
 On your desk, **ON DECK** contains only desk tasks. On a project board, it contains that project's ready and open tasks. Ready tasks are the picked queue; open tasks are the untriaged inbox below it. Ready tasks sort by oldest pick first, open tasks by oldest capture first, and notice tasks lead within each group. The **inbox** group starts expanded; press `Enter` on its heading or `g` while the done drawer is closed to fold or unfold it. With the drawer open and archived tasks available, `g` addresses its archived group; otherwise it addresses the inbox. Use the thread and assignee filter to narrow the tasks.
 
@@ -181,10 +197,10 @@ On a task-board list, `ctrl+s`, `ctrl+n`, `ctrl+o`, `ctrl+d`, `ctrl+b`, `ctrl+r`
 | `ctrl+n` | Set ready, the picked on-deck queue |
 | `ctrl+o` | Set open, the inbox |
 | `ctrl+d` | Mark done; for a live dispatch, offer [cleanup](#complete-and-clean-up) |
-| `ctrl+b` | Set blocked; press again to return to ready |
+| `ctrl+b` | Block with a reason (the [block card](#block-with-a-reason)); on a blocked task, return it to ready |
 | `ctrl+r` | Set review; press again to return to ready |
 
-`ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Bulk block and review toggles are all-or-nothing: if every target already has that status they all return to ready, otherwise they all move to that status. Other status verbs are absolute, so repeating the current status does nothing. Done tasks can be sent directly to ready or open.
+`ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Bulk block and review toggles are all-or-nothing: if every target already has that status they all return to ready, otherwise they all move to that status (blocking through one block card; tasks already blocked keep their block). Other status verbs are absolute, so repeating the current status does nothing. Done tasks can be sent directly to ready or open.
 
 Agents can set any status with [the CLI](/docs/cli/#status). Task status does not change automatically when steps are checked or an agent stops.
 
@@ -262,7 +278,7 @@ tsk asks whether to restore it. Choose `y` to restore, or `n`/`Esc` to keep it a
 
 Press `ctrl+x` twice to delete the marked tasks, or the cursored task when nothing is marked. The confirmation and recovery messages show the task count for a marked set. `ctrl+Delete` is an alternative.
 
-One `ctrl+u` undoes the whole marked deletion or completion. If another writer has changed any task in that batch since the action, undo refuses without changing any of them and remains available to retry. On an archived cursor with no marks, `ctrl+u` restores that task instead.
+One `ctrl+u` undoes the whole marked deletion, completion, or block. If another writer has changed any task in that batch since the action, undo refuses without changing any of them and remains available to retry. On an archived cursor with no marks, `ctrl+u` restores that task instead.
 
 Deleted tasks remain available through [trash commands](/docs/cli/#trash) for a limited time. They do not appear on the board.
 
