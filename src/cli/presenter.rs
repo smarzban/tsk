@@ -121,8 +121,8 @@ pub fn top_level_help() -> String {
         "Tasks\n",
         "  add      create one task or apply a JSON plan\n",
         "  list     inspect tasks\n",
-        "  status   set a task's human status, or block it with a reason\n",
-        "  reply    answer a blocked task's question\n",
+        "  status   set a task's human status, block it, or put it up for review\n",
+        "  reply    answer a blocked task, or give feedback on a review\n",
         "  dispatch hand a task to its assigned agent\n",
         "  clean    remove a dispatched worktree safely\n",
         "  edit     update a task's title or notes\n",
@@ -311,7 +311,13 @@ fn list_json(result: &ListResult) -> String {
             block: Option<BlockJson<'a>>,
             #[serde(skip_serializing_if = "Vec::is_empty")]
             past_blocks: Vec<BlockJson<'a>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            review: Option<ReviewJson<'a>>,
+            #[serde(skip_serializing_if = "Vec::is_empty")]
+            past_reviews: Vec<ReviewJson<'a>>,
         }
+        let blocks = |record: &&crate::domain::Block| !record.is_review();
+        let reviews = |record: &&crate::domain::Block| record.is_review();
         let direct_row = DirectRow {
             id: row.id,
             number: row.number,
@@ -324,8 +330,20 @@ fn list_json(result: &ListResult) -> String {
             base: &row.base,
             thread: &row.thread,
             dispatch: direct.dispatch.as_ref(),
-            block: direct.block.as_ref().map(BlockJson::from),
-            past_blocks: direct.past_blocks.iter().map(BlockJson::from).collect(),
+            block: direct.block.as_ref().filter(blocks).map(BlockJson::from),
+            past_blocks: direct
+                .past_blocks
+                .iter()
+                .filter(blocks)
+                .map(BlockJson::from)
+                .collect(),
+            review: direct.block.as_ref().filter(reviews).map(ReviewJson::from),
+            past_reviews: direct
+                .past_blocks
+                .iter()
+                .filter(reviews)
+                .map(ReviewJson::from)
+                .collect(),
         };
         return format!(
             "{}\n",
@@ -360,6 +378,80 @@ struct BlockJson<'a> {
     closed_by: Option<&'a str>,
 }
 
+/// The agent-facing review round: `feedback` is the reply thread (deleted entries left out),
+/// `answered` says whether the owner has the last word, and a closed round says how it closed.
+#[derive(serde::Serialize)]
+struct ReviewJson<'a> {
+    round: u32,
+    done: Option<&'a str>,
+    checks: Vec<CheckJson<'a>>,
+    next: Option<&'a str>,
+    on: String,
+    by: &'a str,
+    #[serde(with = "crate::domain::time_serde")]
+    at: std::time::SystemTime,
+    edited: bool,
+    feedback: Vec<ReplyJson<'a>>,
+    answered: bool,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_closed_at"
+    )]
+    closed_at: Option<std::time::SystemTime>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    closed_by: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resolution: Option<crate::domain::Resolution>,
+}
+
+impl<'a> From<&'a crate::domain::Block> for ReviewJson<'a> {
+    fn from(block: &'a crate::domain::Block) -> Self {
+        Self {
+            round: block.round.max(1),
+            done: block.done.as_deref(),
+            checks: block
+                .checks
+                .iter()
+                .map(|check| CheckJson {
+                    text: &check.text,
+                    state: check.state.name(),
+                })
+                .collect(),
+            next: block.next.as_deref(),
+            on: block.on.wire(),
+            by: &block.by,
+            at: block.at,
+            edited: block.edited_at.is_some(),
+            feedback: reply_json(block),
+            answered: block.answered(),
+            closed_at: block.closed_at,
+            closed_by: block.closed_by.as_deref(),
+            resolution: block.resolution,
+        }
+    }
+}
+
+/// A check with its state always spelled out: `open`, `passed` or `failed`.
+#[derive(serde::Serialize)]
+struct CheckJson<'a> {
+    text: &'a str,
+    state: &'static str,
+}
+
+fn reply_json(block: &crate::domain::Block) -> Vec<ReplyJson<'_>> {
+    block
+        .replies
+        .iter()
+        .filter(|reply| !reply.deleted)
+        .map(|reply| ReplyJson {
+            at: reply.at,
+            by: &reply.by,
+            text: &reply.text,
+            edited: reply.edited,
+        })
+        .collect()
+}
+
 #[derive(serde::Serialize)]
 struct ReplyJson<'a> {
     #[serde(with = "crate::domain::time_serde")]
@@ -388,17 +480,7 @@ impl<'a> From<&'a crate::domain::Block> for BlockJson<'a> {
             by: &block.by,
             at: block.at,
             edited: block.edited_at.is_some(),
-            replies: block
-                .replies
-                .iter()
-                .filter(|reply| !reply.deleted)
-                .map(|reply| ReplyJson {
-                    at: reply.at,
-                    by: &reply.by,
-                    text: &reply.text,
-                    edited: reply.edited,
-                })
-                .collect(),
+            replies: reply_json(block),
             answered: block.answered(),
             closed_at: block.closed_at,
             closed_by: block.closed_by.as_deref(),
@@ -1006,7 +1088,7 @@ fn task_refusal_message(code: &str, task: TaskAddress) -> String {
             crate::domain::BLOCK_TEXT_MAX
         ),
         "invalid-blocker" => "--on must name another task on the board".to_string(),
-        "not-blocked" => format!("{display} has no open block to reply to"),
+        "not-blocked" => format!("{display} is not blocked or in review; nothing to reply to"),
         "empty-reply" => "the reply is empty".to_string(),
         _ => return code.to_string(),
     };
@@ -1246,8 +1328,9 @@ pub fn status_help() -> CliOutput {
             "tsk status <task> <status> [--clean] [--state-dir <dir>]".into(),
             "tsk status <task> started [--again | --no-dispatch] [--state-dir <dir>]".into(),
             "tsk status <task> blocked --why <text> [--needs <text>] [--option <text>]... [--on you|T<n>|<text>]".into(),
+            "tsk status <task> review --done <text> [--check <text>]... [--next <text>] [--on you|<agent>|<text>]".into(),
         ],
-        purpose: "Set a task's human status, optionally cleaning its dispatch after done persists. Block with a reason so the owner can answer it. Starting an assigned task that was never dispatched dispatches it, like tsk dispatch."
+        purpose: "Set a task's human status, optionally cleaning its dispatch after done persists. Block with a reason so the owner can answer it, or put work up for review with what was done and what to check; running review again while in review updates the same round. Starting an assigned task that was never dispatched dispatches it, like tsk dispatch."
             .into(),
         groups: vec![
             group(
@@ -1289,6 +1372,21 @@ pub fn status_help() -> CliOutput {
                     ),
                 ],
             ),
+            group(
+                "Review",
+                &[
+                    ("--done <text>", "what was done"),
+                    (
+                        "--check <text>",
+                        "one thing the reviewer should check; repeat for more",
+                    ),
+                    ("--next <text>", "what comes after"),
+                    (
+                        "--on <who>",
+                        "you (default), an agent profile, or any other text",
+                    ),
+                ],
+            ),
         ],
         examples: vec![
             "tsk status T12 ready".into(),
@@ -1296,6 +1394,7 @@ pub fn status_help() -> CliOutput {
             "tsk status T12 started --no-dispatch".into(),
             "tsk status T12 blocked --why \"Which database?\" --option postgres --option sqlite".into(),
             "tsk status T12 blocked --why \"Needs the API from T9\" --on T9".into(),
+            "tsk status T12 review --done \"Opened PR #41\" --check \"tests pass\" --check \"no flicker at 80 cols\" --next \"docs\"".into(),
         ],
         refusals: vec![
             "unknown-task".into(),
@@ -1323,7 +1422,7 @@ pub fn status_help() -> CliOutput {
 pub fn reply_help() -> CliOutput {
     help(HelpDoc {
         usage: vec!["tsk reply <task> <text> [--send] [--state-dir <dir>]".into()],
-        purpose: "Add a reply to a blocked task's open block. Not idempotent: each run adds one."
+        purpose: "Add a reply to a blocked task's open block, or feedback to a task's open review round. Not idempotent: each run adds one."
             .into(),
         groups: vec![group(
             "Values",
@@ -1332,7 +1431,7 @@ pub fn reply_help() -> CliOutput {
                 ("<text>", "the reply; put -- before text that begins with -"),
                 (
                     "--send",
-                    "also send your replies since the agent's last one to its running agent; the task stays blocked",
+                    "also send your replies since the agent's last one to its running agent; the status stays",
                 ),
                 ("--state-dir <dir>", "use another board store"),
             ],

@@ -302,23 +302,40 @@ fn block_card_overlay<'a>(
             .find(|task| task.id == *id)
             .and_then(|task| task.board_identifier())
     };
+    let review = card.kind() == crate::domain::BlockKind::Review;
+    let noun = if review { "review" } else { "block" };
     let title = match (card.is_edit(), card.targets()) {
-        (true, [id]) => format!("edit block {}", identifier(id).unwrap_or_default()),
-        (false, [id]) => format!("block {}", identifier(id).unwrap_or_default()),
-        (_, targets) => format!("block {} tasks", targets.len()),
+        (true, [id]) => format!("edit {noun} {}", identifier(id).unwrap_or_default()),
+        (false, [id]) => format!("{noun} {}", identifier(id).unwrap_or_default()),
+        (_, targets) => format!("{noun} {} tasks", targets.len()),
     };
     let (focus, cursor) = match card.field() {
         BlockCardField::Why => (0, card.why().cursor()),
+        BlockCardField::On if review => (3, card.on_text().cursor()),
         BlockCardField::On => (1, card.on_text().cursor()),
         BlockCardField::Needs => (2, card.needs().cursor()),
+        BlockCardField::Done => (0, card.done().cursor()),
+        BlockCardField::Check => (1, card.checks().cursor()),
+        BlockCardField::Next => (2, card.next().cursor()),
     };
     QueueOverlay::BlockCard(render::BlockCardPaint {
         title: title.trim().to_string(),
+        review,
         why: terminal_text(card.why().value()),
         needs: terminal_text(card.needs().value()),
+        done: terminal_text(card.done().value()),
+        checks: card
+            .checks()
+            .value()
+            .split('\n')
+            .map(terminal_text)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        next: terminal_text(card.next().value()),
         on_kind: match card.on_kind() {
             OnKind::You => "you",
             OnKind::Task => "task",
+            OnKind::Agent => "agent",
             OnKind::Other => "other",
         },
         on_text: terminal_text(card.on_text().value()),
@@ -549,6 +566,27 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
             VerbEntry {
                 key: "shift+enter",
                 label: "save",
+            },
+            VerbEntry {
+                key: "esc",
+                label: "cancel",
+            },
+        ];
+    }
+
+    if model.input_mode() == BoardInputMode::EditReply && model.reply_is_feedback() {
+        return vec![
+            VerbEntry {
+                key: "shift+enter",
+                label: "save",
+            },
+            VerbEntry {
+                key: "ctrl+s",
+                label: "send back",
+            },
+            VerbEntry {
+                key: "ctrl+d",
+                label: "approve",
             },
             VerbEntry {
                 key: "esc",
@@ -1260,9 +1298,10 @@ fn build_task_page_overlay<'a>(
             }
         }
     }
-    // A blocked task leads its page with the BLOCKED section, outside an edit session.
+    // A blocked task leads its page with the BLOCKED section, a task in review with the REVIEW
+    // section, outside an edit session.
     let (block_rows, block_stops, block_cursor) = match bound_task {
-        Some(task) if !editing_session && task.status == HumanStatus::Blocked => {
+        Some(task) if !editing_session && super::block::has_open_section(task) => {
             block_page_rows(model, form, task, notes_width)
         }
         _ => (Vec::new(), Vec::new(), None),
@@ -1341,15 +1380,16 @@ fn build_task_page_overlay<'a>(
     }
 }
 
-/// The BLOCKED section's rows, each ring stop's row, and the reply box caret.
+/// The BLOCKED or REVIEW section's rows, each ring stop's row, and the reply box caret.
 type BlockPageRows = (
     Vec<render::BlockPageRow>,
     Vec<(crate::ui::board::BlockTarget, usize)>,
     Option<(usize, u16)>,
 );
 
-/// The BLOCKED section of a blocked task's page: heading, why, needs, options and replies,
-/// the reply box when open, then the closing rule. Also returns each ring stop's row and the
+/// The BLOCKED section of a blocked task's page (heading, why, needs, options) or the REVIEW
+/// section of a task in review, then the replies (feedback), the reply box when open, then the
+/// closing rule. Also returns each ring stop's row and the
 /// reply box caret. Every text wraps at `width`.
 fn block_page_rows(
     model: &BoardModel,
@@ -1402,6 +1442,7 @@ fn block_page_rows(
                     kind
                 },
                 selected: index == 0 && stop.is_some() && stop == selected,
+                hint: String::new(),
             });
         }
         if let Some(stop) = stop {
@@ -1412,54 +1453,70 @@ fn block_page_rows(
     let on = match &block.on {
         BlockOn::You => "on you".to_string(),
         BlockOn::Task(number) => format!("on T{number}"),
+        BlockOn::Agent(name) => format!("on @{name}"),
         BlockOn::Other(text) => format!("on {text}"),
     };
-    let mut heading = format!(
-        "BLOCKED · {on} · {} {}",
-        author(&block.by),
-        render::format_age(now, block.at)
-    );
-    if block.edited_at.is_some() {
-        heading.push_str(" · edited");
-    }
-    push(
-        &mut rows,
-        "",
-        &heading,
-        BlockRowKind::Heading,
-        Some(BlockTarget::Heading),
-    );
-    match block_wait(task, &model.tasks) {
-        Some(BlockWait::BlockerDone(number)) => push(
+    if block.is_review() {
+        review_section_rows(
+            task,
+            block,
+            &on,
+            form.block.passed_open,
+            &author(&block.by),
+            now,
             &mut rows,
-            "",
-            &format!("T{number} done, unblock? ctrl+b"),
-            BlockRowKind::Bold,
-            None,
-        ),
-        Some(BlockWait::BlockerGone(number)) => push(
-            &mut rows,
-            "",
-            &format!("T{number} is gone, unblock? ctrl+b"),
-            BlockRowKind::Bold,
-            None,
-        ),
-        _ => {}
-    }
-    if let Some(why) = block.why.as_deref() {
-        push(&mut rows, "why    ", why, BlockRowKind::Plain, None);
-    }
-    if let Some(needs) = block.needs.as_deref() {
-        push(&mut rows, "needs  ", needs, BlockRowKind::Plain, None);
-    }
-    for (index, option) in block.options.iter().enumerate() {
+            &mut push,
+        );
+    } else {
+        let mut heading = format!(
+            "BLOCKED · {on} · {} {}",
+            author(&block.by),
+            render::format_age(now, block.at)
+        );
+        if block.edited_at.is_some() {
+            heading.push_str(" · edited");
+        }
+        let first = rows.len();
         push(
             &mut rows,
-            "○ ",
-            option,
-            BlockRowKind::Plain,
-            Some(BlockTarget::Option(index)),
+            "",
+            &heading,
+            BlockRowKind::Heading,
+            Some(BlockTarget::Heading),
         );
+        rows[first].hint = "r reply".to_string();
+        match block_wait(task, &model.tasks) {
+            Some(BlockWait::BlockerDone(number)) => push(
+                &mut rows,
+                "",
+                &format!("T{number} done, unblock? ctrl+b"),
+                BlockRowKind::Bold,
+                None,
+            ),
+            Some(BlockWait::BlockerGone(number)) => push(
+                &mut rows,
+                "",
+                &format!("T{number} is gone, unblock? ctrl+b"),
+                BlockRowKind::Bold,
+                None,
+            ),
+            _ => {}
+        }
+        if let Some(why) = block.why.as_deref() {
+            push(&mut rows, "why    ", why, BlockRowKind::Plain, None);
+        }
+        if let Some(needs) = block.needs.as_deref() {
+            push(&mut rows, "needs  ", needs, BlockRowKind::Plain, None);
+        }
+        for (index, option) in block.options.iter().enumerate() {
+            push(
+                &mut rows,
+                "○ ",
+                option,
+                BlockRowKind::Plain,
+                Some(BlockTarget::Option(index)),
+            );
+        }
     }
     for (index, reply) in block.replies.iter().enumerate() {
         let mut lead = format!(
@@ -1506,9 +1563,17 @@ fn block_page_rows(
             };
             let empty = editor.buffer.value().is_empty();
             rows.push(BlockPageRow {
-                text: format!("{lead}{}", if empty { "reply…" } else { row }),
+                text: format!(
+                    "{lead}{}",
+                    if empty {
+                        editor.placeholder.as_str()
+                    } else {
+                        row
+                    }
+                ),
                 kind: BlockRowKind::Bold,
                 selected: false,
+                hint: String::new(),
             });
         }
         if model.input_mode() == BoardInputMode::EditReply {
@@ -1531,21 +1596,135 @@ fn block_page_rows(
         text: String::new(),
         kind: BlockRowKind::Plain,
         selected: false,
+        hint: String::new(),
     });
     rows.push(BlockPageRow {
         text: String::new(),
         kind: BlockRowKind::Rule,
         selected: false,
+        hint: String::new(),
     });
     rows.push(BlockPageRow {
         text: String::new(),
         kind: BlockRowKind::Plain,
         selected: false,
+        hint: String::new(),
     });
     (rows, stops, caret)
 }
 
-/// The reply box open under a blocked board row, with the block's why and needs above it.
+/// The REVIEW section's rows above the feedback: the heading (round, who it is on, author and
+/// age, the PR it names), done, the open and failed checks, the passed checks folded under
+/// their `N passed ▸` line (unfolded `▾`), then next.
+#[allow(clippy::too_many_arguments)]
+fn review_section_rows(
+    task: &crate::domain::Task,
+    block: &crate::domain::Block,
+    on: &str,
+    passed_open: bool,
+    author: &str,
+    now: SystemTime,
+    rows: &mut Vec<render::BlockPageRow>,
+    push: &mut impl FnMut(
+        &mut Vec<render::BlockPageRow>,
+        &str,
+        &str,
+        render::BlockRowKind,
+        Option<crate::ui::board::BlockTarget>,
+    ),
+) {
+    use crate::ui::board::BlockTarget;
+    use render::BlockRowKind;
+
+    let mut heading = format!(
+        "REVIEW · round {} · {on} · {author} {}",
+        block.round.max(1),
+        render::format_age(now, block.at)
+    );
+    if block.edited_at.is_some() {
+        heading.push_str(" · edited");
+    }
+    let first = rows.len();
+    push(
+        rows,
+        "",
+        &heading,
+        BlockRowKind::Heading,
+        Some(BlockTarget::Heading),
+    );
+    rows[first].hint = match pull_request_number(task, block) {
+        Some(number) => format!("PR #{number} · r feedback"),
+        None => "r feedback".to_string(),
+    };
+    if let Some(done) = block.done.as_deref() {
+        push(rows, "done   ", done, BlockRowKind::Plain, None);
+    }
+    let (shown, passed) = crate::ui::board::block::review_check_order(block);
+    for index in shown {
+        let check = &block.checks[index];
+        push(
+            rows,
+            &format!("{} ", render::check_glyph(check.state)),
+            &check.text,
+            BlockRowKind::Plain,
+            Some(BlockTarget::Check(index)),
+        );
+    }
+    if !passed.is_empty() {
+        let arrow = if passed_open { "▾" } else { "▸" };
+        push(
+            rows,
+            "",
+            &format!("{} passed {arrow}", passed.len()),
+            BlockRowKind::Dim,
+            Some(BlockTarget::PassedFold),
+        );
+        if passed_open {
+            for index in passed {
+                push(
+                    rows,
+                    "  ✓ ",
+                    &block.checks[index].text,
+                    BlockRowKind::Dim,
+                    Some(BlockTarget::Check(index)),
+                );
+            }
+        }
+    }
+    if let Some(next) = block.next.as_deref() {
+        push(rows, "next   ", next, BlockRowKind::Plain, None);
+    }
+}
+
+/// The pull request a review names: the first `/pull/<n>` link or `PR #<n>` in done, next, the
+/// checks, then the notes.
+fn pull_request_number(task: &crate::domain::Task, block: &crate::domain::Block) -> Option<u64> {
+    fn find(text: &str) -> Option<u64> {
+        let digits = |rest: &str| {
+            let number: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            number.parse().ok()
+        };
+        for marker in ["/pull/", "PR #", "PR#", "pr #"] {
+            if let Some(found) = text
+                .match_indices(marker)
+                .find_map(|(at, _)| digits(&text[at + marker.len()..]))
+            {
+                return Some(found);
+            }
+        }
+        None
+    }
+    block
+        .done
+        .iter()
+        .chain(block.next.iter())
+        .chain(block.checks.iter().map(|check| &check.text))
+        .chain(task.notes.iter())
+        .find_map(|text| find(text))
+}
+
+/// The reply box open under a blocked board row, with the block's why and needs above it; on a
+/// review row, the feedback box with done and next above it.
 fn row_reply_paint(model: &BoardModel) -> Option<render::RowReplyPaint<'_>> {
     let row = model.row_reply.as_ref()?;
     let block = model
@@ -1553,10 +1732,24 @@ fn row_reply_paint(model: &BoardModel) -> Option<render::RowReplyPaint<'_>> {
         .iter()
         .find(|task| task.id == row.task)
         .and_then(|task| task.block.as_ref());
+    let context = match block {
+        Some(block) if block.is_review() => [
+            block.done.as_deref().map(|done| ("done   ", done)),
+            block.next.as_deref().map(|next| ("next   ", next)),
+        ],
+        _ => [
+            block
+                .and_then(|block| block.why.as_deref())
+                .map(|why| ("why    ", why)),
+            block
+                .and_then(|block| block.needs.as_deref())
+                .map(|needs| ("needs  ", needs)),
+        ],
+    };
     Some(render::RowReplyPaint {
         task: row.task,
-        why: block.and_then(|block| block.why.as_deref()),
-        needs: block.and_then(|block| block.needs.as_deref()),
+        context,
+        placeholder: &row.editor.placeholder,
         draft: &row.editor.buffer,
         width: &row.editor.width,
         refusal: row.editor.refusal.as_deref(),

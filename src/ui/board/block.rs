@@ -1,24 +1,28 @@
-//! Blocks on the board: the block card (`ctrl+b`), the task page's BLOCKED section ring, and
-//! its reply box.
+//! Blocks and reviews on the board: the block card (`ctrl+b`) and review card (`ctrl+r`), the
+//! task page's BLOCKED and REVIEW section rings, and their reply (feedback) box.
 
 use std::cell::{Cell, RefCell};
 
 use uuid::Uuid;
 
 use crate::domain::{
-    Block, BlockDraft, BlockField, BlockKey, BlockOn, BlockPatch, DomainError, DomainState,
-    HumanStatus, Task, BLOCK_TEXT_MAX, OWNER,
+    Block, BlockDraft, BlockField, BlockKey, BlockKind, BlockOn, BlockPatch, CheckState,
+    DomainError, DomainState, HumanStatus, ReviewDraft, ReviewPatch, Task, BLOCK_TEXT_MAX, OWNER,
 };
 use crate::ui::edit::{seeded_draft, EditBuffer};
 use crate::ui::mouse::BoardPopup;
 
 use super::model::{BoardInputMode, BoardModel, IntentOutcome};
 
-/// One Tab stop of the task page's BLOCKED section.
+/// One Tab stop of the task page's BLOCKED or REVIEW section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockTarget {
     Heading,
     Option(usize),
+    /// A review check, by its index in the round.
+    Check(usize),
+    /// The dim `N passed ▸` line the passed checks fold into.
+    PassedFold,
     Reply(usize),
 }
 
@@ -29,6 +33,8 @@ pub(crate) struct BlockPageState {
     pub(crate) target: Option<BlockTarget>,
     /// The open reply box.
     pub(crate) reply: Option<ReplyEditor>,
+    /// The passed checks are unfolded under their `N passed ▾` line.
+    pub(crate) passed_open: bool,
     /// Absolute content row of each ring stop at the last painted width, recorded by the
     /// renderer so Tab can keep the selected stop inside the page viewport.
     pub(crate) rows: RefCell<Vec<(BlockTarget, usize)>>,
@@ -49,6 +55,35 @@ pub(crate) struct ReplyEditor {
     pub(crate) pending: Option<ReplySave>,
     /// The wrap width the last painted frame used, for vertical caret movement.
     pub(crate) width: Cell<usize>,
+    /// Feedback on a review round rather than a reply to a block.
+    pub(crate) review: bool,
+    /// The empty draft's hint: `reply…`, or `feedback to @claude…`.
+    pub(crate) placeholder: String,
+}
+
+impl ReplyEditor {
+    fn open(block: &Block, task: &Task, prefill: &str, edit: Option<usize>) -> Self {
+        let review = block.is_review();
+        let agent = task
+            .assignee
+            .clone()
+            .or_else(|| (block.by != OWNER).then(|| block.by.clone()));
+        let placeholder = match (review, agent) {
+            (true, Some(agent)) => format!("feedback to @{agent}…"),
+            (true, None) => "feedback…".to_string(),
+            (false, _) => "reply…".to_string(),
+        };
+        Self {
+            buffer: seeded_draft(prefill),
+            block: block.key(),
+            edit,
+            refusal: None,
+            pending: None,
+            width: Cell::new(0),
+            review,
+            placeholder,
+        }
+    }
 }
 
 /// The reply box opened inline under a blocked board row (`r` on the board).
@@ -69,20 +104,26 @@ pub(crate) struct ReplySave {
     pub(crate) unblock: bool,
 }
 
-/// The block card's fields, in Tab order.
+/// The card's fields. A block card tabs why → on → needs; a review card done → check → next →
+/// on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockCardField {
     Why,
     On,
     Needs,
+    Done,
+    Check,
+    Next,
 }
 
-/// The card's waiting-on choice; `task` and `other` take the typed text.
+/// The card's waiting-on choice; `task`, `agent` and `other` take the typed text. A block card
+/// offers you · task · other, a review card you · agent · other.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OnKind {
     #[default]
     You,
     Task,
+    Agent,
     Other,
 }
 
@@ -91,22 +132,29 @@ impl OnKind {
         match self {
             OnKind::You => "you",
             OnKind::Task => "task",
+            OnKind::Agent => "agent",
             OnKind::Other => "other",
         }
     }
 
-    fn cycle(self, forward: bool) -> Self {
-        match (self, forward) {
-            (OnKind::You, true) | (OnKind::Other, false) => OnKind::Task,
-            (OnKind::Task, true) | (OnKind::You, false) => OnKind::Other,
-            (OnKind::Other, true) | (OnKind::Task, false) => OnKind::You,
-        }
+    fn cycle(self, forward: bool, kind: BlockKind) -> Self {
+        let middle = match kind {
+            BlockKind::Blocked => OnKind::Task,
+            BlockKind::Review => OnKind::Agent,
+        };
+        let ring = [OnKind::You, middle, OnKind::Other];
+        let position = ring.iter().position(|on| *on == self).unwrap_or(0);
+        let next = if forward { position + 1 } else { position + 2 };
+        ring[next % ring.len()]
     }
 }
 
-/// The block card: why, on and needs for one task or a marked set.
+/// The block card (why, on and needs) or review card (done, checks, next and on) for one task
+/// or a marked set.
 #[derive(Debug, Clone)]
 pub struct BlockCard {
+    /// What the card opens or edits: a block or a review round.
+    pub(crate) kind: BlockKind,
     /// Tasks the card blocks, captured when it opened.
     pub(crate) targets: Vec<Uuid>,
     /// Editing this task's open block instead of blocking.
@@ -120,6 +168,10 @@ pub struct BlockCard {
     pub(crate) on_kind: OnKind,
     pub(crate) on_text: EditBuffer,
     pub(crate) needs: EditBuffer,
+    pub(crate) done: EditBuffer,
+    /// One check per line.
+    pub(crate) checks: EditBuffer,
+    pub(crate) next: EditBuffer,
     pub(crate) field: BlockCardField,
     pub(crate) refusal: Option<String>,
 }
@@ -127,6 +179,7 @@ pub struct BlockCard {
 impl BlockCard {
     fn new(targets: Vec<Uuid>) -> Self {
         Self {
+            kind: BlockKind::Blocked,
             targets,
             edit: None,
             block: None,
@@ -135,8 +188,19 @@ impl BlockCard {
             on_kind: OnKind::You,
             on_text: seeded_draft(""),
             needs: seeded_draft(""),
+            done: seeded_draft(""),
+            checks: seeded_draft(""),
+            next: seeded_draft(""),
             field: BlockCardField::Why,
             refusal: None,
+        }
+    }
+
+    fn new_review(targets: Vec<Uuid>) -> Self {
+        Self {
+            kind: BlockKind::Review,
+            field: BlockCardField::Done,
+            ..Self::new(targets)
         }
     }
 
@@ -144,18 +208,43 @@ impl BlockCard {
         let block = task.block.as_ref();
         let (on_kind, on_text) = match block.map(|block| &block.on) {
             Some(BlockOn::Task(number)) => (OnKind::Task, number.to_string()),
+            Some(BlockOn::Agent(name)) => (OnKind::Agent, name.clone()),
             Some(BlockOn::Other(text)) => (OnKind::Other, text.clone()),
-            _ => (OnKind::You, String::new()),
+            Some(BlockOn::You) | None => (OnKind::You, String::new()),
+        };
+        let text = |value: Option<&String>| seeded_draft(value.map(String::as_str).unwrap_or(""));
+        let base = if block.is_some_and(Block::is_review) {
+            Self::new_review(vec![task.id])
+        } else {
+            Self::new(vec![task.id])
         };
         Self {
             edit: Some(task.id),
             block: block.map(Block::key),
-            why: seeded_draft(block.and_then(|block| block.why.as_deref()).unwrap_or("")),
+            why: text(block.and_then(|block| block.why.as_ref())),
             on_kind,
             on_text: seeded_draft(&on_text),
-            needs: seeded_draft(block.and_then(|block| block.needs.as_deref()).unwrap_or("")),
-            ..Self::new(vec![task.id])
+            needs: text(block.and_then(|block| block.needs.as_ref())),
+            done: text(block.and_then(|block| block.done.as_ref())),
+            checks: seeded_draft(
+                &block
+                    .map(|block| {
+                        block
+                            .checks
+                            .iter()
+                            .map(|check| check.text.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .unwrap_or_default(),
+            ),
+            next: text(block.and_then(|block| block.next.as_ref())),
+            ..base
         }
+    }
+
+    pub fn kind(&self) -> BlockKind {
+        self.kind
     }
 
     pub fn targets(&self) -> &[Uuid] {
@@ -195,6 +284,18 @@ impl BlockCard {
         &self.needs
     }
 
+    pub(crate) fn done(&self) -> &EditBuffer {
+        &self.done
+    }
+
+    pub(crate) fn checks(&self) -> &EditBuffer {
+        &self.checks
+    }
+
+    pub(crate) fn next(&self) -> &EditBuffer {
+        &self.next
+    }
+
     /// The buffer of the focused field, or `None` while a save holds the card.
     pub(crate) fn focused_buffer_mut(&mut self) -> Option<&mut EditBuffer> {
         if self.pending.is_some() {
@@ -205,25 +306,57 @@ impl BlockCard {
             BlockCardField::Why => &mut self.why,
             BlockCardField::On => &mut self.on_text,
             BlockCardField::Needs => &mut self.needs,
+            BlockCardField::Done => &mut self.done,
+            BlockCardField::Check => &mut self.checks,
+            BlockCardField::Next => &mut self.next,
         })
     }
 
     fn move_field(&mut self, forward: bool) {
-        self.field = match (self.field, forward) {
-            (BlockCardField::Why, true) | (BlockCardField::Needs, false) => BlockCardField::On,
-            (BlockCardField::On, true) | (BlockCardField::Why, false) => BlockCardField::Needs,
-            (BlockCardField::Needs, true) | (BlockCardField::On, false) => BlockCardField::Why,
+        let order: &[BlockCardField] = match self.kind {
+            BlockKind::Blocked => &[
+                BlockCardField::Why,
+                BlockCardField::On,
+                BlockCardField::Needs,
+            ],
+            BlockKind::Review => &[
+                BlockCardField::Done,
+                BlockCardField::Check,
+                BlockCardField::Next,
+                BlockCardField::On,
+            ],
         };
+        let position = order
+            .iter()
+            .position(|field| *field == self.field)
+            .unwrap_or(0);
+        let next = if forward {
+            position + 1
+        } else {
+            position + order.len() - 1
+        };
+        self.field = order[next % order.len()];
     }
 
     /// Resolve the typed waiting-on value against the board. A task must exist and must not
-    /// be one of the card's own targets.
-    fn resolve_on(&self, domain: &DomainState) -> Result<BlockOn, String> {
+    /// be one of the card's own targets; an agent must be a defined profile.
+    fn resolve_on(&self, domain: &DomainState, agents: &[String]) -> Result<BlockOn, String> {
         let text = self.on_text.value().trim();
         match self.on_kind {
             OnKind::You => Ok(BlockOn::You),
             OnKind::Other if text.is_empty() => Err("say what it waits on".to_string()),
             OnKind::Other => Ok(BlockOn::Other(text.to_string())),
+            OnKind::Agent => {
+                let name = text.strip_prefix('@').unwrap_or(text).to_ascii_lowercase();
+                if name.is_empty() {
+                    return Err("type an agent profile, like pi".to_string());
+                }
+                if agents.contains(&name) {
+                    Ok(BlockOn::Agent(name))
+                } else {
+                    Err(format!("no agent profile named {name}"))
+                }
+            }
             OnKind::Task => {
                 let BlockOn::Task(number) = BlockOn::parse_input(text) else {
                     return Err("type a task number, like T12".to_string());
@@ -257,7 +390,15 @@ pub(super) fn open_block_card(model: &mut BoardModel, targets: Vec<Uuid>) {
     model.clear_message();
 }
 
-/// `ctrl+e` on the BLOCKED heading: the same card, prefilled, editing why, on and needs.
+/// `ctrl+r` on work not in review: open the review card over `targets`. Marks stay until it
+/// confirms.
+pub(super) fn open_review_card(model: &mut BoardModel, targets: Vec<Uuid>) {
+    model.block_card = Some(BlockCard::new_review(targets));
+    model.set_popup(BoardPopup::BlockCard);
+    model.clear_message();
+}
+
+/// `ctrl+e` on the BLOCKED or REVIEW heading: the same card, prefilled, editing the open record.
 pub(super) fn open_block_edit_card(model: &mut BoardModel, task: &Task) {
     model.block_card = Some(BlockCard::editing(task));
     model.set_popup(BoardPopup::BlockCard);
@@ -292,7 +433,7 @@ pub(super) fn block_card_arrow(model: &mut BoardModel, forward: bool) {
     };
     card.refusal = None;
     match card.field {
-        BlockCardField::On => card.on_kind = card.on_kind.cycle(forward),
+        BlockCardField::On => card.on_kind = card.on_kind.cycle(forward, card.kind),
         _ => {
             let Some(buffer) = card.focused_buffer_mut() else {
                 return;
@@ -316,7 +457,10 @@ pub(super) fn confirm_block_card(
     let Some(card) = model.block_card.as_ref().filter(|card| !card.is_pending()) else {
         return Ok(IntentOutcome::None);
     };
-    let on = match card.resolve_on(domain) {
+    if card.kind == BlockKind::Review {
+        return confirm_review_card(domain, model);
+    }
+    let on = match card.resolve_on(domain, &model.agent_names) {
         Ok(on) => on,
         Err(refusal) => {
             if let Some(card) = model.block_card.as_mut() {
@@ -390,6 +534,94 @@ pub(super) fn confirm_block_card(
     Ok(IntentOutcome::Persist)
 }
 
+/// Enter on the review card: put every target up for review with one draft as one batch and
+/// one undo entry, or edit the open round in place. An empty card puts the work up for review
+/// at once.
+fn confirm_review_card(
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+) -> Result<IntentOutcome, DomainError> {
+    let Some(card) = model.block_card.as_ref() else {
+        return Ok(IntentOutcome::None);
+    };
+    let refuse = |model: &mut BoardModel, refusal: String| {
+        if let Some(card) = model.block_card.as_mut() {
+            card.refusal = Some(refusal);
+        }
+        Ok(IntentOutcome::None)
+    };
+    let on = match card.resolve_on(domain, &model.agent_names) {
+        Ok(on) => on,
+        Err(refusal) => return refuse(model, refusal),
+    };
+    let checks: Vec<String> = card.checks.value().lines().map(str::to_string).collect();
+    let draft = match ReviewDraft::from_input(
+        Some(card.done.value()),
+        &checks,
+        Some(card.next.value()),
+        on,
+    ) {
+        Ok(draft) => draft,
+        Err(field) => return refuse(model, too_long(field)),
+    };
+    let targets = card.targets.clone();
+    let edit = card.edit;
+    let opened_on = card.block.clone();
+    let changed = match edit {
+        Some(id) => {
+            let current = domain
+                .get(id)
+                .and_then(|task| task.block.as_ref())
+                .filter(|block| block.is_review())
+                .map(Block::key);
+            if current.is_none() || current != opened_on {
+                close_block_card(model);
+                model.set_message("that review round was closed elsewhere");
+                return Ok(IntentOutcome::None);
+            }
+            domain.edit_review(id, ReviewPatch::replace_with(draft))?
+        }
+        None => {
+            let live: Vec<Uuid> = targets
+                .iter()
+                .copied()
+                .filter(|id| domain.get(*id).is_some())
+                .collect();
+            domain.review_batch(&live, &draft, OWNER)?
+        }
+    };
+    if !changed {
+        close_block_card(model);
+        if edit.is_none() {
+            model.clear_marks();
+        }
+        return Ok(IntentOutcome::None);
+    }
+    let stored = targets
+        .iter()
+        .filter_map(|id| {
+            let block = domain.get(*id)?.block.clone()?;
+            Some((*id, block))
+        })
+        .collect();
+    if let Some(card) = model.block_card.as_mut() {
+        card.refusal = None;
+        card.pending = Some(stored);
+    }
+    Ok(IntentOutcome::Persist)
+}
+
+/// Shift+Enter in the review card's check field starts the next check.
+pub(super) fn block_card_newline(model: &mut BoardModel) {
+    let Some(card) = model.block_card.as_mut().filter(|card| !card.is_pending()) else {
+        return;
+    };
+    if card.field == BlockCardField::Check {
+        card.refusal = None;
+        card.checks.insert_char('\n');
+    }
+}
+
 /// Close a held card once the synced tasks carry its blocks (the confirmed landing), and
 /// clear the marked set it blocked.
 pub(super) fn finish_block_card_save(model: &mut BoardModel) {
@@ -427,7 +659,16 @@ pub(super) fn release_cancelled_block_card(model: &mut BoardModel) {
     }
 }
 
-/// The task the page shows, when it has an open block and no edit session owns the page.
+/// Whether `task` shows a BLOCKED or REVIEW section: blocked or in review, with the open
+/// record of that kind.
+pub(crate) fn has_open_section(task: &Task) -> bool {
+    task.block
+        .as_ref()
+        .is_some_and(|block| BlockKind::for_status(task.status) == Some(block.kind))
+}
+
+/// The task the page shows, when it has an open block or review round and no edit session
+/// owns the page.
 fn page_block_task(model: &BoardModel) -> Option<&Task> {
     let form = model.form.as_ref().filter(|form| form.is_task())?;
     if form.editing {
@@ -438,16 +679,40 @@ fn page_block_task(model: &BoardModel) -> Option<&Task> {
         .tasks
         .iter()
         .find(|task| task.id == id)
-        .filter(|task| task.status == HumanStatus::Blocked && task.block.is_some())
+        .filter(|task| has_open_section(task))
 }
 
-/// The ring stops of the page's open block, in order.
-pub(super) fn block_ring(task: &Task) -> Vec<BlockTarget> {
+/// The review checks in page order: open and failed checks in place, then the passed ones,
+/// which fold under their `N passed` line.
+pub(crate) fn review_check_order(block: &Block) -> (Vec<usize>, Vec<usize>) {
+    let (shown, passed): (Vec<_>, Vec<_>) = block
+        .checks
+        .iter()
+        .enumerate()
+        .partition(|(_, check)| check.state != CheckState::Passed);
+    (
+        shown.into_iter().map(|(index, _)| index).collect(),
+        passed.into_iter().map(|(index, _)| index).collect(),
+    )
+}
+
+/// The ring stops of the page's open block or review round, in order.
+pub(super) fn block_ring(task: &Task, passed_open: bool) -> Vec<BlockTarget> {
     let Some(block) = task.block.as_ref() else {
         return Vec::new();
     };
     let mut ring = vec![BlockTarget::Heading];
     ring.extend((0..block.options.len()).map(BlockTarget::Option));
+    if block.is_review() {
+        let (shown, passed) = review_check_order(block);
+        ring.extend(shown.into_iter().map(BlockTarget::Check));
+        if !passed.is_empty() {
+            ring.push(BlockTarget::PassedFold);
+            if passed_open {
+                ring.extend(passed.into_iter().map(BlockTarget::Check));
+            }
+        }
+    }
     ring.extend(
         block
             .replies
@@ -467,7 +732,9 @@ pub(super) fn selected_block_target(model: &BoardModel) -> Option<BlockTarget> {
     }
     let target = form.block.target?;
     let task = page_block_task(model)?;
-    block_ring(task).contains(&target).then_some(target)
+    block_ring(task, form.block.passed_open)
+        .contains(&target)
+        .then_some(target)
 }
 
 fn select_block_target(model: &mut BoardModel, target: Option<BlockTarget>) {
@@ -516,7 +783,7 @@ pub(super) fn move_block_tab(model: &mut BoardModel, forward: bool) -> PageTab {
     let Some(task) = page_block_task(model) else {
         return PageTab::NotHandled;
     };
-    let ring = block_ring(task);
+    let ring = block_ring(task, passed_open(model));
     let Some(current) = selected_block_target(model) else {
         return PageTab::NotHandled;
     };
@@ -546,7 +813,7 @@ pub(super) fn enter_block_ring(model: &mut BoardModel, forward: bool) -> bool {
     let Some(task) = page_block_task(model) else {
         return false;
     };
-    let ring = block_ring(task);
+    let ring = block_ring(task, passed_open(model));
     let stop = if forward { ring.first() } else { ring.last() }.copied();
     if stop.is_none() {
         return false;
@@ -555,56 +822,54 @@ pub(super) fn enter_block_ring(model: &mut BoardModel, forward: bool) -> bool {
     true
 }
 
+fn passed_open(model: &BoardModel) -> bool {
+    model
+        .form
+        .as_ref()
+        .is_some_and(|form| form.block.passed_open)
+}
+
 /// `r`, or `Enter` on an option (prefilled), or `ctrl+e` on one of your replies (`edit`).
 pub(super) fn begin_reply(model: &mut BoardModel, prefill: &str, edit: Option<usize>) -> bool {
-    let Some(block) = page_block_task(model)
-        .and_then(|task| task.block.as_ref())
-        .map(Block::key)
-    else {
+    let Some(editor) = page_block_task(model).and_then(|task| {
+        task.block
+            .as_ref()
+            .map(|block| ReplyEditor::open(block, task, prefill, edit))
+    }) else {
         return false;
     };
     let Some(form) = model.form.as_mut() else {
         return false;
     };
-    form.block.reply = Some(ReplyEditor {
-        buffer: seeded_draft(prefill),
-        block,
-        edit,
-        refusal: None,
-        pending: None,
-        width: Cell::new(0),
-    });
+    form.block.reply = Some(editor);
     model.input_mode = BoardInputMode::EditReply;
     model.clear_message();
     true
 }
 
 /// `r` on a board row: open the reply box inline under the cursor task. A marked set is
-/// ignored; the box answers the cursor row only. False when the row is not blocked.
+/// ignored; the box answers the cursor row only. False when the row is not blocked or in
+/// review.
 pub(super) fn begin_row_reply(model: &mut BoardModel) -> bool {
     let Some(id) = model.selected_id() else {
         return false;
     };
-    let Some(block) = model
+    let Some(editor) = model
         .tasks
         .iter()
         .find(|task| task.id == id)
-        .filter(|task| task.status == HumanStatus::Blocked && !task.archived)
-        .and_then(|task| task.block.as_ref())
-        .map(Block::key)
+        .filter(|task| has_open_section(task) && !task.archived)
+        .and_then(|task| {
+            task.block
+                .as_ref()
+                .map(|block| ReplyEditor::open(block, task, "", None))
+        })
     else {
         return false;
     };
     model.row_reply = Some(RowReply {
         task: id,
-        editor: ReplyEditor {
-            buffer: seeded_draft(""),
-            block,
-            edit: None,
-            refusal: None,
-            pending: None,
-            width: Cell::new(0),
-        },
+        editor,
         return_mode: model.input_mode,
     });
     model.input_mode = BoardInputMode::EditReply;
@@ -652,6 +917,54 @@ fn close_reply(model: &mut BoardModel, page_target: Option<BlockTarget>) {
         if model.input_mode == BoardInputMode::EditReply {
             model.input_mode = row.return_mode;
         }
+    }
+}
+
+/// `Enter` on a review check: cycle it open → passed → failed. A check that passes folds away
+/// while the passed checks are folded, so the cursor moves to their `N passed` line.
+pub(super) fn cycle_selected_check(
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+) -> Result<IntentOutcome, DomainError> {
+    let Some(BlockTarget::Check(index)) = selected_block_target(model) else {
+        return Ok(IntentOutcome::None);
+    };
+    let Some(task) = page_block_task(model) else {
+        return Ok(IntentOutcome::None);
+    };
+    let id = task.id;
+    let Some(state) = task
+        .block
+        .as_ref()
+        .and_then(|block| block.checks.get(index))
+        .map(|check| check.state.cycle())
+    else {
+        return Ok(IntentOutcome::None);
+    };
+    match domain.set_check(id, index, state) {
+        Ok(true) => {}
+        Ok(false) => return Ok(IntentOutcome::None),
+        Err(DomainError::NotInReview(_) | DomainError::UnknownCheck(_)) => {
+            model.set_message("this review changed elsewhere");
+            return Ok(IntentOutcome::None);
+        }
+        Err(error) => return Err(error),
+    }
+    if let Some(form) = model.form.as_mut() {
+        if state == CheckState::Passed && !form.block.passed_open {
+            form.block.target = Some(BlockTarget::PassedFold);
+        }
+    }
+    Ok(IntentOutcome::Persist)
+}
+
+/// `Enter` on the `N passed` line: show or fold the passed checks.
+pub(super) fn toggle_passed_checks(model: &mut BoardModel) {
+    if selected_block_target(model) != Some(BlockTarget::PassedFold) {
+        return;
+    }
+    if let Some(form) = model.form.as_mut() {
+        form.block.passed_open = !form.block.passed_open;
     }
 }
 
@@ -731,6 +1044,7 @@ pub(super) fn save_reply(
     let text = editor.buffer.value().trim().to_string();
     let edit = editor.edit;
     let opened_on = editor.block.clone();
+    let editor_review = editor.review;
     let refuse = |model: &mut BoardModel, refusal: String| {
         if let Some(editor) = active_reply_mut(model) {
             editor.refusal = Some(refusal);
@@ -755,6 +1069,14 @@ pub(super) fn save_reply(
     if text.len() > BLOCK_TEXT_MAX {
         return refuse(model, too_long(BlockField::Reply));
     }
+    // Sending a review back always restarts the work, assigned or not.
+    let unblock = unblock.map(|status| {
+        if editor_review {
+            HumanStatus::Started
+        } else {
+            status
+        }
+    });
     // The reply lands on the open block before the unblock closes it, as one change.
     let stored = domain.as_one_change(id, |domain| {
         let index = match edit {
@@ -804,7 +1126,8 @@ pub(super) fn finish_reply_save(model: &mut BoardModel) {
         .find(|task| task.id == pending.task)
         .and_then(|task| {
             if pending.unblock {
-                (task.status != HumanStatus::Blocked)
+                task.block
+                    .is_none()
                     .then(|| task.past_blocks.last())
                     .flatten()
             } else {

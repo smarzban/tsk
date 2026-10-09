@@ -1959,6 +1959,29 @@ impl BoardModel {
         )
     }
 
+    /// Whether `Enter` on the task page lands on a review check.
+    pub fn review_check_selected(&self) -> bool {
+        matches!(
+            self.block_target(),
+            Some(super::block::BlockTarget::Check(_))
+        )
+    }
+
+    /// Whether `Enter` on the task page lands on the `N passed` line.
+    pub fn passed_checks_selected(&self) -> bool {
+        self.block_target() == Some(super::block::BlockTarget::PassedFold)
+    }
+
+    /// Close the reply box without saving, back to the page or the board.
+    pub fn close_reply_box(&mut self) {
+        super::block::cancel_reply(self);
+    }
+
+    /// Whether the open reply box gives feedback on a review round.
+    pub fn reply_is_feedback(&self) -> bool {
+        super::block::active_reply(self).is_some_and(|(_, editor)| editor.review)
+    }
+
     /// The task whose reply box is open, while it is open.
     pub fn reply_task_id(&self) -> Option<Uuid> {
         super::block::active_reply(self).map(|(id, _)| id)

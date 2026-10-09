@@ -864,14 +864,15 @@ pub enum BlockWait {
     BlockerGone(u64),
 }
 
-/// Read a task's block against the whole store. `None` unless the task is blocked.
+/// Read a task's block or review round against the whole store. `None` unless the task is
+/// blocked or in review.
 pub fn block_wait(task: &Task, tasks: &[Task]) -> Option<BlockWait> {
-    if task.status != HumanStatus::Blocked {
+    if !matches!(task.status, HumanStatus::Blocked | HumanStatus::Review) {
         return None;
     }
     Some(match task.block.as_ref().map(|block| &block.on) {
         None | Some(BlockOn::You) => BlockWait::You,
-        Some(BlockOn::Other(_)) => BlockWait::Elsewhere,
+        Some(BlockOn::Agent(_) | BlockOn::Other(_)) => BlockWait::Elsewhere,
         Some(BlockOn::Task(number)) => match tasks
             .iter()
             .find(|other| other.number == Some(*number) && !other.is_notice())
@@ -884,16 +885,17 @@ pub fn block_wait(task: &Task, tasks: &[Task]) -> Option<BlockWait> {
     })
 }
 
-/// NEEDS YOU: review, and blocked unless the block waits elsewhere.
+/// NEEDS YOU: blocked or in review, unless the record waits elsewhere.
 pub fn is_needs_you(task: &Task, tasks: &[Task]) -> bool {
     match task.status {
-        HumanStatus::Review => true,
-        HumanStatus::Blocked => block_wait(task, tasks) != Some(BlockWait::Elsewhere),
+        HumanStatus::Review | HumanStatus::Blocked => {
+            block_wait(task, tasks) != Some(BlockWait::Elsewhere)
+        }
         _ => false,
     }
 }
 
-/// IN MOTION: started, and blocked on another task or on something else.
+/// IN MOTION: started, and blocked or in review on another task, an agent or something else.
 pub fn is_in_motion(task: &Task, tasks: &[Task]) -> bool {
     task.status == HumanStatus::Started || block_wait(task, tasks) == Some(BlockWait::Elsewhere)
 }

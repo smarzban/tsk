@@ -180,6 +180,9 @@ pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> boo
                 | BoardIntent::ReplySaveUnblock
                 | BoardIntent::ReplySaveStart
                 | BoardIntent::ToggleReview
+                | BoardIntent::CycleCheck
+                | BoardIntent::ReplyApprove
+                | BoardIntent::ApproveReview(_)
                 | BoardIntent::ToggleStep
                 | BoardIntent::QuickAddSave
                 | BoardIntent::QuickAddSaveNext
@@ -1016,16 +1019,44 @@ fn apply_board_intent(
             super::block::block_card_arrow(model, intent == BoardIntent::BlockCardRight);
             return Ok(IntentOutcome::None);
         }
+        BoardIntent::BlockCardNewline => {
+            super::block::block_card_newline(model);
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::CycleCheck => {
+            return super::block::cycle_selected_check(domain, model);
+        }
+        BoardIntent::TogglePassedChecks => {
+            super::block::toggle_passed_checks(model);
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::ApproveReview(id) => {
+            model.close_popup();
+            if !domain
+                .get(id)
+                .is_some_and(|task| task.status == HumanStatus::Review)
+            {
+                return Ok(IntentOutcome::None);
+            }
+            domain.complete(id)?;
+        }
+        BoardIntent::ReplyApprove => {
+            // The application boundary approves a review; anything else lands here.
+            if model.input_mode == BoardInputMode::EditReply {
+                model.set_message("only a task in review can be approved");
+            }
+            return Ok(IntentOutcome::None);
+        }
         BoardIntent::BeginReply => {
             if model.input_mode() == BoardInputMode::Normal {
                 // `r` on a board row answers the cursor task inline, whatever is marked.
                 if !super::block::begin_row_reply(model) {
-                    model.set_message("not blocked");
+                    model.set_message("not blocked or in review");
                 }
             } else if model.input_mode == BoardInputMode::TaskPage
                 && !super::block::begin_reply(model, "", None)
             {
-                model.set_message("only a blocked task takes replies");
+                model.set_message("only a blocked or review task takes replies");
             }
             return Ok(IntentOutcome::None);
         }
@@ -2141,7 +2172,10 @@ fn apply_board_intent(
         }
         BoardIntent::ToggleReview => {
             model.close_popup();
-            let (targets, bulk) = take_verb_targets(model);
+            let bulk = model.task_list_owns_input()
+                && model.mark_mode_active()
+                && model.marked_count() > 0;
+            let targets = model.verb_target_ids();
             if targets.is_empty() {
                 model.set_message(NO_SELECTION);
                 return Ok(IntentOutcome::None);
@@ -2161,12 +2195,13 @@ fn apply_board_intent(
                     .get(*id)
                     .is_some_and(|task| task.status == HumanStatus::Review)
             });
-            let status = if all_review {
-                HumanStatus::Ready
-            } else {
-                HumanStatus::Review
-            };
-            set_status_batch(domain, &targets, status)?;
+            if !all_review {
+                // Review asks what was done first. The marks stay until the card confirms.
+                super::block::open_review_card(model, targets);
+                return Ok(IntentOutcome::None);
+            }
+            model.clear_marks();
+            set_status_batch(domain, &targets, HumanStatus::Ready)?;
         }
         BoardIntent::StageRight => {
             stage_right(domain, model);

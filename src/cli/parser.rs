@@ -403,18 +403,30 @@ pub struct FlagStatus {
     pub block: BlockFlags,
 }
 
-/// `--why`, `--needs`, `--option` (repeatable) and `--on` for `status <task> blocked`.
+/// `--why`, `--needs`, `--option` (repeatable) and `--on` for `status <task> blocked`;
+/// `--done`, `--check` (repeatable), `--next` and `--on` for `status <task> review`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BlockFlags {
     pub why: Option<String>,
     pub needs: Option<String>,
     pub options: Vec<String>,
     pub on: Option<String>,
+    pub done: Option<String>,
+    pub checks: Vec<String>,
+    pub next: Option<String>,
 }
 
 impl BlockFlags {
     pub fn is_empty(&self) -> bool {
-        self.why.is_none() && self.needs.is_none() && self.options.is_empty() && self.on.is_none()
+        !self.has_block_fields() && !self.has_review_fields() && self.on.is_none()
+    }
+
+    fn has_block_fields(&self) -> bool {
+        self.why.is_some() || self.needs.is_some() || !self.options.is_empty()
+    }
+
+    fn has_review_fields(&self) -> bool {
+        self.done.is_some() || !self.checks.is_empty() || self.next.is_some()
     }
 }
 
@@ -516,22 +528,40 @@ pub fn parse_flag_status(args: &[String]) -> Result<FlagStatus, String> {
     if parsed.again && parsed.no_dispatch {
         return Err("--again and --no-dispatch cannot be combined".into());
     }
-    if !parsed.block.is_empty()
-        && parsed.status.is_some()
-        && parsed.status != Some(HumanStatus::Blocked)
-    {
-        return Err("--why, --needs, --option and --on require blocked status".into());
+    if parsed.status.is_some() {
+        if parsed.block.has_block_fields() && parsed.status != Some(HumanStatus::Blocked) {
+            return Err("--why, --needs and --option require blocked status".into());
+        }
+        if parsed.block.has_review_fields() && parsed.status != Some(HumanStatus::Review) {
+            return Err("--done, --check and --next require review status".into());
+        }
+        if parsed.block.on.is_some()
+            && !matches!(
+                parsed.status,
+                Some(HumanStatus::Blocked | HumanStatus::Review)
+            )
+        {
+            return Err("--on requires blocked or review status".into());
+        }
     }
     Ok(parsed)
 }
 
-const BLOCK_FLAGS: [&str; 4] = ["--why", "--needs", "--option", "--on"];
+const BLOCK_FLAGS: [&str; 7] = [
+    "--why", "--needs", "--option", "--on", "--done", "--check", "--next",
+];
 
 fn set_block_flag(block: &mut BlockFlags, flag: &str, value: String) -> Result<(), String> {
     let slot = match flag {
         "--why" => &mut block.why,
         "--needs" => &mut block.needs,
         "--on" => &mut block.on,
+        "--done" => &mut block.done,
+        "--next" => &mut block.next,
+        "--check" => {
+            block.checks.push(value);
+            return Ok(());
+        }
         _ => {
             block.options.push(value);
             return Ok(());
@@ -877,6 +907,7 @@ mod tests {
                 needs: Some("-a decision".into()),
                 options: vec!["postgres".into(), "-sqlite".into()],
                 on: Some("T169".into()),
+                ..super::BlockFlags::default()
             }
         );
         assert!(parse_flag_status(&args(&["ready", "--why", "x"]))
@@ -890,6 +921,53 @@ mod tests {
         assert!(parse_flag_status(&args(&["blocked", "--why"]))
             .unwrap_err()
             .contains("missing value"));
+    }
+
+    #[test]
+    fn status_parse_reads_review_flags_and_refuses_them_elsewhere() {
+        let args = |rest: &[&str]| {
+            ["tsk", "status", "T4"]
+                .iter()
+                .chain(rest)
+                .map(|arg| arg.to_string())
+                .collect::<Vec<_>>()
+        };
+        let parsed = parse_flag_status(&args(&[
+            "review",
+            "--done",
+            "built the card",
+            "--check",
+            "tests pass",
+            "--check=-no flicker",
+            "--next=docs",
+            "--on",
+            "pi",
+        ]))
+        .expect("parse");
+        assert_eq!(
+            parsed.block,
+            super::BlockFlags {
+                done: Some("built the card".into()),
+                checks: vec!["tests pass".into(), "-no flicker".into()],
+                next: Some("docs".into()),
+                on: Some("pi".into()),
+                ..super::BlockFlags::default()
+            }
+        );
+        assert!(parse_flag_status(&args(&["blocked", "--done", "x"]))
+            .unwrap_err()
+            .contains("require review"));
+        assert!(parse_flag_status(&args(&["review", "--why", "x"]))
+            .unwrap_err()
+            .contains("require blocked"));
+        assert!(parse_flag_status(&args(&["ready", "--on", "x"]))
+            .unwrap_err()
+            .contains("--on requires"));
+        assert!(
+            parse_flag_status(&args(&["review", "--next", "a", "--next", "b"]))
+                .unwrap_err()
+                .contains("more than once")
+        );
     }
 
     #[test]

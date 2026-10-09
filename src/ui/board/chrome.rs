@@ -22,12 +22,30 @@ impl BoardModel {
         if let Some(message) = self.message.as_deref().filter(|msg| !msg.is_empty()) {
             parts.push(ChromeRowPart::Message(message));
         }
-        edit_chrome_line(self.input_mode, &parts, width)
+        let review = match self.input_mode {
+            BoardInputMode::EditReply => self.reply_is_feedback(),
+            BoardInputMode::BlockCard => self
+                .block_card()
+                .is_some_and(|card| card.kind() == crate::domain::BlockKind::Review),
+            _ => false,
+        };
+        edit_chrome_line(self.input_mode, review, &parts, width)
     }
 }
 
-fn edit_chrome_legends(mode: BoardInputMode) -> [&'static str; 3] {
+/// The legends an edit owns, widest first. `review` picks the feedback box and review card.
+fn edit_chrome_legends(mode: BoardInputMode, review: bool) -> [&'static str; 3] {
     match mode {
+        BoardInputMode::EditReply if review => [
+            "shift+enter save · ctrl+s send back · ctrl+d approve · esc cancel",
+            "shift+enter save · ctrl+s back · ctrl+d approve · esc",
+            "shift+enter · ctrl+s · ctrl+d · esc",
+        ],
+        BoardInputMode::BlockCard if review => [
+            "enter review · shift+enter new check · tab next field · esc cancel",
+            "enter review · tab next · esc",
+            "enter · tab · esc",
+        ],
         BoardInputMode::EditNotes => [
             "Shift+Enter save · Enter newline · Esc cancel",
             "Shift+Enter save · Esc cancel",
@@ -100,7 +118,12 @@ fn edit_chrome_legends(mode: BoardInputMode) -> [&'static str; 3] {
     }
 }
 
-fn edit_chrome_line(mode: BoardInputMode, lead: &[ChromeRowPart<'_>], width: usize) -> String {
+fn edit_chrome_line(
+    mode: BoardInputMode,
+    review: bool,
+    lead: &[ChromeRowPart<'_>],
+    width: usize,
+) -> String {
     use ratatui::text::Line;
 
     /// Narrowest lead worth painting; below this only the legend is left.
@@ -111,7 +134,7 @@ fn edit_chrome_line(mode: BoardInputMode, lead: &[ChromeRowPart<'_>], width: usi
     let idle = [ChromeRowPart::Message("editing…")];
     let lead = if lead.is_empty() { &idle[..] } else { lead };
     let full = fit_chrome_row(lead, usize::MAX);
-    let legends = edit_chrome_legends(mode);
+    let legends = edit_chrome_legends(mode, review);
     let lead_width = Line::from(full.as_str()).width();
     for legend in legends {
         if FRAME + lead_width + Line::from(legend).width() <= width {

@@ -1,4 +1,4 @@
-//! Headless replies to a task's open block.
+//! Headless replies to a task's open block or review round (feedback).
 
 use std::path::PathBuf;
 
