@@ -648,7 +648,7 @@ fn a_symlinked_config_file_is_edited_in_place_and_the_link_kept() {
 fn follow_links_resolves_relative_targets_and_refuses_dangling_and_loops() {
     let temp = Temp::new();
     let missing = temp.0.join("absent.toml");
-    assert_eq!(follow_links(&missing).unwrap(), missing);
+    assert_eq!(follow_links(&missing, &missing).unwrap(), missing);
     #[cfg(unix)]
     {
         use std::os::unix::fs::symlink;
@@ -657,14 +657,29 @@ fn follow_links_resolves_relative_targets_and_refuses_dangling_and_loops() {
         fs::create_dir(temp.0.join("home")).unwrap();
         symlink("../real/config.toml", temp.0.join("home/config.toml")).unwrap();
         assert_eq!(
-            fs::canonicalize(follow_links(&temp.0.join("home/config.toml")).unwrap()).unwrap(),
+            fs::canonicalize(
+                follow_links(&temp.0.join("home/config.toml"), Path::new("cfg")).unwrap()
+            )
+            .unwrap(),
             fs::canonicalize(temp.0.join("real/config.toml")).unwrap()
         );
         symlink("nowhere.toml", temp.0.join("dangling.toml")).unwrap();
-        let error = follow_links(&temp.0.join("dangling.toml")).unwrap_err();
+        let error = follow_links(&temp.0.join("dangling.toml"), Path::new("cfg")).unwrap_err();
         assert!(error.to_string().contains("points at missing"), "{error}");
         symlink("loop.toml", temp.0.join("loop.toml")).unwrap();
-        let error = follow_links(&temp.0.join("loop.toml")).unwrap_err();
+        let error = follow_links(&temp.0.join("loop.toml"), Path::new("cfg")).unwrap_err();
         assert!(error.to_string().contains("loops"), "{error}");
+        // A loop in a directory along the target is the same refusal, not a raw ELOOP.
+        symlink("loopdir", temp.0.join("loopdir")).unwrap();
+        symlink("loopdir/config.toml", temp.0.join("via-loop.toml")).unwrap();
+        let error = follow_links(&temp.0.join("via-loop.toml"), Path::new("cfg")).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Herdr config symlink cfg loops; fix the link"
+        );
+        // A regular file along the target reads as a missing target.
+        symlink("real/config.toml/x.toml", temp.0.join("via-file.toml")).unwrap();
+        let error = follow_links(&temp.0.join("via-file.toml"), Path::new("cfg")).unwrap_err();
+        assert!(error.to_string().contains("points at missing"), "{error}");
     }
 }
