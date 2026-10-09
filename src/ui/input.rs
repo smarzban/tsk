@@ -992,6 +992,18 @@ fn help_bindings() -> Vec<HelpBinding> {
         ),
         help_binding(
             HelpGroup::TaskActions,
+            "1-9 (blocked)",
+            "reply with option N (task page)",
+            "answer question blocked choose number",
+        ),
+        help_binding(
+            HelpGroup::TaskActions,
+            "ctrl+s (blocked)",
+            "unblock, or send a review back",
+            "answer blocked review send back",
+        ),
+        help_binding(
+            HelpGroup::TaskActions,
             "enter (check)",
             "cycle open → passed → failed",
             "review check pass fail",
@@ -1004,14 +1016,14 @@ fn help_bindings() -> Vec<HelpBinding> {
         ),
         help_binding(
             HelpGroup::Navigation,
-            "a",
-            "all or latest paper trail (task page)",
+            "g",
+            "open or close paper trail (task page)",
             "activity history who what",
         ),
         help_binding(
             HelpGroup::Navigation,
             "enter (paper trail)",
-            "expand a closed record (task page)",
+            "expand the trail or a closed record",
             "activity history",
         ),
         help_binding(
