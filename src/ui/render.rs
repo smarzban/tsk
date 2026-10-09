@@ -6949,7 +6949,7 @@ mod tests {
                         marked: false,
                         title_bold: selected,
                         dim: false,
-                            };
+                    };
                     for line in paint_task_row_lines(&row, &geo, 0) {
                         assert!(
                             line.line.width() <= geo.row_width as usize,

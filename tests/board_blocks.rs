@@ -222,11 +222,17 @@ fn ctrl_b_card_blocks_on_another_task_which_rides_in_motion_until_that_task_is_d
     let board = rows(&model, 80, 24).join("\n");
     assert!(board.contains("│ T1 is done · unblock it · "), "{board}");
     assert!(board.contains("│ needs the endpoint"), "{board}");
-    assert!(!board.contains("└─ T1 is done"), "the peek replaces the live line: {board}");
+    assert!(
+        !board.contains("└─ T1 is done"),
+        "the peek replaces the live line: {board}"
+    );
     // Closing the peek brings the live line back.
     apply_intent(&mut domain, &mut model, BoardIntent::CollapseDetail, None).unwrap();
     let board = rows(&model, 80, 24).join("\n");
-    assert!(board.contains("    └─ T1 is done · unblock it · "), "{board}");
+    assert!(
+        board.contains("    └─ T1 is done · unblock it · "),
+        "{board}"
+    );
     assert!(!board.contains("needs the endpoint"), "{board}");
 }
 
@@ -443,7 +449,11 @@ fn tab_reaches_an_option_enter_prefills_the_reply_and_shift_enter_answers() {
         .iter()
         .position(|row| row.contains("pick a database"))
         .unwrap();
-    assert!(board[at].trim_end().ends_with("pick a database"), "{}", board[at]);
+    assert!(
+        board[at].trim_end().ends_with("pick a database"),
+        "{}",
+        board[at]
+    );
     assert!(
         board[at + 1].starts_with("    └─ @claude blocked on you · "),
         "{}",
@@ -466,7 +476,11 @@ fn an_agent_block_says_who_asks_on_the_live_line() {
         .position(|row| row.contains("pick a database"))
         .unwrap();
     assert!(board[at].contains("■"), "{}", board[at]);
-    assert!(board[at].trim_end().ends_with("pick a database"), "{}", board[at]);
+    assert!(
+        board[at].trim_end().ends_with("pick a database"),
+        "{}",
+        board[at]
+    );
     assert!(
         board[at + 1].starts_with("    └─ @claude blocked on you · "),
         "{}",

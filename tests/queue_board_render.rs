@@ -785,7 +785,9 @@ fn standard_78x24_fixture_has_selector_list_rule_status_verb_and_no_other_chrome
     // A block's live line names who asks (`@claude blocked on you`); no other agent field
     // paints.
     assert!(
-        !list.replace("└─ @claude blocked on you", "").contains("claude")
+        !list
+            .replace("└─ @claude blocked on you", "")
+            .contains("claude")
             && !list.contains("grok")
             && !list.contains("agent"),
         "M1 must not paint agent fields:\n{list}"
@@ -6967,10 +6969,7 @@ fn live_lines_sit_under_their_rows_and_the_right_edge_stays_empty() {
     model.selection_id = Some(Uuid::from_u128(2));
     for width in [40u16, 78, 109, 120] {
         let (rows, _) = paint(width, 80, &model);
-        let body = rows
-            .iter()
-            .map(|row| list_body(row))
-            .collect::<Vec<_>>();
+        let body = rows.iter().map(|row| list_body(row)).collect::<Vec<_>>();
         let under = |title: &str| {
             let at = body
                 .iter()
@@ -6984,7 +6983,11 @@ fn live_lines_sit_under_their_rows_and_the_right_edge_stays_empty() {
             // The live line and its wrapped continuations, rejoined.
             let mut text = Vec::new();
             for (index, row) in body[at + 1..].iter().enumerate() {
-                match (index, row.strip_prefix("    └─ "), row.strip_prefix("       ")) {
+                match (
+                    index,
+                    row.strip_prefix("    └─ "),
+                    row.strip_prefix("       "),
+                ) {
                     (0, Some(head), _) => text.push(head.trim().to_string()),
                     (1.., None, Some(tail)) if !text.is_empty() && !tail.starts_with(' ') => {
                         text.push(tail.trim().to_string())
@@ -7033,10 +7036,7 @@ fn blocked_and_review_peeks_lead_with_the_live_line_and_drop_notes() {
             model.selection_id = Some(Uuid::from_u128(id));
             model.detail_open = Some(Uuid::from_u128(id));
             let (rows, _) = paint(width, 80, &model);
-            let body = rows
-                .iter()
-                .map(|row| list_body(row))
-                .collect::<Vec<_>>();
+            let body = rows.iter().map(|row| list_body(row)).collect::<Vec<_>>();
             let at = body
                 .iter()
                 .position(|row| row.starts_with('▸'))
@@ -7056,7 +7056,10 @@ fn blocked_and_review_peeks_lead_with_the_live_line_and_drop_notes() {
         let joined = |lines: &[String]| lines.join(" ");
 
         let blocked = peek(1);
-        assert_eq!(blocked[0], "@claude blocked on you · 2h", "{width}: {blocked:?}");
+        assert_eq!(
+            blocked[0], "@claude blocked on you · 2h",
+            "{width}: {blocked:?}"
+        );
         let text = joined(&blocked);
         assert!(
             text.contains("Review found 2 file-safety issues in move-aside. Which way?"),
@@ -7066,8 +7069,14 @@ fn blocked_and_review_peeks_lead_with_the_live_line_and_drop_notes() {
             text.contains("Decide: Drop move-aside · Keep it and fix F-1/F-2"),
             "{width}: {blocked:?}"
         );
-        assert!(!text.contains("a decision"), "options replace needs: {blocked:?}");
-        assert!(!text.contains("why") && !text.contains("needs"), "{blocked:?}");
+        assert!(
+            !text.contains("a decision"),
+            "options replace needs: {blocked:?}"
+        );
+        assert!(
+            !text.contains("why") && !text.contains("needs"),
+            "{blocked:?}"
+        );
         assert!(!text.contains("These notes"), "no notes: {blocked:?}");
         assert!(!text.contains("no notes yet"), "{blocked:?}");
         assert!(
@@ -7086,7 +7095,10 @@ fn blocked_and_review_peeks_lead_with_the_live_line_and_drop_notes() {
         );
 
         let review = peek(3);
-        assert_eq!(review[0], "@claude needs your review · 40m", "{width}: {review:?}");
+        assert_eq!(
+            review[0], "@claude needs your review · 40m",
+            "{width}: {review:?}"
+        );
         let text = joined(&review);
         assert!(
             text.contains("Built the widget; empty input now handled."),
@@ -7099,8 +7111,7 @@ fn blocked_and_review_peeks_lead_with_the_live_line_and_drop_notes() {
         );
         if width >= 110 {
             assert_eq!(
-                review[2],
-                "✓ A works   ○ B works on empty input   ✗ C works",
+                review[2], "✓ A works   ○ B works on empty input   ✗ C works",
                 "{review:?}"
             );
         }
