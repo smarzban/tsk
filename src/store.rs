@@ -323,12 +323,41 @@ pub struct StoreSignature {
 #[derive(Debug, Clone)]
 pub struct TaskStore {
     path: PathBuf,
+    /// Unit tests count durable saves and fail the next one through this handle and its clones.
+    #[cfg(test)]
+    probe: std::sync::Arc<SaveProbe>,
+}
+
+/// Test-only view into a store handle's durable writes.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct SaveProbe {
+    saves: std::sync::atomic::AtomicUsize,
+    fail_next: std::sync::atomic::AtomicBool,
 }
 
 impl TaskStore {
     /// `path` is the plugin state directory (not the JSON file itself).
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            #[cfg(test)]
+            probe: std::sync::Arc::default(),
+        }
+    }
+
+    /// Durable saves this handle (and its clones) made.
+    #[cfg(test)]
+    pub(crate) fn durable_saves(&self) -> usize {
+        self.probe.saves.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Fail this handle's next durable write, after any merge, as a full disk would.
+    #[cfg(test)]
+    pub(crate) fn fail_next_save(&self) {
+        self.probe
+            .fail_next
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn path(&self) -> &Path {
@@ -672,6 +701,14 @@ impl TaskStore {
         filesystem: &F,
         supported: u32,
     ) -> Result<(), StoreError> {
+        #[cfg(test)]
+        if self
+            .probe
+            .fail_next
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(StoreError::Io(io::Error::other("injected save failure")));
+        }
         check_supported(state.format_version(), supported)?;
         // Locked persistence boundary: every save path and locked_transition lands here,
         // after number assignment and any merge-undo union.
@@ -720,6 +757,12 @@ impl TaskStore {
         })();
         if write_result.is_err() {
             let _ = filesystem.remove_file(&tmp);
+        }
+        #[cfg(test)]
+        if write_result.is_ok() {
+            self.probe
+                .saves
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
         write_result
     }

@@ -407,6 +407,16 @@ impl DomainState {
         std::mem::take(&mut self.completed)
     }
 
+    /// [`Self::take_completed`] without taking them.
+    pub fn completed_ids(&self) -> Vec<Uuid> {
+        self.completed.clone()
+    }
+
+    /// Put back completions a failed save took, so a retry decides what they released again.
+    pub fn restore_completed(&mut self, completed: Vec<Uuid>) {
+        self.completed = completed;
+    }
+
     /// The `ready` tasks whose last prerequisite is among `done` (and still done), each with the
     /// prerequisite that released it, in board order by number.
     pub fn released_by(&self, done: &[Uuid]) -> Vec<(Uuid, u64)> {
@@ -463,13 +473,25 @@ impl DomainState {
         Ok(())
     }
 
-    /// A released task started by a dispatch just recorded: name the prerequisite on that
-    /// event and make the start part of the done's undo, as [`Self::start_released`] does.
+    /// Hold `id`, started just now by [`Self::start_released`], for an agent launch once the save
+    /// carrying it lands.
+    pub fn hold_launch(&mut self, id: Uuid, after: u64) {
+        self.pending_launches.push((id, after));
+    }
+
+    /// The released tasks waiting on a launch, oldest first.
+    pub fn take_pending_launches(&mut self) -> Vec<(Uuid, u64)> {
+        std::mem::take(&mut self.pending_launches)
+    }
+
+    /// A released task's agent launched and its dispatch was recorded (the task was already
+    /// started): name the prerequisite on that event, and point the done's undo at the task's
+    /// new revision, so undoing the done still puts it back to ready.
     pub fn note_released_dispatch(
         &mut self,
         id: Uuid,
         after: u64,
-        previous: HumanStatus,
+        started_revision: Uuid,
     ) -> Result<(), DomainError> {
         let task = self.task_mut(id)?;
         if let Some(event) = task
@@ -480,30 +502,67 @@ impl DomainState {
             event.detail.get_or_insert_with(EventDetail::default).after = Some(after);
         }
         let revision = task.revision;
-        self.graft_released_undo(id, previous, revision, after);
+        for entry in &mut self.undo_stack {
+            entry.retarget(id, started_revision, revision);
+        }
         Ok(())
     }
 
+    /// A released task whose launch failed goes back to ready, and leaves the done's undo.
+    pub fn return_released_to_ready(
+        &mut self,
+        id: Uuid,
+        started_revision: Uuid,
+    ) -> Result<(), DomainError> {
+        let by = current_actor();
+        let at = SystemTime::now();
+        let task = self.task_mut(id)?;
+        if task.revision != started_revision || task.status != HumanStatus::Started {
+            return Ok(());
+        }
+        task.status = HumanStatus::Ready;
+        sync_block_with_status(task, at, &by);
+        record_event(
+            task,
+            TaskEventKind::StatusSet,
+            at,
+            Some(&by),
+            Some(EventDetail::status(
+                HumanStatus::Started,
+                HumanStatus::Ready,
+            )),
+        );
+        for entry in &mut self.undo_stack {
+            if let UndoEntry::Batch { entries } = entry {
+                entries.retain(|leaf| {
+                    !matches!(leaf, UndoEntry::Start { id: target, expected_revision, .. }
+                        if *target == id && *expected_revision == started_revision)
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Add `id`'s start to the undo entry that completed prerequisite `after` (found by that
+    /// task's id, newest first), so undoing the done also puts this task back.
     fn graft_released_undo(&mut self, id: Uuid, previous: HumanStatus, revision: Uuid, after: u64) {
         let Some(prerequisite) = self.task_by_number(after).map(|task| task.id) else {
             return;
         };
-        let Some(top) = self.undo_stack.last_mut() else {
+        let Some(entry) = self.undo_stack.iter_mut().rev().find(|entry| {
+            entry
+                .leaf_entries()
+                .into_iter()
+                .any(|leaf| matches!(leaf, UndoEntry::Complete { id, .. } if *id == prerequisite))
+        }) else {
             return;
         };
-        let completes = top
-            .leaf_entries()
-            .into_iter()
-            .any(|leaf| matches!(leaf, UndoEntry::Complete { id, .. } if *id == prerequisite));
-        if !completes {
-            return;
-        }
         let start = UndoEntry::Start {
             id,
             previous,
             expected_revision: revision,
         };
-        match top {
+        match entry {
             UndoEntry::Batch { entries } => entries.push(start),
             other => {
                 let first = other.clone();

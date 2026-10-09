@@ -2636,7 +2636,9 @@ fn report_released(
     name_agent: &mut dyn FnMut(dispatch::AgentNaming),
 ) -> Option<String> {
     for released in released {
-        if let dispatch::ReleasedStart::Dispatched(result) = &released.start {
+        if let dispatch::ReleasedStart::Dispatched(result)
+        | dispatch::ReleasedStart::Unrecorded(result, _) = &released.start
+        {
             if let Some(naming) = result.naming.clone() {
                 name_agent(naming);
             }
@@ -10434,6 +10436,10 @@ mod quick_assign_tests {
         cleanup: bool,
         /// The task's durable status and last reply on disk when each prompt was submitted.
         disk_at_prompt: Vec<(HumanStatus, Option<String>)>,
+        /// The store as saved when each worktree was created.
+        disk_at_launch: Vec<DomainState>,
+        /// Fail the next save of this store handle once a launch begins.
+        fail_save_at_launch: Option<TaskStore>,
     }
 
     impl DispatchHost for FakeHost {
@@ -10473,6 +10479,10 @@ mod quick_assign_tests {
             _: &str,
         ) -> Result<CreatedWorktree, String> {
             let disk = self.store.load().expect("load during launch");
+            self.disk_at_launch.push(disk.clone());
+            if let Some(store) = self.fail_save_at_launch.take() {
+                store.fail_next_save();
+            }
             self.replies_on_disk_at_launch
                 .extend(disk.tasks().iter().filter_map(|task| {
                     let block = task.block.as_ref().or(task.past_blocks.last())?;
@@ -10597,6 +10607,8 @@ mod quick_assign_tests {
             root_queries: Vec::new(),
             agent_queries: Vec::new(),
             disk_at_prompt: Vec::new(),
+            disk_at_launch: Vec::new(),
+            fail_save_at_launch: None,
             cleanup: false,
         }
     }
@@ -15981,7 +15993,7 @@ mod quick_assign_tests {
         assert!(
             model
                 .message()
-                .is_some_and(|message| message.starts_with(&format!("T{second} stays ready: "))),
+                .is_some_and(|message| message.starts_with(&format!("T{second} back to ready: "))),
             "{:?}",
             model.message()
         );
@@ -16035,7 +16047,7 @@ mod quick_assign_tests {
     }
 
     /// While a marked-set dispatch is still landing (it may be launching this very task), a
-    /// released assigned task starts without a launch and says why.
+    /// released assigned task stays ready and says how to start it.
     #[test]
     fn a_released_task_never_launches_while_a_bulk_dispatch_runs() {
         let temp = Temp::new("after-bulk-running", &["builder"]);
@@ -16069,12 +16081,12 @@ mod quick_assign_tests {
         assert_eq!(host.ran, 0, "no second launch beside the running batch");
         let disk = temp.store.load().expect("load");
         let task = disk.get(ids[1]).expect("task");
-        assert_eq!(task.status, HumanStatus::Started);
+        assert_eq!(task.status, HumanStatus::Ready, "it waits for a start");
         assert!(task.dispatch.is_none());
         assert_eq!(
             model.message(),
             Some(
-                format!("T{second} started · no launch: a dispatch is running · T{first} done")
+                format!("T{second} waits: a dispatch is running; ctrl+s starts it · T{first} done")
                     .as_str()
             )
         );
@@ -16109,6 +16121,8 @@ mod quick_assign_tests {
             number_of(&domain, ids[1]),
             number_of(&domain, ids[2]),
         );
+        let saves = temp.store.durable_saves();
+        let undo = temp.store.load().expect("load").undo_len();
         handle(
             &temp,
             &mut domain,
@@ -16117,7 +16131,19 @@ mod quick_assign_tests {
             &mut host,
         );
         assert_eq!(host.ran, 1, "one launch for the shared dependent");
+        assert_eq!(
+            temp.store.durable_saves() - saves,
+            2,
+            "the dones and the start, then the dispatch record"
+        );
+        let first_save = &host.disk_at_launch[0];
+        assert_eq!(status_of(first_save, ids[0]), HumanStatus::Done);
+        assert_eq!(status_of(first_save, ids[1]), HumanStatus::Done);
+        assert_eq!(status_of(first_save, ids[2]), HumanStatus::Started);
+        assert!(first_save.get(ids[2]).expect("task").dispatch.is_none());
         let disk = temp.store.load().expect("load");
+        assert!(disk.get(ids[2]).expect("task").dispatch.is_some());
+        assert_eq!(disk.undo_len(), undo + 1, "one undo entry");
         assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
         assert_eq!(status_of(&disk, ids[1]), HumanStatus::Done);
         assert_eq!(status_of(&disk, ids[2]), HumanStatus::Started);
@@ -16139,6 +16165,130 @@ mod quick_assign_tests {
         assert_eq!(status_of(&disk, ids[1]), HumanStatus::Open);
         assert_eq!(status_of(&disk, ids[2]), HumanStatus::Ready);
         assert_eq!(host.ran, 1, "undo launches nothing");
+    }
+
+    /// The done's first save fails after the merge decided the release: Retry decides again and
+    /// launches the assigned dependent exactly once; Cancel drops the done and launches nothing.
+    #[test]
+    fn a_failed_first_save_retries_the_release_and_launches_once() {
+        for retry in [true, false] {
+            let temp = Temp::new("after-first-save", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+            let mut host = fake_host(&temp);
+            domain
+                .assign(ids[1], Some("builder".into()))
+                .expect("assign");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            link(
+                &temp,
+                &mut domain,
+                &mut model,
+                ids[1],
+                &[ids[0]],
+                HumanStatus::Ready,
+            );
+            select(&mut domain, &mut model, ids[0]);
+            let mut recovery = SaveRecovery::new();
+            let step = |domain: &mut DomainState,
+                        model: &mut BoardModel,
+                        recovery: &mut SaveRecovery<DomainState>,
+                        host: &mut FakeHost,
+                        intent: BoardIntent| {
+                handle_board_intent_with_host(
+                    &temp.store,
+                    domain,
+                    model,
+                    intent,
+                    recovery,
+                    false,
+                    true,
+                    host,
+                    &mut |_| {},
+                )
+                .expect("board intent");
+            };
+            temp.store.fail_next_save();
+            step(
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                &mut host,
+                BoardIntent::Complete,
+            );
+            assert!(recovery.is_pending(), "the first save failed");
+            assert_eq!(host.ran, 0, "nothing launches before the done is durable");
+            let resolve = if retry {
+                BoardIntent::RetrySave
+            } else {
+                BoardIntent::CancelSave
+            };
+            step(&mut domain, &mut model, &mut recovery, &mut host, resolve);
+            assert!(!recovery.is_pending());
+            let disk = temp.store.load().expect("load");
+            if retry {
+                assert_eq!(host.ran, 1, "Retry launches exactly once");
+                assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
+                let task = disk.get(ids[1]).expect("task");
+                assert_eq!(task.status, HumanStatus::Started);
+                assert!(task.dispatch.is_some());
+            } else {
+                assert_eq!(host.ran, 0, "Cancel launches nothing");
+                assert_eq!(status_of(&disk, ids[0]), HumanStatus::Open);
+                assert_eq!(status_of(&disk, ids[1]), HumanStatus::Ready);
+                step(
+                    &mut domain,
+                    &mut model,
+                    &mut recovery,
+                    &mut host,
+                    BoardIntent::SelectNext,
+                );
+                assert!(domain.take_pending_launches().is_empty());
+            }
+        }
+    }
+
+    /// The launch succeeded but the save recording it failed: the done and the start are already
+    /// durable, so the board does not enter save recovery; it says the agent runs unrecorded.
+    #[test]
+    fn a_failed_record_save_reports_the_running_agent_without_recovery() {
+        let temp = Temp::new("after-record-save", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        domain
+            .assign(ids[1], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        host.fail_save_at_launch = Some(temp.store.clone());
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        assert_eq!(host.ran, 1);
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
+        let task = disk.get(ids[1]).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        assert!(task.dispatch.is_none(), "the record did not save");
+        let message = model.message().expect("message").to_string();
+        assert!(
+            message.starts_with(&format!(
+                "T{second} started · @builder is running but its record did not save · worktree "
+            )) && message.ends_with(&format!("T{first} done")),
+            "{message}"
+        );
     }
 
     /// A released task dispatched before: a gone agent starts it without a relaunch, and Herdr

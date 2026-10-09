@@ -178,11 +178,15 @@ migration or design work they imply. What the behaviour *is* lives in the docs
   `dispatch::start_route` and joins the done's undo entry. What a done released is decided on the
   merged state under the save's lock (`plan_released_with_host` inside
   `TaskStore::reload_merge_save_then`, or the CLI's locked transition), never on a stale copy, so
-  concurrent dones of a task's last two prerequisites still release it. Plain starts land in that
-  save; launches run after it (`launch_released_with_host`) and save again, and never while a
-  marked-set dispatch is landing (it may hold the same task). Every done path (reducer, cleanup
-  card, missing-worktree converge, CLI) saves through `save_releasing_with_host` or its CLI twin;
-  completions queue on `DomainState` (`take_completed`) until then. A delete never rewrites a task
+  concurrent dones of a task's last two prerequisites still release it. The done and every
+  released start land in one save; an assigned task's agent launches after it, outside the lock
+  (`launch_released_with_host`), and only its dispatch record follows in a second save (a failed
+  launch puts the task back to ready there). Started on disk first, it is no other start's to
+  dispatch. A failed second save is reported, never routed to save recovery: the done is durable.
+  While a marked-set dispatch is landing a released assigned task stays ready. Every done path
+  (reducer, cleanup card, missing-worktree converge, CLI) saves through `save_releasing_with_host`
+  or its CLI twin; completions and held launches (`pending_launches`) stay on `DomainState` until
+  then, so save-recovery Retry decides and launches again. A delete never rewrites a task
   already soft-deleted: its own delete's undo entry must keep matching.
 - A delete drops its number from every other task's `after` in the same undo entry
   (`UndoEntry::SetAfter` leaves); trash purge drops leftovers as bookkeeping. A number no live task

@@ -114,7 +114,9 @@ pub fn run_done(
         &mut host,
     )?;
     for released in &outcome.1 {
-        if let dispatch::ReleasedStart::Dispatched(result) = &released.start {
+        if let dispatch::ReleasedStart::Dispatched(result)
+        | dispatch::ReleasedStart::Unrecorded(result, _) = &released.start
+        {
             if let Some(naming) = &result.naming {
                 // Best effort, like naming itself: the dispatch already succeeded.
                 let _ = dispatch::spawn_agent_naming_process(naming);
@@ -139,7 +141,7 @@ pub fn run_done_with_host(
 ) -> Result<(StatusResult, Vec<dispatch::Released>), StatusError> {
     let state_dir = state_dir.unwrap_or_else(default_state_dir);
     let store = TaskStore::new(&state_dir);
-    let (result, plan) = store
+    let (result, mut released, launches) = store
         .locked_transition_if_changed(|state: &mut DomainState| {
             let found = state
                 .tasks()
@@ -162,30 +164,35 @@ pub fn run_done_with_host(
                 None,
                 actor,
             );
-            let plan = if changed {
+            let released = if changed {
                 dispatch::plan_released_with_host(state, actor, in_herdr, None, host)
             } else {
-                dispatch::ReleasePlan::default()
+                Vec::new()
             };
-            Ok(((result, plan), changed))
+            let launches = state.take_pending_launches();
+            Ok(((result, released, launches), changed))
         })
         .map_err(StatusError::Store)?;
     let result = result?;
-    let mut released = plan.released;
-    if !plan.launches.is_empty() {
+    if !launches.is_empty() {
+        // The done and the starts are durable: launch outside the lock, then record.
         let mut state = store
             .load()
             .map_err(|error| StatusError::Store(error.to_string()))?;
-        released.extend(dispatch::launch_released_with_host(
-            &mut state,
-            plan.launches,
-            &state_dir,
-            in_herdr,
-            host,
-        ));
-        store
-            .reload_merge_save(&mut state)
-            .map_err(|error| StatusError::Store(error.to_string()))?;
+        for (id, after) in launches {
+            state.hold_launch(id, after);
+        }
+        let launched = dispatch::launch_released_with_host(&mut state, &state_dir, in_herdr, host);
+        let recorded = store.reload_merge_save(&mut state);
+        released.extend(launched.into_iter().map(|mut released| {
+            if let (Err(error), dispatch::ReleasedStart::Dispatched(launch)) =
+                (&recorded, &released.start)
+            {
+                released.start =
+                    dispatch::ReleasedStart::Unrecorded(launch.clone(), error.to_string());
+            }
+            released
+        }));
         released.sort_by_key(|released| released.number);
     }
     Ok((result, released))
@@ -935,7 +942,7 @@ mod start_tests {
         assert!(matches!(
             released.as_slice(),
             [dispatch::Released {
-                start: dispatch::ReleasedStart::Failed(_),
+                start: dispatch::ReleasedStart::BackToReady(_),
                 ..
             }]
         ));
@@ -943,7 +950,7 @@ mod start_tests {
         assert_eq!(temp.status(second), HumanStatus::Ready);
         let message = dispatch::released_message(&released).expect("message");
         assert!(
-            message.starts_with(&format!("T{second} stays ready: ")),
+            message.starts_with(&format!("T{second} back to ready: ")),
             "{message}"
         );
     }

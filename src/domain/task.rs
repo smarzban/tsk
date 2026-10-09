@@ -478,6 +478,11 @@ pub struct DomainState {
     /// Transient: the board and CLI take them before saving to start what was waiting.
     #[serde(skip)]
     pub(super) completed: Vec<Uuid>,
+    /// Released tasks started in the save that carries their prerequisite's done, whose agent
+    /// launches once that save lands: (task, the prerequisite that released it). Transient, and
+    /// kept with a failed save so Retry still launches them.
+    #[serde(skip)]
+    pub(super) pending_launches: Vec<(Uuid, u64)>,
 }
 
 impl Default for DomainState {
@@ -497,6 +502,7 @@ impl DomainState {
             project_intents: BTreeMap::new(),
             undo_stack: Vec::new(),
             completed: Vec::new(),
+            pending_launches: Vec::new(),
         }
     }
 
