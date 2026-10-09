@@ -58,6 +58,18 @@ where
         .into_iter()
         .map(|argument| argument.as_ref().to_owned())
         .collect::<Vec<_>>();
+    // Every change a verb makes is recorded as made by the agent `TSK_AGENT` names, or you.
+    crate::domain::acting_as(&crate::domain::actor_from_env(), || {
+        run_verb(args, &mut stdin, stdin_is_tty, terminal_width)
+    })
+}
+
+fn run_verb<R: Read>(
+    args: Vec<String>,
+    mut stdin: &mut R,
+    stdin_is_tty: bool,
+    terminal_width: Option<usize>,
+) -> CliOutput {
     match args.get(1).map(String::as_str) {
         Some("help") => run_help(args),
         Some("setup") => run_setup(args, &mut stdin, stdin_is_tty),

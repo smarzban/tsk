@@ -259,6 +259,18 @@ pub struct CleanupResult {
     pub workspace: WorkspaceCleanup,
 }
 
+impl CleanupResult {
+    /// What this cleanup did, as the task's history records it.
+    pub fn outcome(&self) -> crate::domain::CleanupOutcome {
+        use crate::domain::CleanupOutcome;
+        match (self.worktree, self.branch) {
+            (WorktreeCleanup::Missing, _) => CleanupOutcome::Missing,
+            (WorktreeCleanup::Removed, BranchCleanup::Removed) => CleanupOutcome::Removed,
+            (WorktreeCleanup::Removed, BranchCleanup::Kept) => CleanupOutcome::BranchKept,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CleanupError {
     UnknownTask,
@@ -1994,7 +2006,7 @@ pub fn clean_with_host(
     let plan = cleanup_plan(state, id, CleanupRefs::Fetch)?;
     let result = clean_planned_with_host(&plan, in_herdr, host)?;
     state
-        .record_dispatch_cleaned(id)
+        .record_dispatch_cleaned(id, result.outcome())
         .map_err(|error| CleanupError::Store(error.to_string()))?;
     Ok(result)
 }
@@ -5544,8 +5556,8 @@ mod tests {
     }
 
     #[test]
-    fn cleaned_marker_is_optional_and_store_format_stays_v9() {
-        assert_eq!(crate::domain::STORE_FORMAT_VERSION, 9);
+    fn cleaned_marker_is_optional_and_store_format_stays_v10() {
+        assert_eq!(crate::domain::STORE_FORMAT_VERSION, 10);
         let record = Dispatch {
             argv: vec!["agent".into()],
             worktree: "/tmp/worktree".into(),

@@ -46,10 +46,7 @@ fn task(id: u128, title: &str, status: HumanStatus, scope: TaskScope, updated_se
         past_blocks: Vec::new(),
         scope,
         provenance: ProvenanceOrigin::Manual,
-        history: vec![TaskEvent {
-            kind: TaskEventKind::Created,
-            at,
-        }],
+        history: vec![TaskEvent::new(TaskEventKind::Created, at)],
         steps: Vec::new(),
         soft_deleted: false,
         archived: false,
@@ -864,16 +861,14 @@ fn projects_index_rows_carry_open_work_counts() {
 #[test]
 fn selection_stays_on_task_id_across_motion_reorder() {
     let mut alpha_task = task(1, "alpha", HumanStatus::Started, project(THIS_REPO), 10);
-    alpha_task.history.push(TaskEvent {
-        kind: TaskEventKind::StatusSet,
-        at: epoch_plus(100),
-    });
+    alpha_task
+        .history
+        .push(TaskEvent::new(TaskEventKind::StatusSet, epoch_plus(100)));
     let alpha = alpha_task.id;
     let mut beta_task = task(2, "beta", HumanStatus::Started, project(THIS_REPO), 20);
-    beta_task.history.push(TaskEvent {
-        kind: TaskEventKind::StatusSet,
-        at: epoch_plus(200),
-    });
+    beta_task
+        .history
+        .push(TaskEvent::new(TaskEventKind::StatusSet, epoch_plus(200)));
     let beta = beta_task.id;
     let mut domain = domain_with_tasks(vec![alpha_task.clone(), beta_task.clone()]);
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
@@ -899,10 +894,9 @@ fn selection_stays_on_task_id_across_motion_reorder() {
 
     // A fresh status change on alpha moves it above beta; selection stays pinned
     // to beta's id, not to beta's row position.
-    alpha_task.history.push(TaskEvent {
-        kind: TaskEventKind::StatusSet,
-        at: epoch_plus(300),
-    });
+    alpha_task
+        .history
+        .push(TaskEvent::new(TaskEventKind::StatusSet, epoch_plus(300)));
     alpha_task.updated_at = epoch_plus(300);
     let reordered = domain_with_tasks(vec![alpha_task, beta_task]);
     model.sync_from_domain(&reordered);

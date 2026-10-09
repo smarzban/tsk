@@ -886,6 +886,10 @@ pub fn map_board_mouse(
             // the inline editor only when the task edit session is already active.
             Some(QueueHitTarget::Step(index)) => Some(BoardIntent::SelectStep(index)),
             Some(QueueHitTarget::StepAdd) => Some(BoardIntent::BeginAddStep),
+            Some(QueueHitTarget::TrailRecord(index)) => {
+                Some(BoardIntent::ToggleTrailRecord(Some(index)))
+            }
+            Some(QueueHitTarget::TrailAll) => Some(BoardIntent::ToggleTrailAll),
             Some(QueueHitTarget::PageScroll(offset)) => Some(BoardIntent::PageScrollTo(offset)),
             Some(QueueHitTarget::Verb(index)) => verb_intent(model, index),
             _ => None,

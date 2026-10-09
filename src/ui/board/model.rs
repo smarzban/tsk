@@ -1967,6 +1967,14 @@ impl BoardModel {
         )
     }
 
+    /// Whether `Enter` on the task page lands on a closed record on the PAPER TRAIL.
+    pub fn trail_record_selected(&self) -> bool {
+        matches!(
+            self.block_target(),
+            Some(super::block::BlockTarget::Trail(_))
+        )
+    }
+
     /// Whether `Enter` on the task page lands on the `N passed` line.
     pub fn passed_checks_selected(&self) -> bool {
         self.block_target() == Some(super::block::BlockTarget::PassedFold)

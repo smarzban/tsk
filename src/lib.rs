@@ -1,5 +1,6 @@
 //! tsk library root.
 
+pub mod activity;
 pub mod agents;
 pub mod announcements;
 pub mod app;

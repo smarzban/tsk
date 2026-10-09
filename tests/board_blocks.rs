@@ -348,7 +348,9 @@ fn the_page_leads_with_the_blocked_section_and_a_rule_above_the_notes() {
         .position(|row| row.contains("BLOCKED · on you · @claude"))
         .unwrap_or_else(|| panic!("{}", page.join("\n")));
     assert!(
-        page[heading].trim_end().ends_with("r reply"),
+        page[heading]
+            .trim_end_matches(['▌', ' '])
+            .ends_with("r reply"),
         "{}",
         page[heading]
     );
@@ -359,7 +361,10 @@ fn the_page_leads_with_the_blocked_section_and_a_rule_above_the_notes() {
     let rule = heading
         + page[heading..]
             .iter()
-            .position(|row| row.trim().chars().all(|c| c == '─') && row.trim().chars().count() > 60)
+            .position(|row| {
+                let row = row.trim_end_matches(['▌', ' ']).trim();
+                row.chars().all(|c| c == '─') && row.chars().count() > 60
+            })
             .unwrap_or_else(|| panic!("{joined}"));
     let notes = page
         .iter()

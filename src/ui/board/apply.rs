@@ -678,6 +678,15 @@ fn apply_board_intent(
                     } else if !move_step_within_edit_group(model, true) {
                         select_add_step(model);
                     }
+                } else if let Some(trail) = trail_tab(model, true) {
+                    // The PAPER TRAIL closes the ring: past its last record Tab wraps to the
+                    // BLOCKED section, the first step, or `+ step`.
+                    if matches!(trail, super::block::PageTab::LeaveBlock)
+                        && !super::block::enter_block_ring(model, true)
+                        && !select_first_step_from_page(model)
+                    {
+                        model.enter_page_field_focus();
+                    }
                 } else {
                     match super::block::move_block_tab(model, true) {
                         super::block::PageTab::Moved => {}
@@ -694,10 +703,11 @@ fn apply_board_intent(
                             let nothing_selected = model.form.as_ref().is_some_and(|form| {
                                 form.steps.cursor.is_none() && !form.steps.add_selected
                             });
-                            // The ring leads with the BLOCKED section: from nothing, and
-                            // after `+ step` wraps.
-                            if !((nothing_selected || on_add)
-                                && super::block::enter_block_ring(model, true))
+                            // `+ step` leads into the PAPER TRAIL's records. The ring leads with
+                            // the BLOCKED section: from nothing, and after them it wraps.
+                            if !(on_add && super::block::enter_trail(model, true))
+                                && !((nothing_selected || on_add)
+                                    && super::block::enter_block_ring(model, true))
                                 && !move_step_with_tab(model, true)
                                 && !select_first_step_from_page(model)
                             {
@@ -765,6 +775,11 @@ fn apply_board_intent(
                         select_last_step_for_edit(model);
                     } else if !move_step_within_edit_group(model, false) {
                         model.focus_form_field(CaptureField::Notes);
+                    }
+                } else if let Some(trail) = trail_tab(model, false) {
+                    // Shift+Tab from the newest record climbs back to `+ step`.
+                    if matches!(trail, super::block::PageTab::LeaveBlock) {
+                        select_add_step(model);
                     }
                 } else {
                     match super::block::move_block_tab(model, false) {
@@ -1029,6 +1044,14 @@ fn apply_board_intent(
         }
         BoardIntent::TogglePassedChecks => {
             super::block::toggle_passed_checks(model);
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::ToggleTrailAll => {
+            super::block::toggle_trail_all(model);
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::ToggleTrailRecord(index) => {
+            super::block::toggle_trail_record(model, index);
             return Ok(IntentOutcome::None);
         }
         BoardIntent::ApproveReview(id) => {
@@ -3595,6 +3618,14 @@ fn select_first_step_from_page(model: &mut BoardModel) -> bool {
         steps_scroll_to_cursor(form, 0);
     }
     true
+}
+
+/// Move Tab within the PAPER TRAIL when one of its records is selected; `None` otherwise.
+fn trail_tab(model: &mut BoardModel, forward: bool) -> Option<super::block::PageTab> {
+    match super::block::move_trail_tab(model, forward) {
+        super::block::PageTab::NotHandled => None,
+        moved => Some(moved),
+    }
 }
 
 /// Cycle view-mode Tab through every stored step and then its trailing add target.

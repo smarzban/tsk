@@ -2,9 +2,11 @@
 //! task page's BLOCKED and REVIEW section rings, and their reply (feedback) box.
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 
 use uuid::Uuid;
 
+use crate::activity::TrailEntry;
 use crate::domain::{
     Block, BlockDraft, BlockField, BlockKey, BlockKind, BlockOn, BlockPatch, CheckState,
     DomainError, DomainState, HumanStatus, ReviewDraft, ReviewPatch, Task, BLOCK_TEXT_MAX, OWNER,
@@ -14,9 +16,11 @@ use crate::ui::mouse::BoardPopup;
 
 use super::model::{BoardInputMode, BoardModel, IntentOutcome};
 
-/// One Tab stop of the task page's BLOCKED or REVIEW section.
+/// One Tab stop of the task page's BLOCKED or REVIEW section, or of its PAPER TRAIL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockTarget {
+    /// A closed block or review round on the PAPER TRAIL, by its index in `past_blocks`.
+    Trail(usize),
     Heading,
     Option(usize),
     /// A review check, by its index in the round.
@@ -38,6 +42,10 @@ pub(crate) struct BlockPageState {
     /// Absolute content row of each ring stop at the last painted width, recorded by the
     /// renderer so Tab can keep the selected stop inside the page viewport.
     pub(crate) rows: RefCell<Vec<(BlockTarget, usize)>>,
+    /// The PAPER TRAIL shows every entry rather than the latest few (`a`).
+    pub(crate) trail_all: bool,
+    /// Closed records expanded in place on the PAPER TRAIL, by `past_blocks` index.
+    pub(crate) trail_open: BTreeSet<usize>,
 }
 
 /// The reply box under the last reply.
@@ -727,13 +735,16 @@ pub(super) fn block_ring(task: &Task, passed_open: bool) -> Vec<BlockTarget> {
     ring
 }
 
-/// The selected BLOCKED stop. A selected step or `+ step` outranks it.
+/// The selected BLOCKED or PAPER TRAIL stop. A selected step or `+ step` outranks it.
 pub(super) fn selected_block_target(model: &BoardModel) -> Option<BlockTarget> {
     let form = model.form.as_ref()?;
     if form.steps.cursor.is_some() || form.steps.add_selected {
         return None;
     }
     let target = form.block.target?;
+    if matches!(target, BlockTarget::Trail(_)) {
+        return trail_stops(model).contains(&target).then_some(target);
+    }
     let task = page_block_task(model)?;
     block_ring(task, form.block.passed_open)
         .contains(&target)
@@ -767,6 +778,127 @@ fn select_block_target(model: &mut BoardModel, target: Option<BlockTarget>) {
             form.notes_scroll = row + 1 - rows;
         }
         form.notes_scroll = form.notes_scroll.min(form.notes_max_scroll.get());
+    }
+}
+
+/// The task whose PAPER TRAIL the page shows: any bound task but a notice row. It stays painted
+/// through an edit session, so the page body never jumps as one starts or ends.
+pub(crate) fn page_trail_task(model: &BoardModel) -> Option<&Task> {
+    let form = model.form.as_ref().filter(|form| form.is_task())?;
+    let id = form.task_id()?;
+    model
+        .tasks
+        .iter()
+        .find(|task| task.id == id)
+        .filter(|task| !task.is_notice())
+}
+
+/// The PAPER TRAIL entries the page shows, newest first, and how many earlier ones `a` reveals.
+pub(crate) fn trail_view(task: &Task, all: bool) -> (Vec<TrailEntry>, usize) {
+    let mut entries = crate::activity::paper_trail(task);
+    let hidden = if all {
+        0
+    } else {
+        entries.len().saturating_sub(crate::activity::LATEST)
+    };
+    entries.truncate(entries.len() - hidden);
+    (entries, hidden)
+}
+
+/// The PAPER TRAIL's Tab stops, newest first: the closed records it shows. An edit session owns
+/// the ring, so it has none then.
+fn trail_stops(model: &BoardModel) -> Vec<BlockTarget> {
+    let editing = model
+        .form
+        .as_ref()
+        .is_some_and(|form| form.editing || model.open_field_edit().is_some());
+    let Some(task) = page_trail_task(model).filter(|_| !editing) else {
+        return Vec::new();
+    };
+    let all = model.form.as_ref().is_some_and(|form| form.block.trail_all);
+    trail_view(task, all)
+        .0
+        .iter()
+        .filter_map(|entry| entry.record.map(BlockTarget::Trail))
+        .collect()
+}
+
+/// Move Tab within the PAPER TRAIL. `LeaveBlock` past either end, `NotHandled` off the trail.
+pub(super) fn move_trail_tab(model: &mut BoardModel, forward: bool) -> PageTab {
+    let Some(current @ BlockTarget::Trail(_)) = selected_block_target(model) else {
+        return PageTab::NotHandled;
+    };
+    let stops = trail_stops(model);
+    let position = stops.iter().position(|stop| *stop == current).unwrap_or(0);
+    let next = if forward {
+        stops.get(position + 1).copied()
+    } else {
+        position
+            .checked_sub(1)
+            .and_then(|index| stops.get(index))
+            .copied()
+    };
+    match next {
+        Some(stop) => {
+            select_block_target(model, Some(stop));
+            PageTab::Moved
+        }
+        None => {
+            select_block_target(model, None);
+            PageTab::LeaveBlock
+        }
+    }
+}
+
+/// Enter the PAPER TRAIL at its first (forward) or last stop. False when it has none.
+pub(super) fn enter_trail(model: &mut BoardModel, forward: bool) -> bool {
+    let stops = trail_stops(model);
+    let stop = if forward { stops.first() } else { stops.last() }.copied();
+    if stop.is_none() {
+        return false;
+    }
+    select_block_target(model, stop);
+    true
+}
+
+/// `a`: show every PAPER TRAIL entry, or only the latest few. A selected record the shorter
+/// view hides loses its selection.
+pub(super) fn toggle_trail_all(model: &mut BoardModel) {
+    if page_trail_task(model).is_none() {
+        return;
+    }
+    let selected = selected_block_target(model);
+    if let Some(form) = model.form.as_mut() {
+        form.block.trail_all = !form.block.trail_all;
+    }
+    if let Some(target @ BlockTarget::Trail(_)) = selected {
+        if !trail_stops(model).contains(&target) {
+            select_block_target(model, None);
+        }
+    }
+}
+
+/// `Enter` on a selected closed record, or a click on one (`index`): expand it in place or fold
+/// it back.
+pub(super) fn toggle_trail_record(model: &mut BoardModel, index: Option<usize>) {
+    let target = match index {
+        Some(index) => BlockTarget::Trail(index),
+        None => match selected_block_target(model) {
+            Some(target @ BlockTarget::Trail(_)) => target,
+            _ => return,
+        },
+    };
+    if !trail_stops(model).contains(&target) {
+        return;
+    }
+    select_block_target(model, Some(target));
+    let BlockTarget::Trail(index) = target else {
+        return;
+    };
+    if let Some(form) = model.form.as_mut() {
+        if !form.block.trail_open.remove(&index) {
+            form.block.trail_open.insert(index);
+        }
     }
 }
 

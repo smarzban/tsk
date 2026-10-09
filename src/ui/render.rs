@@ -443,6 +443,13 @@ pub struct BlockPageRow {
     pub hint: String,
 }
 
+/// One painted row of the task page's PAPER TRAIL, and what a click on it does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrailPageRow {
+    pub row: BlockPageRow,
+    pub target: Option<QueueHitTarget>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockRowKind {
     /// `BLOCKED · on you · @claude 1h ──── r reply`, the dashes filled to the width, then the
@@ -606,9 +613,11 @@ pub enum QueueOverlay<'a> {
         block_rows: Vec<BlockPageRow>,
         /// Reply box caret: (block row, column) while the reply box is open.
         block_cursor: Option<(usize, u16)>,
+        /// The PAPER TRAIL section after the steps. Empty outside view mode.
+        trail_rows: Vec<TrailPageRow>,
         /// The thread field still uses the shared bottom input slot.
         bottom_input: Option<BottomInputSlot<'a>>,
-        /// Footer: assignee · thread · scope · created · updated.
+        /// Footer: assignee · base · thread · scope.
         meta: String,
         /// Display offset of the assignee inside `meta`.
         meta_assignee_x: Option<u16>,
@@ -876,6 +885,11 @@ pub enum QueueHitTarget {
     Step(usize),
     /// The dim trailing task-page control that starts a new inline step.
     StepAdd,
+    /// A closed block or review round on the PAPER TRAIL, by its index in `past_blocks`: a
+    /// click selects it and expands or folds it.
+    TrailRecord(usize),
+    /// The PAPER TRAIL's `+ N earlier` line: a click shows every entry.
+    TrailAll,
     /// One painted option in a shared form footer dropdown, indexed into that field's choices.
     FormDropdownOption(usize),
     /// One cell of the board list's overflow scrollbar (track or thumb). The usize is the
@@ -1338,6 +1352,7 @@ pub fn draw_task_column(
         ref inline_step_editor,
         ref block_rows,
         block_cursor,
+        ref trail_rows,
         bottom_input: _,
         ref meta,
         meta_assignee_x,
@@ -1372,6 +1387,7 @@ pub fn draw_task_column(
             inline_step_editor.as_ref(),
             block_rows,
             block_cursor,
+            trail_rows,
             meta,
             meta_assignee_x,
             meta_assignee_width,
@@ -2110,6 +2126,7 @@ fn paint_overlay(
             ref inline_step_editor,
             ref block_rows,
             block_cursor,
+            ref trail_rows,
             bottom_input: _,
             ref meta,
             meta_assignee_x,
@@ -2143,6 +2160,7 @@ fn paint_overlay(
                 inline_step_editor.as_ref(),
                 block_rows,
                 *block_cursor,
+                trail_rows,
                 meta,
                 *meta_assignee_x,
                 *meta_assignee_width,
@@ -3029,6 +3047,8 @@ pub struct StepsWindow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PageContentLayout {
     pub steps_start: usize,
+    /// First row of the PAPER TRAIL, one blank row after `+ step`.
+    pub trail_start: usize,
     pub total_rows: usize,
     pub max_scroll: usize,
 }
@@ -3036,6 +3056,7 @@ pub struct PageContentLayout {
 pub fn page_content_layout(
     note_rows: usize,
     steps: usize,
+    trail_rows: usize,
     viewport_rows: u16,
 ) -> PageContentLayout {
     let note_rows = note_rows.max(1);
@@ -3048,9 +3069,15 @@ pub fn page_content_layout(
     } else {
         note_rows.saturating_add(2)
     };
-    let total_rows = steps_start + usize::from(steps > 0) + steps + 1;
+    let trail_start = steps_start + usize::from(steps > 0) + steps + 1;
+    let total_rows = if trail_rows == 0 {
+        trail_start
+    } else {
+        trail_start + trail_rows + 1
+    };
     PageContentLayout {
         steps_start,
+        trail_start,
         total_rows,
         max_scroll: total_rows.saturating_sub(viewport),
     }
@@ -3200,6 +3227,7 @@ fn paint_task_page(
     inline_step_editor: Option<&InlineStepEditor<'_>>,
     block_rows: &[BlockPageRow],
     block_cursor: Option<(usize, u16)>,
+    trail_rows: &[TrailPageRow],
     meta: &str,
     meta_assignee_x: Option<u16>,
     meta_assignee_width: u16,
@@ -3371,7 +3399,12 @@ fn paint_task_page(
     let note_count = notes_rows.len().max(1);
     let step_rows: usize = step_views.iter().map(|step| step.rows.len().max(1)).sum();
     // Every checklist has a trailing add control, including an empty one.
-    let content = page_content_layout(block_count + note_count, step_rows + 1, lay.notes_rows);
+    let content = page_content_layout(
+        block_count + note_count,
+        step_rows + 1,
+        trail_rows.len(),
+        lay.notes_rows,
+    );
     let scroll = step_scroll.min(content.max_scroll);
     // Content has a two-cell gutter on both sides. An overflowing page keeps its
     // scrollbar outside that right gutter at the frame edge.
@@ -3401,41 +3434,32 @@ fn paint_task_page(
             break;
         }
         let y = lay.notes_y.saturating_add(visible as u16);
-        if absolute < block_count {
-            let row = &block_rows[absolute];
-            let gutter = if row.selected { "▸ " } else { "  " };
-            let room = (content_width as usize).saturating_sub(2);
-            let line = match row.kind {
-                BlockRowKind::Heading => {
-                    let left = present_line(&row.text, room);
-                    let used = display_width(&left);
-                    let fill = room.saturating_sub(used + display_width(&row.hint) + 2);
-                    let mut spans = vec![
-                        Span::styled(gutter.to_string(), style_plain()),
-                        Span::styled(left, style_bold()),
-                    ];
-                    if fill >= 2 {
-                        spans.push(Span::styled(format!(" {} ", "─".repeat(fill)), style_dim()));
-                        spans.push(Span::styled(row.hint.clone(), style_dim()));
-                    }
-                    bound_line(Line::from(spans), content_width as usize)
-                }
-                BlockRowKind::Rule => paint_bounded_line(
-                    &format!("  {}", "─".repeat(room)),
-                    content_width,
-                    style_plain(),
-                ),
-                kind => paint_bounded_line(
-                    &format!("{gutter}{}", row.text),
-                    content_width,
-                    match kind {
-                        BlockRowKind::Dim => style_dim(),
-                        BlockRowKind::Bold => style_bold(),
-                        _ => style_plain(),
-                    },
-                ),
+        if absolute >= content.trail_start {
+            let Some(trail) = trail_rows.get(absolute - content.trail_start) else {
+                continue;
             };
-            put_line(frame, surface, y, content_width, line);
+            put_line(
+                frame,
+                surface,
+                y,
+                content_width,
+                paint_section_row(&trail.row, content_width),
+            );
+            if let Some(target) = trail.target {
+                hits.push(target, Rect::new(0, y, content_width, 1));
+            }
+            if !matches!(trail.row.kind, BlockRowKind::Rule) {
+                hits.push_copyable(Rect::new(2, y, content_width.saturating_sub(3), 1));
+            }
+        } else if absolute < block_count {
+            let row = &block_rows[absolute];
+            put_line(
+                frame,
+                surface,
+                y,
+                content_width,
+                paint_section_row(row, content_width),
+            );
             if !matches!(row.kind, BlockRowKind::Rule) {
                 hits.push_copyable(Rect::new(2, y, content_width.saturating_sub(3), 1));
             }
@@ -3717,6 +3741,43 @@ fn paint_task_page(
         }
     }
     Some(lay)
+}
+
+/// One row of a task-page section (BLOCKED, REVIEW, PAPER TRAIL): the `▸` gutter on a selected
+/// stop, a heading's dash fill and dim hint, or text in the row's weight.
+fn paint_section_row(row: &BlockPageRow, content_width: u16) -> Line<'static> {
+    let gutter = if row.selected { "▸ " } else { "  " };
+    let room = (content_width as usize).saturating_sub(2);
+    match row.kind {
+        BlockRowKind::Heading => {
+            let left = present_line(&row.text, room);
+            let used = display_width(&left);
+            let fill = room.saturating_sub(used + display_width(&row.hint) + 2);
+            let mut spans = vec![
+                Span::styled(gutter.to_string(), style_plain()),
+                Span::styled(left, style_bold()),
+            ];
+            if fill >= 2 {
+                spans.push(Span::styled(format!(" {} ", "─".repeat(fill)), style_dim()));
+                spans.push(Span::styled(row.hint.clone(), style_dim()));
+            }
+            bound_line(Line::from(spans), content_width as usize)
+        }
+        BlockRowKind::Rule => paint_bounded_line(
+            &format!("  {}", "─".repeat(room)),
+            content_width,
+            style_plain(),
+        ),
+        kind => paint_bounded_line(
+            &format!("{gutter}{}", row.text),
+            content_width,
+            match kind {
+                BlockRowKind::Dim => style_dim(),
+                BlockRowKind::Bold => style_bold(),
+                _ => style_plain(),
+            },
+        ),
+    }
 }
 
 /// Project an unwrapped display-cell range through the shared wrap engine's rows.
@@ -6722,11 +6783,19 @@ mod tests {
 
     #[test]
     fn steps_start_two_rows_after_the_notes_block() {
-        let layout = page_content_layout(1, 3, 16);
+        let layout = page_content_layout(1, 3, 0, 16);
         assert_eq!(layout.steps_start, 3);
 
-        let layout = page_content_layout(5, 3, 16);
+        let layout = page_content_layout(5, 3, 0, 16);
         assert_eq!(layout.steps_start, 7);
+    }
+
+    #[test]
+    fn the_paper_trail_follows_the_steps_after_one_blank_row() {
+        let layout = page_content_layout(1, 3, 0, 16);
+        assert_eq!((layout.trail_start, layout.total_rows), (8, 8));
+        let layout = page_content_layout(1, 3, 4, 16);
+        assert_eq!((layout.trail_start, layout.total_rows), (8, 13));
     }
 
     #[test]

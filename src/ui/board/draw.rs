@@ -976,8 +976,9 @@ fn build_task_page_overlay<'a>(
         .map(render::task_status_glyph)
         .unwrap_or_else(|| render::status_glyph(status));
 
-    // Meta footer: assignee · thread · scope · created · updated (ages only while the task is
-    // present). The identifier belongs in the header, so it never competes with footer hits.
+    // Meta footer: assignee · base · thread · scope. The PAPER TRAIL carries when the task was
+    // created and last changed. The identifier belongs in the header, so it never competes with
+    // footer hits.
     // A wide column moves the project up into its header slot: the scope footer paints only
     // while the edit session can change it, so its control stays reachable by mouse.
     let editing_session = !form.is_task() || form.editing || model.open_field_edit().is_some();
@@ -1107,20 +1108,6 @@ fn build_task_page_overlay<'a>(
     let meta_scope_x = u16::try_from(render::display_width(&meta)).unwrap_or(u16::MAX);
     if !meta_scope.is_empty() {
         meta.push_str(&meta_scope);
-    }
-    if let Some(task) = bound_task {
-        let now = SystemTime::now();
-        let ages = format!(
-            "created {} ago · updated {} ago",
-            render::format_age(now, task.created_at),
-            render::format_age(now, task.updated_at),
-        );
-        if meta.is_empty() {
-            meta.push_str(&ages);
-        } else {
-            meta.push_str(" · ");
-            meta.push_str(&ages);
-        }
     }
     // Header: indent + glyph + the WRAPPED title rows + right-aligned status word
     // on row 0. A long title wraps onto further bold rows indented under the
@@ -1306,14 +1293,28 @@ fn build_task_page_overlay<'a>(
         }
         _ => (Vec::new(), Vec::new(), None),
     };
-    form.block.rows.replace(block_stops);
+    let (trail_rows, trail_stops) = match super::block::page_trail_task(model) {
+        Some(task) => trail_page_rows(model, form, task, notes_width),
+        None => (Vec::new(), Vec::new()),
+    };
     let step_rows: usize = step_views.iter().map(|step| step.rows.len().max(1)).sum();
     // Match the painter's stream exactly: it always paints one notes row and a trailing
     // `+ step` row, even when both stored notes and stored steps are empty.
     let content = render::page_content_layout(
         block_rows.len() + notes_rows.len().max(1),
         step_rows + 1,
+        trail_rows.len(),
         lay.notes_rows,
+    );
+    form.block.rows.replace(
+        block_stops
+            .into_iter()
+            .chain(
+                trail_stops
+                    .into_iter()
+                    .map(|(stop, row)| (stop, content.trail_start + row)),
+            )
+            .collect(),
     );
     // The reply box's caret stays in view while it is typed into.
     let notes_scroll = match block_cursor {
@@ -1366,6 +1367,7 @@ fn build_task_page_overlay<'a>(
         inline_step_editor,
         block_rows,
         block_cursor,
+        trail_rows,
         bottom_input,
         meta,
         meta_assignee_x,
@@ -1378,6 +1380,116 @@ fn build_task_page_overlay<'a>(
         focus,
         scope_dropdown,
     }
+}
+
+/// The PAPER TRAIL section after the steps: its heading (`a all` / `a latest` on the right when
+/// earlier entries exist), the entries newest first with closed records expandable in place, and
+/// `+ N earlier` while the latest few show. Also returns each record stop's row, counted from the
+/// section's first row. Automatic entries are dim; closed records are normal weight.
+fn trail_page_rows(
+    model: &BoardModel,
+    form: &BoardForm,
+    task: &crate::domain::Task,
+    width: usize,
+) -> (
+    Vec<render::TrailPageRow>,
+    Vec<(crate::ui::board::BlockTarget, usize)>,
+) {
+    use crate::ui::board::BlockTarget;
+    use render::{BlockPageRow, BlockRowKind, QueueHitTarget, TrailPageRow};
+
+    let width = width.max(8);
+    let now = SystemTime::now();
+    let all = form.block.trail_all;
+    let (entries, hidden) = super::block::trail_view(task, all);
+    let selected = model.block_target();
+    let mut rows: Vec<TrailPageRow> = Vec::new();
+    let mut stops = Vec::new();
+    let push = |rows: &mut Vec<TrailPageRow>,
+                lead: &str,
+                text: &str,
+                kind: BlockRowKind,
+                selected: bool,
+                target: Option<QueueHitTarget>| {
+        let indent = render::display_width(lead);
+        for (index, row) in wrap_text(&terminal_text(text), width.saturating_sub(indent).max(1))
+            .into_iter()
+            .enumerate()
+        {
+            let lead = if index == 0 {
+                lead.to_string()
+            } else {
+                " ".repeat(indent)
+            };
+            rows.push(TrailPageRow {
+                row: BlockPageRow {
+                    text: format!("{lead}{}", row.text),
+                    kind,
+                    selected: index == 0 && selected,
+                    hint: String::new(),
+                },
+                target,
+            });
+        }
+    };
+
+    let earlier = hidden > 0 || (all && entries.len() > crate::activity::LATEST);
+    rows.push(TrailPageRow {
+        row: BlockPageRow {
+            text: "PAPER TRAIL".to_string(),
+            kind: BlockRowKind::Heading,
+            selected: false,
+            hint: match (earlier, all) {
+                (false, _) => String::new(),
+                (true, false) => "a all".to_string(),
+                (true, true) => "a latest".to_string(),
+            },
+        },
+        target: None,
+    });
+    for entry in &entries {
+        let line = entry.line(now);
+        let Some(index) = entry.record else {
+            push(&mut rows, "", &line, BlockRowKind::Dim, false, None);
+            continue;
+        };
+        let stop = BlockTarget::Trail(index);
+        let open = form.block.trail_open.contains(&index);
+        stops.push((stop, rows.len()));
+        push(
+            &mut rows,
+            "",
+            &format!("{line} {}", if open { "▾" } else { "▸" }),
+            BlockRowKind::Plain,
+            selected == Some(stop),
+            Some(QueueHitTarget::TrailRecord(index)),
+        );
+        if open {
+            if let Some(block) = task.past_blocks.get(index) {
+                for detail in crate::activity::record_lines(block, now) {
+                    push(
+                        &mut rows,
+                        &format!("  {}", detail.lead),
+                        &detail.text,
+                        BlockRowKind::Plain,
+                        false,
+                        Some(QueueHitTarget::TrailRecord(index)),
+                    );
+                }
+            }
+        }
+    }
+    if hidden > 0 {
+        push(
+            &mut rows,
+            "",
+            &format!("+ {hidden} earlier"),
+            BlockRowKind::Dim,
+            false,
+            Some(QueueHitTarget::TrailAll),
+        );
+    }
+    (rows, stops)
 }
 
 /// The BLOCKED or REVIEW section's rows, each ring stop's row, and the reply box caret.

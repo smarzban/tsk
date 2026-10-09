@@ -348,6 +348,11 @@ pub enum BoardIntent {
     CycleCheck,
     /// Task page `Enter` on the `N passed` line: unfold or fold the passed checks.
     TogglePassedChecks,
+    /// Task page `a`: show every PAPER TRAIL entry, or only the latest few.
+    ToggleTrailAll,
+    /// Task page `Enter` on a closed block or review round on the PAPER TRAIL (`None`), or a
+    /// click on one (its `past_blocks` index): expand it in place or fold it.
+    ToggleTrailRecord(Option<usize>),
     /// Task page `r`: open the reply box under the last reply of the open block.
     BeginReply,
     /// Task page `Enter` on a block option: open the reply box prefilled with it.
@@ -981,6 +986,18 @@ fn help_bindings() -> Vec<HelpBinding> {
             "enter (n passed)",
             "show or fold passed checks (task page)",
             "review check",
+        ),
+        help_binding(
+            HelpGroup::Navigation,
+            "a",
+            "all or latest paper trail (task page)",
+            "activity history who what",
+        ),
+        help_binding(
+            HelpGroup::Navigation,
+            "enter (paper trail)",
+            "expand a closed record (task page)",
+            "activity history",
         ),
         help_binding(
             HelpGroup::CreateEdit,
@@ -1987,6 +2004,8 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::BlockCardNewline
         | BoardIntent::CycleCheck
         | BoardIntent::TogglePassedChecks
+        | BoardIntent::ToggleTrailAll
+        | BoardIntent::ToggleTrailRecord(_)
         | BoardIntent::BeginReply
         | BoardIntent::ReplyWithOption
         | BoardIntent::ReplySave
@@ -2131,6 +2150,7 @@ fn map_task_page(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Char('?') if !extra => Some(BoardIntent::OpenHelp),
         KeyCode::Char('@') if !extra => Some(BoardIntent::OpenAssigneePicker),
         KeyCode::Char('r') if !extra => Some(BoardIntent::BeginReply),
+        KeyCode::Char('a') if !extra => Some(BoardIntent::ToggleTrailAll),
         KeyCode::Tab if !extra => Some(BoardIntent::FormFocusNext),
         KeyCode::BackTab
             if !mods
