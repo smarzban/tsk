@@ -147,17 +147,17 @@ test("the paper trail stays painted while a field is edited", async ({
   const heading = page.locator(".tsk-trail-heading");
   // A click on the heading expands the trail, like `g`.
   await heading.click();
-  await expect(heading).toHaveText(/^PAPER TRAIL · \d+ ▾$/);
+  await expect(heading).toHaveText(/PAPER TRAIL · \d+ ▾$/);
   await expect(page.locator(".tsk-trail-entry").first()).toContainText(
     "ready → started · you",
   );
   await page.locator("#board-demo").focus();
   await page.keyboard.press("e");
   await expect(column).toHaveAttribute("data-edit-field", "title");
-  await expect(heading).toHaveText(/^PAPER TRAIL · \d+ ▾$/);
+  await expect(heading).toHaveText(/PAPER TRAIL · \d+ ▾$/);
   await page.keyboard.press("Tab");
   await expect(column).toHaveAttribute("data-edit-field", "notes");
-  await expect(heading).toHaveText(/^PAPER TRAIL · \d+ ▾$/);
+  await expect(heading).toHaveText(/PAPER TRAIL · \d+ ▾$/);
   await expect(page.locator(".tsk-trail-entry").last()).toContainText(
     "created · you",
   );
@@ -174,4 +174,79 @@ test("landing project task page keeps its default base visible", async ({
   await expect(page.locator(".tsk-page-meta")).toContainText(
     "⎇ main (default)",
   );
+});
+
+// The trail collapses on every page open, like the app's fresh task form: expand it, close the
+// page, open it again.
+test("the paper trail collapses when the page is reopened", async ({
+  page,
+}) => {
+  await open(page, 78);
+  const heading = page.locator(".tsk-trail-heading");
+  await page.keyboard.press("g");
+  await expect(heading).toHaveText(/^PAPER TRAIL · \d+ ▾$/);
+  await page.keyboard.press("Escape");
+  await expect(heading).toHaveCount(0);
+  await page.keyboard.press("Enter");
+  await expect(heading).toHaveText(/^PAPER TRAIL · \d+ ▸$/);
+  await expect(page.locator(".tsk-trail-entry")).toHaveCount(0);
+});
+
+// Tab walks the steps, `+ step`, then the trail heading, where Enter expands it; Tab wraps on.
+test("Tab reaches the paper trail heading after + step and Enter expands it", async ({
+  page,
+}) => {
+  await open(page, 78);
+  const heading = page.locator(".tsk-trail-heading");
+  for (let i = 0; i < 4; i += 1) await page.keyboard.press("Tab");
+  await expect(heading).toHaveAttribute("aria-selected", "true");
+  await expect(heading).toHaveText(/^▸ PAPER TRAIL · \d+ ▸$/);
+  await page.keyboard.press("Enter");
+  await expect(heading).toHaveText(/^▸ PAPER TRAIL · \d+ ▾$/);
+  await expect(page.locator("[data-step]")).toHaveCount(2);
+  await page.keyboard.press("Tab");
+  await expect(heading).toHaveAttribute("aria-selected", "false");
+  await expect(page.locator("[data-step]").first()).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+});
+
+// The project preview's page behaves the same: Tab reaches the heading, and the trail resets
+// when another task's page opens and when the first one opens again.
+test("the project preview page's trail is a Tab stop and resets on reopen", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page
+    .locator("#tsk-demo")
+    .evaluate((el, w) => (el.style.width = `${w}ch`), 110);
+  await page.locator("#board-demo").focus();
+  await page.keyboard.press("3");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Enter");
+  const heading = page.locator(".tsk-trail-heading");
+  await expect(heading).toHaveText(/^PAPER TRAIL · \d+ ▸$/);
+  for (let i = 0; i < 12; i += 1) {
+    if ((await heading.getAttribute("aria-selected")) === "true") break;
+    await page.keyboard.press("Tab");
+  }
+  await expect(heading).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Enter");
+  await expect(heading).toHaveText(/PAPER TRAIL · \d+ ▾$/);
+  const column = page.locator(".tsk-task-column");
+  const first = await column.getAttribute("aria-label");
+  // Another task's page opens collapsed.
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(column).not.toHaveAttribute("aria-label", first);
+  await expect(heading).toHaveText(/^PAPER TRAIL · \d+ ▸$/);
+  // And so does the first one, opened again.
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("Enter");
+  await expect(column).toHaveAttribute("aria-label", first);
+  await expect(heading).toHaveText(/^PAPER TRAIL · \d+ ▸$/);
 });

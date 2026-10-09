@@ -505,7 +505,10 @@ import { parseCapture } from "./capture.js";
   }
   function openFullPage() {
     if (!state.selectedId) return;
-    if (state.stage !== "page") state.stageOrigin = state.stage;
+    if (state.stage !== "page") {
+      state.stageOrigin = state.stage;
+      steps.trailOpen = false;
+    }
     state.stage = "page";
   }
   function leaveTaskPage() {
@@ -548,28 +551,32 @@ import { parseCapture } from "./capture.js";
   }
 
   // The task page's PAPER TRAIL: collapsed and dim on every page open (`PAPER TRAIL · N ▸`);
-  // `g` or a click on the heading shows every entry, newest first, still dim (`▾`).
-  let trailOpen = null;
-  function paperTrail(task) {
+  // `g`, `Enter` on the heading (a Tab stop after `+ step`), or a click shows every entry,
+  // newest first, still dim (`▾`). The state lives on the page's step binding, so it resets
+  // whenever a page opens, closes, or binds another task.
+  function paperTrail(task, pageSteps, owner) {
     const entries = [
       ...(task.trail || []),
       { text: "created", at: task.createdAt },
     ]
       .slice()
       .sort((a, b) => b.at - a.at);
-    const open = trailOpen === task.id;
+    const open = pageSteps.trailOpen;
+    const selected = pageSteps.selected === "trail";
     const rows = open
       ? entries.map(
           (entry) =>
             `<div class="tsk-trail-entry dim">${esc(`${entry.text} · you ${age(entry.at)}`)}</div>`,
         )
       : [];
-    return `<div class="tsk-trail"><button type="button" class="tsk-trail-heading dim" data-trail-toggle="${esc(task.id)}" aria-expanded="${open}">PAPER TRAIL · ${entries.length} ${open ? "▾" : "▸"}</button>${rows.join("")}</div>`;
+    return `<div class="tsk-trail"><button type="button" class="tsk-trail-heading dim" data-trail-toggle="${owner}" aria-expanded="${open}" aria-selected="${selected}">${selected ? "▸ " : ""}PAPER TRAIL · ${entries.length} ${open ? "▾" : "▸"}</button>${rows.join("")}</div>`;
   }
 
-  function toggleTrail(task) {
-    trailOpen = trailOpen === task.id ? null : task.id;
-  }
+  // Whether a page's selection is a stored step (not `+ step` or the trail heading).
+  const stepSelected = (pageSteps) =>
+    pageSteps.selected &&
+    pageSteps.selected !== "add" &&
+    pageSteps.selected !== "trail";
 
   // A blocked task's BLOCKED section above the notes: the row's live line, why and needs as
   // plain text, the numbered options, then the dim action line and the rule. The demo answers
@@ -2294,6 +2301,8 @@ import { parseCapture } from "./capture.js";
   function openPreviewTaskPage(editField = null) {
     const task = previewTask();
     if (!task) return;
+    // A page opening fresh collapses its trail; an edit on the open page keeps it.
+    if (!preview.page) previewSteps.trailOpen = false;
     preview.page = true;
     preview.editField = editField;
     preview.editDraft =
@@ -2439,7 +2448,7 @@ import { parseCapture } from "./capture.js";
     enterTaskStage();
     const task = selectedTask();
     if (!task) return;
-    if (id === "edit" && steps.selected && steps.selected !== "add") {
+    if (id === "edit" && stepSelected(steps)) {
       steps.begin(task, steps.selected);
       return;
     }
@@ -2464,11 +2473,7 @@ import { parseCapture } from "./capture.js";
     clearMarks(preview);
     const task = previewTask();
     if (!task) return;
-    if (
-      id === "edit" &&
-      previewSteps.selected &&
-      previewSteps.selected !== "add"
-    ) {
+    if (id === "edit" && stepSelected(previewSteps)) {
       previewSteps.begin(task, previewSteps.selected);
       return;
     }
@@ -2562,8 +2567,6 @@ import { parseCapture } from "./capture.js";
             .map((line) => `<span>${esc(line) || " "}</span>`)
             .join("")}</div>`;
     const stepRows = pageSteps.rows(task);
-    // The expanded trail lasts while you stay on the task; another task's page opens collapsed.
-    if (!previewMode && trailOpen && trailOpen !== task.id) trailOpen = null;
     const block = editing ? "" : blockSection(task, taskColumnWidth() - 6);
     const inlineEditor = `<textarea id="${stepEditId}" class="tsk-field" aria-label="Step text" rows="${wrapText(pageSteps.editor?.text ?? "", taskColumnWidth() - 8).length}">${esc(pageSteps.editor?.text ?? "")}</textarea><span class="tsk-step-refusal">${esc(pageSteps.refusal)}</span>`;
     const stepList = `<div class="tsk-steps"><div class="tsk-steps-heading dim">steps ${stepRows.filter((step) => step.done).length}/${stepRows.length}</div>${stepRows
@@ -2635,7 +2638,7 @@ import { parseCapture } from "./capture.js";
     const editTarget = editing?.startsWith("step:")
       ? editing.slice("step:".length)
       : "";
-    return `<div class="tsk-task-column tsk-surface ${narrow ? "is-narrow" : ""}" aria-label="T${task.number}${previewMode ? " project" : ""} task column" data-status="${esc(task.status)}" data-edit-state="${pageSteps.editor ? "editing" : pageSteps.dirty ? "unsaved" : "view"}" data-edit-field="${esc(editField)}" data-edit-target="${esc(editTarget)}">${header}<div class="tsk-task-surface tsk-page">${block}${notes}${stepList}${paperTrail(task)}</div>${meta}</div>`;
+    return `<div class="tsk-task-column tsk-surface ${narrow ? "is-narrow" : ""}" aria-label="T${task.number}${previewMode ? " project" : ""} task column" data-status="${esc(task.status)}" data-edit-state="${pageSteps.editor ? "editing" : pageSteps.dirty ? "unsaved" : "view"}" data-edit-field="${esc(editField)}" data-edit-target="${esc(editTarget)}">${header}<div class="tsk-task-surface tsk-page">${block}${notes}${stepList}${paperTrail(task, pageSteps, previewMode ? "preview" : "main")}</div>${meta}</div>`;
   }
 
   function renderPage(embedded = false) {
@@ -3277,6 +3280,7 @@ import { parseCapture } from "./capture.js";
       previewSteps.move(
         task,
         e.shiftKey || ["ArrowUp", "k"].includes(e.key) ? -1 : 1,
+        ["trail"],
       );
       render();
       root
@@ -3287,6 +3291,8 @@ import { parseCapture } from "./capture.js";
     if (bare && e.key === "Enter" && previewSteps.selected) {
       e.preventDefault();
       if (previewSteps.selected === "add") previewSteps.begin(task);
+      else if (previewSteps.selected === "trail")
+        previewSteps.trailOpen = !previewSteps.trailOpen;
       else {
         previewSteps.toggle(task);
         task.updatedAt = clock();
@@ -3302,25 +3308,20 @@ import { parseCapture } from "./capture.js";
     }
     if (bare && e.key === "g") {
       e.preventDefault();
-      toggleTrail(task);
+      previewSteps.trailOpen = !previewSteps.trailOpen;
       render();
       return true;
     }
     if (bare && e.key === "e") {
       e.preventDefault();
       clearMarks(preview);
-      if (previewSteps.selected && previewSteps.selected !== "add")
+      if (stepSelected(previewSteps))
         previewSteps.begin(task, previewSteps.selected);
       else openPreviewTaskPage("title");
       render();
       return true;
     }
-    if (
-      bare &&
-      e.key === "x" &&
-      previewSteps.selected &&
-      previewSteps.selected !== "add"
-    ) {
+    if (bare && e.key === "x" && stepSelected(previewSteps)) {
       e.preventDefault();
       if (previewSteps.remove(task)) task.updatedAt = clock();
       render();
@@ -3701,6 +3702,7 @@ import { parseCapture } from "./capture.js";
         steps.move(
           task,
           e.shiftKey || ["ArrowUp", "k"].includes(e.key) ? -1 : 1,
+          ["trail"],
         );
         render();
         root
@@ -3711,6 +3713,7 @@ import { parseCapture } from "./capture.js";
       if (bare && e.key === "Enter" && steps.selected) {
         e.preventDefault();
         if (steps.selected === "add") steps.begin(task);
+        else if (steps.selected === "trail") steps.trailOpen = !steps.trailOpen;
         else {
           steps.toggle(task);
           task.updatedAt = clock();
@@ -3726,17 +3729,17 @@ import { parseCapture } from "./capture.js";
       }
       if (bare && e.key === "g") {
         e.preventDefault();
-        toggleTrail(task);
+        steps.trailOpen = !steps.trailOpen;
         render();
         return;
       }
-      if (bare && e.key === "e" && steps.selected && steps.selected !== "add") {
+      if (bare && e.key === "e" && stepSelected(steps)) {
         e.preventDefault();
         steps.begin(task, steps.selected);
         render();
         return;
       }
-      if (bare && e.key === "x" && steps.selected && steps.selected !== "add") {
+      if (bare && e.key === "x" && stepSelected(steps)) {
         e.preventDefault();
         if (steps.remove(task)) task.updatedAt = clock();
         render();
@@ -4325,8 +4328,10 @@ import { parseCapture } from "./capture.js";
     }
     const trailToggle = e.target.closest("[data-trail-toggle]");
     if (trailToggle) {
-      const task = taskById(trailToggle.dataset.trailToggle);
-      if (task) toggleTrail(task);
+      const pageSteps =
+        trailToggle.dataset.trailToggle === "preview" ? previewSteps : steps;
+      pageSteps.selected = "trail";
+      pageSteps.trailOpen = !pageSteps.trailOpen;
       render();
       return;
     }
