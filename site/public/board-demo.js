@@ -538,7 +538,10 @@ import { parseCapture } from "./capture.js";
   // A status change, recorded on the task's paper trail as the TUI does (`open → started`).
   function logStatus(task, status) {
     const at = clock();
-    task.trail = [...(task.trail || []), { text: `${task.status} → ${status}`, at }];
+    task.trail = [
+      ...(task.trail || []),
+      { text: `${task.status} → ${status}`, at },
+    ];
     task.status = status;
     task.updatedAt = at;
     task.statusAt = at;
@@ -1561,7 +1564,9 @@ import { parseCapture } from "./capture.js";
   function blockTrailer(task) {
     if (task.status !== "blocked" || !task.block) return "";
     if (task.block.answered) return "answered";
-    return task.block.by && task.block.by !== "you" ? `@${task.block.by} ?` : "";
+    return task.block.by && task.block.by !== "you"
+      ? `@${task.block.by} ?`
+      : "";
   }
 
   // The peek's block lines: why, needs, then each option.
@@ -2814,7 +2819,8 @@ import { parseCapture } from "./capture.js";
           state.peekId === task.id && !isWideSplit()
             ? [
                 ...blockLines.map(
-                  (line) => `<div class="tsk-peek dim">    │ ${esc(line)}</div>`,
+                  (line) =>
+                    `<div class="tsk-peek dim">    │ ${esc(line)}</div>`,
                 ),
                 ...noteLines
                   .slice(0, 5)

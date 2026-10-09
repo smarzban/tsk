@@ -27,9 +27,12 @@ for (const width of [40, 78, 109, 110])
     ).toEqual(reference);
 
     await expect(page.locator(".tsk-page-meta")).toContainText("⎇ default");
-    await expect(page.locator(".tsk-page-meta")).toContainText("created");
-    await expect(page.locator(".tsk-meta-row")).toHaveCount(
-      width === 40 ? 2 : 1,
+    // The dates moved from the footer to the paper trail.
+    await expect(page.locator(".tsk-page-meta")).not.toContainText("created");
+    await expect(page.locator(".tsk-meta-row")).toHaveCount(1);
+    await expect(page.locator(".tsk-trail-heading")).toHaveText("PAPER TRAIL");
+    await expect(page.locator(".tsk-trail-entry").last()).toContainText(
+      "created · you",
     );
     const scrollbarRows = await readReference(`page-scrollbar-${width}`);
     const chrome = await page.locator("#tsk-demo").evaluate((el) => {
