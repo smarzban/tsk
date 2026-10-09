@@ -69,7 +69,7 @@ crates.io publishing is separate task T29. `publish = false` remains in Cargo.to
 
 `tsk setup herdr` requires Herdr 0.9+ on PATH, or Herdr's supported `0.9.0-preview.*` Windows build, checked from `herdr --version` before any write; an older host is refused with an update message. It uses `HERDR_CONFIG_PATH`, otherwise
 `$XDG_CONFIG_HOME/herdr/config.toml`, otherwise `~/.config/herdr/config.toml`.
-Empty config-path environment values are treated as unset. Config-file and final-directory symlinks are refused. On Unix, an open directory descriptor anchors all setup writes, backups, renames and cleanup, so a replaced parent cannot redirect them. Windows refuses reparse-point ancestors and final paths around each operation. A kernel lock on `.tsk-setup.lock` serializes setup and is released on process death. The lock file
+Empty config-path environment values are treated as unset. A symlinked config file or config directory (dotfiles managers) is followed: setup edits the link's target in place and never replaces the link. The staged candidate, atomic rename and backup land beside the real file; generated assets and the lock stay beside the configured path. A dangling or looping config link is refused before any read or write. On Unix, an open directory descriptor anchors all setup writes, backups, renames and cleanup, so a replaced parent cannot redirect them. Windows refuses reparse-point ancestors and final paths around each operation. A kernel lock on `.tsk-setup.lock` serializes setup and is released on process death. The lock file
 stays on disk and does not imply a running setup.
 
 The embedded manifest and launchers are materialized in `tsk-plugins/<content-hash>`
@@ -116,8 +116,9 @@ a test. A failed asset integrity check names the file to inspect; do not erase a
 unrelated checkout or package-manager installation to recover setup.
 
 Review scope decisions (F-1/F-7/F-16, F-6, F-11): ancestor symlinks in the Herdr
-config path are trusted; the final directory is fd-pinned and final-component
-symlinks are refused. Rejecting a symlinked `~/.config` would break common dotfile
+config path are trusted; a linked config file or config directory is resolved first, and
+the resolved directory is then fd-pinned. Symlinks inside the generated `tsk-plugins`
+tree and at `.tsk-setup.lock` are refused. Rejecting a symlinked `~/.config` would break common dotfile
 setups, and Herdr follows that ancestor too. `TSK_INSTALL_DIR` is likewise a trusted
 installation location: an attacker who can swap it can replace the executable
 directly, so protecting that directory is the owner's boundary (F-6). F-11 is an

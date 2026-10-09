@@ -297,21 +297,11 @@ fn argv0_mismatch_is_refused_without_registration() {
     assert_eq!(h.calls(), "");
 }
 #[test]
-fn symlink_config_and_parent_and_assets_are_refused() {
-    for which in [
-        "config", "parent", "asset", "scripts", "root", "base", "lock",
-    ] {
+fn symlinked_assets_and_lock_are_refused() {
+    for which in ["asset", "scripts", "root", "base", "lock"] {
         let h = host();
         let outside = h.root.join("outside");
         match which {
-            "config" => {
-                fs::write(outside.join("file"), "# target").unwrap();
-                symlink(outside.join("file"), &h.config).unwrap();
-            }
-            "parent" => {
-                fs::remove_dir(h.config.parent().unwrap()).unwrap();
-                symlink(&outside, h.config.parent().unwrap()).unwrap();
-            }
             "lock" => {
                 fs::write(outside.join("file"), "# target").unwrap();
                 symlink(
@@ -353,6 +343,220 @@ fn symlink_config_and_parent_and_assets_are_refused() {
                 "# target"
             );
         }
+    }
+}
+fn backups_in(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("config.toml.tsk-backup-")
+        })
+        .collect()
+}
+/// #129: a dotfiles-managed config.toml is a symlink. Setup edits the target in place, keeps
+/// the link, backs up beside the target, and keeps generated assets beside the link.
+#[test]
+fn symlinked_config_is_edited_through_the_link() {
+    let original = "# dotfiles\n[ui]\nmouse_capture=true\n";
+    for (which, link) in [
+        ("absolute", None),
+        ("relative", Some("../outside/dotfiles/config.toml")),
+        ("chained", None),
+    ] {
+        let h = host();
+        let dotfiles = h.root.join("outside/dotfiles");
+        fs::create_dir(&dotfiles).unwrap();
+        let target = dotfiles.join("config.toml");
+        fs::write(&target, original).unwrap();
+        let link_target = match (which, link) {
+            (_, Some(relative)) => std::path::PathBuf::from(relative),
+            ("chained", _) => {
+                let hop = h.root.join("outside/hop.toml");
+                symlink(&target, &hop).unwrap();
+                hop
+            }
+            _ => target.clone(),
+        };
+        symlink(&link_target, &h.config).unwrap();
+
+        let output = ok(h.run(""));
+
+        assert!(
+            fs::symlink_metadata(&h.config).unwrap().is_symlink(),
+            "{which}"
+        );
+        assert_eq!(fs::read_link(&h.config).unwrap(), link_target, "{which}");
+        let updated = fs::read_to_string(&target).unwrap();
+        assert!(updated.contains(original.trim()), "{which}");
+        assert!(updated.contains("herdr-tsk.quick-capture"), "{which}");
+        let backups = backups_in(&dotfiles);
+        assert_eq!(backups.len(), 1, "{which}");
+        assert_eq!(fs::read_to_string(&backups[0]).unwrap(), original);
+        assert!(output.contains("config.toml.tsk-backup-"), "{which}");
+        let home = h.config.parent().unwrap();
+        assert!(backups_in(home).is_empty(), "{which}");
+        assert!(h.linked().starts_with(home.join("tsk-plugins")), "{which}");
+        assert!(home.join(".tsk-setup.lock").exists(), "{which}");
+        assert!(!dotfiles.join("tsk-plugins").exists(), "{which}");
+        assert!(!dotfiles.join(".tsk-setup.lock").exists(), "{which}");
+        let checked = fs::read_to_string(h.root.join("checked")).unwrap();
+        assert_eq!(
+            fs::canonicalize(std::path::Path::new(&checked).parent().unwrap()).unwrap(),
+            fs::canonicalize(&dotfiles).unwrap(),
+            "{which}: staged config checked at {checked}"
+        );
+        let names: Vec<_> = fs::read_dir(&dotfiles)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().all(|n| !n.starts_with(".tsk-")),
+            "{which}: staged files left behind: {names:?}"
+        );
+
+        assert_eq!(ok(h.check()).trim(), "bound", "{which}");
+        let rerun = ok(h.run(""));
+        assert!(!rerun.contains("tsk-backup"), "{which}: {rerun}");
+        assert_eq!(fs::read_link(&h.config).unwrap(), link_target, "{which}");
+    }
+}
+/// A dotfiles manager may link the whole herdr directory instead of the file.
+#[test]
+fn symlinked_config_directory_is_followed() {
+    let h = host();
+    let home = h.config.parent().unwrap().to_path_buf();
+    let dotfiles = h.root.join("outside/herdr");
+    fs::create_dir(&dotfiles).unwrap();
+    fs::write(dotfiles.join("config.toml"), "# dir link\n").unwrap();
+    fs::remove_dir(&home).unwrap();
+    symlink(&dotfiles, &home).unwrap();
+
+    ok(h.run(""));
+
+    assert!(fs::symlink_metadata(&home).unwrap().is_symlink());
+    let updated = fs::read_to_string(dotfiles.join("config.toml")).unwrap();
+    assert!(updated.contains("# dir link") && updated.contains("herdr-tsk.quick-capture"));
+    assert_eq!(backups_in(&dotfiles).len(), 1);
+    assert!(dotfiles.join("tsk-plugins").is_dir());
+    assert_eq!(ok(h.check()).trim(), "bound");
+}
+/// The link's target sits in a linked directory, and its basename is not config.toml:
+/// `config.toml -> dotlink/<name>`, `dotlink -> dotfiles/<dir>`. The edit, staging and
+/// backup land in the real directory; both links survive.
+#[test]
+fn config_link_into_a_linked_directory_edits_the_real_directory() {
+    for (which, real_dir, name) in [
+        ("linked dir", "dotfiles", "config.toml"),
+        ("other basename", "dotfiles/v2", "herdr.toml"),
+    ] {
+        let h = host();
+        let home = h.config.parent().unwrap().to_path_buf();
+        let real = h.root.join("outside").join(real_dir);
+        fs::create_dir_all(&real).unwrap();
+        let target = real.join(name);
+        fs::write(&target, "# real\n").unwrap();
+        let dir_link = h.root.join("outside/dotlink");
+        symlink(&real, &dir_link).unwrap();
+        let file_link = format!("../outside/dotlink/{name}");
+        symlink(&file_link, &h.config).unwrap();
+
+        assert_eq!(ok(h.check()).trim(), "unbound", "{which}");
+        let output = ok(h.run(""));
+
+        assert_eq!(
+            fs::read_link(&h.config).unwrap(),
+            std::path::PathBuf::from(&file_link)
+        );
+        assert_eq!(fs::read_link(&dir_link).unwrap(), real, "{which}");
+        let updated = fs::read_to_string(&target).unwrap();
+        assert!(updated.contains("# real") && updated.contains("herdr-tsk.quick-capture"));
+        let backups: Vec<_> = fs::read_dir(&real)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("config.toml.tsk-backup-"))
+            .collect();
+        assert_eq!(backups.len(), 1, "{which}: {backups:?}");
+        assert!(output.contains("tsk-backup-"), "{which}");
+        // Every path setup printed or staged resolves to the real directory, never a link.
+        let checked = fs::read_to_string(h.root.join("checked")).unwrap();
+        let checked_dir = std::path::Path::new(&checked).parent().unwrap();
+        assert!(
+            !fs::symlink_metadata(checked_dir).unwrap().is_symlink(),
+            "{which}: staged through a link: {checked}"
+        );
+        assert_eq!(
+            fs::canonicalize(checked_dir).unwrap(),
+            fs::canonicalize(&real).unwrap(),
+            "{which}"
+        );
+        let backup_line = output
+            .lines()
+            .find(|l| l.contains("tsk-backup-"))
+            .unwrap()
+            .trim()
+            .to_string();
+        assert!(
+            !fs::symlink_metadata(std::path::Path::new(&backup_line).parent().unwrap())
+                .unwrap()
+                .is_symlink(),
+            "{which}: backup reported through a link: {backup_line}"
+        );
+        assert!(backups_in(&home).is_empty(), "{which}");
+        assert!(home.join("tsk-plugins").is_dir(), "{which}");
+        assert_eq!(ok(h.check()).trim(), "bound", "{which}");
+    }
+}
+#[test]
+fn dangling_or_looping_config_link_is_refused_without_writes() {
+    for which in ["dangling", "self", "pair", "loop dir", "file dir"] {
+        let h = host();
+        let outside = h.root.join("outside");
+        match which {
+            "dangling" => symlink(outside.join("missing.toml"), &h.config).unwrap(),
+            "self" => symlink(&h.config, &h.config).unwrap(),
+            "loop dir" => {
+                symlink(outside.join("loopdir"), outside.join("loopdir")).unwrap();
+                symlink(outside.join("loopdir/config.toml"), &h.config).unwrap();
+            }
+            "file dir" => {
+                fs::write(outside.join("plain"), "").unwrap();
+                symlink(outside.join("plain/config.toml"), &h.config).unwrap();
+            }
+            _ => {
+                symlink(outside.join("b.toml"), &h.config).unwrap();
+                symlink(&h.config, outside.join("b.toml")).unwrap();
+            }
+        }
+        let expected = if matches!(which, "dangling" | "file dir") {
+            "points at missing"
+        } else {
+            "loops"
+        };
+        for output in [h.run(""), h.check()] {
+            assert!(!output.status.success(), "{which}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(expected), "{which}: {stderr}");
+            assert!(
+                stderr.contains(h.config.to_str().unwrap()),
+                "{which}: {stderr}"
+            );
+        }
+        assert_eq!(h.calls(), "", "{which}");
+        assert!(!outside.join("missing.toml").exists());
+        let mut left: Vec<_> = fs::read_dir(h.config.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            vec![std::ffi::OsString::from("config.toml")],
+            "{which}"
+        );
     }
 }
 #[test]
