@@ -1919,10 +1919,12 @@ import { parseCapture } from "./capture.js";
   }
 
   function primaryVerb() {
+    const bulk = state.markMode && state.markedIds.size > 0;
     const tasks = targetTasks();
     const changed = tasks.filter(
       (task) => task.status === "open" || task.status === "ready",
     );
+    const skippedDone = tasks.filter((task) => task.status === "done").length;
     for (const task of changed) {
       task.status = "started";
       task.updatedAt = clock();
@@ -1930,7 +1932,10 @@ import { parseCapture } from "./capture.js";
     }
     clearMarks();
     state.pendingDelete = null;
-    state.message = "";
+    state.message =
+      bulk && skippedDone
+        ? `started ${changed.length} · skipped ${skippedDone} done (n or o reopens them)`
+        : "";
     flashTasks(changed);
   }
 
@@ -1970,10 +1975,12 @@ import { parseCapture } from "./capture.js";
   }
 
   function previewPrimaryVerb() {
+    const bulk = preview.markMode && preview.markedIds.size > 0;
     const tasks = targetTasks(preview);
     const changed = tasks.filter(
       (task) => task.status === "open" || task.status === "ready",
     );
+    const skippedDone = tasks.filter((task) => task.status === "done").length;
     for (const task of changed) {
       task.status = "started";
       task.updatedAt = clock();
@@ -1981,7 +1988,10 @@ import { parseCapture } from "./capture.js";
     }
     clearMarks(preview);
     preview.pendingDelete = null;
-    preview.message = "";
+    preview.message =
+      bulk && skippedDone
+        ? `started ${changed.length} · skipped ${skippedDone} done (n or o reopens them)`
+        : "";
     flashTasks(changed);
   }
 
@@ -2107,7 +2117,7 @@ import { parseCapture } from "./capture.js";
       ["task actions", "o", "inbox", "status open"],
       ["task actions", "x", "delete", "remove"],
       ["task actions", "u", "undo", "restore"],
-      ["task actions", "f", "archive", "file hide"],
+      ["task actions", "f", "archive / restore (archived: z drawer)", "file hide restore"],
       ["create & edit", "+", "quick-add", "capture new task"],
       ["create & edit", "e", "edit title", "rename"],
       ["create & edit", "a", "add step (task page)", "checklist"],
@@ -2116,7 +2126,7 @@ import { parseCapture } from "./capture.js";
       ["views & find", "3", "projects", "switch view"],
       ["views & find", "p", "project picker", "switch find"],
       ["views & find", "z / D", "done drawer", "completed tasks"],
-      ["views & find", "g", "toggle inbox / groups", "collapse expand"],
+      ["views & find", "g", "fold inbox; archived when drawer open", "collapse expand"],
       ["views & find", "/", "search board", "find filter tasks projects"],
       ["views & find", ":", "command palette", "find actions"],
       ["app controls", "?", "help", "shortcuts keys"],

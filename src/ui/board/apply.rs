@@ -1660,13 +1660,14 @@ fn apply_board_intent(
         BoardIntent::PrimaryVerb => {
             model.close_popup();
             // Status verbs always act on tasks, even with a step selected: Enter owns steps.
-            let (targets, _) = take_verb_targets(model);
+            let (targets, bulk) = take_verb_targets(model);
             if targets.is_empty() {
                 model.set_message(NO_SELECTION);
                 return Ok(IntentOutcome::None);
             }
             let baseline = domain.clone();
-            let mut changed = false;
+            let mut started = 0usize;
+            let mut skipped_done = 0usize;
             for id in targets {
                 let Some(status) = domain.get(id).map(|task| task.status) else {
                     *domain = baseline;
@@ -1678,10 +1679,18 @@ fn apply_board_intent(
                         *domain = baseline;
                         return Err(error);
                     }
-                    changed = true;
+                    started += 1;
+                } else if status == HumanStatus::Done {
+                    skipped_done += 1;
                 }
             }
-            if !changed {
+            // A marked set that held done tasks says so: start never reopens them.
+            if bulk && skipped_done > 0 {
+                model.set_message(format!(
+                    "started {started} · skipped {skipped_done} done (ctrl+n or ctrl+o reopens them)"
+                ));
+            }
+            if started == 0 {
                 return Ok(IntentOutcome::None);
             }
         }
