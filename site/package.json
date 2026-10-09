@@ -22,7 +22,7 @@
     "@astrojs/starlight": "^0.41.10",
     "@vercel/analytics": "2.0.1",
     "astro": "^7.1.6",
-    "sharp": "^0.35.3"
+    "sharp": "^0.35.5"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
