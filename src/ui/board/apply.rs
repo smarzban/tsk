@@ -846,12 +846,31 @@ fn apply_board_intent(
                     }
                 } else {
                     match super::block::move_block_tab(model, false) {
-                        super::block::PageTab::Moved | super::block::PageTab::LeaveBlock => {}
+                        super::block::PageTab::Moved => {}
+                        // Shift+Tab before the top line wraps to the ring's last stop.
+                        super::block::PageTab::LeaveBlock => select_last_page_stop(model),
+                        super::block::PageTab::NotHandled
+                            if model.page_section_open()
+                                && model.form.as_ref().is_some_and(|form| {
+                                    form.steps.cursor.is_none() && !form.steps.add_selected
+                                }) =>
+                        {
+                            // Nothing selected yet (a blocked page opens so): the last stop.
+                            select_last_page_stop(model);
+                        }
                         super::block::PageTab::NotHandled => {
+                            let no_steps = model
+                                .form
+                                .as_ref()
+                                .and_then(|form| form.task_id())
+                                .and_then(|id| model.tasks.iter().find(|task| task.id == id))
+                                .is_some_and(|task| task.steps.is_empty());
                             let first_step = model.form.as_ref().is_some_and(|form| {
-                                form.steps.cursor == Some(0) && !form.steps.add_selected
+                                (form.steps.cursor == Some(0) && !form.steps.add_selected)
+                                    || (form.steps.add_selected && no_steps)
                             });
-                            // Shift+Tab from the first step climbs back into the section.
+                            // Shift+Tab from the first step (or `+ step` with none) climbs back
+                            // into the section.
                             let climbed =
                                 first_step && super::block::enter_block_ring(model, false);
                             if !(climbed || move_step_with_tab(model, false)) {
@@ -3899,6 +3918,14 @@ fn select_first_step_from_page(model: &mut BoardModel) -> bool {
         steps_scroll_to_cursor(form, 0);
     }
     true
+}
+
+/// The page ring's last stop, where Shift+Tab wraps from its first: the PAPER TRAIL's last stop
+/// (its heading, or its last record while expanded), else `+ step`.
+fn select_last_page_stop(model: &mut BoardModel) {
+    if !super::block::enter_trail(model, false) {
+        select_add_step(model);
+    }
 }
 
 /// Move Tab within the PAPER TRAIL when one of its records is selected; `None` otherwise.

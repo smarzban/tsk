@@ -96,7 +96,7 @@ The top line is the same text as the board row's [live line](/docs/board/#status
 
 The dim action line above the rule shows only the keys that work right now and follows the cursor: `ctrl+e edit` on the top line, `enter toggle step` on a step, `ctrl+e edit · ctrl+x delete` on your reply. A block waiting on another task or on something else offers `r reply · ctrl+b unblock` instead of `ctrl+s`. While the reply box is open, its own keys take the line.
 
-The page opens with nothing selected. `Tab` walks the top line, the options, and the replies, then the steps, **+ step**, and the paper trail; `Shift+Tab` goes back.
+The page opens with nothing selected. `Tab` walks the top line, the options, and the replies, then the steps, **+ step**, and the paper trail, and wraps; `Shift+Tab` goes back the same way, from the top line round to the paper trail. The ring never leaves the page for task editing.
 
 | Action | Key |
 | --- | --- |
@@ -134,7 +134,7 @@ tab next · enter mark · r feedback · ctrl+s send back · ctrl+d approve
 
 The top line is the row's live line (`@claude needs your review · 40m`, or `@pi reviewing` for a review on someone else). No round number shows on the page; closed rounds are on the paper trail. Below it, what was done and what is next read as plain text, then the checks under a small `Check` heading: `✓` passed, `✗` failed, `○` open. Passed checks fold into a dim `N passed ▸` line under them. The fold is taken when the page opens: a check you cycle on the page keeps its row and the cursor (`○` → `✓` → `✗` → `○`), so you can pass and then fail it in one place, and it folds the next time you open the page. Folding the line with `Enter` takes in the checks passed since. Your feedback runs as a thread like a block's replies. The section shows only while the task is in review; closed rounds stay in `tsk list --json` under `past_reviews`. Checks are the review's own list and never become steps.
 
-The page opens with the first unmarked check selected (with every check marked, the first one). `Tab` walks on through the checks, the `N passed` line (and the passed checks when unfolded), and the feedback, then the steps, **+ step**, and the paper trail, and wraps; `Shift+Tab` before the first check reaches the top line. The action line follows the cursor like a block's.
+The page opens with the first unmarked check selected (with every check marked, the first one). `Tab` walks on through the checks, the `N passed` line (and the passed checks when unfolded), and the feedback, then the steps, **+ step**, and the paper trail, and wraps; `Shift+Tab` before the first check reaches the top line, and before the top line wraps to the paper trail (its last record while expanded). The action line follows the cursor like a block's.
 
 | Action | Key |
 | --- | --- |

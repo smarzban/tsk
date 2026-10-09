@@ -11937,6 +11937,86 @@ mod quick_assign_tests {
         assert!(!screen.contains("feedback to @buil\n"), "{screen}");
     }
 
+    /// The page's Tab ring wraps both ways and never passes through no selection or into the
+    /// task edit: Shift+Tab before the top line lands on the PAPER TRAIL heading (or its last
+    /// record while expanded), and Tab past that comes back to the top line. A blocked page,
+    /// which opens with nothing selected, wraps the same way.
+    #[test]
+    fn shift_tab_on_the_top_line_wraps_to_the_last_stop() {
+        use crate::ui::board::BlockTarget::{Check, Heading, Trail, TrailHeading};
+        let temp = Temp::new("ring-wrap", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me", "blocked"]);
+        let mut host = fake_host(&temp);
+        let mut key = |domain: &mut DomainState, model: &mut BoardModel, code: KeyCode| {
+            let modifiers = if code == KeyCode::BackTab {
+                KeyModifiers::SHIFT
+            } else {
+                KeyModifiers::NONE
+            };
+            page_key(&temp, domain, model, &mut host, code, modifiers);
+            assert!(!model.task_editing(), "the ring never starts an edit");
+            assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+        };
+        let add_selected =
+            |model: &BoardModel| model.block_target().is_none() && !model.stored_step_selected();
+        // Review: top line · check · + step · trail heading, round and round.
+        review_page(&temp, &mut domain, &mut model, ids[0], &["a"]);
+        assert_eq!(model.block_target(), Some(Check(0)));
+        key(&mut domain, &mut model, KeyCode::BackTab);
+        assert_eq!(model.block_target(), Some(Heading));
+        key(&mut domain, &mut model, KeyCode::BackTab);
+        assert_eq!(
+            model.block_target(),
+            Some(TrailHeading),
+            "wraps to the last stop"
+        );
+        key(&mut domain, &mut model, KeyCode::BackTab);
+        assert!(add_selected(&model), "then + step");
+        key(&mut domain, &mut model, KeyCode::BackTab);
+        assert_eq!(model.block_target(), Some(Check(0)));
+        key(&mut domain, &mut model, KeyCode::BackTab);
+        assert_eq!(model.block_target(), Some(Heading));
+        key(&mut domain, &mut model, KeyCode::BackTab);
+        key(&mut domain, &mut model, KeyCode::Tab);
+        assert_eq!(
+            model.block_target(),
+            Some(Heading),
+            "Tab on the last stop wraps"
+        );
+        apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close");
+
+        // Blocked, with a closed block on the trail; the page opens with nothing selected.
+        blocked_row(&temp, &mut domain, &mut model, ids[1]);
+        domain
+            .set_status(ids[1], HumanStatus::Started)
+            .expect("unblock");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        blocked_row(&temp, &mut domain, &mut model, ids[1]);
+        // `blocked_row` selects the row twice within the double-click window, which opens it.
+        if model.input_mode() != BoardInputMode::TaskPage {
+            apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        }
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+        assert_eq!(model.block_target(), None);
+        key(&mut domain, &mut model, KeyCode::BackTab);
+        assert_eq!(model.block_target(), Some(TrailHeading));
+        key(&mut domain, &mut model, KeyCode::Enter);
+        key(&mut domain, &mut model, KeyCode::Tab);
+        assert_eq!(model.block_target(), Some(Trail(0)));
+        key(&mut domain, &mut model, KeyCode::Tab);
+        assert_eq!(
+            model.block_target(),
+            Some(Heading),
+            "Tab past the last record wraps"
+        );
+        key(&mut domain, &mut model, KeyCode::BackTab);
+        assert_eq!(
+            model.block_target(),
+            Some(Trail(0)),
+            "Shift+Tab wraps to the expanded trail's last record"
+        );
+    }
+
     /// The feedback box's keys: Esc discards, Shift+Enter stores and stays in review, and
     /// neither sends anything.
     #[test]
