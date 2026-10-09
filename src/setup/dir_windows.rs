@@ -6,8 +6,6 @@
 //! TOCTOU threat model does not apply the same way. The `File::try_lock` (Rust 1.96)
 //! still serializes concurrent `tsk setup herdr` invocations, which is the real
 //! concurrency concern.
-// ponytail: no descriptor-relative I/O on Windows; user-local config dir has no
-// symlink-attack threat. Upgrade to CreateFileW + NtCreateFile if a hardened model is needed.
 use std::{
     fs::{self, File, OpenOptions},
     io,

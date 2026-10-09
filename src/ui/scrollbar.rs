@@ -50,9 +50,7 @@ pub fn split_for_scrollbar(
 
 /// Mouse grab zone: the track plus the one-column gap to its left.
 ///
-/// Grok Build uses gap + track + one slop column past the border so a press on
-/// the adjacent chrome still grabs. Our track is already the frame edge, so the
-/// gap column is the slop.
+/// The track is the frame edge, so the gap is slop.
 pub fn grab_zone(track: Rect) -> Rect {
     let x = track.x.saturating_sub(1);
     Rect {
