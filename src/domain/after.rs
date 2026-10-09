@@ -184,6 +184,52 @@ impl DomainState {
         Ok(true)
     }
 
+    /// Whether a task not created yet may run after every number in `after`: each names a live
+    /// task that is not done. Nothing runs after a new task, so it cannot close a loop.
+    pub fn check_new_after(&self, after: &[u64]) -> Result<(), DomainError> {
+        for &number in after {
+            let prerequisite = self
+                .task_by_number(number)
+                .ok_or(DomainError::AfterUnknown(number))?;
+            if prerequisite.status == HumanStatus::Done {
+                return Err(DomainError::AfterDone(number));
+            }
+        }
+        Ok(())
+    }
+
+    /// Give a task created in this same mutation its prerequisites, checked by
+    /// [`Self::check_new_after`]. Part of the creation, so no event of its own.
+    pub fn set_after_on_create(&mut self, id: Uuid, after: &[u64]) -> Result<(), DomainError> {
+        let after = dedupe(after);
+        self.check_new_after(&after)?;
+        self.task_mut(id)?.after = after;
+        Ok(())
+    }
+
+    /// Set one task's prerequisites as an edit, with no undo entry (the CLI's `edit --after`).
+    pub fn edit_after(&mut self, id: Uuid, after: &[u64]) -> Result<bool, DomainError> {
+        let after = dedupe(after);
+        let task = self.get(id).ok_or(DomainError::UnknownId(id))?;
+        if task.soft_deleted {
+            return Err(DomainError::SoftDeleted(id));
+        }
+        if task.after == after {
+            return Ok(false);
+        }
+        self.check_after(id, &after)?;
+        let task = self.task_mut(id)?;
+        task.after = after;
+        record_event(
+            task,
+            TaskEventKind::Edited,
+            SystemTime::now(),
+            None,
+            after_detail(),
+        );
+        Ok(true)
+    }
+
     /// Undo's half of [`Self::set_after`]: put back an earlier list.
     pub(crate) fn restore_after(&mut self, id: Uuid, after: Vec<u64>) -> Result<(), DomainError> {
         let task = self.task_mut(id)?;

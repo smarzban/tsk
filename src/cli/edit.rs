@@ -18,6 +18,8 @@ pub struct EditFields {
     pub assignee: Option<Option<String>>,
     /// `None` leaves it unchanged, `Some(None)` clears it.
     pub base: Option<Option<String>>,
+    /// `None` leaves it unchanged; `Some` replaces the list (empty clears it).
+    pub after: Option<Vec<u64>>,
 }
 
 /// A successful edit, including an idempotent repeat.
@@ -37,6 +39,10 @@ pub enum EditError {
     UnknownAgent(String),
     UnknownBase(String),
     AgentConfig(String),
+    /// An `--after` task is this task, not on the board, or already done.
+    InvalidAfter(String),
+    /// An `--after` task already runs after this one.
+    AfterLoop(String),
     Store(String),
 }
 
@@ -50,6 +56,8 @@ impl EditError {
             Self::UnknownAgent(_) => "unknown-agent",
             Self::UnknownBase(_) => "unknown-base",
             Self::AgentConfig(_) => "agent-config",
+            Self::InvalidAfter(_) => "invalid-after",
+            Self::AfterLoop(_) => "after-loop",
             Self::Store(_) => "store-error",
         }
     }
@@ -105,6 +113,7 @@ pub fn run(
                     thread: task.thread.clone(),
                     assignee: task.assignee.clone(),
                     base: task.base.clone(),
+                    after: task.after.clone(),
                     soft_deleted: task.soft_deleted,
                 });
             Ok(apply(state, found, &fields))
@@ -121,6 +130,7 @@ struct Found {
     thread: Option<String>,
     assignee: Option<String>,
     base: Option<String>,
+    after: Vec<u64>,
     soft_deleted: bool,
 }
 
@@ -159,10 +169,18 @@ fn apply(
             return (Err(EditError::UnknownBase(error)), false);
         }
     }
+    let next_after = fields.after.clone().unwrap_or_else(|| found.after.clone());
+    let changed_after = next_after != found.after;
+    if changed_after {
+        if let Err(error) = state.check_after(found.id, &next_after) {
+            return (Err(after_error(error)), false);
+        }
+    }
     if next_title == found.title
         && next_notes == found.notes
         && next_assignee == found.assignee
         && next_base == found.base
+        && !changed_after
     {
         return (
             Ok(EditResult {
@@ -172,15 +190,31 @@ fn apply(
             false,
         );
     }
-    match state.edit_with_assignee_and_base(
-        found.id,
-        &next_title,
-        next_notes,
-        found.scope,
-        found.thread,
-        next_assignee,
-        next_base,
-    ) {
+    let fields_changed = next_title != found.title
+        || next_notes != found.notes
+        || next_assignee != found.assignee
+        || next_base != found.base;
+    let edited = if fields_changed {
+        state.edit_with_assignee_and_base(
+            found.id,
+            &next_title,
+            next_notes,
+            found.scope,
+            found.thread,
+            next_assignee,
+            next_base,
+        )
+    } else {
+        Ok(())
+    };
+    let edited = edited.and_then(|()| {
+        if changed_after {
+            state.edit_after(found.id, &next_after).map(|_| ())
+        } else {
+            Ok(())
+        }
+    });
+    match edited {
         Ok(()) => (
             Ok(EditResult {
                 number,
@@ -190,6 +224,20 @@ fn apply(
         ),
         Err(DomainError::EmptyTitle) => (Err(EditError::EmptyTitle), false),
         Err(DomainError::UnknownId(_)) => (Err(EditError::UnknownTask), false),
+        Err(
+            error @ (DomainError::AfterSelf(_)
+            | DomainError::AfterUnknown(_)
+            | DomainError::AfterDone(_)
+            | DomainError::AfterLoop { .. }),
+        ) => (Err(after_error(error)), false),
         Err(other) => (Err(EditError::Store(other.to_string())), false),
+    }
+}
+
+fn after_error(error: DomainError) -> EditError {
+    match error {
+        DomainError::AfterLoop { .. } => EditError::AfterLoop(error.to_string()),
+        DomainError::UnknownId(_) => EditError::UnknownTask,
+        other => EditError::InvalidAfter(other.to_string()),
     }
 }

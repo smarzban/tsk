@@ -397,6 +397,8 @@ pub struct FlagStatus {
     pub again: bool,
     /// `--no-dispatch`: with `started`, change the status only, never launch.
     pub no_dispatch: bool,
+    /// `--force`: with `started`, start a task whose prerequisites are not all done.
+    pub force: bool,
     pub state_dir: Option<PathBuf>,
     pub help: bool,
     /// Block reason flags, accepted only with `blocked`.
@@ -442,6 +444,7 @@ pub fn parse_flag_status(args: &[String]) -> Result<FlagStatus, String> {
         clean: false,
         again: false,
         no_dispatch: false,
+        force: false,
         state_dir: None,
         help: false,
         block: BlockFlags::default(),
@@ -477,6 +480,10 @@ pub fn parse_flag_status(args: &[String]) -> Result<FlagStatus, String> {
             }
             "--no-dispatch" => {
                 parsed.no_dispatch = true;
+                index += 1;
+            }
+            "--force" => {
+                parsed.force = true;
                 index += 1;
             }
             "--help" => {
@@ -527,6 +534,9 @@ pub fn parse_flag_status(args: &[String]) -> Result<FlagStatus, String> {
     }
     if parsed.again && parsed.no_dispatch {
         return Err("--again and --no-dispatch cannot be combined".into());
+    }
+    if parsed.force && parsed.status.is_some() && parsed.status != Some(HumanStatus::Started) {
+        return Err("--force requires started status".into());
     }
     if parsed.status.is_some() {
         if parsed.block.has_block_fields() && parsed.status != Some(HumanStatus::Blocked) {
@@ -658,8 +668,21 @@ pub struct FlagEdit {
     pub unassign: bool,
     pub base: Option<String>,
     pub clear_base: bool,
+    /// `--after`, repeatable: the task numbers this task runs after, replacing the list.
+    pub after: Vec<u64>,
+    pub clear_after: bool,
     pub state_dir: Option<PathBuf>,
     pub help: bool,
+}
+
+/// Parse one `--after` value: a task number, with or without its `T`.
+pub fn parse_after_number(value: &str) -> Result<u64, String> {
+    let digits = value.strip_prefix(['T', 't']).unwrap_or(value);
+    digits
+        .parse::<u64>()
+        .ok()
+        .filter(|number| *number > 0 && digits.bytes().all(|byte| byte.is_ascii_digit()))
+        .ok_or_else(|| format!("invalid --after value {value} · use a task number like T12"))
 }
 
 /// Parse `tsk edit <task> [--title <title>] [--notes <notes>]` arguments, including argv0.
@@ -676,6 +699,8 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
         unassign: false,
         base: None,
         clear_base: false,
+        after: Vec::new(),
+        clear_after: false,
         state_dir: None,
         help: false,
     };
@@ -730,6 +755,20 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
                 parsed.clear_base = true;
                 index += 1;
             }
+            flag if flag.starts_with("--after=") => {
+                parsed
+                    .after
+                    .push(parse_after_number(&flag["--after=".len()..])?);
+                index += 1;
+            }
+            "--after" => {
+                parsed.after.push(parse_after_number(&value(flag)?)?);
+                index += 2;
+            }
+            "--clear-after" => {
+                parsed.clear_after = true;
+                index += 1;
+            }
             "--help" => {
                 parsed.help = true;
                 index += 1;
@@ -757,6 +796,9 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
     }
     if parsed.clear_base && parsed.base.is_some() {
         return Err("--clear-base cannot be used with --base".into());
+    }
+    if parsed.clear_after && !parsed.after.is_empty() {
+        return Err("--clear-after cannot be used with --after".into());
     }
     Ok(parsed)
 }
@@ -838,6 +880,7 @@ mod tests {
                 clean: false,
                 again: false,
                 no_dispatch: false,
+                force: false,
                 state_dir: Some(std::path::PathBuf::from("/tmp/dir")),
                 help: false,
                 block: super::BlockFlags::default(),
@@ -1020,10 +1063,38 @@ mod tests {
                 unassign: false,
                 base: None,
                 clear_base: false,
+                after: Vec::new(),
+                clear_after: false,
                 state_dir: None,
                 help: false,
             }
         );
+    }
+
+    #[test]
+    fn edit_parses_repeatable_after_and_status_parses_force() {
+        let args = |command: &str, rest: &[&str]| {
+            ["tsk", command]
+                .iter()
+                .chain(rest)
+                .map(|arg| arg.to_string())
+                .collect::<Vec<_>>()
+        };
+        let edit =
+            parse_flag_edit(&args("edit", &["T5", "--after", "T2", "--after=3"])).expect("after");
+        assert_eq!(edit.after, vec![2, 3]);
+        assert!(parse_flag_edit(&args("edit", &["T5", "--after", "x2"])).is_err());
+        assert!(parse_flag_edit(&args("edit", &["T5", "--after", "0"])).is_err());
+        assert!(parse_flag_edit(&args("edit", &["T5", "--after", "2", "--clear-after"])).is_err());
+        assert!(
+            parse_flag_edit(&args("edit", &["T5", "--clear-after"]))
+                .expect("clear")
+                .clear_after
+        );
+        let parsed =
+            parse_flag_status(&args("status", &["T5", "started", "--force"])).expect("force");
+        assert!(parsed.force);
+        assert!(parse_flag_status(&args("status", &["T5", "done", "--force"])).is_err());
     }
 
     #[test]

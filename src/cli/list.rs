@@ -7,7 +7,9 @@ use uuid::Uuid;
 
 use crate::cli::parser::{parse_task_address, TaskAddress};
 use crate::context::snapshot_from_env;
-use crate::domain::{normalize_thread, thread_refusal_message, HumanStatus, TaskScope};
+use crate::domain::{
+    normalize_thread, thread_refusal_message, DomainState, HumanStatus, TaskScope,
+};
 use crate::scope::{resolve_permissive_project_path, PathIdentityCache};
 use crate::store::{default_state_dir, TaskStore};
 
@@ -61,12 +63,24 @@ pub(crate) struct ListRow {
     pub(crate) thread: Option<String>,
     pub(crate) assignee: Option<String>,
     pub(crate) base: Option<String>,
+    /// The tasks this one runs after, in its own order, each with whether it is done.
+    pub(crate) after: Vec<AfterLink>,
+    /// The live tasks that run after this one (read-only, derived from their `after`).
+    pub(crate) before: Vec<u64>,
     /// `archived` / `project archived` mark, set only in the archived view.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) archived: Option<&'static str>,
     /// The open block's reason, painted as `blocked: <why>` by the human listing only.
     #[serde(skip)]
     pub(crate) blocked_why: Option<String>,
+}
+
+/// One prerequisite of a listed task. A number no live task carries any more reads as done:
+/// nothing waits on it.
+#[derive(Debug, Serialize)]
+pub(crate) struct AfterLink {
+    pub(crate) task: u64,
+    pub(crate) done: bool,
 }
 
 /// Complete detail attached only to a direct single-task listing.
@@ -274,7 +288,7 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
             ListView::Open
         };
         return Ok(ListResult {
-            rows: vec![row_for(task)],
+            rows: vec![row_for(task, &domain)],
             view,
             include_scope: false,
             direct: Some(DirectTaskDetails {
@@ -362,7 +376,7 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
             }
         })
         .map(|task| {
-            let mut row = row_for(task);
+            let mut row = row_for(task, &domain);
             if view == ListView::Archived {
                 // "archived" wins over "project archived".
                 row.archived = Some(if task.archived {
@@ -414,7 +428,7 @@ fn deleted_rows(
         .map(|task| {
             (
                 task.soft_deleted_at().unwrap_or(task.updated_at),
-                row_for(task),
+                row_for(task, &domain),
             )
         })
         .collect();
@@ -425,7 +439,7 @@ fn deleted_rows(
         if live_ids.contains(&line.task.id) || !in_view(&line.task) {
             continue;
         }
-        dated.push((line.deleted_at, row_for(&line.task)));
+        dated.push((line.deleted_at, row_for(&line.task, &domain)));
     }
     dated.sort_by(|(left, _), (right, _)| right.cmp(left));
     Ok(ListResult {
@@ -436,7 +450,8 @@ fn deleted_rows(
     })
 }
 
-fn row_for(task: &crate::domain::Task) -> ListRow {
+fn row_for(task: &crate::domain::Task, domain: &DomainState) -> ListRow {
+    let waiting = domain.waiting_on(task);
     ListRow {
         id: task.id,
         number: task
@@ -451,6 +466,17 @@ fn row_for(task: &crate::domain::Task) -> ListRow {
         thread: task.thread.clone(),
         assignee: task.assignee.clone(),
         base: task.base.clone(),
+        after: task
+            .after
+            .iter()
+            .map(|number| AfterLink {
+                task: *number,
+                done: !waiting.contains(number),
+            })
+            .collect(),
+        before: task
+            .number
+            .map_or_else(Vec::new, |number| domain.before(number)),
         archived: None,
         blocked_why: task
             .block

@@ -33,6 +33,9 @@ pub enum StatusError {
     AgentGone(String),
     /// Starting an assigned task dispatched it, and the dispatch refused.
     Dispatch(DispatchError),
+    /// Starting a task that still waits on prerequisites, without `--force`: `T3 runs after
+    /// T2 (started)`.
+    AfterNotDone(String),
     Store(String),
 }
 
@@ -45,6 +48,7 @@ impl StatusError {
             Self::InvalidBlocker => "invalid-blocker",
             Self::AgentGone(_) => "agent-gone",
             Self::Dispatch(error) => error.code(),
+            Self::AfterNotDone(_) => "after-not-done",
             Self::Store(_) => "store-error",
         }
     }
@@ -95,6 +99,85 @@ pub fn run(
         .map_err(StatusError::Store)?
 }
 
+/// `tsk status <task> done` through the real host: a done that releases waiting tasks starts
+/// them, launching an assigned one's agent.
+pub fn run_done(
+    target: TaskAddress,
+    state_dir: Option<PathBuf>,
+) -> Result<(StatusResult, Vec<dispatch::Released>), StatusError> {
+    let (state_dir, mut host) = crate::cli::dispatch::system_host(state_dir);
+    let outcome = run_done_with_host(
+        target,
+        Some(state_dir),
+        dispatch::running_inside_herdr(),
+        &actor_from_env(),
+        &mut host,
+    )?;
+    for released in &outcome.1 {
+        if let dispatch::ReleasedStart::Dispatched(result) = &released.start {
+            if let Some(naming) = &result.naming {
+                // Best effort, like naming itself: the dispatch already succeeded.
+                let _ = dispatch::spawn_agent_naming_process(naming);
+            }
+        }
+    }
+    Ok(outcome)
+}
+
+/// Set a task done by `actor`. When that releases tasks waiting on it (`ready`, every
+/// prerequisite now done), each starts in the same save through the start route: plain, or a
+/// dispatch for an assigned task never dispatched. A failed launch leaves its task ready and
+/// never refuses the done. A done that releases nothing is the plain locked status change.
+pub fn run_done_with_host(
+    target: TaskAddress,
+    state_dir: Option<PathBuf>,
+    in_herdr: bool,
+    actor: &str,
+    host: &mut impl DispatchHost,
+) -> Result<(StatusResult, Vec<dispatch::Released>), StatusError> {
+    let plain = |state_dir| {
+        run(target, HumanStatus::Done, BlockFlags::default(), state_dir)
+            .map(|result| (result, Vec::new()))
+    };
+    let state_dir = state_dir.unwrap_or_else(default_state_dir);
+    let store = TaskStore::new(&state_dir);
+    let mut state = store
+        .load()
+        .map_err(|error| StatusError::Store(error.to_string()))?;
+    let Some(task) = state.tasks().iter().find(|task| target.matches(task)) else {
+        return plain(Some(state_dir));
+    };
+    let (id, number, title) = (task.id, task.number, task.title.clone());
+    if task.soft_deleted || task.status == HumanStatus::Done || number.is_none() {
+        return plain(Some(state_dir));
+    }
+    // Nothing waits on it: keep the plain locked status change.
+    let _ = state.take_completed();
+    let mut probe = state.clone();
+    if probe.set_status_by(id, HumanStatus::Done, actor).is_err() || {
+        let done = probe.take_completed();
+        probe.released_by(&done).is_empty()
+    } {
+        return plain(Some(state_dir));
+    }
+    state
+        .set_status_by(id, HumanStatus::Done, actor)
+        .map_err(|error| StatusError::Store(error.to_string()))?;
+    let released =
+        dispatch::start_released_with_host(&mut state, &state_dir, actor, in_herdr, host);
+    store
+        .reload_merge_save(&mut state)
+        .map_err(|error| StatusError::Store(error.to_string()))?;
+    Ok((
+        StatusResult {
+            number: number.expect("checked above"),
+            title,
+            status: HumanStatus::Done,
+        },
+        released,
+    ))
+}
+
 /// What `tsk status <task> started` did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartOutcome {
@@ -108,11 +191,36 @@ pub enum StartOutcome {
     Dispatched(StatusResult, Box<DispatchResult>),
 }
 
-/// How `started` may launch: `--again` relaunches a gone agent, `--no-dispatch` never launches.
+/// How `started` may launch: `--again` relaunches a gone agent, `--no-dispatch` never launches,
+/// `--force` starts a task whose prerequisites are not all done.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StartFlags {
     pub again: bool,
     pub no_dispatch: bool,
+    pub force: bool,
+}
+
+/// `T3 runs after T2 (started), T4 (open)`: what a task still waits on, or `None` when it waits
+/// on nothing.
+pub fn waiting_text(state: &DomainState, task: &crate::domain::Task) -> Option<String> {
+    let waiting = state.waiting_on(task);
+    if waiting.is_empty() {
+        return None;
+    }
+    let list = waiting
+        .iter()
+        .map(|number| {
+            let status = state.task_by_number(*number).map_or("open", |task| {
+                crate::cli::presenter::status_name(task.status)
+            });
+            format!("T{number} ({status})")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "T{} runs after {list}",
+        task.number.unwrap_or_default()
+    ))
 }
 
 /// `tsk status <task> started` through the real host: launches where a start launches.
@@ -155,6 +263,19 @@ pub fn run_started_with_host(
     actor: &str,
     host: &mut impl DispatchHost,
 ) -> Result<StartOutcome, StatusError> {
+    if !flags.force {
+        let store = TaskStore::new(state_dir.clone().unwrap_or_else(default_state_dir));
+        let state = store
+            .load()
+            .map_err(|error| StatusError::Store(error.to_string()))?;
+        if let Some(task) = state.tasks().iter().find(|task| {
+            target.matches(task) && !task.soft_deleted && task.status != HumanStatus::Started
+        }) {
+            if let Some(waiting) = waiting_text(&state, task) {
+                return Err(StatusError::AfterNotDone(waiting));
+            }
+        }
+    }
     let plain = |state_dir| {
         run(
             target,
@@ -457,6 +578,8 @@ mod start_tests {
         ran: usize,
         agent: Option<bool>,
         root: Option<crate::dispatch::RootPaneError>,
+        /// Every pane command fails, as a launch Herdr refuses.
+        refuse_launch: bool,
     }
 
     impl DispatchHost for Host {
@@ -491,6 +614,9 @@ mod start_tests {
         }
 
         fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
+            if self.refuse_launch {
+                return Err("pane refused".into());
+            }
             self.ran += 1;
             Ok(())
         }
@@ -503,6 +629,7 @@ mod start_tests {
     const PLAIN: StartFlags = StartFlags {
         again: false,
         no_dispatch: false,
+        force: false,
     };
 
     #[test]
@@ -728,5 +855,127 @@ mod start_tests {
         assert!(matches!(outcome, StartOutcome::Status(_)));
         assert_eq!(temp.status(number), HumanStatus::Started);
         assert_eq!(host.ran, 0);
+    }
+
+    /// A prerequisite and an assigned ready task waiting on it, in one project.
+    fn released_pair(temp: &Temp) -> (u64, u64) {
+        let mut state = DomainState::new();
+        let scope = TaskScope::Project {
+            path: "/repos/app".into(),
+        };
+        let first = state
+            .create("first", None, scope.clone(), ProvenanceOrigin::Manual, None)
+            .expect("create");
+        let second = state
+            .create_assigned(
+                "second",
+                None,
+                scope,
+                ProvenanceOrigin::Manual,
+                None,
+                Some("builder".into()),
+            )
+            .expect("create");
+        temp.store().reload_merge_save(&mut state).expect("save");
+        let number = |id| state.get(id).and_then(|task| task.number).expect("number");
+        let (first_number, second_number) = (number(first), number(second));
+        state.set_after(second, &[first_number]).expect("after");
+        temp.store().reload_merge_save(&mut state).expect("save");
+        state.set_status(second, HumanStatus::Ready).expect("ready");
+        temp.store().reload_merge_save(&mut state).expect("save");
+        (first_number, second_number)
+    }
+
+    #[test]
+    fn a_done_dispatches_an_assigned_task_it_released() {
+        let temp = Temp::new("released-dispatch");
+        let (first, second) = released_pair(&temp);
+        let mut host = Host::default();
+        let (result, released) = run_done_with_host(
+            TaskAddress::Number(first),
+            Some(temp.0.clone()),
+            true,
+            "you",
+            &mut host,
+        )
+        .expect("done");
+        assert_eq!(result.status, HumanStatus::Done);
+        assert_eq!(host.ran, 1, "the waiting task's agent launched");
+        assert!(matches!(
+            released.as_slice(),
+            [dispatch::Released { number, after, start: dispatch::ReleasedStart::Dispatched(_) }]
+                if *number == second && *after == first
+        ));
+        assert_eq!(temp.status(first), HumanStatus::Done);
+        assert_eq!(temp.status(second), HumanStatus::Started);
+        let state = temp.store().load().expect("load");
+        let task = state
+            .tasks()
+            .iter()
+            .find(|task| task.number == Some(second))
+            .expect("task");
+        assert!(task.dispatch.is_some());
+        let event = task.history.last().expect("event");
+        assert_eq!(
+            event.detail.as_ref().and_then(|detail| detail.after),
+            Some(first)
+        );
+        assert_eq!(
+            dispatch::released_message(&released).as_deref(),
+            Some(format!("T{second} dispatched to @builder · T{first} done").as_str())
+        );
+    }
+
+    #[test]
+    fn a_failed_launch_keeps_the_released_task_ready_and_the_done() {
+        let temp = Temp::new("released-failed");
+        let (first, second) = released_pair(&temp);
+        let mut host = Host {
+            refuse_launch: true,
+            ..Host::default()
+        };
+        let (_, released) = run_done_with_host(
+            TaskAddress::Number(first),
+            Some(temp.0.clone()),
+            true,
+            "you",
+            &mut host,
+        )
+        .expect("the done stands");
+        assert!(matches!(
+            released.as_slice(),
+            [dispatch::Released {
+                start: dispatch::ReleasedStart::Failed(_),
+                ..
+            }]
+        ));
+        assert_eq!(temp.status(first), HumanStatus::Done);
+        assert_eq!(temp.status(second), HumanStatus::Ready);
+        let message = dispatch::released_message(&released).expect("message");
+        assert!(
+            message.starts_with(&format!("T{second} stays ready: ")),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_released_task_outside_herdr_starts_and_says_why() {
+        let temp = Temp::new("released-no-herdr");
+        let (first, second) = released_pair(&temp);
+        let mut host = Host::default();
+        let (_, released) = run_done_with_host(
+            TaskAddress::Number(first),
+            Some(temp.0.clone()),
+            false,
+            "you",
+            &mut host,
+        )
+        .expect("done");
+        assert_eq!(host.ran, 0);
+        assert_eq!(temp.status(second), HumanStatus::Started);
+        assert_eq!(
+            dispatch::released_message(&released).as_deref(),
+            Some(format!("T{second} started · no launch: not in Herdr · T{first} done").as_str())
+        );
     }
 }
