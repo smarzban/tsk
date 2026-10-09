@@ -11122,7 +11122,94 @@ mod quick_assign_tests {
         let (screen, _) = board_screen(&model, 90, 30);
         assert!(screen.contains("✗ tests pass"), "{screen}");
         assert!(!screen.contains("passed ▸"), "{screen}");
+        assert_eq!(
+            model.block_target(),
+            Some(Check(0)),
+            "the fold line went away; the cursor rests on the check that left it"
+        );
+        let (screen, _) = board_screen(&model, 90, 30);
+        let selected = screen
+            .lines()
+            .find(|line| line.starts_with('▸'))
+            .unwrap_or_else(|| panic!("a painted selection:\n{screen}"));
+        assert!(selected.contains("✗ tests pass"), "{selected}");
+        key(&mut domain, &mut model, &mut host, KeyCode::Tab);
+        assert_eq!(
+            model.block_target(),
+            Some(Check(1)),
+            "Tab walks on in order"
+        );
         assert_eq!(host.prompts, [], "checks never send anything");
+    }
+
+    /// A review round that arrives on an open page takes its fold then; a refresh that marks the
+    /// selected check passed elsewhere keeps its row and the selection until the page is left.
+    #[test]
+    fn a_review_arriving_on_an_open_page_freezes_its_fold() {
+        use crate::domain::CheckState::{Open, Passed};
+        use crate::ui::board::BlockTarget::{Check, Heading};
+        let temp = Temp::new("review-arrives", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        select(&mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        let mut other = temp.store.load().expect("load");
+        let checks = vec!["tests pass".to_string(), "no flicker".to_string()];
+        other
+            .review(
+                ids[0],
+                crate::domain::ReviewDraft::from_input(
+                    Some("built the card"),
+                    &checks,
+                    Some("docs"),
+                    Default::default(),
+                )
+                .expect("draft"),
+                "builder",
+            )
+            .expect("review");
+        temp.store.reload_merge_save(&mut other).expect("save");
+        domain = temp.store.load().expect("reload");
+        model.sync_from_domain(&domain);
+        let mut host = fake_host(&temp);
+        let none = KeyModifiers::NONE;
+        page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Tab,
+            none,
+        );
+        assert_eq!(model.block_target(), Some(Heading));
+        page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Tab,
+            none,
+        );
+        assert_eq!(model.block_target(), Some(Check(0)));
+
+        other.set_check(ids[0], 0, Passed).expect("pass");
+        temp.store.reload_merge_save(&mut other).expect("save");
+        domain = temp.store.load().expect("reload");
+        model.sync_from_domain(&domain);
+        assert_eq!(checks_of(&domain, ids[0]), [Passed, Open]);
+        assert_eq!(model.block_target(), Some(Check(0)), "the selection holds");
+        let (screen, _) = board_screen(&model, 90, 30);
+        let selected = screen
+            .lines()
+            .find(|line| line.starts_with('▸'))
+            .unwrap_or_else(|| panic!("a painted selection:\n{screen}"));
+        assert!(selected.contains("✓ tests pass"), "{selected}\n{screen}");
+        assert!(!screen.contains("passed ▸"), "{screen}");
+
+        apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close");
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        let (screen, _) = board_screen(&model, 90, 30);
+        assert!(screen.contains("1 passed ▸"), "{screen}");
+        assert!(!screen.contains("tests pass"), "{screen}");
     }
 
     /// The REVIEW section leads the page: round, who it is on, author, the PR it names, then

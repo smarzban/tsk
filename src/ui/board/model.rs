@@ -2458,6 +2458,7 @@ impl BoardModel {
         super::block::finish_reply_save(self);
         super::block::flag_stale_row_reply(self);
         super::block::finish_block_card_save(self);
+        super::block::freeze_check_fold(self);
         if let Some(id) = pinned_edit.or(pinned_quick_add) {
             // A save this surface just made owns the selection, but navigation never
             // follows it: the pin moves only when the current destination already

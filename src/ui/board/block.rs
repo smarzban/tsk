@@ -999,8 +999,18 @@ fn page_ring(model: &BoardModel, task: &Task) -> Vec<BlockTarget> {
     )
 }
 
-/// Take a fresh fold when the page has none for the task's current review round.
-fn freeze_check_fold(model: &mut BoardModel, id: Uuid) {
+/// Take a fresh fold when the page has none for the task's current review round: the round
+/// first appears on an open page, or a new round replaces it. Later refreshes keep the fold, so
+/// a check marked passed elsewhere keeps its row until the page is painted fresh.
+pub(super) fn freeze_check_fold(model: &mut BoardModel) {
+    let Some(id) = model
+        .form
+        .as_ref()
+        .filter(|form| form.is_task())
+        .and_then(|form| form.task_id())
+    else {
+        return;
+    };
     let Some(fresh) = model
         .tasks
         .iter()
@@ -1128,7 +1138,7 @@ pub(super) fn cycle_selected_check(
     else {
         return Ok(IntentOutcome::None);
     };
-    freeze_check_fold(model, id);
+    freeze_check_fold(model);
     match domain.set_check(id, index, state) {
         Ok(true) => {}
         Ok(false) => return Ok(IntentOutcome::None),
@@ -1142,18 +1152,41 @@ pub(super) fn cycle_selected_check(
 }
 
 /// `Enter` on the `N passed` line: show or fold the passed checks. Folding paints the fold
-/// fresh, so it takes in the checks passed in place and lets go of any no longer passed.
+/// fresh, so it takes in the checks passed in place and lets go of any no longer passed. When
+/// none is still passed the line goes away, and the cursor moves to the check that left the fold
+/// (else the stop before the line), never onto a row the page does not paint.
 pub(super) fn toggle_passed_checks(model: &mut BoardModel) {
     if selected_block_target(model) != Some(BlockTarget::PassedFold) {
         return;
     }
-    let fresh = page_block_task(model).and_then(CheckFold::fresh);
-    if let Some(form) = model.form.as_mut() {
-        form.block.passed_open = !form.block.passed_open;
-        if !form.block.passed_open {
-            form.block.fold = fresh;
-        }
+    let Some(task) = page_block_task(model) else {
+        return;
+    };
+    let fresh = CheckFold::fresh(task);
+    let before = page_ring(model, task);
+    let Some(form) = model.form.as_mut() else {
+        return;
+    };
+    form.block.passed_open = !form.block.passed_open;
+    if form.block.passed_open {
+        return;
     }
+    let old = std::mem::replace(&mut form.block.fold, fresh);
+    if form
+        .block
+        .fold
+        .as_ref()
+        .is_some_and(|fold| !fold.folded.is_empty())
+    {
+        return;
+    }
+    let left = old.and_then(|fold| fold.folded.first().copied());
+    let previous = before
+        .iter()
+        .position(|stop| *stop == BlockTarget::PassedFold)
+        .and_then(|at| at.checked_sub(1))
+        .map(|at| before[at]);
+    form.block.target = left.map(BlockTarget::Check).or(previous);
 }
 
 /// The text of the selected option, for `Enter`.
