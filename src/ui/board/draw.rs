@@ -1891,6 +1891,9 @@ fn section_action_keys(
                 Some("ctrl+e edit · ctrl+x delete")
             }
             Some(BlockTarget::TrailHeading) if form.block.trail_expanded => Some("enter collapse"),
+            Some(BlockTarget::Trail(index)) if form.block.trail_open.contains(&index) => {
+                Some("enter collapse")
+            }
             Some(BlockTarget::TrailHeading | BlockTarget::Trail(_)) => Some("enter expand"),
             _ => None,
         }

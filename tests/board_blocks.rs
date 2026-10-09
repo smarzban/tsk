@@ -1316,3 +1316,53 @@ fn palette_set_status_blocked_opens_the_block_card() {
     assert_eq!(model.input_mode(), BoardInputMode::Normal);
     assert_eq!(domain.get(ids[0]).unwrap().status, HumanStatus::Blocked);
 }
+
+/// On a closed record of the PAPER TRAIL the action line says what Enter does there: expand a
+/// folded record, collapse an open one.
+#[test]
+fn the_action_line_says_collapse_on_an_open_trail_record() {
+    let (mut domain, mut model, id) = blocked_page();
+    domain.set_status(id, HumanStatus::Started).unwrap();
+    domain
+        .block(
+            id,
+            BlockDraft::from_input(Some("again?"), None, &[], BlockOn::You).unwrap(),
+            OWNER,
+        )
+        .unwrap();
+    model.sync_from_domain(&domain);
+    let action = |model: &BoardModel| {
+        let page = page_body(&rows(model, 90, 60));
+        let rule = page
+            .iter()
+            .rposition(|row| row.starts_with("  ───"))
+            .expect("rule");
+        page[rule - 1].trim().to_string()
+    };
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleTrail, None).unwrap();
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ToggleTrailRecord(Some(0)),
+        None,
+    )
+    .unwrap();
+    assert_eq!(model.block_target(), Some(BlockTarget::Trail(0)));
+    assert!(
+        action(&model).starts_with("enter collapse · "),
+        "{}",
+        action(&model)
+    );
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ToggleTrailRecord(None),
+        None,
+    )
+    .unwrap();
+    assert!(
+        action(&model).starts_with("enter expand · "),
+        "{}",
+        action(&model)
+    );
+}
