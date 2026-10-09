@@ -65,6 +65,13 @@ New tasks start `open` in the inbox; `ready` means the user picked it.
     `--clear-base` restores the repository's remote default (`origin/HEAD`). Where the CLI runs
     never supplies the dispatch base. `tsk dispatch --base <branch>` overrides a first launch, not
     the task. `--again` always keeps the recorded base and ignores overrides or later task edits.
+11. **After means wait.** `tsk edit T13 --after T12` (repeatable; replaces the list) makes T13 wait
+    until T12 is done; `--clear-after` empties it. Numbers are board-wide, so any project works.
+    Self, unknown or done tasks refuse with `invalid-after`; a loop with `after-loop`. `tsk list
+    --json` rows carry `after: [{"task": 12, "done": false}]` and a read-only `before`. Setting the
+    last prerequisite `done` starts each waiting `ready` task (dispatching an assigned one) and says
+    so on a second line. `status started` on a waiting task refuses `after-not-done`; add `--force`
+    only when the user said to start it anyway.
 
 ## Exit contract (all commands)
 
@@ -132,7 +139,7 @@ block. Text over 4 KB refuses with `text-too-long`. Never unblock a task yoursel
 "…"` per step, in order. Do not add steps for your own bookkeeping.
 
 **Capture many.** `cat plan.json | tsk add` with
-`[{"title": "…", "notes": "…", "project": "…", "thread": "…", "assignee": "…", "base": "…"}]`; only `title` is required, an
+`[{"title": "…", "notes": "…", "project": "…", "thread": "…", "assignee": "…", "base": "…", "after": [12]}]`; only `title` is required, an
 omitted `project` takes the default scope. The result lists `created`, `existing` and `failed`
 items; on exit 1 retry only the `failed` items, never the whole plan. Full shape:
 https://gettsk.sh/docs/cli.md#json-plans.

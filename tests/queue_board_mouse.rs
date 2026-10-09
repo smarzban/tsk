@@ -1126,6 +1126,11 @@ fn footer_assignee_then_base_then_thread_then_scope_each_routes_its_field() {
         .iter()
         .find(|hit| hit.target == QueueHitTarget::FormBase)
         .expect("base target");
+    let after_hit = hits
+        .regions
+        .iter()
+        .find(|hit| hit.target == QueueHitTarget::FormAfter)
+        .expect("empty after target");
     let thread_hit = hits
         .regions
         .iter()
@@ -1146,9 +1151,19 @@ fn footer_assignee_then_base_then_thread_then_scope_each_routes_its_field() {
         "base follows assignee and its separator"
     );
     assert_eq!(
-        thread_hit.area.x,
+        after_hit.area.x,
         base_hit.area.x + base_hit.area.width + 3,
-        "thread follows base and its separator"
+        "after follows base and its separator"
+    );
+    assert_eq!(
+        after_hit.area.width,
+        "after".chars().count() as u16,
+        "the empty after slot is its placeholder"
+    );
+    assert_eq!(
+        thread_hit.area.x,
+        after_hit.area.x + after_hit.area.width + 3,
+        "thread follows after and its separator"
     );
     assert_eq!(
         scope_hit.area.x,
@@ -1196,6 +1211,11 @@ fn footer_assignee_then_base_then_thread_then_scope_each_routes_its_field() {
         click(base_hit, &model, &hits),
         Some(BoardIntent::OpenBasePicker),
         "clicking the ⎇ footer slot opens the common branch picker"
+    );
+    assert_eq!(
+        click(after_hit, &model, &hits),
+        Some(BoardIntent::OpenAfterPicker),
+        "clicking the after footer slot opens the task picker"
     );
     let thread = click(thread_hit, &model, &hits).expect("thread click intent");
     assert_eq!(thread, BoardIntent::FocusFormField(CaptureField::Thread));
@@ -1720,7 +1740,7 @@ fn wheel_scrolls_the_open_command_surface_so_every_command_becomes_reachable() {
     let commands = model.visible_commands();
     assert_eq!(
         commands.len(),
-        15,
+        16,
         "this ready fixture must expose every palette command a ready selection has: {commands:?}"
     );
     let last = commands.len() - 1;

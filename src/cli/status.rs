@@ -33,6 +33,9 @@ pub enum StatusError {
     AgentGone(String),
     /// Starting an assigned task dispatched it, and the dispatch refused.
     Dispatch(DispatchError),
+    /// Starting a task that still waits on prerequisites, without `--force`: `T3 runs after
+    /// T2 (started)`.
+    AfterNotDone(String),
     Store(String),
 }
 
@@ -45,6 +48,7 @@ impl StatusError {
             Self::InvalidBlocker => "invalid-blocker",
             Self::AgentGone(_) => "agent-gone",
             Self::Dispatch(error) => error.code(),
+            Self::AfterNotDone(_) => "after-not-done",
             Self::Store(_) => "store-error",
         }
     }
@@ -95,6 +99,102 @@ pub fn run(
         .map_err(StatusError::Store)?
 }
 
+/// `tsk status <task> done` through the real host: a done that releases waiting tasks starts
+/// them, launching an assigned one's agent.
+pub fn run_done(
+    target: TaskAddress,
+    state_dir: Option<PathBuf>,
+) -> Result<(StatusResult, Vec<dispatch::Released>), StatusError> {
+    let (state_dir, mut host) = crate::cli::dispatch::system_host(state_dir);
+    let outcome = run_done_with_host(
+        target,
+        Some(state_dir),
+        dispatch::running_inside_herdr(),
+        &actor_from_env(),
+        &mut host,
+    )?;
+    for released in &outcome.1 {
+        if let dispatch::ReleasedStart::Dispatched(result)
+        | dispatch::ReleasedStart::Unrecorded(result, _) = &released.start
+        {
+            if let Some(naming) = &result.naming {
+                // Best effort, like naming itself: the dispatch already succeeded.
+                let _ = dispatch::spawn_agent_naming_process(naming);
+            }
+        }
+    }
+    Ok(outcome)
+}
+
+/// Set a task done by `actor`. When that releases tasks waiting on it (`ready`, every
+/// prerequisite now done), each starts through the start route. What it released is decided
+/// inside the same locked transition as the done, so a prerequisite another process completed
+/// concurrently is never missed: a plain start lands in that save, and an assigned task never
+/// dispatched launches right after it. A failed launch leaves its task ready and never refuses
+/// the done.
+pub fn run_done_with_host(
+    target: TaskAddress,
+    state_dir: Option<PathBuf>,
+    in_herdr: bool,
+    actor: &str,
+    host: &mut impl DispatchHost,
+) -> Result<(StatusResult, Vec<dispatch::Released>), StatusError> {
+    let state_dir = state_dir.unwrap_or_else(default_state_dir);
+    let store = TaskStore::new(&state_dir);
+    let (result, mut released, launches) = store
+        .locked_transition_if_changed(|state: &mut DomainState| {
+            let found = state
+                .tasks()
+                .iter()
+                .find(|task| target.matches(task))
+                .map(|task| Found {
+                    id: task.id,
+                    number: task.number,
+                    title: task.title.clone(),
+                    current: task.status,
+                    soft_deleted: task.soft_deleted,
+                    open: task.block.as_ref().map(|block| block.kind),
+                });
+            let _ = state.take_completed();
+            let (result, changed) = apply(
+                state,
+                found,
+                HumanStatus::Done,
+                &BlockFlags::default(),
+                None,
+                actor,
+            );
+            let released = if changed {
+                dispatch::plan_released_with_host(state, actor, in_herdr, None, host)
+            } else {
+                Vec::new()
+            };
+            let launches = state.take_pending_launches();
+            Ok(((result, released, launches), changed))
+        })
+        .map_err(StatusError::Store)?;
+    let result = result?;
+    if !launches.is_empty() {
+        // The done and the starts are durable: launch outside the lock, then record.
+        let mut state = store
+            .load()
+            .map_err(|error| StatusError::Store(error.to_string()))?;
+        for (id, after) in launches {
+            state.hold_launch(id, after);
+        }
+        let launched = dispatch::launch_released_with_host(&mut state, &state_dir, in_herdr, host);
+        let recorded = store.reload_merge_save(&mut state);
+        released.extend(launched.into_iter().map(|mut released| {
+            if let Err(error) = &recorded {
+                released.start = dispatch::unsaved(released.start, error.to_string());
+            }
+            released
+        }));
+        released.sort_by_key(|released| released.number);
+    }
+    Ok((result, released))
+}
+
 /// What `tsk status <task> started` did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartOutcome {
@@ -108,11 +208,13 @@ pub enum StartOutcome {
     Dispatched(StatusResult, Box<DispatchResult>),
 }
 
-/// How `started` may launch: `--again` relaunches a gone agent, `--no-dispatch` never launches.
+/// How `started` may launch: `--again` relaunches a gone agent, `--no-dispatch` never launches,
+/// `--force` starts a task whose prerequisites are not all done.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StartFlags {
     pub again: bool,
     pub no_dispatch: bool,
+    pub force: bool,
 }
 
 /// `tsk status <task> started` through the real host: launches where a start launches.
@@ -155,6 +257,19 @@ pub fn run_started_with_host(
     actor: &str,
     host: &mut impl DispatchHost,
 ) -> Result<StartOutcome, StatusError> {
+    if !flags.force {
+        let store = TaskStore::new(state_dir.clone().unwrap_or_else(default_state_dir));
+        let state = store
+            .load()
+            .map_err(|error| StatusError::Store(error.to_string()))?;
+        if let Some(task) = state.tasks().iter().find(|task| {
+            target.matches(task) && !task.soft_deleted && task.status != HumanStatus::Started
+        }) {
+            if let Some(waiting) = state.waiting_text(task) {
+                return Err(StatusError::AfterNotDone(waiting));
+            }
+        }
+    }
     let plain = |state_dir| {
         run(
             target,
@@ -457,6 +572,11 @@ mod start_tests {
         ran: usize,
         agent: Option<bool>,
         root: Option<crate::dispatch::RootPaneError>,
+        /// Every pane command fails, as a launch Herdr refuses.
+        refuse_launch: bool,
+        /// Another writer edits the task titled `second` in this store as its launch is refused,
+        /// so the save putting it back to ready meets a changed task.
+        edit_on_refusal: Option<PathBuf>,
     }
 
     impl DispatchHost for Host {
@@ -491,6 +611,23 @@ mod start_tests {
         }
 
         fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
+            if self.refuse_launch {
+                if let Some(dir) = self.edit_on_refusal.take() {
+                    let store = TaskStore::new(dir);
+                    let mut other = store.load().expect("load");
+                    let id = other
+                        .tasks()
+                        .iter()
+                        .find(|task| task.title == "second")
+                        .expect("second")
+                        .id;
+                    other
+                        .set_base(id, Some("other".into()))
+                        .expect("edit elsewhere");
+                    store.reload_merge_save(&mut other).expect("save elsewhere");
+                }
+                return Err("pane refused".into());
+            }
             self.ran += 1;
             Ok(())
         }
@@ -503,6 +640,7 @@ mod start_tests {
     const PLAIN: StartFlags = StartFlags {
         again: false,
         no_dispatch: false,
+        force: false,
     };
 
     #[test]
@@ -728,5 +866,160 @@ mod start_tests {
         assert!(matches!(outcome, StartOutcome::Status(_)));
         assert_eq!(temp.status(number), HumanStatus::Started);
         assert_eq!(host.ran, 0);
+    }
+
+    /// A prerequisite and an assigned ready task waiting on it, in one project.
+    fn released_pair(temp: &Temp) -> (u64, u64) {
+        let mut state = DomainState::new();
+        let scope = TaskScope::Project {
+            path: "/repos/app".into(),
+        };
+        let first = state
+            .create("first", None, scope.clone(), ProvenanceOrigin::Manual, None)
+            .expect("create");
+        let second = state
+            .create_assigned(
+                "second",
+                None,
+                scope,
+                ProvenanceOrigin::Manual,
+                None,
+                Some("builder".into()),
+            )
+            .expect("create");
+        temp.store().reload_merge_save(&mut state).expect("save");
+        let number = |id| state.get(id).and_then(|task| task.number).expect("number");
+        let (first_number, second_number) = (number(first), number(second));
+        state.set_after(second, &[first_number]).expect("after");
+        temp.store().reload_merge_save(&mut state).expect("save");
+        state.set_status(second, HumanStatus::Ready).expect("ready");
+        temp.store().reload_merge_save(&mut state).expect("save");
+        (first_number, second_number)
+    }
+
+    #[test]
+    fn a_done_dispatches_an_assigned_task_it_released() {
+        let temp = Temp::new("released-dispatch");
+        let (first, second) = released_pair(&temp);
+        let mut host = Host::default();
+        let (result, released) = run_done_with_host(
+            TaskAddress::Number(first),
+            Some(temp.0.clone()),
+            true,
+            "you",
+            &mut host,
+        )
+        .expect("done");
+        assert_eq!(result.status, HumanStatus::Done);
+        assert_eq!(host.ran, 1, "the waiting task's agent launched");
+        assert!(matches!(
+            released.as_slice(),
+            [dispatch::Released { number, after, start: dispatch::ReleasedStart::Dispatched(_) }]
+                if *number == second && *after == first
+        ));
+        assert_eq!(temp.status(first), HumanStatus::Done);
+        assert_eq!(temp.status(second), HumanStatus::Started);
+        let state = temp.store().load().expect("load");
+        let task = state
+            .tasks()
+            .iter()
+            .find(|task| task.number == Some(second))
+            .expect("task");
+        assert!(task.dispatch.is_some());
+        let event = task.history.last().expect("event");
+        assert_eq!(
+            event.detail.as_ref().and_then(|detail| detail.after),
+            Some(first)
+        );
+        assert_eq!(
+            dispatch::released_message(&released).as_deref(),
+            Some(format!("T{second} dispatched to @builder · T{first} done").as_str())
+        );
+    }
+
+    #[test]
+    fn a_failed_launch_keeps_the_released_task_ready_and_the_done() {
+        let temp = Temp::new("released-failed");
+        let (first, second) = released_pair(&temp);
+        let mut host = Host {
+            refuse_launch: true,
+            ..Host::default()
+        };
+        let (_, released) = run_done_with_host(
+            TaskAddress::Number(first),
+            Some(temp.0.clone()),
+            true,
+            "you",
+            &mut host,
+        )
+        .expect("the done stands");
+        assert!(matches!(
+            released.as_slice(),
+            [dispatch::Released {
+                start: dispatch::ReleasedStart::BackToReady(_),
+                ..
+            }]
+        ));
+        assert_eq!(temp.status(first), HumanStatus::Done);
+        assert_eq!(temp.status(second), HumanStatus::Ready);
+        let message = dispatch::released_message(&released).expect("message");
+        assert!(
+            message.starts_with(&format!("T{second} back to ready: ")),
+            "{message}"
+        );
+    }
+
+    /// The launch fails and the save putting the task back to ready fails too: the task stays
+    /// started on disk with no agent, and the CLI warns instead of failing the durable done.
+    #[test]
+    fn a_failed_launch_whose_rollback_cannot_save_says_it_is_started() {
+        let temp = Temp::new("released-rollback");
+        let (first, second) = released_pair(&temp);
+        let mut host = Host {
+            refuse_launch: true,
+            edit_on_refusal: Some(temp.0.clone()),
+            ..Host::default()
+        };
+        let (_, released) = run_done_with_host(
+            TaskAddress::Number(first),
+            Some(temp.0.clone()),
+            true,
+            "you",
+            &mut host,
+        )
+        .expect("the done stands");
+        assert_eq!(temp.status(first), HumanStatus::Done);
+        assert_eq!(temp.status(second), HumanStatus::Started);
+        let warnings = dispatch::released_warnings(&released);
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].starts_with(&format!(
+                "T{second} is started but no agent launched; couldn't save it back to ready: "
+            )),
+            "{warnings:?}"
+        );
+        let message = dispatch::released_message(&released).expect("message");
+        assert!(message.starts_with(&warnings[0]), "{message}");
+    }
+
+    #[test]
+    fn a_released_task_outside_herdr_starts_and_says_why() {
+        let temp = Temp::new("released-no-herdr");
+        let (first, second) = released_pair(&temp);
+        let mut host = Host::default();
+        let (_, released) = run_done_with_host(
+            TaskAddress::Number(first),
+            Some(temp.0.clone()),
+            false,
+            "you",
+            &mut host,
+        )
+        .expect("done");
+        assert_eq!(host.ran, 0);
+        assert_eq!(temp.status(second), HumanStatus::Started);
+        assert_eq!(
+            dispatch::released_message(&released).as_deref(),
+            Some(format!("T{second} started · no launch: not in Herdr · T{first} done").as_str())
+        );
     }
 }

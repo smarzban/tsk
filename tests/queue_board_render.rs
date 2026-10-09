@@ -52,6 +52,7 @@ fn task(id: u128, title: &str, status: HumanStatus, scope: TaskScope, secs_ago: 
         assignee: None,
         base: None,
         dispatch: None,
+        after: Vec::new(),
         status,
         block: None,
         past_blocks: Vec::new(),
@@ -319,9 +320,11 @@ fn palette_commands() -> Vec<PaletteCommandRow> {
             "set status: started",
             "set status: blocked",
             "set status: review",
+            "set after…",
         ],
         "the \"stat\" query against the real M1 catalog must narrow to exactly the five \
-         status commands (no dispatch, no other tail entry) -- if the product catalog \
+         status commands plus `set after…` (s-t-a-t is a subsequence of it; no dispatch, no \
+         other tail entry) -- if the product catalog \
          changed, this fixture must follow it, not be hand-patched"
     );
     for _ in 0..3 {
@@ -2373,7 +2376,10 @@ fn shift_tab_from_scope_resets_notes_stream_origin_and_aligns_caret() {
     .expect("Shift+Tab reaches Thread from Scope");
     assert_eq!(model.input_mode(), BoardInputMode::SelectThread);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
-        .expect("Shift+Tab reaches Base from Thread");
+        .expect("Shift+Tab reaches After from Thread");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectAfter);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
+        .expect("Shift+Tab reaches Base from After");
     assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
         .expect("Shift+Tab reaches Assignee from Base");
@@ -3602,6 +3608,7 @@ fn palette_golden_scene_commands_are_bound_to_the_real_m1_catalog_and_exclude_di
             "set status: started",
             "set status: blocked",
             "set status: review",
+            "set after…",
         ],
         "the palette golden scene's command rows must be exactly what \
          `BoardModel::visible_commands` produces for the fixture's selection and query, not \

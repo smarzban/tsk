@@ -1181,6 +1181,7 @@ fn resolve_save_recovery(model: &mut BoardModel, domain: &DomainState, resolutio
     let after_sync = |board: &mut BoardModel| {
         board.finish_form_assignee_sync(retried);
         board.finish_form_base_sync(retried);
+        board.finish_form_after_sync(retried);
         let cancelled_quick_add = board.end_save_recovery(resolution);
         if retried && !board.has_saved_task() {
             board.set_message("saved");
@@ -1344,6 +1345,7 @@ pub fn apply_board_intent_with_save_recovery(
     model.sync_from_domain(domain);
     model.finish_form_assignee_sync(true);
     model.finish_form_base_sync(true);
+    model.finish_form_after_sync(true);
     Ok(IntentOutcome::Persisted)
 }
 
@@ -2602,6 +2604,52 @@ pub fn finish_queued_cleanup_with_host(
     Ok(())
 }
 
+/// Save `domain` and start what its completions released, through the start route (plain, or
+/// a dispatch for an assigned task never dispatched), decided against the merged state under the
+/// save's lock. While a marked-set dispatch is landing nothing launches: a released assigned
+/// task stays ready and says so, since it may be in that batch.
+fn save_releasing(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    dispatch_running: bool,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<Vec<dispatch::Released>, crate::store::StoreError> {
+    dispatch::save_releasing_with_host(
+        store,
+        domain,
+        crate::domain::OWNER,
+        in_herdr,
+        dispatch_running.then_some(dispatch::NO_LAUNCH_DISPATCH_RUNNING),
+        host,
+    )
+}
+
+/// Once the save that carried them landed: name each launched agent and say what started.
+fn report_released(
+    released: &[dispatch::Released],
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
+) -> Option<String> {
+    for released in released {
+        if let dispatch::ReleasedStart::Dispatched(result)
+        | dispatch::ReleasedStart::Unrecorded(result, _) = &released.start
+        {
+            if let Some(naming) = result.naming.clone() {
+                name_agent(naming);
+            }
+        }
+    }
+    dispatch::released_message(released)
+}
+
+/// `message`, then what the completion released.
+fn with_released(message: String, note: Option<String>) -> String {
+    match note {
+        Some(note) => format!("{message} · {note}"),
+        None => message,
+    }
+}
+
 /// The board's single-task launch: `ctrl+s` on an assigned task never dispatched, `y` on the
 /// relaunch card (`again`), or the palette's **dispatch again**. Launches `target` through
 /// the real host and saves its record with `started`. A start that moved the status is
@@ -2884,6 +2932,37 @@ fn route_board_start(
     }
 }
 
+/// Open the start-anyway card when a start (`ctrl+s`, palette **set status: started**) would
+/// move a task that still waits on others: `T203 runs after T202 (started). Start anyway?`.
+/// The marks stay for the replay. `y` sets [`BoardModel::start_anyway`] for one pass.
+fn ask_before_starting_waiting(
+    domain: &DomainState,
+    model: &mut BoardModel,
+    intent: &BoardIntent,
+) -> bool {
+    if model.start_anyway {
+        return false;
+    }
+    let any_status = *intent != BoardIntent::PrimaryVerb;
+    let waiting: Vec<String> = model
+        .verb_target_ids()
+        .iter()
+        .filter_map(|id| domain.get(*id))
+        .filter(|task| !task.is_notice() && start_moves(task, any_status))
+        .filter_map(|task| domain.waiting_text(task))
+        .collect();
+    if waiting.is_empty() {
+        return false;
+    }
+    model.begin_dispatch_prompt(crate::ui::board::DispatchPrompt::start_anyway(
+        crate::ui::board::StartAnywayPrompt {
+            waiting,
+            intent: intent.clone(),
+        },
+    ));
+    true
+}
+
 /// The status row when a refresh before a start dropped or moved its target.
 const START_TARGET_CHANGED: &str = "that task changed elsewhere · nothing started";
 
@@ -2963,14 +3042,18 @@ fn approve_review(
             let Some(baseline) = load_baseline(store, model)? else {
                 return Ok(());
             };
-            if let Err(error) = store.reload_merge_save(domain) {
-                fail_board_save(domain, model, save_recovery, baseline, error.to_string());
-                return Ok(());
-            }
+            let dispatch_running = model.bulk_dispatch_running();
+            let released = match save_releasing(store, domain, dispatch_running, in_herdr, host) {
+                Ok(released) => released,
+                Err(error) => {
+                    fail_board_save(domain, model, save_recovery, baseline, error.to_string());
+                    return Ok(());
+                }
+            };
             model.sync_from_domain(domain);
-            model.set_message(format!(
-                "done T{} · worktree missing · branch kept",
-                result.number
+            model.set_message(with_released(
+                format!("done T{} · worktree missing · branch kept", result.number),
+                report_released(&released, name_agent),
             ));
             record_notice_dismissals_without_blocking_persist(store, domain);
             return Ok(());
@@ -3284,6 +3367,7 @@ pub fn open_bulk_dispatch_card(
         no_launch,
         any_status,
         relaunch: None,
+        start_anyway: None,
         git_checks,
         scroll: 0,
     });
@@ -3738,14 +3822,19 @@ fn handle_board_intent_with_host(
         match offer_bulk_cleanup_prompt_with_host(domain, model, in_herdr, host) {
             Ok(BulkCleanupOffer::Prompted) => return Ok(false),
             Ok(BulkCleanupOffer::MissingConverged { done, missing }) => {
-                if let Err(error) = store.reload_merge_save(domain) {
-                    fail_board_save(domain, model, save_recovery, baseline, error.to_string());
-                    return Ok(false);
-                }
+                let dispatch_running = model.bulk_dispatch_running();
+                let released = match save_releasing(store, domain, dispatch_running, in_herdr, host)
+                {
+                    Ok(released) => released,
+                    Err(error) => {
+                        fail_board_save(domain, model, save_recovery, baseline, error.to_string());
+                        return Ok(false);
+                    }
+                };
                 model.sync_from_domain(domain);
-                model.set_message(format!(
-                    "done {done} · {} already gone",
-                    plural(missing, "worktree")
+                model.set_message(with_released(
+                    format!("done {done} · {} already gone", plural(missing, "worktree")),
+                    report_released(&released, name_agent),
                 ));
                 record_notice_dismissals_without_blocking_persist(store, domain);
                 return Ok(false);
@@ -3767,14 +3856,25 @@ fn handle_board_intent_with_host(
             match offer_cleanup_prompt_with_host(domain, model, target, in_herdr, host) {
                 Ok(CleanupOffer::Prompted) => return Ok(false),
                 Ok(CleanupOffer::MissingConverged(result)) => {
-                    if let Err(error) = store.reload_merge_save(domain) {
-                        fail_board_save(domain, model, save_recovery, baseline, error.to_string());
-                        return Ok(false);
-                    }
+                    let dispatch_running = model.bulk_dispatch_running();
+                    let released =
+                        match save_releasing(store, domain, dispatch_running, in_herdr, host) {
+                            Ok(released) => released,
+                            Err(error) => {
+                                fail_board_save(
+                                    domain,
+                                    model,
+                                    save_recovery,
+                                    baseline,
+                                    error.to_string(),
+                                );
+                                return Ok(false);
+                            }
+                        };
                     model.sync_from_domain(domain);
-                    model.set_message(format!(
-                        "done T{} · worktree missing · branch kept",
-                        result.number
+                    model.set_message(with_released(
+                        format!("done T{} · worktree missing · branch kept", result.number),
+                        report_released(&released, name_agent),
                     ));
                     record_notice_dismissals_without_blocking_persist(store, domain);
                     return Ok(false);
@@ -3807,13 +3907,19 @@ fn handle_board_intent_with_host(
                 return Ok(false);
             }
         };
+        let dispatch_running = model.bulk_dispatch_running();
         // Completion is durable before any worktree is touched.
-        if let Err(error) = store.reload_merge_save(domain) {
-            model.close_popup();
-            fail_board_save(domain, model, save_recovery, baseline, error.to_string());
-            return Ok(false);
-        }
+        let released = match save_releasing(store, domain, dispatch_running, in_herdr, host) {
+            Ok(released) => released,
+            Err(error) => {
+                model.close_popup();
+                fail_board_save(domain, model, save_recovery, baseline, error.to_string());
+                return Ok(false);
+            }
+        };
         model.sync_from_domain(domain);
+        // The cleanup card owns the status row: its summary carries what started.
+        model.released_note = report_released(&released, name_agent);
         match confirmed {
             Some(CleanupConfirmed { run: Some(run), .. }) => {
                 model.begin_cleanup_run(run);
@@ -3834,6 +3940,29 @@ fn handle_board_intent_with_host(
     // scope and provenance: the reducer stores it on `model.capture_snapshot` at
     // open and reads it back at ConfirmEdit, so a `None` here is what silently turned board
     // `a` into a no-op save that still reported success.
+    // `y` on the start-anyway card: replay the start that asked, past the after check once.
+    if intent == BoardIntent::ConfirmDispatch && !save_recovery.is_pending() {
+        if let Some(start) = model
+            .dispatch_prompt()
+            .and_then(|prompt| prompt.start_anyway.clone())
+        {
+            model.take_dispatch_prompt();
+            model.start_anyway = true;
+            let replayed = handle_board_intent_with_host(
+                store,
+                domain,
+                model,
+                start.intent,
+                save_recovery,
+                quick_capture,
+                in_herdr,
+                host,
+                name_agent,
+            );
+            model.start_anyway = false;
+            return replayed;
+        }
+    }
     if intent == BoardIntent::ConfirmDispatch && !save_recovery.is_pending() {
         start_bulk_dispatch(
             store,
@@ -3884,6 +4013,17 @@ fn handle_board_intent_with_host(
             host,
             name_agent,
         );
+        return Ok(false);
+    }
+
+    // A start of a task that still waits on others asks first.
+    if matches!(
+        intent,
+        BoardIntent::PrimaryVerb | BoardIntent::SetStatus(HumanStatus::Started)
+    ) && !save_recovery.is_pending()
+        && !model.focus_is_archived()
+        && ask_before_starting_waiting(domain, model, &intent)
+    {
         return Ok(false);
     }
 
@@ -3964,6 +4104,9 @@ fn handle_board_intent_with_host(
         None
     };
 
+    // A completion the reducer made starts what it released, decided in the save.
+    let mut released = Vec::new();
+    let dispatch_running = model.bulk_dispatch_running();
     let outcome = apply_board_intent_presenting_rejection(
         domain,
         model,
@@ -3974,11 +4117,18 @@ fn handle_board_intent_with_host(
             snapshot: snapshot_for_intent,
         },
         |state| {
-            store
-                .reload_merge_save(state)
-                .map_err(|error| error.to_string())
+            released.extend(
+                save_releasing(store, state, dispatch_running, in_herdr, host)
+                    .map_err(|error| error.to_string())?,
+            );
+            Ok(())
         },
     );
+    if outcome == IntentOutcome::Persisted {
+        if let Some(note) = report_released(&released, name_agent) {
+            model.set_message(note);
+        }
+    }
     // A reply whose save failed keeps its start for save recovery: Retry resumes it, Cancel
     // drops it with the rolled-back reply.
     // A delivery waits on the same recovery: Retry sends it once, against a fresh check.
@@ -8875,6 +9025,7 @@ mod tests {
             BoardInputMode::TaskPage,
             BoardInputMode::EditAssignee,
             BoardInputMode::SelectBase,
+            BoardInputMode::SelectAfter,
             BoardInputMode::SelectThread,
             BoardInputMode::EditScope,
             BoardInputMode::EditTitle,
@@ -8885,6 +9036,7 @@ mod tests {
         for expected in [
             BoardInputMode::EditScope,
             BoardInputMode::SelectThread,
+            BoardInputMode::SelectAfter,
             BoardInputMode::SelectBase,
             BoardInputMode::EditAssignee,
             BoardInputMode::TaskPage,
@@ -8917,6 +9069,7 @@ mod tests {
             BoardInputMode::CapturePage,
             BoardInputMode::EditAssignee,
             BoardInputMode::SelectBase,
+            BoardInputMode::SelectAfter,
             BoardInputMode::EditThread,
             BoardInputMode::EditScope,
             BoardInputMode::EditTitle,
@@ -10283,6 +10436,10 @@ mod quick_assign_tests {
         cleanup: bool,
         /// The task's durable status and last reply on disk when each prompt was submitted.
         disk_at_prompt: Vec<(HumanStatus, Option<String>)>,
+        /// The store as saved when each worktree was created.
+        disk_at_launch: Vec<DomainState>,
+        /// Fail the next save of this store handle once a launch begins.
+        fail_save_at_launch: Option<TaskStore>,
     }
 
     impl DispatchHost for FakeHost {
@@ -10322,6 +10479,10 @@ mod quick_assign_tests {
             _: &str,
         ) -> Result<CreatedWorktree, String> {
             let disk = self.store.load().expect("load during launch");
+            self.disk_at_launch.push(disk.clone());
+            if let Some(store) = self.fail_save_at_launch.take() {
+                store.fail_next_save();
+            }
             self.replies_on_disk_at_launch
                 .extend(disk.tasks().iter().filter_map(|task| {
                     let block = task.block.as_ref().or(task.past_blocks.last())?;
@@ -10446,6 +10607,8 @@ mod quick_assign_tests {
             root_queries: Vec::new(),
             agent_queries: Vec::new(),
             disk_at_prompt: Vec::new(),
+            disk_at_launch: Vec::new(),
+            fail_save_at_launch: None,
             cleanup: false,
         }
     }
@@ -15662,6 +15825,1119 @@ mod quick_assign_tests {
                 ids
             );
         }
+    }
+
+    // ---- after: task dependencies (T207) ----
+
+    fn number_of(domain: &DomainState, id: uuid::Uuid) -> u64 {
+        domain.get(id).and_then(|task| task.number).expect("number")
+    }
+
+    fn status_of(domain: &DomainState, id: uuid::Uuid) -> HumanStatus {
+        domain.get(id).expect("task").status
+    }
+
+    /// `second` runs after `first`, saved, and is set to `status`.
+    fn link(
+        temp: &Temp,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        waiting: uuid::Uuid,
+        after: &[uuid::Uuid],
+        status: HumanStatus,
+    ) {
+        let numbers: Vec<u64> = after.iter().map(|id| number_of(domain, *id)).collect();
+        domain.set_after(waiting, &numbers).expect("after");
+        temp.store.reload_merge_save(domain).expect("save");
+        if status != HumanStatus::Open {
+            domain.set_status(waiting, status).expect("status");
+            temp.store.reload_merge_save(domain).expect("save");
+        }
+        model.sync_from_domain(domain);
+    }
+
+    #[test]
+    fn a_done_on_the_board_starts_the_ready_task_it_released_and_undo_reverts_both() {
+        let temp = Temp::new("after-done", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second", "third"]);
+        let mut host = fake_host(&temp);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[2],
+            &[ids[0]],
+            HumanStatus::Open,
+        );
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Started, "same save");
+        assert_eq!(
+            status_of(&disk, ids[2]),
+            HumanStatus::Open,
+            "open does not move"
+        );
+        assert_eq!(
+            model.message(),
+            Some(format!("T{second} started · T{first} done").as_str())
+        );
+        let trail = crate::activity::paper_trail(disk.get(ids[1]).expect("task"));
+        assert_eq!(trail[0].text, format!("started · after T{first}"));
+        assert_eq!(host.ran, 0, "unassigned: no launch");
+
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Open);
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Ready);
+        assert_eq!(
+            model.message(),
+            Some(format!("done undone · T{second} back to ready").as_str())
+        );
+    }
+
+    #[test]
+    fn a_done_dispatches_an_assigned_released_task_and_undo_keeps_its_agent() {
+        let temp = Temp::new("after-dispatch", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        domain
+            .assign(ids[1], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        assert_eq!(host.ran, 1, "the released task's agent launched");
+        let disk = temp.store.load().expect("load");
+        let task = disk.get(ids[1]).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        assert!(
+            task.dispatch.is_some(),
+            "dispatch recorded right after the done"
+        );
+        assert_eq!(
+            model.message(),
+            Some(format!("T{second} dispatched to @builder · T{first} done").as_str())
+        );
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Ready);
+        assert!(disk.get(ids[1]).expect("task").dispatch.is_some());
+        assert_eq!(
+            model.message(),
+            Some(format!("done undone · T{second} back to ready · @builder kept running").as_str())
+        );
+    }
+
+    #[test]
+    fn a_failed_released_launch_keeps_the_task_ready_and_the_done() {
+        let temp = Temp::new("after-failed", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        host.fail_launch = Some("herdr refused".into());
+        domain
+            .assign(ids[1], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let second = number_of(&domain, ids[1]);
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Ready);
+        assert!(
+            model
+                .message()
+                .is_some_and(|message| message.starts_with(&format!("T{second} back to ready: "))),
+            "{:?}",
+            model.message()
+        );
+    }
+
+    /// Another writer completed one prerequisite after the board last read the store: the
+    /// release is decided against the merged state, so the board's done of the other one still
+    /// starts the waiting task.
+    #[test]
+    fn a_done_releases_against_a_prerequisite_another_writer_completed() {
+        let temp = Temp::new("after-merged", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second", "third"]);
+        let mut host = fake_host(&temp);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[2],
+            &[ids[0], ids[1]],
+            HumanStatus::Ready,
+        );
+        let mut other = temp.store.load().expect("load");
+        other
+            .set_status(ids[1], HumanStatus::Done)
+            .expect("done elsewhere");
+        temp.store
+            .reload_merge_save(&mut other)
+            .expect("save elsewhere");
+        assert_eq!(
+            status_of(&domain, ids[1]),
+            HumanStatus::Open,
+            "the board has not read it"
+        );
+
+        let (first, third) = (number_of(&domain, ids[0]), number_of(&domain, ids[2]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Done);
+        assert_eq!(status_of(&disk, ids[2]), HumanStatus::Started);
+        assert_eq!(
+            model.message(),
+            Some(format!("T{third} started · T{first} done").as_str())
+        );
+    }
+
+    /// While a marked-set dispatch is still landing (it may be launching this very task), a
+    /// released assigned task stays ready and says how to start it.
+    #[test]
+    fn a_released_task_never_launches_while_a_bulk_dispatch_runs() {
+        let temp = Temp::new("after-bulk-running", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        domain
+            .assign(ids[1], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        model.begin_bulk_dispatch(crate::ui::board::BulkDispatchRun::new(
+            dispatch::LaunchBatch::new(1),
+            1,
+        ));
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        assert_eq!(host.ran, 0, "no second launch beside the running batch");
+        let disk = temp.store.load().expect("load");
+        let task = disk.get(ids[1]).expect("task");
+        assert_eq!(task.status, HumanStatus::Ready, "it waits for a start");
+        assert!(task.dispatch.is_none());
+        assert_eq!(
+            model.message(),
+            Some(
+                format!("T{second} waits: a dispatch is running; ctrl+s starts it · T{first} done")
+                    .as_str()
+            )
+        );
+    }
+
+    /// Two marked prerequisites of one assigned ready task, completed together: one launch, one
+    /// released row, and one undo puts all three back.
+    #[test]
+    fn a_marked_done_of_two_prerequisites_launches_their_dependent_once() {
+        let temp = Temp::new("after-marked-done", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second", "third"]);
+        let mut host = fake_host(&temp);
+        domain
+            .assign(ids[2], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[2],
+            &[ids[0], ids[1]],
+            HumanStatus::Ready,
+        );
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None).expect("marks");
+        for id in [ids[0], ids[1]] {
+            select(&mut domain, &mut model, id);
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        }
+        let (first, second, third) = (
+            number_of(&domain, ids[0]),
+            number_of(&domain, ids[1]),
+            number_of(&domain, ids[2]),
+        );
+        let saves = temp.store.durable_saves();
+        let undo = temp.store.load().expect("load").undo_len();
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        assert_eq!(host.ran, 1, "one launch for the shared dependent");
+        assert_eq!(
+            temp.store.durable_saves() - saves,
+            2,
+            "the dones and the start, then the dispatch record"
+        );
+        let first_save = &host.disk_at_launch[0];
+        assert_eq!(status_of(first_save, ids[0]), HumanStatus::Done);
+        assert_eq!(status_of(first_save, ids[1]), HumanStatus::Done);
+        assert_eq!(status_of(first_save, ids[2]), HumanStatus::Started);
+        assert!(first_save.get(ids[2]).expect("task").dispatch.is_none());
+        let disk = temp.store.load().expect("load");
+        assert!(disk.get(ids[2]).expect("task").dispatch.is_some());
+        assert_eq!(disk.undo_len(), undo + 1, "one undo entry");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Done);
+        assert_eq!(status_of(&disk, ids[2]), HumanStatus::Started);
+        let message = model.message().expect("message").to_string();
+        assert_eq!(
+            message.matches(&format!("T{third} dispatched")).count(),
+            1,
+            "{message}"
+        );
+        assert!(
+            message.ends_with(&format!("T{second} done"))
+                || message.ends_with(&format!("T{first} done")),
+            "{message}"
+        );
+
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Open);
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Open);
+        assert_eq!(status_of(&disk, ids[2]), HumanStatus::Ready);
+        assert_eq!(host.ran, 1, "undo launches nothing");
+    }
+
+    /// The done's first save fails after the merge decided the release: Retry decides again and
+    /// launches the assigned dependent exactly once; Cancel drops the done and launches nothing.
+    #[test]
+    fn a_failed_first_save_retries_the_release_and_launches_once() {
+        for retry in [true, false] {
+            let temp = Temp::new("after-first-save", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+            let mut host = fake_host(&temp);
+            domain
+                .assign(ids[1], Some("builder".into()))
+                .expect("assign");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            link(
+                &temp,
+                &mut domain,
+                &mut model,
+                ids[1],
+                &[ids[0]],
+                HumanStatus::Ready,
+            );
+            select(&mut domain, &mut model, ids[0]);
+            let mut recovery = SaveRecovery::new();
+            let step = |domain: &mut DomainState,
+                        model: &mut BoardModel,
+                        recovery: &mut SaveRecovery<DomainState>,
+                        host: &mut FakeHost,
+                        intent: BoardIntent| {
+                handle_board_intent_with_host(
+                    &temp.store,
+                    domain,
+                    model,
+                    intent,
+                    recovery,
+                    false,
+                    true,
+                    host,
+                    &mut |_| {},
+                )
+                .expect("board intent");
+            };
+            temp.store.fail_next_save();
+            step(
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                &mut host,
+                BoardIntent::Complete,
+            );
+            assert!(recovery.is_pending(), "the first save failed");
+            assert_eq!(host.ran, 0, "nothing launches before the done is durable");
+            let resolve = if retry {
+                BoardIntent::RetrySave
+            } else {
+                BoardIntent::CancelSave
+            };
+            step(&mut domain, &mut model, &mut recovery, &mut host, resolve);
+            assert!(!recovery.is_pending());
+            let disk = temp.store.load().expect("load");
+            if retry {
+                assert_eq!(host.ran, 1, "Retry launches exactly once");
+                assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
+                let task = disk.get(ids[1]).expect("task");
+                assert_eq!(task.status, HumanStatus::Started);
+                assert!(task.dispatch.is_some());
+            } else {
+                assert_eq!(host.ran, 0, "Cancel launches nothing");
+                assert_eq!(status_of(&disk, ids[0]), HumanStatus::Open);
+                assert_eq!(status_of(&disk, ids[1]), HumanStatus::Ready);
+                step(
+                    &mut domain,
+                    &mut model,
+                    &mut recovery,
+                    &mut host,
+                    BoardIntent::SelectNext,
+                );
+                assert!(domain.take_pending_launches().is_empty());
+            }
+        }
+    }
+
+    /// The launch succeeded but the save recording it failed: the done and the start are already
+    /// durable, so the board does not enter save recovery; it says the agent runs unrecorded.
+    #[test]
+    fn a_failed_record_save_reports_the_running_agent_without_recovery() {
+        let temp = Temp::new("after-record-save", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        domain
+            .assign(ids[1], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        host.fail_save_at_launch = Some(temp.store.clone());
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        assert_eq!(host.ran, 1);
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
+        let task = disk.get(ids[1]).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        assert!(task.dispatch.is_none(), "the record did not save");
+        let message = model.message().expect("message").to_string();
+        assert!(
+            message.starts_with(&format!(
+                "T{second} started · @builder is running but its record did not save · worktree "
+            )) && message.ends_with(&format!("T{first} done")),
+            "{message}"
+        );
+    }
+
+    /// The launch fails and the save putting the task back to ready fails too: the done stands,
+    /// the task is started on disk with no agent, and the status row says so.
+    #[test]
+    fn a_failed_launch_whose_rollback_cannot_save_says_it_is_started() {
+        let temp = Temp::new("after-rollback-save", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        host.fail_launch = Some("herdr refused".into());
+        host.fail_save_at_launch = Some(temp.store.clone());
+        domain
+            .assign(ids[1], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Started);
+        assert_eq!(
+            model.message(),
+            Some(
+                format!(
+                    "T{second} is started but no agent launched; couldn't save it back to ready: \
+                     store I/O error: injected save failure · T{first} done"
+                )
+                .as_str()
+            )
+        );
+    }
+
+    /// A released task dispatched before: a gone agent starts it without a relaunch, and Herdr
+    /// that cannot answer starts it plainly. Neither launches.
+    #[test]
+    fn a_released_task_with_an_earlier_dispatch_never_relaunches() {
+        for (gone, label) in [(true, "after-gone"), (false, "after-unreachable")] {
+            let temp = Temp::new(label, &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+            let mut host = fake_host(&temp);
+            dispatched_before(&temp, &mut domain, &mut model, ids[1], HumanStatus::Ready);
+            link(
+                &temp,
+                &mut domain,
+                &mut model,
+                ids[1],
+                &[ids[0]],
+                HumanStatus::Ready,
+            );
+            host.workspace_gone = gone;
+            host.root_failed = !gone;
+            let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+            select(&mut domain, &mut model, ids[0]);
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::Complete,
+                &mut host,
+            );
+            assert_eq!(host.ran, 0, "{label}: no launch");
+            assert_eq!(host.launched, 0, "{label}: no worktree");
+            let disk = temp.store.load().expect("load");
+            assert_eq!(status_of(&disk, ids[1]), HumanStatus::Started, "{label}");
+            let expected = if gone {
+                format!("T{second} started · @builder gone, not relaunched · T{first} done")
+            } else {
+                format!("T{second} started · T{first} done")
+            };
+            assert_eq!(model.message(), Some(expected.as_str()), "{label}");
+        }
+    }
+
+    #[test]
+    fn ctrl_s_on_a_waiting_task_asks_first_and_y_starts_it_esc_does_not() {
+        let temp = Temp::new("after-ask", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[1]);
+        let start = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, start.clone(), &mut host);
+        let waiting = model
+            .dispatch_prompt()
+            .and_then(|prompt| prompt.start_anyway.clone())
+            .expect("the start-anyway card")
+            .waiting;
+        assert_eq!(
+            waiting,
+            vec![format!("T{second} runs after T{first} (open)")]
+        );
+        assert_eq!(status_of(&domain, ids[1]), HumanStatus::Ready);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::CancelDispatch,
+            &mut host,
+        );
+        assert!(model.dispatch_prompt().is_none());
+        assert_eq!(
+            status_of(&temp.store.load().expect("load"), ids[1]),
+            HumanStatus::Ready
+        );
+
+        handle(&temp, &mut domain, &mut model, start, &mut host);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmDispatch,
+            &mut host,
+        );
+        assert_eq!(
+            status_of(&temp.store.load().expect("load"), ids[1]),
+            HumanStatus::Started
+        );
+        assert!(!model.start_anyway, "the pass is one start only");
+    }
+
+    #[test]
+    fn deleting_a_prerequisite_unlinks_says_so_and_undo_restores_the_link() {
+        let temp = Temp::new("after-delete", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::SoftDelete,
+            &mut host,
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::SoftDelete,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert!(disk.get(ids[0]).expect("task").soft_deleted);
+        assert!(disk.get(ids[1]).expect("task").after.is_empty());
+        assert_eq!(
+            status_of(&disk, ids[1]),
+            HumanStatus::Ready,
+            "no auto-start"
+        );
+        assert_eq!(
+            model.message(),
+            Some(format!("T{second} no longer waits (T{first} deleted)").as_str())
+        );
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let disk = temp.store.load().expect("load");
+        assert!(!disk.get(ids[0]).expect("task").soft_deleted);
+        assert_eq!(disk.get(ids[1]).expect("task").after, vec![first]);
+    }
+
+    #[test]
+    fn the_cleanup_card_starts_what_its_done_released() {
+        let temp = Temp::new("after-cleanup", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        host.cleanup = true;
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Review);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        assert!(model.cleanup_prompt().is_some(), "the cleanup card opens");
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::KeepCleanup,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Started);
+        assert_eq!(
+            model.message(),
+            Some(
+                format!("done T{first} · worktree kept · T{second} started · T{first} done")
+                    .as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn chain_in_order_follows_the_mark_order_as_one_undo() {
+        let temp = Temp::new("after-chain", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second", "third"]);
+        let mut host = fake_host(&temp);
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None).expect("marks");
+        for id in [ids[2], ids[0], ids[1]] {
+            select(&mut domain, &mut model, id);
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        }
+        // Through the palette, which owns input while it lists the command.
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenCommandPalette,
+            None,
+        )
+        .expect("palette");
+        let index = model
+            .visible_commands()
+            .iter()
+            .position(|command| command.label == "chain in order")
+            .expect("the open palette offers chain in order");
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectCommand(index),
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        let n = |id| number_of(&disk, id);
+        assert_eq!(disk.get(ids[0]).expect("task").after, vec![n(ids[2])]);
+        assert_eq!(disk.get(ids[1]).expect("task").after, vec![n(ids[0])]);
+        assert!(disk.get(ids[2]).expect("task").after.is_empty());
+        assert_eq!(
+            model.message(),
+            Some(format!("chained T{} → T{} → T{}", n(ids[2]), n(ids[0]), n(ids[1])).as_str())
+        );
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let disk = temp.store.load().expect("load");
+        assert!(ids
+            .iter()
+            .all(|id| disk.get(*id).expect("task").after.is_empty()));
+    }
+
+    #[test]
+    fn the_task_picker_ticks_several_and_refuses_a_loop() {
+        let temp = Temp::new("after-picker", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second", "third"]);
+        let mut host = fake_host(&temp);
+        let n = |domain: &DomainState, index: usize| number_of(domain, ids[index]);
+        select(&mut domain, &mut model, ids[1]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAfterPicker,
+            &mut host,
+        );
+        assert_eq!(model.list_picker_kind(), Some(ListPickerKind::After));
+        let labels: Vec<String> = model
+            .visible_list_picker_options()
+            .into_iter()
+            .map(|(_, option)| option.label)
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                format!("  T{} first", n(&domain, 0)),
+                format!("  T{} third", n(&domain, 2)),
+                "none".to_string()
+            ],
+            "the task itself is not offered"
+        );
+        for intent in [
+            BoardIntent::ListPickerQueryInsert(' '),
+            BoardIntent::ListPickerNext,
+            BoardIntent::ListPickerQueryInsert(' '),
+        ] {
+            handle(&temp, &mut domain, &mut model, intent, &mut host);
+        }
+        assert!(model
+            .visible_list_picker_options()
+            .iter()
+            .all(|(_, option)| option.label.starts_with("✓ ") || option.label == "none"));
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert_eq!(
+            disk.get(ids[1]).expect("task").after,
+            vec![n(&disk, 0), n(&disk, 2)]
+        );
+
+        // T1 after T2 would close a loop: refused, the picker stays open.
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAfterPicker,
+            &mut host,
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            &mut host,
+        );
+        assert_eq!(
+            model.message(),
+            Some(format!("T{} already runs after T{}", n(&domain, 1), n(&domain, 0)).as_str())
+        );
+        assert_eq!(model.list_picker_kind(), Some(ListPickerKind::After));
+        assert!(temp
+            .store
+            .load()
+            .expect("load")
+            .get(ids[0])
+            .expect("task")
+            .after
+            .is_empty());
+    }
+
+    #[test]
+    fn the_page_after_field_saves_with_the_edit() {
+        let temp = Temp::new("after-page", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        select(&mut domain, &mut model, ids[1]);
+        for intent in [
+            BoardIntent::OpenTaskPage,
+            BoardIntent::BeginEditTitle,
+            BoardIntent::FocusFormField(crate::ui::capture::CaptureField::After),
+        ] {
+            handle(&temp, &mut domain, &mut model, intent, &mut host);
+        }
+        assert_eq!(model.input_mode(), BoardInputMode::SelectAfter);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAfterPicker,
+            &mut host,
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            &mut host,
+        );
+        assert_eq!(
+            model.input_mode(),
+            BoardInputMode::SelectAfter,
+            "back on the field"
+        );
+        assert!(
+            temp.store
+                .load()
+                .expect("load")
+                .get(ids[1])
+                .expect("task")
+                .after
+                .is_empty(),
+            "a draft until the edit saves"
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmEdit,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        let task = disk.get(ids[1]).expect("task");
+        assert_eq!(task.after, vec![number_of(&disk, ids[0])]);
+        assert_eq!(
+            crate::activity::paper_trail(task)[0].text,
+            "after edited",
+            "one edit event names the field"
+        );
+    }
+
+    /// A task-picker change from the open task page whose save failed and was retried reaches
+    /// the page's form, so a later page save keeps the link instead of reverting it.
+    #[test]
+    fn a_retried_picker_save_syncs_the_page_form_after() {
+        let temp = Temp::new("after-retry", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        let first = number_of(&domain, ids[0]);
+        select(&mut domain, &mut model, ids[1]);
+        for intent in [BoardIntent::OpenTaskPage, BoardIntent::OpenAfterPicker] {
+            handle(&temp, &mut domain, &mut model, intent, &mut host);
+        }
+        let mut recovery = SaveRecovery::new();
+        let baseline = domain.clone();
+        apply_board_intent_with_save_recovery(
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardSaveContext {
+                baseline,
+                intent: BoardIntent::ConfirmListPicker,
+                snapshot: None,
+            },
+            |_| Err("disk full".into()),
+        )
+        .expect("failed save enters recovery");
+        assert!(recovery.is_pending());
+        apply_board_intent_with_save_recovery(
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardSaveContext {
+                baseline: DomainState::new(),
+                intent: BoardIntent::RetrySave,
+                snapshot: None,
+            },
+            |state| {
+                temp.store
+                    .reload_merge_save(state)
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .expect("retry");
+        assert!(!recovery.is_pending());
+        for intent in [
+            BoardIntent::BeginEditTitle,
+            BoardIntent::EditInsertText(" renamed".into()),
+            BoardIntent::ConfirmEdit,
+        ] {
+            handle(&temp, &mut domain, &mut model, intent, &mut host);
+        }
+        let disk = temp.store.load().expect("load");
+        let task = disk.get(ids[1]).expect("task");
+        assert_eq!(task.title, "second renamed");
+        assert_eq!(task.after, vec![first], "the page save kept the link");
+    }
+
+    #[test]
+    fn quick_add_w_runs_after_a_task_and_refuses_unknown_or_done_keeping_the_draft() {
+        let temp = Temp::new("after-quick-add", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first"]);
+        let mut host = fake_host(&temp);
+        let first = number_of(&domain, ids[0]);
+        let type_line =
+            |domain: &mut DomainState, model: &mut BoardModel, host: &mut FakeHost, text: &str| {
+                handle(&temp, domain, model, BoardIntent::OpenCapture, host);
+                let text = BoardIntent::QuickAddInsertText(text.to_string());
+                handle(&temp, domain, model, text, host);
+                handle(&temp, domain, model, BoardIntent::QuickAddSave, host);
+            };
+        let done = {
+            let id = domain
+                .create(
+                    "already done",
+                    None,
+                    TaskScope::Project {
+                        path: PROJECT.into(),
+                    },
+                    ProvenanceOrigin::Manual,
+                    None,
+                )
+                .expect("create");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            domain.set_status(id, HumanStatus::Done).expect("done");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            model.sync_from_domain(&domain);
+            number_of(&domain, id)
+        };
+        for (line, refusal) in [
+            (
+                "Waits !w T99".to_string(),
+                "T99 is not on the board".to_string(),
+            ),
+            (
+                format!("Waits !w T{done}"),
+                format!("T{done} is already done"),
+            ),
+        ] {
+            type_line(&mut domain, &mut model, &mut host, &line);
+            assert_eq!(model.message(), Some(refusal.as_str()));
+            assert_eq!(
+                model.input_mode(),
+                BoardInputMode::QuickAdd,
+                "the draft stays"
+            );
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::CancelQuickAdd,
+                &mut host,
+            );
+        }
+        type_line(
+            &mut domain,
+            &mut model,
+            &mut host,
+            &format!("Waits !w {first}"),
+        );
+        let disk = temp.store.load().expect("load");
+        let created = disk
+            .tasks()
+            .iter()
+            .find(|task| task.title == "Waits")
+            .expect("created");
+        assert_eq!(created.after, vec![first]);
+    }
+
+    /// `!w` carried onto the expanded quick-add page saves with the form; a prerequisite done
+    /// before that save refuses it and keeps the page open.
+    #[test]
+    fn quick_add_w_survives_expanding_and_saves_from_the_page() {
+        let temp = Temp::new("after-expand", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        let expand =
+            |domain: &mut DomainState, model: &mut BoardModel, host: &mut FakeHost, text: &str| {
+                handle(&temp, domain, model, BoardIntent::OpenCapture, host);
+                let text = BoardIntent::QuickAddInsertText(text.to_string());
+                handle(&temp, domain, model, text, host);
+                handle(&temp, domain, model, BoardIntent::ExpandQuickAdd, host);
+            };
+        expand(
+            &mut domain,
+            &mut model,
+            &mut host,
+            &format!("Expanded !w T{first}"),
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmEdit,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        let created = disk
+            .tasks()
+            .iter()
+            .find(|task| task.title == "Expanded")
+            .expect("created from the page");
+        assert_eq!(created.after, vec![first]);
+
+        expand(
+            &mut domain,
+            &mut model,
+            &mut host,
+            &format!("Late !w T{second}"),
+        );
+        domain.set_status(ids[1], HumanStatus::Done).expect("done");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        let mode = model.input_mode();
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmEdit,
+            &mut host,
+        );
+        assert_eq!(
+            model.message(),
+            Some(format!("T{second} is already done").as_str())
+        );
+        assert_eq!(model.input_mode(), mode, "the page stays open");
+        assert!(temp
+            .store
+            .load()
+            .expect("load")
+            .tasks()
+            .iter()
+            .all(|task| task.title != "Late"));
+    }
+
+    #[test]
+    fn a_waiting_row_shows_after_and_its_peek_shows_status_and_before() {
+        let temp = Temp::new("after-row", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let first = number_of(&domain, ids[0]);
+        let (screen, _) = board_screen(&model, 80, 24);
+        assert!(screen.contains(&format!("after T{first}")), "{screen}");
+        select(&mut domain, &mut model, ids[1]);
+        apply_intent(&mut domain, &mut model, BoardIntent::PeekDetail, None).expect("peek");
+        let (screen, _) = board_screen(&model, 80, 24);
+        assert!(
+            screen.contains(&format!("after T{first} · open")),
+            "{screen}"
+        );
+        domain.set_status(ids[0], HumanStatus::Done).expect("done");
+        model.sync_from_domain(&domain);
+        let (screen, _) = board_screen(&model, 80, 24);
+        assert!(
+            !screen
+                .lines()
+                .any(|line| line.contains("second") && line.contains("after T")),
+            "gone once every prerequisite is done: {screen}"
+        );
     }
 }
 

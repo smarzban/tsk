@@ -171,7 +171,11 @@ pub fn event_text(event: &TaskEvent) -> Option<String> {
     };
     Some(match event.kind {
         TaskEventKind::Created => "created".to_string(),
-        TaskEventKind::StatusSet => status().unwrap_or_else(|| "status changed".to_string()),
+        TaskEventKind::StatusSet => match detail.and_then(|detail| detail.after) {
+            // A start its last prerequisite's completion made.
+            Some(after) => format!("started · after T{after}"),
+            None => status().unwrap_or_else(|| "status changed".to_string()),
+        },
         TaskEventKind::Completed => status().unwrap_or_else(|| "done".to_string()),
         TaskEventKind::Reopened => status().unwrap_or_else(|| "reopened".to_string()),
         TaskEventKind::Edited => match detail {
@@ -213,6 +217,9 @@ pub fn event_text(event: &TaskEvent) -> Option<String> {
                     text.push_str(" @ ");
                     text.push_str(sha);
                 }
+                if let Some(after) = detail.after {
+                    text.push_str(&format!(" · after T{after}"));
+                }
                 text
             }
         },
@@ -251,6 +258,7 @@ fn field_list(fields: &[EditedField]) -> String {
             EditedField::Notes => "notes",
             EditedField::Thread => "thread",
             EditedField::Project => "project",
+            EditedField::After => "after",
         })
         .collect();
     match names.split_last() {

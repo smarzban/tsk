@@ -178,6 +178,7 @@ pub fn add_help() -> CliOutput {
             "invalid-title".into(),
             "invalid-thread (JSON plan)".into(),
             "invalid-item (JSON plan)".into(),
+            "invalid-after (JSON plan)".into(),
             "unknown-project".into(),
             "unknown-agent".into(),
             "unknown-base".into(),
@@ -305,6 +306,8 @@ fn list_json(result: &ListResult) -> String {
             assignee: &'a Option<String>,
             base: &'a Option<String>,
             thread: &'a Option<String>,
+            after: &'a [crate::cli::list::AfterLink],
+            before: &'a [u64],
             #[serde(skip_serializing_if = "Option::is_none")]
             dispatch: Option<&'a crate::domain::Dispatch>,
             #[serde(skip_serializing_if = "Option::is_none")]
@@ -330,6 +333,8 @@ fn list_json(result: &ListResult) -> String {
             assignee: &row.assignee,
             base: &row.base,
             thread: &row.thread,
+            after: &row.after,
+            before: &row.before,
             dispatch: direct.dispatch.as_ref(),
             block: direct.block.as_ref().filter(blocks).map(BlockJson::from),
             past_blocks: direct
@@ -699,6 +704,38 @@ fn append_direct_details(
         }
         let base = terminal_text(&format!("⎇ {base}"));
         append_wrapped(output, &detail_prefix, &detail_prefix, &base, output_width);
+        has_prior = true;
+    }
+    for (word, numbers) in [
+        (
+            "after",
+            row.after
+                .iter()
+                .map(|link| {
+                    if link.done {
+                        format!("T{} (done)", link.task)
+                    } else {
+                        format!("T{}", link.task)
+                    }
+                })
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "before",
+            row.before
+                .iter()
+                .map(|number| format!("T{number}"))
+                .collect(),
+        ),
+    ] {
+        if numbers.is_empty() {
+            continue;
+        }
+        if has_prior {
+            output.push('\n');
+        }
+        let line = format!("{word} {}", numbers.join(", "));
+        append_wrapped(output, &detail_prefix, &detail_prefix, &line, output_width);
         has_prior = true;
     }
     if let Some(thread) = thread {
@@ -1390,11 +1427,11 @@ pub fn status_help() -> CliOutput {
     help(HelpDoc {
         usage: vec![
             "tsk status <task> <status> [--clean] [--state-dir <dir>]".into(),
-            "tsk status <task> started [--again | --no-dispatch] [--state-dir <dir>]".into(),
+            "tsk status <task> started [--again | --no-dispatch] [--force] [--state-dir <dir>]".into(),
             "tsk status <task> blocked --why <text> [--needs <text>] [--option <text>]... [--on you|T<n>|<text>]".into(),
             "tsk status <task> review --done <text> [--check <text>]... [--next <text>] [--on you|<agent>|<text>]".into(),
         ],
-        purpose: "Set a task's human status, optionally cleaning its dispatch after done persists. Block with a reason so the owner can answer it, or put work up for review with what was done and what to check; running review again while in review updates the same round. Starting an assigned task that was never dispatched dispatches it, like tsk dispatch."
+        purpose: "Set a task's human status, optionally cleaning its dispatch after done persists. Block with a reason so the owner can answer it, or put work up for review with what was done and what to check; running review again while in review updates the same round. Starting an assigned task that was never dispatched dispatches it, like tsk dispatch. A task that runs after others refuses to start until they are done unless forced; setting the last of them done starts each waiting ready task the same way."
             .into(),
         groups: vec![
             group(
@@ -1416,6 +1453,10 @@ pub fn status_help() -> CliOutput {
                     (
                         "--no-dispatch",
                         "with started, only set the status, never launch an agent",
+                    ),
+                    (
+                        "--force",
+                        "with started, start even though tasks it runs after are not done",
                     ),
                     ("--state-dir <dir>", "use another board store"),
                 ],
@@ -1465,6 +1506,7 @@ pub fn status_help() -> CliOutput {
             "soft-deleted-task".into(),
             "text-too-long".into(),
             "invalid-blocker".into(),
+            "after-not-done".into(),
             "agent-gone".into(),
             "needs-git-project".into(),
             "unknown-agent".into(),
@@ -1610,6 +1652,10 @@ pub fn status_usage(reason: &str) -> CliOutput {
 pub fn status_rejected(error: StatusError, task: TaskAddress) -> CliOutput {
     let (detail, code) = match error {
         StatusError::Store(detail) => (detail, 3),
+        StatusError::AfterNotDone(waiting) => (
+            format!("after-not-done: {waiting}; --force starts it anyway"),
+            1,
+        ),
         StatusError::AgentGone(assignee) => (
             format!(
                 "agent-gone: @{} is no longer running for {}; --again relaunches it, --no-dispatch only sets the status",
@@ -1643,9 +1689,9 @@ pub fn status_rejected(error: StatusError, task: TaskAddress) -> CliOutput {
 pub fn edit_help() -> CliOutput {
     help(HelpDoc {
         usage: vec![
-            "tsk edit <task> [--title <title>] [--notes <notes>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--state-dir <dir>]".into(),
+            "tsk edit <task> [--title <title>] [--notes <notes>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--after <task>]... [--clear-after] [--state-dir <dir>]".into(),
         ],
-        purpose: "Update a task's title, notes, assignee, or dispatch base without changing its scope or thread.".into(),
+        purpose: "Update a task's title, notes, assignee, dispatch base, or the tasks it runs after, without changing its scope or thread.".into(),
         groups: vec![group(
             "Values",
             &[
@@ -1656,6 +1702,11 @@ pub fn edit_help() -> CliOutput {
                 ("--unassign", "clear the assignee"),
                 ("--base <branch>", "set an existing project branch as the dispatch base"),
                 ("--clear-base", "return to the project's remote default branch"),
+                (
+                    "--after <task>",
+                    "run after this task (repeatable; replaces the list); it starts when the last one is done",
+                ),
+                ("--clear-after", "run after nothing"),
                 ("--state-dir <dir>", "use another board store"),
                 (
                     "--flag=<value>",
@@ -1666,6 +1717,7 @@ pub fn edit_help() -> CliOutput {
         examples: vec![
             "tsk edit T12 --title \"Fix timeout on slow connections\"".into(),
             "tsk edit T12 --notes \"Reproduced with a delayed response\"".into(),
+            "tsk edit T13 --after T12 --after T9".into(),
         ],
         refusals: vec![
             "unknown-task".into(),
@@ -1674,6 +1726,8 @@ pub fn edit_help() -> CliOutput {
             "invalid-title".into(),
             "unknown-agent".into(),
             "unknown-base".into(),
+            "invalid-after (the task itself, not on the board, or done)".into(),
+            "after-loop (T12 already runs after T13)".into(),
         ],
         exit: exit_line(
             "fields written, or already had the values",
@@ -1709,6 +1763,8 @@ pub fn edit_usage(reason: &str) -> CliOutput {
 pub fn edit_rejected(error: EditError, task: TaskAddress) -> CliOutput {
     let (detail, code) = match error {
         EditError::UnknownBase(detail) => (format!("unknown-base: {}", terminal_text(&detail)), 1),
+        EditError::InvalidAfter(detail) => (format!("invalid-after: {detail}"), 1),
+        EditError::AfterLoop(detail) => (format!("after-loop: {detail}"), 1),
         EditError::AgentConfig(detail) => (detail, 2),
         EditError::Store(detail) => (detail, 3),
         other => (task_refusal_message(other.code(), task), 1),

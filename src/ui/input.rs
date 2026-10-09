@@ -155,6 +155,11 @@ pub enum BoardIntent {
     BeginEditScope,
     /// Open the common branch picker for the selected task, marked set, or Base field.
     OpenBasePicker,
+    /// Open the task picker for what the selected task, marked set, or After field runs after
+    /// (palette **set after…**, the page's After field).
+    OpenAfterPicker,
+    /// Palette **chain in order**: each marked task runs after the one marked before it.
+    ChainAfter,
     /// Open the steps section's one-line editor empty to add an step (page `a`).
     BeginAddStep,
     /// Move focus through the shared capture/task form fields.
@@ -1459,6 +1464,7 @@ pub fn map_key(mode: BoardInputMode, key: KeyEvent) -> Option<BoardIntent> {
         BoardInputMode::EditAssignee => map_board_form_key(CaptureField::Assignee, false, key),
         BoardInputMode::SelectThread => map_selected_thread_key(key),
         BoardInputMode::SelectBase => map_selected_base_key(key),
+        BoardInputMode::SelectAfter => map_selected_after_key(key),
         BoardInputMode::EditThread => map_thread_edit_key(key),
         BoardInputMode::EditTitle | BoardInputMode::EditNotes => map_edit(mode, key),
         BoardInputMode::BlockCard => map_block_card(key),
@@ -1553,6 +1559,30 @@ pub fn route_responsive_key(
             ResponsiveKeyRoute::Intent(BoardIntent::StageLeft)
         }
         _ => ResponsiveKeyRoute::Surface,
+    }
+}
+
+/// Map the selected task-page After footer. It is a chooser, never a text editor.
+fn map_selected_after_key(key: KeyEvent) -> Option<BoardIntent> {
+    if key.code == KeyCode::Char('?')
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+    {
+        return Some(BoardIntent::OpenHelp);
+    }
+    if key.code == KeyCode::Enter && key.modifiers.is_empty() {
+        return Some(BoardIntent::OpenAfterPicker);
+    }
+    match map_form_edit_key(CaptureField::After, FormEditNavigation::Form, true, key) {
+        intent @ Some(
+            BoardIntent::BeginAddStep
+            | BoardIntent::ConfirmEdit
+            | BoardIntent::CancelEdit
+            | BoardIntent::FormFocusNext
+            | BoardIntent::FormFocusPrev,
+        ) => intent,
+        _ => None,
     }
 }
 
@@ -1789,6 +1819,12 @@ fn map_form_edit_key(
             KeyCode::Enter => Some(BoardIntent::OpenBasePicker),
             _ => None,
         },
+        CaptureField::After => match key.code {
+            KeyCode::Char('?') => Some(BoardIntent::OpenHelp),
+            KeyCode::Esc => Some(BoardIntent::CancelEdit),
+            KeyCode::Enter => Some(BoardIntent::OpenAfterPicker),
+            _ => None,
+        },
         CaptureField::Title | CaptureField::Notes | CaptureField::Thread => match key.code {
             KeyCode::Enter if focused == CaptureField::Notes => {
                 Some(BoardIntent::EditInsertLineBreak)
@@ -1854,6 +1890,7 @@ pub fn map_edit_paste(mode: BoardInputMode, text: &str) -> Option<BoardIntent> {
         | BoardInputMode::EditReply => Some(BoardIntent::EditInsertText(text.to_string())),
         BoardInputMode::SelectThread
         | BoardInputMode::SelectBase
+        | BoardInputMode::SelectAfter
         | BoardInputMode::EditScope
         | BoardInputMode::EditAssignee
         | BoardInputMode::FormDropdown
@@ -1897,6 +1934,8 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::BeginEditNotes
         | BoardIntent::BeginEditScope
         | BoardIntent::OpenBasePicker
+        | BoardIntent::OpenAfterPicker
+        | BoardIntent::ChainAfter
         | BoardIntent::BeginAddStep
         | BoardIntent::Quit
         | BoardIntent::EditInsert(_)
@@ -2509,7 +2548,7 @@ pub fn map_capture_key_state(
             KeyCode::Char('p') | KeyCode::Char('e') => Some(CaptureIntent::BeginScopePathEdit),
             _ => None,
         },
-        CaptureField::Assignee | CaptureField::Base => None,
+        CaptureField::Assignee | CaptureField::Base | CaptureField::After => None,
     }
 }
 
@@ -2552,7 +2591,9 @@ pub fn map_capture_paste_state(
             Some(CaptureIntent::InsertText(text.to_string()))
         }
         CaptureField::Scope if path_editing => Some(CaptureIntent::InsertText(text.to_string())),
-        CaptureField::Scope | CaptureField::Assignee | CaptureField::Base => None,
+        CaptureField::Scope | CaptureField::Assignee | CaptureField::Base | CaptureField::After => {
+            None
+        }
     }
 }
 
@@ -2583,7 +2624,7 @@ pub fn intent_primary_capture_action(intent: &CaptureIntent) -> Option<PrimaryCa
         ) => Some(PrimaryCaptureAction::EditField),
         // Scope row click cycles; path edit and focusing scope are scope interaction.
         CaptureIntent::FocusField(
-            CaptureField::Scope | CaptureField::Assignee | CaptureField::Base,
+            CaptureField::Scope | CaptureField::Assignee | CaptureField::Base | CaptureField::After,
         )
         | CaptureIntent::CycleScope
         | CaptureIntent::SelectScope(_)

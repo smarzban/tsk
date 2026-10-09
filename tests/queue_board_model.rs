@@ -41,6 +41,7 @@ fn task(id: u128, title: &str, status: HumanStatus, scope: TaskScope, updated_se
         assignee: None,
         base: None,
         dispatch: None,
+        after: Vec::new(),
         status,
         block: None,
         past_blocks: Vec::new(),

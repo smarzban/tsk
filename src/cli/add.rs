@@ -94,6 +94,8 @@ struct PlanItem {
     assignee: Option<String>,
     /// Missing and JSON null both use dispatch's default base resolution.
     base: Option<String>,
+    /// Task numbers the new task runs after.
+    after: Vec<u64>,
 }
 
 struct ResolvedPlanItem {
@@ -104,6 +106,7 @@ struct ResolvedPlanItem {
     thread: Option<String>,
     assignee: Option<String>,
     base: Option<String>,
+    after: Vec<u64>,
 }
 
 /// Result of one accepted flag add.
@@ -294,6 +297,15 @@ pub fn run_plan(
                         continue;
                     }
                 }
+                if let Err(error) = domain.check_new_after(&item.after) {
+                    failed.push(fail_item(
+                        item.i,
+                        Some(item.title),
+                        "invalid-after",
+                        error.to_string(),
+                    ));
+                    continue;
+                }
                 if let Some(task) = existing_task(
                     domain,
                     &item.title,
@@ -324,6 +336,9 @@ pub fn run_plan(
                     )
                     .expect("plan item titles and threads are validated before domain creation");
                 domain.assign_numbers_for_persistence();
+                domain
+                    .set_after_on_create(id, &item.after)
+                    .expect("plan item after links are validated before domain creation");
                 let number = domain
                     .get(id)
                     .and_then(|task| task.number)
@@ -394,6 +409,7 @@ fn resolve_plan_items(
             thread: item.thread,
             assignee,
             base: item.base,
+            after: item.after,
         });
     }
     (resolved, failed)
@@ -533,6 +549,40 @@ fn parse_plan_item(i: usize, value: Value) -> Result<PlanItem, Failed> {
         }
     };
 
+    let after = match object.get("after") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(values)) => {
+            let mut after = Vec::with_capacity(values.len());
+            for value in values {
+                let number = match value {
+                    Value::Number(number) => number.as_u64().filter(|number| *number > 0),
+                    Value::String(text) => crate::cli::parser::parse_after_number(text).ok(),
+                    _ => None,
+                };
+                match number {
+                    Some(number) => after.push(number),
+                    None => {
+                        return Err(fail_item(
+                            i,
+                            Some(trimmed_title),
+                            "invalid-item",
+                            "after must list task numbers",
+                        ));
+                    }
+                }
+            }
+            after
+        }
+        Some(_) => {
+            return Err(fail_item(
+                i,
+                Some(trimmed_title),
+                "invalid-item",
+                "after must be an array of task numbers or null",
+            ));
+        }
+    };
+
     Ok(PlanItem {
         i,
         title: trimmed_title,
@@ -541,6 +591,7 @@ fn parse_plan_item(i: usize, value: Value) -> Result<PlanItem, Failed> {
         thread,
         assignee,
         base,
+        after,
     })
 }
 

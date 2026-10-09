@@ -26,7 +26,7 @@ use super::commands::CommandSurface;
 use super::model::{
     project_option_label, project_scope_option_label, BoardForm, BoardInputMode, BoardLocation,
     BoardModel, CleanupPrompt, CleanupRow, CleanupRowState, CleanupRun, DispatchPrompt, PickerTab,
-    ProjectScopeOption, ProjectsView, RelaunchPrompt,
+    ProjectScopeOption, ProjectsView, RelaunchPrompt, StartAnywayPrompt,
 };
 use crate::ui::render::{CleanupCardLine, CleanupFooter, CleanupTitle};
 
@@ -355,6 +355,9 @@ pub(crate) fn dispatch_overlay<'a>(
     if let Some(relaunch) = &prompt.relaunch {
         return relaunch_overlay(relaunch, prompt.scroll);
     }
+    if let Some(start) = &prompt.start_anyway {
+        return start_anyway_overlay(start, prompt.scroll);
+    }
     let count = prompt.launch.len();
     let noun = if count == 1 { "task" } else { "tasks" };
     let title = if count == 0 {
@@ -424,6 +427,27 @@ pub(crate) fn dispatch_overlay<'a>(
         lines,
         footer: CleanupFooter::Dispatch(count),
         scroll: prompt.scroll,
+    }
+}
+
+/// The start-anyway card: `T203 runs after T202 (started).` per waiting target.
+fn start_anyway_overlay<'a>(prompt: &StartAnywayPrompt, scroll: usize) -> QueueOverlay<'a> {
+    let title = CleanupTitle {
+        full: "Start anyway?".into(),
+        short: "Start anyway?".into(),
+        bare: "Start".into(),
+        question: "Start anyway?".into(),
+    };
+    let lines = prompt
+        .waiting
+        .iter()
+        .map(|line| CleanupCardLine::Text(format!("{line}.")))
+        .collect();
+    QueueOverlay::CleanupConfirm {
+        title,
+        lines,
+        footer: CleanupFooter::StartAnyway,
+        scroll,
     }
 }
 
@@ -1063,6 +1087,47 @@ fn build_task_page_overlay<'a>(
         meta.push_str(&segment);
     }
 
+    // `after T202, T205` beside the base, hidden when empty outside an edit session; the
+    // read-only `before T203` follows, derived from the other tasks' `after`.
+    let editing_links = capture_form || (form.is_task() && form.editing);
+    let shown_after: &[u64] = if editing_links {
+        &form.after
+    } else {
+        bound_task.map_or(&[], |task| task.after.as_slice())
+    };
+    let after_segment = if !shown_after.is_empty() {
+        Some(format!(
+            "after {}",
+            shown_after
+                .iter()
+                .map(|number| format!("T{number}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    } else {
+        editing_links.then(|| "after".to_string())
+    };
+    let before_segment = bound_task
+        .filter(|_| !capture_form)
+        .map(|task| render::before_numbers(task, &model.tasks))
+        .filter(|before| !before.is_empty())
+        .map(|before| {
+            format!(
+                "before {}",
+                before
+                    .iter()
+                    .map(|number| format!("T{number}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        });
+    for segment in [after_segment, before_segment].into_iter().flatten() {
+        if !meta.is_empty() {
+            meta.push_str(" · ");
+        }
+        meta.push_str(&segment);
+    }
+
     let shown_thread = if capture_form || (form.is_task() && form.editing) {
         Some(form.thread.value())
     } else {
@@ -1334,6 +1399,7 @@ fn build_task_page_overlay<'a>(
         BoardInputMode::EditNotes => Some(CaptureField::Notes),
         BoardInputMode::SelectThread | BoardInputMode::EditThread => Some(CaptureField::Thread),
         BoardInputMode::SelectBase => Some(CaptureField::Base),
+        BoardInputMode::SelectAfter => Some(CaptureField::After),
         BoardInputMode::EditScope => Some(CaptureField::Scope),
         BoardInputMode::EditAssignee => Some(CaptureField::Assignee),
         BoardInputMode::FormDropdown => Some(form.focus),

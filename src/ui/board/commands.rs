@@ -93,7 +93,13 @@ impl BoardModel {
                 command("change scope", BoardIntent::BeginEditScope),
                 command("set assignee", BoardIntent::OpenAssigneePicker),
                 command("set base", BoardIntent::OpenBasePicker),
+                command("set after…", BoardIntent::OpenAfterPicker),
             ]);
+            // Two or more marked tasks chain in the order they were marked. The palette owns
+            // input while it lists this, so ask about the task list underneath it.
+            if self.marks_under_palette() >= 2 {
+                commands.push(command("chain in order", BoardIntent::ChainAfter));
+            }
             // Starting dispatches an assigned task (`set status: started`, `ctrl+s`); dispatch
             // again is the explicit, cursor-only relaunch.
             if self

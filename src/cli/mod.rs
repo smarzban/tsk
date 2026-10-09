@@ -215,6 +215,7 @@ fn run_status(args: Vec<String>) -> CliOutput {
         let flags = status::StartFlags {
             again: input.again,
             no_dispatch: input.no_dispatch,
+            force: input.force,
         };
         return match status::run_started(task, flags, input.state_dir) {
             Ok(status::StartOutcome::Status(result)) => presenter::status(result),
@@ -230,9 +231,26 @@ fn run_status(args: Vec<String>) -> CliOutput {
         };
     }
     let state_dir = input.state_dir.clone();
-    match status::run(task, status, input.block, input.state_dir) {
-        Ok(result) => {
+    let outcome = if status == crate::domain::HumanStatus::Done {
+        share_fetch_window(&input.state_dir);
+        status::run_done(task, input.state_dir)
+    } else {
+        status::run(task, status, input.block, input.state_dir).map(|result| (result, Vec::new()))
+    };
+    match outcome {
+        Ok((result, released)) => {
             let mut output = presenter::status(result);
+            if let Some(line) = crate::dispatch::released_message(&released) {
+                output.stdout.push_str(&crate::ui::terminal_text(&line));
+                output.stdout.push('\n');
+            }
+            // The done and the start are durable: a lost record or rollback is a warning.
+            for warning in crate::dispatch::released_warnings(&released) {
+                output.stderr.push_str(&crate::ui::terminal_text(&format!(
+                    "tsk status: warning: {warning}"
+                )));
+                output.stderr.push('\n');
+            }
             if input.clean {
                 share_fetch_window(&state_dir);
                 match clean::run(task, state_dir) {
@@ -300,9 +318,11 @@ fn run_edit(args: Vec<String>) -> CliOutput {
         && !input.unassign
         && input.base.is_none()
         && !input.clear_base
+        && input.after.is_empty()
+        && !input.clear_after
     {
         return presenter::edit_usage(
-            "title, notes, assignee, base, --unassign, or --clear-base is required",
+            "title, notes, assignee, base, after, --unassign, --clear-base, or --clear-after is required",
         );
     }
     let assignee = if input.unassign {
@@ -325,6 +345,11 @@ fn run_edit(args: Vec<String>) -> CliOutput {
             notes: input.notes,
             assignee,
             base,
+            after: if input.clear_after {
+                Some(Vec::new())
+            } else {
+                (!input.after.is_empty()).then_some(input.after)
+            },
         },
         input.state_dir,
     ) {

@@ -39,6 +39,9 @@ pub enum CaptureField {
     Assignee,
     /// Task-page-only dispatch base chooser. Standalone capture never focuses this field.
     Base,
+    /// The tasks this one runs after, chosen in the task picker. Standalone capture never
+    /// focuses this field.
+    After,
 }
 
 /// Visible capture surface title.
@@ -297,7 +300,10 @@ impl CaptureModel {
             CaptureField::Title => Some(&mut self.title),
             CaptureField::Notes => Some(&mut self.notes),
             CaptureField::Thread => Some(&mut self.thread),
-            CaptureField::Scope | CaptureField::Assignee | CaptureField::Base => None,
+            CaptureField::Scope
+            | CaptureField::Assignee
+            | CaptureField::Base
+            | CaptureField::After => None,
         }
     }
 
@@ -308,7 +314,9 @@ impl CaptureModel {
             CaptureField::Notes => CaptureField::Thread,
             CaptureField::Thread => CaptureField::Scope,
             CaptureField::Scope => CaptureField::Title,
-            CaptureField::Assignee | CaptureField::Base => CaptureField::Title,
+            CaptureField::Assignee | CaptureField::Base | CaptureField::After => {
+                CaptureField::Title
+            }
         };
     }
 
@@ -319,7 +327,9 @@ impl CaptureModel {
             CaptureField::Notes => CaptureField::Title,
             CaptureField::Thread => CaptureField::Notes,
             CaptureField::Scope => CaptureField::Thread,
-            CaptureField::Assignee | CaptureField::Base => CaptureField::Scope,
+            CaptureField::Assignee | CaptureField::Base | CaptureField::After => {
+                CaptureField::Scope
+            }
         };
     }
 
@@ -492,7 +502,7 @@ pub fn apply_capture_intent(
                         model.message = None;
                     }
                 }
-                CaptureField::Assignee | CaptureField::Base => {}
+                CaptureField::Assignee | CaptureField::Base | CaptureField::After => {}
                 CaptureField::Title | CaptureField::Notes | CaptureField::Thread => {
                     edit_draft(model, |draft| draft.insert_char(c));
                 }
@@ -507,7 +517,7 @@ pub fn apply_capture_intent(
                         model.message = None;
                     }
                 }
-                CaptureField::Assignee | CaptureField::Base => {}
+                CaptureField::Assignee | CaptureField::Base | CaptureField::After => {}
                 CaptureField::Title | CaptureField::Notes | CaptureField::Thread => {
                     edit_draft(model, EditBuffer::backspace);
                 }
@@ -526,7 +536,7 @@ pub fn apply_capture_intent(
                         model.message = None;
                     }
                 }
-                CaptureField::Assignee | CaptureField::Base => {}
+                CaptureField::Assignee | CaptureField::Base | CaptureField::After => {}
                 CaptureField::Title | CaptureField::Thread => {
                     edit_draft(model, |draft| {
                         draft.insert_text(&flatten_line_breaks(&text))

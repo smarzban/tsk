@@ -123,9 +123,11 @@ pub struct QuickAddTokens {
     pub thread: Option<String>,
     pub assignee: Option<String>,
     pub base: Option<String>,
+    /// `!w T202`, repeatable: the tasks the new task runs after.
+    pub after: Vec<u64>,
 }
 
-/// Lift and validate whitespace-delimited `!p`, `!t`, `!a`, and `!b` directives.
+/// Lift and validate whitespace-delimited `!p`, `!t`, `!a`, `!b`, and `!w` directives.
 ///
 /// Base validation uses the effective task destination, never the process checkout.
 pub fn lift_quick_add_tokens(
@@ -141,6 +143,7 @@ pub fn lift_quick_add_tokens(
     let mut thread = None;
     let mut assignee = None;
     let mut base = None;
+    let mut after = Vec::new();
     let mut index = 0;
 
     while let Some(word) = words.get(index) {
@@ -193,6 +196,19 @@ pub fn lift_quick_add_tokens(
                 base = argument.map(str::to_owned);
                 index += usize::from(argument.is_some()) + 1;
             }
+            // `!w T202`: run after T202 ("wait for"). Unknown or done tasks refuse.
+            "!w" => {
+                let number = quick_add_token_argument(&words, index)
+                    .and_then(|argument| crate::cli::parser::parse_after_number(argument).ok())
+                    .ok_or_else(|| "!w needs a task number like T12".to_string())?;
+                domain
+                    .check_new_after(&[number])
+                    .map_err(|error| error.to_string())?;
+                if !after.contains(&number) {
+                    after.push(number);
+                }
+                index += 2;
+            }
             _ => {
                 title.push(*word);
                 index += 1;
@@ -214,6 +230,7 @@ pub fn lift_quick_add_tokens(
         thread,
         assignee,
         base,
+        after,
     })
 }
 
@@ -221,7 +238,7 @@ fn quick_add_token_argument<'a>(words: &'a [&str], index: usize) -> Option<&'a s
     words
         .get(index + 1)
         .copied()
-        .filter(|word| !matches!(*word, "!p" | "!t" | "!a" | "!b") && !word.starts_with('#'))
+        .filter(|word| !matches!(*word, "!p" | "!t" | "!a" | "!b" | "!w") && !word.starts_with('#'))
 }
 
 #[cfg(test)]
@@ -272,6 +289,47 @@ mod tests {
             title_prefill: None,
             provenance: ProvenanceOrigin::Capture,
         }
+    }
+
+    /// `!w`: a task number with or without `T`, repeatable and deduplicated; no argument, a
+    /// word that is not a number, or another token in its place refuses, as do unknown and done
+    /// tasks.
+    #[test]
+    fn w_tokens_lift_task_numbers_and_refuse_bad_arguments() {
+        let mut state = DomainState::new();
+        let ids: Vec<_> = ["first", "second", "done"]
+            .iter()
+            .map(|title| {
+                state
+                    .create(
+                        title,
+                        None,
+                        TaskScope::Global,
+                        ProvenanceOrigin::Manual,
+                        None,
+                    )
+                    .expect("create")
+            })
+            .collect();
+        state.assign_numbers_for_persistence();
+        state.set_status(ids[2], HumanStatus::Done).expect("done");
+        let lift = |line: &str| lift_quick_add_tokens(line, &state, None, &TaskScope::Global, &[]);
+
+        let tokens = lift("Waits !w T1 !w 2 !w T1").expect("lift");
+        assert_eq!(tokens.title, "Waits");
+        assert_eq!(tokens.after, vec![1, 2], "repeatable, deduplicated");
+        let needs = "!w needs a task number like T12".to_string();
+        assert_eq!(lift("Waits !w").map(|_| ()), Err(needs.clone()));
+        assert_eq!(lift("Waits !w abc").map(|_| ()), Err(needs.clone()));
+        assert_eq!(lift("Waits !w !p").map(|_| ()), Err(needs));
+        assert_eq!(
+            lift("Waits !w T9").map(|_| ()),
+            Err("T9 is not on the board".to_string())
+        );
+        assert_eq!(
+            lift("Waits !w T3").map(|_| ()),
+            Err("T3 is already done".to_string())
+        );
     }
 
     #[test]

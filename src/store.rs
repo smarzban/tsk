@@ -38,8 +38,8 @@ type MigrationStep = fn(serde_json::Value) -> Result<serde_json::Value, StoreErr
 /// v1 documents gain the empty per-project record map, v2 documents the notice
 /// counter, v3 documents rewrite ready to open, v4 documents gain batch undo,
 /// v5 documents gain the optional v6 task fields, v6 documents gain blocks, v7 documents
-/// gain the start undo entry, v8 documents gain review rounds, and v9 documents gain event
-/// authors and details.
+/// gain the start undo entry, v8 documents gain review rounds, v9 documents gain event
+/// authors and details, and v10 documents gain `after` links.
 const MIGRATIONS: &[MigrationStep] = &[
     migrate_v1_to_v2,
     migrate_v2_to_v3,
@@ -50,6 +50,7 @@ const MIGRATIONS: &[MigrationStep] = &[
     migrate_v7_to_v8,
     migrate_v8_to_v9,
     migrate_v9_to_v10,
+    migrate_v10_to_v11,
 ];
 
 /// v1 -> v2: a v1 store has no archived projects, so it gains an empty project map.
@@ -140,6 +141,12 @@ fn migrate_v8_to_v9(document: serde_json::Value) -> Result<serde_json::Value, St
 /// v9 -> v10: task events gain an optional author (`by`) and per-kind `detail`. Existing events
 /// keep kind and time only and read as made by nobody in particular, with no detail.
 fn migrate_v9_to_v10(document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
+    Ok(document)
+}
+
+/// v10 -> v11: tasks gain an optional `after` list, events an optional `after` detail, and the
+/// undo stack a `set_after` entry. A v10 task runs after nothing.
+fn migrate_v10_to_v11(document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
     Ok(document)
 }
 
@@ -316,12 +323,41 @@ pub struct StoreSignature {
 #[derive(Debug, Clone)]
 pub struct TaskStore {
     path: PathBuf,
+    /// Unit tests count durable saves and fail the next one through this handle and its clones.
+    #[cfg(test)]
+    probe: std::sync::Arc<SaveProbe>,
+}
+
+/// Test-only view into a store handle's durable writes.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct SaveProbe {
+    saves: std::sync::atomic::AtomicUsize,
+    fail_next: std::sync::atomic::AtomicBool,
 }
 
 impl TaskStore {
     /// `path` is the plugin state directory (not the JSON file itself).
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            #[cfg(test)]
+            probe: std::sync::Arc::default(),
+        }
+    }
+
+    /// Durable saves this handle (and its clones) made.
+    #[cfg(test)]
+    pub(crate) fn durable_saves(&self) -> usize {
+        self.probe.saves.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Fail this handle's next durable write, after any merge, as a full disk would.
+    #[cfg(test)]
+    pub(crate) fn fail_next_save(&self) {
+        self.probe
+            .fail_next
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn path(&self) -> &Path {
@@ -558,18 +594,30 @@ impl TaskStore {
     /// changed from, merge sibling records, then durably write. Divergent same-task writes are
     /// rejected rather than ordered by wall clock or silently overwritten.
     pub fn reload_merge_save(&self, local: &mut DomainState) -> Result<(), StoreError> {
-        self.reload_merge_save_with(local, &StdFilesystem)
+        self.reload_merge_save_with(local, &StdFilesystem, |_| ())
+    }
+
+    /// [`Self::reload_merge_save`], with `merged` run on the caller's state after the merge and
+    /// before the write, under the same lock: a decision that must see every other writer's
+    /// changes (what a completion released) lands in the same save.
+    pub fn reload_merge_save_then<T>(
+        &self,
+        local: &mut DomainState,
+        merged: impl FnOnce(&mut DomainState) -> T,
+    ) -> Result<T, StoreError> {
+        self.reload_merge_save_with(local, &StdFilesystem, merged)
     }
 
     /// Internal filesystem seam for the merge-save durability boundary.
     ///
     /// The caller's state keeps its merge bases until the replacement succeeds, so Save
     /// Recovery can retry the same intended mutation after any write-stage failure.
-    fn reload_merge_save_with<F: AtomicFilesystem>(
+    fn reload_merge_save_with<F: AtomicFilesystem, T>(
         &self,
         local: &mut DomainState,
         filesystem: &F,
-    ) -> Result<(), StoreError> {
+        merged: impl FnOnce(&mut DomainState) -> T,
+    ) -> Result<T, StoreError> {
         check_format_version(local.format_version())?;
         let _guard = self.lock_exclusive()?;
         let disk = self.load_unlocked()?;
@@ -577,6 +625,7 @@ impl TaskStore {
         local
             .merge_for_save(&disk)
             .map_err(|message| StoreError::Io(io::Error::other(message)))?;
+        let result = merged(local);
         let mut durable = local.clone();
         durable.assign_numbers_for_persistence();
         durable.clear_merge_bases();
@@ -596,7 +645,7 @@ impl TaskStore {
         }
         local.sync_numbers_from_persisted(&durable);
         local.clear_merge_bases();
-        Ok(())
+        Ok(result)
     }
 
     fn load_unlocked(&self) -> Result<DomainState, StoreError> {
@@ -652,6 +701,14 @@ impl TaskStore {
         filesystem: &F,
         supported: u32,
     ) -> Result<(), StoreError> {
+        #[cfg(test)]
+        if self
+            .probe
+            .fail_next
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(StoreError::Io(io::Error::other("injected save failure")));
+        }
         check_supported(state.format_version(), supported)?;
         // Locked persistence boundary: every save path and locked_transition lands here,
         // after number assignment and any merge-undo union.
@@ -700,6 +757,12 @@ impl TaskStore {
         })();
         if write_result.is_err() {
             let _ = filesystem.remove_file(&tmp);
+        }
+        #[cfg(test)]
+        if write_result.is_ok() {
+            self.probe
+                .saves
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
         write_result
     }
@@ -1405,7 +1468,7 @@ mod tests {
         let filesystem = RecordingFilesystem::new(Some(SaveStage::FileSync));
         assert!(
             store
-                .reload_merge_save_with(&mut local, &filesystem)
+                .reload_merge_save_with(&mut local, &filesystem, |_| ())
                 .is_err(),
             "the injected durable write failure must reach Save Recovery"
         );
@@ -1646,7 +1709,7 @@ mod tests {
     }
 
     #[test]
-    fn save_emits_format_version_ten() {
+    fn save_emits_format_version_eleven() {
         let dir = temp_dir("format-stamp");
         let _guard = TempDirGuard(dir.clone());
         let store = TaskStore::new(&dir);
@@ -1655,7 +1718,7 @@ mod tests {
         let value: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(dir.join(STATE_FILE)).expect("read"))
                 .expect("json");
-        assert_eq!(value["format_version"], 10);
+        assert_eq!(value["format_version"], 11);
         assert_eq!(value["next_notice_number"], 1);
     }
 
@@ -1673,7 +1736,7 @@ mod tests {
             error,
             StoreError::UnsupportedFormat {
                 found: 0,
-                supported: 10
+                supported: 11
             }
         ));
         let on_disk: serde_json::Value =
@@ -1684,7 +1747,7 @@ mod tests {
 
     #[test]
     fn load_refuses_noncurrent_format_without_rewriting() {
-        for format_version in [0, 11] {
+        for format_version in [0, 12] {
             let dir = temp_dir("format-noncurrent");
             let _guard = TempDirGuard(dir.clone());
             let document = serde_json::json!({
@@ -1702,7 +1765,7 @@ mod tests {
                     error,
                     StoreError::UnsupportedFormat {
                         found,
-                        supported: 10
+                        supported: 11
                     } if found == format_version
                 ),
                 "{error}"
@@ -1719,7 +1782,7 @@ mod tests {
         let dir = temp_dir("format-save-state");
         let _guard = TempDirGuard(dir.clone());
         let state: DomainState = serde_json::from_value(serde_json::json!({
-            "format_version": 11,
+            "format_version": 12,
             "next_task_number": 1,
             "tasks": [],
             "undo_stack": []
@@ -1732,8 +1795,8 @@ mod tests {
         assert!(matches!(
             error,
             StoreError::UnsupportedFormat {
-                found: 11,
-                supported: 10
+                found: 12,
+                supported: 11
             }
         ));
         assert!(!dir.join(STATE_FILE).exists());
@@ -1747,7 +1810,7 @@ mod tests {
         store.save(&DomainState::new()).expect("seed current store");
         let before = fs::read(dir.join(STATE_FILE)).expect("read current store");
         let mut local: DomainState = serde_json::from_value(serde_json::json!({
-            "format_version": 11,
+            "format_version": 12,
             "next_task_number": 1,
             "tasks": [],
             "undo_stack": []
@@ -1760,8 +1823,8 @@ mod tests {
         assert!(matches!(
             error,
             StoreError::UnsupportedFormat {
-                found: 11,
-                supported: 10
+                found: 12,
+                supported: 11
             }
         ));
         assert_eq!(
@@ -1775,7 +1838,7 @@ mod tests {
         let dir = temp_dir("format-save-newer");
         let _guard = TempDirGuard(dir.clone());
         let newer = serde_json::json!({
-            "format_version": 11,
+            "format_version": 12,
             "tasks": [],
             "undo_stack": []
         });
@@ -1788,8 +1851,8 @@ mod tests {
             matches!(
                 error,
                 StoreError::UnsupportedFormat {
-                    found: 11,
-                    supported: 10
+                    found: 12,
+                    supported: 11
                 }
             ),
             "{error}"
@@ -3019,8 +3082,8 @@ mod tests {
         fs::create_dir_all(&dir).expect("mkdir");
         fs::write(dir.join(STATE_FILE), &original_bytes).expect("seed v6 file");
 
-        let mut state = store.load().expect("v6 file loads through v6 -> v10");
-        assert_eq!(state.format_version(), 10);
+        let mut state = store.load().expect("v6 file loads through v6 -> v11");
+        assert_eq!(state.format_version(), 11);
         assert_eq!(state.tasks()[0].assignee, None);
         assert_eq!(
             state.tasks()[0].title,
@@ -3028,7 +3091,7 @@ mod tests {
             "migration must preserve the task content"
         );
 
-        store.save(&state).expect("first save at v10");
+        store.save(&state).expect("first save at v11");
         assert_eq!(
             fs::read(dir.join("tsk.json.v6")).expect("read version backup"),
             original_bytes,
@@ -3037,7 +3100,7 @@ mod tests {
         let live: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(dir.join(STATE_FILE)).expect("read live"))
                 .expect("json");
-        assert_eq!(live["format_version"], 10);
+        assert_eq!(live["format_version"], 11);
         assert_eq!(live["tasks"][0]["title"], "migrate me");
         assert_eq!(
             fs::read(dir.join("tsk.json.1")).expect("last-good holds the v6 original"),
@@ -3054,7 +3117,7 @@ mod tests {
                 None,
             )
             .expect("create");
-        store.save(&state).expect("second save at v10");
+        store.save(&state).expect("second save at v11");
         assert_eq!(
             fs::read(dir.join("tsk.json.v6")).expect("read version backup"),
             original_bytes,
@@ -3086,7 +3149,7 @@ mod tests {
 
     #[test]
     fn load_refuses_a_higher_version_and_changes_nothing_in_the_state_dir() {
-        for (format_version, supported) in [(11u32, 10u32), (12, 11)] {
+        for (format_version, supported) in [(12u32, 11u32), (13, 12)] {
             let dir = temp_dir("format-higher");
             let _guard = TempDirGuard(dir.clone());
             let document = serde_json::json!({
@@ -3107,7 +3170,7 @@ mod tests {
             assert!(
                 matches!(
                     error,
-                    StoreError::UnsupportedFormat { found, supported: 10 } if found == format_version
+                    StoreError::UnsupportedFormat { found, supported: 11 } if found == format_version
                 ),
                 "{error}"
             );

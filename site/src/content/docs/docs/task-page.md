@@ -1,6 +1,6 @@
 ---
 title: Task page
-description: Read and edit a task's title, notes, project, thread, assignee, and base branch.
+description: Read and edit a task's title, notes, project, thread, assignee, base branch, and the tasks it runs after.
 ---
 
 Read notes and steps, then edit the task when you need to change it.
@@ -11,7 +11,7 @@ Double-click a task or select it and press `Enter`. A double-click follows the t
 
 At 110 usable columns or wider, click a task or press `→` / `l` to open details beside the board, keeping board focus. Use `→` / `l` and `←` / `h` to move between [board and task views](/docs/board/#wide-stage-slider). From the board-focused split, `Esc` closes the details column, keeping any parked draft. Press `Enter` from the board for full screen; `Esc` or click **esc close** returns. In view mode, `ctrl+q` quits the whole board rather than closing the page; save or cancel unsaved edits first.
 
-Click the task's `T` number to copy it. The page shows its status, notes, steps, assignee, base, project, thread, and its [paper trail](#paper-trail). After a [dispatch](/docs/board/#dispatch) it also shows the worktree, branch, `from <ref> @ <short sha>`, when it was dispatched, and whether the worktree has been cleaned up. Its footer is ordered `@assignee · ⎇ <base> · #thread · project`; when the task was created and last changed is on the paper trail. The base slot is always visible: an unset base shows the repository's default branch, for example `⎇ main (default)`, or `⎇ default` until that name is known. Long text and the metadata footer wrap, and footer controls remain clickable on each wrapped row.
+Click the task's `T` number to copy it. The page shows its status, notes, steps, assignee, base, project, thread, and its [paper trail](#paper-trail). After a [dispatch](/docs/board/#dispatch) it also shows the worktree, branch, `from <ref> @ <short sha>`, when it was dispatched, and whether the worktree has been cleaned up. Its footer is ordered `@assignee · ⎇ <base> · after T202 · before T203 · #thread · project`, with the after and before slots only when the task has them; when the task was created and last changed is on the paper trail. The base slot is always visible: an unset base shows the repository's default branch, for example `⎇ main (default)`, or `⎇ default` until that name is known. Long text and the metadata footer wrap, and footer controls remain clickable on each wrapped row.
 
 ## Edit
 
@@ -32,9 +32,13 @@ In view mode the footer's assignee is a quick control: click `@name` to open the
 
 Click the footer's `⎇` slot to choose the [base branch](/docs/board/#base-branch) a dispatch starts from. The same picker opens from palette **set base** or the **Base** field during editing. It lists the repository default first, for example **default (main)**, then local and `origin/*` branches, and refreshes in place after a background fetch. Type to filter, select a branch, or choose **default** to clear the base.
 
+## After
+
+The footer's `after T202, T205` slot lists the tasks this one [runs after](/docs/board/#after); it is hidden when empty. `before T203, T204` lists the tasks that run after this one: it is read-only, derived from their lists, and changes only when you edit theirs. During editing the **After** field opens the task picker on `Enter` or a click: tasks not done, this project's first, `Space` ticks several, `Enter` applies, **none** clears. The draft saves with the rest of the edit; a choice that would close a loop, such as `T202 already runs after T205`, is refused and the draft stays. The same picker opens in view mode from palette **set after…**, where the choice saves at once.
+
 In view mode, `Tab` selects steps, **+ step**, then the paper trail's closed blocks and review rounds. It does not cycle task fields. Status shortcuts remain available on the task page; use `ctrl+e`, then `Tab` to reach Notes.
 
-During task editing, the forward order is Title → Notes → steps → **+ step** → Assignee → Base → Thread → Scope → Title. `Shift+Tab` reverses the ring. The footer follows the same left-to-right order: Assignee, Base, Thread, Scope. A field click moves the cursor and retains staged changes.
+During task editing, the forward order is Title → Notes → steps → **+ step** → Assignee → Base → After → Thread → Scope → Title. `Shift+Tab` reverses the ring. The footer follows the same left-to-right order: Assignee, Base, After, Thread, Scope. A field click moves the cursor and retains staged changes.
 
 ## Scope, thread, and assignee
 
@@ -46,6 +50,7 @@ During task editing, the forward order is Title → Notes → steps → **+ step
 | Thread | Select it, then press `Enter` or click again to edit its name |
 | Assignee | Select it, press `Enter`, choose an exact profile name or **none**, then press `Enter` again |
 | Base | Select it, press `Enter`, choose a branch or **default**, then press `Enter` again |
+| After | Select it, press `Enter`, tick tasks with `Space` (or choose **none**), then press `Enter` |
 
 Scope and Assignee also support cycling without opening their lists with `Space`, `←`, or `→`. Archived projects are not offered.
 
@@ -53,7 +58,7 @@ Thread is optional and follows the [thread name rules](/docs/capture/#thread-nam
 
 ## Save
 
-`Shift+Enter` saves the task's title, notes, scope, thread, assignee, base, and staged changes to existing steps. The base is checked only when you change it or the project, so a deleted base branch never blocks other edits.
+`Shift+Enter` saves the task's title, notes, scope, thread, assignee, base, after list, and staged changes to existing steps. The base is checked only when you change it or the project, so a deleted base branch never blocks other edits.
 
 | While editing | `Enter` does this |
 | --- | --- |
@@ -117,11 +122,11 @@ Below the steps, the PAPER TRAIL lists who did what to the task, newest first: `
 | Entry | Example |
 | --- | --- |
 | Created | `created` |
-| Status change | `review → started`, `review → done` |
+| Status change | `review → started`, `review → done`, `started · after T202` (its last prerequisite was done) |
 | Assignee, base | `assigned @claude`, `unassigned`, `base ⎇ origin/dev`, `base cleared` |
 | Dispatch | `dispatched tsk/t12-fix from origin/main @ 3333b79`, or `relaunched …` |
 | Cleanup | `cleaned · worktree removed, branch kept` |
-| Edits | `title edited`, `notes edited`, `title and notes edited` (which fields, never the text) |
+| Edits | `title edited`, `notes edited`, `title and notes edited`, `after edited` (which fields, never the text) |
 | Steps | `step added`, `step checked` |
 | Archive and delete | `archived`, `unarchived`, `deleted`, `restored` |
 | A closed block | `blocked on you · need creds · 1 reply ▸` |

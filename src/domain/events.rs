@@ -79,6 +79,7 @@ pub enum EditedField {
     Notes,
     Thread,
     Project,
+    After,
 }
 
 /// What a cleanup did with the dispatch's worktree and branch.
@@ -124,6 +125,9 @@ pub struct EventDetail {
     /// The fields an `edited` event changed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<EditedField>,
+    /// The prerequisite whose completion started this task (a start or dispatch it caused).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<u64>,
 }
 
 impl EventDetail {
