@@ -63,7 +63,8 @@ pub(crate) struct RowReply {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReplySave {
     pub(crate) task: Uuid,
-    pub(crate) index: usize,
+    /// The stored reply's index, or `None` for `ctrl+s` on an empty box (unblock only).
+    pub(crate) index: Option<usize>,
     pub(crate) text: String,
     pub(crate) unblock: bool,
 }
@@ -746,7 +747,9 @@ pub(super) fn save_reply(
         model.set_message(BLOCK_REPLACED);
         return refuse(model, BLOCK_REPLACED.to_string());
     }
-    if text.is_empty() {
+    // `ctrl+s` on an empty new reply only unblocks; saving an empty reply is refused.
+    let unblock_only = text.is_empty() && unblock.is_some() && edit.is_none();
+    if text.is_empty() && !unblock_only {
         return refuse(model, "type a reply first".to_string());
     }
     if text.len() > BLOCK_TEXT_MAX {
@@ -755,8 +758,9 @@ pub(super) fn save_reply(
     // The reply lands on the open block before the unblock closes it, as one change.
     let stored = domain.as_one_change(id, |domain| {
         let index = match edit {
-            Some(index) => domain.edit_reply(id, index, &text).map(|()| index)?,
-            None => domain.reply(id, &text, OWNER)?,
+            _ if unblock_only => None,
+            Some(index) => Some(domain.edit_reply(id, index, &text).map(|()| index)?),
+            None => Some(domain.reply(id, &text, OWNER)?),
         };
         if let Some(status) = unblock {
             domain.set_status(id, status)?;
@@ -807,15 +811,45 @@ pub(super) fn finish_reply_save(model: &mut BoardModel) {
                 task.block.as_ref()
             }
         })
-        .and_then(|block| block.replies.get(pending.index))
-        .is_some_and(|reply| reply.text == pending.text && !reply.deleted);
+        .is_some_and(|block| match pending.index {
+            Some(index) => block
+                .replies
+                .get(index)
+                .is_some_and(|reply| reply.text == pending.text && !reply.deleted),
+            None => true,
+        });
     if !landed {
         return;
     }
     close_reply(
         model,
-        (!pending.unblock).then_some(BlockTarget::Reply(pending.index)),
+        pending
+            .index
+            .filter(|_| !pending.unblock)
+            .map(BlockTarget::Reply),
     );
+}
+
+/// A refresh closed or replaced the block an open row reply box answers: say so in the box
+/// at once, keeping the draft. Saving would refuse the same way.
+pub(super) fn flag_stale_row_reply(model: &mut BoardModel) {
+    let Some(row) = model.row_reply.as_ref() else {
+        return;
+    };
+    if row.editor.pending.is_some() {
+        return;
+    }
+    let current = model
+        .tasks
+        .iter()
+        .find(|task| task.id == row.task)
+        .and_then(|task| task.block.as_ref())
+        .map(Block::key);
+    if current.as_ref() != Some(&row.editor.block) {
+        if let Some(row) = model.row_reply.as_mut() {
+            row.editor.refusal = Some(BLOCK_REPLACED.to_string());
+        }
+    }
 }
 
 /// A cancelled failed save rolled the reply back: keep the box and its text, drop the hold.
@@ -831,6 +865,9 @@ pub(super) fn reply_buffer_mut(model: &mut BoardModel) -> Option<&mut EditBuffer
     if editor.pending.is_some() {
         return None;
     }
-    editor.refusal = None;
+    // A closed or replaced block stays said while the draft is kept; typing cannot fix it.
+    if editor.refusal.as_deref() != Some(BLOCK_REPLACED) {
+        editor.refusal = None;
+    }
     Some(&mut editor.buffer)
 }

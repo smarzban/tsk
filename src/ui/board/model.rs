@@ -1059,6 +1059,8 @@ pub struct BoardModel {
     /// A reply-box `ctrl+s` to a running agent whose save failed: the task whose reply goes
     /// to its agent once Retry saves it. Cancel drops it. Session-only.
     pub pending_reply_delivery: Option<Uuid>,
+    /// The reply text a held start or delivery sends once Retry saves it. Session-only.
+    pub pending_reply_text: Option<String>,
     /// The block card while it owns input.
     pub(super) block_card: Option<super::block::BlockCard>,
     /// The reply box open inline under a blocked board row.
@@ -1726,6 +1728,7 @@ impl BoardModel {
             dispatch_prompt: None,
             pending_reply_start: None,
             pending_reply_delivery: None,
+            pending_reply_text: None,
             block_card: None,
             row_reply: None,
             bulk_dispatch: SharedBulkDispatch::default(),
@@ -2415,6 +2418,7 @@ impl BoardModel {
         self.finish_task_edit_save();
         self.finish_step_editor_save();
         super::block::finish_reply_save(self);
+        super::block::flag_stale_row_reply(self);
         super::block::finish_block_card_save(self);
         if let Some(id) = pinned_edit.or(pinned_quick_add) {
             // A save this surface just made owns the selection, but navigation never

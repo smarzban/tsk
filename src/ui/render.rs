@@ -1482,8 +1482,12 @@ fn draw_queue_frame_impl(
         };
         let max_scroll = list_rows.len().saturating_sub(min_content);
         let mut scroll = model.list_scroll.min(max_scroll);
-        if model.follow_list {
-            let pin = if model.detail_open.is_some() && model.detail_open == model.selection_id {
+        // While the inline reply box owns input its caret is the pin, whatever the follow
+        // flag says: typing never edits text scrolled out of view.
+        if model.follow_list || reply_caret.is_some() {
+            let pin = if let Some((row, _)) = reply_caret {
+                Some(row)
+            } else if model.detail_open.is_some() && model.detail_open == model.selection_id {
                 selected_idx
             } else {
                 follow_idx
@@ -4952,6 +4956,47 @@ type BuiltListRows = (
 /// Builds the list rows plus the index of an open accordion detail or selected task, which
 /// must stay fully visible in the viewport.
 fn build_list_rows(model: &QueueFrameModel<'_>, geo: &TierGeometry, rail: bool) -> BuiltListRows {
+    let (mut out, mut anchor, selected, mut caret) = build_list_rows_inner(model, geo, rail);
+    // A refresh can take the reply box's row off this list (unblocked or finished
+    // elsewhere) while the box still owns input: keep the draft painted below the list,
+    // under the task's own line, so it never edits out of sight.
+    if let Some(reply) = model.row_reply.filter(|_| !rail) {
+        let painted = out
+            .iter()
+            .any(|row| matches!(row, ListRow::Task { id, .. } if *id == reply.task));
+        if !painted {
+            out.push(ListRow::Blank);
+            if let Some(task) = model.tasks.iter().find(|task| task.id == reply.task) {
+                let label = format!(
+                    "  {} {}  · not on this list",
+                    task.board_identifier().unwrap_or_default(),
+                    super::terminal_text(&task.title.replace(['\n', '\r'], " "))
+                );
+                out.push(ListRow::Detail {
+                    line: paint_bounded_line(&label, geo.row_width, style_dim()),
+                    content_x: 2,
+                    content_width: u16::try_from(display_width(&label))
+                        .unwrap_or(u16::MAX)
+                        .max(1),
+                });
+            }
+            let (rows, row_caret) = row_reply_rows(&reply, geo.row_width);
+            let first = out.len();
+            out.extend(rows);
+            if let Some((row, column)) = row_caret.filter(|_| reply.caret) {
+                caret = Some((first + row, column));
+            }
+            anchor = Some(out.len() - 1);
+        }
+    }
+    (out, anchor, selected, caret)
+}
+
+fn build_list_rows_inner(
+    model: &QueueFrameModel<'_>,
+    geo: &TierGeometry,
+    rail: bool,
+) -> BuiltListRows {
     let mut out = Vec::new();
     let mut anchor_last_idx: Option<usize> = None;
     let mut selected_idx: Option<usize> = None;

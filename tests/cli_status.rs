@@ -254,15 +254,26 @@ fn block_args(dir: &Path, task: &str, flags: &[&str]) -> Vec<String> {
     args
 }
 
+/// Replies as the board's owner. A separate process with `TSK_AGENT` removed, so a test run
+/// from inside a dispatched agent (which sets it) still authors `you`; the in-process
+/// runner would read the caller's environment.
 fn reply(dir: &Path, task: &str, text: &str) -> CliOutput {
-    cli(vec![
-        "tsk".into(),
-        "reply".into(),
-        task.into(),
-        text.into(),
-        "--state-dir".into(),
-        dir.to_string_lossy().into_owned(),
-    ])
+    let output = std::process::Command::new(
+        std::env::var("CARGO_BIN_EXE_tsk").expect("Cargo must provide the tsk binary path"),
+    )
+    .args(["reply", task, "--state-dir"])
+    .arg(dir)
+    .arg("--")
+    .arg(text)
+    .env_remove("TSK_AGENT")
+    .stdin(std::process::Stdio::null())
+    .output()
+    .expect("run tsk reply");
+    CliOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        code: u8::try_from(output.status.code().unwrap_or(255)).unwrap_or(u8::MAX),
+    }
 }
 
 fn listed(dir: &Path, task: &str) -> serde_json::Value {

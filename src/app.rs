@@ -2915,13 +2915,15 @@ fn reply_unblock_route(
     Some((id, route, check))
 }
 
-/// Send the owner's replies on `id` to its running agent once the start is durable, and
-/// say on the status row how it went. Nothing is sent when `check` found no running agent.
+/// Send the reply this `ctrl+s` stored (or just the unblock, for an empty box) to `id`'s
+/// dispatched agent once the start is durable, and say on the status row how it went.
+/// Nothing is sent when `check` found no live dispatch.
 fn deliver_reply_after_start(
     domain: &DomainState,
     model: &mut BoardModel,
     id: uuid::Uuid,
     check: &dispatch::AgentCheck,
+    reply: Option<&str>,
     host: &mut impl DispatchHost,
 ) {
     let Some(task) = domain.get(id) else {
@@ -2930,7 +2932,7 @@ fn deliver_reply_after_start(
     let Some(assignee) = task.assignee.as_deref() else {
         return;
     };
-    if let Some(delivery) = dispatch::deliver_reply(task, check, "unblocked", host) {
+    if let Some(delivery) = dispatch::deliver_reply(task, check, "unblocked", reply, host) {
         model.set_message(dispatch::delivery_message(assignee, &delivery));
     }
 }
@@ -3773,6 +3775,10 @@ fn handle_board_intent_with_host(
     // A plain start because the agent still runs: the reply goes to it once the start is
     // durable. Shift+Enter (save only) never sends.
     let mut deliver_to = None;
+    // Only the reply this action stores is ever sent, never earlier ones.
+    let mut reply_text = (intent == BoardIntent::ReplySaveUnblock && !save_recovery.is_pending())
+        .then(|| model.reply_draft().map(|draft| draft.trim().to_string()))
+        .flatten();
     let intent = if intent == BoardIntent::ReplySaveUnblock && !save_recovery.is_pending() {
         // Route against the durable record: an assignment made elsewhere must launch.
         domain.merge_tasks_from_disk(&baseline);
@@ -3833,8 +3839,10 @@ fn handle_board_intent_with_host(
         Some(false) => {
             model.pending_reply_start = None;
             model.pending_reply_delivery = None;
+            model.pending_reply_text = None;
         }
         Some(true) if outcome == IntentOutcome::Persisted && !save_recovery.is_pending() => {
+            reply_text = model.pending_reply_text.take();
             if let Some(target) = model.pending_reply_start.take() {
                 after_reply = domain
                     .get(target)
@@ -3867,6 +3875,11 @@ fn handle_board_intent_with_host(
         if let Some((target, _)) = deliver_to.take() {
             model.pending_reply_delivery = Some(target);
         }
+        if model.pending_reply_start.is_some() || model.pending_reply_delivery.is_some() {
+            if let Some(text) = reply_text.take() {
+                model.pending_reply_text = Some(text);
+            }
+        }
     }
     if outcome == IntentOutcome::Persisted {
         record_notice_dismissals_without_blocking_persist(store, domain);
@@ -3874,7 +3887,7 @@ fn handle_board_intent_with_host(
             model.set_message(dispatch::no_launch_message(reason));
         }
         if let Some((target, check)) = deliver_to.take() {
-            deliver_reply_after_start(domain, model, target, &check, host);
+            deliver_reply_after_start(domain, model, target, &check, reply_text.as_deref(), host);
         }
         if let Some((target, route)) = after_reply.filter(|_| !save_recovery.is_pending()) {
             match route {
@@ -3905,7 +3918,14 @@ fn handle_board_intent_with_host(
                             model.set_message(dispatch::no_launch_message(reason));
                         }
                         (Some(_), _) if !save_recovery.is_pending() => {
-                            deliver_reply_after_start(domain, model, target, &resumed_check, host);
+                            deliver_reply_after_start(
+                                domain,
+                                model,
+                                target,
+                                &resumed_check,
+                                reply_text.as_deref(),
+                                host,
+                            );
                         }
                         _ => {}
                     }
@@ -10104,6 +10124,15 @@ mod quick_assign_tests {
         prompts: Vec<(String, String)>,
         /// How Herdr answers a prompt: `None` accepts it.
         prompt_error: Option<crate::dispatch::PromptError>,
+        /// Live agent names by pane; a pane missing here holds an unnamed agent.
+        names: std::collections::HashMap<String, String>,
+        /// Names the next agent lookups report, ahead of `names` (a pane changing hands).
+        next_names: std::collections::VecDeque<Option<String>>,
+        /// Every workspace whose root pane was asked for, and every pane asked about.
+        root_queries: Vec<String>,
+        agent_queries: Vec<String>,
+        /// The task's durable status and last reply on disk when each prompt was submitted.
+        disk_at_prompt: Vec<(HumanStatus, Option<String>)>,
     }
 
     impl DispatchHost for FakeHost {
@@ -10153,7 +10182,8 @@ mod quick_assign_tests {
             })
         }
 
-        fn root_pane(&mut self, _: &str) -> Result<String, crate::dispatch::RootPaneError> {
+        fn root_pane(&mut self, workspace: &str) -> Result<String, crate::dispatch::RootPaneError> {
+            self.root_queries.push(workspace.into());
             if self.workspace_gone {
                 return Err(crate::dispatch::RootPaneError::WorkspaceGone(
                     "workspace not found".into(),
@@ -10162,7 +10192,7 @@ mod quick_assign_tests {
             if self.root_failed {
                 return Err("could not run herdr".into());
             }
-            Ok("w1:p1".into())
+            Ok(format!("{workspace}:p1"))
         }
 
         fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
@@ -10174,11 +10204,38 @@ mod quick_assign_tests {
             self.agent.ok_or_else(|| "herdr did not answer".to_string())
         }
 
+        fn pane_agent(&mut self, pane: &str) -> Result<crate::dispatch::PaneAgent, String> {
+            self.agent_queries.push(pane.into());
+            match self.agent {
+                None => Err("herdr did not answer".into()),
+                Some(false) => Ok(crate::dispatch::PaneAgent::Absent),
+                Some(true) => Ok(crate::dispatch::PaneAgent::Present {
+                    name: self
+                        .next_names
+                        .pop_front()
+                        .unwrap_or_else(|| self.names.get(pane).cloned()),
+                }),
+            }
+        }
+
         fn prompt_agent(
             &mut self,
             pane: &str,
             text: &str,
         ) -> Result<(), crate::dispatch::PromptError> {
+            // What an agent acting on this prompt would read from the board right now.
+            let number: Option<u64> = text
+                .strip_prefix("[tsk T")
+                .and_then(|rest| rest.split(' ').next())
+                .and_then(|digits| digits.trim_end_matches(']').parse().ok());
+            let disk = self.store.load().expect("load at prompt");
+            if let Some(task) = disk.tasks().iter().find(|task| task.number == number) {
+                let block = task.block.as_ref().or(task.past_blocks.last());
+                self.disk_at_prompt.push((
+                    task.status,
+                    block.and_then(|block| block.replies.last().map(|reply| reply.text.clone())),
+                ));
+            }
             self.prompts.push((pane.into(), text.into()));
             self.prompt_error.clone().map_or(Ok(()), Err)
         }
@@ -10214,7 +10271,24 @@ mod quick_assign_tests {
             reopened: 0,
             prompts: Vec::new(),
             prompt_error: None,
+            names: Default::default(),
+            next_names: Default::default(),
+            root_queries: Vec::new(),
+            agent_queries: Vec::new(),
+            disk_at_prompt: Vec::new(),
         }
+    }
+
+    /// The dispatched agent of task `id` runs, under its dispatch name, in workspace `w0`'s
+    /// root pane (the one `dispatched_before` records).
+    fn agent_running(domain: &DomainState, host: &mut FakeHost, id: uuid::Uuid) -> String {
+        let number = domain.get(id).and_then(|task| task.number).expect("number");
+        host.agent = Some(true);
+        host.names.insert(
+            "w0:p1".into(),
+            crate::dispatch::agent_name(number, "builder"),
+        );
+        format!("[tsk T{number} unblocked]")
     }
 
     fn handle(
@@ -10397,7 +10471,7 @@ mod quick_assign_tests {
             assert_eq!(usize::from(y), row + 3, "the caret sits in the draft");
 
             let mut host = fake_host(&temp);
-            host.agent = Some(true);
+            agent_running(&domain, &mut host, ids[0]);
             let save = key(&model, KeyCode::Char('s'), KeyModifiers::CONTROL);
             assert_eq!(save, BoardIntent::ReplySaveUnblock);
             handle(&temp, &mut domain, &mut model, save, &mut host);
@@ -10413,6 +10487,92 @@ mod quick_assign_tests {
             );
             assert_eq!(last_reply(&saved, ids[0]).as_deref(), Some("postgres"));
         }
+    }
+
+    /// A long multi-line draft scrolls the list so the caret stays on screen, even after
+    /// moving back to its first line.
+    #[test]
+    fn the_row_reply_caret_stays_visible_in_a_long_draft() {
+        let temp = Temp::new("row-reply-caret", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["agent asks"]);
+        blocked_row(&temp, &mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("r");
+        let draft = (1..=40)
+            .map(|line| format!("line {line:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText(draft),
+            None,
+        )
+        .expect("type");
+        let caret_line = |model: &BoardModel| {
+            let (screen, cursor) = board_screen(model, 80, 18);
+            let (_, y) = cursor.expect("caret placed");
+            screen
+                .lines()
+                .nth(usize::from(y))
+                .expect("caret row on screen")
+                .to_string()
+        };
+        assert!(caret_line(&model).contains("line 40"), "the end is in view");
+        for _ in 0..45 {
+            apply_intent(&mut domain, &mut model, BoardIntent::EditMoveUp, None).expect("up");
+        }
+        assert!(
+            caret_line(&model).contains("line 01"),
+            "the first line scrolled into view"
+        );
+    }
+
+    /// A refresh that takes the row off the list (finished elsewhere) keeps the draft on
+    /// screen with the changed-block refusal, and the box still owns input.
+    #[test]
+    fn the_row_reply_box_survives_its_row_leaving_the_list() {
+        let temp = Temp::new("row-reply-orphan", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["finished elsewhere"]);
+        blocked_row(&temp, &mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("r");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText("my draft".into()),
+            None,
+        )
+        .expect("type");
+        elsewhere(&temp, |other| other.complete(ids[0]).expect("done"));
+        let disk = temp.store.load().expect("load");
+        domain.merge_tasks_from_disk(&disk);
+        model.sync_from_domain(&domain);
+        assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+        assert_eq!(model.reply_draft(), Some("my draft"));
+        let (screen, cursor) = board_screen(&model, 80, 24);
+        assert!(screen.contains("not on this list"), "{screen}");
+        assert!(screen.contains("└ you  my draft"), "{screen}");
+        assert!(
+            screen.contains("this block was closed or replaced elsewhere"),
+            "{screen}"
+        );
+        let (_, y) = cursor.expect("caret placed");
+        assert!(screen
+            .lines()
+            .nth(usize::from(y))
+            .is_some_and(|line| line.contains("my draft")));
+        // Typing keeps the refusal; Esc closes the box back to the board.
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText("!".into()),
+            None,
+        )
+        .expect("type");
+        assert!(board_screen(&model, 80, 24)
+            .0
+            .contains("this block was closed or replaced elsewhere"));
+        apply_intent(&mut domain, &mut model, BoardIntent::CancelEdit, None).expect("esc");
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
     }
 
     /// Shift+Enter on the row's box stores the reply only; Esc discards a draft. Both return
@@ -10634,7 +10794,7 @@ mod quick_assign_tests {
         dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
         reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
         let mut host = fake_host(&temp);
-        host.agent = Some(true);
+        let tag = agent_running(&domain, &mut host, ids[0]);
         handle(
             &temp,
             &mut domain,
@@ -10644,55 +10804,137 @@ mod quick_assign_tests {
         );
         assert_eq!(host.ran, 0);
         assert_eq!(model.dispatch_prompt(), None);
-        let saved = temp.store.load().expect("reload");
-        let task = saved.get(ids[0]).expect("task");
-        assert_eq!(task.status, HumanStatus::Started);
-        assert_eq!(last_reply(&saved, ids[0]).as_deref(), Some("postgres"));
-        let number = task.number.expect("number");
         assert_eq!(
             host.prompts,
-            [(
-                "w1:p1".to_string(),
-                format!("[tsk T{number} unblocked] postgres")
-            )],
-            "the reply went to the running agent once"
+            [("w0:p1".to_string(), format!("{tag} postgres"))],
+            "the reply went to the recorded workspace's agent once"
+        );
+        assert_eq!(
+            host.root_queries,
+            ["w0"],
+            "the recorded workspace was asked"
+        );
+        assert_eq!(
+            host.disk_at_prompt,
+            [(HumanStatus::Started, Some("postgres".to_string()))],
+            "the reply and the start were durable before the prompt"
         );
         assert_eq!(model.message(), Some("started · reply sent to @builder"));
     }
 
-    /// The agent waits on a permission prompt, or Herdr fails: the task stays started, the
-    /// reply stays on the task, and nothing is tried twice.
+    /// `ctrl+s` on an empty box only unblocks, and tells the agent so with the bare tag.
+    #[test]
+    fn an_empty_reply_box_unblocks_and_sends_the_bare_tag() {
+        let temp = Temp::new("reply-empty", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["agent waits"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "");
+        let mut host = fake_host(&temp);
+        let tag = agent_running(&domain, &mut host, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut host,
+        );
+        assert_eq!(host.prompts, [("w0:p1".to_string(), tag)]);
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        assert!(task.past_blocks.last().expect("closed").replies.is_empty());
+        assert_eq!(model.reply_draft(), None, "the box closed on landing");
+    }
+
+    /// Each send carries only the reply that action stored: an earlier answer is never sent
+    /// again, even with no agent reply in between.
+    #[test]
+    fn two_sends_in_a_row_never_repeat_a_reply() {
+        let temp = Temp::new("reply-twice", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["agent asks twice"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "use postgres");
+        let mut host = fake_host(&temp);
+        let tag = agent_running(&domain, &mut host, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut host,
+        );
+        // Blocked again; the owner's earlier reply sits on the closed block and a new one
+        // is typed with a line break.
+        reply_on_blocked(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[0],
+            "add an index\n\"quoted\" too",
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut host,
+        );
+        let texts: Vec<&str> = host.prompts.iter().map(|(_, text)| text.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                format!("{tag} use postgres"),
+                format!("{tag} add an index\n\"quoted\" too")
+            ]
+        );
+    }
+
+    /// The agent waits on a permission prompt, Herdr fails, Herdr cannot list the panes, or
+    /// cannot say who runs: the task stays started, the reply stays on the task, and nothing
+    /// is tried twice.
     #[test]
     fn a_refused_or_failed_delivery_keeps_the_task_started() {
         use crate::dispatch::PromptError;
+        // (agent, root pane fails, prompt error, sends, message)
         let cases = [
             (
                 Some(true),
+                false,
                 Some(PromptError::AgentBlocked),
                 1,
                 "started · @builder is waiting on a prompt; reply kept on the task",
             ),
             (
                 Some(true),
+                false,
                 Some(PromptError::Failed("herdr: boom".into())),
                 1,
                 "started · could not reach @builder; reply kept on the task",
             ),
-            // Herdr cannot say whether the agent runs: plain start, nothing sent.
             (
                 None,
+                false,
+                None,
+                0,
+                "started · could not reach @builder; reply kept on the task",
+            ),
+            (
+                Some(true),
+                true,
                 None,
                 0,
                 "started · could not reach @builder; reply kept on the task",
             ),
         ];
-        for (agent, error, sends, message) in cases {
+        for (agent, root_failed, error, sends, message) in cases {
             let temp = Temp::new("reply-delivery-fails", &["builder"]);
             let (mut domain, mut model, ids) = board(&temp, &["agent busy"]);
             dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
             reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
             let mut host = fake_host(&temp);
+            agent_running(&domain, &mut host, ids[0]);
             host.agent = agent;
+            host.root_failed = root_failed;
             host.prompt_error = error;
             handle(
                 &temp,
@@ -10701,7 +10943,7 @@ mod quick_assign_tests {
                 BoardIntent::ReplySaveUnblock,
                 &mut host,
             );
-            assert_eq!(host.prompts.len(), sends);
+            assert_eq!(host.prompts.len(), sends, "{message}");
             assert_eq!(host.ran, 0, "never relaunches");
             assert_eq!(model.dispatch_prompt(), None);
             assert_eq!(model.message(), Some(message));
@@ -10714,6 +10956,89 @@ mod quick_assign_tests {
         }
     }
 
+    /// Another agent in the recorded pane, an unnamed one (naming failed), or a pane that
+    /// changes hands between the check and the send: nothing is sent, and the start stays.
+    #[test]
+    fn a_reply_never_reaches_an_agent_tsk_did_not_dispatch() {
+        let not_in_pane =
+            "started · reply not sent: @builder is not in its pane; reply kept on the task";
+        for case in ["other", "unnamed", "swapped"] {
+            let temp = Temp::new("reply-wrong-agent", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["pane reused"]);
+            dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+            reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "secret");
+            let mut host = fake_host(&temp);
+            let number = domain.get(ids[0]).and_then(|task| task.number).expect("n");
+            let expected = crate::dispatch::agent_name(number, "builder");
+            host.agent = Some(true);
+            match case {
+                "other" => {
+                    host.names.insert("w0:p1".into(), "reviewer".into());
+                }
+                "unnamed" => {}
+                _ => {
+                    host.next_names = [Some(expected.clone()), Some("t99-other".into())].into();
+                }
+            }
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::ReplySaveUnblock,
+                &mut host,
+            );
+            assert!(host.prompts.is_empty(), "{case}: nothing sent");
+            assert!(
+                host.agent_queries.iter().all(|pane| pane == "w0:p1"),
+                "{case}: only the recorded pane was asked"
+            );
+            assert_eq!(model.message(), Some(not_in_pane), "{case}");
+            assert_eq!(model.dispatch_prompt(), None, "{case}: the start stays");
+            let saved = temp.store.load().expect("reload");
+            assert_eq!(
+                saved.get(ids[0]).expect("task").status,
+                HumanStatus::Started,
+                "{case}"
+            );
+        }
+    }
+
+    /// Outside Herdr a dispatched task still starts, and the status row says the reply did
+    /// not go anywhere.
+    #[test]
+    fn a_reply_outside_herdr_starts_and_says_it_was_not_sent() {
+        let temp = Temp::new("reply-outside-herdr", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["plain terminal"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+        let mut host = fake_host(&temp);
+        agent_running(&domain, &mut host, ids[0]);
+        let mut recovery = SaveRecovery::new();
+        handle_board_intent_with_host(
+            &temp.store,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut recovery,
+            false,
+            false,
+            &mut host,
+            &mut |_| {},
+        )
+        .expect("intent");
+        assert!(host.prompts.is_empty());
+        assert!(host.root_queries.is_empty(), "Herdr is never asked");
+        assert_eq!(
+            model.message(),
+            Some("started · reply not sent: not in Herdr")
+        );
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(
+            saved.get(ids[0]).expect("task").status,
+            HumanStatus::Started
+        );
+    }
+
     /// Shift+Enter stores the reply only: nothing is sent, even to a running agent.
     #[test]
     fn a_reply_saved_without_unblocking_sends_nothing() {
@@ -10722,7 +11047,7 @@ mod quick_assign_tests {
         dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
         reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
         let mut host = fake_host(&temp);
-        host.agent = Some(true);
+        agent_running(&domain, &mut host, ids[0]);
         handle(
             &temp,
             &mut domain,
@@ -10737,58 +11062,6 @@ mod quick_assign_tests {
             HumanStatus::Blocked
         );
         assert_eq!(last_reply(&saved, ids[0]).as_deref(), Some("postgres"));
-    }
-
-    /// Only the owner's replies since the agent's last reply go out, in order.
-    #[test]
-    fn delivery_sends_the_owner_replies_since_the_agent_last_spoke() {
-        let temp = Temp::new("reply-since", &["builder"]);
-        let (mut domain, mut model, ids) = board(&temp, &["long thread"]);
-        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
-        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "first answer");
-        let mut host = fake_host(&temp);
-        handle(
-            &temp,
-            &mut domain,
-            &mut model,
-            BoardIntent::ReplySave,
-            &mut host,
-        );
-        domain
-            .reply(ids[0], "which one?", "builder")
-            .expect("agent reply");
-        temp.store.reload_merge_save(&mut domain).expect("save");
-        model.sync_from_domain(&domain);
-        domain
-            .reply(ids[0], "the second", crate::domain::OWNER)
-            .expect("reply");
-        temp.store.reload_merge_save(&mut domain).expect("save");
-        model.sync_from_domain(&domain);
-        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("box");
-        apply_intent(
-            &mut domain,
-            &mut model,
-            BoardIntent::EditInsertText("line one\nline two".into()),
-            None,
-        )
-        .expect("type");
-        host.agent = Some(true);
-        handle(
-            &temp,
-            &mut domain,
-            &mut model,
-            BoardIntent::ReplySaveUnblock,
-            &mut host,
-        );
-        let number = domain
-            .get(ids[0])
-            .and_then(|task| task.number)
-            .expect("number");
-        assert_eq!(host.prompts.len(), 1);
-        assert_eq!(
-            host.prompts[0].1,
-            format!("[tsk T{number} unblocked] the second\n\nline one\nline two")
-        );
     }
 
     #[test]
@@ -11116,74 +11389,221 @@ mod quick_assign_tests {
         }
     }
 
+    #[cfg(unix)]
+    fn recovering_step(
+        temp: &Temp,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        recovery: &mut SaveRecovery<DomainState>,
+        host: &mut FakeHost,
+        intent: BoardIntent,
+    ) {
+        handle_board_intent_with_host(
+            &temp.store,
+            domain,
+            model,
+            intent,
+            recovery,
+            false,
+            true,
+            host,
+            &mut |_| {},
+        )
+        .expect("intent");
+    }
+
+    /// Run `intent` with the state dir read-only, so its save fails into recovery.
+    #[cfg(unix)]
+    fn failing_step(
+        temp: &Temp,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        recovery: &mut SaveRecovery<DomainState>,
+        host: &mut FakeHost,
+        intent: BoardIntent,
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o555))
+            .expect("lock the state dir");
+        recovering_step(temp, domain, model, recovery, host, intent);
+        std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o700))
+            .expect("unlock");
+        assert!(recovery.is_pending(), "the save failed into recovery");
+    }
+
     /// A failed reply save to a running agent sends nothing; Retry sends it exactly once,
-    /// Cancel never.
+    /// after the save, and Cancel never.
     #[cfg(unix)]
     #[test]
     fn a_failed_reply_save_sends_nothing_until_retry_saves_it() {
-        use std::os::unix::fs::PermissionsExt;
         for retry in [true, false] {
             let temp = Temp::new("reply-deliver-recovery", &["builder"]);
             let (mut domain, mut model, ids) = board(&temp, &["agent waits"]);
             dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
             reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
             let mut host = fake_host(&temp);
-            host.agent = Some(true);
+            let tag = agent_running(&domain, &mut host, ids[0]);
             let mut recovery = SaveRecovery::new();
-            let mut step = |domain: &mut DomainState,
-                            model: &mut BoardModel,
-                            recovery: &mut SaveRecovery<DomainState>,
-                            intent: BoardIntent| {
-                handle_board_intent_with_host(
-                    &temp.store,
-                    domain,
-                    model,
-                    intent,
-                    recovery,
-                    false,
-                    true,
-                    &mut host,
-                    &mut |_| {},
-                )
-                .expect("intent");
-            };
-            std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o555))
-                .expect("lock the state dir");
-            step(
+            failing_step(
+                &temp,
                 &mut domain,
                 &mut model,
                 &mut recovery,
+                &mut host,
                 BoardIntent::ReplySaveUnblock,
             );
-            std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o700))
-                .expect("unlock");
-            assert!(recovery.is_pending(), "the save failed into recovery");
+            assert!(host.prompts.is_empty(), "nothing before the save lands");
             let answer = if retry {
                 BoardIntent::RetrySave
             } else {
                 BoardIntent::CancelSave
             };
-            step(&mut domain, &mut model, &mut recovery, answer);
-            assert!(!recovery.is_pending());
-            // A later save must not send again.
-            step(
+            recovering_step(
+                &temp,
                 &mut domain,
                 &mut model,
                 &mut recovery,
+                &mut host,
+                answer,
+            );
+            assert!(!recovery.is_pending());
+            // A later save must not send again.
+            recovering_step(
+                &temp,
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                &mut host,
                 BoardIntent::SelectNext,
             );
             assert_eq!(model.pending_reply_delivery, None);
-            let sends = host.prompts.len();
+            assert_eq!(model.pending_reply_text, None);
             let saved = temp.store.load().expect("reload");
             let task = saved.get(ids[0]).expect("task");
             if retry {
-                assert_eq!(sends, 1, "retry sent the reply once");
+                assert_eq!(
+                    host.prompts,
+                    [("w0:p1".to_string(), format!("{tag} postgres"))]
+                );
+                assert_eq!(
+                    host.disk_at_prompt,
+                    [(HumanStatus::Started, Some("postgres".to_string()))]
+                );
                 assert_eq!(task.status, HumanStatus::Started);
             } else {
-                assert_eq!(sends, 0, "cancel sent nothing");
+                assert!(host.prompts.is_empty(), "cancel sent nothing");
                 assert_eq!(task.status, HumanStatus::Blocked);
             }
         }
+    }
+
+    /// The agent looked gone at `ctrl+s` (Herdr's detection lagged) and the save failed; on
+    /// Retry it is found running: the resumed start sends the reply exactly once.
+    #[cfg(unix)]
+    #[test]
+    fn a_resumed_start_delivers_to_an_agent_found_on_retry() {
+        let temp = Temp::new("reply-resumed", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["detection lags"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+        let mut host = fake_host(&temp);
+        let tag = agent_running(&domain, &mut host, ids[0]);
+        host.agent = Some(false);
+        let mut recovery = SaveRecovery::new();
+        failing_step(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            &mut host,
+            BoardIntent::ReplySaveUnblock,
+        );
+        assert!(model.pending_reply_start.is_some());
+        assert!(host.prompts.is_empty());
+        host.agent = Some(true);
+        recovering_step(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            &mut host,
+            BoardIntent::RetrySave,
+        );
+        recovering_step(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            &mut host,
+            BoardIntent::SelectNext,
+        );
+        assert_eq!(host.ran, 0, "no launch");
+        assert_eq!(model.dispatch_prompt(), None);
+        assert_eq!(
+            host.prompts,
+            [("w0:p1".to_string(), format!("{tag} postgres"))]
+        );
+        assert_eq!(
+            host.disk_at_prompt,
+            [(HumanStatus::Started, Some("postgres".to_string()))]
+        );
+        assert_eq!(model.message(), Some("started · reply sent to @builder"));
+    }
+
+    /// The dispatch record changed (a relaunch elsewhere) while the save waited on Retry:
+    /// the old workspace's pane, now someone else's, is never asked or sent to. The changed
+    /// task refuses the held save, and Cancel drops the delivery.
+    #[cfg(unix)]
+    #[test]
+    fn a_dispatch_record_changed_before_retry_sends_nothing_to_the_old_pane() {
+        let temp = Temp::new("reply-record-moved", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["relaunched meanwhile"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+        let mut host = fake_host(&temp);
+        agent_running(&domain, &mut host, ids[0]);
+        let mut recovery = SaveRecovery::new();
+        failing_step(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            &mut host,
+            BoardIntent::ReplySaveUnblock,
+        );
+        elsewhere(&temp, |other| {
+            let mut record = other
+                .get(ids[0])
+                .and_then(|task| task.dispatch.clone())
+                .expect("record");
+            record.herdr_workspace_id = "w5".into();
+            other.record_dispatch(ids[0], record).expect("relaunch");
+        });
+        let name = host.names.remove("w0:p1").expect("old agent");
+        host.names.insert("w0:p1".into(), "someone-else".into());
+        host.names.insert("w5:p1".into(), name);
+        host.root_queries.clear();
+        host.agent_queries.clear();
+        for answer in [BoardIntent::RetrySave, BoardIntent::CancelSave] {
+            recovering_step(
+                &temp,
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                &mut host,
+                answer,
+            );
+        }
+        assert!(!recovery.is_pending());
+        assert!(host.prompts.is_empty(), "nothing sent anywhere");
+        assert!(
+            !host.root_queries.iter().any(|workspace| workspace == "w0")
+                && !host.agent_queries.iter().any(|pane| pane == "w0:p1"),
+            "the old record was never used: {:?} {:?}",
+            host.root_queries,
+            host.agent_queries
+        );
+        assert_eq!(model.pending_reply_delivery, None);
     }
 
     #[test]
