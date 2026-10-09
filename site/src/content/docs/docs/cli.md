@@ -17,7 +17,7 @@ Install the skill with `tsk setup pi`, or use your [agent's setup target](#setup
 1. Read the task with `tsk list T12`.
 2. Set its status with `tsk status T12 started` (or `ready` to pick it from the inbox).
 3. Update notes or steps as work progresses.
-4. Set `review`, `blocked`, `open`, or `done` explicitly. Block with your question: `tsk status T12 blocked --why "…"`, and read the answers under `block.replies` in `tsk list T12 --json`.
+4. Set `review`, `blocked`, `open`, or `done` explicitly. Block with your question: `tsk status T12 blocked --why "…"`, and read the answers under `block.replies` in `tsk list T12 --json` (once it is unblocked or relaunched, in the last `past_blocks` entry).
 
 The CLI can mark a task done with `tsk status <task> done`. Agent lifecycle does not change task status automatically.
 

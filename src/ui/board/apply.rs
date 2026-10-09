@@ -1004,7 +1004,7 @@ fn apply_board_intent(
         }
         BoardIntent::BlockCardCancel => {
             // Esc keeps the marks: the card returns to the same marked set.
-            super::block::close_block_card(model);
+            super::block::cancel_block_card(model);
             return Ok(IntentOutcome::None);
         }
         BoardIntent::BlockCardNextField | BoardIntent::BlockCardPrevField => {
@@ -2683,6 +2683,28 @@ fn apply_board_intent(
         // The five intents below aim at the selection, and an empty board has none. Each
         // says so rather than returning to a row that has just been cleared for an action
         // that then did nothing: a silent no-op is the failure the row exists to prevent.
+        // Palette **set status: blocked** asks why like `ctrl+b`, over the targets not yet
+        // blocked; it never unblocks.
+        BoardIntent::SetStatus(HumanStatus::Blocked) => {
+            model.close_popup();
+            let targets = model.verb_target_ids();
+            if targets.is_empty() {
+                model.set_message(NO_SELECTION);
+                return Ok(IntentOutcome::None);
+            }
+            let targets: Vec<Uuid> = targets
+                .into_iter()
+                .filter(|id| {
+                    domain
+                        .get(*id)
+                        .is_some_and(|task| task.status != HumanStatus::Blocked)
+                })
+                .collect();
+            if !targets.is_empty() {
+                super::block::open_block_card(model, targets);
+            }
+            return Ok(IntentOutcome::None);
+        }
         BoardIntent::SetStatus(status) => {
             let (targets, _) = take_verb_targets(model);
             if targets.is_empty() {
@@ -2997,8 +3019,12 @@ fn edit_draft(model: &mut BoardModel, operation: impl FnOnce(&mut EditBuffer)) {
         return;
     }
     if model.input_mode() == BoardInputMode::BlockCard {
-        if let Some(card) = model.block_card.as_mut() {
-            operation(card.focused_buffer_mut());
+        if let Some(buffer) = model
+            .block_card
+            .as_mut()
+            .and_then(|card| card.focused_buffer_mut())
+        {
+            operation(buffer);
         }
         return;
     }

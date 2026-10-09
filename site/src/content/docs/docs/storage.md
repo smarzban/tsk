@@ -43,7 +43,7 @@ You were dispatched to T{number} ({title}) in worktree {worktree} on branch {bra
 3. Work only on {branch}. Run the project's checks before saying you are done.
 4. Push and open a pull request into {base}. Never merge it.
 5. Set the task to review with one line on what to look at. When you need a human, block it with your question: `tsk status {number} blocked --why "…"`, adding `--needs` and one `--option` per choice, then stop.
-6. On a relaunch, read the answers under `block.replies` in `tsk list {number} --json` first.
+6. On a relaunch, read the answers to your last question first: a relaunch closes the block, so they are the `replies` of the last `past_blocks` entry in `tsk list {number} --json`.
 ```
 
 A profile with its own `prompt` replaces the default entirely. The rendered prompt is always appended to the command as its last argument. `env` is an optional table of string values passed to the launched command unchanged. tsk also sets `TSK_AGENT` to the profile name, so the agent's blocks and replies carry its name.

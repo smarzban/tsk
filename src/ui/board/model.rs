@@ -2186,6 +2186,7 @@ impl BoardModel {
         // baseline; Retried resolves it there instead and never reaches this branch.
         if resolution == SaveResolution::Cancelled {
             super::block::release_cancelled_reply(self);
+            super::block::release_cancelled_block_card(self);
         }
         if resolution == SaveResolution::Cancelled
             && self
@@ -2369,6 +2370,7 @@ impl BoardModel {
         self.finish_task_edit_save();
         self.finish_step_editor_save();
         super::block::finish_reply_save(self);
+        super::block::finish_block_card_save(self);
         if let Some(id) = pinned_edit.or(pinned_quick_add) {
             // A save this surface just made owns the selection, but navigation never
             // follows it: the pin moves only when the current destination already

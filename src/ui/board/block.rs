@@ -6,8 +6,8 @@ use std::cell::{Cell, RefCell};
 use uuid::Uuid;
 
 use crate::domain::{
-    BlockDraft, BlockField, BlockOn, BlockPatch, DomainError, DomainState, HumanStatus, Task,
-    BLOCK_TEXT_MAX, OWNER,
+    Block, BlockDraft, BlockField, BlockKey, BlockOn, BlockPatch, DomainError, DomainState,
+    HumanStatus, Task, BLOCK_TEXT_MAX, OWNER,
 };
 use crate::ui::edit::{seeded_draft, EditBuffer};
 use crate::ui::mouse::BoardPopup;
@@ -38,6 +38,9 @@ pub(crate) struct BlockPageState {
 #[derive(Debug, Clone)]
 pub(crate) struct ReplyEditor {
     pub(crate) buffer: EditBuffer,
+    /// The block the box was opened on. A refresh that closed or replaced it refuses the save
+    /// and keeps the draft, so an answer never lands on a different question.
+    pub(crate) block: BlockKey,
     /// The index of the owner's reply this box rewrites, or `None` for a new reply.
     pub(crate) edit: Option<usize>,
     pub(crate) refusal: Option<String>,
@@ -98,6 +101,11 @@ pub struct BlockCard {
     pub(crate) targets: Vec<Uuid>,
     /// Editing this task's open block instead of blocking.
     pub(crate) edit: Option<Uuid>,
+    /// The block the edit card was opened on.
+    pub(crate) block: Option<BlockKey>,
+    /// The blocks the save boundary has not confirmed yet. The card, its mode and the marks
+    /// are held until the synced tasks carry them; a cancelled save releases the hold.
+    pub(crate) pending: Option<Vec<(Uuid, Block)>>,
     pub(crate) why: EditBuffer,
     pub(crate) on_kind: OnKind,
     pub(crate) on_text: EditBuffer,
@@ -111,6 +119,8 @@ impl BlockCard {
         Self {
             targets,
             edit: None,
+            block: None,
+            pending: None,
             why: seeded_draft(""),
             on_kind: OnKind::You,
             on_text: seeded_draft(""),
@@ -129,6 +139,7 @@ impl BlockCard {
         };
         Self {
             edit: Some(task.id),
+            block: block.map(Block::key),
             why: seeded_draft(block.and_then(|block| block.why.as_deref()).unwrap_or("")),
             on_kind,
             on_text: seeded_draft(&on_text),
@@ -157,6 +168,11 @@ impl BlockCard {
         self.refusal.as_deref()
     }
 
+    /// Whether a confirmed card waits on the save boundary.
+    pub fn is_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
     pub(crate) fn why(&self) -> &EditBuffer {
         &self.why
     }
@@ -169,14 +185,17 @@ impl BlockCard {
         &self.needs
     }
 
-    /// The buffer of the focused field.
-    pub(crate) fn focused_buffer_mut(&mut self) -> &mut EditBuffer {
+    /// The buffer of the focused field, or `None` while a save holds the card.
+    pub(crate) fn focused_buffer_mut(&mut self) -> Option<&mut EditBuffer> {
+        if self.pending.is_some() {
+            return None;
+        }
         self.refusal = None;
-        match self.field {
+        Some(match self.field {
             BlockCardField::Why => &mut self.why,
             BlockCardField::On => &mut self.on_text,
             BlockCardField::Needs => &mut self.needs,
-        }
+        })
     }
 
     fn move_field(&mut self, forward: bool) {
@@ -214,6 +233,9 @@ impl BlockCard {
     }
 }
 
+/// The reply box's block was closed or replaced elsewhere; the draft stays.
+pub(crate) const BLOCK_REPLACED: &str = "this block was closed or replaced elsewhere; reply kept";
+
 fn too_long(field: BlockField) -> String {
     format!("{} is longer than {BLOCK_TEXT_MAX} bytes", field.name())
 }
@@ -232,6 +254,13 @@ pub(super) fn open_block_edit_card(model: &mut BoardModel, task: &Task) {
     model.clear_message();
 }
 
+/// `Esc` on the card. A card held by a save stays until the save resolves.
+pub(super) fn cancel_block_card(model: &mut BoardModel) {
+    if !model.block_card.as_ref().is_some_and(BlockCard::is_pending) {
+        close_block_card(model);
+    }
+}
+
 pub(super) fn close_block_card(model: &mut BoardModel) {
     model.block_card = None;
     if model.popup() == BoardPopup::BlockCard {
@@ -240,7 +269,7 @@ pub(super) fn close_block_card(model: &mut BoardModel) {
 }
 
 pub(super) fn block_card_field(model: &mut BoardModel, forward: bool) {
-    if let Some(card) = model.block_card.as_mut() {
+    if let Some(card) = model.block_card.as_mut().filter(|card| !card.is_pending()) {
         card.refusal = None;
         card.move_field(forward);
     }
@@ -248,14 +277,16 @@ pub(super) fn block_card_field(model: &mut BoardModel, forward: bool) {
 
 /// `←`/`→`: cycle the waiting-on choice on the On field, move the caret elsewhere.
 pub(super) fn block_card_arrow(model: &mut BoardModel, forward: bool) {
-    let Some(card) = model.block_card.as_mut() else {
+    let Some(card) = model.block_card.as_mut().filter(|card| !card.is_pending()) else {
         return;
     };
     card.refusal = None;
     match card.field {
         BlockCardField::On => card.on_kind = card.on_kind.cycle(forward),
         _ => {
-            let buffer = card.focused_buffer_mut();
+            let Some(buffer) = card.focused_buffer_mut() else {
+                return;
+            };
             if forward {
                 buffer.move_right();
             } else {
@@ -266,12 +297,13 @@ pub(super) fn block_card_arrow(model: &mut BoardModel, forward: bool) {
 }
 
 /// Enter on the card: block every target with one draft as one batch and one undo entry, or
-/// edit the open block in place. A refusal keeps the card open with its own line.
+/// edit the open block in place. A refusal keeps the card open with its own line. A stored
+/// change holds the card and the marks until the synced tasks carry it.
 pub(super) fn confirm_block_card(
     domain: &mut DomainState,
     model: &mut BoardModel,
 ) -> Result<IntentOutcome, DomainError> {
-    let Some(card) = model.block_card.as_ref() else {
+    let Some(card) = model.block_card.as_ref().filter(|card| !card.is_pending()) else {
         return Ok(IntentOutcome::None);
     };
     let on = match card.resolve_on(domain) {
@@ -295,13 +327,14 @@ pub(super) fn confirm_block_card(
         };
     let targets = card.targets.clone();
     let edit = card.edit;
+    let opened_on = card.block.clone();
     let changed = match edit {
         Some(id) => {
-            if domain
+            let current = domain
                 .get(id)
                 .and_then(|task| task.block.as_ref())
-                .is_none()
-            {
+                .map(Block::key);
+            if current.is_none() || current != opened_on {
                 close_block_card(model);
                 model.set_message("that block was closed elsewhere");
                 return Ok(IntentOutcome::None);
@@ -326,15 +359,62 @@ pub(super) fn confirm_block_card(
             domain.block_batch(&live, &draft, OWNER)?
         }
     };
+    if !changed {
+        close_block_card(model);
+        if edit.is_none() {
+            model.clear_marks();
+        }
+        return Ok(IntentOutcome::None);
+    }
+    let stored = targets
+        .iter()
+        .filter_map(|id| {
+            let block = domain.get(*id)?.block.clone()?;
+            Some((*id, block))
+        })
+        .collect();
+    if let Some(card) = model.block_card.as_mut() {
+        card.refusal = None;
+        card.pending = Some(stored);
+    }
+    Ok(IntentOutcome::Persist)
+}
+
+/// Close a held card once the synced tasks carry its blocks (the confirmed landing), and
+/// clear the marked set it blocked.
+pub(super) fn finish_block_card_save(model: &mut BoardModel) {
+    let Some(card) = model.block_card.as_ref() else {
+        return;
+    };
+    let Some(pending) = card.pending.as_ref() else {
+        return;
+    };
+    let landed = pending.iter().all(|(id, block)| {
+        model
+            .tasks
+            .iter()
+            .find(|task| task.id == *id)
+            .is_some_and(|task| task.block.as_ref() == Some(block))
+    });
+    if !landed {
+        return;
+    }
+    let edit = card.edit.is_some();
     close_block_card(model);
-    if edit.is_none() {
+    if !edit {
         model.clear_marks();
     }
-    Ok(if changed {
-        IntentOutcome::Persist
-    } else {
-        IntentOutcome::None
-    })
+}
+
+/// A cancelled failed save rolled the blocks back: reopen the card with its drafts and keep
+/// the marks, so Enter tries the same set again.
+pub(super) fn release_cancelled_block_card(model: &mut BoardModel) {
+    let Some(card) = model.block_card.as_mut() else {
+        return;
+    };
+    if card.pending.take().is_some() {
+        model.set_popup(BoardPopup::BlockCard);
+    }
 }
 
 /// The task the page shows, when it has an open block and no edit session owns the page.
@@ -467,14 +547,18 @@ pub(super) fn enter_block_ring(model: &mut BoardModel, forward: bool) -> bool {
 
 /// `r`, or `Enter` on an option (prefilled), or `ctrl+e` on one of your replies (`edit`).
 pub(super) fn begin_reply(model: &mut BoardModel, prefill: &str, edit: Option<usize>) -> bool {
-    if page_block_task(model).is_none() {
+    let Some(block) = page_block_task(model)
+        .and_then(|task| task.block.as_ref())
+        .map(Block::key)
+    else {
         return false;
-    }
+    };
     let Some(form) = model.form.as_mut() else {
         return false;
     };
     form.block.reply = Some(ReplyEditor {
         buffer: seeded_draft(prefill),
+        block,
         edit,
         refusal: None,
         pending: None,
@@ -565,6 +649,7 @@ pub(super) fn save_reply(
     };
     let text = editor.buffer.value().trim().to_string();
     let edit = editor.edit;
+    let opened_on = editor.block.clone();
     let refuse = |model: &mut BoardModel, refusal: String| {
         if let Some(editor) = model
             .form
@@ -575,6 +660,16 @@ pub(super) fn save_reply(
         }
         Ok(IntentOutcome::None)
     };
+    // A refresh may have closed the block the box was opened on, or replaced it with a new
+    // one: the answer (or the reply index being edited) belongs to that block only.
+    let current = domain
+        .get(id)
+        .and_then(|task| task.block.as_ref())
+        .map(Block::key);
+    if current.as_ref() != Some(&opened_on) {
+        model.set_message(BLOCK_REPLACED);
+        return refuse(model, BLOCK_REPLACED.to_string());
+    }
     if text.is_empty() {
         return refuse(model, "type a reply first".to_string());
     }

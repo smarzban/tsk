@@ -1664,6 +1664,38 @@ mod tests {
     }
 
     #[test]
+    fn a_block_on_a_trashed_or_missing_task_comes_back_to_you() {
+        let mut blocker = task(1, HumanStatus::Started, TaskScope::Global, false, 10);
+        blocker.number = Some(1);
+        blocker.soft_deleted = true;
+        let on_trashed = blocked_on(2, 2, crate::domain::BlockOn::Task(1));
+        let on_missing = blocked_on(3, 3, crate::domain::BlockOn::Task(9));
+        let tasks = vec![blocker, on_trashed, on_missing];
+
+        assert_eq!(
+            block_wait(&tasks[1], &tasks),
+            Some(BlockWait::BlockerGone(1)),
+            "a started blocker in the trash is gone, not still in motion"
+        );
+        assert_eq!(
+            block_wait(&tasks[2], &tasks),
+            Some(BlockWait::BlockerGone(9))
+        );
+        let view = query_lens(&tasks, None, BoardLens::Desk, false);
+        let mut need = section_ids(&view, SectionKind::NeedsYou);
+        need.sort();
+        assert_eq!(need, vec![Uuid::from_u128(2), Uuid::from_u128(3)]);
+        assert!(section_ids(&view, SectionKind::InMotion).is_empty());
+        assert_eq!((view.counts.in_motion, view.counts.need), (0, 2));
+        assert!(
+            tasks[1..]
+                .iter()
+                .all(|task| task.status == HumanStatus::Blocked),
+            "tsk never unblocks"
+        );
+    }
+
+    #[test]
     fn project_board_puts_a_block_on_another_task_in_motion_not_on_deck() {
         let mut on_task = blocked_on(2, 2, crate::domain::BlockOn::Other("vendor".into()));
         on_task.scope = project("/repos/a");

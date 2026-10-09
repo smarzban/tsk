@@ -450,3 +450,45 @@ fn a_legacy_blocked_task_without_a_block_gains_one_without_a_status_change() {
     assert_eq!(loaded_status(&dir).1, status_events, "no status event");
     assert_eq!(reply(&dir, "T1", "ok").code, 0);
 }
+
+#[test]
+fn reply_on_a_blocked_task_refuses_empty_and_oversized_text_by_bytes() {
+    let dir = temp_state_dir("reply-refusals");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "pick").code, 0);
+    let output = cli(block_args(&dir, "T1", &["--why", "Which one?"]));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    let before = fs::read(dir.join("tsk.json")).expect("read");
+
+    let output = reply(&dir, "T1", "   ");
+    assert_eq!(output.code, 1, "{}", output.stderr);
+    assert!(
+        output.stderr.starts_with("tsk reply: empty-reply: "),
+        "{}",
+        output.stderr
+    );
+    // 1025 four-byte characters: 4100 bytes, though only 1025 characters.
+    let output = reply(&dir, "T1", &"😀".repeat(1025));
+    assert_eq!(output.code, 1, "{}", output.stderr);
+    assert!(
+        output.stderr.starts_with("tsk reply: text-too-long: "),
+        "{}",
+        output.stderr
+    );
+    assert_eq!(
+        fs::read(dir.join("tsk.json")).expect("read"),
+        before,
+        "a refused reply writes nothing"
+    );
+
+    let exact = "😀".repeat(1024);
+    assert_eq!(exact.len(), 4096);
+    let output = reply(&dir, "T1", &exact);
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    let replies = listed(&dir, "T1")["block"]["replies"].clone();
+    assert_eq!(
+        replies[0]["text"],
+        exact.as_str(),
+        "stored whole, never truncated"
+    );
+}

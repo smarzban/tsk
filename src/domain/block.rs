@@ -186,6 +186,21 @@ impl Block {
     pub fn answered(&self) -> bool {
         self.last_reply().is_some_and(Reply::is_owner)
     }
+
+    /// Who opened this block and when: a closed and reopened block never shares it.
+    pub fn key(&self) -> BlockKey {
+        BlockKey {
+            by: self.by.clone(),
+            at: self.at,
+        }
+    }
+}
+
+/// The identity of one block, for sessions that must stay bound to the block they opened on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockKey {
+    pub by: String,
+    pub at: SystemTime,
 }
 
 /// Validated content for a new block.

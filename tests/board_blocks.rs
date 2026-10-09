@@ -1,15 +1,18 @@
 //! Blocks on the board: the block card, block-aware sections and rows, and the task page's
 //! BLOCKED section with its reply box.
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use tsk_tui::app::{apply_board_intent_with_save_recovery, BoardSaveContext};
 use tsk_tui::domain::{
     BlockDraft, BlockOn, DomainState, HumanStatus, ProvenanceOrigin, TaskScope, OWNER,
 };
+use tsk_tui::save_recovery::SaveRecovery;
 use tsk_tui::store::TaskStore;
 use tsk_tui::ui::board::{
     apply_intent, board_intent_may_persist, draw_board, BlockTarget, BoardInputMode, BoardModel,
@@ -705,4 +708,363 @@ fn reply_and_unblock_saves_through_the_locked_store_as_one_change() {
         .collect();
     assert_eq!(texts, ["first", "second"]);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Apply one intent through the board's save boundary. `fail` decides whether this persist
+/// call fails; `calls` counts every persist call.
+fn apply_saving(
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    recovery: &mut SaveRecovery<DomainState>,
+    intent: BoardIntent,
+    fail: bool,
+    calls: &Cell<usize>,
+) -> IntentOutcome {
+    let baseline = domain.clone();
+    apply_board_intent_with_save_recovery(
+        domain,
+        model,
+        recovery,
+        BoardSaveContext {
+            baseline,
+            intent,
+            snapshot: None,
+        },
+        |_| {
+            calls.set(calls.get() + 1);
+            if fail {
+                Err("disk full".to_string())
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .expect("apply")
+}
+
+fn enter() -> BoardIntent {
+    map_key(
+        BoardInputMode::BlockCard,
+        key(KeyCode::Enter, KeyModifiers::NONE),
+    )
+    .expect("enter")
+}
+
+fn marked_card(titles: &[&str], marked: usize) -> (DomainState, BoardModel, Vec<Uuid>) {
+    let (mut domain, ids) = numbered_domain(titles);
+    let mut model = BoardModel::from_domain(&domain, None);
+    model.sync_from_domain(&domain);
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None).unwrap();
+    for id in &ids[..marked] {
+        select(&mut domain, &mut model, *id);
+        apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).unwrap();
+    }
+    press(
+        &mut domain,
+        &mut model,
+        key(KeyCode::Char('b'), KeyModifiers::CONTROL),
+    );
+    type_text(&mut domain, &mut model, "waiting on design");
+    (domain, model, ids)
+}
+
+#[test]
+fn a_cancelled_failed_card_save_keeps_the_card_its_why_and_the_marked_set() {
+    let (mut domain, mut model, ids) = marked_card(&["a", "b", "c"], 2);
+    let mut recovery = SaveRecovery::new();
+    let calls = Cell::new(0);
+
+    let outcome = apply_saving(
+        &mut domain,
+        &mut model,
+        &mut recovery,
+        enter(),
+        true,
+        &calls,
+    );
+    assert_eq!(outcome, IntentOutcome::None);
+    assert!(recovery.is_pending());
+    assert!(
+        model.block_card().is_some(),
+        "the card outlives the failed save"
+    );
+    assert_eq!(model.marked_count(), 2);
+
+    apply_saving(
+        &mut domain,
+        &mut model,
+        &mut recovery,
+        BoardIntent::CancelSave,
+        false,
+        &calls,
+    );
+    assert_eq!(model.input_mode(), BoardInputMode::BlockCard);
+    assert!(rows(&model, 80, 24)
+        .join("\n")
+        .contains("waiting on design"));
+    assert_eq!(model.marked_count(), 2, "the marked set survives Cancel");
+    assert!(ids
+        .iter()
+        .all(|id| domain.get(*id).unwrap().status == HumanStatus::Open));
+
+    calls.set(0);
+    let outcome = apply_saving(
+        &mut domain,
+        &mut model,
+        &mut recovery,
+        enter(),
+        false,
+        &calls,
+    );
+    assert_eq!(outcome, IntentOutcome::Persisted);
+    assert_eq!(calls.get(), 1, "one save for the whole set");
+    for id in &ids[..2] {
+        assert_eq!(domain.get(*id).unwrap().status, HumanStatus::Blocked);
+    }
+    assert_eq!(last_batch_len(&domain), Some(2));
+    assert_eq!(model.input_mode(), BoardInputMode::Normal);
+    assert!(model.block_card().is_none());
+    assert_eq!(
+        model.marked_count(),
+        0,
+        "the marks clear once the save lands"
+    );
+}
+
+#[test]
+fn a_retried_failed_card_save_blocks_the_whole_set_with_one_persist() {
+    let (mut domain, mut model, ids) = marked_card(&["a", "b", "c"], 2);
+    let mut recovery = SaveRecovery::new();
+    let calls = Cell::new(0);
+    apply_saving(
+        &mut domain,
+        &mut model,
+        &mut recovery,
+        enter(),
+        true,
+        &calls,
+    );
+    assert!(recovery.is_pending());
+
+    calls.set(0);
+    let outcome = apply_saving(
+        &mut domain,
+        &mut model,
+        &mut recovery,
+        BoardIntent::RetrySave,
+        false,
+        &calls,
+    );
+    assert_eq!(outcome, IntentOutcome::Persisted);
+    assert_eq!(calls.get(), 1);
+    for id in &ids[..2] {
+        let task = domain.get(*id).unwrap();
+        assert_eq!(task.status, HumanStatus::Blocked);
+        assert_eq!(
+            task.block.as_ref().unwrap().why.as_deref(),
+            Some("waiting on design")
+        );
+    }
+    assert_eq!(domain.get(ids[2]).unwrap().status, HumanStatus::Open);
+    assert_eq!(model.input_mode(), BoardInputMode::Normal);
+    assert!(model.block_card().is_none());
+    assert_eq!(model.marked_count(), 0);
+}
+
+#[test]
+fn a_cancelled_failed_edit_card_save_keeps_the_card_and_its_text() {
+    let (mut domain, mut model, id) = blocked_page();
+    press(
+        &mut domain,
+        &mut model,
+        key(KeyCode::Tab, KeyModifiers::NONE),
+    );
+    press(
+        &mut domain,
+        &mut model,
+        key(KeyCode::Char('e'), KeyModifiers::CONTROL),
+    );
+    type_text(&mut domain, &mut model, " Really?");
+    let mut recovery = SaveRecovery::new();
+    let calls = Cell::new(0);
+    apply_saving(
+        &mut domain,
+        &mut model,
+        &mut recovery,
+        enter(),
+        true,
+        &calls,
+    );
+    assert!(recovery.is_pending());
+    apply_saving(
+        &mut domain,
+        &mut model,
+        &mut recovery,
+        BoardIntent::CancelSave,
+        false,
+        &calls,
+    );
+    assert_eq!(model.input_mode(), BoardInputMode::BlockCard);
+    assert!(rows(&model, 80, 24)
+        .join("\n")
+        .contains("Which database? Really?"));
+    assert_eq!(
+        domain
+            .get(id)
+            .unwrap()
+            .block
+            .as_ref()
+            .unwrap()
+            .why
+            .as_deref(),
+        Some("Which database?")
+    );
+
+    calls.set(0);
+    let outcome = apply_saving(
+        &mut domain,
+        &mut model,
+        &mut recovery,
+        enter(),
+        false,
+        &calls,
+    );
+    assert_eq!(outcome, IntentOutcome::Persisted);
+    assert_eq!(calls.get(), 1);
+    assert_eq!(
+        domain
+            .get(id)
+            .unwrap()
+            .block
+            .as_ref()
+            .unwrap()
+            .why
+            .as_deref(),
+        Some("Which database? Really?")
+    );
+    assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+}
+
+#[test]
+fn a_reply_box_refuses_to_save_onto_a_block_that_replaced_its_own() {
+    let (mut domain, mut model, id) = blocked_page();
+    press(
+        &mut domain,
+        &mut model,
+        key(KeyCode::Char('r'), KeyModifiers::NONE),
+    );
+    type_text(&mut domain, &mut model, "postgres");
+    // Another board or the CLI closes the block and opens a new one while the owner types.
+    domain.set_status(id, HumanStatus::Ready).unwrap();
+    domain
+        .block(
+            id,
+            BlockDraft::from_input(Some("Which region?"), None, &[], BlockOn::You).unwrap(),
+            "claude",
+        )
+        .unwrap();
+    model.sync_from_domain(&domain);
+    let before = domain.clone();
+
+    let outcome = press(
+        &mut domain,
+        &mut model,
+        key(KeyCode::Char('s'), KeyModifiers::CONTROL),
+    );
+    assert_eq!(outcome, IntentOutcome::None);
+    assert_eq!(
+        serde_json::to_value(&domain).unwrap(),
+        serde_json::to_value(&before).unwrap(),
+        "nothing landed on the new block"
+    );
+    assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+    assert_eq!(model.reply_draft(), Some("postgres"), "the draft is kept");
+    assert!(
+        model
+            .message()
+            .is_some_and(|message| message.contains("closed or replaced")),
+        "{:?}",
+        model.message()
+    );
+}
+
+#[test]
+fn editing_a_reply_by_index_refuses_once_its_block_was_replaced() {
+    let (mut domain, mut model, id) = blocked_page();
+    domain.reply(id, "mine", OWNER).unwrap();
+    model.sync_from_domain(&domain);
+    // Heading, two options, then your reply.
+    for _ in 0..4 {
+        press(
+            &mut domain,
+            &mut model,
+            key(KeyCode::Tab, KeyModifiers::NONE),
+        );
+    }
+    assert_eq!(model.block_target(), Some(BlockTarget::Reply(0)));
+    press(
+        &mut domain,
+        &mut model,
+        key(KeyCode::Char('e'), KeyModifiers::CONTROL),
+    );
+    assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+    type_text(&mut domain, &mut model, " edited");
+    // The block is replaced by one whose first reply is a different answer of yours.
+    domain.set_status(id, HumanStatus::Ready).unwrap();
+    domain.block(id, BlockDraft::default(), "claude").unwrap();
+    domain.reply(id, "another answer", OWNER).unwrap();
+    model.sync_from_domain(&domain);
+
+    let outcome = press(
+        &mut domain,
+        &mut model,
+        key(KeyCode::Enter, KeyModifiers::SHIFT),
+    );
+    assert_eq!(outcome, IntentOutcome::None);
+    let block = domain.get(id).unwrap().block.clone().unwrap();
+    assert_eq!(block.replies[0].text, "another answer");
+    assert!(!block.replies[0].edited);
+    assert_eq!(model.reply_draft(), Some("mine edited"));
+}
+
+#[test]
+fn palette_set_status_blocked_opens_the_block_card() {
+    let (mut domain, ids) = numbered_domain(&["a"]);
+    let mut model = BoardModel::from_domain(&domain, None);
+    model.sync_from_domain(&domain);
+    select(&mut domain, &mut model, ids[0]);
+    let outcome = apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::SetStatus(HumanStatus::Blocked),
+        None,
+    )
+    .unwrap();
+    assert_eq!(outcome, IntentOutcome::None);
+    assert_eq!(model.input_mode(), BoardInputMode::BlockCard);
+    assert_eq!(domain.get(ids[0]).unwrap().status, HumanStatus::Open);
+    type_text(&mut domain, &mut model, "asked legal");
+    press(
+        &mut domain,
+        &mut model,
+        key(KeyCode::Enter, KeyModifiers::NONE),
+    );
+    let task = domain.get(ids[0]).unwrap();
+    assert_eq!(task.status, HumanStatus::Blocked);
+    assert_eq!(
+        task.block.as_ref().unwrap().why.as_deref(),
+        Some("asked legal")
+    );
+
+    // On a task already blocked it does nothing, never unblocks.
+    let outcome = apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::SetStatus(HumanStatus::Blocked),
+        None,
+    )
+    .unwrap();
+    assert_eq!(outcome, IntentOutcome::None);
+    assert_eq!(model.input_mode(), BoardInputMode::Normal);
+    assert_eq!(domain.get(ids[0]).unwrap().status, HumanStatus::Blocked);
 }
