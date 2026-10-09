@@ -1,7 +1,7 @@
 //! Board intent reducer.
 
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
@@ -28,6 +28,10 @@ use super::model::{
 /// What the row says when an action that aims at the selection is asked for on a board that
 /// has none. One wording, so the same refusal always reads the same way.
 const NO_SELECTION: &str = "select a task first";
+
+/// What the row says when Shift+Enter reaches a form as Ctrl+J (#125).
+pub const SHIFT_ENTER_AS_CTRL_J_HINT: &str =
+    "Shift+Enter arrived as Ctrl+J: check your terminal's key bindings";
 
 fn take_verb_targets(model: &mut BoardModel) -> (Vec<Uuid>, bool) {
     let bulk = model.task_list_owns_input() && model.mark_mode_active() && model.marked_count() > 0;
@@ -263,6 +267,7 @@ pub fn apply_intent(
                 | BoardIntent::ConfirmEdit
                 | BoardIntent::ConfirmEditNext
                 | BoardIntent::CancelEdit
+                | BoardIntent::ShiftEnterAsCtrlJ
                 | BoardIntent::BeginAddStep
         )
     {
@@ -1068,6 +1073,10 @@ fn apply_board_intent(
         }
         BoardIntent::EditMoveWordRight => {
             edit_draft(model, EditBuffer::move_word_right);
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::ShiftEnterAsCtrlJ => {
+            model.set_ephemeral_message(SHIFT_ENTER_AS_CTRL_J_HINT, Duration::from_secs(5));
             return Ok(IntentOutcome::None);
         }
         BoardIntent::CancelEdit => {

@@ -202,6 +202,10 @@ pub enum BoardIntent {
     /// the reducer from the editor's own mode).
     ConfirmEditNext,
     CancelEdit,
+    /// Ctrl+J in a form where Shift+Enter saves. A terminal bound to send a bare line feed
+    /// for Shift+Enter (Ghostty `shift+enter=text:\n`) delivers it as Ctrl+J; the reducer
+    /// only hints at the binding, since Ctrl+J is too ambiguous to treat as a save.
+    ShiftEnterAsCtrlJ,
     /// Status-row quick-add edits and actions.
     QuickAddInsert(char),
     QuickAddInsertText(String),
@@ -1524,6 +1528,9 @@ fn map_form_edit_key(
             FormEditNavigation::Form => return Some(BoardIntent::FormFocusPrev),
         },
         KeyCode::Char('c') if ctrl => return Some(BoardIntent::CancelEdit),
+        KeyCode::Char('j') if ctrl && !alt && !super_key => {
+            return Some(BoardIntent::ShiftEnterAsCtrlJ)
+        }
         KeyCode::Char('a') if ctrl && task_steps => return Some(BoardIntent::BeginAddStep),
         KeyCode::Char('a') if ctrl && focused != CaptureField::Scope => {
             return Some(BoardIntent::EditMoveLineStart)
@@ -1673,6 +1680,7 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::ConfirmEdit
         | BoardIntent::ConfirmEditNext
         | BoardIntent::CancelEdit
+        | BoardIntent::ShiftEnterAsCtrlJ
         | BoardIntent::QuickAddInsert(_)
         | BoardIntent::QuickAddInsertText(_)
         | BoardIntent::QuickAddBackspace
