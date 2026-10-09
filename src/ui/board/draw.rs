@@ -1303,6 +1303,13 @@ fn build_task_page_overlay<'a>(
     }
 }
 
+/// The BLOCKED section's rows, each ring stop's row, and the reply box caret.
+type BlockPageRows = (
+    Vec<render::BlockPageRow>,
+    Vec<(crate::ui::board::BlockTarget, usize)>,
+    Option<(usize, u16)>,
+);
+
 /// The BLOCKED section of a blocked task's page: heading, why, needs, options and replies,
 /// the reply box when open, then the closing rule. Also returns each ring stop's row and the
 /// reply box caret. Every text wraps at `width`.
@@ -1311,11 +1318,7 @@ fn block_page_rows(
     form: &BoardForm,
     task: &crate::domain::Task,
     width: usize,
-) -> (
-    Vec<render::BlockPageRow>,
-    Vec<(crate::ui::board::BlockTarget, usize)>,
-    Option<(usize, u16)>,
-) {
+) -> BlockPageRows {
     use crate::domain::{BlockOn, OWNER};
     use crate::ui::board::BlockTarget;
     use crate::ui::queue::{block_wait, BlockWait};

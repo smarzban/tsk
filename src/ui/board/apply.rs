@@ -769,9 +769,9 @@ fn apply_board_intent(
                                 form.steps.cursor == Some(0) && !form.steps.add_selected
                             });
                             // Shift+Tab from the first step climbs back into the section.
-                            if !(first_step && super::block::enter_block_ring(model, false))
-                                && !move_step_with_tab(model, false)
-                            {
+                            let climbed =
+                                first_step && super::block::enter_block_ring(model, false);
+                            if !(climbed || move_step_with_tab(model, false)) {
                                 model.enter_page_field_focus();
                             }
                         }
