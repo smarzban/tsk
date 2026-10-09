@@ -1405,6 +1405,26 @@ enum FormEditNavigation {
     Form,
 }
 
+/// A printable character typed through AltGr.
+///
+/// Windows reports AltGr as Ctrl+Alt, so a German layout's `AltGr+8` arrives as `[` with both
+/// modifiers set. Text fields take that shape as input; Ctrl alone and Alt alone stay chords,
+/// and Super never types. Callers check their chord table first, so a bound Ctrl chord still
+/// wins over a bare-letter AltGr collision.
+fn altgr_text_char(key: &KeyEvent) -> Option<char> {
+    let mods = key.modifiers;
+    match key.code {
+        KeyCode::Char(character)
+            if !character.is_control()
+                && mods.contains(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && !mods.contains(KeyModifiers::SUPER) =>
+        {
+            Some(character)
+        }
+        _ => None,
+    }
+}
+
 /// Map one key for either kind of board form.
 ///
 /// Unlike standalone quick capture, board capture and task editing emit [`BoardIntent`]s. They
@@ -1424,6 +1444,9 @@ pub fn map_quick_add_key(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Left if ctrl => return Some(BoardIntent::QuickAddMoveWordLeft),
         KeyCode::Right if ctrl => return Some(BoardIntent::QuickAddMoveWordRight),
         _ => {}
+    }
+    if let Some(character) = altgr_text_char(&key) {
+        return Some(BoardIntent::QuickAddInsert(character));
     }
     if mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER) {
         return None;
@@ -1540,6 +1563,11 @@ fn map_form_edit_key(
         _ => {}
     }
 
+    if focused != CaptureField::Scope {
+        if let Some(character) = altgr_text_char(&key) {
+            return Some(BoardIntent::EditInsert(character));
+        }
+    }
     // Shift is how a capital letter arrives, so it is not treated as a chord here.
     if mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER) {
         return None;
@@ -1588,6 +1616,9 @@ fn map_form_edit_key(
 }
 
 fn map_search(key: KeyEvent) -> Option<BoardIntent> {
+    if let Some(character) = altgr_text_char(&key) {
+        return Some(BoardIntent::SearchQueryInsert(character));
+    }
     if key
         .modifiers
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
@@ -1911,6 +1942,9 @@ fn map_help(key: KeyEvent) -> Option<BoardIntent> {
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return Some(BoardIntent::Quit);
     }
+    if let Some(character) = altgr_text_char(&key) {
+        return Some(BoardIntent::HelpQueryInsert(character));
+    }
     if key
         .modifiers
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
@@ -1958,6 +1992,9 @@ fn map_project_picker(key: KeyEvent) -> Option<BoardIntent> {
 /// Searchable list picker (thread filter / projects View). Printable keys narrow the
 /// query, arrows move, Enter applies, Esc cancels — the palette's contract with counts.
 fn map_list_picker(key: KeyEvent) -> Option<BoardIntent> {
+    if let Some(character) = altgr_text_char(&key) {
+        return Some(BoardIntent::ListPickerQueryInsert(character));
+    }
     if key
         .modifiers
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
@@ -1998,6 +2035,9 @@ fn map_save_recovery(key: KeyEvent) -> Option<BoardIntent> {
 
 /// Palette: printable keys type the query, so movement stays on arrows and Tab.
 fn map_palette(key: KeyEvent) -> Option<BoardIntent> {
+    if let Some(character) = altgr_text_char(&key) {
+        return Some(BoardIntent::CommandQueryInsert(character));
+    }
     if key
         .modifiers
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
@@ -2075,6 +2115,15 @@ pub fn map_capture_key_state(
     ) {
         if let Some(intent) = map_capture_edit_chord(key) {
             return Some(intent);
+        }
+    }
+    let text_field = matches!(
+        focused,
+        CaptureField::Title | CaptureField::Notes | CaptureField::Thread
+    ) || path_editing;
+    if text_field {
+        if let Some(character) = altgr_text_char(&key) {
+            return Some(CaptureIntent::Insert(character));
         }
     }
 

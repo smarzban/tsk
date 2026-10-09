@@ -14,6 +14,7 @@ the GitHub release notes verbatim.
 - The task page's project chooser lists options top to bottom, so `↓` moves the highlight down instead of up.
 - Windows: `tsk update` and the board's update check work instead of crashing on the first HTTPS request, so update notices appear. A failed check stays silent.
 - `tsk add --file` and piped JSON plans accept a leading UTF-8 byte order mark, as Windows PowerShell 5.1 writes by default.
+- Windows: characters typed with AltGr, such as `[ ] { } @` on a German layout, insert in every text field (quick-add, task editors, search, the palette, Help, and pickers) instead of being dropped. Thanks @LukasGold (#178).
 
 ## v0.11.6
 
