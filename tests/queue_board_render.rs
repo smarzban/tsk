@@ -53,6 +53,8 @@ fn task(id: u128, title: &str, status: HumanStatus, scope: TaskScope, secs_ago: 
         base: None,
         dispatch: None,
         status,
+        block: None,
+        past_blocks: Vec::new(),
         scope,
         provenance: ProvenanceOrigin::Manual,
         history: vec![TaskEvent {

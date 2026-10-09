@@ -8,7 +8,10 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{ProvenanceOrigin, TaskEvent, TaskEventKind, UndoEntry, UNDO_CAP};
+use super::{
+    block_text, Block, BlockDraft, BlockField, BlockPatch, ProvenanceOrigin, Reply, TaskEvent,
+    TaskEventKind, UndoEntry, OWNER, UNDO_CAP,
+};
 use crate::scope::paths_equivalent;
 
 /// Human-facing task progress. Source of truth for board state.
@@ -114,6 +117,13 @@ pub struct Task {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch: Option<Dispatch>,
     pub status: HumanStatus,
+    /// The open block while the task is `blocked`. A blocked task from an older store may
+    /// have none; it reads as blocked on you with no reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block: Option<Block>,
+    /// Closed blocks, oldest first. Read-only history.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub past_blocks: Vec<Block>,
     pub scope: TaskScope,
     pub provenance: ProvenanceOrigin,
     /// Append-only domain event history.
@@ -149,6 +159,16 @@ pub enum DomainError {
     UnknownStep(Uuid),
     /// No project record exists and no task carries this project scope path.
     UnknownProject(String),
+    /// Block or reply text is longer than [`super::BLOCK_TEXT_MAX`] bytes.
+    TextTooLong(BlockField),
+    /// The task has no open block to reply to or edit.
+    NotBlocked(Uuid),
+    /// No reply at this index, or it is not the owner's to change.
+    UnknownReply(usize),
+    /// Reply text was empty or whitespace-only after trim.
+    EmptyReply,
+    /// The task already has an open block; edit it instead.
+    AlreadyBlocked(Uuid),
 }
 
 impl std::fmt::Display for DomainError {
@@ -163,11 +183,35 @@ impl std::fmt::Display for DomainError {
             DomainError::EmptyStepText => write!(f, "step text must be non-empty after trim"),
             DomainError::UnknownStep(id) => write!(f, "unknown step id {id}"),
             DomainError::UnknownProject(path) => write!(f, "unknown project {path}"),
+            DomainError::TextTooLong(field) => write!(
+                f,
+                "{} is longer than {} bytes",
+                field.name(),
+                super::BLOCK_TEXT_MAX
+            ),
+            DomainError::NotBlocked(id) => write!(f, "task {id} is not blocked"),
+            DomainError::UnknownReply(index) => write!(f, "no reply {index} of yours"),
+            DomainError::EmptyReply => write!(f, "reply must be non-empty after trim"),
+            DomainError::AlreadyBlocked(id) => write!(f, "task {id} already has an open block"),
         }
     }
 }
 
 impl std::error::Error for DomainError {}
+
+/// Keep the block in step with a status change: entering `blocked` opens an empty block
+/// when none is open; leaving it closes the open block into `past_blocks`.
+fn sync_block_with_status(task: &mut Task, at: SystemTime, by: &str) {
+    if task.status == HumanStatus::Blocked {
+        if task.block.is_none() {
+            task.block = Some(Block::open(BlockDraft::default(), by, at));
+        }
+    } else if let Some(mut block) = task.block.take() {
+        block.closed_at = Some(at);
+        block.closed_by = Some(by.to_string());
+        task.past_blocks.push(block);
+    }
+}
 
 fn record_mutation(task: &mut Task, kind: TaskEventKind) {
     record_mutation_at(task, kind, SystemTime::now());
@@ -181,7 +225,7 @@ fn record_mutation_at(task: &mut Task, kind: TaskEventKind, at: SystemTime) {
 }
 
 /// Document version written by this binary.
-pub const STORE_FORMAT_VERSION: u32 = 6;
+pub const STORE_FORMAT_VERSION: u32 = 7;
 
 fn default_next_notice_number() -> u64 {
     1
@@ -429,6 +473,8 @@ impl DomainState {
             base: None,
             dispatch: None,
             status: HumanStatus::Open,
+            block: None,
+            past_blocks: Vec::new(),
             scope,
             provenance,
             history: vec![TaskEvent {
@@ -513,6 +559,161 @@ impl DomainState {
         self.apply_status(id, status, TaskEventKind::StatusSet)
     }
 
+    /// [`Self::set_status`] on behalf of `by` (`you` or an agent profile), who opens or
+    /// closes the block the change implies.
+    pub fn set_status_by(
+        &mut self,
+        id: Uuid,
+        status: HumanStatus,
+        by: &str,
+    ) -> Result<(), DomainError> {
+        self.apply_status_by(id, status, TaskEventKind::StatusSet, by)
+    }
+
+    /// Block a task with reasons. A task that is not blocked becomes blocked with a new
+    /// block; a blocked task without an open block (an older store's) gains one. A task that
+    /// already has an open block is refused: edit it with [`Self::edit_block`].
+    pub fn block(&mut self, id: Uuid, draft: BlockDraft, by: &str) -> Result<(), DomainError> {
+        let task = self.task_mut(id)?;
+        if task.block.is_some() {
+            return Err(DomainError::AlreadyBlocked(id));
+        }
+        let at = SystemTime::now();
+        let kind = if task.status == HumanStatus::Blocked {
+            TaskEventKind::BlockEdited
+        } else {
+            TaskEventKind::StatusSet
+        };
+        task.status = HumanStatus::Blocked;
+        task.block = Some(Block::open(draft, by, at));
+        record_mutation_at(task, kind, at);
+        Ok(())
+    }
+
+    /// Block an ordered set with one draft as one atomic, undoable action. Tasks that
+    /// already have an open block are left as they are. Duplicate ids keep their first
+    /// position. Returns whether any task changed.
+    pub fn block_batch(
+        &mut self,
+        ids: &[Uuid],
+        draft: &BlockDraft,
+        by: &str,
+    ) -> Result<bool, DomainError> {
+        let ids: Vec<_> = self
+            .prevalidate_batch_ids(ids)?
+            .into_iter()
+            .filter(|id| self.get(*id).is_some_and(|task| task.block.is_none()))
+            .collect();
+        if ids.is_empty() {
+            return Ok(false);
+        }
+        let mut entries = Vec::with_capacity(ids.len());
+        for id in ids {
+            let previous = self.task_mut(id)?.status;
+            self.block(id, draft.clone(), by)?;
+            entries.push(UndoEntry::Block {
+                id,
+                previous,
+                expected_revision: self.task_mut(id)?.revision,
+            });
+        }
+        self.undo_stack.push(UndoEntry::Batch { entries });
+        Ok(true)
+    }
+
+    /// Reverse [`Self::block_batch`] for one task: drop the block it opened and restore the
+    /// earlier status.
+    pub(crate) fn restore_unblocked(
+        &mut self,
+        id: Uuid,
+        previous: HumanStatus,
+    ) -> Result<(), DomainError> {
+        let task = self.task_mut(id)?;
+        task.block = None;
+        task.status = previous;
+        record_mutation(task, TaskEventKind::StatusSet);
+        Ok(())
+    }
+
+    /// Change the open block's content and mark it edited. An empty patch changes nothing.
+    pub fn edit_block(&mut self, id: Uuid, patch: BlockPatch) -> Result<bool, DomainError> {
+        let task = self.task_mut(id)?;
+        let block = task.block.as_mut().ok_or(DomainError::NotBlocked(id))?;
+        let mut next = block.clone();
+        if let Some(why) = patch.why {
+            next.why = why;
+        }
+        if let Some(needs) = patch.needs {
+            next.needs = needs;
+        }
+        if let Some(options) = patch.options {
+            next.options = options;
+        }
+        if let Some(on) = patch.on {
+            next.on = on;
+        }
+        if next == *block {
+            return Ok(false);
+        }
+        let at = SystemTime::now();
+        next.edited_at = Some(at);
+        *block = next;
+        record_mutation_at(task, TaskEventKind::BlockEdited, at);
+        Ok(true)
+    }
+
+    /// Add a reply by `by` to the open block. Returns its index.
+    pub fn reply(&mut self, id: Uuid, text: &str, by: &str) -> Result<usize, DomainError> {
+        let text = block_text(Some(text), BlockField::Reply)
+            .map_err(DomainError::TextTooLong)?
+            .ok_or(DomainError::EmptyReply)?;
+        let task = self.task_mut(id)?;
+        let block = task.block.as_mut().ok_or(DomainError::NotBlocked(id))?;
+        let at = SystemTime::now();
+        block.replies.push(Reply {
+            by: by.to_string(),
+            at,
+            text,
+            edited: false,
+            deleted: false,
+        });
+        let index = block.replies.len() - 1;
+        record_mutation_at(task, TaskEventKind::Replied, at);
+        Ok(index)
+    }
+
+    /// Rewrite one of the owner's live replies on the open block.
+    pub fn edit_reply(&mut self, id: Uuid, index: usize, text: &str) -> Result<(), DomainError> {
+        let text = block_text(Some(text), BlockField::Reply)
+            .map_err(DomainError::TextTooLong)?
+            .ok_or(DomainError::EmptyReply)?;
+        let reply = self.owner_reply_mut(id, index)?;
+        if reply.text == text {
+            return Ok(());
+        }
+        reply.text = text;
+        reply.edited = true;
+        record_mutation(self.task_mut(id)?, TaskEventKind::ReplyEdited);
+        Ok(())
+    }
+
+    /// Soft-delete one of the owner's replies on the open block; a stub stays in place.
+    pub fn delete_reply(&mut self, id: Uuid, index: usize) -> Result<(), DomainError> {
+        self.owner_reply_mut(id, index)?.deleted = true;
+        record_mutation(self.task_mut(id)?, TaskEventKind::ReplyDeleted);
+        Ok(())
+    }
+
+    fn owner_reply_mut(&mut self, id: Uuid, index: usize) -> Result<&mut Reply, DomainError> {
+        let task = self.task_mut(id)?;
+        let block = task.block.as_mut().ok_or(DomainError::NotBlocked(id))?;
+        block
+            .replies
+            .get_mut(index)
+            .filter(|reply| reply.is_owner() && !reply.deleted)
+            .ok_or(DomainError::UnknownReply(index))
+    }
+
     /// Complete: set human status to `done`. Pushes an undo entry.
     pub fn complete(&mut self, id: Uuid) -> Result<(), DomainError> {
         self.apply_status(id, HumanStatus::Done, TaskEventKind::Completed)?;
@@ -556,6 +757,7 @@ impl DomainState {
         for id in ids {
             let task = self.task_mut(id)?;
             task.status = HumanStatus::Done;
+            sync_block_with_status(task, at, OWNER);
             record_mutation_at(task, TaskEventKind::Completed, at);
             entries.push(UndoEntry::Complete {
                 id,
@@ -785,11 +987,12 @@ impl DomainState {
         start: bool,
     ) -> Result<(), DomainError> {
         let task = self.task_mut(id)?;
-        if start {
-            task.status = HumanStatus::Started;
-        }
         dispatch.cleaned = false;
         let at = dispatch.at;
+        if start {
+            task.status = HumanStatus::Started;
+            sync_block_with_status(task, at, OWNER);
+        }
         task.dispatch = Some(dispatch);
         record_mutation_at(task, TaskEventKind::Dispatched, at);
         Ok(())
@@ -1100,9 +1303,21 @@ impl DomainState {
         status: HumanStatus,
         kind: TaskEventKind,
     ) -> Result<(), DomainError> {
+        self.apply_status_by(id, status, kind, OWNER)
+    }
+
+    fn apply_status_by(
+        &mut self,
+        id: Uuid,
+        status: HumanStatus,
+        kind: TaskEventKind,
+        by: &str,
+    ) -> Result<(), DomainError> {
         let task = self.task_mut(id)?;
+        let at = SystemTime::now();
         task.status = status;
-        record_mutation(task, kind);
+        sync_block_with_status(task, at, by);
+        record_mutation_at(task, kind, at);
         Ok(())
     }
 
@@ -1345,6 +1560,7 @@ impl DomainState {
                             }
                             UndoEntry::Assign { .. } => task.last_event_at(TaskEventKind::Assigned),
                             UndoEntry::SetBase { .. } => task.last_event_at(TaskEventKind::BaseSet),
+                            UndoEntry::Block { .. } => task.block.as_ref().map(|block| block.at),
                             UndoEntry::Batch { .. } => unreachable!("batches are flattened"),
                         }
                     })

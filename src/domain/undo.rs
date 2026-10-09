@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{DomainError, DomainState};
+use super::{DomainError, DomainState, HumanStatus};
 
 /// Maximum undo entries retained in a saved document.
 pub const UNDO_CAP: usize = 50;
@@ -30,6 +30,12 @@ pub enum UndoEntry {
         previous: Option<String>,
         expected_revision: Uuid,
     },
+    /// A block opened by the board; reversing drops it and restores `previous`.
+    Block {
+        id: Uuid,
+        previous: HumanStatus,
+        expected_revision: Uuid,
+    },
     Batch {
         entries: Vec<UndoEntry>,
     },
@@ -48,7 +54,8 @@ impl UndoEntry {
                 UndoEntry::SoftDelete { .. }
                 | UndoEntry::Complete { .. }
                 | UndoEntry::Assign { .. }
-                | UndoEntry::SetBase { .. } => leaves.push(entry),
+                | UndoEntry::SetBase { .. }
+                | UndoEntry::Block { .. } => leaves.push(entry),
             }
         }
 
@@ -75,6 +82,11 @@ impl UndoEntry {
                     ..
                 }
                 | UndoEntry::SetBase {
+                    id,
+                    expected_revision,
+                    ..
+                }
+                | UndoEntry::Block {
                     id,
                     expected_revision,
                     ..
@@ -109,6 +121,11 @@ impl UndoEntry {
                 id: target,
                 expected_revision,
                 ..
+            }
+            | UndoEntry::Block {
+                id: target,
+                expected_revision,
+                ..
             } => {
                 if *target == id && *expected_revision == from {
                     *expected_revision = to;
@@ -123,6 +140,7 @@ impl UndoEntry {
             UndoEntry::Complete { id, .. } => state.reopen(id),
             UndoEntry::Assign { id, previous, .. } => state.restore_assignee(id, previous),
             UndoEntry::SetBase { id, previous, .. } => state.restore_base(id, previous),
+            UndoEntry::Block { id, previous, .. } => state.restore_unblocked(id, previous),
             UndoEntry::Batch { entries } => {
                 for entry in entries.into_iter().rev() {
                     entry.reverse(state)?;

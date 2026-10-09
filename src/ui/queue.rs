@@ -1028,6 +1028,8 @@ mod tests {
             base: None,
             dispatch: None,
             status,
+            block: None,
+            past_blocks: Vec::new(),
             scope,
             provenance: ProvenanceOrigin::Manual,
             history: vec![TaskEvent {

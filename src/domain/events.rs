@@ -35,6 +35,10 @@ pub enum TaskEventKind {
     BaseSet,
     Dispatched,
     Cleaned,
+    BlockEdited,
+    Replied,
+    ReplyEdited,
+    ReplyDeleted,
 }
 
 /// One append-only history record on a task.
