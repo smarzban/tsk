@@ -5,7 +5,7 @@ use std::path::Path;
 
 use uuid::Uuid;
 
-use crate::domain::{HumanStatus, Task, TaskScope};
+use crate::domain::{BlockOn, HumanStatus, Task, TaskScope};
 use crate::scope::PathIdentityCache;
 
 /// The board's persistent navigation destinations.
@@ -473,14 +473,14 @@ fn query_desk(
     let mut need: Vec<&Task> = live
         .iter()
         .copied()
-        .filter(|t| is_needs_you_status(t.status))
+        .filter(|t| is_needs_you(t, tasks))
         .collect();
     sort_by_status_change_desc(&mut need);
 
     let mut motion: Vec<&Task> = live
         .iter()
         .copied()
-        .filter(|t| t.status == HumanStatus::Started)
+        .filter(|t| is_in_motion(t, tasks))
         .collect();
     sort_by_status_change_desc(&mut motion);
 
@@ -504,7 +504,7 @@ fn query_desk(
 
     QueueView {
         sections,
-        counts: status_counts(&live),
+        counts: status_counts(&live, tasks),
         projects: Vec::new(),
     }
 }
@@ -578,11 +578,11 @@ fn query_projects_index(
                 ProjectCounts {
                     needs_you: owned_tasks
                         .iter()
-                        .filter(|task| is_needs_you_status(task.status))
+                        .filter(|task| is_needs_you(task, tasks))
                         .count(),
                     in_motion: owned_tasks
                         .iter()
-                        .filter(|task| task.status == HumanStatus::Started)
+                        .filter(|task| is_in_motion(task, tasks))
                         .count(),
                     on_deck: owned_tasks
                         .iter()
@@ -636,7 +636,7 @@ fn query_projects_index(
 
     QueueView {
         sections: Vec::new(),
-        counts: status_counts(&live),
+        counts: status_counts(&live, tasks),
         projects,
     }
 }
@@ -673,13 +673,13 @@ fn query_cross_view(
     let mut need: Vec<&Task> = live
         .iter()
         .copied()
-        .filter(|t| is_needs_you_status(t.status))
+        .filter(|t| is_needs_you(t, tasks))
         .collect();
     sort_by_status_change_desc(&mut need);
     let mut motion: Vec<&Task> = live
         .iter()
         .copied()
-        .filter(|t| t.status == HumanStatus::Started)
+        .filter(|t| is_in_motion(t, tasks))
         .collect();
     sort_by_status_change_desc(&mut motion);
     let deck: Vec<&Task> = live
@@ -700,7 +700,7 @@ fn query_cross_view(
 
     QueueView {
         sections,
-        counts: status_counts(&live),
+        counts: status_counts(&live, tasks),
         projects: Vec::new(),
     }
 }
@@ -728,7 +728,7 @@ fn query_project_focus(
     let mut motion: Vec<&Task> = live
         .iter()
         .copied()
-        .filter(|t| t.status == HumanStatus::Started && admits(t))
+        .filter(|t| is_in_motion(t, tasks) && admits(t))
         .collect();
     sort_by_status_change_desc(&mut motion);
 
@@ -738,9 +738,9 @@ fn query_project_focus(
     let pending: Vec<&Task> = live
         .iter()
         .copied()
-        .filter(|t| !matches!(t.status, HumanStatus::Started | HumanStatus::Done) && admits(t))
+        .filter(|t| !is_in_motion(t, tasks) && t.status != HumanStatus::Done && admits(t))
         .collect();
-    let (mut need, ready) = split_needs_you(&pending);
+    let (mut need, ready) = split_needs_you(&pending, tasks);
     sort_by_status_change_desc(&mut need);
 
     let label = live
@@ -798,7 +798,7 @@ fn query_project_focus(
     let counted: Vec<&Task> = live.iter().copied().filter(|t| admits(t)).collect();
     QueueView {
         sections,
-        counts: status_counts(&counted),
+        counts: status_counts(&counted, tasks),
         projects: Vec::new(),
     }
 }
@@ -836,19 +836,13 @@ fn append_archived(sections: &mut Vec<QueueSection>, in_scope: &[&Task], drawer_
     }
 }
 
-fn status_counts(live: &[&Task]) -> StatusCounts {
-    let in_motion = live
-        .iter()
-        .filter(|t| t.status == HumanStatus::Started)
-        .count();
+fn status_counts(live: &[&Task], tasks: &[Task]) -> StatusCounts {
+    let in_motion = live.iter().filter(|t| is_in_motion(t, tasks)).count();
     let done = live
         .iter()
         .filter(|t| t.status == HumanStatus::Done)
         .count();
-    let need = live
-        .iter()
-        .filter(|t| is_needs_you_status(t.status))
-        .count();
+    let need = live.iter().filter(|t| is_needs_you(t, tasks)).count();
     StatusCounts {
         in_motion,
         done,
@@ -856,19 +850,63 @@ fn status_counts(live: &[&Task]) -> StatusCounts {
     }
 }
 
-fn is_needs_you_status(status: HumanStatus) -> bool {
-    matches!(status, HumanStatus::Blocked | HumanStatus::Review)
+/// What a blocked task waits on, as the board reads it. A block on another task that is done
+/// (or gone) is waiting on you again: the owner decides whether to unblock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockWait {
+    /// Blocked on you, or blocked with no recorded block.
+    You,
+    /// Blocked on a task that is not done yet, or on something else.
+    Elsewhere,
+    /// Blocked on a task that is now done.
+    BlockerDone(u64),
+    /// Blocked on a task that is no longer on the board.
+    BlockerGone(u64),
+}
+
+/// Read a task's block against the whole store. `None` unless the task is blocked.
+pub fn block_wait(task: &Task, tasks: &[Task]) -> Option<BlockWait> {
+    if task.status != HumanStatus::Blocked {
+        return None;
+    }
+    Some(match task.block.as_ref().map(|block| &block.on) {
+        None | Some(BlockOn::You) => BlockWait::You,
+        Some(BlockOn::Other(_)) => BlockWait::Elsewhere,
+        Some(BlockOn::Task(number)) => match tasks
+            .iter()
+            .find(|other| other.number == Some(*number) && !other.is_notice())
+        {
+            Some(other) if other.soft_deleted => BlockWait::BlockerGone(*number),
+            Some(other) if other.status == HumanStatus::Done => BlockWait::BlockerDone(*number),
+            Some(_) => BlockWait::Elsewhere,
+            None => BlockWait::BlockerGone(*number),
+        },
+    })
+}
+
+/// NEEDS YOU: review, and blocked unless the block waits elsewhere.
+pub fn is_needs_you(task: &Task, tasks: &[Task]) -> bool {
+    match task.status {
+        HumanStatus::Review => true,
+        HumanStatus::Blocked => block_wait(task, tasks) != Some(BlockWait::Elsewhere),
+        _ => false,
+    }
+}
+
+/// IN MOTION: started, and blocked on another task or on something else.
+pub fn is_in_motion(task: &Task, tasks: &[Task]) -> bool {
+    task.status == HumanStatus::Started || block_wait(task, tasks) == Some(BlockWait::Elsewhere)
 }
 
 fn is_on_deck_status(status: HumanStatus) -> bool {
     matches!(status, HumanStatus::Ready | HumanStatus::Open)
 }
 
-fn split_needs_you<'a>(tasks: &[&'a Task]) -> (Vec<&'a Task>, Vec<&'a Task>) {
+fn split_needs_you<'a>(tasks: &[&'a Task], all: &[Task]) -> (Vec<&'a Task>, Vec<&'a Task>) {
     let mut need = Vec::new();
     let mut rest = Vec::new();
     for task in tasks {
-        if is_needs_you_status(task.status) {
+        if is_needs_you(task, all) {
             need.push(*task);
         } else {
             rest.push(*task);
@@ -1574,6 +1612,79 @@ mod tests {
             vec![Uuid::from_u128(1), Uuid::from_u128(3), Uuid::from_u128(2)],
             "no status event falls back to created_at, never updated_at"
         );
+    }
+
+    fn blocked_on(id: u128, number: u64, on: crate::domain::BlockOn) -> Task {
+        let mut blocked = task(id, HumanStatus::Blocked, TaskScope::Global, false, 10);
+        blocked.number = Some(number);
+        blocked.block = Some(crate::domain::Block::open(
+            crate::domain::BlockDraft {
+                on,
+                ..Default::default()
+            },
+            "claude",
+            SystemTime::UNIX_EPOCH,
+        ));
+        blocked
+    }
+
+    #[test]
+    fn a_block_waiting_elsewhere_rides_in_motion_until_its_blocker_is_done() {
+        let mut blocker = task(1, HumanStatus::Started, TaskScope::Global, false, 10);
+        blocker.number = Some(1);
+        let on_task = blocked_on(2, 2, crate::domain::BlockOn::Task(1));
+        let on_other = blocked_on(3, 3, crate::domain::BlockOn::Other("legal".into()));
+        let on_you = blocked_on(4, 4, crate::domain::BlockOn::You);
+        let legacy = task(5, HumanStatus::Blocked, TaskScope::Global, false, 10);
+        let mut tasks = vec![blocker, on_task, on_other, on_you, legacy];
+
+        let view = query_lens(&tasks, None, BoardLens::Desk, false);
+        let mut motion = section_ids(&view, SectionKind::InMotion);
+        motion.sort();
+        assert_eq!(
+            motion,
+            vec![Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3)]
+        );
+        let mut need = section_ids(&view, SectionKind::NeedsYou);
+        need.sort();
+        assert_eq!(need, vec![Uuid::from_u128(4), Uuid::from_u128(5)]);
+        assert_eq!((view.counts.in_motion, view.counts.need), (3, 2));
+
+        tasks[0].status = HumanStatus::Done;
+        let view = query_lens(&tasks, None, BoardLens::Desk, false);
+        assert!(
+            section_ids(&view, SectionKind::NeedsYou).contains(&Uuid::from_u128(2)),
+            "a done blocker hands the task back to you"
+        );
+        assert_eq!(
+            block_wait(&tasks[1], &tasks),
+            Some(BlockWait::BlockerDone(1))
+        );
+        assert_eq!(tasks[1].status, HumanStatus::Blocked, "tsk never unblocks");
+    }
+
+    #[test]
+    fn project_board_puts_a_block_on_another_task_in_motion_not_on_deck() {
+        let mut on_task = blocked_on(2, 2, crate::domain::BlockOn::Other("vendor".into()));
+        on_task.scope = project("/repos/a");
+        let mut on_you = blocked_on(3, 3, crate::domain::BlockOn::You);
+        on_you.scope = project("/repos/a");
+        let tasks = vec![on_task, on_you];
+        let view = query_lens(
+            &tasks,
+            None,
+            BoardLens::Project(Path::new("/repos/a")),
+            false,
+        );
+        assert_eq!(
+            section_ids(&view, SectionKind::InMotion),
+            vec![Uuid::from_u128(2)]
+        );
+        assert_eq!(
+            section_ids(&view, SectionKind::NeedsYou),
+            vec![Uuid::from_u128(3)]
+        );
+        assert!(section_ids(&view, SectionKind::OnDeck).is_empty());
     }
 
     #[test]

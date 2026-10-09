@@ -110,6 +110,9 @@ pub struct TaskRowPaint<'a> {
     pub title_bold: bool,
     /// Dim every span (the archived group's rows). Glyph and identifier are kept.
     pub dim: bool,
+    /// Dim right-edge note (a block's `on T169`, `@claude ?`, `answered`). Wraps onto
+    /// its own right-aligned rows when it does not fit beside the title.
+    pub trailer: Option<&'a str>,
 }
 
 /// One painted task-row line plus the title-content cells a text selection may copy.
@@ -135,7 +138,19 @@ pub fn paint_task_row_lines(
     let identifier_width = row.identifier.map(display_width).unwrap_or(0);
     let identifier_gap = usize::from(identifier_width > 0);
     let title_x = prefix_cells.saturating_add(identifier_width + identifier_gap);
-    let room = title_budget.saturating_sub(title_x).max(1);
+    let full_room = title_budget.saturating_sub(title_x).max(1);
+    let trailer = row
+        .trailer
+        .map(super::terminal_text)
+        .filter(|text| !text.is_empty());
+    let trailer_w = trailer.as_deref().map(display_width).unwrap_or(0);
+    // Beside the title when it leaves the title at least half the row; otherwise below.
+    let trailer_inline = trailer.is_some() && trailer_w + 2 <= full_room / 2;
+    let room = if trailer_inline {
+        full_room - trailer_w - 2
+    } else {
+        full_room
+    };
     let head_content_x = u16::try_from(prefix_cells).unwrap_or(u16::MAX);
     let head_content_width = u16::try_from(identifier_width + identifier_gap + room)
         .unwrap_or(u16::MAX)
@@ -159,9 +174,16 @@ pub fn paint_task_row_lines(
         ..*row
     };
     let mut title_geo = *geo;
-    title_geo.row_width = row_w as u16;
+    title_geo.row_width = (row_w - if trailer_inline { trailer_w + 2 } else { 0 }) as u16;
+    let mut head_line = paint_task_row_with_indent(&head, &title_geo, leading_indent);
+    if let (true, Some(trailer)) = (trailer_inline, trailer.as_deref()) {
+        head_line
+            .spans
+            .push(Span::styled(format!("  {trailer}"), style_dim()));
+        head_line = bound_line(head_line, row_w);
+    }
     lines.push(TaskRowLine {
-        line: paint_task_row_with_indent(&head, &title_geo, leading_indent),
+        line: head_line,
         content_x: head_content_x,
         content_width: head_content_width,
         identifier,
@@ -188,7 +210,47 @@ pub fn paint_task_row_lines(
             identifier: None,
         });
     }
+    if let (false, Some(trailer)) = (trailer_inline, trailer.as_deref()) {
+        for wrapped in crate::ui::edit::wrap_text(trailer, full_room) {
+            let cells = display_width(&wrapped.text);
+            let x = row_w.saturating_sub(cells);
+            lines.push(TaskRowLine {
+                line: bound_line(
+                    Line::from(Span::styled(
+                        format!("{}{}", " ".repeat(x), wrapped.text),
+                        style_dim(),
+                    )),
+                    row_w,
+                ),
+                content_x: u16::try_from(x).unwrap_or(u16::MAX),
+                content_width: u16::try_from(cells).unwrap_or(u16::MAX).max(1),
+                identifier: None,
+            });
+        }
+    }
     lines
+}
+
+/// The dim right-edge note of a blocked row: who it waits on, or whether you answered.
+pub fn block_trailer(task: &Task, tasks: &[Task]) -> Option<String> {
+    use crate::ui::queue::{block_wait, BlockWait};
+    let block = task.block.as_ref();
+    match block_wait(task, tasks)? {
+        BlockWait::Elsewhere => block.map(|block| format!("on {}", block.on.label())),
+        BlockWait::BlockerDone(number) => Some(format!("T{number} done")),
+        BlockWait::BlockerGone(number) => Some(format!("T{number} gone")),
+        BlockWait::You => {
+            let block = block?;
+            if block.answered() {
+                return Some("answered".to_string());
+            }
+            let asker = block
+                .last_reply()
+                .map(|reply| reply.by.as_str())
+                .unwrap_or(&block.by);
+            (asker != crate::domain::OWNER).then(|| format!("@{asker} ?"))
+        }
+    }
 }
 
 // Unit-test adapter: inspect the same first wrapped line the board paints.
@@ -838,9 +900,16 @@ pub fn status_glyph(status: HumanStatus) -> &'static str {
     }
 }
 
+/// Glyph for a task blocked on another task or on something other than you.
+pub const BLOCKED_ELSEWHERE_GLYPH: &str = "□";
+
 /// Status glyph derived only from durable task state.
 pub fn task_status_glyph(task: &Task) -> &'static str {
-    if task.status == HumanStatus::Started
+    if task.status == HumanStatus::Blocked
+        && task.block.as_ref().is_some_and(|block| !block.on.is_you())
+    {
+        BLOCKED_ELSEWHERE_GLYPH
+    } else if task.status == HumanStatus::Started
         && task
             .dispatch
             .as_ref()
@@ -4327,7 +4396,11 @@ const PEEK_DETAIL_INDENT: &str = "    │ ";
 /// The final corner joins the note gutter back to the task row above.
 const PEEK_DETAIL_END: &str = "    └";
 
-fn detail_lines_for_task(task: &Task, width: u16) -> Vec<(Line<'static>, u16, u16)> {
+fn detail_lines_for_task(
+    task: &Task,
+    tasks: &[Task],
+    width: u16,
+) -> Vec<(Line<'static>, u16, u16)> {
     let indent = PEEK_DETAIL_INDENT;
     let content_x = u16::try_from(display_width(indent)).unwrap_or(0);
     let content_width = width.saturating_sub(content_x);
@@ -4335,6 +4408,18 @@ fn detail_lines_for_task(task: &Task, width: u16) -> Vec<(Line<'static>, u16, u1
     let push = |lines: &mut Vec<(Line<'static>, u16, u16)>, line: Line<'static>| {
         lines.push((line, content_x, content_width));
     };
+    // A block reads first: its prompt to unblock, then why, needs and the options.
+    let room = (width as usize)
+        .saturating_sub(display_width(indent) + 1)
+        .max(1);
+    for (text, style) in peek_block_lines(task, tasks) {
+        for row in crate::ui::edit::wrap_text(&text, room) {
+            push(
+                &mut lines,
+                paint_bounded_line(&format!("{indent}{}", row.text), width, style),
+            );
+        }
+    }
     let notes_text = task.notes.as_deref().map(str::trim).unwrap_or_default();
     if notes_text.is_empty() {
         push(
@@ -4379,6 +4464,36 @@ fn detail_lines_for_task(task: &Task, width: u16) -> Vec<(Line<'static>, u16, u1
         &mut lines,
         paint_bounded_line(PEEK_DETAIL_END, width, style_dim()),
     );
+    lines
+}
+
+/// The peek's block lines, one per item before wrapping. Empty unless the task is blocked.
+fn peek_block_lines(task: &Task, tasks: &[Task]) -> Vec<(String, Style)> {
+    use crate::ui::queue::{block_wait, BlockWait};
+    let mut lines = Vec::new();
+    match block_wait(task, tasks) {
+        None => return lines,
+        Some(BlockWait::BlockerDone(number)) => {
+            lines.push((format!("T{number} done, unblock?"), style_bold()));
+        }
+        Some(BlockWait::BlockerGone(number)) => {
+            lines.push((format!("T{number} is gone, unblock?"), style_bold()));
+        }
+        Some(BlockWait::You | BlockWait::Elsewhere) => {}
+    }
+    let Some(block) = task.block.as_ref() else {
+        return lines;
+    };
+    let one_line = |text: &str| super::terminal_text(&text.replace(['\n', '\r'], " "));
+    if let Some(why) = block.why.as_deref() {
+        lines.push((format!("why  {}", one_line(why)), style_plain()));
+    }
+    if let Some(needs) = block.needs.as_deref() {
+        lines.push((format!("needs  {}", one_line(needs)), style_plain()));
+    }
+    for option in &block.options {
+        lines.push((format!("○ {}", one_line(option)), style_plain()));
+    }
     lines
 }
 
@@ -4434,6 +4549,7 @@ fn build_list_rows(
                 0,
             )
         } else {
+            let trailer = block_trailer(task, model.tasks);
             paint_task_row_lines(
                 &TaskRowPaint {
                     glyph: task_status_glyph(task),
@@ -4444,6 +4560,7 @@ fn build_list_rows(
                     title_bold: false,
                     // AC-41: every row of a read-only archived focus paints dim.
                     dim: dim || model.rows_dim,
+                    trailer: trailer.as_deref(),
                 },
                 geo,
                 0,
@@ -4467,7 +4584,7 @@ fn build_list_rows(
             *selected_idx = Some(out.len() - 1);
         }
         if detail_target == Some(task.id) {
-            let mut details = detail_lines_for_task(task, geo.row_width);
+            let mut details = detail_lines_for_task(task, model.tasks, geo.row_width);
             if !peek_meta.is_empty() {
                 details.pop();
             }
@@ -5976,6 +6093,7 @@ mod tests {
                 marked: false,
                 title_bold: false,
                 dim: false,
+                trailer: None,
             };
             let lines = paint_task_row_lines(&row, &geo, 0);
             assert_eq!(lines.len(), 2);
@@ -6008,6 +6126,7 @@ mod tests {
                         marked: false,
                         title_bold: selected,
                         dim: false,
+                        trailer: None,
                     };
                     for line in paint_task_row_lines(&row, &geo, 0) {
                         assert!(
@@ -6036,6 +6155,7 @@ mod tests {
                 marked: false,
                 title_bold: false,
                 dim: false,
+                trailer: None,
             },
             &geo,
         );
@@ -6056,6 +6176,7 @@ mod tests {
                 marked: false,
                 title_bold: false,
                 dim: false,
+                trailer: None,
             },
             &geo,
         );
@@ -6105,6 +6226,7 @@ mod tests {
                 marked: false,
                 title_bold: false,
                 dim: false,
+                trailer: None,
             },
             TaskRowPaint {
                 glyph: "▲",
@@ -6114,6 +6236,7 @@ mod tests {
                 marked: false,
                 title_bold: true,
                 dim: false,
+                trailer: None,
             },
             TaskRowPaint {
                 glyph: "◓",
@@ -6123,6 +6246,7 @@ mod tests {
                 marked: false,
                 title_bold: false,
                 dim: false,
+                trailer: None,
             },
         ];
 
