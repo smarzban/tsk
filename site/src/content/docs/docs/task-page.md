@@ -36,7 +36,7 @@ Click the footer's `⎇` slot to choose the [base branch](/docs/board/#base-bran
 
 The footer's `after T202, T205` slot lists the tasks this one [runs after](/docs/board/#after); it is hidden when empty. `before T203, T204` lists the tasks that run after this one: it is read-only, derived from their lists, and changes only when you edit theirs. During editing the **After** field opens the task picker on `Enter` or a click: tasks not done, this project's first, `Space` ticks several, `Enter` applies, **none** clears. The draft saves with the rest of the edit; a choice that would close a loop, such as `T202 already runs after T205`, is refused and the draft stays. The same picker opens in view mode from palette **set after…**, where the choice saves at once.
 
-In view mode, `Tab` selects steps, **+ step**, then the paper trail's closed blocks and review rounds. It does not cycle task fields. Status shortcuts remain available on the task page; use `ctrl+e`, then `Tab` to reach Notes.
+In view mode, `Tab` selects steps, **+ step**, then the paper trail's heading (and its closed blocks and review rounds while it is expanded). It does not cycle task fields. Status shortcuts remain available on the task page; use `ctrl+e`, then `Tab` to reach Notes.
 
 During task editing, the forward order is Title → Notes → steps → **+ step** → Assignee → Base → After → Thread → Scope → Title. `Shift+Tab` reverses the ring. The footer follows the same left-to-right order: Assignee, Base, After, Thread, Scope. A field click moves the cursor and retains staged changes.
 
@@ -75,41 +75,78 @@ If another writer deletes the task, saving refuses. If a save fails, use [retry 
 
 ## Blocked
 
-A blocked task's page opens with a BLOCKED section between the title and the notes, closed by a full-width rule. Its heading reads, for example, `BLOCKED · on you · @claude 1h ──── r reply`: who or what the block waits on, who blocked it and when, and `edited` once the block changed. Below it come `why`, `needs`, the suggested options as `○` rows, and the replies as `└ <author> <age>  <text>`. A deleted reply leaves a dim `deleted` stub. The section shows only while the task is blocked; the closed block stays in `tsk list --json` under `past_blocks`.
+A blocked task's page opens with a BLOCKED section between the title and the notes, closed by a full-width rule:
 
-In view mode `Tab` walks the heading, the options, and the replies before the steps and **+ step**.
+```
+@claude blocked on you · 2h
+
+Review found 2 file-safety issues in move-aside. Which way?
+
+ 1  Drop move-aside, delete in place
+ 2  Keep it and fix F-1/F-2
+
+claude · 3m   Recommend 1; it's the smaller change.
+you · 1m      Go with 1, keep the worker.
+
+1-2 choose · r reply · ctrl+s reply + unblock
+──────────────────────────────────────────────
+```
+
+The top line is the same text as the board row's [live line](/docs/board/#status): `@claude blocked on you · 2h`, `waiting on T169`, or `T169 is done · unblock it · 1h`. Below it, the why and then the needs read as plain text, the suggested options are numbered `1`…`9`, and the replies run as a thread: `name · age` in one column (`you`, or the agent's profile), the text wrapped beside it. At 40 columns a name too wide for the column takes its own row. A deleted reply leaves a dim `deleted` stub. The section shows only while the task is blocked; the closed block moves to the [paper trail](#paper-trail) and stays in `tsk list --json` under `past_blocks`.
+
+The dim action line above the rule shows only the keys that work right now and follows the cursor: `ctrl+e edit` on the top line, `enter toggle step` on a step, `ctrl+e edit · ctrl+x delete` on your reply. A block waiting on another task or on something else offers `r reply · ctrl+b unblock` instead of `ctrl+s`. While the reply box is open, its own keys take the line.
+
+The page opens with nothing selected. `Tab` walks the top line, the options, and the replies, then the steps, **+ step**, and the paper trail, and wraps; `Shift+Tab` goes back the same way, from the top line round to the paper trail. The ring never leaves the page for task editing.
 
 | Action | Key |
 | --- | --- |
+| Reply with an option, prefilled | `1`…`9`, or `Enter` on the option |
 | Reply | `r` |
-| Reply with an option, prefilled | `Enter` on the option |
 | Save the reply | `Shift+Enter` |
-| Save the reply and unblock: to ready, or for an assigned task to started (a [start](/docs/board/#dispatch) that may dispatch or relaunch, or [sends the reply](/docs/board/#reply-to-a-running-agent) to its running agent) | `ctrl+s` |
+| Save the reply and unblock: to ready, or for an assigned task to started (a [start](/docs/board/#dispatch) that may dispatch or relaunch, or [sends the reply](/docs/board/#reply-to-a-running-agent) to its running agent). Outside the reply box it unblocks the same way with nothing typed | `ctrl+s` |
 | New line in the reply | `Enter` |
 | Cancel the reply | `Esc` |
-| Edit why, on, and needs (heading selected) | `ctrl+e` |
+| Edit why, on, and needs (top line selected) | `ctrl+e` |
 | Edit your selected reply | `ctrl+e` |
 | Soft-delete your selected reply | `ctrl+x` |
 
-The reply box opens under the last reply and wraps like the notes. It belongs to the block it opened on: if that block is closed or replaced elsewhere while you type, saving refuses and keeps your draft. Agent blocks can be edited like your own; an agent's replies cannot be edited or deleted. The same reply box opens under a blocked row on the board with `r`. A block on another task that is now done asks `T169 done, unblock? ctrl+b` under the heading.
+The reply box opens under the last reply and wraps like the notes. It belongs to the block it opened on: if that block is closed or replaced elsewhere while you type, saving refuses and keeps your draft. Agent blocks can be edited like your own; an agent's replies cannot be edited or deleted. The same reply box opens under a blocked row on the board with `r`.
 
 ## Review
 
-A task in review opens with a REVIEW section in the same place. Its heading reads, for example, `REVIEW · round 2 · on you · @claude 40m ── PR #41 · r feedback`: the round, who it is on, who set it and when, and the pull request it names (the first `/pull/<n>` link or `PR #<n>` in done, next, the checks, or the notes). Below it come `done`, the checks, `next`, and your feedback as `└ you 5m  <text>`. Checks show `○` open or `✗` failed; passed checks fold into a dim `N passed ▸` line under them. The fold is taken when the page opens: a check you cycle on the page keeps its row and the cursor (`○` → `✓` → `✗` → `○`), so you can pass and then fail it in one place, and it folds the next time you open the page. Folding the line with `Enter` takes in the checks passed since. The section shows only while the task is in review; closed rounds stay in `tsk list --json` under `past_reviews`. Checks are the review's own list and never become steps.
+A task in review opens with a REVIEW section in the same place:
 
-In view mode `Tab` walks the heading, the checks, the `N passed` line (and the passed checks when unfolded), and the feedback before the steps and **+ step**.
+```
+@claude needs your review · 40m
+
+Built the widget; empty input now handled.
+
+Check
+ ✓ A works
+ ○ B works on empty input
+ ○ C works
+
+you · 5m      B still fails on an empty string.
+
+tab next · enter mark · r feedback · ctrl+s send back · ctrl+d approve
+──────────────────────────────────────────────────────────────────────
+```
+
+The top line is the row's live line (`@claude needs your review · 40m`, or `@pi reviewing` for a review on someone else). No round number shows on the page; closed rounds are on the paper trail. Below it, what was done and what is next read as plain text, then the checks under a small `Check` heading: `✓` passed, `✗` failed, `○` open. Passed checks fold into a dim `N passed ▸` line under them. The fold is taken when the page opens: a check you cycle on the page keeps its row and the cursor (`○` → `✓` → `✗` → `○`), so you can pass and then fail it in one place, and it folds the next time you open the page. Folding the line with `Enter` takes in the checks passed since. Your feedback runs as a thread like a block's replies. The section shows only while the task is in review; closed rounds stay in `tsk list --json` under `past_reviews`. Checks are the review's own list and never become steps.
+
+The page opens with the first unmarked check selected (with every check marked, the first one). `Tab` walks on through the checks, the `N passed` line (and the passed checks when unfolded), and the feedback, then the steps, **+ step**, and the paper trail, and wraps; `Shift+Tab` before the first check reaches the top line, and before the top line wraps to the paper trail (its last record while expanded). The action line follows the cursor like a block's.
 
 | Action | Key |
 | --- | --- |
-| Cycle a check in place: open → passed → failed → open | `Enter` on the check |
-| Show or fold the passed checks (`▸` / `▾`) | `Enter` on the `N passed` line |
+| Cycle a check in place: open → passed → failed → open | `Enter` on the check, or click it |
+| Show or fold the passed checks (`▸` / `▾`) | `Enter` on the `N passed` line, or click it |
 | Give feedback | `r` |
 | Save the feedback; stay in review | `Shift+Enter` |
-| Send back: started, and the feedback with the failed checks [goes to the running agent](/docs/board/#review-with-what-was-done) | `ctrl+s` |
+| Send back: started, and the feedback with the failed checks [goes to the running agent](/docs/board/#review-with-what-was-done). Outside the feedback box it sends back with nothing typed, which needs a failed check | `ctrl+s` |
 | Approve: done (cleanup card when the dispatch is live); nothing is sent | `ctrl+d` |
 | New line in the feedback | `Enter` |
 | Cancel the feedback | `Esc` |
-| Edit done, checks, next, and on (heading selected) | `ctrl+e` |
+| Edit done, checks, next, and on (top line selected) | `ctrl+e` |
 | Edit your selected feedback | `ctrl+e` |
 | Soft-delete your selected feedback | `ctrl+x` |
 
@@ -117,7 +154,7 @@ The feedback box reads `feedback to @claude…` while empty and belongs to the r
 
 ## Paper trail
 
-Below the steps, the PAPER TRAIL lists who did what to the task, newest first: `open → started · @claude 2m`, `assigned @claude · you 1h`, `created · you 3d`. An entry by an agent names its profile (`@claude`, from the `TSK_AGENT` its dispatch set); everything else is `you`.
+Below the steps, the PAPER TRAIL lists who did what to the task, newest first. Every time a page opens it shows only its dim heading, `PAPER TRAIL · 14 ▸`; expanded (`▾`), it shows every entry, still dim: `open → started · @claude 2m`, `assigned @claude · you 1h`, `created · you 3d`. An entry by an agent names its profile (`@claude`, from the `TSK_AGENT` its dispatch set); everything else is `you`.
 
 | Entry | Example |
 | --- | --- |
@@ -134,13 +171,13 @@ Below the steps, the PAPER TRAIL lists who did what to the task, newest first: `
 
 The same entry repeated by the same author within a minute groups into one: `3 steps checked`. The open block or review round stays in its BLOCKED or REVIEW section above the notes; once it closes, it moves here.
 
-Status changes, edits, and the other automatic entries are dim; closed blocks and review rounds are normal weight and end in `▸`.
+Closed blocks and review rounds end in `▸`. The expanded trail stays expanded while you stay on the task, in the wide task column too, and collapses again when another task's page opens.
 
 | Action | Key |
 | --- | --- |
-| Show every entry, or only the latest five | `a`, or click `+ N earlier` |
+| Expand or collapse the trail | `g`, `Enter` on its heading, or click it |
 | Expand a closed block or review round in place (`▾`), or fold it | `Enter` on it, or click it |
-| Select the closed records | `Tab` past **+ step** |
+| Select the heading, then the closed records | `Tab` past **+ step** |
 
 An expanded block shows who blocked it and when, `why`, `needs`, the options, every reply, and who closed it. An expanded review round shows who set it, who it was on, `done`, each check with `○` open, `✓` passed, or `✗` failed, `next`, and the feedback.
 

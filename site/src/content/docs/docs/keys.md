@@ -81,14 +81,16 @@ These keys apply in **view mode**:
 
 | Action | Key |
 | --- | --- |
-| Select the BLOCKED or REVIEW heading, options or checks, and replies, then steps, **+ step**, and the paper trail's closed records | `Tab` / `Shift+Tab` |
+| Select the BLOCKED or REVIEW top line, options or checks, and replies, then steps, **+ step**, the paper trail's heading, and its closed records while it is expanded | `Tab` / `Shift+Tab` |
 | Reply to a blocked task, or give feedback on a review | `r` |
-| Reply with the selected option, prefilled | `Enter` on an option |
-| Cycle the selected check in place: open → passed → failed → open | `Enter` on a check |
+| Reply with an option, prefilled | `1`…`9` on a blocked page, or `Enter` on an option |
+| Unblock, or send a review back, as the reply box's `ctrl+s` with nothing typed | `ctrl+s` on a blocked or review page |
+| Approve a review | `ctrl+d` |
+| Cycle the selected check in place: open → passed → failed → open (a review page opens on its first unmarked check) | `Enter` on a check |
 | Show or fold the passed checks | `Enter` on the `N passed` line |
-| Show the whole paper trail, or only the latest five | `a` |
+| Expand or collapse the paper trail | `g`, or `Enter` on its heading |
 | Expand or fold a closed block or review round on the paper trail | `Enter` on it |
-| Edit why, on, and needs, or done, checks, next, and on (heading selected), or your selected reply | `ctrl+e` |
+| Edit why, on, and needs, or done, checks, next, and on (top line selected), or your selected reply | `ctrl+e` |
 | Activate first step, then move among steps | `↓`, then `↑` / `↓` |
 | Toggle selected step | `Enter` |
 | Add step | `ctrl+a` |
@@ -100,7 +102,9 @@ These keys apply in **view mode**:
 | Close task | `Esc` |
 | Quit the board | `ctrl+q` |
 
-Click a step to select it. Click **+ step** to add. Click a closed record on the paper trail to expand it, or `+ N earlier` to show every entry. Field clicks become editable only after task editing starts.
+Click a step to select it. Click **+ step** to add. Click a review check to cycle it, or the `N passed` line to show or fold the passed checks. Click the paper trail's heading to expand or collapse it, and a closed record to expand it. Field clicks become editable only after task editing starts.
+
+The board's `1` `2` `3` tab keys stay on the board; on the task page, and in the wide task column while it has focus, the digits pick options instead. Each BLOCKED or REVIEW section ends in a dim action line listing only the keys that work right now.
 
 In the reply box, `Enter` starts a new line, `Shift+Enter` saves the reply, `ctrl+s` saves it and unblocks the task, and `Esc` cancels. An unassigned task unblocks to ready; an assigned one starts, which dispatches it, asks before relaunching a gone agent, or sends the reply to its still-running agent. `r` on a blocked board row opens the same box under the row. An agent's replies cannot be edited or deleted.
 

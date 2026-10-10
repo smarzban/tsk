@@ -495,6 +495,7 @@ impl BoardForm {
         form.after = task.after.clone();
         form.set_agent_names(agent_names);
         form.block.fold = super::block::CheckFold::fresh(task);
+        form.block.target = super::block::initial_target(task, form.block.fold.as_ref());
         form.task_snapshot = Some(Box::new(task.clone()));
         form
     }
@@ -2079,6 +2080,21 @@ impl BoardModel {
             self.block_target(),
             Some(super::block::BlockTarget::Trail(_))
         )
+    }
+
+    /// Whether `Enter` on the task page lands on the PAPER TRAIL heading.
+    pub fn trail_heading_selected(&self) -> bool {
+        self.block_target() == Some(super::block::BlockTarget::TrailHeading)
+    }
+
+    /// Whether the task page shows its BLOCKED or REVIEW section (view mode, no edit session).
+    pub fn page_section_open(&self) -> bool {
+        super::block::page_section_open(self)
+    }
+
+    /// Open the empty reply (feedback) box on the page's BLOCKED or REVIEW section.
+    pub fn open_page_reply_box(&mut self) -> bool {
+        super::block::begin_reply(self, "", None)
     }
 
     /// Whether `Enter` on the task page lands on the `N passed` line.

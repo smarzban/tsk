@@ -353,38 +353,248 @@ fn blocked_page() -> (DomainState, BoardModel, Uuid) {
     (domain, model, id)
 }
 
+/// The page rows between the header rule and the footer, without the gutter's scrollbar.
+fn page_body(page: &[String]) -> Vec<String> {
+    page.iter()
+        .map(|row| row.trim_end_matches(['▌', ' ']).to_string())
+        .collect()
+}
+
 #[test]
 fn the_page_leads_with_the_blocked_section_and_a_rule_above_the_notes() {
     let (_domain, model, _) = blocked_page();
-    let page = rows(&model, 80, 24);
-    let heading = page
-        .iter()
-        .position(|row| row.contains("BLOCKED · on you · @claude"))
-        .unwrap_or_else(|| panic!("{}", page.join("\n")));
-    assert!(
-        page[heading]
-            .trim_end_matches(['▌', ' '])
-            .ends_with("r reply"),
-        "{}",
-        page[heading]
-    );
+    let page = page_body(&rows(&model, 80, 30));
     let joined = page.join("\n");
-    assert!(joined.contains("why    Which database?"), "{joined}");
-    assert!(joined.contains("needs  a decision"), "{joined}");
-    assert!(joined.contains("○ postgres"), "{joined}");
-    let rule = heading
-        + page[heading..]
-            .iter()
-            .position(|row| {
-                let row = row.trim_end_matches(['▌', ' ']).trim();
-                row.chars().all(|c| c == '─') && row.chars().count() > 60
-            })
-            .unwrap_or_else(|| panic!("{joined}"));
+    let top = page
+        .iter()
+        .position(|row| row.starts_with("  @claude blocked on you · "))
+        .unwrap_or_else(|| panic!("{joined}"));
+    // Plain body text, no labels; numbered options in a fixed column; then the dim action line
+    // as the last row before the rule.
+    assert_eq!(
+        page[top + 1..top + 8],
+        [
+            "",
+            "  Which database?",
+            "  a decision",
+            "",
+            "   1  postgres",
+            "   2  sqlite",
+            "",
+        ],
+        "{joined}"
+    );
+    assert_eq!(
+        page[top + 8],
+        "  1-2 choose · r reply · ctrl+s reply + unblock",
+        "{joined}"
+    );
+    let rule = page[top + 9].trim();
+    assert!(
+        rule.chars().all(|c| c == '─') && rule.chars().count() > 60,
+        "{joined}"
+    );
     let notes = page
         .iter()
         .position(|row| row.contains("no notes yet"))
         .unwrap_or_else(|| panic!("{joined}"));
-    assert!(heading < rule && rule < notes, "{joined}");
+    assert!(top + 9 < notes, "{joined}");
+    for gone in ["BLOCKED", "why ", "needs ", "○", "r reply ─"] {
+        assert!(!joined.contains(gone), "{gone}:\n{joined}");
+    }
+    assert_eq!(
+        model.block_target(),
+        None,
+        "a blocked page opens with nothing selected"
+    );
+}
+
+#[test]
+fn number_keys_pick_an_option_and_open_the_reply_box_prefilled() {
+    let (mut domain, mut model, id) = blocked_page();
+    let three = map_key(
+        model.input_mode(),
+        key(KeyCode::Char('3'), KeyModifiers::NONE),
+    );
+    assert_eq!(three, Some(BoardIntent::PickOption(2)));
+    // No third option: inert, and nothing persists.
+    assert!(!board_intent_may_persist(&model, &three.clone().unwrap()));
+    press(
+        &mut domain,
+        &mut model,
+        key(KeyCode::Char('3'), KeyModifiers::NONE),
+    );
+    assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+    press(
+        &mut domain,
+        &mut model,
+        key(KeyCode::Char('2'), KeyModifiers::NONE),
+    );
+    assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+    assert_eq!(model.reply_draft(), Some("sqlite"));
+    // The box replaces the action line with its own keys.
+    let page = page_body(&rows(&model, 80, 30)).join("\n");
+    assert!(
+        page.contains("  shift+enter save · ctrl+s save + unblock · esc cancel\n  ───"),
+        "{page}"
+    );
+    assert!(!page.contains("1-2 choose"), "{page}");
+    press(
+        &mut domain,
+        &mut model,
+        key(KeyCode::Enter, KeyModifiers::SHIFT),
+    );
+    let block = domain.get(id).unwrap().block.clone().unwrap();
+    assert_eq!(block.replies[0].text, "sqlite");
+    // A digit in the box is text.
+    press(
+        &mut domain,
+        &mut model,
+        key(KeyCode::Char('r'), KeyModifiers::NONE),
+    );
+    type_text(&mut domain, &mut model, "1");
+    assert_eq!(model.reply_draft(), Some("1"));
+}
+
+#[test]
+fn the_action_line_follows_the_cursor() {
+    let (mut domain, mut model, id) = blocked_page();
+    domain.add_step(id, "migrate").unwrap();
+    model.sync_from_domain(&domain);
+    let action = |model: &BoardModel| {
+        let page = page_body(&rows(model, 90, 40));
+        // The section's rule, after the header's.
+        let rule = page
+            .iter()
+            .rposition(|row| row.starts_with("  ───"))
+            .expect("rule");
+        page[rule - 1].trim().to_string()
+    };
+    assert_eq!(
+        action(&model),
+        "1-2 choose · r reply · ctrl+s reply + unblock"
+    );
+    press(
+        &mut domain,
+        &mut model,
+        key(KeyCode::Tab, KeyModifiers::NONE),
+    );
+    assert_eq!(model.block_target(), Some(BlockTarget::Heading));
+    assert_eq!(
+        action(&model),
+        "ctrl+e edit · 1-2 choose · r reply · ctrl+s reply + unblock"
+    );
+    press(
+        &mut domain,
+        &mut model,
+        key(KeyCode::Tab, KeyModifiers::NONE),
+    );
+    assert_eq!(
+        action(&model),
+        "enter choose · 1-2 choose · r reply · ctrl+s reply + unblock"
+    );
+    for _ in 0..2 {
+        press(
+            &mut domain,
+            &mut model,
+            key(KeyCode::Tab, KeyModifiers::NONE),
+        );
+    }
+    assert!(model.stored_step_selected());
+    assert_eq!(
+        action(&model),
+        "enter toggle step · 1-2 choose · r reply · ctrl+s reply + unblock"
+    );
+}
+
+#[test]
+fn the_thread_keeps_names_in_a_fixed_column_and_wraps_at_40_and_110() {
+    let (mut domain, mut model, id) = blocked_page();
+    tsk_tui::domain::acting_as("claude", || {
+        domain
+            .reply(
+                id,
+                "Recommend postgres; it is the smaller change.",
+                "claude",
+            )
+            .unwrap();
+    });
+    domain
+        .reply(id, "Go with postgres, keep the worker running.", OWNER)
+        .unwrap();
+    model.sync_from_domain(&domain);
+    let wide = page_body(&rows(&model, 110, 40));
+    let claude = wide
+        .iter()
+        .find(|row| row.starts_with("  claude · "))
+        .unwrap_or_else(|| panic!("{}", wide.join("\n")));
+    let you = wide
+        .iter()
+        .find(|row| row.starts_with("  you · "))
+        .unwrap_or_else(|| panic!("{}", wide.join("\n")));
+    assert_eq!(
+        claude.find("Recommend"),
+        you.find("Go with"),
+        "one column:\n{}",
+        wide.join("\n")
+    );
+    assert!(!wide
+        .iter()
+        .any(|row| row.contains('└') || row.contains("@claude ·")));
+
+    let narrow = page_body(&rows(&model, 40, 60));
+    let section: Vec<String> = narrow
+        .iter()
+        .take_while(|row| !row.contains("no notes yet"))
+        .cloned()
+        .collect();
+    let joined = section.join(" ");
+    assert!(!joined.contains('…'), "{joined}");
+    let claude = section
+        .iter()
+        .find(|row| row.starts_with("  claude · "))
+        .unwrap_or_else(|| panic!("{}", narrow.join("\n")));
+    let you = section
+        .iter()
+        .find(|row| row.starts_with("  you · "))
+        .unwrap_or_else(|| panic!("{}", narrow.join("\n")));
+    assert_eq!(claude.find("Recommend"), you.find("Go with"));
+    for text in [
+        "Recommend postgres;",
+        "change.",
+        "running.",
+        "1-2 choose · r reply",
+        "ctrl+s reply + unblock",
+    ] {
+        assert!(joined.contains(text), "{text}:\n{}", narrow.join("\n"));
+    }
+}
+
+#[test]
+fn a_block_on_another_task_says_so_on_top_and_offers_ctrl_b() {
+    let (mut domain, ids) = numbered_domain(&["wait for it", "the other one"]);
+    domain
+        .block(
+            ids[0],
+            BlockDraft::from_input(Some("needs the schema"), None, &[], BlockOn::Task(2)).unwrap(),
+            OWNER,
+        )
+        .unwrap();
+    let mut model = BoardModel::from_domain(&domain, None);
+    model.sync_from_domain(&domain);
+    select(&mut domain, &mut model, ids[0]);
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).unwrap();
+    let page = page_body(&rows(&model, 80, 30));
+    let joined = page.join("\n");
+    assert!(
+        joined.contains("  waiting on T2\n\n  needs the schema"),
+        "{joined}"
+    );
+    assert!(
+        joined.contains("  r reply · ctrl+b unblock\n  ───"),
+        "{joined}"
+    );
+    assert!(!joined.contains("choose"), "{joined}");
 }
 
 #[test]
@@ -404,7 +614,7 @@ fn tab_reaches_an_option_enter_prefills_the_reply_and_shift_enter_answers() {
     assert_eq!(model.block_target(), Some(BlockTarget::Option(0)));
     assert!(rows(&model, 80, 24)
         .iter()
-        .any(|row| row.contains("▸ ○ postgres")));
+        .any(|row| row.starts_with("▸  1  postgres")));
     assert!(model.block_option_selected());
     apply_intent(&mut domain, &mut model, BoardIntent::ReplyWithOption, None).unwrap();
     assert_eq!(model.input_mode(), BoardInputMode::EditReply);
@@ -436,7 +646,7 @@ fn tab_reaches_an_option_enter_prefills_the_reply_and_shift_enter_answers() {
     assert!(block.answered());
     assert_eq!(domain.get(id).unwrap().status, HumanStatus::Blocked);
     let page = rows(&model, 80, 24).join("\n");
-    assert!(page.contains("└ you"), "{page}");
+    assert!(page.contains("▸ you · 0s   postgres, please"), "{page}");
 
     press(
         &mut domain,
@@ -1105,4 +1315,54 @@ fn palette_set_status_blocked_opens_the_block_card() {
     assert_eq!(outcome, IntentOutcome::None);
     assert_eq!(model.input_mode(), BoardInputMode::Normal);
     assert_eq!(domain.get(ids[0]).unwrap().status, HumanStatus::Blocked);
+}
+
+/// On a closed record of the PAPER TRAIL the action line says what Enter does there: expand a
+/// folded record, collapse an open one.
+#[test]
+fn the_action_line_says_collapse_on_an_open_trail_record() {
+    let (mut domain, mut model, id) = blocked_page();
+    domain.set_status(id, HumanStatus::Started).unwrap();
+    domain
+        .block(
+            id,
+            BlockDraft::from_input(Some("again?"), None, &[], BlockOn::You).unwrap(),
+            OWNER,
+        )
+        .unwrap();
+    model.sync_from_domain(&domain);
+    let action = |model: &BoardModel| {
+        let page = page_body(&rows(model, 90, 60));
+        let rule = page
+            .iter()
+            .rposition(|row| row.starts_with("  ───"))
+            .expect("rule");
+        page[rule - 1].trim().to_string()
+    };
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleTrail, None).unwrap();
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ToggleTrailRecord(Some(0)),
+        None,
+    )
+    .unwrap();
+    assert_eq!(model.block_target(), Some(BlockTarget::Trail(0)));
+    assert!(
+        action(&model).starts_with("enter collapse · "),
+        "{}",
+        action(&model)
+    );
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ToggleTrailRecord(None),
+        None,
+    )
+    .unwrap();
+    assert!(
+        action(&model).starts_with("enter expand · "),
+        "{}",
+        action(&model)
+    );
 }

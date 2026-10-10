@@ -1942,7 +1942,7 @@ fn task_page_paints_steps_section_between_notes_and_footer() {
     };
     let notes_row = find("the notes body", &shown);
     let label_row = find("steps 2/3", &shown);
-    let meta_row = find("created", &shown);
+    let meta_row = find("⎇", &shown);
     assert_eq!(
         label_row,
         notes_row + 3,

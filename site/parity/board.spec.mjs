@@ -215,6 +215,26 @@ test("Escape closes Help then collapses both wide splits", async ({ page }) => {
   }
 });
 
+// T12's page leads with the BLOCKED section the app paints: the live line, why and needs as
+// plain text, the numbered options. Only the action line differs: the demo answers nothing.
+for (const width of [40, 78, 109, 110]) {
+  test(`blocked task page section at ${width} columns`, async ({ page }) => {
+    await open(page, width);
+    await row(page, 12).click();
+    await page.keyboard.press("Enter");
+    const lines = (
+      await page.locator(".tsk-page-block > span").allTextContents()
+    ).map((line) => line.trimEnd());
+    expect(lines.slice(0, -2)).toEqual(
+      await readReference(`blocked-page-${width}`),
+    );
+    expect(lines.at(-1)).toBe("b unblock");
+    await expect(page.locator(".tsk-trail-heading")).toHaveText(
+      /^PAPER TRAIL · \d+ ▸$/,
+    );
+  });
+}
+
 for (const width of [40, 78, 109, 110]) {
   test(`desk start open back and wrapping at ${width} columns`, async ({
     page,

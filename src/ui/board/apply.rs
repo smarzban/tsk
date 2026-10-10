@@ -233,10 +233,12 @@ pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> boo
                 | BoardIntent::BlockCardConfirm
                 | BoardIntent::ReplySave
                 | BoardIntent::ReplySaveUnblock
+                | BoardIntent::PageReplyUnblock
                 | BoardIntent::ReplySaveStart
                 | BoardIntent::ReplySaveBeforeLaunch
                 | BoardIntent::ToggleReview
                 | BoardIntent::CycleCheck
+                | BoardIntent::ClickCheck(_)
                 | BoardIntent::ReplyApprove
                 | BoardIntent::ApproveReview(_)
                 | BoardIntent::ToggleStep
@@ -844,12 +846,31 @@ fn apply_board_intent(
                     }
                 } else {
                     match super::block::move_block_tab(model, false) {
-                        super::block::PageTab::Moved | super::block::PageTab::LeaveBlock => {}
+                        super::block::PageTab::Moved => {}
+                        // Shift+Tab before the top line wraps to the ring's last stop.
+                        super::block::PageTab::LeaveBlock => select_last_page_stop(model),
+                        super::block::PageTab::NotHandled
+                            if model.page_section_open()
+                                && model.form.as_ref().is_some_and(|form| {
+                                    form.steps.cursor.is_none() && !form.steps.add_selected
+                                }) =>
+                        {
+                            // Nothing selected yet (a blocked page opens so): the last stop.
+                            select_last_page_stop(model);
+                        }
                         super::block::PageTab::NotHandled => {
+                            let no_steps = model
+                                .form
+                                .as_ref()
+                                .and_then(|form| form.task_id())
+                                .and_then(|id| model.tasks.iter().find(|task| task.id == id))
+                                .is_some_and(|task| task.steps.is_empty());
                             let first_step = model.form.as_ref().is_some_and(|form| {
-                                form.steps.cursor == Some(0) && !form.steps.add_selected
+                                (form.steps.cursor == Some(0) && !form.steps.add_selected)
+                                    || (form.steps.add_selected && no_steps)
                             });
-                            // Shift+Tab from the first step climbs back into the section.
+                            // Shift+Tab from the first step (or `+ step` with none) climbs back
+                            // into the section.
                             let climbed =
                                 first_step && super::block::enter_block_ring(model, false);
                             if !(climbed || move_step_with_tab(model, false)) {
@@ -1109,8 +1130,20 @@ fn apply_board_intent(
             super::block::toggle_passed_checks(model);
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::ToggleTrailAll => {
-            super::block::toggle_trail_all(model);
+        BoardIntent::ClickCheck(index) => {
+            if !super::block::select_stop(model, super::block::BlockTarget::Check(index)) {
+                return Ok(IntentOutcome::None);
+            }
+            return super::block::cycle_selected_check(domain, model);
+        }
+        BoardIntent::ClickPassedFold => {
+            if super::block::select_stop(model, super::block::BlockTarget::PassedFold) {
+                super::block::toggle_passed_checks(model);
+            }
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::ToggleTrail => {
+            super::block::toggle_trail(model);
             return Ok(IntentOutcome::None);
         }
         BoardIntent::ToggleTrailRecord(index) => {
@@ -1144,6 +1177,22 @@ fn apply_board_intent(
                 && !super::block::begin_reply(model, "", None)
             {
                 model.set_message("only a blocked or review task takes replies");
+            }
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::PickOption(index) => {
+            // A number picks a block option only on a blocked page; anywhere else it is inert.
+            if model.input_mode == BoardInputMode::TaskPage {
+                if let Some(text) = super::block::option_text(model, index) {
+                    super::block::begin_reply(model, &text, None);
+                }
+            }
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::PageReplyUnblock => {
+            // The application boundary opens the box and saves it; a bare reducer only opens it.
+            if model.input_mode == BoardInputMode::TaskPage {
+                super::block::begin_reply(model, "", None);
             }
             return Ok(IntentOutcome::None);
         }
@@ -2894,6 +2943,9 @@ fn apply_board_intent(
                     .and_then(|id| model.tasks.iter().find(|task| task.id == id))
                     .cloned();
                 if let (Some(form), Some(task)) = (model.form.as_mut(), saved) {
+                    // Still the same task: the PAPER TRAIL keeps how it was expanded.
+                    let trail_expanded = form.block.trail_expanded;
+                    let trail_open = std::mem::take(&mut form.block.trail_open);
                     *form = BoardForm::task(
                         &task,
                         model.this_repo.as_deref(),
@@ -2902,6 +2954,8 @@ fn apply_board_intent(
                         &model.archived_projects,
                         &model.agent_names,
                     );
+                    form.block.trail_expanded = trail_expanded;
+                    form.block.trail_open = trail_open;
                     model.input_mode = BoardInputMode::TaskPage;
                     model.clear_message();
                     return Ok(IntentOutcome::None);
@@ -3864,6 +3918,14 @@ fn select_first_step_from_page(model: &mut BoardModel) -> bool {
         steps_scroll_to_cursor(form, 0);
     }
     true
+}
+
+/// The page ring's last stop, where Shift+Tab wraps from its first: the PAPER TRAIL's last stop
+/// (its heading, or its last record while expanded), else `+ step`.
+fn select_last_page_stop(model: &mut BoardModel) {
+    if !super::block::enter_trail(model, false) {
+        select_add_step(model);
+    }
 }
 
 /// Move Tab within the PAPER TRAIL when one of its records is selected; `None` otherwise.

@@ -195,8 +195,17 @@ pub fn paint_task_row_lines(
 /// review waits on and for how long, or what an on-deck task still runs after. `None` for a
 /// row with nothing to say, and for notices. A block or review peek opens with the same text.
 pub fn live_line(task: &Task, tasks: &[Task], now: SystemTime) -> Option<String> {
+    if task.archived {
+        return None;
+    }
+    status_line(task, tasks, now)
+}
+
+/// [`live_line`] whether or not the task is archived: the task page's BLOCKED or REVIEW section
+/// leads with it, and an archived task's page still shows its open block.
+pub fn status_line(task: &Task, tasks: &[Task], now: SystemTime) -> Option<String> {
     use crate::ui::queue::{block_wait, BlockWait};
-    if task.archived || task.status == HumanStatus::Done || task.is_notice() {
+    if task.status == HumanStatus::Done || task.is_notice() {
         return None;
     }
     let age = |at: Option<SystemTime>| {
@@ -476,29 +485,19 @@ pub struct StepView {
     pub rows: Vec<String>,
 }
 
-/// One painted row of the task page's BLOCKED or REVIEW section. Rows come pre-wrapped.
+/// One painted row of a task-page section (BLOCKED, REVIEW, PAPER TRAIL), and what a click on
+/// it does. Rows come pre-wrapped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockPageRow {
     pub text: String,
     pub kind: BlockRowKind,
     /// The first row of the selected ring stop carries the `▸` gutter.
     pub selected: bool,
-    /// The heading's dim right edge: `r reply`, or `PR #41 · r feedback`.
-    pub hint: String,
-}
-
-/// One painted row of the task page's PAPER TRAIL, and what a click on it does.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrailPageRow {
-    pub row: BlockPageRow,
     pub target: Option<QueueHitTarget>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockRowKind {
-    /// `BLOCKED · on you · @claude 1h ──── r reply`, the dashes filled to the width, then the
-    /// row's hint.
-    Heading,
     Plain,
     Dim,
     Bold,
@@ -658,7 +657,7 @@ pub enum QueueOverlay<'a> {
         /// Reply box caret: (block row, column) while the reply box is open.
         block_cursor: Option<(usize, u16)>,
         /// The PAPER TRAIL section after the steps. Empty outside view mode.
-        trail_rows: Vec<TrailPageRow>,
+        trail_rows: Vec<BlockPageRow>,
         /// The thread field still uses the shared bottom input slot.
         bottom_input: Option<BottomInputSlot<'a>>,
         /// Footer: assignee · base · thread · scope.
@@ -934,8 +933,13 @@ pub enum QueueHitTarget {
     /// A closed block or review round on the PAPER TRAIL, by its index in `past_blocks`: a
     /// click selects it and expands or folds it.
     TrailRecord(usize),
-    /// The PAPER TRAIL's `+ N earlier` line: a click shows every entry.
-    TrailAll,
+    /// The PAPER TRAIL heading: a click expands or collapses the trail.
+    TrailHeading,
+    /// A review check on the task page's REVIEW section, by its index in the round: a click
+    /// selects it and cycles it.
+    PageCheck(usize),
+    /// The REVIEW section's `N passed` line: a click shows or folds the passed checks.
+    PassedFold,
     /// One painted option in a shared form footer dropdown, indexed into that field's choices.
     FormDropdownOption(usize),
     /// One cell of the board list's overflow scrollbar (track or thumb). The usize is the
@@ -3278,7 +3282,7 @@ fn paint_task_page(
     inline_step_editor: Option<&InlineStepEditor<'_>>,
     block_rows: &[BlockPageRow],
     block_cursor: Option<(usize, u16)>,
-    trail_rows: &[TrailPageRow],
+    trail_rows: &[BlockPageRow],
     meta: &str,
     meta_assignee_x: Option<u16>,
     meta_assignee_width: u16,
@@ -3485,8 +3489,15 @@ fn paint_task_page(
             break;
         }
         let y = lay.notes_y.saturating_add(visible as u16);
-        if absolute >= content.trail_start {
-            let Some(trail) = trail_rows.get(absolute - content.trail_start) else {
+        let section = if absolute >= content.trail_start {
+            trail_rows.get(absolute - content.trail_start)
+        } else if absolute < block_count {
+            block_rows.get(absolute)
+        } else {
+            None
+        };
+        if absolute >= content.trail_start || absolute < block_count {
+            let Some(row) = section else {
                 continue;
             };
             put_line(
@@ -3494,23 +3505,11 @@ fn paint_task_page(
                 surface,
                 y,
                 content_width,
-                paint_section_row(&trail.row, content_width),
-            );
-            if let Some(target) = trail.target {
-                hits.push(target, Rect::new(0, y, content_width, 1));
-            }
-            if !matches!(trail.row.kind, BlockRowKind::Rule) {
-                hits.push_copyable(Rect::new(2, y, content_width.saturating_sub(3), 1));
-            }
-        } else if absolute < block_count {
-            let row = &block_rows[absolute];
-            put_line(
-                frame,
-                surface,
-                y,
-                content_width,
                 paint_section_row(row, content_width),
             );
+            if let Some(target) = row.target {
+                hits.push(target, Rect::new(0, y, content_width, 1));
+            }
             if !matches!(row.kind, BlockRowKind::Rule) {
                 hits.push_copyable(Rect::new(2, y, content_width.saturating_sub(3), 1));
             }
@@ -3800,25 +3799,11 @@ fn paint_task_page(
 }
 
 /// One row of a task-page section (BLOCKED, REVIEW, PAPER TRAIL): the `▸` gutter on a selected
-/// stop, a heading's dash fill and dim hint, or text in the row's weight.
+/// stop, the closing rule, or text in the row's weight.
 fn paint_section_row(row: &BlockPageRow, content_width: u16) -> Line<'static> {
     let gutter = if row.selected { "▸ " } else { "  " };
     let room = (content_width as usize).saturating_sub(2);
     match row.kind {
-        BlockRowKind::Heading => {
-            let left = present_line(&row.text, room);
-            let used = display_width(&left);
-            let fill = room.saturating_sub(used + display_width(&row.hint) + 2);
-            let mut spans = vec![
-                Span::styled(gutter.to_string(), style_plain()),
-                Span::styled(left, style_bold()),
-            ];
-            if fill >= 2 {
-                spans.push(Span::styled(format!(" {} ", "─".repeat(fill)), style_dim()));
-                spans.push(Span::styled(row.hint.clone(), style_dim()));
-            }
-            bound_line(Line::from(spans), content_width as usize)
-        }
         BlockRowKind::Rule => paint_bounded_line(
             &format!("  {}", "─".repeat(room)),
             content_width,

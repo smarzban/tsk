@@ -1,9 +1,10 @@
-//! The task page's PAPER TRAIL: who did what, newest first, the latest five until `a` shows
-//! them all, and closed blocks and review rounds that expand in place.
+//! The task page's PAPER TRAIL: collapsed and dim on every open, `g` (or Enter or a click on its
+//! heading) shows every entry newest first, and closed blocks and review rounds expand in place.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
+use ratatui::style::Modifier;
 use ratatui::Terminal;
 use tsk_tui::domain::{
     acting_as, BlockDraft, BlockOn, DomainState, HumanStatus, ProvenanceOrigin, ReviewDraft,
@@ -27,6 +28,14 @@ fn enter(domain: &mut DomainState, model: &mut BoardModel) {
 }
 
 fn rows(model: &BoardModel, width: u16, height: u16) -> Vec<String> {
+    styled_rows(model, width, height)
+        .into_iter()
+        .map(|(row, _)| row)
+        .collect()
+}
+
+/// Each painted row, and whether every visible character on it is dim.
+fn styled_rows(model: &BoardModel, width: u16, height: u16) -> Vec<(String, bool)> {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
     terminal
         .draw(|frame| {
@@ -37,11 +46,21 @@ fn rows(model: &BoardModel, width: u16, height: u16) -> Vec<String> {
     tsk_tui::ui::render::assert_buffer_mono(buffer);
     (0..height)
         .map(|y| {
-            (0..width)
+            let text = (0..width)
                 .map(|x| buffer[(x, y)].symbol().to_string())
-                .collect::<String>()
+                .collect::<String>();
+            // The gutter and the scrollbar column are chrome.
+            let dim = (2..width.saturating_sub(2))
+                .map(|x| &buffer[(x, y)])
+                .filter(|cell| !cell.symbol().trim().is_empty())
+                .all(|cell| cell.modifier.contains(Modifier::DIM));
+            (text, dim)
         })
         .collect()
+}
+
+fn toggle(domain: &mut DomainState, model: &mut BoardModel) {
+    press(domain, model, KeyCode::Char('g'), KeyModifiers::NONE);
 }
 
 /// A task taken through steps, a block answered by you, a review sent back, and a second round
@@ -144,82 +163,83 @@ fn trail(page: &[String]) -> Vec<String> {
 }
 
 #[test]
-fn the_page_shows_the_latest_five_and_a_shows_every_entry() {
-    let (mut domain, mut model, _) = worked_task();
-    let latest = trail(&rows(&model, 100, 60));
-    assert!(latest[0].ends_with("a all"), "{latest:#?}");
-    assert_eq!(
-        latest.len(),
-        1 + 5 + 1,
-        "heading, five entries, + N earlier: {latest:#?}"
-    );
-    assert!(latest[1].starts_with("review → done · you"), "{latest:#?}");
-    assert!(
-        latest[2].starts_with("review round 2 · approved · you") && latest[2].ends_with('▸'),
-        "{latest:#?}"
-    );
-    assert!(
-        latest[6].starts_with("+ ") && latest[6].ends_with("earlier"),
-        "{latest:#?}"
-    );
+fn the_trail_opens_collapsed_and_dim_and_g_shows_every_entry() {
+    let (mut domain, mut model, id) = worked_task();
+    let count = tsk_tui::activity::paper_trail(domain.get(id).expect("task")).len();
+    assert!(count > 5, "{count}");
+    let collapsed = trail(&rows(&model, 100, 60));
+    assert_eq!(collapsed, [format!("PAPER TRAIL · {count} ▸")]);
 
-    press(
-        &mut domain,
-        &mut model,
-        KeyCode::Char('a'),
-        KeyModifiers::NONE,
+    toggle(&mut domain, &mut model);
+    let page = styled_rows(&model, 100, 80);
+    let start = page
+        .iter()
+        .position(|(row, _)| row.contains("PAPER TRAIL"))
+        .expect("heading");
+    let all = trail(&page.iter().map(|(row, _)| row.clone()).collect::<Vec<_>>());
+    assert_eq!(all[0], format!("PAPER TRAIL · {count} ▾"));
+    assert_eq!(all.len(), 1 + count, "every entry: {all:#?}");
+    assert!(
+        page[start..start + all.len()].iter().all(|(_, dim)| *dim),
+        "all dim, records too: {all:#?}"
     );
-    let all = trail(&rows(&model, 100, 60));
-    assert!(all[0].ends_with("a latest"), "{all:#?}");
+    assert!(all[1].starts_with("review → done · you"), "{all:#?}");
+    assert!(
+        all[2].starts_with("review round 2 · approved · you") && all[2].ends_with('▸'),
+        "{all:#?}"
+    );
+    assert!(all
+        .last()
+        .is_some_and(|row| row.starts_with("created · you")));
+    for entry in [
+        "2 steps checked · you",
+        "open → blocked · @claude",
+        "blocked on you · need creds · 1 reply · you",
+    ] {
+        assert!(
+            all.iter().any(|row| row.starts_with(entry)),
+            "{entry}: {all:#?}"
+        );
+    }
     assert!(!all.iter().any(|row| row.ends_with("earlier")), "{all:#?}");
-    assert_eq!(
-        all.last()
-            .map(String::as_str)
-            .map(|row| row.starts_with("created · you")),
-        Some(true)
-    );
-    assert!(
-        all.iter()
-            .any(|row| row.starts_with("2 steps checked · you")),
-        "{all:#?}"
-    );
-    assert!(
-        all.iter()
-            .any(|row| row.starts_with("open → blocked · @claude")),
-        "{all:#?}"
-    );
-    assert!(
-        all.iter()
-            .any(|row| row.starts_with("blocked on you · need creds · 1 reply · you")),
-        "{all:#?}"
-    );
 
-    press(
-        &mut domain,
-        &mut model,
-        KeyCode::Char('a'),
-        KeyModifiers::NONE,
-    );
-    assert_eq!(
-        trail(&rows(&model, 100, 60)),
-        latest,
-        "a folds back to the latest five"
-    );
+    toggle(&mut domain, &mut model);
+    assert_eq!(trail(&rows(&model, 100, 60)), collapsed, "g collapses it");
+
+    // The expanded state lasts while you stay on the task and resets when a page opens again.
+    toggle(&mut domain, &mut model);
+    apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close page");
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("reopen");
+    assert_eq!(trail(&rows(&model, 100, 60)), collapsed, "collapsed again");
 }
 
 #[test]
-fn tab_from_add_step_reaches_the_records_and_enter_expands_one_in_place() {
+fn tab_from_add_step_reaches_the_heading_then_the_records_and_enter_expands_one_in_place() {
     let (mut domain, mut model, _) = worked_task();
-    press(
-        &mut domain,
-        &mut model,
-        KeyCode::Char('a'),
-        KeyModifiers::NONE,
-    );
-    // Two steps, then `+ step`, then the newest closed record.
+    // Two steps, then `+ step`, then the collapsed heading.
     for _ in 0..4 {
         press(&mut domain, &mut model, KeyCode::Tab, KeyModifiers::NONE);
     }
+    assert_eq!(model.block_target(), Some(BlockTarget::TrailHeading));
+    assert!(
+        rows(&model, 100, 60)
+            .iter()
+            .any(|row| row.contains("▸ PAPER TRAIL")),
+        "the heading paints the selection"
+    );
+    // Collapsed, Tab past the heading wraps to the first step.
+    press(&mut domain, &mut model, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(model.block_target(), None);
+    assert!(rows(&model, 100, 80)
+        .iter()
+        .any(|row| row.contains("▸ ✓ write it")));
+    for _ in 0..3 {
+        press(&mut domain, &mut model, KeyCode::Tab, KeyModifiers::NONE);
+    }
+    assert_eq!(model.block_target(), Some(BlockTarget::TrailHeading));
+    // Enter on the heading (resolved at the keyboard boundary to this intent) expands it.
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleTrail, None).expect("expand");
+    press(&mut domain, &mut model, KeyCode::Tab, KeyModifiers::NONE);
     let newest = model.block_target();
     assert!(matches!(newest, Some(BlockTarget::Trail(_))), "{newest:?}");
     enter(&mut domain, &mut model);
@@ -270,11 +290,20 @@ fn tab_from_add_step_reaches_the_records_and_enter_expands_one_in_place() {
         "and wraps to the first step"
     );
 
-    // Shift+Tab from the newest record climbs back to `+ step`.
+    // Shift+Tab from the heading climbs back to `+ step`.
     for _ in 0..3 {
         press(&mut domain, &mut model, KeyCode::Tab, KeyModifiers::NONE);
     }
+    assert_eq!(model.block_target(), Some(BlockTarget::TrailHeading));
+    press(&mut domain, &mut model, KeyCode::Tab, KeyModifiers::NONE);
     assert_eq!(model.block_target(), newest);
+    press(
+        &mut domain,
+        &mut model,
+        KeyCode::BackTab,
+        KeyModifiers::SHIFT,
+    );
+    assert_eq!(model.block_target(), Some(BlockTarget::TrailHeading));
     press(
         &mut domain,
         &mut model,
@@ -288,29 +317,37 @@ fn tab_from_add_step_reaches_the_records_and_enter_expands_one_in_place() {
             .any(|row| row.contains("▸ + step")),
         "Shift+Tab lands on + step"
     );
+
+    // Collapsing with a record selected hands the selection to the heading.
+    for _ in 0..2 {
+        press(&mut domain, &mut model, KeyCode::Tab, KeyModifiers::NONE);
+    }
+    assert_eq!(model.block_target(), newest);
+    toggle(&mut domain, &mut model);
+    assert_eq!(model.block_target(), Some(BlockTarget::TrailHeading));
 }
 
 #[test]
-fn a_click_on_earlier_shows_every_entry_and_a_click_on_a_record_expands_it() {
+fn a_click_on_the_heading_expands_the_trail_and_a_click_on_a_record_expands_it() {
     let (mut domain, mut model, _) = worked_task();
     let area = Rect::new(0, 0, 100, 60);
     rows(&model, 100, 60);
     let hits = board_hit_map(area, &model);
-    let earlier = hits
+    let heading = hits
         .regions
         .iter()
-        .find(|hit| hit.target == QueueHitTarget::TrailAll)
-        .expect("+ N earlier is clickable");
+        .find(|hit| hit.target == QueueHitTarget::TrailHeading)
+        .expect("the heading is clickable");
     let click = crossterm::event::MouseEvent {
         kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
-        column: earlier.area.x + 2,
-        row: earlier.area.y,
+        column: heading.area.x + 2,
+        row: heading.area.y,
         modifiers: KeyModifiers::NONE,
     };
     let intent = map_board_mouse(&model, &hits, click).expect("click maps");
-    assert_eq!(intent, BoardIntent::ToggleTrailAll);
+    assert_eq!(intent, BoardIntent::ToggleTrail);
     apply_intent(&mut domain, &mut model, intent, None).expect("apply");
-    assert!(trail(&rows(&model, 100, 60))[0].ends_with("a latest"));
+    assert!(trail(&rows(&model, 100, 60))[0].ends_with('▾'));
 
     let hits = board_hit_map(area, &model);
     let record = hits
@@ -331,18 +368,14 @@ fn a_click_on_earlier_shows_every_entry_and_a_click_on_a_record_expands_it() {
     assert_eq!(model.block_target(), Some(BlockTarget::Trail(record.0)));
     assert!(trail(&rows(&model, 100, 60))
         .iter()
+        .skip(1)
         .any(|row| row.ends_with('▾')));
 }
 
 #[test]
 fn the_trail_wraps_without_truncating_at_40_and_120_columns() {
     let (mut domain, mut model, _) = worked_task();
-    press(
-        &mut domain,
-        &mut model,
-        KeyCode::Char('a'),
-        KeyModifiers::NONE,
-    );
+    toggle(&mut domain, &mut model);
     for width in [40u16, 120] {
         let page = rows(&model, width, 80);
         let entries = trail(&page);
@@ -395,6 +428,7 @@ fn a_long_agent_lead_wraps_onto_its_own_row_and_keeps_the_reply_text_at_40_colum
     let mut model = BoardModel::from_domain(&domain, None);
     model.sync_from_domain(&domain);
     apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+    toggle(&mut domain, &mut model);
     apply_intent(
         &mut domain,
         &mut model,
@@ -427,5 +461,48 @@ fn a_long_agent_lead_wraps_onto_its_own_row_and_keeps_the_reply_text_at_40_colum
         indent <= 8,
         "the text continues under a bounded indent ({indent}):\n{}",
         page.join("\n")
+    );
+}
+
+/// Leaving a task edit with `Esc` stays on the task, so an expanded trail and an expanded
+/// record stay expanded.
+#[test]
+fn esc_out_of_a_task_edit_keeps_the_trail_expanded() {
+    let (mut domain, mut model, _) = worked_task();
+    toggle(&mut domain, &mut model);
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ToggleTrailRecord(Some(0)),
+        None,
+    )
+    .expect("expand a record");
+    let expanded = trail(&rows(&model, 100, 80));
+    assert!(expanded[0].ends_with('▾'), "{expanded:#?}");
+    press(
+        &mut domain,
+        &mut model,
+        KeyCode::Char('e'),
+        KeyModifiers::CONTROL,
+    );
+    assert!(model.task_editing());
+    // The first Esc closes the title field, the second leaves the edit session.
+    for _ in 0..2 {
+        press(&mut domain, &mut model, KeyCode::Esc, KeyModifiers::NONE);
+    }
+    assert!(!model.task_editing());
+    assert_eq!(
+        model.input_mode(),
+        tsk_tui::ui::board::BoardInputMode::TaskPage
+    );
+    // The selection is the edit's to drop; the expansion stays.
+    let unselected = |rows: Vec<String>| -> Vec<String> {
+        rows.into_iter()
+            .map(|row| row.trim_start_matches("▸ ").to_string())
+            .collect()
+    };
+    assert_eq!(
+        unselected(trail(&rows(&model, 100, 80))),
+        unselected(expanded)
     );
 }

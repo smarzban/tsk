@@ -4493,6 +4493,8 @@ fn view_tab_selection_wraps_without_starting_task_edit_and_ctrl_e_opens_inline_s
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
         .expect("Tab selects add target");
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("Tab selects the paper trail heading");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
         .expect("Tab wraps to first");
     assert!(rendered_board(&model, 80, 24).contains("▸ ▪ first step"));
     assert!(!model.task_editing(), "wrapping remains task view mode");

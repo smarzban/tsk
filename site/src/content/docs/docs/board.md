@@ -242,7 +242,7 @@ Sending back takes the same route as a reply's `ctrl+s` ([below](#reply-to-a-run
 
 ### Reply to a running agent
 
-When `ctrl+s` in a reply box starts an assigned task whose dispatched agent is still running, tsk sends that agent the reply you just saved, once the start is saved, as one message: `[tsk T12 unblocked] <your reply>`. Earlier replies are never sent again. With an empty box, `ctrl+s` only unblocks and sends `[tsk T12 unblocked]` alone. Multi-line replies arrive intact.
+When `ctrl+s` in a reply box starts an assigned task whose dispatched agent is still running, tsk sends that agent the reply you just saved, once the start is saved, as one message: `[tsk T12 unblocked] <your reply>`. Earlier replies are never sent again. With an empty box, or `ctrl+s` on the task page with no box open, it only unblocks and sends `[tsk T12 unblocked]` alone. Multi-line replies arrive intact.
 
 tsk sends only to the agent it dispatched: the pane's live agent must carry the name dispatch gave it (`t12-claude`), checked when the start is routed and again just before the send. Another agent in that pane, or one Herdr never named (naming can fail, for example when the name is taken), gets nothing. The status row says how it went:
 
