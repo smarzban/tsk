@@ -3,18 +3,55 @@ title: Storage
 description: Task data, backups, deleted tasks, and update checks.
 ---
 
-The board, CLI, and Herdr plugin share one store. The current store format is v5.
+The board, CLI, and Herdr plugin share one store. The current store format is v11.
 
 ## Location
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `TSK_STATE_DIR` | Platform default | Task data, backups, trash, and release-check cache. The default is `~/.tsk` on macOS/Linux, `%LOCALAPPDATA%\tsk` on Windows, or `%USERPROFILE%\.tsk` when `LOCALAPPDATA` is unavailable. Without a usable platform home, tsk refuses to run rather than pick a directory |
+| `TSK_STATE_DIR` | Platform default | Task data, configuration, backups, trash, and release-check cache. The default is `~/.tsk` on macOS/Linux, `%LOCALAPPDATA%\tsk` on Windows, or `%USERPROFILE%\.tsk` when `LOCALAPPDATA` is unavailable. Without a usable platform home, tsk refuses to run rather than pick a directory |
 | `--state-dir <dir>` | State directory | Override storage for a data command |
 
 Use a local disk. NFS and synced folders such as Dropbox or iCloud Drive are unsupported. Directory roots must be real directories, not symlinks or Windows reparse points such as junctions.
 
 Herdr's plugin-specific state/config directories do not override these locations. Removing tsk leaves its task data intact.
+
+## Configuration
+
+Settings are read from `config.toml` in the state directory, beside `tsk.json`. The first full board open creates a starter file when it is missing: it explains profiles and placeholders, quotes the default prompt, and holds commented examples (Claude Code, Codex, Pi, Grok, and any other terminal agent) that define no profiles until you uncomment one. Quick capture, CLI commands, and setup do not create it, and tsk never replaces an existing file, even an empty one. Top-level keys and tables tsk does not recognize are ignored, so a file written for a newer tsk still loads; inside an `[agent.<name>]` table an unknown key is an error.
+
+### Agent profiles
+
+Each `[agent.<name>]` table is an agent launch profile. Each profile name must already be lowercase and use the same shape as a thread name: start with a letter or number, then use only letters, numbers, hyphens, and dots, up to 32 characters. Quote a name that contains dots, for example `[agent."review.strict"]`.
+
+```toml
+[agent.implementer]
+command = ["pi"]
+prompt = "Work on T{number}: {title}\n\n{notes}\n\n{steps}"
+
+[agent.implementer.env]
+PI_PROVIDER = "anthropic"
+```
+
+`command` is a required, non-empty argv template. `prompt` is optional; without it, tsk supplies this default:
+
+```text
+You were dispatched to T{number} ({title}) in worktree {worktree} on branch {branch}, based on {base}.
+
+1. Run `tsk guide`, then `tsk list {number} --json`. The task notes are your brief.
+2. Read the repo's agent instructions (AGENTS.md or CLAUDE.md) if present.
+3. Work only on {branch}. Run the project's checks before saying you are done.
+4. Push and open a pull request into {base}. Never merge it.
+5. Set the task to review with what you did and what to check: `tsk status {number} review --done "…" --check "…"`, one `--check` per thing to verify, adding `--next` for what comes after. When you need a human, block it with your question: `tsk status {number} blocked --why "…"`, adding `--needs` and one `--option` per choice, then stop.
+6. On a relaunch, first read whichever record closed last (`closed_at`) in `tsk list {number} --json`: the `replies` of the last `past_blocks` entry, or the `feedback` and failed `checks` of the last `past_reviews` entry when it was `sent_back`.
+7. A message `[tsk T{number} sent back] …` is review feedback, with any failed checks: address it, then set review again.
+```
+
+A profile with its own `prompt` replaces the default entirely. The rendered prompt is always appended to the command as its last argument. `env` is an optional table of string values passed to the launched command unchanged. tsk also sets `TSK_AGENT` to the profile name, so the agent's blocks, reviews, and replies carry its name.
+
+A malformed `config.toml` does not block the board or CLI work that does not assign a task. The board opens without profiles and shows the error on its status row. `tsk add` and `tsk edit` read the file only when an assignee is supplied; a configuration error then exits 2 without saving.
+
+The command and prompt templates support `{number}`, `{title}`, `{notes}`, `{steps}`, `{worktree}`, `{branch}`, and `{base}`. `{branch}` is the dispatched task branch; `{base}` is the short base branch name, for example `dispatch` for `origin/dispatch`, so a prompt can say "open the PR into {base}". tsk replaces only these placeholders. It quotes every argument and renders one command line as `$SHELL -lc '…'`; it never chains commands. On Windows it launches the same argv and `env` through PowerShell instead ([preview](/docs/board/#dispatch-on-windows-preview)). Write Windows paths as TOML literal strings so backslashes stay as typed, for example `command = ['C:\Users\you\.local\bin\claude.exe']`. Profiles are read-only in tsk, edit the file to change them.
 
 ## Backups
 
@@ -22,10 +59,12 @@ Herdr's plugin-specific state/config directories do not override these locations
 | --- | --- |
 | `tsk.json` | Current tasks and archived-project records |
 | `tsk.json.1` | Previous valid task document |
-| `tsk.json.v<N>` | Backup made when migrating an older store format, such as `tsk.json.v4` for the v4 → v5 migration |
+| `tsk.json.v<N>` | Backup made when migrating an older store format, such as `tsk.json.v10` for the v10 → v11 migration |
+| `config.toml` | Settings, including agent launch profiles, seeded with commented examples on the first full board open |
 | `delivery.json` | Which starter tasks this install has received or dismissed, and the newest release note it has seen |
+| `launchers\`, `cleanups\` | Windows only: dispatch launchers and cleanup progress |
 
-An older binary refuses a newer or unversioned store instead of rewriting it. Use a compatible tsk version to open it. On first save, v4 stores migrate to v5 so one undo entry can cover a marked completion or deletion; the original document is saved as `tsk.json.v4`. Earlier stores still run through each migration in order, including the v3 to v4 move from ready to open.
+An older binary refuses a newer or unversioned store instead of rewriting it. Use a compatible tsk version to open it. On first save, older stores migrate to v11. v6 added task assignees, dispatch base branches, and dispatch records; v7 added blocks (why, needs, options, what the block waits on, and replies) and the block undo step; v8 added the undo step for a start that dispatched; v9 added review rounds (done, checks, next, who the review is on, feedback, and how each round closed); v10 added who made each change (`by`) and what it changed (`detail`) to every new task event; v11 adds `after`, the task numbers a task runs after, the prerequisite that started a task on its event, and the undo step that puts an `after` list back. A task from an older store runs after nothing. Events from an older store keep their kind and time and show on the [paper trail](/docs/task-page/#paper-trail) without who or what. The original document is saved as `tsk.json.v<N>`, for example `tsk.json.v5` from v0.11. A blocked task from an older store keeps its status with no block and reads as blocked on you; a task in review keeps its status with no round and reads as in review on you. Earlier stores still run through each migration in order, including v5 batch undo and the v3 to v4 move from ready to open.
 
 Archived tasks stay in the task document with their existing status. [Archive and restore](/docs/board/#archive).
 
@@ -37,7 +76,7 @@ After an upgrade, the first board open adds one `What's new in tsk` task to your
 
 ## Deleted tasks
 
-Deleted tasks move to `trash.jsonl` once undo can no longer restore them, or after seven days. They are purged 30 days after deletion.
+Deleted tasks move to `trash.jsonl` once undo can no longer restore them, or after seven days. A delete already drops the task from every other task's `after`; any link left over is dropped when it moves to trash. They are purged 30 days after deletion.
 
 ```sh
 tsk list --deleted --all
@@ -45,6 +84,14 @@ tsk trash restore T12
 ```
 
 The list includes both recently deleted tasks still in the main store and tasks in trash. Restore reads trash; use board undo for a recent deletion that has not moved there yet.
+
+## Fetch window
+
+Dispatch, the branch picker, and cleanup fetch a base's remote before reading its branches. A remote tsk fetched successfully in the last 60 seconds is not fetched again, so opening the picker and then dispatching costs one round trip. Each fetch also refreshes the remote's default branch (`origin/HEAD`). A surface that needs a remote another is already fetching waits for that fetch and shares its result. Failed fetches are not remembered, and cleanup decides merged status from the refs on disk only inside this window: when its own fetch fails, it keeps the branch.
+
+| File | Purpose |
+| --- | --- |
+| `fetch-stamps.json` | When CLI verbs and the board last fetched each repository's remote, so the window carries across `tsk` processes. Entries older than the window are dropped on the next write; deleting the file only costs one fetch |
 
 ## Update check
 

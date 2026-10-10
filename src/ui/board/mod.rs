@@ -1,16 +1,23 @@
 //! Queue-board presentation, split by state, commands, reduction, chrome, and drawing.
 
 mod apply;
+mod block;
 mod chrome;
 mod commands;
 mod draw;
 mod model;
 
-pub use apply::{apply_intent, board_intent_may_persist};
+pub use apply::{apply_intent, board_intent_may_persist, NO_AGENT_PROFILES};
+pub use block::{BlockCard, BlockCardField, BlockTarget, OnKind};
+#[cfg(test)]
+pub(crate) use block::{BLOCK_REPLACED, NOTHING_TO_SEND_BACK};
 pub use chrome::DELETE_NOTICE_UNDO;
 pub use commands::{resolve_board_command, BoardCommand, CommandSurface};
 pub use draw::{board_hit_map, board_verb_items, draw_board};
 pub use model::{
-    project_option_label, BoardInputMode, BoardModel, BoardTab, IntentOutcome, ListPickerKind,
-    PickerTab, ProjectScopeOption, ProjectsView, SaveResolution, BOARD_TITLE,
+    nothing_to_dispatch, project_option_label, BoardInputMode, BoardModel, BoardTab, BulkCleanup,
+    BulkDispatchRun, CleanupPrompt, CleanupRow, CleanupRowState, CleanupRun, CleanupRunRow,
+    DispatchPrompt, FilterTab, IntentOutcome, ListPickerKind, PendingLaunch, PickerTab,
+    ProjectScopeOption, ProjectsView, RelaunchPrompt, SaveResolution, StartAnywayPrompt,
+    BOARD_TITLE, CLEANUP_BUSY, FINISHING_CLEANUP, REFRESHING_BRANCHES,
 };

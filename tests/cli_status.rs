@@ -167,6 +167,43 @@ fn status_unknown_and_deleted_refuse_without_mutation() {
 }
 
 #[test]
+fn status_done_clean_without_a_dispatch_succeeds_with_nothing_to_clean() {
+    let dir = temp_state_dir("done-clean-nothing");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "finish and clean").code, 0);
+
+    let output = cli(vec![
+        "tsk".into(),
+        "status".into(),
+        "T1".into(),
+        "done".into(),
+        "--clean".into(),
+        "--state-dir".into(),
+        dir.to_string_lossy().into_owned(),
+    ]);
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    assert_eq!(
+        output.stdout,
+        "status T1 done finish and clean\nnothing to clean\n"
+    );
+    assert_eq!(output.stderr, "");
+    assert_eq!(loaded_status(&dir).0, HumanStatus::Done);
+
+    let invalid = cli(vec![
+        "tsk".into(),
+        "status".into(),
+        "T1".into(),
+        "ready".into(),
+        "--clean".into(),
+        "--state-dir".into(),
+        dir.to_string_lossy().into_owned(),
+    ]);
+    assert_eq!(invalid.code, 2);
+    assert!(invalid.stderr.contains("--clean requires done status"));
+    assert_eq!(loaded_status(&dir).0, HumanStatus::Done);
+}
+
+#[test]
 fn status_unknown_name_is_usage() {
     let dir = temp_state_dir("usage");
     let _guard = TempDirGuard(dir.clone());
@@ -203,4 +240,436 @@ fn status_help_names_statuses_and_done_token() {
             "status help should contain {term:?}"
         );
     }
+}
+
+fn block_args(dir: &Path, task: &str, flags: &[&str]) -> Vec<String> {
+    let mut args = vec![
+        "tsk".to_string(),
+        "status".into(),
+        task.into(),
+        "blocked".into(),
+    ];
+    args.extend(flags.iter().map(|flag| flag.to_string()));
+    args.extend(["--state-dir".into(), dir.to_string_lossy().into_owned()]);
+    args
+}
+
+/// Replies as the board's owner. A separate process with `TSK_AGENT` removed, so a test run
+/// from inside a dispatched agent (which sets it) still authors `you`; the in-process
+/// runner would read the caller's environment.
+fn reply(dir: &Path, task: &str, text: &str) -> CliOutput {
+    let output = std::process::Command::new(
+        std::env::var("CARGO_BIN_EXE_tsk").expect("Cargo must provide the tsk binary path"),
+    )
+    .args(["reply", task, "--state-dir"])
+    .arg(dir)
+    .arg("--")
+    .arg(text)
+    .env_remove("TSK_AGENT")
+    .stdin(std::process::Stdio::null())
+    .output()
+    .expect("run tsk reply");
+    CliOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        code: u8::try_from(output.status.code().unwrap_or(255)).unwrap_or(u8::MAX),
+    }
+}
+
+fn listed(dir: &Path, task: &str) -> serde_json::Value {
+    let output = cli(vec![
+        "tsk".into(),
+        "list".into(),
+        task.into(),
+        "--json".into(),
+        "--state-dir".into(),
+        dir.to_string_lossy().into_owned(),
+    ]);
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    serde_json::from_str::<serde_json::Value>(&output.stdout).expect("list json")[0].clone()
+}
+
+#[test]
+fn blocked_with_reasons_shows_in_list_json_and_a_repeat_edits_the_same_block() {
+    let dir = temp_state_dir("block-reasons");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "pick a db").code, 0);
+    let actor = tsk_tui::domain::actor_from_env();
+
+    let output = cli(block_args(
+        &dir,
+        "T1",
+        &[
+            "--why",
+            "Which database?",
+            "--needs",
+            "a decision",
+            "--option",
+            "postgres",
+            "--option=-sqlite",
+        ],
+    ));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    assert_eq!(output.stdout, "status T1 blocked pick a db\n");
+
+    let task = listed(&dir, "T1");
+    assert_eq!(task["status"], "blocked");
+    let block = &task["block"];
+    assert_eq!(block["why"], "Which database?");
+    assert_eq!(block["needs"], "a decision");
+    assert_eq!(block["options"], serde_json::json!(["postgres", "-sqlite"]));
+    assert_eq!(block["on"], "you");
+    assert_eq!(block["by"], actor);
+    assert_eq!(block["edited"], false);
+    assert_eq!(block["replies"], serde_json::json!([]));
+    assert_eq!(block["answered"], false);
+    assert!(task.get("past_blocks").is_none());
+
+    let output = cli(block_args(
+        &dir,
+        "T1",
+        &["--why", "Which database, really?"],
+    ));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    let state = TaskStore::new(&dir).load().expect("load");
+    let task = &state.tasks()[0];
+    assert!(task.past_blocks.is_empty(), "never a second open block");
+    let block = task.block.as_ref().expect("open block");
+    assert_eq!(block.why.as_deref(), Some("Which database, really?"));
+    assert_eq!(
+        block.needs.as_deref(),
+        Some("a decision"),
+        "unset flags stay"
+    );
+    assert_eq!(block.options.len(), 2);
+    assert_eq!(listed(&dir, "T1")["block"]["edited"], true);
+
+    let human = cli(vec![
+        "tsk".into(),
+        "list".into(),
+        "--desk".into(),
+        "--state-dir".into(),
+        dir.to_string_lossy().into_owned(),
+    ]);
+    assert!(
+        human.stdout.contains("blocked: Which database, really?"),
+        "{}",
+        human.stdout
+    );
+}
+
+#[test]
+fn plain_blocked_still_works_and_leaving_blocked_closes_the_block() {
+    let dir = temp_state_dir("block-plain");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "plain").code, 0);
+    assert_eq!(status(&dir, "T1", "blocked").code, 0);
+    let task = listed(&dir, "T1");
+    assert_eq!(task["block"]["why"], serde_json::Value::Null);
+    assert_eq!(reply(&dir, "T1", "noted").code, 0);
+    assert_eq!(listed(&dir, "T1")["block"]["answered"], true);
+
+    assert_eq!(status(&dir, "T1", "ready").code, 0);
+    let task = listed(&dir, "T1");
+    assert!(task.get("block").is_none());
+    let past = &task["past_blocks"][0];
+    assert_eq!(past["replies"][0]["text"], "noted");
+    assert!(past["closed_at"].is_array());
+    assert_eq!(past["closed_by"], tsk_tui::domain::actor_from_env());
+
+    let refused = reply(&dir, "T1", "too late");
+    assert_eq!(refused.code, 1);
+    assert!(
+        refused.stderr.starts_with("tsk reply: not-blocked: "),
+        "{}",
+        refused.stderr
+    );
+}
+
+#[test]
+fn block_flags_refuse_bad_input_without_mutation() {
+    let dir = temp_state_dir("block-refusals");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "one").code, 0);
+    let before = fs::read(dir.join("tsk.json")).expect("read");
+
+    let output = cli(block_args(&dir, "T1", &["--why", &"x".repeat(4097)]));
+    assert_eq!(output.code, 1);
+    assert!(
+        output.stderr.starts_with("tsk status: text-too-long: "),
+        "{}",
+        output.stderr
+    );
+    for on in ["T1", "T99"] {
+        let output = cli(block_args(&dir, "T1", &["--why", "w", "--on", on]));
+        assert_eq!(output.code, 1, "{on}");
+        assert!(
+            output.stderr.starts_with("tsk status: invalid-blocker: "),
+            "{}",
+            output.stderr
+        );
+    }
+    let mut args = block_args(&dir, "T1", &["--why", "w"]);
+    args[3] = "ready".into();
+    assert_eq!(cli(args).code, 2);
+    assert_eq!(fs::read(dir.join("tsk.json")).expect("read"), before);
+
+    assert_eq!(reply(&dir, "T1", "x").code, 1);
+    assert_eq!(fs::read(dir.join("tsk.json")).expect("read"), before);
+}
+
+#[test]
+fn blocked_on_another_task_records_it() {
+    let dir = temp_state_dir("block-on-task");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "api").code, 0);
+    assert_eq!(add_task(&dir, "client").code, 0);
+    let output = cli(block_args(
+        &dir,
+        "T2",
+        &["--why", "needs the api", "--on", "t1"],
+    ));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    assert_eq!(listed(&dir, "T2")["block"]["on"], "task:1");
+    let output = cli(block_args(&dir, "T2", &["--on", "legal sign-off"]));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    assert_eq!(listed(&dir, "T2")["block"]["on"], "other:legal sign-off");
+}
+
+#[test]
+fn a_legacy_blocked_task_without_a_block_gains_one_without_a_status_change() {
+    let dir = temp_state_dir("block-legacy");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "old store").code, 0);
+    // A v6 store's blocked task carries no block.
+    let path = dir.join("tsk.json");
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).expect("read")).expect("json");
+    document["tasks"][0]["status"] = serde_json::json!("blocked");
+    fs::write(&path, serde_json::to_vec_pretty(&document).expect("encode")).expect("write");
+    let (_, status_events) = loaded_status(&dir);
+
+    let output = cli(block_args(&dir, "T1", &["--why", "now with a reason"]));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    let state = TaskStore::new(&dir).load().expect("load");
+    let task = &state.tasks()[0];
+    assert_eq!(task.status, HumanStatus::Blocked);
+    assert_eq!(
+        task.block.as_ref().and_then(|block| block.why.as_deref()),
+        Some("now with a reason")
+    );
+    assert_eq!(loaded_status(&dir).1, status_events, "no status event");
+    assert_eq!(reply(&dir, "T1", "ok").code, 0);
+}
+
+#[test]
+fn reply_on_a_blocked_task_refuses_empty_and_oversized_text_by_bytes() {
+    let dir = temp_state_dir("reply-refusals");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "pick").code, 0);
+    let output = cli(block_args(&dir, "T1", &["--why", "Which one?"]));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    let before = fs::read(dir.join("tsk.json")).expect("read");
+
+    let output = reply(&dir, "T1", "   ");
+    assert_eq!(output.code, 1, "{}", output.stderr);
+    assert!(
+        output.stderr.starts_with("tsk reply: empty-reply: "),
+        "{}",
+        output.stderr
+    );
+    // 1025 four-byte characters: 4100 bytes, though only 1025 characters.
+    let output = reply(&dir, "T1", &"😀".repeat(1025));
+    assert_eq!(output.code, 1, "{}", output.stderr);
+    assert!(
+        output.stderr.starts_with("tsk reply: text-too-long: "),
+        "{}",
+        output.stderr
+    );
+    assert_eq!(
+        fs::read(dir.join("tsk.json")).expect("read"),
+        before,
+        "a refused reply writes nothing"
+    );
+
+    let exact = "😀".repeat(1024);
+    assert_eq!(exact.len(), 4096);
+    let output = reply(&dir, "T1", &exact);
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    let replies = listed(&dir, "T1")["block"]["replies"].clone();
+    assert_eq!(
+        replies[0]["text"],
+        exact.as_str(),
+        "stored whole, never truncated"
+    );
+}
+
+fn review_args(dir: &Path, task: &str, flags: &[&str]) -> Vec<String> {
+    let mut args = block_args(dir, task, flags);
+    args[3] = "review".into();
+    args
+}
+
+/// `status review` with done, checks, next and on opens round 1; a repeat edits the same
+/// round; feedback lands in `feedback`; a send-back (started) closes it into `past_reviews`
+/// and the next review opens round 2.
+#[test]
+fn review_with_done_and_checks_shows_in_list_json_and_rounds_close_into_past_reviews() {
+    let dir = temp_state_dir("review-rounds");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "build the card").code, 0);
+    fs::write(
+        dir.join("config.toml"),
+        "[agent.pi]\ncommand = [\"true\"]\n",
+    )
+    .expect("profiles");
+    let actor = tsk_tui::domain::actor_from_env();
+
+    let output = cli(review_args(
+        &dir,
+        "T1",
+        &[
+            "--done",
+            "Opened PR #41",
+            "--check",
+            "tests pass",
+            "--check=-no flicker",
+            "--next",
+            "docs",
+        ],
+    ));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    assert_eq!(output.stdout, "status T1 review build the card\n");
+    let task = listed(&dir, "T1");
+    assert_eq!(task["status"], "review");
+    assert!(task.get("block").is_none(), "a round is not a block");
+    let review = &task["review"];
+    assert_eq!(review["round"], 1);
+    assert_eq!(review["done"], "Opened PR #41");
+    assert_eq!(
+        review["checks"],
+        serde_json::json!([
+            {"text": "tests pass", "state": "open"},
+            {"text": "-no flicker", "state": "open"}
+        ])
+    );
+    assert_eq!(review["next"], "docs");
+    assert_eq!(review["on"], "you");
+    assert_eq!(review["by"], actor);
+    assert_eq!(review["feedback"], serde_json::json!([]));
+    assert_eq!(review["answered"], false);
+
+    // A repeat edits the same round; `--on` names an agent profile.
+    let output = cli(review_args(&dir, "T1", &["--next", "ship", "--on", "@pi"]));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    let review = listed(&dir, "T1")["review"].clone();
+    assert_eq!(review["round"], 1);
+    assert_eq!(review["done"], "Opened PR #41", "unset flags stay");
+    assert_eq!(review["next"], "ship");
+    assert_eq!(review["on"], "agent:pi");
+    assert_eq!(review["edited"], true);
+    let output = cli(review_args(&dir, "T1", &["--on", "legal"]));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    assert_eq!(listed(&dir, "T1")["review"]["on"], "other:legal");
+    let output = cli(review_args(&dir, "T1", &["--on", "you"]));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+
+    // Feedback is a reply on the open round.
+    let output = reply(&dir, "T1", "the flicker is back");
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    let review = listed(&dir, "T1")["review"].clone();
+    assert_eq!(review["feedback"][0]["text"], "the flicker is back");
+    assert_eq!(review["feedback"][0]["by"], "you");
+    assert_eq!(review["answered"], true);
+
+    // Send back, then review again: round 1 closes as sent back, round 2 opens.
+    assert_eq!(status(&dir, "T1", "started").code, 0);
+    let output = cli(review_args(&dir, "T1", &["--done", "fixed it"]));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    let task = listed(&dir, "T1");
+    assert_eq!(task["review"]["round"], 2);
+    assert_eq!(task["review"]["done"], "fixed it");
+    let past = task["past_reviews"].as_array().expect("past rounds");
+    assert_eq!(past.len(), 1);
+    assert_eq!(past[0]["round"], 1);
+    assert_eq!(past[0]["resolution"], "sent_back");
+    assert_eq!(past[0]["feedback"][0]["text"], "the flicker is back");
+    assert!(past[0]["closed_at"].is_array());
+
+    // Done closes round 2 as approved.
+    assert_eq!(status(&dir, "T1", "done").code, 0);
+    let output = cli(vec![
+        "tsk".into(),
+        "list".into(),
+        "T1".into(),
+        "--json".into(),
+        "--state-dir".into(),
+        dir.to_string_lossy().into_owned(),
+    ]);
+    let task = serde_json::from_str::<serde_json::Value>(&output.stdout).expect("json")[0].clone();
+    assert!(task.get("review").is_none());
+    assert_eq!(task["past_reviews"][1]["resolution"], "approved");
+}
+
+#[test]
+fn review_flags_refuse_bad_input_without_mutation() {
+    let dir = temp_state_dir("review-refuse");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "t").code, 0);
+    let before = fs::read(dir.join("tsk.json")).expect("read");
+    let output = cli(block_args(&dir, "T1", &["--done", "x"]));
+    assert_eq!(output.code, 2, "--done needs review: {}", output.stderr);
+    let long = "x".repeat(tsk_tui::domain::BLOCK_TEXT_MAX + 1);
+    let output = cli(review_args(&dir, "T1", &["--check", &long]));
+    assert_eq!(output.code, 1, "{}", output.stderr);
+    assert!(output.stderr.contains("text-too-long"), "{}", output.stderr);
+    assert_eq!(fs::read(dir.join("tsk.json")).expect("read"), before);
+}
+
+/// Closed blocks and closed review rounds each land only in their own list: `past_blocks` never
+/// carries a round and `past_reviews` never a block.
+#[test]
+fn past_blocks_and_past_reviews_never_mix() {
+    let dir = temp_state_dir("past-split");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "t").code, 0);
+    assert_eq!(cli(block_args(&dir, "T1", &["--why", "which db?"])).code, 0);
+    assert_eq!(status(&dir, "T1", "started").code, 0);
+    assert_eq!(
+        cli(review_args(&dir, "T1", &["--done", "built it"])).code,
+        0
+    );
+    assert_eq!(status(&dir, "T1", "started").code, 0);
+
+    let task = listed(&dir, "T1");
+    let blocks = task["past_blocks"].as_array().expect("closed block");
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0]["why"], "which db?");
+    assert!(blocks[0].get("round").is_none() && blocks[0].get("done").is_none());
+    let reviews = task["past_reviews"].as_array().expect("closed round");
+    assert_eq!(reviews.len(), 1);
+    assert_eq!(reviews[0]["done"], "built it");
+    assert_eq!(reviews[0]["resolution"], "sent_back");
+    assert!(reviews[0].get("why").is_none() && reviews[0].get("replies").is_none());
+
+    // A round alone leaves no past_blocks at all, and a block alone no past_reviews.
+    assert_eq!(add_task(&dir, "u").code, 0);
+    assert_eq!(cli(review_args(&dir, "T2", &["--done", "x"])).code, 0);
+    assert_eq!(status(&dir, "T2", "done").code, 0);
+    let output = cli(vec![
+        "tsk".into(),
+        "list".into(),
+        "T2".into(),
+        "--json".into(),
+        "--state-dir".into(),
+        dir.to_string_lossy().into_owned(),
+    ]);
+    let done = serde_json::from_str::<serde_json::Value>(&output.stdout).expect("json")[0].clone();
+    assert!(done.get("past_blocks").is_none(), "{done}");
+    assert_eq!(done["past_reviews"][0]["resolution"], "approved");
+    assert_eq!(add_task(&dir, "v").code, 0);
+    assert_eq!(cli(block_args(&dir, "T3", &["--why", "y"])).code, 0);
+    assert_eq!(status(&dir, "T3", "ready").code, 0);
+    let blocked = listed(&dir, "T3");
+    assert!(blocked.get("past_reviews").is_none(), "{blocked}");
 }

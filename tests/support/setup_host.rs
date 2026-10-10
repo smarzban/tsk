@@ -1,7 +1,4 @@
-use std::os::unix::{
-    fs::{symlink, PermissionsExt},
-    process::CommandExt,
-};
+use std::os::unix::{fs::symlink, process::CommandExt};
 use std::{
     fs,
     path::PathBuf,
@@ -26,7 +23,9 @@ impl Host {
         fs::create_dir(root.join("outside")).unwrap();
         let bin = root.join("bin");
         symlink(binary, bin.join("tsk")).unwrap();
-        fs::write(bin.join("herdr"), r#"#!/bin/sh
+        crate::stub::write_stub(
+            &bin.join("herdr"),
+            r#"#!/bin/sh
 printf '%s\n' "$*" >> "$FIXTURE/calls"
 case "$1 $2" in
   '--version ')
@@ -47,8 +46,9 @@ case "$1 $2" in
     printf '%s' "$3" > "$FIXTURE/linked"
     if [ "$SCENARIO" = change-link ]; then printf '# external edit\n' > "$FIXTURE/config/config.toml"; fi;;
 esac
-"#).unwrap();
-        fs::set_permissions(bin.join("herdr"), fs::Permissions::from_mode(0o755)).unwrap();
+"#,
+            0o755,
+        );
         let config = root.join("config/config.toml");
         Self { root, config, bin }
     }

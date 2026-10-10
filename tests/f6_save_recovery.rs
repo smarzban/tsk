@@ -1204,6 +1204,12 @@ fn task_form_save_failure_retries_the_exact_atomic_title_notes_and_scope_mutatio
     }
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
         .expect("select add target");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("focus Assignee");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus Base");
+    assert_eq!(model.form_focus(), Some(CaptureField::Base));
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus After");
+    assert_eq!(model.form_focus(), Some(CaptureField::After));
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus Thread");
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus Scope");
     apply_intent(&mut domain, &mut model, BoardIntent::FormCycleScope, None)
@@ -1988,11 +1994,11 @@ fn failed_scope_dropdown_save_holds_the_task_form_for_recovery() {
     apply_intent(
         &mut domain,
         &mut model,
-        BoardIntent::OpenFormScopeDropdown,
+        BoardIntent::OpenFormDropdown(CaptureField::Scope),
         None,
     )
     .expect("open scope dropdown");
-    assert_eq!(model.input_mode(), BoardInputMode::FormScopeDropdown);
+    assert_eq!(model.input_mode(), BoardInputMode::FormDropdown);
 
     apply_board_intent_with_save_recovery(
         &mut domain,
@@ -2151,7 +2157,7 @@ fn failed_save_during_thread_edit_holds_form_until_retry_or_cancel() {
     let mut recovery = SaveRecovery::new();
     apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("open form");
-    for _ in 0..3 {
+    for _ in 0..6 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
             .expect("select thread");
     }

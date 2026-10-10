@@ -1,5 +1,7 @@
 //! tsk library root.
 
+pub mod activity;
+pub mod agents;
 pub mod announcements;
 pub mod app;
 pub mod board_pane;
@@ -7,14 +9,19 @@ pub mod capture;
 pub mod cli;
 pub mod context;
 pub mod delivery;
+pub mod dispatch;
 pub mod domain;
 pub(crate) mod fsperm;
+pub mod git_base;
 pub mod guides;
 pub mod save_recovery;
 pub mod scope;
 pub mod setup;
 pub mod setup_agent;
 pub mod store;
+#[cfg(all(test, unix))]
+#[path = "../tests/support/stub.rs"]
+pub(crate) mod test_stub;
 pub(crate) mod text;
 pub mod ui;
 pub mod update;

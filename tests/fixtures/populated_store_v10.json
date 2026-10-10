@@ -1,0 +1,423 @@
+{
+  "format_version": 10,
+  "next_task_number": 6,
+  "next_notice_number": 1,
+  "tasks": [
+    {
+      "id": "d0fc5a75-0369-4a38-84cc-5bad5822d0a6",
+      "number": 1,
+      "revision": "73a4b31f-76a0-4e4c-b61e-94970ec181d8",
+      "title": "Ship the login fix",
+      "notes": "notes **md**",
+      "thread": "release",
+      "assignee": "builder",
+      "base": "main",
+      "dispatch": {
+        "argv": [
+          "claude",
+          "--flag"
+        ],
+        "worktree": "/tmp/wt/t1",
+        "branch": "tsk/t1-ship-the-login-fix",
+        "base": "main",
+        "base_ref": "origin/main",
+        "base_commit": "abc1234",
+        "base_remote": "origin",
+        "herdr_workspace_id": "w7",
+        "at": [
+          1791568183,
+          430605000
+        ]
+      },
+      "status": "started",
+      "scope": {
+        "project": {
+          "path": "/repos/app"
+        }
+      },
+      "provenance": "manual",
+      "history": [
+        {
+          "kind": "created",
+          "at": [
+            1791568183,
+            354631000
+          ],
+          "by": "you"
+        },
+        {
+          "kind": "step_added",
+          "at": [
+            1791568183,
+            371627000
+          ],
+          "by": "you"
+        },
+        {
+          "kind": "step_added",
+          "at": [
+            1791568183,
+            406483000
+          ],
+          "by": "you"
+        },
+        {
+          "kind": "base_set",
+          "at": [
+            1791568183,
+            417571000
+          ],
+          "by": "you",
+          "detail": {
+            "base": "main"
+          }
+        },
+        {
+          "kind": "dispatched",
+          "at": [
+            1791568183,
+            430605000
+          ],
+          "by": "you",
+          "detail": {
+            "from": "open",
+            "to": "started",
+            "base": "main",
+            "branch": "tsk/t1-ship-the-login-fix",
+            "sha": "abc1234"
+          }
+        },
+        {
+          "kind": "status_set",
+          "at": [
+            1791568183,
+            446577000
+          ],
+          "by": "t1-builder",
+          "detail": {
+            "from": "started",
+            "to": "started"
+          }
+        }
+      ],
+      "steps": [
+        {
+          "id": "ca628d24-95ca-447c-a0a7-079374f29062",
+          "text": "write the test",
+          "done": false
+        },
+        {
+          "id": "ccc1a096-26a5-40b6-9dc9-ed03c3ae2827",
+          "text": "fix it",
+          "done": false
+        }
+      ],
+      "soft_deleted": false,
+      "created_at": [
+        1791568183,
+        354631000
+      ],
+      "updated_at": [
+        1791568183,
+        446577000
+      ]
+    },
+    {
+      "id": "a50cedb4-13fe-498e-829e-dcbcc9f15d26",
+      "number": 2,
+      "revision": "f9b453b8-3c2e-4fcd-8417-84ab0e86d125",
+      "title": "Blocked on the API",
+      "notes": null,
+      "thread": "release",
+      "status": "blocked",
+      "block": {
+        "why": "needs a key",
+        "needs": "an API key",
+        "options": [
+          "staging",
+          "prod"
+        ],
+        "by": "claude",
+        "at": [
+          1791568183,
+          464752000
+        ],
+        "replies": [
+          {
+            "by": "you",
+            "at": [
+              1791568183,
+              481450000
+            ],
+            "text": "use staging"
+          }
+        ]
+      },
+      "scope": {
+        "project": {
+          "path": "/repos/api"
+        }
+      },
+      "provenance": "manual",
+      "history": [
+        {
+          "kind": "created",
+          "at": [
+            1791568183,
+            355497000
+          ],
+          "by": "you"
+        },
+        {
+          "kind": "status_set",
+          "at": [
+            1791568183,
+            464752000
+          ],
+          "by": "claude",
+          "detail": {
+            "from": "open",
+            "to": "blocked"
+          }
+        },
+        {
+          "kind": "replied",
+          "at": [
+            1791568183,
+            481450000
+          ],
+          "by": "you"
+        }
+      ],
+      "soft_deleted": false,
+      "created_at": [
+        1791568183,
+        355497000
+      ],
+      "updated_at": [
+        1791568183,
+        481450000
+      ]
+    },
+    {
+      "id": "68b30017-5bc4-4bd7-8a02-91aad26ef3a0",
+      "number": 3,
+      "revision": "b46fa6de-66af-40d0-8ef0-6636c6aac022",
+      "title": "Reviewed twice",
+      "notes": null,
+      "status": "done",
+      "past_blocks": [
+        {
+          "kind": "review",
+          "done": "done it",
+          "checks": [
+            {
+              "text": "tests pass"
+            }
+          ],
+          "next": "merge",
+          "round": 1,
+          "by": "claude",
+          "at": [
+            1791568183,
+            495448000
+          ],
+          "closed_at": [
+            1791568183,
+            508461000
+          ],
+          "closed_by": "you",
+          "resolution": "sent_back"
+        },
+        {
+          "kind": "review",
+          "done": "again",
+          "round": 2,
+          "by": "claude",
+          "at": [
+            1791568183,
+            519496000
+          ],
+          "closed_at": [
+            1791568183,
+            532213000
+          ],
+          "closed_by": "you",
+          "resolution": "approved"
+        }
+      ],
+      "scope": {
+        "project": {
+          "path": "/repos/app"
+        }
+      },
+      "provenance": "manual",
+      "history": [
+        {
+          "kind": "created",
+          "at": [
+            1791568183,
+            355506000
+          ],
+          "by": "you"
+        },
+        {
+          "kind": "status_set",
+          "at": [
+            1791568183,
+            495448000
+          ],
+          "by": "claude",
+          "detail": {
+            "from": "open",
+            "to": "review"
+          }
+        },
+        {
+          "kind": "status_set",
+          "at": [
+            1791568183,
+            508461000
+          ],
+          "by": "you",
+          "detail": {
+            "from": "review",
+            "to": "started"
+          }
+        },
+        {
+          "kind": "status_set",
+          "at": [
+            1791568183,
+            519496000
+          ],
+          "by": "claude",
+          "detail": {
+            "from": "started",
+            "to": "review"
+          }
+        },
+        {
+          "kind": "completed",
+          "at": [
+            1791568183,
+            532213000
+          ],
+          "by": "you",
+          "detail": {
+            "from": "review",
+            "to": "done"
+          }
+        }
+      ],
+      "soft_deleted": false,
+      "created_at": [
+        1791568183,
+        355506000
+      ],
+      "updated_at": [
+        1791568183,
+        532213000
+      ]
+    },
+    {
+      "id": "1377cd90-279d-4136-9f4f-94abfc58ec00",
+      "number": 4,
+      "revision": "220edd39-c019-4b98-b11e-a9bfd5dbe0f0",
+      "title": "Desk errand",
+      "notes": null,
+      "status": "done",
+      "scope": "global",
+      "provenance": "manual",
+      "history": [
+        {
+          "kind": "created",
+          "at": [
+            1791568183,
+            355513000
+          ],
+          "by": "you"
+        },
+        {
+          "kind": "completed",
+          "at": [
+            1791568183,
+            532213000
+          ],
+          "by": "you",
+          "detail": {
+            "from": "open",
+            "to": "done"
+          }
+        }
+      ],
+      "soft_deleted": false,
+      "created_at": [
+        1791568183,
+        355513000
+      ],
+      "updated_at": [
+        1791568183,
+        532213000
+      ]
+    },
+    {
+      "id": "b0f5aed3-f3d2-49be-b929-2881e3c57ad5",
+      "number": 5,
+      "revision": "788758c4-6e9e-47b3-9a26-9226099b333e",
+      "title": "Archived project task",
+      "notes": null,
+      "status": "open",
+      "scope": {
+        "project": {
+          "path": "/repos/old"
+        }
+      },
+      "provenance": "manual",
+      "history": [
+        {
+          "kind": "created",
+          "at": [
+            1791568183,
+            355520000
+          ],
+          "by": "you"
+        }
+      ],
+      "soft_deleted": false,
+      "created_at": [
+        1791568183,
+        355520000
+      ],
+      "updated_at": [
+        1791568183,
+        355520000
+      ]
+    }
+  ],
+  "projects": {
+    "/repos/old": {
+      "archived": true
+    }
+  },
+  "undo_stack": [
+    {
+      "batch": {
+        "entries": [
+          {
+            "complete": {
+              "id": "68b30017-5bc4-4bd7-8a02-91aad26ef3a0",
+              "expected_revision": "b46fa6de-66af-40d0-8ef0-6636c6aac022"
+            }
+          },
+          {
+            "complete": {
+              "id": "1377cd90-279d-4136-9f4f-94abfc58ec00",
+              "expected_revision": "220edd39-c019-4b98-b11e-a9bfd5dbe0f0"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

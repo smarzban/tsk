@@ -49,6 +49,128 @@ pub fn parse_task_address(value: &str) -> Result<TaskAddress, String> {
         .map_err(|_| format!("invalid task id {value}"))
 }
 
+/// Parsed `dispatch` input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlagDispatch {
+    pub task: Option<TaskAddress>,
+    pub again: bool,
+    pub base: Option<String>,
+    pub state_dir: Option<PathBuf>,
+    pub help: bool,
+}
+
+pub fn parse_flag_dispatch(args: &[String]) -> Result<FlagDispatch, String> {
+    if args.get(1).map(String::as_str) != Some("dispatch") {
+        return Err("expected dispatch command".into());
+    }
+    let mut parsed = FlagDispatch {
+        task: None,
+        again: false,
+        base: None,
+        state_dir: None,
+        help: false,
+    };
+    let mut index = 2;
+    while let Some(flag) = args.get(index).map(String::as_str) {
+        let value = |name: &str| match args.get(index + 1) {
+            Some(value) if !value.starts_with('-') => Ok(value.clone()),
+            _ => Err(format!("missing value for {name}")),
+        };
+        match flag {
+            "--again" => {
+                parsed.again = true;
+                index += 1;
+            }
+            flag if flag.starts_with("--base=") => {
+                parsed.base = Some(flag["--base=".len()..].to_owned());
+                index += 1;
+            }
+            "--base" => {
+                parsed.base = Some(value(flag)?);
+                index += 2;
+            }
+            "--help" => {
+                parsed.help = true;
+                index += 1;
+            }
+            flag if flag.starts_with("--state-dir=") => {
+                parsed.state_dir = Some(PathBuf::from(&flag["--state-dir=".len()..]));
+                index += 1;
+            }
+            "--state-dir" => {
+                parsed.state_dir = Some(PathBuf::from(value(flag)?));
+                index += 2;
+            }
+            flag if flag.starts_with('-') => {
+                return Err(format!("unknown dispatch argument {flag}"))
+            }
+            value => {
+                if parsed.task.is_some() {
+                    return Err(format!("unexpected dispatch argument {value}"));
+                }
+                parsed.task = Some(parse_task_address(value)?);
+                index += 1;
+            }
+        }
+    }
+    Ok(parsed)
+}
+
+/// Parsed `clean` input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlagClean {
+    pub task: Option<TaskAddress>,
+    pub json: bool,
+    pub state_dir: Option<PathBuf>,
+    pub help: bool,
+}
+
+pub fn parse_flag_clean(args: &[String]) -> Result<FlagClean, String> {
+    if args.get(1).map(String::as_str) != Some("clean") {
+        return Err("expected clean command".into());
+    }
+    let mut parsed = FlagClean {
+        task: None,
+        json: false,
+        state_dir: None,
+        help: false,
+    };
+    let mut index = 2;
+    while let Some(flag) = args.get(index).map(String::as_str) {
+        let value = |name: &str| match args.get(index + 1) {
+            Some(value) if !value.starts_with('-') => Ok(value.clone()),
+            _ => Err(format!("missing value for {name}")),
+        };
+        match flag {
+            "--json" => {
+                parsed.json = true;
+                index += 1;
+            }
+            "--help" => {
+                parsed.help = true;
+                index += 1;
+            }
+            flag if flag.starts_with("--state-dir=") => {
+                parsed.state_dir = Some(PathBuf::from(&flag["--state-dir=".len()..]));
+                index += 1;
+            }
+            "--state-dir" => {
+                parsed.state_dir = Some(PathBuf::from(value(flag)?));
+                index += 2;
+            }
+            flag if flag.starts_with('-') => return Err(format!("unknown clean argument {flag}")),
+            operand => {
+                if parsed.task.is_some() {
+                    return Err(format!("unexpected clean argument {operand}"));
+                }
+                parsed.task = Some(parse_task_address(operand)?);
+                index += 1;
+            }
+        }
+    }
+    Ok(parsed)
+}
+
 /// Parsed `trash` input. Positionals are the action (`restore`) and the task address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlagTrash {
@@ -270,8 +392,44 @@ pub fn parse_flag_trash(args: &[String]) -> Result<FlagTrash, String> {
 pub struct FlagStatus {
     pub task: Option<TaskAddress>,
     pub status: Option<HumanStatus>,
+    pub clean: bool,
+    /// `--again`: with `started`, relaunch a dispatched task whose agent is gone.
+    pub again: bool,
+    /// `--no-dispatch`: with `started`, change the status only, never launch.
+    pub no_dispatch: bool,
+    /// `--force`: with `started`, start a task whose prerequisites are not all done.
+    pub force: bool,
     pub state_dir: Option<PathBuf>,
     pub help: bool,
+    /// Block reason flags, accepted only with `blocked`.
+    pub block: BlockFlags,
+}
+
+/// `--why`, `--needs`, `--option` (repeatable) and `--on` for `status <task> blocked`;
+/// `--done`, `--check` (repeatable), `--next` and `--on` for `status <task> review`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BlockFlags {
+    pub why: Option<String>,
+    pub needs: Option<String>,
+    pub options: Vec<String>,
+    pub on: Option<String>,
+    pub done: Option<String>,
+    pub checks: Vec<String>,
+    pub next: Option<String>,
+}
+
+impl BlockFlags {
+    pub fn is_empty(&self) -> bool {
+        !self.has_block_fields() && !self.has_review_fields() && self.on.is_none()
+    }
+
+    fn has_block_fields(&self) -> bool {
+        self.why.is_some() || self.needs.is_some() || !self.options.is_empty()
+    }
+
+    fn has_review_fields(&self) -> bool {
+        self.done.is_some() || !self.checks.is_empty() || self.next.is_some()
+    }
 }
 
 /// Parse `tsk status <task> <status>` arguments, including argv0.
@@ -283,8 +441,13 @@ pub fn parse_flag_status(args: &[String]) -> Result<FlagStatus, String> {
     let mut parsed = FlagStatus {
         task: None,
         status: None,
+        clean: false,
+        again: false,
+        no_dispatch: false,
+        force: false,
         state_dir: None,
         help: false,
+        block: BlockFlags::default(),
     };
     let mut positionals: Vec<&str> = Vec::new();
     let mut index = 2;
@@ -293,7 +456,36 @@ pub fn parse_flag_status(args: &[String]) -> Result<FlagStatus, String> {
             Some(value) if !value.starts_with('-') => Ok(value.clone()),
             _ => Err(format!("missing value for {name}")),
         };
+        if let Some((name, inline)) = flag
+            .split_once('=')
+            .filter(|(name, _)| BLOCK_FLAGS.contains(name))
+        {
+            set_block_flag(&mut parsed.block, name, inline.to_string())?;
+            index += 1;
+            continue;
+        }
+        if BLOCK_FLAGS.contains(&flag) {
+            set_block_flag(&mut parsed.block, flag, value(flag)?)?;
+            index += 2;
+            continue;
+        }
         match flag {
+            "--clean" => {
+                parsed.clean = true;
+                index += 1;
+            }
+            "--again" => {
+                parsed.again = true;
+                index += 1;
+            }
+            "--no-dispatch" => {
+                parsed.no_dispatch = true;
+                index += 1;
+            }
+            "--force" => {
+                parsed.force = true;
+                index += 1;
+            }
             "--help" => {
                 parsed.help = true;
                 index += 1;
@@ -331,6 +523,126 @@ pub fn parse_flag_status(args: &[String]) -> Result<FlagStatus, String> {
         }
         _ => unreachable!("positionals are capped at two"),
     }
+    if parsed.clean && parsed.status.is_some() && parsed.status != Some(HumanStatus::Done) {
+        return Err("--clean requires done status".into());
+    }
+    if (parsed.again || parsed.no_dispatch)
+        && parsed.status.is_some()
+        && parsed.status != Some(HumanStatus::Started)
+    {
+        return Err("--again and --no-dispatch require started status".into());
+    }
+    if parsed.again && parsed.no_dispatch {
+        return Err("--again and --no-dispatch cannot be combined".into());
+    }
+    if parsed.force && parsed.status.is_some() && parsed.status != Some(HumanStatus::Started) {
+        return Err("--force requires started status".into());
+    }
+    if parsed.status.is_some() {
+        if parsed.block.has_block_fields() && parsed.status != Some(HumanStatus::Blocked) {
+            return Err("--why, --needs and --option require blocked status".into());
+        }
+        if parsed.block.has_review_fields() && parsed.status != Some(HumanStatus::Review) {
+            return Err("--done, --check and --next require review status".into());
+        }
+        if parsed.block.on.is_some()
+            && !matches!(
+                parsed.status,
+                Some(HumanStatus::Blocked | HumanStatus::Review)
+            )
+        {
+            return Err("--on requires blocked or review status".into());
+        }
+    }
+    Ok(parsed)
+}
+
+const BLOCK_FLAGS: [&str; 7] = [
+    "--why", "--needs", "--option", "--on", "--done", "--check", "--next",
+];
+
+fn set_block_flag(block: &mut BlockFlags, flag: &str, value: String) -> Result<(), String> {
+    let slot = match flag {
+        "--why" => &mut block.why,
+        "--needs" => &mut block.needs,
+        "--on" => &mut block.on,
+        "--done" => &mut block.done,
+        "--next" => &mut block.next,
+        "--check" => {
+            block.checks.push(value);
+            return Ok(());
+        }
+        _ => {
+            block.options.push(value);
+            return Ok(());
+        }
+    };
+    if slot.replace(value).is_some() {
+        return Err(format!("{flag} given more than once"));
+    }
+    Ok(())
+}
+
+/// Parsed `reply` input: the task address then the reply text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlagReply {
+    pub task: Option<TaskAddress>,
+    pub text: Option<String>,
+    pub state_dir: Option<PathBuf>,
+    /// `--send`: also deliver the reply to the task's running agent.
+    pub send: bool,
+    pub help: bool,
+}
+
+/// Parse `tsk reply <task> <text>` arguments, including argv0. A text that begins with `-`
+/// goes after `--`.
+pub fn parse_flag_reply(args: &[String]) -> Result<FlagReply, String> {
+    if args.get(1).map(String::as_str) != Some("reply") {
+        return Err("expected reply command".into());
+    }
+    let mut parsed = FlagReply {
+        task: None,
+        text: None,
+        state_dir: None,
+        send: false,
+        help: false,
+    };
+    let mut positionals: Vec<&str> = Vec::new();
+    let mut index = 2;
+    let mut literal = false;
+    while let Some(arg) = args.get(index).map(String::as_str) {
+        index += 1;
+        if literal || !arg.starts_with('-') {
+            if positionals.len() == 2 {
+                return Err(format!("unexpected reply argument {arg}"));
+            }
+            positionals.push(arg);
+            continue;
+        }
+        match arg {
+            "--" => literal = true,
+            "--help" => parsed.help = true,
+            "--send" => parsed.send = true,
+            flag if flag.starts_with("--state-dir=") => {
+                parsed.state_dir = Some(PathBuf::from(&flag["--state-dir=".len()..]));
+            }
+            "--state-dir" => match args.get(index) {
+                Some(value) if !value.starts_with('-') => {
+                    parsed.state_dir = Some(PathBuf::from(value));
+                    index += 1;
+                }
+                _ => return Err("missing value for --state-dir".into()),
+            },
+            flag => return Err(format!("unknown reply argument {flag}")),
+        }
+    }
+    if parsed.help {
+        return Ok(parsed);
+    }
+    if let Some(task) = positionals.first() {
+        parsed.task = Some(parse_task_address(task)?);
+    }
+    parsed.text = positionals.get(1).map(|text| text.to_string());
     Ok(parsed)
 }
 
@@ -352,8 +664,25 @@ pub struct FlagEdit {
     pub task: Option<TaskAddress>,
     pub title: Option<String>,
     pub notes: Option<String>,
+    pub assignee: Option<String>,
+    pub unassign: bool,
+    pub base: Option<String>,
+    pub clear_base: bool,
+    /// `--after`, repeatable: the task numbers this task runs after, replacing the list.
+    pub after: Vec<u64>,
+    pub clear_after: bool,
     pub state_dir: Option<PathBuf>,
     pub help: bool,
+}
+
+/// Parse one `--after` value: a task number, with or without its `T`.
+pub fn parse_after_number(value: &str) -> Result<u64, String> {
+    let digits = value.strip_prefix(['T', 't']).unwrap_or(value);
+    digits
+        .parse::<u64>()
+        .ok()
+        .filter(|number| *number > 0 && digits.bytes().all(|byte| byte.is_ascii_digit()))
+        .ok_or_else(|| format!("invalid --after value {value} · use a task number like T12"))
 }
 
 /// Parse `tsk edit <task> [--title <title>] [--notes <notes>]` arguments, including argv0.
@@ -366,6 +695,12 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
         task: None,
         title: None,
         notes: None,
+        assignee: None,
+        unassign: false,
+        base: None,
+        clear_base: false,
+        after: Vec::new(),
+        clear_after: false,
         state_dir: None,
         help: false,
     };
@@ -392,6 +727,48 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
                 parsed.notes = Some(value(flag)?);
                 index += 2;
             }
+            flag if flag.starts_with("--assignee=") => {
+                parsed.assignee = Some(normalize_thread(&flag["--assignee=".len()..]).map_err(
+                    |error| format!("invalid agent name · {}", thread_refusal_message(error)),
+                )?);
+                index += 1;
+            }
+            "--assignee" => {
+                parsed.assignee = Some(normalize_thread(&value(flag)?).map_err(|error| {
+                    format!("invalid agent name · {}", thread_refusal_message(error))
+                })?);
+                index += 2;
+            }
+            "--unassign" => {
+                parsed.unassign = true;
+                index += 1;
+            }
+            flag if flag.starts_with("--base=") => {
+                parsed.base = Some(flag["--base=".len()..].to_owned());
+                index += 1;
+            }
+            "--base" => {
+                parsed.base = Some(value(flag)?);
+                index += 2;
+            }
+            "--clear-base" => {
+                parsed.clear_base = true;
+                index += 1;
+            }
+            flag if flag.starts_with("--after=") => {
+                parsed
+                    .after
+                    .push(parse_after_number(&flag["--after=".len()..])?);
+                index += 1;
+            }
+            "--after" => {
+                parsed.after.push(parse_after_number(&value(flag)?)?);
+                index += 2;
+            }
+            "--clear-after" => {
+                parsed.clear_after = true;
+                index += 1;
+            }
             "--help" => {
                 parsed.help = true;
                 index += 1;
@@ -414,14 +791,23 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
             }
         }
     }
+    if parsed.unassign && parsed.assignee.is_some() {
+        return Err("--unassign cannot be used with --assignee".into());
+    }
+    if parsed.clear_base && parsed.base.is_some() {
+        return Err("--clear-base cannot be used with --base".into());
+    }
+    if parsed.clear_after && !parsed.after.is_empty() {
+        return Err("--clear-after cannot be used with --after".into());
+    }
     Ok(parsed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_flag_edit, parse_flag_status, parse_flag_steps, parse_flag_trash, parse_task_address,
-        FlagEdit, FlagStatus, TaskAddress, TrashAction,
+        parse_flag_add, parse_flag_dispatch, parse_flag_edit, parse_flag_status, parse_flag_steps,
+        parse_flag_trash, parse_task_address, FlagEdit, FlagStatus, TaskAddress, TrashAction,
     };
     use crate::cli::steps::StepsAction;
     use crate::domain::HumanStatus;
@@ -491,8 +877,13 @@ mod tests {
             FlagStatus {
                 task: Some(TaskAddress::Number(4)),
                 status: Some(HumanStatus::Blocked),
+                clean: false,
+                again: false,
+                no_dispatch: false,
+                force: false,
                 state_dir: Some(std::path::PathBuf::from("/tmp/dir")),
                 help: false,
+                block: super::BlockFlags::default(),
             }
         );
         assert!(
@@ -515,6 +906,141 @@ mod tests {
             parse_flag_status(&["tsk".into(), "status".into(), "T4".into(), "open".into()])
                 .expect("open status");
         assert_eq!(parsed.status, Some(HumanStatus::Open));
+        let args = |rest: &[&str]| {
+            ["tsk", "status", "T4"]
+                .iter()
+                .chain(rest)
+                .map(|arg| arg.to_string())
+                .collect::<Vec<_>>()
+        };
+        let parsed = parse_flag_status(&args(&["started", "--no-dispatch"])).expect("no dispatch");
+        assert!(parsed.no_dispatch && !parsed.again);
+        let parsed = parse_flag_status(&args(&["started", "--again"])).expect("again");
+        assert!(parsed.again && !parsed.no_dispatch);
+        assert!(parse_flag_status(&args(&["ready", "--again"])).is_err());
+        assert!(parse_flag_status(&args(&["review", "--no-dispatch"])).is_err());
+        assert!(parse_flag_status(&args(&["started", "--again", "--no-dispatch"])).is_err());
+    }
+
+    #[test]
+    fn status_parse_reads_block_flags_and_their_equals_forms() {
+        let args = |rest: &[&str]| {
+            ["tsk", "status", "T4"]
+                .iter()
+                .chain(rest)
+                .map(|arg| arg.to_string())
+                .collect::<Vec<_>>()
+        };
+        let parsed = parse_flag_status(&args(&[
+            "blocked",
+            "--why",
+            "which db",
+            "--needs=-a decision",
+            "--option",
+            "postgres",
+            "--option=-sqlite",
+            "--on",
+            "T169",
+        ]))
+        .expect("parse");
+        assert_eq!(
+            parsed.block,
+            super::BlockFlags {
+                why: Some("which db".into()),
+                needs: Some("-a decision".into()),
+                options: vec!["postgres".into(), "-sqlite".into()],
+                on: Some("T169".into()),
+                ..super::BlockFlags::default()
+            }
+        );
+        assert!(parse_flag_status(&args(&["ready", "--why", "x"]))
+            .unwrap_err()
+            .contains("require blocked"));
+        assert!(
+            parse_flag_status(&args(&["blocked", "--why", "a", "--why", "b"]))
+                .unwrap_err()
+                .contains("more than once")
+        );
+        assert!(parse_flag_status(&args(&["blocked", "--why"]))
+            .unwrap_err()
+            .contains("missing value"));
+    }
+
+    #[test]
+    fn status_parse_reads_review_flags_and_refuses_them_elsewhere() {
+        let args = |rest: &[&str]| {
+            ["tsk", "status", "T4"]
+                .iter()
+                .chain(rest)
+                .map(|arg| arg.to_string())
+                .collect::<Vec<_>>()
+        };
+        let parsed = parse_flag_status(&args(&[
+            "review",
+            "--done",
+            "built the card",
+            "--check",
+            "tests pass",
+            "--check=-no flicker",
+            "--next=docs",
+            "--on",
+            "pi",
+        ]))
+        .expect("parse");
+        assert_eq!(
+            parsed.block,
+            super::BlockFlags {
+                done: Some("built the card".into()),
+                checks: vec!["tests pass".into(), "-no flicker".into()],
+                next: Some("docs".into()),
+                on: Some("pi".into()),
+                ..super::BlockFlags::default()
+            }
+        );
+        assert!(parse_flag_status(&args(&["blocked", "--done", "x"]))
+            .unwrap_err()
+            .contains("require review"));
+        assert!(parse_flag_status(&args(&["review", "--why", "x"]))
+            .unwrap_err()
+            .contains("require blocked"));
+        assert!(parse_flag_status(&args(&["ready", "--on", "x"]))
+            .unwrap_err()
+            .contains("--on requires"));
+        assert!(
+            parse_flag_status(&args(&["review", "--next", "a", "--next", "b"]))
+                .unwrap_err()
+                .contains("more than once")
+        );
+    }
+
+    #[test]
+    fn reply_parse_takes_a_task_and_text_with_a_literal_separator() {
+        let args = |rest: &[&str]| {
+            ["tsk", "reply"]
+                .iter()
+                .chain(rest)
+                .map(|arg| arg.to_string())
+                .collect::<Vec<_>>()
+        };
+        let parsed = super::parse_flag_reply(&args(&["T4", "go with postgres"])).expect("parse");
+        assert_eq!(parsed.task, Some(TaskAddress::Number(4)));
+        assert_eq!(parsed.text.as_deref(), Some("go with postgres"));
+        let sent = super::parse_flag_reply(&args(&["T4", "go", "--send"])).expect("--send");
+        assert!(sent.send);
+        assert!(
+            !super::parse_flag_reply(&args(&["T4", "go"]))
+                .expect("plain")
+                .send
+        );
+        let parsed = super::parse_flag_reply(&args(&["T4", "--", "-5 degrees"])).expect("--");
+        assert_eq!(parsed.text.as_deref(), Some("-5 degrees"));
+        assert!(super::parse_flag_reply(&args(&["T4", "-x"])).is_err());
+        assert!(super::parse_flag_reply(&args(&["T4", "a", "b"])).is_err());
+        assert!(
+            super::parse_flag_reply(&args(&["--help"]))
+                .expect("help")
+                .help
+        );
     }
 
     #[test]
@@ -533,10 +1059,94 @@ mod tests {
                 task: Some(TaskAddress::Number(12)),
                 title: Some("-fix parser".into()),
                 notes: Some("-5 degrees".into()),
+                assignee: None,
+                unassign: false,
+                base: None,
+                clear_base: false,
+                after: Vec::new(),
+                clear_after: false,
                 state_dir: None,
                 help: false,
             }
         );
+    }
+
+    #[test]
+    fn edit_parses_repeatable_after_and_status_parses_force() {
+        let args = |command: &str, rest: &[&str]| {
+            ["tsk", command]
+                .iter()
+                .chain(rest)
+                .map(|arg| arg.to_string())
+                .collect::<Vec<_>>()
+        };
+        let edit =
+            parse_flag_edit(&args("edit", &["T5", "--after", "T2", "--after=3"])).expect("after");
+        assert_eq!(edit.after, vec![2, 3]);
+        assert!(parse_flag_edit(&args("edit", &["T5", "--after", "x2"])).is_err());
+        assert!(parse_flag_edit(&args("edit", &["T5", "--after", "0"])).is_err());
+        assert!(parse_flag_edit(&args("edit", &["T5", "--after", "2", "--clear-after"])).is_err());
+        assert!(
+            parse_flag_edit(&args("edit", &["T5", "--clear-after"]))
+                .expect("clear")
+                .clear_after
+        );
+        let parsed =
+            parse_flag_status(&args("status", &["T5", "started", "--force"])).expect("force");
+        assert!(parsed.force);
+        assert!(parse_flag_status(&args("status", &["T5", "done", "--force"])).is_err());
+    }
+
+    #[test]
+    fn edit_and_dispatch_parse_base_flags() {
+        let add = parse_flag_add(&[
+            "tsk".into(),
+            "add".into(),
+            "--title".into(),
+            "new".into(),
+            "--clear-base".into(),
+        ])
+        .expect("parse add clear base");
+        assert!(add.clear_base);
+        assert!(parse_flag_add(&[
+            "tsk".into(),
+            "add".into(),
+            "--title".into(),
+            "new".into(),
+            "--base".into(),
+            "main".into(),
+            "--clear-base".into(),
+        ])
+        .is_err());
+
+        let edit = parse_flag_edit(&[
+            "tsk".into(),
+            "edit".into(),
+            "T12".into(),
+            "--base=origin/release".into(),
+        ])
+        .expect("parse edit base");
+        assert_eq!(edit.base.as_deref(), Some("origin/release"));
+        assert!(!edit.clear_base);
+        assert!(parse_flag_edit(&[
+            "tsk".into(),
+            "edit".into(),
+            "T12".into(),
+            "--base".into(),
+            "main".into(),
+            "--clear-base".into(),
+        ])
+        .is_err());
+
+        let dispatch = parse_flag_dispatch(&[
+            "tsk".into(),
+            "dispatch".into(),
+            "T12".into(),
+            "--base".into(),
+            "release".into(),
+        ])
+        .expect("parse dispatch base");
+        assert_eq!(dispatch.base.as_deref(), Some("release"));
     }
 
     #[test]
@@ -601,6 +1211,13 @@ pub struct FlagAdd {
     pub project: Option<String>,
     /// Normalized at the argv boundary so add only receives valid thread names.
     pub thread: Option<String>,
+    /// Normalized agent name, exact profile validation happens at execution.
+    pub assignee: Option<String>,
+    pub unassign: bool,
+    /// Explicit dispatch base branch, validated after the task scope resolves.
+    pub base: Option<String>,
+    /// Explicitly keep the new task on default base resolution.
+    pub clear_base: bool,
     pub global: bool,
     pub json: bool,
     pub state_dir: Option<PathBuf>,
@@ -620,6 +1237,10 @@ pub fn parse_flag_add(args: &[String]) -> Result<FlagAdd, String> {
         notes: None,
         project: None,
         thread: None,
+        assignee: None,
+        unassign: false,
+        base: None,
+        clear_base: false,
         global: false,
         json: false,
         state_dir: None,
@@ -682,6 +1303,40 @@ pub fn parse_flag_add(args: &[String]) -> Result<FlagAdd, String> {
                 parsed.has_item_flags = true;
                 index += 2;
             }
+            flag if flag.starts_with("--assignee=") => {
+                parsed.assignee = Some(normalize_thread(&flag["--assignee=".len()..]).map_err(
+                    |error| format!("invalid agent name · {}", thread_refusal_message(error)),
+                )?);
+                parsed.has_item_flags = true;
+                index += 1;
+            }
+            "--assignee" => {
+                parsed.assignee = Some(normalize_thread(&value(flag)?).map_err(|error| {
+                    format!("invalid agent name · {}", thread_refusal_message(error))
+                })?);
+                parsed.has_item_flags = true;
+                index += 2;
+            }
+            "--unassign" => {
+                parsed.unassign = true;
+                parsed.has_item_flags = true;
+                index += 1;
+            }
+            flag if flag.starts_with("--base=") => {
+                parsed.base = Some(flag["--base=".len()..].to_owned());
+                parsed.has_item_flags = true;
+                index += 1;
+            }
+            "--base" => {
+                parsed.base = Some(value(flag)?);
+                parsed.has_item_flags = true;
+                index += 2;
+            }
+            "--clear-base" => {
+                parsed.clear_base = true;
+                parsed.has_item_flags = true;
+                index += 1;
+            }
             "--desk" => {
                 parsed.global = true;
                 parsed.has_item_flags = true;
@@ -717,6 +1372,12 @@ pub fn parse_flag_add(args: &[String]) -> Result<FlagAdd, String> {
 
     if parsed.global && parsed.project.is_some() {
         return Err("--desk cannot be used with --project".into());
+    }
+    if parsed.unassign && parsed.assignee.is_some() {
+        return Err("--unassign cannot be used with --assignee".into());
+    }
+    if parsed.clear_base && parsed.base.is_some() {
+        return Err("--clear-base cannot be used with --base".into());
     }
     if parsed.has_item_flags && parsed.file.is_some() {
         return Err("item flags cannot be used with --file".into());

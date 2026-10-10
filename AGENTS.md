@@ -40,7 +40,8 @@ For scriptable board work use `tsk add`, `tsk list`, `tsk status`, `tsk edit`,
 | Quick-add and `tsk capture` | `capture.md` |
 | Every key of every surface | `keys.md`, code in `src/ui/input.rs` |
 | CLI verbs, exit codes, error codes | `cli.md`, code in `src/cli/`, glossary in `CONTEXT.md` |
-| Storage, env vars, update check | `storage.md` |
+| Storage, env vars, update check, `config.toml` profiles | `storage.md` |
+| Assignee, dispatch, cleanup (board) | `board.md`, `task-page.md`, code in `src/dispatch.rs` |
 | Install, Homebrew, `tsk setup herdr` | `install.md`, `packaging/README.md` |
 | Agent skill | `skills/tsk-cli/SKILL.md` (`tsk guide`, `/docs/agents/`) |
 | Exact rendered output | golden fixtures in `tests/fixtures/` (`tests/queue_board_render.rs`) |
@@ -56,6 +57,8 @@ same PR, never leave them apart.
 | `src/ui/` | chrome: `board/` (model · apply · commands · chrome · draw), `input`, `mouse`, `render`, `edit` (the one wrap engine), `markdown` |
 | `src/cli/` | headless verbs, `parser`, `router`, `presenter` |
 | `src/store.rs`, `src/domain/` | `tsk.json` format, migrations, trash |
+| `src/agents.rs` | `config.toml` profile loader, prompt/argv rendering, starter seed |
+| `src/dispatch.rs` | dispatch and cleanup engine behind a `DispatchHost` seam (git and herdr calls), cleanup guardrails |
 | `src/setup.rs`, `src/setup/`, `src/setup_agent.rs` | `tsk setup herdr`, agent skill install |
 | `src/guides.rs`, `src/announcements.rs`, `src/delivery.rs` | seeded notice tasks |
 | `src/update.rs` | release check, `tsk update` |
@@ -170,7 +173,24 @@ migration or design work they imply. What the behaviour *is* lives in the docs
 
 ### Store and state
 
-- Human status is source of truth. Never auto-complete tasks from agent status.
+- Human status is source of truth. Never auto-complete tasks from agent status. The one automatic
+  status change is a `ready` task whose last `after` prerequisite became done: it starts through
+  `dispatch::start_route` and joins the done's undo entry. What a done released is decided on the
+  merged state under the save's lock (`plan_released_with_host` inside
+  `TaskStore::reload_merge_save_then`, or the CLI's locked transition), never on a stale copy, so
+  concurrent dones of a task's last two prerequisites still release it. The done and every
+  released start land in one save; an assigned task's agent launches after it, outside the lock
+  (`launch_released_with_host`), and only its dispatch record follows in a second save (a failed
+  launch puts the task back to ready there). Started on disk first, it is no other start's to
+  dispatch. A failed second save is reported, never routed to save recovery: the done is durable.
+  While a marked-set dispatch is landing a released assigned task stays ready. Every done path
+  (reducer, cleanup card, missing-worktree converge, CLI) saves through `save_releasing_with_host`
+  or its CLI twin; completions and held launches (`pending_launches`) stay on `DomainState` until
+  then, so save-recovery Retry decides and launches again. A delete never rewrites a task
+  already soft-deleted: its own delete's undo entry must keep matching.
+- A delete drops its number from every other task's `after` in the same undo entry
+  (`UndoEntry::SetAfter` leaves); trash purge drops leftovers as bookkeeping. A number no live task
+  carries waits on nothing.
 - The projectless scope displays as `desk` but serializes as `global` and is
   `TaskScope::Global` internally. Do not rename either without a store migration.
 - Existing task scopes never move when scope resolution rules change.
@@ -231,6 +251,39 @@ migration or design work they imply. What the behaviour *is* lives in the docs
 - `sync_from_domain` never moves the user's tab or selection for tasks merged from disk;
   the one exception is an otherwise-empty view surfacing the first arriving task. A
   pinned save pins the selection only when the current lens renders the saved task.
+
+### Assignee and dispatch
+
+- Assignee is a label naming a `config.toml` profile; it never changes status or triggers
+  anything by itself, it only decides what a start does (below). Names normalize with the thread normalizer and exact-match a defined profile at the
+  boundary; a task keeps a name whose profile was removed and renders it as-is.
+- Profiles are argv templates plus an optional prompt. tsk substitutes `{number} {title} {notes}
+  {steps} {worktree} {branch} {base}` and nothing else; the prompt is appended as the last argument;
+  the launch is `$SHELL -lc '<quoted argv>'`, one command line, never chained. tsk carries no
+  knowledge of any harness's flags. A malformed `config.toml` never blocks the board or CLI work
+  that does not assign.
+- Starting an assigned task that was never dispatched dispatches it (ADR-0005; `ctrl+g` is gone).
+  Every start goes through `dispatch::start_route`: unassigned, a running agent, or the assignee's
+  own start (`TSK_AGENT`) is a plain status change; uncertainty (Herdr cannot answer, not in
+  Herdr) never launches; a gone agent asks (board) or refuses `agent-gone` (CLI). Dispatch sets
+  `started` in the same save as the record; a failed launch leaves the task unstarted. Only a
+  single-task start that dispatched is undoable (`UndoEntry::Start`, status only, the agent keeps
+  running). Outside `HERDR_ENV=1` `tsk dispatch` refuses; a start there, or on a desk task, is
+  plain and says why (`dispatch::launch_unavailable`). A marked set gets one confirm card, then every
+  listed task takes the single-task path (check, launch, commit in `src/dispatch.rs`) off the
+  event loop and is saved as it lands. Quit and further dispatches wait for a running batch, or
+  launched agents lose their record. Relaunch (the relaunch card, `dispatch again`) stays
+  cursor-only; dispatched tasks in a marked set only start.
+- The dispatch record stays on the task through every later status change. `◉` is derived only
+  from `record present && !record.cleaned && status == started`, never from agent or pane
+  state.
+- Cleanup never deletes uncommitted work or a branch it cannot confirm is merged into the
+  recorded base (a failed fetch keeps the branch), and only removes the recorded worktree
+  (registered with git, matching the herdr entry's path, never the project root). It runs off the
+  event loop after the completion is saved; quit waits for it. A missing worktree converges to
+  `cleaned`. CLI `status done` never prompts.
+- Every git and herdr call goes through the `DispatchHost` seam so tests use a fake host; changes
+  to the real host need a live herdr smoke against a throwaway repo under `/tmp`, never this one.
 
 ### Host integration
 

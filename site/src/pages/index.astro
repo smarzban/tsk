@@ -27,12 +27,12 @@ const BOARD_PINS = [
   {
     n: 2,
     title: 'NEEDS YOU.',
-    body: 'Blocked and review across all projects on Desk, or within the selected project on its board, above IN MOTION.',
+    body: 'Blocked on you and review across all projects on Desk, or within the selected project on its board, above IN MOTION. A line under the row says what is going on (<code>@claude blocked on you · 2h</code>); work blocked on another task rides in IN MOTION as <code>□</code>, <code>waiting on T169</code>.',
   },
   {
     n: 3,
     title: 'A task.',
-    body: 'A selection arrow without a filled highlight, status glyph, a dim <code>T</code>-number you can click to copy, and the wrapped title. Project or thread attribution appears only at the bottom of an open peek.',
+    body: 'A selection arrow without a filled highlight, status glyph, a dim <code>T</code>-number you can click to copy, and the wrapped title. Rows stay a title, plus a dim block note on blocked rows; an open peek shows a block\'s why, needs, and options, then the footer in assignee, base, thread, project order.',
   },
   {
     n: 4,
@@ -42,7 +42,7 @@ const BOARD_PINS = [
   {
     n: 5,
     title: 'Your loose backlog.',
-    body: "Desk's ON DECK contains only tasks without a project. Picked <code>ready</code> tasks lead, then the expandable <code>inbox</code> of <code>open</code> tasks. Project backlogs live on their own boards, with thread filters across every status.",
+    body: "Desk's ON DECK contains only tasks without a project. Picked <code>ready</code> tasks lead, then the expandable <code>inbox</code> of <code>open</code> tasks. Project backlogs live on their own boards, with thread and assignee filters across every status.",
   },
 ];
 const pinLabel = (n) => {
@@ -375,7 +375,7 @@ const softwareApplication = {
                 <div class="agent-body">
                   <p class="agent-line you">webhook retries are applying the same event twice. investigate and add a task.</p>
                   <p class="agent-line say">The handler applies side effects before recording the event ID. Concurrent retries can both get through.</p>
-                  <div class="agent-tool"><span class="tool-name">Bash</span><span class="tool-arg">tsk add -t "Make webhook delivery idempotent" -p launchpad --thread api --json</span><span class="tool-out" data-cli-add-output>&#123;"outcome":"created","id":"00000000-0000-4000-8000-000000000013","number":13,"title":"Make webhook delivery idempotent","project":"/home/agent/work/launchpad"&#125;</span></div>
+                  <div class="agent-tool"><span class="tool-name">Bash</span><span class="tool-arg">tsk add -t "Make webhook delivery idempotent" -p launchpad --thread api --json</span><span class="tool-out" data-cli-add-output>&#123;"outcome":"created","id":"00000000-0000-4000-8000-000000000013","number":13,"title":"Make webhook delivery idempotent","project":"/home/agent/work/launchpad","assignee":null&#125;</span></div>
                   <div class="agent-tool"><span class="tool-name">Bash</span><span class="tool-arg">tsk steps T13 add "Reproduce duplicate delivery"</span><span class="tool-out" data-cli-step-output>added 3f Reproduce duplicate delivery</span></div>
                   <p class="agent-line say">T13 is open with a checklist to reproduce duplicate delivery, persist processed event IDs, and test concurrent retries. Pick it when you are ready to work.</p>
                 </div>
@@ -669,20 +669,20 @@ const softwareApplication = {
       <section class="band" id="coming-soon" aria-labelledby="coming-soon-heading">
         <div class="band-inner" data-reveal>
           <header class="band-head">
-            <span class="index">06 <span class="index-label">next phase</span></span>
-            <p class="coming-announcement">Coming soon</p>
+            <span class="index">06 <span class="index-label">agents</span></span>
+            <p class="coming-announcement">Assign · dispatch · clean up</p>
             <h2 id="coming-soon-heading">From task to implementation.</h2>
             <p class="band-lede">
-              The next phase brings agent execution into the board: assign a task to an agent,
-              start implementation from tsk, and run the work in Herdr worktrees.
+              Assign a task to an agent, dispatch it into its own Git worktree and Herdr workspace,
+              then review the pull request and clean up when you complete the task.
             </p>
           </header>
-          <ol class="coming-steps" aria-label="Planned agent workflow">
+          <ol class="coming-steps" aria-label="Agent workflow">
             <li><span class="dim">01</span><h3>Assign an agent.</h3><p>Choose who takes on the task, with its notes and steps as the brief.</p></li>
-            <li><span class="dim">02</span><h3>Start from the board.</h3><p>Initiate implementation where you already plan and track the work.</p></li>
-            <li><span class="dim">03</span><h3>Work in Herdr worktrees.</h3><p>Give the implementation its own worktree alongside your other work.</p></li>
+            <li><span class="dim">02</span><h3>Start it.</h3><p>Starting an assigned task launches its agent in its own Herdr workspace and Git worktree.</p></li>
+            <li><span class="dim">03</span><h3>Review and clean.</h3><p>Keep unmerged work safe, then remove merged worktrees as you complete tasks.</p></li>
           </ol>
-          <p class="coming-availability">Planned for the next phase. Not available in the current build.</p>
+          <p class="coming-availability">Runs in Herdr on macOS and Linux, from the board or <code>tsk dispatch</code>.</p>
         </div>
       </section>
     </main>

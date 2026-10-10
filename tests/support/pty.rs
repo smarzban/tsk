@@ -160,9 +160,10 @@ impl Session {
         Session { child, tty, root }
     }
 
-    /// Read the terminal until `needle` paints, panicking with the output after ten seconds.
+    /// Read the terminal until `needle` paints, panicking with the output after a minute: a
+    /// loaded suite can take many seconds to start and paint a debug board.
     pub fn output_until(&mut self, needle: &str) -> String {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(60);
         let mut out = String::new();
         while Instant::now() < deadline {
             let mut bytes = [0; 8192];

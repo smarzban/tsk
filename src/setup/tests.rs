@@ -590,3 +590,86 @@ fn old_herdr_is_refused_before_any_write_with_an_actionable_message() {
         );
     }
 }
+#[cfg(unix)]
+#[test]
+fn setup_lock_is_released_while_a_forked_child_still_shares_it() {
+    use std::io::{Read, Write};
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    // The injected fork shares every open descriptor of its process until released: run it
+    // in a child test process so sibling tests' files never leak into it.
+    const CHILD: &str = "TSK_SETUP_LOCK_FORK_CHILD";
+    if env::var_os(CHILD).is_none() {
+        let output = Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "setup::tests::setup_lock_is_released_while_a_forked_child_still_shares_it",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let temp = Temp::new();
+    let config = temp.0.join("config.toml");
+    let registry = RefCell::new(BTreeMap::<String, PathBuf>::new());
+    // Handshake with the forked child: it signals once it exists (so it holds every inherited
+    // descriptor, the setup lock's included), then stays between fork and exec until released.
+    let (mut ready_reader, ready_writer) = std::io::pipe().unwrap();
+    let (release_reader, mut release_writer) = std::io::pipe().unwrap();
+    let (ready_fd, release_fd) = (ready_writer.as_raw_fd(), release_reader.as_raw_fd());
+    let fork = RefCell::new(None);
+    let mut host = |args: &[&str], _: &Path| -> io::Result<String> {
+        if args == ["--version"] {
+            return Ok("herdr 0.9.0\n".into());
+        }
+        if args.starts_with(&["config", "check"]) && fork.borrow().is_none() {
+            // Another thread forks while the first setup holds the lock.
+            *fork.borrow_mut() = Some(std::thread::spawn(move || {
+                let mut command = Command::new("true");
+                // SAFETY: the closure only calls write(2) and read(2), both async-signal-safe.
+                unsafe {
+                    command.pre_exec(move || {
+                        let mut byte = 0u8;
+                        libc::write(ready_fd, (&raw const byte).cast(), 1);
+                        libc::read(release_fd, (&raw mut byte).cast(), 1);
+                        Ok(())
+                    });
+                }
+                command.status().unwrap();
+            }));
+            ready_reader.read_exact(&mut [0u8]).unwrap();
+        }
+        if args.starts_with(&["plugin", "link"]) {
+            registry
+                .borrow_mut()
+                .insert("herdr-tsk".into(), args[2].into());
+        }
+        Ok(serde_json::json!({"result":{"plugins":registry.borrow().iter().map(|(id,root)|serde_json::json!({"plugin_id":id,"plugin_root":root})).collect::<Vec<_>>()}}).to_string())
+    };
+    let mut setup = |version| {
+        run_at(
+            &config,
+            version,
+            &mut io::Cursor::new(""),
+            &mut Vec::new(),
+            false,
+            &mut host,
+        )
+    };
+    let first = setup("0.5.0");
+    // The child is provably still between fork and exec, sharing the first setup's lock.
+    let second = setup("0.5.1");
+    release_writer.write_all(&[0]).unwrap();
+    fork.take().expect("the first setup forked").join().unwrap();
+    drop((ready_writer, release_reader));
+    first.unwrap();
+    second.unwrap();
+}

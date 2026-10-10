@@ -11,6 +11,10 @@ use crate::cli::parser::TaskAddress;
 use crate::cli::status::{StatusError, StatusResult};
 use crate::cli::steps::{StepLine, StepsError, StepsResult};
 use crate::cli::trash::{TrashCliError, TrashRestoreResult};
+use crate::dispatch::{
+    BranchCleanup, CleanupError, CleanupResult, DispatchError, DispatchResult, WorkspaceCleanup,
+    WorktreeCleanup,
+};
 use crate::domain::HumanStatus;
 use crate::ui::terminal_text;
 
@@ -117,7 +121,10 @@ pub fn top_level_help() -> String {
         "Tasks\n",
         "  add      create one task or apply a JSON plan\n",
         "  list     inspect tasks\n",
-        "  status   set a task's human status\n",
+        "  status   set a task's human status, block it, or put it up for review\n",
+        "  reply    answer a blocked task, or give feedback on a review\n",
+        "  dispatch hand a task to its assigned agent\n",
+        "  clean    remove a dispatched worktree safely\n",
         "  edit     update a task's title or notes\n",
         "  steps    add, toggle, rename, or remove one step on a task\n\n",
         "Board\n",
@@ -156,14 +163,14 @@ pub fn help_usage(reason: &str) -> CliOutput {
 pub fn add_help() -> CliOutput {
     help(HelpDoc {
         usage: vec![
-            "tsk add -t <title> [-n <notes>] [-p <project> | --desk] [--thread <name>] [--json] [--state-dir <dir>]".into(),
+            "tsk add -t <title> [-n <notes>] [-p <project> | --desk] [--thread <name>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--json] [--state-dir <dir>]".into(),
             "tsk add [--file <path|->] [--state-dir <dir>]".into(),
         ],
         purpose: "Create one task or apply a JSON plan.".into(),
         groups: vec![
             group("Scope", &[("-p, --project <project>", "create in a project"), ("--desk", "create on your desk")]),
             group("Output", &[("--json", "print one result object for a flag add")]),
-            group("Values", &[("-t, --title <title>", "required task title"), ("-n, --notes <notes>", "optional notes"), ("--thread <name>", "optional normalized thread"), ("--file <path|->", "read a JSON plan from a file or stdin"), ("--state-dir <dir>", "use another board store"), ("--flag=<value>", "use equals syntax for dash-leading title, notes, project, state-dir, or file values")]),
+            group("Values", &[("-t, --title <title>", "required task title"), ("-n, --notes <notes>", "optional notes"), ("--thread <name>", "optional normalized thread"), ("--assignee <name>", "assign a defined agent profile"), ("--unassign", "leave the task unassigned"), ("--base <branch>", "set an existing project branch as the dispatch base"), ("--clear-base", "use the project's remote default branch"), ("--file <path|->", "read a JSON plan from a file or stdin"), ("--state-dir <dir>", "use another board store"), ("--flag=<value>", "use equals syntax for dash-leading title, notes, project, state-dir, or file values")]),
         ],
         examples: vec!["tsk add -t \"Draft release notes\"".into(), "tsk add -t \"Buy milk\" --desk".into(), "tsk add -t \"Fix widget\" --project widget --thread release-2026".into(), "tsk add --file plan.json".into(), "cat plan.json | tsk add".into()],
         refusals: vec![
@@ -171,7 +178,10 @@ pub fn add_help() -> CliOutput {
             "invalid-title".into(),
             "invalid-thread (JSON plan)".into(),
             "invalid-item (JSON plan)".into(),
+            "invalid-after (JSON plan)".into(),
             "unknown-project".into(),
+            "unknown-agent".into(),
+            "unknown-base".into(),
             "project-archived".into(),
         ],
         exit: exit_line("every item was created or already existed", Some("one or more items refused, retry failed only"), true),
@@ -180,11 +190,11 @@ pub fn add_help() -> CliOutput {
 
 pub fn list_help(_terminal_width: Option<usize>) -> CliOutput {
     help(HelpDoc {
-        usage: vec!["tsk list [<task>] [-p <project> | --desk | --all] [--thread <name>] [--open | --ready | --done | --deleted | --archived] [--json] [--state-dir <dir>]".into()],
+        usage: vec!["tsk list [<task>] [-p <project> | --desk | --all] [--thread <name>] [--assignee <name>] [--open | --ready | --done | --deleted | --archived] [--json] [--state-dir <dir>]".into()],
         purpose: "Inspect tasks in the selected scope, or one task anywhere in the live store.".into(),
         groups: vec![
             group("Scope", &[("-p, --project <project>", "select a project"), ("--desk", "select your desk"), ("--all", "select every scope")]),
-            group("Filters", &[("<task>", "a task number or UUID, not combined with filters"), ("--thread <name>", "filter within the selected scope"), ("--open, --ready", "show inbox or picked on-deck tasks"), ("--done, --archived", "show done or archived tasks"), ("--deleted", "show soft-deleted and trashed tasks")]),
+            group("Filters", &[("<task>", "a task number or UUID, not combined with filters"), ("--thread <name>", "filter within the selected scope"), ("--assignee <name>", "filter by exact assignee"), ("--open, --ready", "show inbox or picked on-deck tasks"), ("--done, --archived", "show done or archived tasks"), ("--deleted", "show soft-deleted and trashed tasks")]),
             group("Output", &[("--json", "print machine-readable task rows")]),
             group("Values", &[("--state-dir <dir>", "use another board store"), ("--project=<scope>", "use equals syntax for a dash-leading project or state-dir value")]),
         ],
@@ -201,6 +211,7 @@ pub fn added(result: FlagAddResult, json: bool) -> CliOutput {
             number,
             title,
             project,
+            assignee,
         } if json => format!(
             "{}\n",
             serde_json::json!({
@@ -209,6 +220,7 @@ pub fn added(result: FlagAddResult, json: bool) -> CliOutput {
                 "number": number,
                 "title": title,
                 "project": project,
+                "assignee": assignee,
             })
         ),
         FlagAddResult::Existing {
@@ -216,6 +228,7 @@ pub fn added(result: FlagAddResult, json: bool) -> CliOutput {
             number,
             title,
             project,
+            assignee,
         } if json => format!(
             "{}\n",
             serde_json::json!({
@@ -224,6 +237,7 @@ pub fn added(result: FlagAddResult, json: bool) -> CliOutput {
                 "number": number,
                 "title": title,
                 "project": project,
+                "assignee": assignee,
             })
         ),
         FlagAddResult::Created { title, .. } => format!("added {}\n", terminal_text(&title)),
@@ -252,7 +266,7 @@ pub fn usage(reason: &str) -> CliOutput {
     CliOutput {
         stdout: String::new(),
         stderr: format!(
-            "tsk add: {}\nusage: tsk add -t <title> [-n <notes>] [-p <project> | --desk] [--thread <name>] [--json] [--state-dir <dir>]\n",
+            "tsk add: {}\nusage: tsk add -t <title> [-n <notes>] [-p <project> | --desk] [--thread <name>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--json] [--state-dir <dir>]\n",
             human_reason(reason)
         ),
         code: 2,
@@ -289,8 +303,25 @@ fn list_json(result: &ListResult) -> String {
             title: &'a str,
             notes: &'a Option<String>,
             steps: &'a [StepLine],
+            assignee: &'a Option<String>,
+            base: &'a Option<String>,
             thread: &'a Option<String>,
+            after: &'a [crate::cli::list::AfterLink],
+            before: &'a [u64],
+            #[serde(skip_serializing_if = "Option::is_none")]
+            dispatch: Option<&'a crate::domain::Dispatch>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            block: Option<BlockJson<'a>>,
+            #[serde(skip_serializing_if = "Vec::is_empty")]
+            past_blocks: Vec<BlockJson<'a>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            review: Option<ReviewJson<'a>>,
+            #[serde(skip_serializing_if = "Vec::is_empty")]
+            past_reviews: Vec<ReviewJson<'a>>,
+            activity: Vec<ActivityJson<'a>>,
         }
+        let blocks = |record: &&crate::domain::Block| !record.is_review();
+        let reviews = |record: &&crate::domain::Block| record.is_review();
         let direct_row = DirectRow {
             id: row.id,
             number: row.number,
@@ -299,7 +330,32 @@ fn list_json(result: &ListResult) -> String {
             title: &row.title,
             notes: &direct.notes,
             steps: &direct.steps,
+            assignee: &row.assignee,
+            base: &row.base,
             thread: &row.thread,
+            after: &row.after,
+            before: &row.before,
+            dispatch: direct.dispatch.as_ref(),
+            block: direct.block.as_ref().filter(blocks).map(BlockJson::from),
+            past_blocks: direct
+                .past_blocks
+                .iter()
+                .filter(blocks)
+                .map(BlockJson::from)
+                .collect(),
+            review: direct.block.as_ref().filter(reviews).map(ReviewJson::from),
+            past_reviews: direct
+                .past_blocks
+                .iter()
+                .filter(reviews)
+                .map(ReviewJson::from)
+                .collect(),
+            activity: direct
+                .history
+                .iter()
+                .rev()
+                .map(ActivityJson::from)
+                .collect(),
         };
         return format!(
             "{}\n",
@@ -309,6 +365,161 @@ fn list_json(result: &ListResult) -> String {
 
     let value = serde_json::to_value(&result.rows).expect("list rows are serializable");
     format!("{value}\n")
+}
+
+/// One history event, newest first: when, who (`null` on an event an older store recorded),
+/// what kind, and the kind's detail (`null` when it carries none).
+#[derive(serde::Serialize)]
+struct ActivityJson<'a> {
+    #[serde(with = "crate::domain::time_serde")]
+    at: std::time::SystemTime,
+    by: Option<&'a str>,
+    kind: crate::domain::TaskEventKind,
+    detail: Option<&'a crate::domain::EventDetail>,
+}
+
+impl<'a> From<&'a crate::domain::TaskEvent> for ActivityJson<'a> {
+    fn from(event: &'a crate::domain::TaskEvent) -> Self {
+        Self {
+            at: event.at,
+            by: event.by.as_deref(),
+            kind: event.kind,
+            detail: event.detail.as_ref(),
+        }
+    }
+}
+
+/// The agent-facing block shape: deleted replies are left out, and `answered` says whether
+/// the owner has the last word.
+#[derive(serde::Serialize)]
+struct BlockJson<'a> {
+    why: Option<&'a str>,
+    needs: Option<&'a str>,
+    options: &'a [String],
+    on: String,
+    by: &'a str,
+    #[serde(with = "crate::domain::time_serde")]
+    at: std::time::SystemTime,
+    edited: bool,
+    replies: Vec<ReplyJson<'a>>,
+    answered: bool,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_closed_at"
+    )]
+    closed_at: Option<std::time::SystemTime>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    closed_by: Option<&'a str>,
+}
+
+/// The agent-facing review round: `feedback` is the reply thread (deleted entries left out),
+/// `answered` says whether the owner has the last word, and a closed round says how it closed.
+#[derive(serde::Serialize)]
+struct ReviewJson<'a> {
+    round: u32,
+    done: Option<&'a str>,
+    checks: Vec<CheckJson<'a>>,
+    next: Option<&'a str>,
+    on: String,
+    by: &'a str,
+    #[serde(with = "crate::domain::time_serde")]
+    at: std::time::SystemTime,
+    edited: bool,
+    feedback: Vec<ReplyJson<'a>>,
+    answered: bool,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_closed_at"
+    )]
+    closed_at: Option<std::time::SystemTime>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    closed_by: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resolution: Option<crate::domain::Resolution>,
+}
+
+impl<'a> From<&'a crate::domain::Block> for ReviewJson<'a> {
+    fn from(block: &'a crate::domain::Block) -> Self {
+        Self {
+            round: block.round.max(1),
+            done: block.done.as_deref(),
+            checks: block
+                .checks
+                .iter()
+                .map(|check| CheckJson {
+                    text: &check.text,
+                    state: check.state.name(),
+                })
+                .collect(),
+            next: block.next.as_deref(),
+            on: block.on.wire(),
+            by: &block.by,
+            at: block.at,
+            edited: block.edited_at.is_some(),
+            feedback: reply_json(block),
+            answered: block.answered(),
+            closed_at: block.closed_at,
+            closed_by: block.closed_by.as_deref(),
+            resolution: block.resolution,
+        }
+    }
+}
+
+/// A check with its state always spelled out: `open`, `passed` or `failed`.
+#[derive(serde::Serialize)]
+struct CheckJson<'a> {
+    text: &'a str,
+    state: &'static str,
+}
+
+fn reply_json(block: &crate::domain::Block) -> Vec<ReplyJson<'_>> {
+    block
+        .replies
+        .iter()
+        .filter(|reply| !reply.deleted)
+        .map(|reply| ReplyJson {
+            at: reply.at,
+            by: &reply.by,
+            text: &reply.text,
+            edited: reply.edited,
+        })
+        .collect()
+}
+
+#[derive(serde::Serialize)]
+struct ReplyJson<'a> {
+    #[serde(with = "crate::domain::time_serde")]
+    at: std::time::SystemTime,
+    by: &'a str,
+    text: &'a str,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    edited: bool,
+}
+
+fn serialize_closed_at<S: serde::Serializer>(
+    time: &Option<std::time::SystemTime>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let time = time.expect("skipped when absent");
+    crate::domain::time_serde::serialize(&time, serializer)
+}
+
+impl<'a> From<&'a crate::domain::Block> for BlockJson<'a> {
+    fn from(block: &'a crate::domain::Block) -> Self {
+        Self {
+            why: block.why.as_deref(),
+            needs: block.needs.as_deref(),
+            options: &block.options,
+            on: block.on.wire(),
+            by: &block.by,
+            at: block.at,
+            edited: block.edited_at.is_some(),
+            replies: reply_json(block),
+            answered: block.answered(),
+            closed_at: block.closed_at,
+            closed_by: block.closed_by.as_deref(),
+        }
+    }
 }
 
 fn list_human(result: &ListResult, terminal_width: Option<usize>) -> String {
@@ -360,10 +571,11 @@ fn list_human(result: &ListResult, terminal_width: Option<usize>) -> String {
                     &mut output,
                     direct.notes.as_deref(),
                     &direct.steps,
-                    rows[0].thread.as_deref(),
+                    rows[0],
                     " ",
                     output_width,
                 );
+                append_activity(&mut output, &direct.trail, " ", output_width);
             }
         }
     }
@@ -408,6 +620,14 @@ fn append_rows(
     for row in rows {
         let mut content = terminal_text(&row.title);
         if include_thread {
+            if let Some(assignee) = row.assignee.as_deref() {
+                content.push_str(" @");
+                content.push_str(&terminal_text(assignee));
+            }
+            if let Some(base) = row.base.as_deref() {
+                content.push_str(" ⎇ ");
+                content.push_str(&terminal_text(base));
+            }
             if let Some(thread) = row.thread.as_deref() {
                 content.push_str(" #");
                 content.push_str(&terminal_text(thread));
@@ -426,19 +646,31 @@ fn append_rows(
             &content,
             output_width,
         );
+        if let Some(why) = row.blocked_why.as_deref() {
+            append_wrapped(
+                output,
+                &continuation_prefix,
+                &continuation_prefix,
+                &terminal_text(&format!("blocked: {why}")),
+                output_width,
+            );
+        }
     }
 }
 
 /// Direct detail is an ordered set of present blocks. Blank rows separate only
-/// adjacent blocks that exist: notes, steps, then thread.
+/// adjacent blocks that exist: notes, steps, assignee, base, then thread.
 fn append_direct_details(
     output: &mut String,
     notes: Option<&str>,
     steps: &[StepLine],
-    thread: Option<&str>,
+    row: &ListRow,
     indent: &str,
     output_width: usize,
 ) {
+    let assignee = row.assignee.as_deref();
+    let base = row.base.as_deref();
+    let thread = row.thread.as_deref();
     let mut has_prior = false;
     let detail_prefix = format!("{indent}  ");
     if let Some(notes) = notes {
@@ -452,6 +684,60 @@ fn append_direct_details(
         append_step_lines(output, steps, indent, output_width);
         has_prior = true;
     }
+    if let Some(assignee) = assignee {
+        if has_prior {
+            output.push('\n');
+        }
+        let assignee = terminal_text(&format!("@{assignee}"));
+        append_wrapped(
+            output,
+            &detail_prefix,
+            &detail_prefix,
+            &assignee,
+            output_width,
+        );
+        has_prior = true;
+    }
+    if let Some(base) = base {
+        if has_prior {
+            output.push('\n');
+        }
+        let base = terminal_text(&format!("⎇ {base}"));
+        append_wrapped(output, &detail_prefix, &detail_prefix, &base, output_width);
+        has_prior = true;
+    }
+    for (word, numbers) in [
+        (
+            "after",
+            row.after
+                .iter()
+                .map(|link| {
+                    if link.done {
+                        format!("T{} (done)", link.task)
+                    } else {
+                        format!("T{}", link.task)
+                    }
+                })
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "before",
+            row.before
+                .iter()
+                .map(|number| format!("T{number}"))
+                .collect(),
+        ),
+    ] {
+        if numbers.is_empty() {
+            continue;
+        }
+        if has_prior {
+            output.push('\n');
+        }
+        let line = format!("{word} {}", numbers.join(", "));
+        append_wrapped(output, &detail_prefix, &detail_prefix, &line, output_width);
+        has_prior = true;
+    }
     if let Some(thread) = thread {
         if has_prior {
             output.push('\n');
@@ -462,6 +748,40 @@ fn append_direct_details(
             &detail_prefix,
             &detail_prefix,
             &thread,
+            output_width,
+        );
+    }
+}
+
+/// The latest paper-trail entries under an `activity` heading, newest first.
+fn append_activity(
+    output: &mut String,
+    trail: &[crate::activity::TrailEntry],
+    indent: &str,
+    output_width: usize,
+) {
+    if trail.is_empty() {
+        return;
+    }
+    let now = std::time::SystemTime::now();
+    let prefix = format!("{indent}  ");
+    output.push('\n');
+    append_wrapped(output, &prefix, &prefix, "activity", output_width);
+    for entry in trail.iter().take(crate::activity::LATEST) {
+        append_wrapped(
+            output,
+            &format!("{prefix}  "),
+            &format!("{prefix}  "),
+            &terminal_text(&entry.line(now)),
+            output_width,
+        );
+    }
+    if trail.len() > crate::activity::LATEST {
+        append_wrapped(
+            output,
+            &format!("{prefix}  "),
+            &format!("{prefix}  "),
+            &format!("+ {} earlier", trail.len() - crate::activity::LATEST),
             output_width,
         );
     }
@@ -864,6 +1184,13 @@ fn task_refusal_message(code: &str, task: TaskAddress) -> String {
         "invalid-step-text" => "the step text contains control characters".to_string(),
         "unknown-step" => format!("no step on {display} matches that id"),
         "ambiguous-step" => format!("more than one step on {display} matches that id"),
+        "text-too-long" => format!(
+            "block and reply text is at most {} bytes",
+            crate::domain::BLOCK_TEXT_MAX
+        ),
+        "invalid-blocker" => "--on must name another task on the board".to_string(),
+        "not-blocked" => format!("{display} is not blocked or in review; nothing to reply to"),
+        "empty-reply" => "the reply is empty".to_string(),
         _ => return code.to_string(),
     };
     format!("{code}: {message}")
@@ -881,7 +1208,7 @@ pub fn steps_rejected(error: StepsError, task: TaskAddress) -> CliOutput {
     }
 }
 
-fn status_name(status: HumanStatus) -> &'static str {
+pub(crate) fn status_name(status: HumanStatus) -> &'static str {
     match status {
         HumanStatus::Open => "open",
         HumanStatus::Ready => "ready",
@@ -892,32 +1219,395 @@ fn status_name(status: HumanStatus) -> &'static str {
     }
 }
 
-pub fn status_help() -> CliOutput {
+pub fn dispatch_help() -> CliOutput {
     help(HelpDoc {
-        usage: vec!["tsk status <task> <status> [--state-dir <dir>]".into()],
-        purpose: "Set a task's human status.".into(),
+        usage: vec!["tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]".into()],
+        purpose: "Create a project worktree and launch the task's assigned agent in Herdr.".into(),
         groups: vec![group(
-            "Values",
+            "Options",
             &[
-                ("<task>", "a task number or UUID"),
                 (
-                    "<status>",
-                    "open, ready, started (or start), blocked, review, or done",
+                    "--again",
+                    "relaunch, recreating a cleaned worktree when needed",
+                ),
+                (
+                    "--base <branch>",
+                    "use an existing project branch for this launch only",
                 ),
                 ("--state-dir <dir>", "use another board store"),
             ],
         )],
+        examples: vec!["tsk dispatch T12".into(), "tsk dispatch 12 --again".into()],
+        refusals: vec![
+            "unknown-task".into(),
+            "soft-deleted-task".into(),
+            "no-assignee".into(),
+            "not-in-herdr".into(),
+            "unsupported-platform".into(),
+            "unsafe-state-dir".into(),
+            "needs-git-project".into(),
+            "done-task".into(),
+            "archived-task".into(),
+            "already-dispatched".into(),
+            "unknown-agent".into(),
+            "agent-config".into(),
+            "unknown-base".into(),
+            "no-default-base".into(),
+            "herdr-failed".into(),
+        ],
+        exit: exit_line(
+            "task dispatched",
+            Some("dispatch refused, nothing persisted"),
+            true,
+        ),
+    })
+}
+
+pub fn clean_help() -> CliOutput {
+    help(HelpDoc {
+        usage: vec!["tsk clean <task> [--json] [--state-dir <dir>]".into()],
+        purpose: "Remove a clean dispatched worktree, keeping an unmerged branch.".into(),
+        groups: vec![
+            group(
+                "Options",
+                &[
+                    ("--json", "print one machine-readable cleanup result"),
+                    ("--state-dir <dir>", "use another board store"),
+                ],
+            ),
+            group(
+                "Store failures",
+                &[("store-error (exit 3)", "verify the task with tsk list")],
+            ),
+        ],
+        examples: vec!["tsk clean T12".into(), "tsk clean 12 --json".into()],
+        refusals: vec![
+            "unknown-task".into(),
+            "not-dispatched".into(),
+            "already-cleaned".into(),
+            "dirty-worktree".into(),
+            "worktree-mismatch".into(),
+            "files-in-use".into(),
+            "path-too-long".into(),
+            "removal-timed-out".into(),
+            "partly-removed".into(),
+            "herdr-failed".into(),
+        ],
+        exit: exit_line(
+            "dispatch cleaned, or its worktree was already missing",
+            Some("cleanup refused, task and dispatch record unchanged"),
+            true,
+        ),
+    })
+}
+
+pub fn cleaned(result: CleanupResult, json: bool) -> CliOutput {
+    let worktree = match result.worktree {
+        WorktreeCleanup::Removed => "removed",
+        WorktreeCleanup::Missing => "missing",
+    };
+    let branch = match result.branch {
+        BranchCleanup::Removed => "removed",
+        BranchCleanup::Kept => "kept",
+    };
+    let (workspace, workspace_detail) = match result.workspace {
+        WorkspaceCleanup::Removed => ("removed", "removed"),
+        WorkspaceCleanup::Kept => ("kept", "kept"),
+        WorkspaceCleanup::Missing => ("missing", "already closed"),
+    };
+    let branch_reason = result
+        .branch_reason
+        .map(|reason| reason.message(result.base.as_deref(), result.remote.as_deref()));
+    let stdout = if json {
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "number": result.number,
+                "title": result.title,
+                "worktree": {"path": result.worktree_path, "outcome": worktree},
+                "branch": {"name": result.branch_name, "outcome": branch, "reason": branch_reason},
+                "workspace": {"id": result.workspace_id, "outcome": workspace},
+                "warning": result.warning,
+            })
+        )
+    } else {
+        let branch_detail = match branch_reason {
+            Some(reason) => format!("{branch}, {}", terminal_text(&reason)),
+            None => branch.to_string(),
+        };
+        let warning = result
+            .warning
+            .as_deref()
+            .map(|warning| format!("warning: {}\n", terminal_text(warning)))
+            .unwrap_or_default();
+        format!(
+            "{warning}cleaned T{}: worktree {} ({}), branch {} ({}), workspace {} ({})\n",
+            result.number,
+            terminal_text(&result.worktree_path),
+            worktree,
+            terminal_text(&result.branch_name),
+            branch_detail,
+            terminal_text(&result.workspace_id),
+            workspace_detail,
+        )
+    };
+    CliOutput {
+        stdout,
+        stderr: String::new(),
+        code: 0,
+    }
+}
+
+pub fn clean_usage(reason: &str) -> CliOutput {
+    CliOutput {
+        stdout: String::new(),
+        stderr: format!(
+            "tsk clean: {}\nusage: tsk clean <task> [--json] [--state-dir <dir>]\n",
+            human_reason(reason)
+        ),
+        code: 2,
+    }
+}
+
+pub fn clean_rejected(error: CleanupError, task: TaskAddress) -> CliOutput {
+    let store = matches!(error, CleanupError::Store(_));
+    let detail = match &error {
+        CleanupError::UnknownTask => format!("{} is not on the board", task.display()),
+        other => other.to_string(),
+    };
+    verb_rejected("clean", error.code(), store, &detail)
+}
+
+/// A dispatch or cleanup refusal: exit 3 when the store failed, 1 otherwise.
+fn verb_rejected(verb: &str, refusal: &str, store: bool, detail: &str) -> CliOutput {
+    CliOutput {
+        stdout: String::new(),
+        stderr: format!("tsk {verb}: {refusal}: {}\n", human_reason(detail)),
+        code: if store { 3 } else { 1 },
+    }
+}
+
+pub fn dispatched(result: DispatchResult) -> CliOutput {
+    CliOutput {
+        stdout: format!(
+            "dispatched T{} to @{} in {}\n",
+            result.number,
+            terminal_text(&result.assignee),
+            terminal_text(&result.record.worktree)
+        ),
+        stderr: result
+            .warning
+            .map(|warning| format!("tsk dispatch: warning: {}\n", terminal_text(&warning)))
+            .unwrap_or_default(),
+        code: 0,
+    }
+}
+
+pub fn dispatch_usage(reason: &str) -> CliOutput {
+    CliOutput {
+        stdout: String::new(),
+        stderr: format!(
+            "tsk dispatch: {}\nusage: tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]\n",
+            human_reason(reason)
+        ),
+        code: 2,
+    }
+}
+
+pub fn dispatch_rejected(error: DispatchError, task: TaskAddress) -> CliOutput {
+    let store = matches!(error, DispatchError::Store(_));
+    let detail = match &error {
+        DispatchError::UnknownTask => format!("{} is not on the board", task.display()),
+        other => other.to_string(),
+    };
+    verb_rejected("dispatch", error.code(), store, &detail)
+}
+
+pub fn status_help() -> CliOutput {
+    help(HelpDoc {
+        usage: vec![
+            "tsk status <task> <status> [--clean] [--state-dir <dir>]".into(),
+            "tsk status <task> started [--again | --no-dispatch] [--force] [--state-dir <dir>]".into(),
+            "tsk status <task> blocked --why <text> [--needs <text>] [--option <text>]... [--on you|T<n>|<text>]".into(),
+            "tsk status <task> review --done <text> [--check <text>]... [--next <text>] [--on you|<agent>|<text>]".into(),
+        ],
+        purpose: "Set a task's human status, optionally cleaning its dispatch after done persists. Block with a reason so the owner can answer it, or put work up for review with what was done and what to check; running review again while in review updates the same round. Starting an assigned task that was never dispatched dispatches it, like tsk dispatch. A task that runs after others refuses to start until they are done unless forced; setting the last of them done starts each waiting ready task the same way."
+            .into(),
+        groups: vec![
+            group(
+                "Values",
+                &[
+                    ("<task>", "a task number or UUID"),
+                    (
+                        "<status>",
+                        "open, ready, started (or start), blocked, review, or done",
+                    ),
+                    (
+                        "--clean",
+                        "after setting done, safely clean its dispatch if it has a live one",
+                    ),
+                    (
+                        "--again",
+                        "with started, relaunch a dispatched task whose agent is gone",
+                    ),
+                    (
+                        "--no-dispatch",
+                        "with started, only set the status, never launch an agent",
+                    ),
+                    (
+                        "--force",
+                        "with started, start even though tasks it runs after are not done",
+                    ),
+                    ("--state-dir <dir>", "use another board store"),
+                ],
+            ),
+            group(
+                "Block",
+                &[
+                    ("--why <text>", "what stops the work"),
+                    ("--needs <text>", "what would unblock it"),
+                    ("--option <text>", "one suggested answer; repeat for more"),
+                    (
+                        "--on <who>",
+                        "you (default), another task T<n>, or any other text",
+                    ),
+                    (
+                        "--flag=<value>",
+                        "use equals syntax for dash-leading values",
+                    ),
+                ],
+            ),
+            group(
+                "Review",
+                &[
+                    ("--done <text>", "what was done"),
+                    (
+                        "--check <text>",
+                        "one thing the reviewer should check; repeat for more",
+                    ),
+                    ("--next <text>", "what comes after"),
+                    (
+                        "--on <who>",
+                        "you (default), an agent profile, or any other text",
+                    ),
+                ],
+            ),
+        ],
         examples: vec![
             "tsk status T12 ready".into(),
             "tsk status T12 review".into(),
+            "tsk status T12 started --no-dispatch".into(),
+            "tsk status T12 blocked --why \"Which database?\" --option postgres --option sqlite".into(),
+            "tsk status T12 blocked --why \"Needs the API from T9\" --on T9".into(),
+            "tsk status T12 review --done \"Opened PR #41\" --check \"tests pass\" --check \"no flicker at 80 cols\" --next \"docs\"".into(),
         ],
-        refusals: vec!["unknown-task".into(), "soft-deleted-task".into()],
+        refusals: vec![
+            "unknown-task".into(),
+            "soft-deleted-task".into(),
+            "text-too-long".into(),
+            "invalid-blocker".into(),
+            "after-not-done".into(),
+            "agent-gone".into(),
+            "needs-git-project".into(),
+            "unknown-agent".into(),
+            "unknown-base".into(),
+            "no-default-base".into(),
+            "agent-config".into(),
+            "herdr-failed".into(),
+            "unsupported-platform".into(),
+            "unsafe-state-dir".into(),
+        ],
         exit: exit_line(
             "status set, or it already had the value",
             Some("status refusal, verify with list before retrying"),
             true,
         ),
     })
+}
+
+pub fn reply_help() -> CliOutput {
+    help(HelpDoc {
+        usage: vec!["tsk reply <task> <text> [--send] [--state-dir <dir>]".into()],
+        purpose: "Add a reply to a blocked task's open block, or feedback to a task's open review round. Not idempotent: each run adds one."
+            .into(),
+        groups: vec![group(
+            "Values",
+            &[
+                ("<task>", "a task number or UUID"),
+                ("<text>", "the reply; put -- before text that begins with -"),
+                (
+                    "--send",
+                    "also send your replies since the agent's last one to its running agent; the status stays",
+                ),
+                ("--state-dir <dir>", "use another board store"),
+            ],
+        )],
+        examples: vec![
+            "tsk reply T12 \"Use postgres\"".into(),
+            "tsk reply T12 \"Use postgres\" --send".into(),
+            "tsk reply T12 -- \"-5 degrees is fine\"".into(),
+        ],
+        refusals: vec![
+            "unknown-task".into(),
+            "soft-deleted-task".into(),
+            "not-blocked".into(),
+            "empty-reply".into(),
+            "text-too-long".into(),
+        ],
+        exit: exit_line(
+            "reply stored",
+            Some("reply refusal, verify with list before retrying"),
+            true,
+        ),
+    })
+}
+
+/// A stored reply, then whether `--send` reached the agent. Exit 0 either way: the reply is
+/// on the task.
+pub fn replied_and_sent(
+    result: crate::cli::reply::ReplyResult,
+    outcome: &crate::cli::reply::SendOutcome,
+) -> CliOutput {
+    let mut output = replied(result);
+    output.stdout.push_str(&terminal_text(&outcome.line()));
+    output.stdout.push('\n');
+    output
+}
+
+pub fn replied(result: crate::cli::reply::ReplyResult) -> CliOutput {
+    CliOutput {
+        stdout: format!(
+            "replied T{} as {} {}\n",
+            result.number,
+            terminal_text(&result.by),
+            terminal_text(&result.title)
+        ),
+        stderr: String::new(),
+        code: 0,
+    }
+}
+
+pub fn reply_usage(reason: &str) -> CliOutput {
+    CliOutput {
+        stdout: String::new(),
+        stderr: format!(
+            "tsk reply: {}\nusage: tsk reply <task> <text> [--send] [--state-dir <dir>]\n",
+            human_reason(reason)
+        ),
+        code: 2,
+    }
+}
+
+pub fn reply_rejected(error: crate::cli::reply::ReplyError, task: TaskAddress) -> CliOutput {
+    let (detail, code) = match error {
+        crate::cli::reply::ReplyError::Store(detail) => (detail, 3),
+        other => (task_refusal_message(other.code(), task), 1),
+    };
+    CliOutput {
+        stdout: String::new(),
+        stderr: format!("tsk reply: {detail}\n"),
+        code,
+    }
 }
 
 pub fn status(result: StatusResult) -> CliOutput {
@@ -931,6 +1621,21 @@ pub fn status(result: StatusResult) -> CliOutput {
         stderr: String::new(),
         code: 0,
     }
+}
+
+/// A start that dispatched: the status line, then where the agent runs.
+pub fn status_dispatched(result: StatusResult, dispatched: DispatchResult) -> CliOutput {
+    let mut output = status(result);
+    output.stdout.push_str(&format!(
+        "dispatched T{} to @{} in {}\n",
+        dispatched.number,
+        terminal_text(&dispatched.assignee),
+        terminal_text(&dispatched.record.worktree)
+    ));
+    if let Some(warning) = dispatched.warning {
+        output.stderr = format!("tsk status: warning: {}\n", terminal_text(&warning));
+    }
+    output
 }
 
 pub fn status_usage(reason: &str) -> CliOutput {
@@ -947,6 +1652,31 @@ pub fn status_usage(reason: &str) -> CliOutput {
 pub fn status_rejected(error: StatusError, task: TaskAddress) -> CliOutput {
     let (detail, code) = match error {
         StatusError::Store(detail) => (detail, 3),
+        StatusError::AfterNotDone(waiting) => (
+            format!("after-not-done: {waiting}; --force starts it anyway"),
+            1,
+        ),
+        StatusError::AgentGone(assignee) => (
+            format!(
+                "agent-gone: @{} is no longer running for {}; --again relaunches it, --no-dispatch only sets the status",
+                terminal_text(&assignee),
+                task.display()
+            ),
+            1,
+        ),
+        StatusError::Dispatch(error) => {
+            let detail = match &error {
+                DispatchError::UnknownTask => format!("{} is not on the board", task.display()),
+                other => human_reason(&other.to_string()),
+            };
+            (
+                format!(
+                    "{}: {detail}; --no-dispatch only sets the status",
+                    error.code()
+                ),
+                1,
+            )
+        }
         other => (task_refusal_message(other.code(), task), 1),
     };
     CliOutput {
@@ -959,15 +1689,24 @@ pub fn status_rejected(error: StatusError, task: TaskAddress) -> CliOutput {
 pub fn edit_help() -> CliOutput {
     help(HelpDoc {
         usage: vec![
-            "tsk edit <task> [--title <title>] [--notes <notes>] [--state-dir <dir>]".into(),
+            "tsk edit <task> [--title <title>] [--notes <notes>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--after <task>]... [--clear-after] [--state-dir <dir>]".into(),
         ],
-        purpose: "Update a task's title or notes without changing its scope or thread.".into(),
+        purpose: "Update a task's title, notes, assignee, dispatch base, or the tasks it runs after, without changing its scope or thread.".into(),
         groups: vec![group(
             "Values",
             &[
                 ("<task>", "a task number or UUID"),
                 ("--title <title>", "replace the title"),
                 ("--notes <notes>", "replace notes, or clear them when blank"),
+                ("--assignee <name>", "assign a defined agent profile"),
+                ("--unassign", "clear the assignee"),
+                ("--base <branch>", "set an existing project branch as the dispatch base"),
+                ("--clear-base", "return to the project's remote default branch"),
+                (
+                    "--after <task>",
+                    "run after this task (repeatable; replaces the list); it starts when the last one is done",
+                ),
+                ("--clear-after", "run after nothing"),
                 ("--state-dir <dir>", "use another board store"),
                 (
                     "--flag=<value>",
@@ -978,12 +1717,17 @@ pub fn edit_help() -> CliOutput {
         examples: vec![
             "tsk edit T12 --title \"Fix timeout on slow connections\"".into(),
             "tsk edit T12 --notes \"Reproduced with a delayed response\"".into(),
+            "tsk edit T13 --after T12 --after T9".into(),
         ],
         refusals: vec![
             "unknown-task".into(),
             "soft-deleted-task".into(),
             "empty-title".into(),
             "invalid-title".into(),
+            "unknown-agent".into(),
+            "unknown-base".into(),
+            "invalid-after (the task itself, not on the board, or done)".into(),
+            "after-loop (T12 already runs after T13)".into(),
         ],
         exit: exit_line(
             "fields written, or already had the values",
@@ -1009,7 +1753,7 @@ pub fn edit_usage(reason: &str) -> CliOutput {
     CliOutput {
         stdout: String::new(),
         stderr: format!(
-            "tsk edit: {}\nusage: tsk edit <task> [--title <title>] [--notes <notes>] [--state-dir <dir>]\n",
+            "tsk edit: {}\nusage: tsk edit <task> [--title <title>] [--notes <notes>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--state-dir <dir>]\n",
             human_reason(reason)
         ),
         code: 2,
@@ -1018,6 +1762,10 @@ pub fn edit_usage(reason: &str) -> CliOutput {
 
 pub fn edit_rejected(error: EditError, task: TaskAddress) -> CliOutput {
     let (detail, code) = match error {
+        EditError::UnknownBase(detail) => (format!("unknown-base: {}", terminal_text(&detail)), 1),
+        EditError::InvalidAfter(detail) => (format!("invalid-after: {detail}"), 1),
+        EditError::AfterLoop(detail) => (format!("after-loop: {detail}"), 1),
+        EditError::AgentConfig(detail) => (detail, 2),
         EditError::Store(detail) => (detail, 3),
         other => (task_refusal_message(other.code(), task), 1),
     };
@@ -1227,7 +1975,7 @@ pub fn archive_rejected(error: ArchiveCliError, verb: &str) -> CliOutput {
 
 pub fn list_usage(reason: &str, terminal_width: Option<usize>) -> CliOutput {
     let stderr = format!(
-        "tsk list: {}\nusage: tsk list [<task>] [-p <project> | --desk | --all] [--thread <name>] [--open | --ready | --done | --deleted | --archived] [--json] [--state-dir <dir>]\n",
+        "tsk list: {}\nusage: tsk list [<task>] [-p <project> | --desk | --all] [--thread <name>] [--assignee <name>] [--open | --ready | --done | --deleted | --archived] [--json] [--state-dir <dir>]\n",
         human_reason(reason)
     );
     CliOutput {
@@ -1266,6 +2014,9 @@ pub fn rejected(error: AddError) -> CliOutput {
                 1,
             )
         }
+        AddError::UnknownAgent(detail) => (format!("unknown-agent: {}", terminal_text(detail)), 1),
+        AddError::UnknownBase(detail) => (format!("unknown-base: {}", terminal_text(detail)), 1),
+        AddError::AgentConfig(detail) => (detail.clone(), 2),
         AddError::Store(detail) => (detail.clone(), 3),
         other => (other.code().into(), 1),
     };
@@ -1610,6 +2361,67 @@ mod tests {
             alternatives,
             "usage: tsk pick\n       alpha | beta | gamma\n       [--long argument]\n"
         );
+    }
+
+    #[test]
+    fn clean_output_names_every_resource_in_human_and_json_forms() {
+        let result = CleanupResult {
+            remote: None,
+            warning: None,
+            branch_reason: Some(crate::dispatch::BranchRetentionReason::NotMerged),
+            number: 12,
+            title: "finished".into(),
+            worktree_path: "/tmp/task-12".into(),
+            branch_name: "tsk/t12-finished".into(),
+            workspace_id: "w12".into(),
+            worktree: WorktreeCleanup::Removed,
+            branch: BranchCleanup::Kept,
+            workspace: WorkspaceCleanup::Removed,
+            base: Some("origin/main".into()),
+        };
+        let human = cleaned(result.clone(), false);
+        assert_eq!(
+            human.stdout,
+            "cleaned T12: worktree /tmp/task-12 (removed), branch tsk/t12-finished (kept, not merged into origin/main; squash-merged? delete by hand), workspace w12 (removed)\n"
+        );
+        let json = cleaned(result, true);
+        let value: serde_json::Value = serde_json::from_str(json.stdout.trim()).unwrap();
+        assert_eq!(value["number"], 12);
+        assert_eq!(value["worktree"]["outcome"], "removed");
+        assert_eq!(value["branch"]["outcome"], "kept");
+        assert_eq!(
+            value["branch"]["reason"],
+            "not merged into origin/main; squash-merged? delete by hand"
+        );
+        assert_eq!(value["workspace"]["outcome"], "removed");
+    }
+
+    /// A workspace an earlier refused cleanup closed reads as already closed, never kept.
+    #[test]
+    fn clean_output_says_an_already_closed_workspace_is_gone() {
+        let result = CleanupResult {
+            remote: None,
+            warning: None,
+            branch_reason: None,
+            number: 12,
+            title: "finished".into(),
+            worktree_path: "/tmp/task-12".into(),
+            branch_name: "tsk/t12-finished".into(),
+            workspace_id: "w12".into(),
+            worktree: WorktreeCleanup::Removed,
+            branch: BranchCleanup::Removed,
+            workspace: WorkspaceCleanup::Missing,
+            base: Some("origin/main".into()),
+        };
+        let human = cleaned(result.clone(), false);
+        assert!(
+            human.stdout.ends_with("workspace w12 (already closed)\n"),
+            "{}",
+            human.stdout
+        );
+        let json = cleaned(result, true);
+        let value: serde_json::Value = serde_json::from_str(json.stdout.trim()).unwrap();
+        assert_eq!(value["workspace"]["outcome"], "missing");
     }
 
     #[test]

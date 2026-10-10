@@ -6,7 +6,9 @@
 use uuid::Uuid;
 
 use crate::context::InvocationSnapshot;
-use crate::domain::{DomainError, DomainState, TaskScope};
+use crate::domain::{
+    normalize_thread, thread_refusal_message, DomainError, DomainState, TaskScope,
+};
 use crate::store::{StoreError, TaskStore};
 
 /// Task id returned by a successful capture (domain `Uuid`).
@@ -17,6 +19,7 @@ pub type TaskId = Uuid;
 pub enum CaptureError {
     Domain(DomainError),
     Store(StoreError),
+    UnknownBase(String),
 }
 
 impl std::fmt::Display for CaptureError {
@@ -24,6 +27,7 @@ impl std::fmt::Display for CaptureError {
         match self {
             CaptureError::Domain(e) => write!(f, "{e}"),
             CaptureError::Store(e) => write!(f, "{e}"),
+            CaptureError::UnknownBase(reason) => write!(f, "{reason}"),
         }
     }
 }
@@ -33,6 +37,7 @@ impl std::error::Error for CaptureError {
         match self {
             CaptureError::Domain(e) => Some(e),
             CaptureError::Store(e) => Some(e),
+            CaptureError::UnknownBase(_) => None,
         }
     }
 }
@@ -72,6 +77,168 @@ pub fn capture_save(
         store.reload_merge_save(state)?;
     }
     Ok(id)
+}
+
+/// Board capture variant carrying validated assignment and dispatch base fields.
+#[allow(clippy::too_many_arguments)]
+pub fn capture_save_configured(
+    state: &mut DomainState,
+    store: Option<&TaskStore>,
+    snapshot: &InvocationSnapshot,
+    title: impl AsRef<str>,
+    notes: Option<String>,
+    scope_override: Option<TaskScope>,
+    thread: Option<String>,
+    assignee: Option<String>,
+    base: Option<String>,
+) -> Result<TaskId, CaptureError> {
+    let scope = scope_override.unwrap_or_else(|| snapshot.default_scope.clone());
+    // An expanded draft may change project after its !b token was lifted. Validate
+    // again at save against the final destination, before any domain mutation.
+    if let Some(branch) = base.as_deref() {
+        crate::git_base::validate_task_base(&scope, branch, false)
+            .map_err(CaptureError::UnknownBase)?;
+    }
+
+    let id = state.create_configured(
+        title,
+        notes,
+        scope,
+        snapshot.provenance,
+        thread,
+        assignee,
+        base,
+    )?;
+    if let Some(store) = store {
+        store.reload_merge_save(state)?;
+    }
+    Ok(id)
+}
+
+/// Directives lifted from a quick-add title before capture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuickAddTokens {
+    pub title: String,
+    pub scope: Option<TaskScope>,
+    pub thread: Option<String>,
+    pub assignee: Option<String>,
+    pub base: Option<String>,
+    /// `!w T202`, repeatable: the tasks the new task runs after.
+    pub after: Vec<u64>,
+}
+
+/// Lift and validate whitespace-delimited `!p`, `!t`, `!a`, `!b`, and `!w` directives.
+///
+/// Base validation uses the effective task destination, never the process checkout.
+pub fn lift_quick_add_tokens(
+    value: &str,
+    domain: &DomainState,
+    snapshot: Option<&InvocationSnapshot>,
+    default_scope: &TaskScope,
+    agent_names: &[String],
+) -> Result<QuickAddTokens, String> {
+    let words: Vec<&str> = value.split_whitespace().collect();
+    let mut title = Vec::new();
+    let mut scope = None;
+    let mut thread = None;
+    let mut assignee = None;
+    let mut base = None;
+    let mut after = Vec::new();
+    let mut index = 0;
+
+    while let Some(word) = words.get(index) {
+        match *word {
+            "!p" => {
+                let argument = quick_add_token_argument(&words, index);
+                scope = Some(match argument {
+                    Some(path) => {
+                        let resolved = crate::scope::resolve_project_path(path, domain, snapshot)
+                            .map_err(|error| error.message(path))?;
+                        if domain.is_project_archived(&resolved) {
+                            return Err(format!(
+                                "project {} is archived",
+                                crate::ui::render::short_project(&resolved)
+                            ));
+                        }
+                        TaskScope::Project { path: resolved }
+                    }
+                    None => TaskScope::Global,
+                });
+                index += usize::from(argument.is_some()) + 1;
+            }
+            "!t" => {
+                let argument = quick_add_token_argument(&words, index);
+                thread = match argument {
+                    Some(name) => Some(normalize_thread(name).map_err(thread_refusal_message)?),
+                    None => None,
+                };
+                index += usize::from(argument.is_some()) + 1;
+            }
+            "!a" => {
+                let argument = quick_add_token_argument(&words, index);
+                assignee = match argument {
+                    Some(name) => {
+                        let normalized = normalize_thread(name).map_err(|error| {
+                            thread_refusal_message(error).replacen("thread", "agent name", 1)
+                        })?;
+                        if agent_names.iter().any(|name| name == &normalized) {
+                            Some(normalized)
+                        } else {
+                            return Err(format!("unknown agent {normalized}"));
+                        }
+                    }
+                    None => None,
+                };
+                index += usize::from(argument.is_some()) + 1;
+            }
+            "!b" => {
+                let argument = quick_add_token_argument(&words, index);
+                base = argument.map(str::to_owned);
+                index += usize::from(argument.is_some()) + 1;
+            }
+            // `!w T202`: run after T202 ("wait for"). Unknown or done tasks refuse.
+            "!w" => {
+                let number = quick_add_token_argument(&words, index)
+                    .and_then(|argument| crate::cli::parser::parse_after_number(argument).ok())
+                    .ok_or_else(|| "!w needs a task number like T12".to_string())?;
+                domain
+                    .check_new_after(&[number])
+                    .map_err(|error| error.to_string())?;
+                if !after.contains(&number) {
+                    after.push(number);
+                }
+                index += 2;
+            }
+            _ => {
+                title.push(*word);
+                index += 1;
+            }
+        }
+    }
+
+    if let Some(branch) = base.as_deref() {
+        crate::git_base::validate_task_base(
+            scope.as_ref().unwrap_or(default_scope),
+            branch,
+            false,
+        )?;
+    }
+
+    Ok(QuickAddTokens {
+        title: title.join(" "),
+        scope,
+        thread,
+        assignee,
+        base,
+        after,
+    })
+}
+
+fn quick_add_token_argument<'a>(words: &'a [&str], index: usize) -> Option<&'a str> {
+    words
+        .get(index + 1)
+        .copied()
+        .filter(|word| !matches!(*word, "!p" | "!t" | "!a" | "!b" | "!w") && !word.starts_with('#'))
 }
 
 #[cfg(test)]
@@ -122,6 +289,70 @@ mod tests {
             title_prefill: None,
             provenance: ProvenanceOrigin::Capture,
         }
+    }
+
+    /// `!w`: a task number with or without `T`, repeatable and deduplicated; no argument, a
+    /// word that is not a number, or another token in its place refuses, as do unknown and done
+    /// tasks.
+    #[test]
+    fn w_tokens_lift_task_numbers_and_refuse_bad_arguments() {
+        let mut state = DomainState::new();
+        let ids: Vec<_> = ["first", "second", "done"]
+            .iter()
+            .map(|title| {
+                state
+                    .create(
+                        title,
+                        None,
+                        TaskScope::Global,
+                        ProvenanceOrigin::Manual,
+                        None,
+                    )
+                    .expect("create")
+            })
+            .collect();
+        state.assign_numbers_for_persistence();
+        state.set_status(ids[2], HumanStatus::Done).expect("done");
+        let lift = |line: &str| lift_quick_add_tokens(line, &state, None, &TaskScope::Global, &[]);
+
+        let tokens = lift("Waits !w T1 !w 2 !w T1").expect("lift");
+        assert_eq!(tokens.title, "Waits");
+        assert_eq!(tokens.after, vec![1, 2], "repeatable, deduplicated");
+        let needs = "!w needs a task number like T12".to_string();
+        assert_eq!(lift("Waits !w").map(|_| ()), Err(needs.clone()));
+        assert_eq!(lift("Waits !w abc").map(|_| ()), Err(needs.clone()));
+        assert_eq!(lift("Waits !w !p").map(|_| ()), Err(needs));
+        assert_eq!(
+            lift("Waits !w T9").map(|_| ()),
+            Err("T9 is not on the board".to_string())
+        );
+        assert_eq!(
+            lift("Waits !w T3").map(|_| ()),
+            Err("T3 is already done".to_string())
+        );
+    }
+
+    #[test]
+    fn configured_capture_revalidates_base_against_final_scope_before_mutation() {
+        let mut state = DomainState::new();
+        let snapshot = project_snapshot("/unused/initial-repo");
+        let before = state.clone();
+        let result = capture_save_configured(
+            &mut state,
+            None,
+            &snapshot,
+            "Captured",
+            None,
+            Some(TaskScope::Global),
+            None,
+            None,
+            Some("main".into()),
+        );
+        assert!(matches!(result, Err(CaptureError::UnknownBase(_))));
+        assert_eq!(
+            serde_json::to_value(state).unwrap(),
+            serde_json::to_value(before).unwrap()
+        );
     }
 
     #[test]

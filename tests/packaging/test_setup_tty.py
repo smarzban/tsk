@@ -47,8 +47,14 @@ if args[:2] == ["plugin", "list"]:
                     os.close(slave)
                     slave = None
                     if piped:
-                        process.stdin.write(answer)
-                        process.stdin.close()
+                        # tsk refuses a piped stdin without reading it and may already have
+                        # exited; the flush on close then raises. The assertions below
+                        # still prove the refusal.
+                        try:
+                            process.stdin.write(answer)
+                            process.stdin.close()
+                        except BrokenPipeError:
+                            pass
                     replied = piped
                     deadline = time.monotonic() + 20
                     while time.monotonic() < deadline:

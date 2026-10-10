@@ -18,12 +18,15 @@ pub enum CommandSurface {
 /// One discoverable board command: a label plus the existing intent it dispatches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoardCommand {
-    pub label: &'static str,
+    pub label: String,
     pub intent: BoardIntent,
 }
 
-const fn command(label: &'static str, intent: BoardIntent) -> BoardCommand {
-    BoardCommand { label, intent }
+fn command(label: impl Into<String>, intent: BoardIntent) -> BoardCommand {
+    BoardCommand {
+        label: label.into(),
+        intent,
+    }
 }
 
 impl BoardModel {
@@ -63,9 +66,9 @@ impl BoardModel {
         }
         let mut commands = Vec::new();
         if self.selected_id().is_some() {
-            // the tail: set status x4, edit notes, change scope, then shared tail.
-            // No park / resume / link / dispatch entries.
-            commands.extend_from_slice(&[
+            // the tail: set status x4, edit notes, change scope, assignment and optional
+            // relaunch, then shared tail. No park / resume / link entries.
+            commands.extend([
                 command(
                     "set status: ready",
                     BoardIntent::SetStatus(HumanStatus::Ready),
@@ -88,7 +91,24 @@ impl BoardModel {
                 ),
                 command("edit notes", BoardIntent::BeginEditNotes),
                 command("change scope", BoardIntent::BeginEditScope),
+                command("set assignee", BoardIntent::OpenAssigneePicker),
+                command("set base", BoardIntent::OpenBasePicker),
+                command("set after…", BoardIntent::OpenAfterPicker),
             ]);
+            // Two or more marked tasks chain in the order they were marked. The palette owns
+            // input while it lists this, so ask about the task list underneath it.
+            if self.marks_under_palette() >= 2 {
+                commands.push(command("chain in order", BoardIntent::ChainAfter));
+            }
+            // Starting dispatches an assigned task (`set status: started`, `ctrl+s`); dispatch
+            // again is the explicit, cursor-only relaunch.
+            if self
+                .selected_id()
+                .and_then(|id| self.tasks.iter().find(|task| task.id == id))
+                .is_some_and(|task| task.dispatch.is_some())
+            {
+                commands.push(command("dispatch again", BoardIntent::DispatchAgain));
+            }
         }
         // Always-available board commands, then selection-gated delete when present.
         // The status commands above are absolute, so `set status: open` replaces the old
@@ -105,7 +125,7 @@ impl BoardModel {
             command("help", BoardIntent::OpenHelp),
             command("quit", BoardIntent::Quit),
         ]);
-        // Park / resume / link / dispatch stay out of the palette.
+        // Park / resume / link stay out of the palette.
         commands
     }
 
@@ -121,11 +141,20 @@ impl BoardModel {
         }
         commands
             .into_iter()
-            .filter(|command| subsequence_match(command.label, query))
+            .filter(|command| subsequence_match(&command.label, query))
             .collect()
     }
 
     /// The command a confirmation would invoke.
+    /// The command a palette `ConfirmCommand` or `SelectCommand` would run, without running it.
+    pub fn selected_command_for(&self, intent: &BoardIntent) -> Option<BoardCommand> {
+        match intent {
+            BoardIntent::ConfirmCommand => self.selected_command(),
+            BoardIntent::SelectCommand(index) => self.visible_commands().get(*index).cloned(),
+            _ => None,
+        }
+    }
+
     pub fn selected_command(&self) -> Option<BoardCommand> {
         let index = self.command_selected()?;
         self.visible_commands().get(index).cloned()

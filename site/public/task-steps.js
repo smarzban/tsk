@@ -10,6 +10,9 @@ export class TaskSteps {
     this.staged = null;
     this.marked = null;
     this.refusal = "";
+    // The task page's PAPER TRAIL is expanded (`g`). It belongs to this binding, so leaving the
+    // page or binding another task collapses it.
+    this.trailOpen = false;
   }
   bind(task) {
     if (this.taskId !== task.id) {
@@ -25,8 +28,9 @@ export class TaskSteps {
   get dirty() {
     return this.staged !== null;
   }
-  move(task, delta) {
-    const ids = [...this.rows(task).map((step) => step.id), "add"];
+  // `extra` stops follow `+ step` (the task page's PAPER TRAIL heading, `"trail"`).
+  move(task, delta, extra = []) {
+    const ids = [...this.rows(task).map((step) => step.id), "add", ...extra];
     let i = ids.indexOf(this.selected);
     if (i < 0) i = delta > 0 ? -1 : 0;
     this.selected = ids[(i + delta + ids.length) % ids.length];

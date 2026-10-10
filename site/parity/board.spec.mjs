@@ -215,6 +215,26 @@ test("Escape closes Help then collapses both wide splits", async ({ page }) => {
   }
 });
 
+// T12's page leads with the BLOCKED section the app paints: the live line, why and needs as
+// plain text, the numbered options. Only the action line differs: the demo answers nothing.
+for (const width of [40, 78, 109, 110]) {
+  test(`blocked task page section at ${width} columns`, async ({ page }) => {
+    await open(page, width);
+    await row(page, 12).click();
+    await page.keyboard.press("Enter");
+    const lines = (
+      await page.locator(".tsk-page-block > span").allTextContents()
+    ).map((line) => line.trimEnd());
+    expect(lines.slice(0, -2)).toEqual(
+      await readReference(`blocked-page-${width}`),
+    );
+    expect(lines.at(-1)).toBe("b unblock");
+    await expect(page.locator(".tsk-trail-heading")).toHaveText(
+      /^PAPER TRAIL · \d+ ▸$/,
+    );
+  });
+}
+
 for (const width of [40, 78, 109, 110]) {
   test(`desk start open back and wrapping at ${width} columns`, async ({
     page,
@@ -222,6 +242,10 @@ for (const width of [40, 78, 109, 110]) {
     await open(page, width);
     await expect(page.locator(".tsk-attribution")).toHaveCount(0);
     await expect(page.locator(".tsk-sec")).not.toContainText(["IN MOTION"]);
+    // The blocked row's live line matches the app's at the fixture's clock.
+    await expect(row(page, 12).locator(".tsk-live-line")).toHaveText(
+      await readReference(`live-${width}`),
+    );
     await capture(page, info, "initial");
     await page.keyboard.press("ArrowDown");
     await expect(row(page, 13)).toHaveClass(/is-sel/);
@@ -273,25 +297,62 @@ for (const width of [40, 78, 109])
     await open(page, width);
     await page.keyboard.press("ArrowRight");
     await expect(page.locator(".tsk-attribution")).toHaveText(
-      "    └─ tsk-parity",
+      "    └─ #release · tsk-parity",
     );
+    // A recorded block's peek replaces the live line: live text, why, Decide; no notes.
+    await expect(page.locator(".tsk-peek, .tsk-attribution")).toHaveText(
+      await readReference(`peek-${width}`),
+    );
+    await expect(row(page, 12).locator(".tsk-live-line")).toHaveCount(0);
     await capture(page, info, "project-peek");
     await page.keyboard.press("Escape");
     await expect(page.locator(".tsk-attribution")).toHaveCount(0);
+    await expect(row(page, 12).locator(".tsk-live-line")).toHaveText(
+      await readReference(`live-${width}`),
+    );
     await page.keyboard.press("2");
     await expect(page.locator(".tsk-tab")).toHaveCount(3);
     await page.keyboard.press("ArrowDown");
     await page.keyboard.press("ArrowRight");
     await expect(page.locator(".tsk-attribution")).toHaveText(
-      "    └─ #release",
+      "    └─ #release · tsk-parity",
     );
     await capture(page, info, "thread-peek");
     await page.keyboard.press("ArrowDown");
     await page.keyboard.press("ArrowRight");
-    await expect(page.locator(".tsk-attribution")).toHaveCount(0);
+    await expect(page.locator(".tsk-attribution")).toHaveText(
+      "    └─ tsk-parity",
+    );
     await expect(page.locator(".tsk-peek")).toContainText(["no notes yet"]);
     await capture(page, info, "unlabeled-peek");
   });
+for (const width of [110, 130])
+  test(`project preview live line and block peek at ${width}`, async ({
+    page,
+  }) => {
+    await open(page, width);
+    await page.keyboard.press("3");
+    await page.keyboard.press("ArrowDown");
+    await expect(page.locator(".tsk-wide-split.is-split")).toBeVisible();
+    await page.keyboard.press("l");
+    await expect(page.locator(".tsk-project-preview.is-live")).toBeVisible();
+    const previewRow = page.locator(`[data-preview-task="${id(12)}"]`);
+    await expect(previewRow.locator(".tsk-live-line")).toHaveText(
+      await readReference(`preview-live-${width}`),
+    );
+    await page.keyboard.press("l");
+    const preview = page.locator(".tsk-project-preview");
+    await expect(preview.locator(".tsk-peek, .tsk-attribution")).toHaveText(
+      await readReference(`preview-peek-${width}`),
+    );
+    await expect(previewRow.locator(".tsk-live-line")).toHaveCount(0);
+    await page.keyboard.press("h");
+    await expect(preview.locator(".tsk-peek")).toHaveCount(0);
+    await expect(previewRow.locator(".tsk-live-line")).toHaveText(
+      await readReference(`preview-closed-${width}`),
+    );
+  });
+
 test("110-column boundary and rail mouse return", async ({ page }, info) => {
   await open(page, 109);
   await page.keyboard.press("ArrowRight");
@@ -313,7 +374,7 @@ test("h and l mirror task-detail navigation in every demo board", async ({
 }) => {
   await open(page, 109);
   await page.keyboard.press("l");
-  await expect(page.locator(".tsk-peek")).toBeVisible();
+  await expect(page.locator(".tsk-peek").first()).toBeVisible();
   await page.keyboard.press("h");
   await expect(page.locator(".tsk-peek")).toHaveCount(0);
 
@@ -333,7 +394,7 @@ test("h and l mirror task-detail navigation in every demo board", async ({
   await page.keyboard.press("l");
   await expect(page.locator(".tsk-project-preview.is-live")).toBeVisible();
   await page.keyboard.press("l");
-  await expect(page.locator(".tsk-peek")).toBeVisible();
+  await expect(page.locator(".tsk-peek").first()).toBeVisible();
   await page.keyboard.press("h");
   await expect(page.locator(".tsk-peek")).toHaveCount(0);
   await page.keyboard.press("Enter");
@@ -416,14 +477,14 @@ test("projects overview opens a live project preview and keeps its task seat", a
   await expect(page.locator("[data-preview-task]")).not.toHaveCount(0);
   await page.keyboard.press("t");
   await expect(
-    page.locator('[role="dialog"][aria-label="project thread filter"]'),
+    page.locator('[role="dialog"][aria-label="project filter"]'),
   ).toBeVisible();
   await page
     .locator("[data-preview-filter-option]")
     .filter({ hasText: "#release" })
     .click();
   await expect(
-    page.locator('[role="dialog"][aria-label="project thread filter"]'),
+    page.locator('[role="dialog"][aria-label="project filter"]'),
   ).toHaveCount(0);
   await expect(page.locator("[data-preview-task]")).toHaveCount(2);
   await expect(

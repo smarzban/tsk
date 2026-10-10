@@ -36,6 +36,8 @@ fn normal_mode_keymap_equals_the_readme_and_queue_board_v1_set() {
         (KeyCode::Char('h'), BoardIntent::CollapseDetail, false),
         (KeyCode::Esc, BoardIntent::CloseLayer, false),
         (KeyCode::Char('s'), BoardIntent::PrimaryVerb, true),
+        (KeyCode::Char('@'), BoardIntent::OpenAssigneePicker, false),
+        (KeyCode::Char('r'), BoardIntent::BeginReply, false),
         (KeyCode::Char('d'), BoardIntent::Complete, true),
         (
             KeyCode::Char('n'),
@@ -89,8 +91,9 @@ fn normal_mode_keymap_equals_the_readme_and_queue_board_v1_set() {
         if needs_ctrl {
             assert_eq!(ctrl(key), Some(intent), "ctrl+{key:?}");
             // A bare mutating letter is dead unless the same letter carries a bare route
-            // of its own (`d` opens the done drawer).
-            if key != KeyCode::Char('d') {
+            // of its own (`d` opens the done drawer, `g` folds groups, `r` opens the reply
+            // box under a blocked row).
+            if !matches!(key, KeyCode::Char('d' | 'g' | 'r')) {
                 assert_eq!(normal(key), None, "bare mutating key {key:?} must be dead");
             }
         } else {
@@ -136,7 +139,7 @@ fn normal_mode_keymap_equals_the_readme_and_queue_board_v1_set() {
     assert_eq!(
         ctrl(KeyCode::Char('g')),
         None,
-        "ctrl+g retired in favour of bare g"
+        "ctrl+g is retired: starting an assigned task dispatches it"
     );
 }
 
@@ -177,8 +180,24 @@ fn bare_page_keys_never_mutate_steps() {
     let mut model = BoardModel::from_domain(&domain, None);
     apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
     let before = domain.get(id).expect("task").clone();
+    // Bare `a` does nothing; it never adds a step (`ctrl+a` does). Bare `g` only expands or
+    // collapses the paper trail.
+    assert_eq!(
+        map_key(
+            BoardInputMode::TaskPage,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)
+        ),
+        None
+    );
+    assert_eq!(
+        map_key(
+            BoardInputMode::TaskPage,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE)
+        ),
+        Some(BoardIntent::ToggleTrail)
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleTrail, None).expect("toggle");
     for key in [
-        KeyCode::Char('a'),
         KeyCode::Char('s'),
         KeyCode::Char(' '),
         KeyCode::Char('x'),

@@ -20,21 +20,23 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 | Move through wide views | `→` / `←` or `l` / `h` |
 | Add task | `+` |
 | Edit title | `ctrl+e` |
-| Start open or ready task | `ctrl+s` |
+| Start open or ready task; an assigned one dispatches to its agent | `ctrl+s` |
+| Assign: pick an agent profile or **none** | `@` |
 | Set ready, the picked queue | `ctrl+n` |
 | Set open, the inbox | `ctrl+o` |
-| Mark done | `ctrl+d` |
-| Toggle blocked / ready | `ctrl+b` |
-| Toggle review / ready | `ctrl+r` |
+| Mark done; confirm cleanup for a live dispatched worktree | `ctrl+d` |
+| Toggle blocked / ready; blocking opens the block card | `ctrl+b` |
+| Review with the review card; on a task in review, return it to ready | `ctrl+r` |
 | Delete, with a second press to confirm | `ctrl+x` or `ctrl+Delete` |
-| Undo completion/deletion; restore an archived selection | `ctrl+u` |
+| Undo completion/deletion/block; restore an archived selection | `ctrl+u` |
+| Reply to the blocked cursor row, or give feedback on a review row, inline under it | `r` |
 | Archive / restore selected task | `ctrl+f` |
 | Open / close done drawer | `d` |
 | Expand / collapse its archived group | `g` |
 | Desk / selected project / projects | `1` / `2` / `3` |
 | Project picker | `p` |
-| Project thread filter | `t` |
-| Cross-project view selector | `v` on Projects |
+| Project Filter (threads · @assignees) | `t` |
+| Cross-project view selector (threads · @assignees) | `v` on Projects |
 | Search current board rows | `/` |
 | Command palette | `:` |
 | All shortcuts | `?` |
@@ -44,11 +46,34 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 
 `ctrl+q` quits from task views, Help, and pickers too, including the wide project preview. It does not quit while editing text, using board search, typing a quick-add line, or filtering the palette. Save or cancel any unsaved draft first. During save recovery, resolve the pending save instead.
 
-`Esc` leaves multi-select and clears its marks first, then closes the current layer. At the full-board root on any tab, with multi-select inactive, it quits without confirmation rather than switching back to the desk. In either wide split, `Esc` closes the right column after any editor or overlay is dismissed. A further `Esc` at the full-board root quits. A project preview with unsaved work refuses to close. If narrowing the terminal hides the right column, the visible board/index is already at the root: `Esc` quits without an extra collapse, unless a parked draft blocks quitting.
+`Esc` leaves multi-select and clears its marks first, then closes the current layer. In a filter, view, assignee, or base picker, `Esc` closes the picker first and keeps the marks. At the full-board root on any tab, with multi-select inactive, it quits without confirmation rather than switching back to the desk. In either wide split, `Esc` closes the right column after any editor or overlay is dismissed. A further `Esc` at the full-board root quits. A project preview with unsaved work refuses to close. If narrowing the terminal hides the right column, the visible board/index is already at the root: `Esc` quits without an extra collapse, unless a parked draft blocks quitting.
 
-`Shift+M` enters or leaves multi-select while the board owns input. While it is active, `Space`, shifted arrows, and a plain task click change marks instead of opening a task. Removing the last mark leaves the mode active. `Shift+M` again from the board, `Esc`, a task action, or a lens change leaves it and clears the set. Text entry keeps `Shift+M` as a capital `M`; `Esc` leaves multi-select before cancelling that surface.
+`Shift+M` enters or leaves multi-select while the board owns input. While it is active, `Space`, shifted arrows, and a plain task click change marks instead of opening a task. Removing the last mark leaves the mode active. `Shift+M` again from the board, `Esc`, a task action, or a lens change leaves it and clears the set. Text entry keeps `Shift+M` as a capital `M`; `Esc` leaves multi-select before cancelling that surface, except in a filter, view, assignee, or base picker, where it closes the picker first.
 
-When tasks are marked, the status, delete, and archive shortcuts act on that set; without marks they act on the cursor. `Enter` and `ctrl+e` remain cursor-only. `ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Bulk block and review toggles send every target to blocked or review unless all targets already have that status, in which case they all return to ready. `ctrl+n` and `ctrl+o` can send done tasks directly to ready or open. One `ctrl+u` reverses an entire marked completion or deletion.
+When tasks are marked, the status, delete, archive, and `@` shortcuts act on that set; without marks they act on the cursor. `Enter` and `ctrl+e` remain cursor-only. `ctrl+s` on a task that still [runs after](/docs/board/#after) unfinished tasks asks first (`y` start anyway, `Esc` cancel). `ctrl+s` on an assigned task that was never dispatched dispatches it; on a dispatched task whose agent is gone it asks first (`y` relaunch, `n` just start, `Esc` cancel). On a marked set where any task would launch, `ctrl+s` opens one card listing what launches, what only starts, and what stays unstarted; `y` starts and launches them all, `Esc` cancels and keeps the marks. `ctrl+u` right after a start that dispatched restores the status and leaves the agent running. `ctrl+d` on a task with a live dispatch, or a marked set holding some, opens a cleanup card: `y` completes and cleans in the background, `n` completes and keeps everything, and `Esc` cancels (a bulk card keeps the marks). After `y`, `Esc` hides the card while cleanup continues, or closes a finished one. When nothing listed can be cleaned (uncommitted changes) there is no `y` choice. See [Agents](/docs/board/#agents). `ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Bulk block and review toggles send every target to blocked or review (through one card) unless all targets already have that status, in which case they all return to ready. `ctrl+n` and `ctrl+o` can send done tasks directly to ready or open. One `ctrl+u` reverses an entire marked completion, deletion, block, or review.
+
+## Block card
+
+`ctrl+b` on work that is not blocked opens the card. One card covers a marked set.
+
+| Action | Key |
+| --- | --- |
+| Next / previous field (why · on · needs) | `Tab` / `Shift+Tab` |
+| Cycle on: you · task · other | `←` / `→` on the on field |
+| Block (an empty card blocks with no reason) | `Enter` |
+| Cancel, keeping marks | `Esc` |
+
+## Review card
+
+`ctrl+r` on work that is not in review opens the card. One card covers a marked set.
+
+| Action | Key |
+| --- | --- |
+| Next / previous field (done · check · next · on) | `Tab` / `Shift+Tab` |
+| New check line | `Shift+Enter` in the check field |
+| Cycle on: you · agent · other | `←` / `→` on the on field |
+| Review (an empty card sets review at once) | `Enter` |
+| Cancel, keeping marks | `Esc` |
 
 ## Task page
 
@@ -56,18 +81,34 @@ These keys apply in **view mode**:
 
 | Action | Key |
 | --- | --- |
-| Select steps and **+ step** | `Tab` / `Shift+Tab` |
+| Select the BLOCKED or REVIEW top line, options or checks, and replies, then steps, **+ step**, the paper trail's heading, and its closed records while it is expanded | `Tab` / `Shift+Tab` |
+| Reply to a blocked task, or give feedback on a review | `r` |
+| Reply with an option, prefilled | `1`…`9` on a blocked page, or `Enter` on an option |
+| Unblock, or send a review back, as the reply box's `ctrl+s` with nothing typed | `ctrl+s` on a blocked or review page |
+| Approve a review | `ctrl+d` |
+| Cycle the selected check in place: open → passed → failed → open (a review page opens on its first unmarked check) | `Enter` on a check |
+| Show or fold the passed checks | `Enter` on the `N passed` line |
+| Expand or collapse the paper trail | `g`, or `Enter` on its heading |
+| Expand or fold a closed block or review round on the paper trail | `Enter` on it |
+| Edit why, on, and needs, or done, checks, next, and on (top line selected), or your selected reply | `ctrl+e` |
 | Activate first step, then move among steps | `↓`, then `↑` / `↓` |
 | Toggle selected step | `Enter` |
 | Add step | `ctrl+a` |
 | Edit title or selected step | `ctrl+e` |
 | Change task status | Board status shortcuts above |
-| Mark/remove selected step; otherwise confirm/delete task | `ctrl+x` |
+| Assign: pick an agent profile or **none** | `@` or click the footer's `@name` / `+ assign` |
+| Mark/remove selected step; soft-delete your selected reply; otherwise confirm/delete task | `ctrl+x` |
 | All shortcuts | `?` |
 | Close task | `Esc` |
 | Quit the board | `ctrl+q` |
 
-Click a step to select it. Click **+ step** to add. Field clicks become editable only after task editing starts.
+Click a step to select it. Click **+ step** to add. Click a review check to cycle it, or the `N passed` line to show or fold the passed checks. Click the paper trail's heading to expand or collapse it, and a closed record to expand it. Field clicks become editable only after task editing starts.
+
+The board's `1` `2` `3` tab keys stay on the board; on the task page, and in the wide task column while it has focus, the digits pick options instead. Each BLOCKED or REVIEW section ends in a dim action line listing only the keys that work right now.
+
+In the reply box, `Enter` starts a new line, `Shift+Enter` saves the reply, `ctrl+s` saves it and unblocks the task, and `Esc` cancels. An unassigned task unblocks to ready; an assigned one starts, which dispatches it, asks before relaunching a gone agent, or sends the reply to its still-running agent. `r` on a blocked board row opens the same box under the row. An agent's replies cannot be edited or deleted.
+
+On a review, the same box takes feedback: `Shift+Enter` saves it and the task stays in review, `ctrl+s` sends the review back (started, and the feedback with the failed checks goes to its running agent; an empty box needs a failed check), `ctrl+d` approves it (done, through the cleanup card when its dispatch is live; nothing is sent), and `Esc` cancels.
 
 ## Editing
 
@@ -82,8 +123,8 @@ Click a step to select it. Click **+ step** to add. Field clicks become editable
 | Save new step and open next empty row | `Enter` in new step |
 | Retain existing-step rename in session | `Enter` in existing step |
 | Stage selected-step removal | `ctrl+x` in task edit |
-| Open Scope picker / confirm selection | `Enter` |
-| Cycle Scope | `Space` or `←` / `→` |
+| Open Scope, Assignee, Base, or After picker / confirm selection | `Enter` |
+| Cycle Scope or Assignee without opening | `Space` or `←` / `→` |
 | Open / close selected Thread editor | `Enter` |
 | Line start / end | `Home` / `End` |
 | Word left / right | `ctrl+←` / `ctrl+→` |
@@ -92,7 +133,7 @@ Click a step to select it. Click **+ step** to add. Field clicks become editable
 
 `ctrl+e` moves to line end in text editors. `ctrl+a` moves to line start in quick-add; on the task page it adds a step instead. Paste preserves line breaks in Notes and converts them to spaces in single-line fields.
 
-Editing keys take precedence over view-mode status shortcuts. In the step editor, `ctrl+d` and `ctrl+o` still address the task; `ctrl+x` removes the step being edited, staged until the task edit is saved; `ctrl+a` adds another step. Notes are reached with `ctrl+e`, then `Tab`. `Alt+Enter` does not save the task edit.
+The editing ring is Title → Notes → steps → **+ step** → Assignee → Base → After → Thread → Scope → Title; `Shift+Tab` reverses it. Editing keys take precedence over view-mode status shortcuts. In the step editor, `ctrl+d` and `ctrl+o` still address the task; `ctrl+x` removes the step being edited, staged until the task edit is saved; `ctrl+a` adds another step. Notes are reached with `ctrl+e`, then `Tab`. `Alt+Enter` does not save the task edit.
 
 ## Quick-add
 
@@ -112,14 +153,21 @@ In Herdr quick capture, `Shift+Enter` saves and closes the popup. `Esc` closes a
 | Project picker | Arrows or `j`/`k` select; `Tab` or `←`/`→` switch tabs; `Enter` opens; `?` opens Help; `Esc` or `q` closes |
 | Project archive | `ctrl+f` archives; on archived tab, `ctrl+f` or `ctrl+u` restores |
 | Archived project view | `ctrl+u` restores; `Esc`, `p`, or `1`–`3` leaves |
-| Thread/view selector | Type or paste to filter; arrows or `Tab` select; `Enter` chooses; `Esc` closes |
+| Filter/view selector | `Tab` switches `threads · @assignees`; type or paste to filter the current tab; arrows select; `Enter` chooses; `Esc` closes |
+| Assignee picker | Type to filter; arrows or `Tab` select; `Enter` applies; `Esc` closes with no change |
+| Base picker | Open from palette **set base**, task footer `⎇`, or edit **Base** field; type to filter; arrows or `Tab` select; `Enter` applies; `Esc` closes with no change. No dedicated key |
+| Task picker (after) | Open from palette **set after…** or edit **After** field; type to filter by number or title; arrows or `Tab` select; `Space` ticks several; `Enter` applies the ticked tasks (or the highlighted one), **none** clears; `Esc` closes with no change. No dedicated key |
 | Board search | Type or paste; `Backspace` edits; `Enter` pins; `Esc` clears and closes |
-| Palette | Type to filter; arrows or `Tab` select; `Enter` runs; `Esc` closes |
+| Palette | Type to filter; arrows or `Tab` select; `Enter` runs; `Esc` closes. **set assignee** opens the assignee picker; **set base** opens the branch picker; **set after…** opens the task picker (all support marked sets); with two or more marked, **chain in order** runs each after the one marked before it; a dispatched task offers **dispatch again** |
 | Help | Type or paste to filter by key or action; arrows, page keys, or wheel scroll; `Esc` clears the search, then closes |
 | Archived-project launch prompt | `y` restores; `n` or `Esc` keeps archived; `?` opens Help |
+| Start card (marked set) | `y` starts and launches every listed task; `Esc` or `[x]` cancels and keeps the marks; `↑`/`↓` or page keys scroll a long set |
+| Relaunch card | `y` relaunches the gone agent; `n` just starts; `Esc` or `[x]` cancels |
+| Start-anyway card | `y` starts a task that still waits on others; `Esc` or `[x]` cancels and keeps the marks |
+| Dispatch cleanup prompt | `y` completes and cleans in the background; `n` completes only; `Esc` or `[x]` cancels; `↑`/`↓` or page keys scroll a long marked set. Nothing cleanable omits `y`. After `y`, `Esc` or `[x]` hides the card and cleanup continues; on a finished card it closes |
 | Failed save | `r` or `Enter` retries; `c` or `Esc` cancels |
 
-`j` and `k` are text in board search, thread/view filters, and Help search, not navigation. `?` and `/` are text in every input field, including Help search.
+`j` and `k` are text in board search, thread/view, assignee, and base filters, and Help search, not navigation. `?` and `/` are text in every input field, including Help search.
 
 ## Wide stage slider
 

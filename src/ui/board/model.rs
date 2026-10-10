@@ -1,16 +1,17 @@
 //! Session-only board state, forms, selection, and recovery presentation.
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
 use ratatui::layout::Position;
 use uuid::Uuid;
 
 use crate::context::InvocationSnapshot;
 use crate::domain::{DomainState, HumanStatus, Task, TaskScope};
-use crate::scope::{archived_path_contains, paths_equivalent};
+use crate::scope::{archived_path_contains, paths_equivalent, PathIdentityCache};
 use crate::ui::capture::CaptureField;
 use crate::ui::edit::{seeded_draft, EditBuffer};
 use crate::ui::input::{
@@ -20,7 +21,8 @@ use crate::ui::input::{
 use crate::ui::mouse::BoardPopup;
 pub use crate::ui::queue::BoardTab;
 use crate::ui::queue::{
-    self, visible_task_ids, BoardLens, NavTab, ProjectRow, QueueView, SectionKind, ThreadFilter,
+    self, visible_task_ids, AssigneeFilter, BoardFilter, BoardLens, NavTab, ProjectRow, QueueView,
+    SectionKind, ThreadFilter,
 };
 use crate::ui::selection;
 use crate::ui::terminal_text;
@@ -80,16 +82,28 @@ pub enum BoardInputMode {
     /// The task page footer's optional thread name is selected, ready for Enter or a second
     /// click to enter its text editor without ending the enclosing task edit session.
     SelectThread,
+    /// The task page footer's dispatch base is selected. Enter opens the branch picker.
+    SelectBase,
+    /// The task page footer's `after` list is selected. Enter opens the task picker.
+    SelectAfter,
     /// The task page footer's optional thread name owns its text cursor.
     EditThread,
-    /// The scope row of an open task form owns focus. The renderer adaptation remains
-    /// deliberately thin until, but its keyboard state is a first-class form field.
+    /// The scope row of an open task form owns focus.
     EditScope,
-    /// A task/capture form's transient scope chooser. It returns to its parent form on Esc.
-    FormScopeDropdown,
+    /// The assignee field cycles defined agent profiles plus unassigned.
+    EditAssignee,
+    /// A task/capture form footer chooser. The retained form focus identifies Scope or
+    /// Assignee, and Esc returns to that parent field without applying the highlight.
+    FormDropdown,
     /// The launch card owns input: a two-choice modal raised at most once per session
     /// when the invocation default resolved to an archived project.
     LaunchCard,
+    /// A cursor-pinned clean worktree is awaiting y/n/Esc cleanup choice.
+    CleanupConfirm,
+    /// A dirty worktree can only be kept and completed, or cancelled.
+    CleanupDirtyConfirm,
+    /// The bulk dispatch card over a marked set is awaiting y/Esc.
+    DispatchConfirm,
     /// The task page is open in view mode: the full-page surface shows the bound task and
     /// no field owns the cursor. Verbs act on the task; `e`/`n`/Tab enter field edits. A
     /// click does NOT: field regions are inert in this state, and only move focus once one
@@ -120,6 +134,10 @@ pub enum BoardInputMode {
     Search,
     /// Single-line status-row capture from board `+`.
     QuickAdd,
+    /// The block card (`ctrl+b`) owns input: why, on and needs.
+    BlockCard,
+    /// The task page's reply box under the last reply owns input.
+    EditReply,
 }
 
 /// Result of applying a [`BoardIntent`].
@@ -193,13 +211,22 @@ impl BoardLocation {
     }
 }
 
-/// The projects index's View control: the project overview (default) or one
-/// cross-project thread's flat task board.
+/// The projects index's View control: the project overview (default), one
+/// cross-project thread's flat task board, or one assignee's.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ProjectsView {
     #[default]
     Overview,
     Thread(String),
+    Assignee(String),
+}
+
+/// The two tabs of the Filter picker (`t` on a project board) and the overview's View
+/// picker (`v`): `threads · @assignees`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterTab {
+    Threads,
+    Assignees,
 }
 
 /// Which searchable list picker is open.
@@ -209,6 +236,12 @@ pub enum ListPickerKind {
     ThreadFilter,
     /// The projects index's View selector (bare `v`).
     ProjectsView,
+    /// The quick assignee picker (bare `@`, the task-page footer, palette **set assignee**).
+    Assignee,
+    /// Explicit dispatch base, including the leading remote-default choice.
+    Base,
+    /// The tasks a task runs after: tick several with Space, `none` clears.
+    After,
 }
 
 /// One choice inside a searchable list picker.
@@ -225,17 +258,91 @@ pub enum ListPickerValue {
     ThreadAll,
     ThreadNamed(String),
     ThreadWithout,
+    /// Assignees tab of the project board's Filter picker.
+    AssigneeFilterAll,
+    AssigneeFilterNamed(String),
+    AssigneeFilterUnassigned,
     ProjectsOverview,
     ProjectsThread(String),
+    ProjectsAssignee(String),
+    /// Assign this exact profile name, or clear the assignee with `None`.
+    Assignee(Option<String>),
+    /// Set this exact branch name, or clear the explicit base with `None`.
+    Base(Option<String>),
+    /// One task the target may run after, by number.
+    After(u64),
+    /// Run after nothing.
+    AfterNone,
+    /// Informational row, never a selectable or confirmable value.
+    Unavailable,
 }
 
-/// An open searchable list picker (thread filter / projects view). Session-only.
+/// The tick column a task-picker label leads with.
+const AFTER_TICKED: &str = "✓ ";
+const AFTER_UNTICKED: &str = "  ";
+
+fn after_option_label(ticked: bool, rest: &str) -> String {
+    let tick = if ticked { AFTER_TICKED } else { AFTER_UNTICKED };
+    format!("{tick}{rest}")
+}
+
+/// What the assignee picker applies to, captured when it opens so a refresh that moves the
+/// cursor underneath it can never redirect the assignment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AssigneePickerTarget {
+    pub ids: Vec<Uuid>,
+}
+
+/// What the branch picker applies to. An edit-ring picker updates only its retained draft;
+/// every other picker target is one atomic domain batch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BasePickerTarget {
+    pub ids: Vec<Uuid>,
+    pub edit_draft: bool,
+    request: Uuid,
+    project: PathBuf,
+    current: Option<String>,
+    selection_pending: bool,
+}
+
+/// What the task picker applies to, captured when it opens. An edit-ring picker updates only
+/// its form's draft; every other target is one atomic, undoable domain batch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AfterPickerTarget {
+    pub ids: Vec<Uuid>,
+    pub edit_draft: bool,
+    /// The ticked numbers, in the order they were ticked.
+    pub ticked: Vec<u64>,
+    /// Current links the picker does not list (a done prerequisite): kept unless `none`.
+    pub kept: Vec<u64>,
+}
+
+/// An open searchable list picker (thread filter / projects view / assignee / base / after).
+/// Session-only.
 #[derive(Debug, Clone)]
 pub(super) struct ListPickerState {
     pub kind: ListPickerKind,
     pub options: Vec<ListPickerOption>,
     pub selected: usize,
     pub query: String,
+    /// The mode confirm and cancel restore. The thread and View pickers open from the board
+    /// only; the assignee picker also opens over the task page, which must survive it.
+    pub return_mode: BoardInputMode,
+    pub assignee_target: Option<AssigneePickerTarget>,
+    pub base_target: Option<BasePickerTarget>,
+    pub after_target: Option<AfterPickerTarget>,
+    /// Source index of the option the board currently applies (painted `✓`).
+    pub active: Option<usize>,
+    /// The tabbed filter pickers keep the inactive tab here; `None` for single lists.
+    pub tabs: Option<ListPickerTabs>,
+}
+
+/// The inactive tab of a tabbed list picker, swapped in by `Tab`.
+#[derive(Debug, Clone)]
+pub(super) struct ListPickerTabs {
+    pub active_tab: FilterTab,
+    pub other_options: Vec<ListPickerOption>,
+    pub other_active: Option<usize>,
 }
 /// The immutable value a board form carries for its whole lifetime.
 ///
@@ -297,6 +404,9 @@ pub(super) struct TaskEditSave {
     pub(super) notes: Option<String>,
     pub(super) scope: TaskScope,
     pub(super) thread: Option<String>,
+    pub(super) assignee: Option<String>,
+    pub(super) base: Option<String>,
+    pub(super) after: Vec<u64>,
     /// Existing-step names staged alongside the ordinary task fields. They reach the
     /// domain only when the task session is confirmed with Shift+Enter.
     pub(super) step_renames: BTreeMap<Uuid, String>,
@@ -316,6 +426,14 @@ pub(super) struct BoardForm {
     pub(super) thread: EditBuffer,
     /// Field-local validation feedback, painted by the footer input rather than status chrome.
     pub(super) thread_refusal: Option<String>,
+    /// Optional assignee draft and the defined choices available this session.
+    pub(super) assignee: Option<String>,
+    /// Optional explicit dispatch branch. `None` means the repository's remote default.
+    pub(super) base: Option<String>,
+    /// The tasks this one runs after, by number, as the task picker last set them.
+    pub(super) after: Vec<u64>,
+    pub(super) assignee_options: Vec<Option<String>>,
+    pub(super) assignee_selected: usize,
     /// A task page starts view-only. Entering any field makes its steps selectable and editable
     /// for the rest of that page session; closing the page drops the state with the form.
     pub(super) editing: bool,
@@ -334,6 +452,8 @@ pub(super) struct BoardForm {
     /// Page-session steps state (step cursor, window scroll, delete mark, step
     /// editor). Carried by the form so it lives exactly as long as the page does.
     pub(super) steps: StepsPageState,
+    /// The BLOCKED section's ring stop and reply box. Lives as long as the page does.
+    pub(super) block: super::block::BlockPageState,
     /// The furthest shared-content scroll offset the last painted frame can show.
     ///
     /// The scroll bound depends on the wrap width, which only the renderer knows: the model
@@ -357,6 +477,7 @@ impl BoardForm {
         tasks: &[Task],
         focus: CaptureField,
         archived: &BTreeSet<String>,
+        agent_names: &[String],
     ) -> Self {
         let mut form = Self::new(
             &task.title,
@@ -369,6 +490,12 @@ impl BoardForm {
             archived,
         );
         form.thread = seeded_draft(task.thread.as_deref().unwrap_or_default());
+        form.assignee = task.assignee.clone();
+        form.base = task.base.clone();
+        form.after = task.after.clone();
+        form.set_agent_names(agent_names);
+        form.block.fold = super::block::CheckFold::fresh(task);
+        form.block.target = super::block::initial_target(task, form.block.fold.as_ref());
         form.task_snapshot = Some(Box::new(task.clone()));
         form
     }
@@ -422,6 +549,11 @@ impl BoardForm {
             scope,
             thread: seeded_draft(""),
             thread_refusal: None,
+            assignee: None,
+            base: None,
+            after: Vec::new(),
+            assignee_options: vec![None],
+            assignee_selected: 0,
             editing: false,
             focus,
             scope_options,
@@ -432,6 +564,7 @@ impl BoardForm {
             notes_scroll: 0,
             manual_page_scroll: false,
             steps: StepsPageState::default(),
+            block: super::block::BlockPageState::default(),
             notes_max_scroll: std::cell::Cell::new(0),
             notes_width: std::cell::Cell::new(0),
         }
@@ -464,6 +597,9 @@ impl BoardForm {
             CaptureField::Thread if self.is_task() => BoardInputMode::SelectThread,
             CaptureField::Thread => BoardInputMode::EditThread,
             CaptureField::Scope => BoardInputMode::EditScope,
+            CaptureField::Assignee => BoardInputMode::EditAssignee,
+            CaptureField::Base => BoardInputMode::SelectBase,
+            CaptureField::After => BoardInputMode::SelectAfter,
         }
     }
 
@@ -482,6 +618,12 @@ impl BoardForm {
                 self.scope = task.scope.clone();
                 self.select_current_scope();
             }
+            CaptureField::Assignee => {
+                self.assignee = task.assignee.clone();
+                self.select_current_assignee();
+            }
+            CaptureField::Base => self.base = task.base.clone(),
+            CaptureField::After => self.after = task.after.clone(),
         }
         if let Some(snapshot) = self.task_snapshot.as_mut() {
             match field {
@@ -489,6 +631,9 @@ impl BoardForm {
                 CaptureField::Notes => snapshot.notes = task.notes.clone(),
                 CaptureField::Thread => snapshot.thread = task.thread.clone(),
                 CaptureField::Scope => snapshot.scope = task.scope.clone(),
+                CaptureField::Assignee => snapshot.assignee = task.assignee.clone(),
+                CaptureField::Base => snapshot.base = task.base.clone(),
+                CaptureField::After => snapshot.after = task.after.clone(),
             }
         }
     }
@@ -496,7 +641,10 @@ impl BoardForm {
     pub(super) fn focus_next(&mut self) {
         self.focus = match self.focus {
             CaptureField::Title => CaptureField::Notes,
-            CaptureField::Notes => CaptureField::Thread,
+            CaptureField::Notes => CaptureField::Assignee,
+            CaptureField::Assignee => CaptureField::Base,
+            CaptureField::Base => CaptureField::After,
+            CaptureField::After => CaptureField::Thread,
             CaptureField::Thread => CaptureField::Scope,
             CaptureField::Scope => CaptureField::Title,
         };
@@ -506,9 +654,60 @@ impl BoardForm {
         self.focus = match self.focus {
             CaptureField::Title => CaptureField::Scope,
             CaptureField::Notes => CaptureField::Title,
-            CaptureField::Thread => CaptureField::Notes,
+            CaptureField::Assignee => CaptureField::Notes,
+            CaptureField::Base => CaptureField::Assignee,
+            CaptureField::After => CaptureField::Base,
+            CaptureField::Thread => CaptureField::After,
             CaptureField::Scope => CaptureField::Thread,
         };
+    }
+
+    pub(super) fn set_agent_names(&mut self, names: &[String]) {
+        self.assignee_options = std::iter::once(None)
+            .chain(names.iter().cloned().map(Some))
+            .collect();
+        self.select_current_assignee();
+    }
+
+    pub(super) fn cycle_assignee(&mut self, forward: bool) {
+        if self.assignee_options.is_empty() {
+            return;
+        }
+        self.assignee_selected = if forward {
+            (self.assignee_selected + 1) % self.assignee_options.len()
+        } else {
+            self.assignee_selected
+                .checked_sub(1)
+                .unwrap_or(self.assignee_options.len() - 1)
+        };
+        self.assignee = self.assignee_options[self.assignee_selected].clone();
+    }
+
+    fn select_current_assignee(&mut self) {
+        self.assignee_selected = self
+            .assignee_options
+            .iter()
+            .position(|option| option == &self.assignee)
+            .unwrap_or(0);
+    }
+
+    fn move_assignee_selection(&mut self, forward: bool) {
+        if self.assignee_options.is_empty() {
+            return;
+        }
+        self.assignee_selected = if forward {
+            (self.assignee_selected + 1) % self.assignee_options.len()
+        } else {
+            self.assignee_selected
+                .checked_sub(1)
+                .unwrap_or(self.assignee_options.len() - 1)
+        };
+    }
+
+    fn apply_assignee_selection(&mut self) {
+        if let Some(assignee) = self.assignee_options.get(self.assignee_selected) {
+            self.assignee = assignee.clone();
+        }
     }
 
     pub(super) fn cycle_scope(&mut self) {
@@ -632,8 +831,17 @@ fn board_form_scope_options(
     archived: &BTreeSet<String>,
 ) -> Vec<TaskScope> {
     let mut options = Vec::new();
+    // Aliases of one directory (`/tmp/x` and `/private/tmp/x`) are one choice; the first
+    // spelling pushed wins, so the form's own scope keeps its exact value.
+    let identities = PathIdentityCache::default();
     let push = |scope: TaskScope, options: &mut Vec<TaskScope>| {
-        if !options.contains(&scope) {
+        let known = options.iter().any(|option| match (option, &scope) {
+            (TaskScope::Project { path: known }, TaskScope::Project { path }) => {
+                identities.equivalent(known, path)
+            }
+            (known, scope) => known == scope,
+        });
+        if !known {
             options.push(scope);
         }
     };
@@ -666,6 +874,88 @@ fn board_form_scope_options(
     options
 }
 
+/// Shared, session-local remote-default cache. Metadata refreshes off the render
+/// thread, after a dispatch changes origin/HEAD or a short TTL catches external changes.
+#[derive(Debug, Clone, Default)]
+struct DefaultBranchCache(Arc<Mutex<BTreeMap<PathBuf, CachedDefaultBranch>>>);
+
+#[derive(Debug, Clone)]
+struct CachedDefaultBranch {
+    name: Option<String>,
+    checked_at: Instant,
+    loading: bool,
+    request: Uuid,
+}
+
+impl DefaultBranchCache {
+    fn invalidate(&self, project: &Path) {
+        if let Ok(mut cache) = self.0.try_lock() {
+            cache.remove(project);
+        }
+    }
+
+    fn get_or_request(&self, project: &Path) -> String {
+        const TTL: Duration = Duration::from_secs(2);
+        let path = project.to_path_buf();
+        let mut request = None;
+        let cached = self.0.try_lock().ok().and_then(|mut cache| {
+            let entry = cache.entry(path.clone()).or_insert_with(|| {
+                let id = Uuid::new_v4();
+                request = Some(id);
+                CachedDefaultBranch {
+                    name: None,
+                    checked_at: Instant::now(),
+                    loading: true,
+                    request: id,
+                }
+            });
+            if !entry.loading && entry.checked_at.elapsed() >= TTL {
+                let id = Uuid::new_v4();
+                entry.request = id;
+                entry.loading = true;
+                request = Some(id);
+            }
+            entry.name.clone()
+        });
+        if let Some(request) = request {
+            let shared = Arc::clone(&self.0);
+            std::thread::spawn(move || {
+                let name = crate::git_base::default_branch_name(&path)
+                    .unwrap_or_else(|| "default".to_string());
+                if let Ok(mut cache) = shared.lock() {
+                    if let Some(entry) = cache
+                        .get_mut(&path)
+                        .filter(|entry| entry.request == request)
+                    {
+                        entry.name = Some(name);
+                        entry.checked_at = Instant::now();
+                        entry.loading = false;
+                    }
+                }
+            });
+        }
+        cached.unwrap_or_else(|| "default".to_string())
+    }
+}
+
+/// The base picker's disabled row while its background fetch runs.
+pub const REFRESHING_BRANCHES: &str = "refreshing…";
+
+/// Workers publish here, only the event-loop poll updates the active picker.
+#[derive(Debug)]
+struct BasePickerWorker {
+    job: Uuid,
+    request: Uuid,
+}
+
+#[derive(Debug)]
+struct BasePickerResult {
+    request: Uuid,
+    project: PathBuf,
+    branches: Result<(Vec<String>, Option<String>), String>,
+    default: String,
+}
+
 /// Pure board presentation state for one open session.
 ///
 /// Session-only UI state lives here and is never written under the task store or
@@ -677,7 +967,10 @@ pub struct BoardModel {
     /// Scope paths of archived projects, carried from domain state so the lens
     /// query can filter hidden tasks without re-deriving from records.
     pub(super) archived_projects: BTreeSet<String>,
+    /// Defined profile names loaded once for this session.
+    pub(super) agent_names: Vec<String>,
     pub(super) this_repo: Option<PathBuf>,
+    default_branches: DefaultBranchCache,
     /// Session board location (active surface). Not durable.
     pub(super) board_location: BoardLocation,
     /// Slot 2 identity, independent from the active surface (for example after switching to
@@ -687,9 +980,9 @@ pub struct BoardModel {
     pub(super) wide_stage: WideStage,
     /// Stage `Enter` (or a row double-click) left for the full task page; `Esc` returns there.
     pub(super) stage_origin: Option<WideStage>,
-    /// The project board's session thread filter. It narrows every status section and
-    /// is cleared whenever the selected project changes.
-    pub(super) thread_filter: ThreadFilter,
+    /// The project board's session filter (thread AND assignee). It narrows every status
+    /// section and is cleared whenever the selected project changes.
+    pub(super) filter: BoardFilter,
     /// The projects index's View: the project overview, or one cross-project thread.
     pub(super) projects_view: ProjectsView,
     /// The active lens's content-search query. Session-only.
@@ -700,6 +993,8 @@ pub struct BoardModel {
     pub(super) projects_selected: usize,
     /// Open searchable list picker (thread filter / projects view). Session-only.
     pub(super) list_picker: Option<ListPickerState>,
+    base_picker_results: Arc<Mutex<Vec<BasePickerResult>>>,
+    base_picker_workers: Arc<Mutex<HashMap<PathBuf, BasePickerWorker>>>,
     /// Whether the done drawer lists completed tasks. Session-only.
     pub(super) drawer_open: bool,
     /// The done drawer's archived group starts collapsed on every launch. Session-only.
@@ -736,6 +1031,10 @@ pub struct BoardModel {
     pub(super) help_scroll: usize,
     /// Furthest help scroll the last painted card could show (renderer-recorded).
     pub(super) help_max_scroll: Cell<usize>,
+    /// This board's SaveRecovery popup only mirrors a failed save another board owns.
+    pub(super) save_recovery_proxy: bool,
+    /// Furthest cleanup-card scroll the last painted card could show (renderer-recorded).
+    pub(super) cleanup_max_scroll: Cell<usize>,
     /// Underlying surface to restore after Help closes.
     pub(super) help_return_mode: BoardInputMode,
     /// Underlying board mode to restore after the search input closes or pins.
@@ -753,6 +1052,11 @@ pub struct BoardModel {
     pub(super) quick_add_save: Option<QuickAddSave>,
     /// A task-form edit waiting for the app save boundary to confirm persistence.
     pub(super) task_edit_save: Option<TaskEditSave>,
+    /// Tasks a quick-picker assignment changed, waiting for its save to land before an open
+    /// task form bound to one of them adopts the new assignee. Cancel drops it unapplied.
+    pub(super) pending_form_assignee_sync: Option<Vec<Uuid>>,
+    /// Same stale-draft guard for an immediately-applied Base picker.
+    pub(super) pending_form_base_sync: Option<Vec<Uuid>>,
     /// The app save boundary holds task-form release across its inner reducer sync.
     pub(super) hold_task_edit_save: bool,
     /// Last board action feedback or empty-selection chrome message.
@@ -778,6 +1082,44 @@ pub struct BoardModel {
     pub(super) suspended_delete_notice_count: Option<usize>,
     /// First ctrl+x arms this exact target set; a second press on the same set deletes it.
     pub(super) pending_delete: Option<BTreeSet<Uuid>>,
+    /// Cursor-pinned dispatch cleanup details while the confirmation modal owns input.
+    pub(super) cleanup_prompt: Option<CleanupPrompt>,
+    /// A confirmed cleanup whose host work runs off the event loop. Outlives its card: Esc
+    /// hides the card and the status row reports progress until the run finishes.
+    pub(super) cleanup_run: SharedCleanupRun,
+    /// Quit waits here while a cleanup run finishes its git and Herdr steps, up to this bound.
+    pub(super) quit_after_cleanup: Option<Instant>,
+    /// The status row while a hidden cleanup runs (`cleaning 2 of 5…`, `finishing
+    /// cleanup…`). Its own slot, under any action message: another action never erases it
+    /// and it never outlives the run.
+    pub(super) cleanup_status: Option<String>,
+    /// Bulk dispatch card over the marked set while it owns input.
+    pub(super) dispatch_prompt: Option<DispatchPrompt>,
+    /// A reply-box `ctrl+s` whose reply save failed: the task to start once Retry saves it.
+    /// Cancel drops it. Session-only.
+    pub pending_reply_start: Option<Uuid>,
+    /// A reply-box `ctrl+s` to a running agent whose save failed: the task whose reply goes
+    /// to its agent once Retry saves it. Cancel drops it. Session-only.
+    pub pending_reply_delivery: Option<Uuid>,
+    /// The reply text a held start or delivery sends once Retry saves it. Session-only.
+    pub pending_reply_text: Option<String>,
+    /// `y` on the start-anyway card: the replayed start skips the after check once.
+    pub start_anyway: bool,
+    /// What a completion's save released (`T203 started · T202 done`), joined onto the cleanup
+    /// summary that owns the status row once the cleanup lands.
+    pub released_note: Option<String>,
+    /// Marked tasks in the order they were marked, for **chain in order**.
+    pub(super) mark_order: Vec<Uuid>,
+    /// Tasks a quick task-picker change saved: an open page form bound to one adopts the new
+    /// list once the save lands, unless its own After draft changed.
+    pub(super) pending_form_after_sync: Option<Vec<Uuid>>,
+    /// The block card while it owns input.
+    pub(super) block_card: Option<super::block::BlockCard>,
+    /// The reply box open inline under a blocked board row.
+    pub(crate) row_reply: Option<super::block::RowReply>,
+    /// A bulk dispatch whose launches are still landing. One slot shared by the outer board and
+    /// its project preview, so dropping or rebinding the preview never loses a running batch.
+    pub(super) bulk_dispatch: SharedBulkDispatch,
     /// Whether the armed delete originated from a non-empty marked set.
     pub(super) pending_delete_bulk: bool,
     /// Open project-picker or save-recovery presentation.
@@ -819,6 +1161,579 @@ pub struct BoardModel {
     /// Whether the last app-boundary presentation was wide enough to paint a split frame.
     /// A parked preview keeps its session while input returns to the painted index.
     pub(super) frame_wide: Cell<bool>,
+    /// A fixed clock for every age the board paints; `None` reads the wall clock. Tests and
+    /// goldens pin it so no frame depends on today's date.
+    clock: Option<SystemTime>,
+}
+
+/// One dispatched task on a cleanup card, captured before the modal opens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupRow {
+    pub task_id: Uuid,
+    pub number: u64,
+    pub worktree: String,
+    pub branch: String,
+    pub base: String,
+    pub dirty: bool,
+    pub branch_merged: bool,
+    pub workspace_exists: bool,
+    pub warning: Option<String>,
+    pub base_available: bool,
+    /// The background fetch and ancestry recheck still running; the card shows `checking…`
+    /// in place of the cached merged status until it lands.
+    pub merge_check: Option<crate::dispatch::MergeCheck>,
+    /// The dispatch record the card inspected. Cleanup touches the task only while this is
+    /// still its record; `None` (a card built without one) never cleans.
+    pub inspected: Option<crate::domain::Dispatch>,
+    /// The background check landed without confirming anything (its ancestry query errored
+    /// or timed out): the branch stays, whatever the refs on disk say later.
+    pub check_failed: bool,
+    /// The background check could not fetch this remote: the refs on disk confirm nothing,
+    /// so the card says `not confirmed (offline)` and the branch stays.
+    pub unreachable_remote: Option<String>,
+}
+
+impl CleanupRow {
+    /// The inspected record has no exact base ref, so no ancestry target is known and the
+    /// branch stays whatever the refs say.
+    pub fn no_recorded_base(&self) -> bool {
+        self.inspected
+            .as_ref()
+            .is_some_and(|record| record.base_ref.is_none())
+    }
+
+    /// Copy a landed merged check onto the row. True when one landed.
+    fn apply_landed_check(&mut self) -> bool {
+        let Some(verdict) = self.merge_check.as_ref().and_then(|check| check.take()) else {
+            return false;
+        };
+        self.merge_check = None;
+        self.check_failed = !verdict.confirmed;
+        self.unreachable_remote = verdict.unreachable_remote;
+        self.branch_merged = verdict.branch_merged;
+        self.base_available = verdict.base_available;
+        self.warning = verdict.warning;
+        true
+    }
+
+    pub fn checking(&self) -> bool {
+        self.merge_check.is_some()
+    }
+
+    /// No completed check vouches for the merged status: cleanup keeps the branch.
+    pub fn merge_unconfirmed(&self) -> bool {
+        self.checking() || self.check_failed
+    }
+
+    /// `y` deletes the branch: a completed check confirmed the merge into an available base.
+    pub fn branch_deletable(&self) -> bool {
+        !self.merge_unconfirmed()
+            && self.unreachable_remote.is_none()
+            && self.base_available
+            && self.branch_merged
+    }
+
+    /// The ref policy `y` cleans this row with: the card already refreshed the base off the
+    /// event loop, so cleanup never fetches; an unfinished, failed or offline check keeps
+    /// the branch.
+    pub fn cleanup_refs(&self) -> crate::dispatch::CleanupRefs {
+        if self.merge_unconfirmed() {
+            crate::dispatch::CleanupRefs::Unconfirmed
+        } else if self.unreachable_remote.is_some() {
+            crate::dispatch::CleanupRefs::Offline
+        } else {
+            crate::dispatch::CleanupRefs::Cached
+        }
+    }
+
+    /// `y` removes this worktree. A dirty worktree is never cleaned.
+    pub fn cleanable(&self) -> bool {
+        !self.dirty
+    }
+}
+
+/// The marked set behind a bulk cleanup card: every target completes in one save.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BulkCleanup {
+    /// The whole marked set, in mark order, including tasks without a live dispatch.
+    pub targets: Vec<Uuid>,
+    /// Board identifiers (`T12`) of targets with no live dispatch: marked done, nothing to clean.
+    pub plain: Vec<String>,
+    /// Targets whose recorded worktree was already gone, with the dispatch record inspected:
+    /// on `y` or `n` they converge to cleaned only if that same record is still current and
+    /// its worktree is still gone.
+    pub missing: Vec<(Uuid, String, crate::domain::Dispatch)>,
+    /// Dispatched targets whose worktree could not be inspected, with the reason: kept, still
+    /// marked done.
+    pub refused: Vec<(String, String)>,
+}
+
+/// Session-only start confirmation: the bulk card over a marked set where a start would
+/// launch an agent, checked when `ctrl+s` opened it, or the relaunch card for one cursor task
+/// whose agent is gone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchPrompt {
+    /// The tasks `y` launches, in board order.
+    pub launch: Vec<crate::dispatch::EligibleDispatch>,
+    /// Marked tasks the card skips: the board identifier and the single-task refusal. They
+    /// stay unstarted.
+    pub skipped: Vec<(String, String)>,
+    /// Marked tasks `y` only starts, in board order: unassigned, or already dispatched
+    /// (relaunching stays cursor-only).
+    pub start_only: Vec<(String, Uuid)>,
+    /// Start-only rows that were done or archived when the card opened: the palette's absolute
+    /// start corrects them to started. Only these may start while done or archived.
+    pub corrections: Vec<Uuid>,
+    /// Start-only rows assigned and never dispatched that cannot launch here, with why (not
+    /// in Herdr, a desk task): `y` starts them plainly.
+    pub no_launch: Vec<(Uuid, &'static str)>,
+    /// Opened by the palette's absolute **set status: started** (any status but started
+    /// moves) rather than `ctrl+s` (open and ready only); `y` rechecks the rows by it.
+    pub any_status: bool,
+    /// The relaunch card: one cursor task whose agent is gone. `y` relaunches it, `n` only
+    /// starts it. `launch`, `skipped` and `start_only` are empty.
+    pub relaunch: Option<RelaunchPrompt>,
+    /// The start-anyway card: the start's targets still wait on tasks that are not done. `y`
+    /// starts them anyway, through the same start route. Everything else is empty.
+    pub start_anyway: Option<StartAnywayPrompt>,
+    /// The git-repository check of the listed tasks, running off the event loop; rows show
+    /// `checking…` until it lands.
+    pub git_checks: Option<crate::dispatch::GitChecks>,
+    /// First visible card row; the painter clamps it to the rows that fit.
+    pub scroll: usize,
+}
+
+impl DispatchPrompt {
+    pub fn checking(&self) -> bool {
+        self.git_checks.is_some()
+    }
+
+    /// The relaunch card for one cursor task whose agent is gone.
+    pub fn relaunch(prompt: RelaunchPrompt) -> Self {
+        Self {
+            launch: Vec::new(),
+            skipped: Vec::new(),
+            start_only: Vec::new(),
+            corrections: Vec::new(),
+            no_launch: Vec::new(),
+            any_status: prompt.any_status,
+            relaunch: Some(prompt),
+            start_anyway: None,
+            git_checks: None,
+            scroll: 0,
+        }
+    }
+
+    /// The start-anyway card over a start whose targets still wait.
+    pub fn start_anyway(prompt: StartAnywayPrompt) -> Self {
+        Self {
+            launch: Vec::new(),
+            skipped: Vec::new(),
+            start_only: Vec::new(),
+            corrections: Vec::new(),
+            no_launch: Vec::new(),
+            any_status: prompt.intent != crate::ui::input::BoardIntent::PrimaryVerb,
+            relaunch: None,
+            start_anyway: Some(prompt),
+            git_checks: None,
+            scroll: 0,
+        }
+    }
+}
+
+/// A start (`ctrl+s`, palette **set status: started**) whose targets still wait on tasks that
+/// are not done, asking first. The marks stay, so `y` starts the same set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartAnywayPrompt {
+    /// One line per waiting target: `T203 runs after T202 (started)`.
+    pub waiting: Vec<String>,
+    /// The start that asked, replayed on `y`.
+    pub intent: crate::ui::input::BoardIntent,
+}
+
+/// A cursor task whose dispatched agent is gone, asking before a relaunch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelaunchPrompt {
+    pub task_id: Uuid,
+    pub number: u64,
+    /// The start's rule: any status but started moves (palette, reply box), or only open and
+    /// ready (`ctrl+s`). `n` rechecks the task by it.
+    pub any_status: bool,
+    pub assignee: String,
+    pub worktree: String,
+}
+
+/// A launch recorded on its task whose save has not been confirmed yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingLaunch {
+    pub task_id: Uuid,
+    pub identifier: String,
+    pub assignee: String,
+    pub record: crate::domain::Dispatch,
+    pub naming: Option<crate::dispatch::AgentNaming>,
+    /// The human status kept instead of `started`, when it changed after `y`.
+    pub kept_status: Option<String>,
+}
+
+/// A bulk dispatch in flight. Launches run off the event loop; each outcome is recorded and
+/// saved as it lands, like a single dispatch.
+#[derive(Debug, Clone)]
+pub struct BulkDispatchRun {
+    pub batch: crate::dispatch::LaunchBatch,
+    /// Every task `y` confirmed, including any a recheck refused before launching.
+    pub total: usize,
+    /// Board identifiers of launched tasks whose record is saved, with their assignee.
+    pub launched: Vec<(String, String)>,
+    /// Saved launches whose task kept a status the human set after `y`.
+    pub kept_status: Vec<(String, String)>,
+    /// Recorded launches waiting on a save (a failed one is in save recovery).
+    pub pending: Vec<PendingLaunch>,
+    /// Launched agents whose record was discarded (a cancelled save): identifier, workspace.
+    pub unrecorded: Vec<(String, String)>,
+    /// Board identifiers of tasks whose launch or record failed, with the reason.
+    pub failed: Vec<(String, String)>,
+    /// Fetch fallbacks reported by launches (cached refs used).
+    pub warnings: Vec<String>,
+}
+
+impl BulkDispatchRun {
+    pub fn new(batch: crate::dispatch::LaunchBatch, total: usize) -> Self {
+        Self {
+            batch,
+            total,
+            launched: Vec::new(),
+            kept_status: Vec::new(),
+            pending: Vec::new(),
+            unrecorded: Vec::new(),
+            failed: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    /// Every launch has landed and its record is saved or reported.
+    pub fn settled(&self) -> bool {
+        self.batch.finished() && self.pending.is_empty()
+    }
+
+    /// The status row while launches land, and the outcome once all have.
+    pub fn message(&self) -> String {
+        let total = self.total;
+        let settled =
+            self.launched.len() + self.failed.len() + self.unrecorded.len() + self.pending.len();
+        let mut parts = Vec::new();
+        if settled < total {
+            parts.push(format!("dispatching {}/{total}…", settled + 1));
+        }
+        if !self.launched.is_empty() {
+            let launched = self
+                .launched
+                .iter()
+                .map(|(identifier, assignee)| format!("{identifier} to @{assignee}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            parts.push(format!("dispatched {launched}"));
+        }
+        for (identifier, status) in &self.kept_status {
+            parts.push(format!("{identifier} kept {status} (changed meanwhile)"));
+        }
+        if !self.unrecorded.is_empty() {
+            let unrecorded = self
+                .unrecorded
+                .iter()
+                .map(|(identifier, workspace)| {
+                    format!("{identifier} (agent running in workspace {workspace})")
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            parts.push(format!("launched but not recorded: {unrecorded}"));
+        }
+        for (identifier, reason) in &self.failed {
+            parts.push(format!("{identifier} failed: {reason}"));
+        }
+        let mut warnings = self.warnings.clone();
+        warnings.dedup();
+        parts.extend(warnings);
+        parts.join(" · ")
+    }
+}
+
+/// The refusal when no marked task can be dispatched: one shared reason, or each task's own.
+pub fn nothing_to_dispatch(skipped: &[(String, String)]) -> String {
+    let shared = skipped
+        .first()
+        .filter(|(_, first)| skipped.iter().all(|(_, reason)| reason == first));
+    match shared {
+        Some((_, reason)) => format!("nothing to dispatch: {reason}"),
+        None => format!(
+            "nothing to dispatch: {}",
+            skipped
+                .iter()
+                .map(|(identifier, reason)| format!("{identifier} {reason}"))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        ),
+    }
+}
+
+/// The running bulk dispatch slot, shared between a board and its project preview.
+#[derive(Debug, Clone, Default)]
+pub struct SharedBulkDispatch(std::rc::Rc<std::cell::RefCell<Option<BulkDispatchRun>>>);
+
+/// Session-only cleanup confirmation: one row for the cursor task, or one per live dispatch
+/// in a marked set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupPrompt {
+    pub rows: Vec<CleanupRow>,
+    /// `Some` for a marked set; `None` for the single cursor card.
+    pub bulk: Option<BulkCleanup>,
+    /// First visible card row; the painter clamps it to the rows that fit.
+    pub scroll: usize,
+}
+
+impl CleanupPrompt {
+    pub fn single(row: CleanupRow) -> Self {
+        Self {
+            rows: vec![row],
+            bulk: None,
+            scroll: 0,
+        }
+    }
+
+    pub fn checking(&self) -> bool {
+        self.rows.iter().any(CleanupRow::checking)
+    }
+
+    /// Whether `y` is offered: at least one listed worktree can be removed.
+    pub fn can_clean_any(&self) -> bool {
+        self.rows.iter().any(CleanupRow::cleanable)
+    }
+}
+
+/// Longest a quit waits for a running cleanup's git and Herdr steps before exiting anyway. A
+/// row cut off here is never marked cleaned, and its dispatch converges on the next cleanup.
+pub const QUIT_CLEANUP_BOUND: Duration = Duration::from_secs(30);
+
+/// `ctrl+d` while a confirmed cleanup still runs.
+pub const CLEANUP_BUSY: &str = "cleanup still running; try again when it finishes";
+
+/// The status row while quit waits on a running cleanup.
+pub const FINISHING_CLEANUP: &str = "finishing cleanup…";
+
+/// How long a clean cleanup outcome stays on the status row.
+pub const CLEANUP_SUMMARY_TTL: Duration = Duration::from_secs(4);
+
+/// Longest status-row summary a cleanup names tasks in; past it, only counts.
+const CLEANUP_SUMMARY_WIDTH: usize = 72;
+
+/// The running cleanup, shared between a board and its project preview: dropping or rebinding
+/// the preview never loses the worker's handle, its cleaned markers, or the busy and quit
+/// guards.
+#[derive(Debug, Clone, Default)]
+pub struct SharedCleanupRun(std::rc::Rc<std::cell::RefCell<Option<CleanupRun>>>);
+
+/// What one row of a confirmed cleanup shows on its card.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CleanupRowState {
+    /// Its merged check is still running: the worker starts once every check lands.
+    Checking,
+    Queued,
+    Removing,
+    /// Removed. `branch_kept` holds the short and full reason the branch stayed, if it did.
+    Cleaned {
+        branch_kept: Option<(String, String)>,
+    },
+    /// Left in place, with a short reason for the status row and a full one for the card.
+    Kept {
+        short: String,
+        full: String,
+    },
+}
+
+impl CleanupRowState {
+    /// A worktree the cleanup left in place. The card leads with `kept:`, so the full reason
+    /// is the bare one, never the CLI line that already carries it.
+    pub fn kept(error: &crate::dispatch::CleanupError) -> Self {
+        Self::Kept {
+            short: error.short().into(),
+            full: error.reason(),
+        }
+    }
+
+    pub fn landed(&self) -> bool {
+        matches!(self, Self::Cleaned { .. } | Self::Kept { .. })
+    }
+
+    /// Anything the user should not miss: a kept worktree or a kept branch.
+    fn exception(&self) -> bool {
+        matches!(
+            self,
+            Self::Kept { .. }
+                | Self::Cleaned {
+                    branch_kept: Some(_)
+                }
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupRunRow {
+    pub task_id: Uuid,
+    pub number: u64,
+    /// This row's slot in the job; `None` for a row kept before any host work (dirty, or
+    /// changed since the card opened).
+    pub slot: Option<usize>,
+    /// The dispatch the card inspected: the cleaned marker lands only while it is current.
+    pub inspected: Option<crate::domain::Dispatch>,
+    pub state: CleanupRowState,
+}
+
+/// A confirmed cleanup: completion is already saved, and the host work runs off the event
+/// loop while the board keeps painting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupRun {
+    pub job: crate::dispatch::CleanupJob,
+    pub rows: Vec<CleanupRunRow>,
+    /// A marked set's card: how many tasks it completed and how many worktrees were
+    /// already gone. `None` for the single cursor card.
+    pub bulk: Option<(usize, usize)>,
+    /// A marked set's dispatched targets the card could not inspect: identifier and reason.
+    pub refused: Vec<(String, String)>,
+    /// The job reported every row's git and Herdr work done.
+    pub settled: bool,
+    /// The card rows the worker will clean, in job-slot order, with their merged checks.
+    /// Completion is saved at `y`; the worker starts once every check lands or at
+    /// `start_deadline`, cleaning each row with the refs its check confirmed.
+    pub waiting: Vec<CleanupRow>,
+    /// One plan row per job slot; refs are filled in when the worker starts.
+    pub plan: Vec<crate::dispatch::CleanupPlanRow>,
+    pub start_deadline: Instant,
+    pub started: bool,
+}
+
+impl CleanupRun {
+    pub fn finished(&self) -> bool {
+        self.started && self.settled && self.rows.iter().all(|row| row.state.landed())
+    }
+
+    /// Apply landed merged checks to the rows still waiting. True when the worker may start:
+    /// every check landed, or the bound passed (unconfirmed rows then keep their branch).
+    pub fn poll_checks(&mut self) -> bool {
+        for (slot, row) in self.waiting.iter_mut().enumerate() {
+            if !row.apply_landed_check() {
+                continue;
+            }
+            if let Some(run_row) = self
+                .rows
+                .iter_mut()
+                .find(|run_row| run_row.slot == Some(slot))
+            {
+                if run_row.state == CleanupRowState::Checking {
+                    run_row.state = CleanupRowState::Queued;
+                }
+            }
+        }
+        !self.waiting.iter().any(CleanupRow::checking) || Instant::now() >= self.start_deadline
+    }
+
+    /// Rows the worker handles, and how many of them have landed.
+    pub fn progress(&self) -> (usize, usize) {
+        let worked = self.rows.iter().filter(|row| row.slot.is_some());
+        let total = worked.clone().count();
+        (worked.filter(|row| row.state.landed()).count(), total)
+    }
+
+    pub fn progress_message(&self) -> String {
+        if !self.started {
+            return "cleanup waits for merge checks…".into();
+        }
+        let (landed, total) = self.progress();
+        format!("cleaning {} of {total}…", (landed + 1).min(total.max(1)))
+    }
+
+    /// The status-row outcome: counts, naming only the tasks that kept something. The bool
+    /// is true when nothing was kept, so the line may expire on its own.
+    pub fn summary(&self) -> (String, bool) {
+        let clean = self.refused.is_empty() && !self.rows.iter().any(|row| row.state.exception());
+        let Some((done, missing)) = self.bulk else {
+            let Some(row) = self.rows.first() else {
+                return ("done".into(), true);
+            };
+            let text = match &row.state {
+                CleanupRowState::Cleaned { branch_kept: None } => {
+                    format!("done T{} · cleaned", row.number)
+                }
+                CleanupRowState::Cleaned {
+                    branch_kept: Some((short, _)),
+                } => format!("done T{} · cleaned · branch kept ({short})", row.number),
+                CleanupRowState::Kept { short, .. } => {
+                    format!("done T{} · kept ({short})", row.number)
+                }
+                CleanupRowState::Checking | CleanupRowState::Queued | CleanupRowState::Removing => {
+                    format!("done T{}", row.number)
+                }
+            };
+            return (text, clean);
+        };
+        let cleaned = self
+            .rows
+            .iter()
+            .filter(|row| matches!(row.state, CleanupRowState::Cleaned { .. }))
+            .count();
+        let kept = self
+            .rows
+            .iter()
+            .filter_map(|row| match &row.state {
+                CleanupRowState::Kept { short, .. } => Some(format!("T{} ({short})", row.number)),
+                _ => None,
+            })
+            .chain(
+                self.refused
+                    .iter()
+                    .map(|(identifier, _)| format!("{identifier} (can't inspect)")),
+            )
+            .collect::<Vec<_>>();
+        let branches = self
+            .rows
+            .iter()
+            .filter_map(|row| match &row.state {
+                CleanupRowState::Cleaned {
+                    branch_kept: Some((short, _)),
+                } => Some(format!("T{} ({short})", row.number)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let build = |named: bool| {
+            let mut parts = vec![format!("done {done}")];
+            if cleaned > 0 {
+                parts.push(format!("cleaned {cleaned}"));
+            }
+            if !kept.is_empty() {
+                parts.push(if named {
+                    format!("kept {}", kept.join(", "))
+                } else {
+                    format!("kept {}", kept.len())
+                });
+            }
+            if !branches.is_empty() {
+                parts.push(if named {
+                    format!("branch kept {}", branches.join(", "))
+                } else {
+                    format!("branch kept {}", branches.len())
+                });
+            }
+            if missing > 0 {
+                parts.push(format!("{missing} already gone"));
+            }
+            parts.join(" · ")
+        };
+        let named = build(true);
+        let text = if named.chars().count() <= CLEANUP_SUMMARY_WIDTH {
+            named
+        } else {
+            build(false)
+        };
+        (text, clean)
+    }
 }
 
 /// How an unresolved failed save ended.
@@ -834,23 +1749,41 @@ pub enum SaveResolution {
 }
 
 impl BoardModel {
+    /// The time every painted age is measured against.
+    pub fn now(&self) -> SystemTime {
+        self.clock.unwrap_or_else(SystemTime::now)
+    }
+
+    /// Pin the board's clock (tests and goldens); `None` returns to the wall clock.
+    pub fn set_clock(&mut self, clock: Option<SystemTime>) {
+        self.clock = clock;
+        if let Some(right) = self.right_seat.as_deref_mut() {
+            right.set_clock(clock);
+        }
+    }
+
     /// Build a board model with queue-local session state only. The desk is the
     /// default destination; [`Self::from_domain`] applies directory-aware startup.
     pub fn from_tasks(tasks: Vec<Task>, this_repo: Option<PathBuf>) -> Self {
         let mut model = Self {
+            clock: None,
             tasks,
             archived_projects: BTreeSet::new(),
+            agent_names: Vec::new(),
             this_repo: this_repo.clone(),
+            default_branches: DefaultBranchCache::default(),
             board_location: BoardLocation::Desk,
             selected_project: this_repo,
             wide_stage: WideStage::FullBoard,
             stage_origin: None,
-            thread_filter: ThreadFilter::All,
+            filter: BoardFilter::default(),
             projects_view: ProjectsView::Overview,
             search_query: String::new(),
             search_pinned: false,
             projects_selected: 0,
             list_picker: None,
+            base_picker_results: Arc::default(),
+            base_picker_workers: Arc::default(),
             drawer_open: false,
             archived_collapsed: true,
             inbox_collapsed: false,
@@ -867,6 +1800,8 @@ impl BoardModel {
             help_query: String::new(),
             help_scroll: 0,
             help_max_scroll: Cell::new(usize::MAX),
+            cleanup_max_scroll: Cell::new(usize::MAX),
+            save_recovery_proxy: false,
             help_return_mode: BoardInputMode::Normal,
             search_return_mode: BoardInputMode::Normal,
             input_mode: BoardInputMode::Normal,
@@ -875,6 +1810,8 @@ impl BoardModel {
             saved_task: None,
             quick_add_save: None,
             task_edit_save: None,
+            pending_form_assignee_sync: None,
+            pending_form_base_sync: None,
             hold_task_edit_save: false,
             message: None,
             update_notice: None,
@@ -883,6 +1820,21 @@ impl BoardModel {
             suspended_delete_notice: None,
             suspended_delete_notice_count: None,
             pending_delete: None,
+            cleanup_prompt: None,
+            cleanup_run: SharedCleanupRun::default(),
+            quit_after_cleanup: None,
+            cleanup_status: None,
+            dispatch_prompt: None,
+            pending_reply_start: None,
+            pending_reply_delivery: None,
+            pending_reply_text: None,
+            start_anyway: false,
+            released_note: None,
+            mark_order: Vec::new(),
+            pending_form_after_sync: None,
+            block_card: None,
+            row_reply: None,
+            bulk_dispatch: SharedBulkDispatch::default(),
             pending_delete_bulk: false,
             popup: BoardPopup::None,
             project_picker: None,
@@ -926,9 +1878,413 @@ impl BoardModel {
 
     pub fn close_popup(&mut self) {
         if self.popup != BoardPopup::SaveRecovery {
+            let cleanup = matches!(
+                self.popup,
+                BoardPopup::CleanupConfirm | BoardPopup::DispatchConfirm
+            );
             self.popup = BoardPopup::None;
             self.project_picker = None;
+            self.cleanup_prompt = None;
+            self.dispatch_prompt = None;
+            self.block_card = None;
+            if cleanup {
+                self.clear_message();
+            }
         }
+    }
+
+    /// Open a cleanup card. The single card is cursor-only and clears marks; a bulk card keeps
+    /// them, so `Esc` returns to the same marked set.
+    pub fn begin_cleanup_prompt(&mut self, prompt: CleanupPrompt) {
+        if prompt.bulk.is_none() {
+            self.clear_marks();
+        }
+        self.cleanup_max_scroll.set(usize::MAX);
+        self.close_help();
+        self.close_command_surface();
+        self.cleanup_prompt = Some(prompt);
+        self.popup = BoardPopup::CleanupConfirm;
+        self.clear_message();
+    }
+
+    pub fn cleanup_prompt(&self) -> Option<&CleanupPrompt> {
+        self.cleanup_prompt.as_ref()
+    }
+
+    pub fn cleanup_run(&self) -> Option<std::cell::Ref<'_, CleanupRun>> {
+        std::cell::Ref::filter_map(self.cleanup_run.0.borrow(), Option::as_ref).ok()
+    }
+
+    pub fn cleanup_run_mut(&self) -> Option<std::cell::RefMut<'_, CleanupRun>> {
+        std::cell::RefMut::filter_map(self.cleanup_run.0.borrow_mut(), Option::as_mut).ok()
+    }
+
+    /// Show a confirmed cleanup's progress on the card that confirmed it.
+    pub fn begin_cleanup_run(&mut self, run: CleanupRun) {
+        if let Some(prompt) = self.cleanup_prompt.as_mut() {
+            prompt.scroll = 0;
+        }
+        self.cleanup_max_scroll.set(usize::MAX);
+        *self.cleanup_run.0.borrow_mut() = Some(run);
+    }
+
+    /// Whether this board shows the running cleanup's card.
+    pub fn cleanup_card_open(&self) -> bool {
+        self.popup == BoardPopup::CleanupConfirm
+            && self.cleanup_prompt.is_some()
+            && self.cleanup_running()
+    }
+
+    /// A confirmed cleanup is running on this board or its project preview (one shared slot).
+    pub fn cleanup_running(&self) -> bool {
+        self.cleanup_run.0.borrow().is_some()
+    }
+
+    /// Drop a finished run and its card. Returns the status-row summary to post.
+    pub fn finish_cleanup_run(&mut self) -> Option<(String, bool)> {
+        let run = self.cleanup_run.0.borrow_mut().take()?;
+        if self.popup == BoardPopup::CleanupConfirm {
+            self.close_popup();
+        }
+        if let Some(seat) = self.right_seat.as_deref_mut() {
+            if seat.popup == BoardPopup::CleanupConfirm {
+                seat.close_popup();
+            }
+        }
+        self.cleanup_status = None;
+        Some(run.summary())
+    }
+
+    /// Esc or `[x]` on the cleanup card. Before `y` it cancels; while the run works it hides
+    /// the card (completion stays saved, cleanup continues, the status row reports it); once
+    /// the run finished it closes with the summary.
+    pub fn cancel_cleanup_card(&mut self) {
+        let finished = self.cleanup_run().is_some_and(|run| run.finished());
+        if !finished {
+            self.close_popup();
+        } else if let Some((summary, clean)) = self.finish_cleanup_run() {
+            self.post_cleanup_summary(summary, clean);
+        }
+    }
+
+    /// A cleanup outcome on the status row: a clean one expires on its own, one that kept
+    /// anything stays until the next action so it is not missed.
+    pub fn post_cleanup_summary(&mut self, summary: String, clean: bool) {
+        // A refusal that only said the cleanup was still running is obsolete now: it must
+        // neither stay up nor come back when an expiring summary restores what it covered.
+        self.drop_cleanup_refusals();
+        let summary = match self.released_note.take() {
+            Some(note) => format!("{summary} · {note}"),
+            None => summary,
+        };
+        if clean {
+            self.set_ephemeral_message(summary, CLEANUP_SUMMARY_TTL);
+        } else {
+            self.set_message(summary);
+        }
+    }
+
+    /// No cleanup runs: a "still running" refusal on this board or its preview is obsolete.
+    /// The preview cannot reach the outer board, so the outer loop clears both.
+    pub fn drop_cleanup_refusals(&mut self) {
+        self.drop_cleanup_refusal();
+        if let Some(seat) = self.right_seat.as_deref_mut() {
+            seat.drop_cleanup_refusal();
+        }
+    }
+
+    fn drop_cleanup_refusal(&mut self) {
+        if self.message.as_deref() == Some(CLEANUP_BUSY) {
+            self.message = None;
+            self.message_expires_at = None;
+            self.message_restore = None;
+        }
+        if self.message_restore.as_deref() == Some(CLEANUP_BUSY) {
+            self.message_restore = None;
+        }
+    }
+
+    /// Point the hidden-cleanup status slot at `status` (`None` clears it).
+    pub fn set_cleanup_status(&mut self, status: Option<String>) {
+        self.cleanup_status = status;
+    }
+
+    /// Quit with a cleanup still running: hide its card and wait, visibly and bounded, for
+    /// its git and Herdr steps to land.
+    pub fn begin_quit_after_cleanup(&mut self) {
+        if self.quit_after_cleanup.is_none() {
+            self.quit_after_cleanup = Some(Instant::now() + QUIT_CLEANUP_BOUND);
+        }
+        if self.popup == BoardPopup::CleanupConfirm {
+            self.close_popup();
+        }
+        if let Some(seat) = self.right_seat.as_deref_mut() {
+            if seat.popup == BoardPopup::CleanupConfirm {
+                seat.close_popup();
+                seat.clear_message();
+            }
+        }
+        self.clear_message();
+        self.cleanup_status = Some(FINISHING_CLEANUP.into());
+    }
+
+    pub fn quitting_after_cleanup(&self) -> bool {
+        self.quit_after_cleanup.is_some()
+    }
+
+    /// A quit that waited on cleanup may exit: the run finished, or its bound passed.
+    pub fn quit_after_cleanup_due(&self) -> bool {
+        self.quit_after_cleanup
+            .is_some_and(|deadline| !self.cleanup_running() || Instant::now() >= deadline)
+    }
+
+    /// Open the bulk dispatch card. It keeps the marks, so `Esc` returns to the same set.
+    pub fn begin_dispatch_prompt(&mut self, prompt: DispatchPrompt) {
+        self.cleanup_max_scroll.set(usize::MAX);
+        self.close_help();
+        self.close_command_surface();
+        self.dispatch_prompt = Some(prompt);
+        self.popup = BoardPopup::DispatchConfirm;
+        self.clear_message();
+    }
+
+    /// The block card while it owns input.
+    pub fn block_card(&self) -> Option<&super::block::BlockCard> {
+        self.block_card.as_ref()
+    }
+
+    /// The task page's selected BLOCKED stop, if any. A selected step outranks it.
+    pub fn block_target(&self) -> Option<super::block::BlockTarget> {
+        super::block::selected_block_target(self)
+    }
+
+    /// Whether `Enter` on the task page lands on a block option.
+    pub fn block_option_selected(&self) -> bool {
+        matches!(
+            self.block_target(),
+            Some(super::block::BlockTarget::Option(_))
+        )
+    }
+
+    /// Whether `Enter` on the task page lands on a review check.
+    pub fn review_check_selected(&self) -> bool {
+        matches!(
+            self.block_target(),
+            Some(super::block::BlockTarget::Check(_))
+        )
+    }
+
+    /// Whether `Enter` on the task page lands on a closed record on the PAPER TRAIL.
+    pub fn trail_record_selected(&self) -> bool {
+        matches!(
+            self.block_target(),
+            Some(super::block::BlockTarget::Trail(_))
+        )
+    }
+
+    /// Whether `Enter` on the task page lands on the PAPER TRAIL heading.
+    pub fn trail_heading_selected(&self) -> bool {
+        self.block_target() == Some(super::block::BlockTarget::TrailHeading)
+    }
+
+    /// Whether the task page shows its BLOCKED or REVIEW section (view mode, no edit session).
+    pub fn page_section_open(&self) -> bool {
+        super::block::page_section_open(self)
+    }
+
+    /// Open the empty reply (feedback) box on the page's BLOCKED or REVIEW section.
+    pub fn open_page_reply_box(&mut self) -> bool {
+        super::block::begin_reply(self, "", None)
+    }
+
+    /// Whether `Enter` on the task page lands on the `N passed` line.
+    pub fn passed_checks_selected(&self) -> bool {
+        self.block_target() == Some(super::block::BlockTarget::PassedFold)
+    }
+
+    /// Whether the open reply box still answers the task's open record; otherwise it says so
+    /// and keeps the draft.
+    pub fn reply_box_current(&mut self, domain: &crate::domain::DomainState) -> bool {
+        super::block::reply_box_current(domain, self)
+    }
+
+    /// Close the reply box without saving, back to the page or the board.
+    pub fn close_reply_box(&mut self) {
+        super::block::cancel_reply(self);
+    }
+
+    /// Whether the open reply box gives feedback on a review round.
+    pub fn reply_is_feedback(&self) -> bool {
+        super::block::active_reply(self).is_some_and(|(_, editor)| editor.review)
+    }
+
+    /// The task whose reply box is open, while it is open.
+    pub fn reply_task_id(&self) -> Option<Uuid> {
+        super::block::active_reply(self).map(|(id, _)| id)
+    }
+
+    /// The reply box's draft while it is open.
+    pub fn reply_draft(&self) -> Option<&str> {
+        super::block::active_reply(self).map(|(_, editor)| editor.buffer.value())
+    }
+
+    /// The task whose reply box is open inline under its board row.
+    pub fn row_reply_task(&self) -> Option<Uuid> {
+        self.row_reply.as_ref().map(|row| row.task)
+    }
+
+    pub fn dispatch_prompt(&self) -> Option<&DispatchPrompt> {
+        self.dispatch_prompt.as_ref()
+    }
+
+    /// Close the card and take what it would launch.
+    pub fn take_dispatch_prompt(&mut self) -> Option<DispatchPrompt> {
+        let prompt = self.dispatch_prompt.take()?;
+        self.close_popup();
+        Some(prompt)
+    }
+
+    /// Hand the running batch to the board and its project preview (one shared slot).
+    pub fn begin_bulk_dispatch(&mut self, run: BulkDispatchRun) {
+        *self.bulk_dispatch.0.borrow_mut() = Some(run);
+    }
+
+    /// Take the running batch out to land outcomes; put it back unless it has settled.
+    pub fn take_bulk_dispatch(&mut self) -> Option<BulkDispatchRun> {
+        self.bulk_dispatch.0.borrow_mut().take()
+    }
+
+    /// A bulk dispatch started on this board or its project preview is still landing.
+    pub fn bulk_dispatch_running(&self) -> bool {
+        self.bulk_dispatch.0.borrow().is_some()
+    }
+
+    /// Apply a landed git check to the open bulk dispatch card (this board's or its project
+    /// preview's): tasks outside a git repository move to the skipped rows. A card left with
+    /// nothing to launch closes with the refusal, keeping the marks. True when anything changed.
+    pub fn poll_dispatch_checks(&mut self) -> bool {
+        let nested = self
+            .right_seat
+            .as_deref_mut()
+            .is_some_and(BoardModel::poll_dispatch_checks);
+        let Some(prompt) = self.dispatch_prompt.as_mut() else {
+            return nested;
+        };
+        let Some(results) = prompt.git_checks.as_ref().and_then(|checks| checks.take()) else {
+            return nested;
+        };
+        prompt.git_checks = None;
+        let (launch, outside): (Vec<_>, Vec<_>) = std::mem::take(&mut prompt.launch)
+            .into_iter()
+            .partition(|eligible| results.get(eligible.project()).copied().unwrap_or(false));
+        prompt.launch = launch;
+        for eligible in outside {
+            prompt.skipped.push((
+                format!("T{}", eligible.number),
+                "not a project in a git repo".into(),
+            ));
+        }
+        prompt.skipped.sort_by_key(|(identifier, _)| {
+            identifier
+                .strip_prefix('T')
+                .and_then(|number| number.parse::<u64>().ok())
+        });
+        // With nothing left to launch, the card stays only for what `y` still starts.
+        if prompt.launch.is_empty() && prompt.start_only.is_empty() {
+            let message = nothing_to_dispatch(&prompt.skipped);
+            self.close_popup();
+            self.set_message(message);
+        }
+        true
+    }
+
+    pub fn cleanup_prompt_mut(&mut self) -> Option<&mut CleanupPrompt> {
+        self.cleanup_prompt.as_mut()
+    }
+
+    /// Apply a finished background merged check to the open cleanup card (this board's or its
+    /// project preview's). A check whose card was closed is dropped with it, so a late result
+    /// never reaches another prompt.
+    pub fn poll_cleanup_check(&mut self) -> bool {
+        let nested = self
+            .right_seat
+            .as_deref_mut()
+            .is_some_and(BoardModel::poll_cleanup_check);
+        let Some(prompt) = self.cleanup_prompt.as_mut() else {
+            return nested;
+        };
+        let mut landed = false;
+        for row in &mut prompt.rows {
+            landed |= row.apply_landed_check();
+        }
+        landed || nested
+    }
+
+    /// Make an unresolved failed save visible and reachable on whichever board owns input, and
+    /// take a resolved one down from both boards. A queued cleanup can finish (and fail its
+    /// save) inside a project preview that a narrowing frame has parked, and the frame can
+    /// widen or narrow again before the user answers Retry or Cancel.
+    ///
+    /// The board that failed keeps owning the recovery (its held form, its drafts); a board
+    /// that only shows it for input is a proxy, and Retry or Cancel resolve the owner.
+    pub fn present_save_recovery(&mut self, pending: Option<&str>) {
+        match pending {
+            Some(error) => {
+                let target = self.input_target_mut();
+                if target.popup != BoardPopup::SaveRecovery {
+                    target.begin_proxy_save_recovery(error);
+                }
+            }
+            None => {
+                self.drop_stale_save_recovery();
+                if let Some(right) = self.right_seat.as_deref_mut() {
+                    right.drop_stale_save_recovery();
+                }
+            }
+        }
+    }
+
+    fn drop_stale_save_recovery(&mut self) {
+        if self.popup == BoardPopup::SaveRecovery {
+            self.end_proxy_save_recovery();
+            self.clear_message();
+        }
+    }
+
+    /// Whether this board holds the failed save itself, not just a proxy of its banner.
+    pub fn owns_save_recovery(&self) -> bool {
+        self.popup == BoardPopup::SaveRecovery && !self.save_recovery_proxy
+    }
+
+    pub fn shows_save_recovery_proxy(&self) -> bool {
+        self.popup == BoardPopup::SaveRecovery && self.save_recovery_proxy
+    }
+
+    /// Take down a proxied recovery banner. Nothing failed on this board, so its own state
+    /// (drafts, a durable delete notice) is restored as it was.
+    pub fn end_proxy_save_recovery(&mut self) {
+        self.save_recovery_proxy = false;
+        self.end_save_recovery(SaveResolution::Retried);
+    }
+
+    /// The retained project preview, whether or not it currently owns input.
+    pub(crate) fn preview_seat_mut(&mut self) -> Option<&mut BoardModel> {
+        self.right_seat.as_deref_mut()
+    }
+
+    /// Scroll the cleanup or bulk dispatch card one row; the painter records how far it may go.
+    pub fn scroll_cleanup(&mut self, down: bool) {
+        let horizon = self.cleanup_max_scroll.get();
+        let scroll = match (self.cleanup_prompt.as_mut(), self.dispatch_prompt.as_mut()) {
+            (Some(prompt), _) => &mut prompt.scroll,
+            (None, Some(prompt)) => &mut prompt.scroll,
+            (None, None) => return,
+        };
+        *scroll = if down {
+            scroll.saturating_add(1).min(horizon)
+        } else {
+            scroll.saturating_sub(1)
+        };
     }
 
     /// Present a failed board save without replacing its visible working state.
@@ -946,6 +2302,13 @@ impl BoardModel {
             self.suspended_delete_notice_count = self.delete_notice_count.take();
         }
         self.set_message(format!("save failed: {error} · Retry or Cancel"));
+    }
+
+    /// Show a failed background save (a bulk dispatch landing) on this board without making it
+    /// the owner: Retry or Cancel end it as a proxy, never closing this board's form.
+    pub fn begin_proxy_save_recovery(&mut self, error: &str) {
+        self.begin_save_recovery(error);
+        self.save_recovery_proxy = true;
     }
 
     /// End save recovery only after Retry succeeds or Cancel restores the baseline.
@@ -968,6 +2331,7 @@ impl BoardModel {
         if self.popup == BoardPopup::SaveRecovery {
             self.popup = BoardPopup::None;
         }
+        self.save_recovery_proxy = false;
         let armed = (self.delete_notice.take(), self.delete_notice_count.take());
         let suspended = (
             self.suspended_delete_notice.take(),
@@ -1003,6 +2367,8 @@ impl BoardModel {
                     form.notes = seeded_draft(task.notes.as_deref().unwrap_or_default());
                     form.thread = seeded_draft(task.thread.as_deref().unwrap_or_default());
                     form.thread_refusal = None;
+                    form.assignee = task.assignee.clone();
+                    form.base = task.base.clone();
                     form.scope = task.scope.clone();
                     form.select_current_scope();
                     form.editing = false;
@@ -1025,6 +2391,10 @@ impl BoardModel {
         // `sync_from_domain` ran first and left
         // the pending save unresolved precisely because the mutation is not in the
         // baseline; Retried resolves it there instead and never reaches this branch.
+        if resolution == SaveResolution::Cancelled {
+            super::block::release_cancelled_reply(self);
+            super::block::release_cancelled_block_card(self);
+        }
         if resolution == SaveResolution::Cancelled
             && self
                 .form
@@ -1052,8 +2422,13 @@ impl BoardModel {
     /// directory remains selected in project slot 2 and Desk remains quick-add's default.
     pub fn from_domain_for_snapshot(state: &DomainState, snapshot: &InvocationSnapshot) -> Self {
         let start_in_project = matches!(snapshot.default_scope, TaskScope::Project { .. });
-        let mut model =
-            Self::from_domain_with_start(state, snapshot.this_repo.clone(), start_in_project);
+        // The board navigates and offers the stored identity of an aliased launch repo
+        // (`/tmp/x` for `/private/tmp/x`); the snapshot keeps the launch spelling for `!p`.
+        let this_repo = snapshot.this_repo.clone().map(|repo| {
+            crate::scope::stored_spelling(state, &repo.to_string_lossy())
+                .map_or(repo, PathBuf::from)
+        });
+        let mut model = Self::from_domain_with_start(state, this_repo, start_in_project);
         model.session_default_scope = Some(snapshot.default_scope.clone());
         model
     }
@@ -1128,6 +2503,20 @@ impl BoardModel {
             .then(|| self.selected_project_row().map(|row| row.path))
             .flatten();
         let previous_id_set: HashSet<Uuid> = self.tasks.iter().map(|task| task.id).collect();
+        // Dispatch refreshes origin/HEAD in the task repository. Do not keep a footer
+        // cached before that fetch, and do not invalidate on ordinary unchanged reloads.
+        let prior_dispatches = self
+            .tasks
+            .iter()
+            .filter_map(|task| task.dispatch.as_ref().map(|record| (task.id, record)))
+            .collect::<HashMap<_, _>>();
+        for task in state.tasks() {
+            if prior_dispatches.get(&task.id).copied() != task.dispatch.as_ref() {
+                if let TaskScope::Project { path } = &task.scope {
+                    self.default_branches.invalidate(Path::new(path));
+                }
+            }
+        }
         self.tasks = state.tasks().to_vec();
         self.archived_projects = state.archived_projects();
         if let Some(previous_path) = previous_project_path.as_deref() {
@@ -1187,6 +2576,10 @@ impl BoardModel {
         self.finish_quick_add_save();
         self.finish_task_edit_save();
         self.finish_step_editor_save();
+        super::block::finish_reply_save(self);
+        super::block::flag_stale_row_reply(self);
+        super::block::finish_block_card_save(self);
+        super::block::freeze_check_fold(self);
         if let Some(id) = pinned_edit.or(pinned_quick_add) {
             // A save this surface just made owns the selection, but navigation never
             // follows it: the pin moves only when the current destination already
@@ -1272,6 +2665,8 @@ impl BoardModel {
         }
         let visible: BTreeSet<Uuid> = self.visible_ids().into_iter().collect();
         self.marked_ids.retain(|id| visible.contains(id));
+        let marked = &self.marked_ids;
+        self.mark_order.retain(|id| marked.contains(id));
     }
 
     /// Presenter / pane title string.
@@ -1368,7 +2763,9 @@ impl BoardModel {
     }
 
     /// Mutable board session that owns keyboard, mouse, and modal dispatch.
-    pub(crate) fn input_target_mut(&mut self) -> &mut BoardModel {
+    // Public only so tests/demo_parity.rs can drive the project preview seat.
+    #[doc(hidden)]
+    pub fn input_target_mut(&mut self) -> &mut BoardModel {
         if self.project_right_seat_focused() {
             self.right_seat
                 .as_deref_mut()
@@ -1412,11 +2809,15 @@ impl BoardModel {
         // should keep the existing seat instead of paying that cost or dropping its session.
         let mut right = BoardModel::from_tasks(self.tasks.clone(), self.this_repo.clone());
         right.archived_projects = self.archived_projects.clone();
+        right.agent_names = self.agent_names.clone();
         right.board_location = BoardLocation::Project(path.clone());
         right.selected_project = Some(path);
         right.preview_seat = true;
+        right.clock = self.clock;
         right.selection_id = None;
         right.update_notice = self.update_notice.clone();
+        right.bulk_dispatch = self.bulk_dispatch.clone();
+        right.cleanup_run = self.cleanup_run.clone();
         right.seed_selection();
         self.right_seat = Some(Box::new(right));
         true
@@ -1486,10 +2887,10 @@ impl BoardModel {
             // Equivalent spellings are the same stored project identity. Do not rewrite the
             // selected path merely because a host supplied an alias. The transition still
             // clears its local thread filter.
-            self.thread_filter = ThreadFilter::All;
+            self.filter = BoardFilter::default();
             return;
         }
-        self.thread_filter = ThreadFilter::All;
+        self.filter = BoardFilter::default();
         let preview_transition = self.right_seat.is_some()
             || matches!(self.board_location, BoardLocation::Projects)
             || matches!(target, BoardLocation::Projects);
@@ -1563,6 +2964,7 @@ impl BoardModel {
             return true;
         }
         if self.task_session_dirty()
+            || self.row_reply.is_some()
             || self.quick_add_save.is_some()
             || self.task_edit_save.is_some()
         {
@@ -1852,9 +3254,25 @@ impl BoardModel {
     /// resolved invocation repository and current selection: no path is ever invented.
     pub fn project_options(&self) -> Vec<ProjectScopeOption> {
         let mut paths: Vec<PathBuf> = Vec::new();
+        // Aliases of one directory (`/tmp/x` and `/private/tmp/x`) are one option. The
+        // spelling the board is on wins, so the selector can highlight it; otherwise the
+        // first spelling pushed wins.
+        let identities = PathIdentityCache::default();
+        let current = match &self.board_location {
+            BoardLocation::Project(path) | BoardLocation::ArchivedProject(path) => {
+                Some(path.as_path())
+            }
+            BoardLocation::Desk | BoardLocation::Projects => None,
+        };
         let push = |path: PathBuf, paths: &mut Vec<PathBuf>| {
-            if !paths.contains(&path) {
-                paths.push(path);
+            let spelling = path.to_string_lossy();
+            match paths
+                .iter()
+                .position(|known| identities.equivalent(&known.to_string_lossy(), &spelling))
+            {
+                Some(index) if current == Some(path.as_path()) => paths[index] = path,
+                Some(_) => {}
+                None => paths.push(path),
             }
         };
         if let Some(repo) = self.this_repo.clone() {
@@ -1928,7 +3346,7 @@ impl BoardModel {
                 self.this_repo.as_deref(),
                 self.effective_lens(),
                 self.drawer_open,
-                &self.thread_filter,
+                &self.filter,
             )
         } else {
             queue::query_board_search(
@@ -1937,7 +3355,7 @@ impl BoardModel {
                 self.this_repo.as_deref(),
                 self.effective_lens(),
                 self.drawer_open,
-                &self.thread_filter,
+                &self.filter,
                 &self.search_query,
             )
         };
@@ -1960,13 +3378,26 @@ impl BoardModel {
     pub(super) fn effective_lens(&self) -> BoardLens<'_> {
         match (&self.board_location, &self.projects_view) {
             (BoardLocation::Projects, ProjectsView::Thread(name)) => BoardLens::ThreadView(name),
+            (BoardLocation::Projects, ProjectsView::Assignee(name)) => {
+                BoardLens::AssigneeView(name)
+            }
             (location, _) => location.lens(),
         }
     }
 
     /// The thread filter active on slot 2's board.
     pub fn thread_filter(&self) -> &ThreadFilter {
-        &self.thread_filter
+        &self.filter.thread
+    }
+
+    /// The assignee filter active on slot 2's board.
+    pub fn assignee_filter(&self) -> &AssigneeFilter {
+        &self.filter.assignee
+    }
+
+    /// The combined (thread AND assignee) filter active on slot 2's board.
+    pub fn board_filter(&self) -> &BoardFilter {
+        &self.filter
     }
 
     /// The projects index's current View control.
@@ -2034,18 +3465,18 @@ impl BoardModel {
         true
     }
 
-    /// Open the project board's searchable thread filter picker (bare `t`).
+    /// Open the project board's tabbed Filter picker (bare `t`): the threads tab first,
+    /// then `@assignees`. Each tab marks its active choice.
     pub(super) fn open_thread_filter_picker(&mut self) {
-        if !matches!(self.board_location, BoardLocation::Project(_)) {
+        let BoardLocation::Project(path) = &self.board_location else {
             return;
-        }
-        let scope: Option<String> = match &self.board_location {
-            BoardLocation::Project(path) => Some(path.to_string_lossy().into_owned()),
-            _ => None,
         };
-        let in_project = |task: &Task| matches!(&task.scope, TaskScope::Project { path } if scope.as_deref().is_some_and(|scope| paths_equivalent(path, scope)));
+        let scope = path.to_string_lossy().into_owned();
+        let in_project = |task: &Task| matches!(&task.scope, TaskScope::Project { path } if paths_equivalent(path, &scope));
         let mut threads: BTreeMap<String, usize> = BTreeMap::new();
+        let mut assignees: BTreeMap<String, usize> = BTreeMap::new();
         let mut unthreaded = 0usize;
+        let mut unassigned = 0usize;
         let mut open = 0usize;
         for task in &self.tasks {
             if task.soft_deleted
@@ -2061,9 +3492,13 @@ impl BoardModel {
                 Some(name) => *threads.entry(name.to_ascii_lowercase()).or_default() += 1,
                 None => unthreaded += 1,
             }
+            match task.assignee.as_deref() {
+                Some(name) => *assignees.entry(name.to_ascii_lowercase()).or_default() += 1,
+                None => unassigned += 1,
+            }
         }
         let mut options = vec![ListPickerOption {
-            label: "All tasks".to_string(),
+            label: "all".to_string(),
             count: Some(open),
             value: ListPickerValue::ThreadAll,
         }];
@@ -2079,31 +3514,87 @@ impl BoardModel {
             count: Some(unthreaded),
             value: ListPickerValue::ThreadWithout,
         });
-        let selected = options
+        let thread_active = options.iter().position(|option| match &option.value {
+            ListPickerValue::ThreadAll => self.filter.thread == ThreadFilter::All,
+            ListPickerValue::ThreadNamed(name) => {
+                self.filter.thread == ThreadFilter::Named(name.clone())
+            }
+            ListPickerValue::ThreadWithout => self.filter.thread == ThreadFilter::Without,
+            _ => false,
+        });
+
+        let mut assignee_options = vec![ListPickerOption {
+            label: "all".to_string(),
+            count: Some(open),
+            value: ListPickerValue::AssigneeFilterAll,
+        }];
+        assignee_options.extend(self.assignee_view_names(&mut assignees).into_iter().map(
+            |(name, count)| ListPickerOption {
+                label: format!("@{name}"),
+                count: Some(count),
+                value: ListPickerValue::AssigneeFilterNamed(name),
+            },
+        ));
+        assignee_options.push(ListPickerOption {
+            label: "unassigned".to_string(),
+            count: Some(unassigned),
+            value: ListPickerValue::AssigneeFilterUnassigned,
+        });
+        let assignee_active = assignee_options
             .iter()
             .position(|option| match &option.value {
-                ListPickerValue::ThreadAll => self.thread_filter == ThreadFilter::All,
-                ListPickerValue::ThreadNamed(name) => {
-                    self.thread_filter == ThreadFilter::Named(name.clone())
+                ListPickerValue::AssigneeFilterAll => self.filter.assignee == AssigneeFilter::All,
+                ListPickerValue::AssigneeFilterNamed(name) => {
+                    self.filter.assignee == AssigneeFilter::Named(name.clone())
                 }
-                ListPickerValue::ThreadWithout => self.thread_filter == ThreadFilter::Without,
+                ListPickerValue::AssigneeFilterUnassigned => {
+                    self.filter.assignee == AssigneeFilter::Unassigned
+                }
                 _ => false,
-            })
-            .unwrap_or(0);
+            });
         self.list_picker = Some(ListPickerState {
             kind: ListPickerKind::ThreadFilter,
             options,
-            selected,
+            selected: thread_active.unwrap_or(0),
             query: String::new(),
+            return_mode: BoardInputMode::Normal,
+            assignee_target: None,
+            base_target: None,
+            after_target: None,
+            active: thread_active,
+            tabs: Some(ListPickerTabs {
+                active_tab: FilterTab::Threads,
+                other_options: assignee_options,
+                other_active: assignee_active,
+            }),
         });
     }
 
-    /// Open the projects index's searchable View picker (bare `v`).
+    /// The assignee names a filter tab lists: every defined profile in `config.toml` order,
+    /// then names still on tasks whose profile was removed (sorted). `counts` holds the
+    /// lowercased assignee counts of the tasks in view; profiles without tasks count zero.
+    fn assignee_view_names(&self, counts: &mut BTreeMap<String, usize>) -> Vec<(String, usize)> {
+        let mut names: Vec<(String, usize)> = self
+            .agent_names
+            .iter()
+            .map(|name| {
+                let count = counts.remove(&name.to_ascii_lowercase()).unwrap_or(0);
+                (name.clone(), count)
+            })
+            .collect();
+        names.extend(std::mem::take(counts));
+        names
+    }
+
+    /// Open the projects index's tabbed View picker (bare `v`): `Overview` and the
+    /// cross-project threads, then one `@name` view per assignee. One view applies at a
+    /// time, so only one tab carries the active mark.
     pub(super) fn open_projects_view_picker(&mut self) {
         if !matches!(self.board_location, BoardLocation::Projects) {
             return;
         }
         let mut threads: BTreeMap<String, usize> = BTreeMap::new();
+        let mut assignees: BTreeMap<String, usize> = BTreeMap::new();
         for task in &self.tasks {
             if task.soft_deleted
                 || task.archived
@@ -2114,6 +3605,9 @@ impl BoardModel {
             }
             if let Some(name) = task.thread.as_deref() {
                 *threads.entry(name.to_ascii_lowercase()).or_default() += 1;
+            }
+            if let Some(name) = task.assignee.as_deref() {
+                *assignees.entry(name.to_ascii_lowercase()).or_default() += 1;
             }
         }
         let mut options = vec![ListPickerOption {
@@ -2128,22 +3622,603 @@ impl BoardModel {
             count: Some(count),
             value: ListPickerValue::ProjectsThread(name),
         }));
-        let selected = options
-            .iter()
-            .position(|option| match (&option.value, &self.projects_view) {
-                (ListPickerValue::ProjectsOverview, ProjectsView::Overview) => true,
-                (ListPickerValue::ProjectsThread(name), ProjectsView::Thread(active)) => {
-                    name == active
-                }
-                _ => false,
+        let assignee_options: Vec<ListPickerOption> = self
+            .assignee_view_names(&mut assignees)
+            .into_iter()
+            .map(|(name, count)| ListPickerOption {
+                label: format!("@{name}"),
+                count: Some(count),
+                value: ListPickerValue::ProjectsAssignee(name),
             })
-            .unwrap_or(0);
+            .collect();
+        let active_in = |options: &[ListPickerOption]| {
+            options
+                .iter()
+                .position(|option| match (&option.value, &self.projects_view) {
+                    (ListPickerValue::ProjectsOverview, ProjectsView::Overview) => true,
+                    (ListPickerValue::ProjectsThread(name), ProjectsView::Thread(active))
+                    | (ListPickerValue::ProjectsAssignee(name), ProjectsView::Assignee(active)) => {
+                        name == active
+                    }
+                    _ => false,
+                })
+        };
+        let thread_active = active_in(&options);
+        let assignee_active = active_in(&assignee_options);
+        // An `@name` view reopens on its own tab, so Enter right away keeps it.
+        let (tab, options, active, other_options, other_active) =
+            if matches!(self.projects_view, ProjectsView::Assignee(_)) {
+                (
+                    FilterTab::Assignees,
+                    assignee_options,
+                    assignee_active,
+                    options,
+                    thread_active,
+                )
+            } else {
+                (
+                    FilterTab::Threads,
+                    options,
+                    thread_active,
+                    assignee_options,
+                    assignee_active,
+                )
+            };
         self.list_picker = Some(ListPickerState {
             kind: ListPickerKind::ProjectsView,
             options,
+            selected: active.unwrap_or(0),
+            query: String::new(),
+            return_mode: BoardInputMode::Normal,
+            assignee_target: None,
+            base_target: None,
+            after_target: None,
+            active,
+            tabs: Some(ListPickerTabs {
+                active_tab: tab,
+                other_options,
+                other_active,
+            }),
+        });
+    }
+
+    /// The open picker's active tab, for tabbed pickers.
+    pub fn list_picker_tab(&self) -> Option<FilterTab> {
+        self.list_picker
+            .as_ref()
+            .and_then(|picker| picker.tabs.as_ref())
+            .map(|tabs| tabs.active_tab)
+    }
+
+    /// Source index of the option the board currently applies in the open picker's tab.
+    pub fn list_picker_active(&self) -> Option<usize> {
+        self.list_picker.as_ref().and_then(|picker| picker.active)
+    }
+
+    /// Show `target` (or the other tab when `None`) in a tabbed picker. The query clears and
+    /// the cursor lands on that tab's active choice. Returns false for an untabbed picker.
+    pub(super) fn switch_list_picker_tab(&mut self, target: Option<FilterTab>) -> bool {
+        let Some(picker) = self.list_picker.as_mut() else {
+            return false;
+        };
+        let Some(tabs) = picker.tabs.as_mut() else {
+            return false;
+        };
+        if target.is_some_and(|tab| tab == tabs.active_tab) {
+            return true;
+        }
+        tabs.active_tab = match tabs.active_tab {
+            FilterTab::Threads => FilterTab::Assignees,
+            FilterTab::Assignees => FilterTab::Threads,
+        };
+        std::mem::swap(&mut picker.options, &mut tabs.other_options);
+        std::mem::swap(&mut picker.active, &mut tabs.other_active);
+        picker.query.clear();
+        picker.selected = picker.active.unwrap_or(0);
+        true
+    }
+
+    /// Open the assignee picker over `ids`: every defined profile, then **none** last.
+    /// `current` (the cursor task's assignee) is preselected, else the first profile. Nothing changes
+    /// until Enter.
+    pub(super) fn open_assignee_picker(&mut self, ids: Vec<Uuid>, current: Option<String>) {
+        let mut options: Vec<ListPickerOption> = self
+            .agent_names
+            .iter()
+            .map(|name| ListPickerOption {
+                label: format!("@{name}"),
+                count: None,
+                value: ListPickerValue::Assignee(Some(name.clone())),
+            })
+            .collect();
+        options.push(ListPickerOption {
+            label: "none".to_string(),
+            count: None,
+            value: ListPickerValue::Assignee(None),
+        });
+        // An unassigned task starts on the first profile, so Enter right away assigns.
+        let selected = current
+            .and_then(|name| {
+                options.iter().position(|option| {
+                    option.value == ListPickerValue::Assignee(Some(name.clone()))
+                })
+            })
+            .unwrap_or(0);
+        self.list_picker = Some(ListPickerState {
+            kind: ListPickerKind::Assignee,
+            options,
             selected,
             query: String::new(),
+            return_mode: self.input_mode,
+            assignee_target: Some(AssigneePickerTarget { ids }),
+            base_target: None,
+            after_target: None,
+            active: None,
+            tabs: None,
         });
+        self.input_mode = BoardInputMode::ListPicker;
+    }
+
+    /// Open on the branches already on disk (bounded local queries, never the network). Unless
+    /// origin was fetched inside the fetch window, a background worker fetches and refreshes
+    /// the list in place behind a disabled `refreshing…` row.
+    pub(super) fn open_base_picker(
+        &mut self,
+        ids: Vec<Uuid>,
+        current: Option<String>,
+        project: &Path,
+        edit_draft: bool,
+    ) {
+        let project = project
+            .canonicalize()
+            .unwrap_or_else(|_| project.to_path_buf());
+        let default = crate::git_base::default_branch_name(&project)
+            .unwrap_or_else(|| self.default_branch_name(&project));
+        self.open_base_picker_from(
+            ids,
+            current,
+            project,
+            edit_draft,
+            default,
+            |project| crate::git_base::fetch_is_fresh(project, "origin"),
+            crate::git_base::list_cached_branches,
+        );
+    }
+
+    /// Freshness is read before the snapshot: a fetch that lands between the two then leaves
+    /// a not-fresh answer and a refresh subscription, never a fresh answer over pre-fetch refs.
+    #[allow(clippy::too_many_arguments)]
+    fn open_base_picker_from(
+        &mut self,
+        ids: Vec<Uuid>,
+        current: Option<String>,
+        project: PathBuf,
+        edit_draft: bool,
+        default: String,
+        is_fresh: impl FnOnce(&Path) -> bool,
+        cached_branches: impl FnOnce(&Path) -> Result<Vec<String>, String>,
+    ) {
+        let request = Uuid::new_v4();
+        let fresh = is_fresh(&project);
+        let cached = cached_branches(&project);
+        let mut options = vec![Self::default_base_option(default)];
+        let status = match &cached {
+            Ok(branches) => {
+                options.extend(branches.iter().map(|branch| ListPickerOption {
+                    label: branch.clone(),
+                    count: None,
+                    value: ListPickerValue::Base(Some(branch.clone())),
+                }));
+                (!fresh).then(|| REFRESHING_BRANCHES.to_string())
+            }
+            Err(_) if !fresh => Some(REFRESHING_BRANCHES.to_string()),
+            Err(message) => Some(message.clone()),
+        };
+        if let Some(label) = status {
+            options.push(ListPickerOption {
+                label,
+                count: None,
+                value: ListPickerValue::Unavailable,
+            });
+        }
+        let preferred = ListPickerValue::Base(current.clone());
+        let selected = options
+            .iter()
+            .position(|option| option.value == preferred)
+            .unwrap_or(0);
+        self.list_picker = Some(ListPickerState {
+            kind: ListPickerKind::Base,
+            options,
+            selected,
+            query: String::new(),
+            return_mode: self.input_mode,
+            assignee_target: None,
+            base_target: Some(BasePickerTarget {
+                ids,
+                edit_draft,
+                request,
+                project: project.clone(),
+                current,
+                // A cached list already placed the cursor; the refresh keeps whatever the
+                // user moves it to. Without one, the refresh selects the current base.
+                selection_pending: cached.is_err(),
+            }),
+            after_target: None,
+            active: None,
+            tabs: None,
+        });
+        self.input_mode = BoardInputMode::ListPicker;
+        if fresh {
+            return;
+        }
+        // A cancelled picker leaves its bounded lookup running. Reopening subscribes
+        // the new request to that project's existing job instead of starting another fetch.
+        {
+            let mut workers = self
+                .base_picker_workers
+                .lock()
+                .expect("base worker registry");
+            if let Some(worker) = workers.get_mut(&project) {
+                worker.request = request;
+                return;
+            }
+            workers.insert(
+                project.clone(),
+                BasePickerWorker {
+                    job: request,
+                    request,
+                },
+            );
+        }
+        let mailbox = Arc::clone(&self.base_picker_results);
+        let workers = Arc::clone(&self.base_picker_workers);
+        std::thread::spawn(move || {
+            let branches = crate::git_base::list_branches_with_warning(&project);
+            let default =
+                crate::git_base::default_branch_name(&project).unwrap_or_else(|| "default".into());
+            if let Ok(mut workers) = workers.lock() {
+                if workers
+                    .get(&project)
+                    .is_some_and(|worker| worker.job == request)
+                {
+                    let subscriber = workers
+                        .remove(&project)
+                        .expect("completed base worker")
+                        .request;
+                    if let Ok(mut results) = mailbox.lock() {
+                        results.push(BasePickerResult {
+                            request: subscriber,
+                            project,
+                            branches,
+                            default,
+                        });
+                    }
+                }
+            }
+        });
+    }
+
+    fn default_base_option(default: String) -> ListPickerOption {
+        ListPickerOption {
+            label: if default == "default" {
+                default
+            } else {
+                format!("default ({default})")
+            },
+            count: None,
+            value: ListPickerValue::Base(None),
+        }
+    }
+
+    /// Apply completed branch lookup on the event loop, including idle redraw ticks.
+    /// Cancelled and superseded generations cannot overwrite a newly opened picker.
+    pub fn poll_base_picker_results(&mut self) -> bool {
+        let results = match self.base_picker_results.try_lock() {
+            Ok(mut mailbox) => std::mem::take(&mut *mailbox),
+            Err(_) => return false,
+        };
+        let mut changed = false;
+        for result in results {
+            let Some(target) = self
+                .list_picker
+                .as_ref()
+                .and_then(|picker| picker.base_target.as_ref())
+                .filter(|target| {
+                    target.request == result.request && target.project == result.project
+                })
+            else {
+                continue;
+            };
+            let preferred = if target.selection_pending {
+                Some(ListPickerValue::Base(target.current.clone()))
+            } else {
+                self.selected_list_picker_option()
+                    .map(|(_, option)| option.value)
+            };
+            let picker = self.list_picker.as_mut().expect("active base picker");
+            picker.options = vec![Self::default_base_option(result.default)];
+            match result.branches {
+                Ok((branches, warning)) => {
+                    picker
+                        .options
+                        .extend(branches.into_iter().map(|branch| ListPickerOption {
+                            label: branch.clone(),
+                            count: None,
+                            value: ListPickerValue::Base(Some(branch)),
+                        }));
+                    if let Some(warning) = warning {
+                        picker.options.push(ListPickerOption {
+                            label: warning,
+                            count: None,
+                            value: ListPickerValue::Unavailable,
+                        });
+                    }
+                }
+                Err(message) => picker.options.push(ListPickerOption {
+                    label: message,
+                    count: None,
+                    value: ListPickerValue::Unavailable,
+                }),
+            }
+            picker
+                .base_target
+                .as_mut()
+                .expect("base target")
+                .selection_pending = false;
+            let visible = self.visible_list_picker_options();
+            let selected = visible
+                .iter()
+                .position(|(_, option)| Some(&option.value) == preferred.as_ref())
+                .or_else(|| {
+                    visible
+                        .iter()
+                        .position(|(_, option)| option.value != ListPickerValue::Unavailable)
+                })
+                .unwrap_or(0);
+            self.list_picker.as_mut().expect("active picker").selected = selected;
+            changed = true;
+        }
+        changed
+    }
+
+    pub(super) fn close_base_picker(&mut self) -> Option<BasePickerTarget> {
+        let picker = self.list_picker.take()?;
+        self.input_mode = picker.return_mode;
+        picker.base_target
+    }
+
+    /// Open the task picker over `ids` (or the open form's draft): the tasks not done, the
+    /// target's project first, then the rest with their project, then **none**. `current` is
+    /// ticked; a current link the picker does not list (a done task) is kept. Space ticks,
+    /// Enter applies.
+    pub(super) fn open_after_picker(
+        &mut self,
+        ids: Vec<Uuid>,
+        current: Vec<u64>,
+        scope: &TaskScope,
+        edit_draft: bool,
+        own: Option<u64>,
+    ) {
+        let mut candidates: Vec<&Task> = self
+            .tasks
+            .iter()
+            .filter(|task| {
+                !task.soft_deleted
+                    && !task.is_notice()
+                    && !task.archived
+                    && task.status != HumanStatus::Done
+                    && task.number.is_some()
+                    && task.number != own
+                    && !ids.contains(&task.id)
+            })
+            .collect();
+        candidates.sort_by_key(|task| (task.scope != *scope, task.number));
+        let listed: Vec<u64> = candidates.iter().filter_map(|task| task.number).collect();
+        let ticked: Vec<u64> = current
+            .iter()
+            .copied()
+            .filter(|number| listed.contains(number))
+            .collect();
+        let kept: Vec<u64> = current
+            .iter()
+            .copied()
+            .filter(|number| !listed.contains(number))
+            .collect();
+        let mut options: Vec<ListPickerOption> = candidates
+            .iter()
+            .map(|task| {
+                let number = task.number.expect("listed tasks are numbered");
+                let place = if task.scope == *scope {
+                    String::new()
+                } else {
+                    match &task.scope {
+                        TaskScope::Project { path } => {
+                            format!(" · {}", crate::ui::render::short_project(path))
+                        }
+                        TaskScope::Global => " · desk".to_string(),
+                    }
+                };
+                ListPickerOption {
+                    label: after_option_label(
+                        ticked.contains(&number),
+                        &format!("T{number} {}{place}", terminal_text(&task.title)),
+                    ),
+                    count: None,
+                    value: ListPickerValue::After(number),
+                }
+            })
+            .collect();
+        options.push(ListPickerOption {
+            label: "none".to_string(),
+            count: None,
+            value: ListPickerValue::AfterNone,
+        });
+        self.list_picker = Some(ListPickerState {
+            kind: ListPickerKind::After,
+            options,
+            selected: 0,
+            query: String::new(),
+            return_mode: self.input_mode,
+            assignee_target: None,
+            base_target: None,
+            after_target: Some(AfterPickerTarget {
+                ids,
+                edit_draft,
+                ticked,
+                kept,
+            }),
+            active: None,
+            tabs: None,
+        });
+        self.input_mode = BoardInputMode::ListPicker;
+    }
+
+    /// Space in the task picker: tick or untick the highlighted task.
+    pub(super) fn toggle_after_tick(&mut self) {
+        let Some((index, option)) = self.selected_list_picker_option() else {
+            return;
+        };
+        let ListPickerValue::After(number) = option.value else {
+            return;
+        };
+        let Some(picker) = self.list_picker.as_mut() else {
+            return;
+        };
+        let Some(target) = picker.after_target.as_mut() else {
+            return;
+        };
+        let ticked = if let Some(position) = target.ticked.iter().position(|n| *n == number) {
+            target.ticked.remove(position);
+            false
+        } else {
+            target.ticked.push(number);
+            true
+        };
+        if let Some(option) = picker.options.get_mut(index) {
+            let rest = option
+                .label
+                .strip_prefix(AFTER_TICKED)
+                .or_else(|| option.label.strip_prefix(AFTER_UNTICKED))
+                .unwrap_or(&option.label)
+                .to_string();
+            option.label = after_option_label(ticked, &rest);
+        }
+    }
+
+    /// What Enter in the task picker sets: `none` clears; otherwise the ticked tasks plus any
+    /// kept link, or the highlighted task when nothing is ticked.
+    pub fn after_picker_choice(&self) -> Option<Vec<u64>> {
+        let picker = self.list_picker.as_ref()?;
+        let target = picker.after_target.as_ref()?;
+        let (_, option) = self.selected_list_picker_option()?;
+        Some(match option.value {
+            ListPickerValue::AfterNone => Vec::new(),
+            ListPickerValue::After(number) => {
+                let mut chosen = target.kept.clone();
+                if target.ticked.is_empty() {
+                    chosen.push(number);
+                } else {
+                    chosen.extend(target.ticked.iter().copied());
+                }
+                chosen
+            }
+            _ => return None,
+        })
+    }
+
+    pub(super) fn close_after_picker(&mut self) -> Option<AfterPickerTarget> {
+        let picker = self.list_picker.take()?;
+        self.input_mode = picker.return_mode;
+        picker.after_target
+    }
+
+    /// Cached remote-default label for the task footer. Cache misses schedule metadata lookup and
+    /// return `default` for this frame.
+    pub fn default_branch_name(&self, project: &Path) -> String {
+        self.default_branches.get_or_request(project)
+    }
+
+    /// Close the assignee picker after its choice was applied (or refused), restoring the
+    /// surface it opened over.
+    pub(super) fn close_assignee_picker(&mut self) -> Option<AssigneePickerTarget> {
+        let picker = self.list_picker.take()?;
+        self.input_mode = picker.return_mode;
+        picker.assignee_target
+    }
+
+    /// Resolve a quick-picker assignment at the persistence boundary. Once it is on disk
+    /// (`saved`), an open task form bound to one of its tasks adopts the new assignee, unless
+    /// its own assignee draft was already changed; otherwise a later save of that form would
+    /// write its stale draft over the assignment. A cancelled save leaves the form alone.
+    /// Call after `sync_from_domain`, so the bound task is current.
+    pub fn finish_form_assignee_sync(&mut self, saved: bool) {
+        let Some(ids) = self.pending_form_assignee_sync.take() else {
+            return;
+        };
+        if !saved {
+            return;
+        }
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        let tasks = &self.tasks;
+        let Some(id) = form.task_id().filter(|id| ids.contains(id)) else {
+            return;
+        };
+        let untouched = form
+            .task_snapshot
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.assignee == form.assignee);
+        if let (true, Some(task)) = (untouched, tasks.iter().find(|task| task.id == id)) {
+            form.reset_field_to_saved(CaptureField::Assignee, task);
+        }
+    }
+
+    /// Resolve a persisted quick Base choice into an open page form without overwriting a base
+    /// draft the user changed while the save was in flight.
+    pub fn finish_form_base_sync(&mut self, saved: bool) {
+        let Some(ids) = self.pending_form_base_sync.take() else {
+            return;
+        };
+        if !saved {
+            return;
+        }
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        let Some(id) = form.task_id().filter(|id| ids.contains(id)) else {
+            return;
+        };
+        let untouched = form
+            .task_snapshot
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.base == form.base);
+        if let (true, Some(task)) = (untouched, self.tasks.iter().find(|task| task.id == id)) {
+            form.reset_field_to_saved(CaptureField::Base, task);
+        }
+    }
+
+    /// [`Self::finish_form_base_sync`] for a quick task-picker change.
+    pub fn finish_form_after_sync(&mut self, saved: bool) {
+        let Some(ids) = self.pending_form_after_sync.take() else {
+            return;
+        };
+        if !saved {
+            return;
+        }
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        let Some(id) = form.task_id().filter(|id| ids.contains(id)) else {
+            return;
+        };
+        let untouched = form
+            .task_snapshot
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.after == form.after);
+        if let (true, Some(task)) = (untouched, self.tasks.iter().find(|task| task.id == id)) {
+            form.reset_field_to_saved(CaptureField::After, task);
+        }
     }
 
     /// Options the open picker shows after its search query, as (source index, option).
@@ -2152,15 +4227,29 @@ impl BoardModel {
             return Vec::new();
         };
         let query = picker.query.trim().to_ascii_lowercase();
-        picker
+        let mut visible: Vec<_> = picker
             .options
             .iter()
             .enumerate()
             .filter(|(_, option)| {
-                query.is_empty() || option.label.to_ascii_lowercase().contains(&query)
+                option.value == ListPickerValue::Unavailable
+                    || query.is_empty()
+                    || option.label.to_ascii_lowercase().contains(&query)
             })
             .map(|(index, option)| (index, option.clone()))
-            .collect()
+            .collect();
+        // With only a loading/error row matching, retain the real default choice rather than
+        // putting a highlight on an informational row.
+        if picker.kind == ListPickerKind::Base
+            && !visible
+                .iter()
+                .any(|(_, option)| option.value != ListPickerValue::Unavailable)
+        {
+            if let Some(option) = picker.options.first() {
+                visible.insert(0, (0, option.clone()));
+            }
+        }
+        visible
     }
 
     /// The picker row the cursor rests on, in the visible (filtered) order.
@@ -2172,39 +4261,60 @@ impl BoardModel {
     }
 
     pub fn selected_list_picker_option(&self) -> Option<(usize, ListPickerOption)> {
-        let visible = self.visible_list_picker_options();
-        let selected = self
-            .list_picker
-            .as_ref()
-            .map(|picker| picker.selected.min(visible.len().saturating_sub(1)))
-            .unwrap_or(0);
-        visible.into_iter().nth(selected)
+        self.visible_list_picker_options()
+            .into_iter()
+            .nth(self.list_picker_selected())
+            .filter(|(_, option)| option.value != ListPickerValue::Unavailable)
+    }
+
+    pub(super) fn select_list_picker_option(&mut self, index: usize) -> bool {
+        if self
+            .visible_list_picker_options()
+            .get(index)
+            .is_none_or(|(_, option)| option.value == ListPickerValue::Unavailable)
+        {
+            return false;
+        }
+        if let Some(picker) = self.list_picker.as_mut() {
+            picker.selected = index;
+            if let Some(target) = picker.base_target.as_mut() {
+                target.selection_pending = false;
+            }
+        }
+        true
     }
 
     pub(super) fn move_list_picker(&mut self, forward: bool) {
-        let len = self.visible_list_picker_options().len();
+        let visible = self.visible_list_picker_options();
+        let len = visible.len();
         if let Some(picker) = self.list_picker.as_mut() {
-            picker.selected = if len == 0 {
-                0
-            } else if forward {
-                (picker.selected + 1) % len
-            } else {
-                picker.selected.checked_sub(1).unwrap_or(len - 1)
-            };
+            if let Some(target) = picker.base_target.as_mut() {
+                target.selection_pending = false;
+            }
+            for _ in 0..len {
+                picker.selected = if forward {
+                    (picker.selected + 1) % len
+                } else {
+                    picker.selected.checked_sub(1).unwrap_or(len - 1)
+                };
+                if visible[picker.selected].1.value != ListPickerValue::Unavailable {
+                    break;
+                }
+            }
         }
     }
 
     pub(super) fn list_picker_query_insert(&mut self, character: char) {
-        if let Some(picker) = self.list_picker.as_mut() {
-            picker.query.push(character);
-            picker.selected = 0;
-        }
+        self.list_picker_query_insert_text(&character.to_string());
     }
 
     pub(super) fn list_picker_query_backspace(&mut self) {
         if let Some(picker) = self.list_picker.as_mut() {
             picker.query.pop();
             picker.selected = 0;
+            if let Some(target) = picker.base_target.as_mut() {
+                target.selection_pending = false;
+            }
         }
     }
 
@@ -2212,6 +4322,9 @@ impl BoardModel {
         if let Some(picker) = self.list_picker.as_mut() {
             picker.query.push_str(text);
             picker.selected = 0;
+            if let Some(target) = picker.base_target.as_mut() {
+                target.selection_pending = false;
+            }
         }
     }
 
@@ -2224,15 +4337,27 @@ impl BoardModel {
         let kind = self.list_picker.as_ref()?.kind;
         let applied = match (kind, &value) {
             (ListPickerKind::ThreadFilter, ListPickerValue::ThreadAll) => {
-                self.thread_filter = ThreadFilter::All;
+                self.filter.thread = ThreadFilter::All;
                 true
             }
             (ListPickerKind::ThreadFilter, ListPickerValue::ThreadNamed(name)) => {
-                self.thread_filter = ThreadFilter::Named(name.clone());
+                self.filter.thread = ThreadFilter::Named(name.clone());
                 true
             }
             (ListPickerKind::ThreadFilter, ListPickerValue::ThreadWithout) => {
-                self.thread_filter = ThreadFilter::Without;
+                self.filter.thread = ThreadFilter::Without;
+                true
+            }
+            (ListPickerKind::ThreadFilter, ListPickerValue::AssigneeFilterAll) => {
+                self.filter.assignee = AssigneeFilter::All;
+                true
+            }
+            (ListPickerKind::ThreadFilter, ListPickerValue::AssigneeFilterNamed(name)) => {
+                self.filter.assignee = AssigneeFilter::Named(name.clone());
+                true
+            }
+            (ListPickerKind::ThreadFilter, ListPickerValue::AssigneeFilterUnassigned) => {
+                self.filter.assignee = AssigneeFilter::Unassigned;
                 true
             }
             (ListPickerKind::ProjectsView, ListPickerValue::ProjectsOverview) => {
@@ -2249,6 +4374,13 @@ impl BoardModel {
                 self.projects_selected = 0;
                 true
             }
+            (ListPickerKind::ProjectsView, ListPickerValue::ProjectsAssignee(name)) => {
+                self.projects_view = ProjectsView::Assignee(name.clone());
+                self.search_query.clear();
+                self.search_pinned = false;
+                self.projects_selected = 0;
+                true
+            }
             _ => false,
         };
         if applied {
@@ -2260,7 +4392,11 @@ impl BoardModel {
     }
 
     pub(super) fn cancel_list_picker(&mut self) {
-        self.list_picker = None;
+        let return_mode = self
+            .list_picker
+            .take()
+            .map_or(BoardInputMode::Normal, |picker| picker.return_mode);
+        self.input_mode = return_mode;
     }
 
     /// Fold the group `g` addresses: archived while the drawer is open and that
@@ -2384,6 +4520,15 @@ impl BoardModel {
         &self.marked_ids
     }
 
+    /// The marked tasks in the order they were marked.
+    pub fn marked_in_order(&self) -> Vec<Uuid> {
+        self.mark_order
+            .iter()
+            .copied()
+            .filter(|id| self.marked_ids.contains(id))
+            .collect()
+    }
+
     /// Number of tasks the next bulk verb will target.
     pub fn marked_count(&self) -> usize {
         self.marked_ids.len()
@@ -2396,8 +4541,11 @@ impl BoardModel {
         if !self.visible_ids().contains(&id) {
             return false;
         }
-        if !self.marked_ids.remove(&id) {
+        if self.marked_ids.remove(&id) {
+            self.mark_order.retain(|marked| *marked != id);
+        } else {
             self.marked_ids.insert(id);
+            self.mark_order.push(id);
         }
         true
     }
@@ -2409,7 +4557,11 @@ impl BoardModel {
         if !self.visible_ids().contains(&id) {
             return false;
         }
-        self.marked_ids.insert(id)
+        let inserted = self.marked_ids.insert(id);
+        if inserted {
+            self.mark_order.push(id);
+        }
+        inserted
     }
 
     pub(super) fn toggle_mark_mode(&mut self) {
@@ -2420,10 +4572,11 @@ impl BoardModel {
         }
     }
 
-    pub(super) fn clear_marks(&mut self) -> bool {
+    pub fn clear_marks(&mut self) -> bool {
         let had_mark_state = self.mark_mode || !self.marked_ids.is_empty();
         self.mark_mode = false;
         self.marked_ids.clear();
+        self.mark_order.clear();
         had_mark_state
     }
 
@@ -2432,8 +4585,26 @@ impl BoardModel {
         self.input_mode_local() == BoardInputMode::Normal && !self.projects_overview()
     }
 
+    /// Whether a status verb currently targets the marked set rather than the cursor.
+    pub fn bulk_verb_active(&self) -> bool {
+        self.task_list_owns_input() && self.mark_mode && !self.marked_ids.is_empty()
+    }
+
+    /// Marked tasks a palette command would act on: the task list under an open palette owns
+    /// the marks exactly as [`Self::bulk_verb_active`] would once the palette closes.
+    pub(super) fn marks_under_palette(&self) -> usize {
+        let list_underneath = self.input_mode == BoardInputMode::Normal
+            && self.popup == BoardPopup::None
+            && !self.projects_overview();
+        if list_underneath && self.mark_mode {
+            self.marked_ids.len()
+        } else {
+            0
+        }
+    }
+
     /// Mark targets when the task list owns input, otherwise the cursor target.
-    pub(super) fn verb_target_ids(&self) -> Vec<Uuid> {
+    pub fn verb_target_ids(&self) -> Vec<Uuid> {
         if self.task_list_owns_input() && self.mark_mode && !self.marked_ids.is_empty() {
             self.marked_ids.iter().copied().collect()
         } else {
@@ -2606,6 +4777,17 @@ impl BoardModel {
         match self.popup {
             BoardPopup::SaveRecovery => BoardInputMode::SaveRecovery,
             BoardPopup::LaunchCard => BoardInputMode::LaunchCard,
+            BoardPopup::CleanupConfirm
+                if self
+                    .cleanup_prompt
+                    .as_ref()
+                    .is_some_and(|prompt| !prompt.can_clean_any()) =>
+            {
+                BoardInputMode::CleanupDirtyConfirm
+            }
+            BoardPopup::CleanupConfirm => BoardInputMode::CleanupConfirm,
+            BoardPopup::DispatchConfirm => BoardInputMode::DispatchConfirm,
+            BoardPopup::BlockCard => BoardInputMode::BlockCard,
             _ if self.project_picker.is_some() => BoardInputMode::ProjectPicker,
             _ if self.focused_surface() == FocusedSurface::Board
                 && self.input_mode == BoardInputMode::TaskPage =>
@@ -2622,9 +4804,13 @@ impl BoardModel {
             return "";
         };
         match form.focus {
-            CaptureField::Title | CaptureField::Scope => form.title.value(),
+            CaptureField::Title
+            | CaptureField::Scope
+            | CaptureField::Base
+            | CaptureField::After => form.title.value(),
             CaptureField::Notes => form.notes.value(),
             CaptureField::Thread => form.thread.value(),
+            CaptureField::Assignee => "",
         }
     }
 
@@ -2634,9 +4820,13 @@ impl BoardModel {
             return 0;
         };
         match form.focus {
-            CaptureField::Title | CaptureField::Scope => form.title.cursor(),
+            CaptureField::Title
+            | CaptureField::Scope
+            | CaptureField::Base
+            | CaptureField::After => form.title.cursor(),
             CaptureField::Notes => form.notes.cursor(),
             CaptureField::Thread => form.thread.cursor(),
+            CaptureField::Assignee => 0,
         }
     }
 
@@ -2741,6 +4931,8 @@ impl BoardModel {
                 && task.notes == pending.notes
                 && task.scope == pending.scope
                 && task.thread == pending.thread
+                && task.assignee == pending.assignee
+                && task.base == pending.base
                 && pending.step_renames.iter().all(|(step_id, text)| {
                     task.steps
                         .iter()
@@ -2778,6 +4970,10 @@ impl BoardModel {
                 .unwrap_or(0);
             form.thread = seeded_draft(pending.thread.as_deref().unwrap_or_default());
             form.thread_refusal = None;
+            form.assignee = pending.assignee;
+            form.base = pending.base;
+            form.after = pending.after;
+            form.select_current_assignee();
             form.editing = false;
             form.steps.editor = None;
             form.steps.drafts.clear();
@@ -2793,6 +4989,19 @@ impl BoardModel {
     /// Hold a task form through the reducer's pre-persist sync.
     pub fn hold_task_edit_save(&mut self) {
         self.hold_task_edit_save = true;
+    }
+
+    /// Whether a task form is held through an unresolved save.
+    pub fn task_edit_save_held(&self) -> bool {
+        self.hold_task_edit_save
+    }
+
+    /// The task page form's title draft, if a task form is open.
+    pub fn task_form_title(&self) -> Option<&str> {
+        self.form
+            .as_ref()
+            .filter(|form| form.is_task())
+            .map(|form| form.title.value())
     }
 
     /// Release a held form only after Retry or the initial persistence succeeds.
@@ -3003,7 +5212,7 @@ impl BoardModel {
         let Some(form) = self.form.as_mut() else {
             return;
         };
-        if self.input_mode == BoardInputMode::FormScopeDropdown {
+        if self.input_mode == BoardInputMode::FormDropdown {
             return;
         }
         if form.is_task() {
@@ -3079,6 +5288,9 @@ impl BoardModel {
         if form.title.value() != snapshot.title
             || form.notes.value() != snapshot.notes.as_deref().unwrap_or_default()
             || form.thread.value() != snapshot.thread.as_deref().unwrap_or_default()
+            || form.assignee != snapshot.assignee
+            || form.base != snapshot.base
+            || form.after != snapshot.after
             || form.scope != snapshot.scope
             || !form.steps.removals.is_empty()
         {
@@ -3107,62 +5319,95 @@ impl BoardModel {
         })
     }
 
+    pub(super) fn cycle_form_assignee(&mut self, forward: bool) {
+        if let Some(form) = self.form.as_mut() {
+            form.cycle_assignee(forward);
+        }
+    }
+
+    pub fn set_agent_profiles(&mut self, profiles: &crate::agents::AgentProfiles) {
+        self.agent_names = profiles.names().map(str::to_string).collect();
+        if let Some(form) = self.form.as_mut() {
+            form.set_agent_names(&self.agent_names);
+        }
+        if let Some(right) = self.right_seat.as_mut() {
+            right.set_agent_profiles(profiles);
+        }
+    }
+
     pub(super) fn cycle_form_scope(&mut self) {
         if let Some(form) = self.form.as_mut() {
             form.cycle_scope();
         }
     }
 
-    pub(super) fn open_form_scope_dropdown(&mut self) {
-        if !self.park_rename_step_draft() {
+    pub(super) fn open_form_dropdown(&mut self, field: CaptureField) {
+        if !matches!(field, CaptureField::Scope | CaptureField::Assignee)
+            || !self.park_rename_step_draft()
+        {
             return;
         }
         let Some(form) = self.form.as_mut() else {
             return;
         };
-        // A Scope row click reaches this route directly. Keyboard only reaches it after focus
-        // has moved to Scope, but both routes leave the parent form focused there.
-        form.focus = CaptureField::Scope;
-        // Each opening starts from the parent form's chosen scope. Esc therefore discards
-        // only the dropdown's pending highlight, never a field draft or the whole form.
-        form.select_current_scope();
-        self.input_mode = BoardInputMode::FormScopeDropdown;
+        form.focus = field;
+        match field {
+            CaptureField::Scope => form.select_current_scope(),
+            CaptureField::Assignee => form.select_current_assignee(),
+            _ => unreachable!(),
+        }
+        self.input_mode = BoardInputMode::FormDropdown;
     }
 
-    pub(super) fn close_form_scope_dropdown(&mut self, apply: bool) {
+    pub(super) fn close_form_dropdown(&mut self, apply: bool) -> bool {
         let Some(form) = self.form.as_mut() else {
-            return;
+            return false;
         };
-        if apply {
-            form.apply_scope_selection();
-        } else {
-            form.select_current_scope();
+        match (form.focus, apply) {
+            (CaptureField::Scope, true) => form.apply_scope_selection(),
+            (CaptureField::Scope, false) => form.select_current_scope(),
+            (CaptureField::Assignee, true) => form.apply_assignee_selection(),
+            (CaptureField::Assignee, false) => form.select_current_assignee(),
+            _ => return false,
         }
         self.input_mode = form.parent_mode();
+        true
     }
 
-    pub(super) fn move_form_scope_dropdown(&mut self, forward: bool) {
-        if self.input_mode == BoardInputMode::FormScopeDropdown {
-            if let Some(form) = self.form.as_mut() {
-                form.move_scope_selection(forward);
+    pub(super) fn move_form_dropdown(&mut self, forward: bool) {
+        if self.input_mode != BoardInputMode::FormDropdown {
+            return;
+        }
+        if let Some(form) = self.form.as_mut() {
+            match form.focus {
+                CaptureField::Scope => form.move_scope_selection(forward),
+                CaptureField::Assignee => form.move_assignee_selection(forward),
+                _ => {}
             }
         }
     }
 
     /// Apply a clicked source option exactly as keyboard navigation plus Enter would.
-    pub(super) fn select_form_scope_option(&mut self, index: usize) {
-        if self.input_mode != BoardInputMode::FormScopeDropdown {
-            return;
+    pub(super) fn select_form_dropdown_option(&mut self, index: usize) -> bool {
+        if self.input_mode != BoardInputMode::FormDropdown {
+            return false;
         }
         let Some(form) = self.form.as_mut() else {
-            return;
+            return false;
         };
-        if index >= form.scope_options.len() {
-            return;
+        match form.focus {
+            CaptureField::Scope if index < form.scope_options.len() => {
+                form.scope_selected = index;
+                form.apply_scope_selection();
+            }
+            CaptureField::Assignee if index < form.assignee_options.len() => {
+                form.assignee_selected = index;
+                form.apply_assignee_selection();
+            }
+            _ => return false,
         }
-        form.scope_selected = index;
-        form.apply_scope_selection();
         self.input_mode = form.parent_mode();
+        true
     }
 
     /// Help line listing primary key bindings.
@@ -3184,9 +5429,9 @@ impl BoardModel {
             .as_deref()
             .filter(|_| self.project_right_seat_focused())
         {
-            return right.message();
+            return right.message().or(self.cleanup_status.as_deref());
         }
-        self.message.as_deref()
+        self.message.as_deref().or(self.cleanup_status.as_deref())
     }
 
     pub fn update_notice(&self) -> Option<&str> {
@@ -3221,6 +5466,16 @@ impl BoardModel {
         }
         self.message = Some(terminal_text(&msg.into()));
         self.message_expires_at = Some(Instant::now() + ttl);
+    }
+
+    /// The status line stays until the next action rather than expiring on its own.
+    pub fn message_is_sticky(&self) -> bool {
+        let board = self
+            .right_seat
+            .as_deref()
+            .filter(|_| self.project_right_seat_focused())
+            .unwrap_or(self);
+        board.message.is_some() && board.message_expires_at.is_none()
     }
 
     pub fn clear_message(&mut self) {
@@ -3407,6 +5662,7 @@ impl BoardModel {
                         &self.tasks,
                         CaptureField::Title,
                         &archived,
+                        &self.agent_names,
                     )
                 })
             });
@@ -3589,6 +5845,352 @@ pub(super) fn project_scope_option_label(option: &ProjectScopeOption) -> String 
 mod tests {
     use super::*;
     use crate::domain::ProvenanceOrigin;
+    use crate::ui::input::BoardIntent;
+
+    fn run_row(number: u64, state: CleanupRowState) -> CleanupRunRow {
+        CleanupRunRow {
+            task_id: Uuid::new_v4(),
+            number,
+            slot: Some(0),
+            inspected: None,
+            state,
+        }
+    }
+
+    fn cleaned() -> CleanupRowState {
+        CleanupRowState::Cleaned { branch_kept: None }
+    }
+
+    fn kept(short: &str) -> CleanupRowState {
+        CleanupRowState::Kept {
+            short: short.into(),
+            full: short.into(),
+        }
+    }
+
+    fn run(rows: Vec<CleanupRunRow>, bulk: Option<(usize, usize)>) -> CleanupRun {
+        CleanupRun {
+            job: crate::dispatch::CleanupJob::new(0),
+            rows,
+            bulk,
+            refused: Vec::new(),
+            settled: true,
+            waiting: Vec::new(),
+            plan: Vec::new(),
+            start_deadline: Instant::now(),
+            started: true,
+        }
+    }
+
+    #[test]
+    fn cleanup_summaries_count_and_name_only_what_was_kept() {
+        let all = run(
+            (160..165)
+                .map(|number| run_row(number, cleaned()))
+                .collect(),
+            Some((5, 0)),
+        );
+        assert_eq!(all.summary(), ("done 5 · cleaned 5".to_string(), true));
+
+        let mut rows: Vec<_> = (160..164)
+            .map(|number| run_row(number, cleaned()))
+            .collect();
+        rows.push(run_row(164, kept("uncommitted changes")));
+        assert_eq!(
+            run(rows, Some((5, 0))).summary(),
+            (
+                "done 5 · cleaned 4 · kept T164 (uncommitted changes)".to_string(),
+                false
+            )
+        );
+        let branch = run(
+            vec![
+                run_row(156, cleaned()),
+                run_row(
+                    157,
+                    CleanupRowState::Cleaned {
+                        branch_kept: Some(("not merged".into(), "not merged into main".into())),
+                    },
+                ),
+            ],
+            Some((2, 0)),
+        );
+        assert_eq!(
+            branch.summary(),
+            (
+                "done 2 · cleaned 2 · branch kept T157 (not merged)".to_string(),
+                false
+            )
+        );
+
+        // Past the width, counts only: never wider than the status row.
+        let many = run(
+            (1..=4)
+                .map(|number| run_row(number, kept("uncommitted changes")))
+                .chain([run_row(5, cleaned())])
+                .collect(),
+            Some((6, 1)),
+        );
+        let (text, clean) = many.summary();
+        assert_eq!(text, "done 6 · cleaned 1 · kept 4 · 1 already gone");
+        assert!(!clean);
+
+        assert_eq!(
+            run(vec![run_row(5, cleaned())], None).summary(),
+            ("done T5 · cleaned".to_string(), true)
+        );
+        assert_eq!(
+            run(vec![run_row(5, kept("uncommitted changes"))], None).summary(),
+            ("done T5 · kept (uncommitted changes)".to_string(), false)
+        );
+    }
+
+    #[test]
+    fn a_clean_cleanup_summary_expires_and_one_that_kept_anything_stays() {
+        let mut model = BoardModel::from_tasks(Vec::new(), None);
+        model.post_cleanup_summary("done 5 · cleaned 5".into(), true);
+        assert!(!model.message_is_sticky());
+        model.message_expires_at = Some(Instant::now());
+        model.expire_ephemeral_message();
+        assert_eq!(model.message(), None);
+
+        model.post_cleanup_summary(
+            "done 5 · cleaned 4 · kept T164 (uncommitted changes)".into(),
+            false,
+        );
+        model.expire_ephemeral_message();
+        assert_eq!(
+            model.message(),
+            Some("done 5 · cleaned 4 · kept T164 (uncommitted changes)")
+        );
+        assert!(model.message_is_sticky());
+    }
+
+    #[test]
+    fn an_expired_clean_summary_never_restores_a_busy_refusal() {
+        let mut model = BoardModel::from_tasks(Vec::new(), None);
+        model.set_message(CLEANUP_BUSY);
+        model.post_cleanup_summary("done 2 · cleaned 2".into(), true);
+        assert_eq!(model.message(), Some("done 2 · cleaned 2"));
+        model.message_expires_at = Some(Instant::now());
+        model.expire_ephemeral_message();
+        assert_eq!(model.message(), None);
+    }
+
+    #[test]
+    fn a_quit_waiting_on_cleanup_is_due_once_the_run_ends_or_its_bound_passes() {
+        let mut model = BoardModel::from_tasks(Vec::new(), None);
+        let mut unfinished = run(vec![run_row(1, CleanupRowState::Removing)], None);
+        unfinished.settled = false;
+        model.begin_cleanup_run(unfinished);
+        model.begin_quit_after_cleanup();
+        assert_eq!(model.message(), Some("finishing cleanup…"));
+        assert!(!model.quit_after_cleanup_due());
+        model.quit_after_cleanup = Some(Instant::now());
+        assert!(
+            model.quit_after_cleanup_due(),
+            "bounded: a stuck host never pins the board"
+        );
+        model.quit_after_cleanup = Some(Instant::now() + QUIT_CLEANUP_BOUND);
+        model.finish_cleanup_run();
+        assert!(model.quit_after_cleanup_due());
+    }
+
+    fn loading_picker(request: Uuid, ids: Vec<Uuid>) -> ListPickerState {
+        ListPickerState {
+            kind: ListPickerKind::Base,
+            options: vec![
+                BoardModel::default_base_option("default".into()),
+                ListPickerOption {
+                    label: REFRESHING_BRANCHES.into(),
+                    count: None,
+                    value: ListPickerValue::Unavailable,
+                },
+            ],
+            selected: 0,
+            query: String::new(),
+            return_mode: BoardInputMode::Normal,
+            assignee_target: None,
+            base_target: Some(BasePickerTarget {
+                ids,
+                edit_draft: false,
+                request,
+                project: PathBuf::from("/repos/picker"),
+                current: None,
+                selection_pending: true,
+            }),
+            after_target: None,
+            active: None,
+            tabs: None,
+        }
+    }
+
+    #[test]
+    fn delayed_base_picker_result_cannot_replace_reopened_generation_or_target() {
+        let id = Uuid::new_v4();
+        for ids in [vec![id], vec![Uuid::new_v4()], Vec::new()] {
+            let mut model = BoardModel::from_domain(&DomainState::new(), None);
+            let old_request = Uuid::new_v4();
+            model.list_picker = Some(loading_picker(old_request, vec![id]));
+            model.input_mode = BoardInputMode::ListPicker;
+            let mailbox = Arc::clone(&model.base_picker_results);
+            let (release, wait) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                wait.recv().unwrap();
+                mailbox.lock().unwrap().push(BasePickerResult {
+                    request: old_request,
+                    project: PathBuf::from("/repos/picker"),
+                    branches: Ok((vec!["stale".into()], None)),
+                    default: "stale-default".into(),
+                });
+            });
+            model.cancel_list_picker();
+            let new_request = Uuid::new_v4();
+            model.list_picker = Some(loading_picker(new_request, ids.clone()));
+            model.input_mode = BoardInputMode::ListPicker;
+            model.list_picker_query_insert_text("release");
+            model
+                .base_picker_results
+                .lock()
+                .unwrap()
+                .push(BasePickerResult {
+                    request: new_request,
+                    project: PathBuf::from("/repos/picker"),
+                    branches: Ok((vec!["main".into(), "release".into()], None)),
+                    default: "main".into(),
+                });
+            assert!(model.poll_base_picker_results());
+            assert_eq!(model.list_picker_query(), Some("release"));
+            assert_eq!(
+                model.selected_list_picker_option().unwrap().1.value,
+                ListPickerValue::Base(Some("release".into()))
+            );
+            assert_eq!(
+                model
+                    .list_picker
+                    .as_ref()
+                    .unwrap()
+                    .base_target
+                    .as_ref()
+                    .unwrap()
+                    .ids,
+                ids
+            );
+            release.send(()).unwrap();
+            worker.join().unwrap();
+            assert!(!model.poll_base_picker_results());
+            assert_eq!(
+                model.selected_list_picker_option().unwrap().1.value,
+                ListPickerValue::Base(Some("release".into()))
+            );
+            assert!(!model
+                .list_picker
+                .as_ref()
+                .unwrap()
+                .options
+                .iter()
+                .any(|option| option.label.contains("stale")));
+        }
+    }
+
+    #[test]
+    fn base_picker_refreshes_when_its_fetch_lands_during_the_cached_snapshot() {
+        let mut model = BoardModel::from_domain(&DomainState::new(), None);
+        let project = PathBuf::from(format!("/repos/race-{}", Uuid::new_v4()));
+        let fetched = std::cell::Cell::new(false);
+        model.open_base_picker_from(
+            vec![Uuid::new_v4()],
+            None,
+            project.clone(),
+            false,
+            "main".into(),
+            |_| fetched.get(),
+            |_| {
+                // The worker's fetch completes while the pre-fetch refs are being read.
+                fetched.set(true);
+                Ok(vec!["main".into()])
+            },
+        );
+        let labels: Vec<_> = model
+            .visible_list_picker_options()
+            .into_iter()
+            .map(|(_, option)| option.label)
+            .collect();
+        assert_eq!(
+            labels.last().map(String::as_str),
+            Some(REFRESHING_BRANCHES),
+            "a refresh is subscribed for the pre-fetch snapshot"
+        );
+    }
+
+    #[test]
+    fn base_picker_rejects_another_projects_result_even_with_current_request() {
+        let mut model = BoardModel::from_domain(&DomainState::new(), None);
+        let request = Uuid::new_v4();
+        model.list_picker = Some(loading_picker(request, vec![Uuid::new_v4()]));
+        model
+            .base_picker_results
+            .lock()
+            .unwrap()
+            .push(BasePickerResult {
+                request,
+                project: PathBuf::from("/repos/different"),
+                branches: Ok((vec!["wrong-project".into()], None)),
+                default: "wrong-default".into(),
+            });
+        assert!(!model.poll_base_picker_results());
+        assert_eq!(
+            model.visible_list_picker_options()[1].1.label,
+            REFRESHING_BRANCHES
+        );
+    }
+
+    #[test]
+    fn base_picker_results_preserve_selection_and_show_disabled_warnings() {
+        let mut model = BoardModel::from_domain(&DomainState::new(), None);
+        let request = Uuid::new_v4();
+        let mut picker = loading_picker(request, vec![Uuid::new_v4()]);
+        picker.base_target.as_mut().unwrap().current = Some("release".into());
+        model.list_picker = Some(picker);
+        model
+            .base_picker_results
+            .lock()
+            .unwrap()
+            .push(BasePickerResult {
+                request,
+                project: PathBuf::from("/repos/picker"),
+                branches: Ok((
+                    vec!["main".into(), "release".into()],
+                    Some("offline: using cached refs".into()),
+                )),
+                default: "main".into(),
+            });
+        assert!(model.poll_base_picker_results());
+        assert_eq!(
+            model.selected_list_picker_option().unwrap().1.value,
+            ListPickerValue::Base(Some("release".into()))
+        );
+        model.move_list_picker(true);
+        assert_eq!(
+            model.selected_list_picker_option().unwrap().1.value,
+            ListPickerValue::Base(None)
+        );
+        assert!(!model.select_list_picker_option(3));
+        assert_eq!(model.list_picker_selected(), 0);
+        model.cancel_list_picker();
+        model
+            .base_picker_results
+            .lock()
+            .unwrap()
+            .push(BasePickerResult {
+                request,
+                project: PathBuf::from("/repos/picker"),
+                branches: Err("failed".into()),
+                default: "default".into(),
+            });
+        assert!(!model.poll_base_picker_results());
+        assert!(model.list_picker.is_none());
+    }
 
     const REPO_A: &str = "/repos/a";
     const REPO_B: &str = "/repos/b";
@@ -3707,7 +6309,7 @@ mod tests {
         create(&mut domain, "task-b", project(REPO_B));
 
         let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(REPO_A)));
-        model.thread_filter = ThreadFilter::Named("release".to_string());
+        model.filter.thread = ThreadFilter::Named("release".to_string());
         model.set_selected_project(Some(PathBuf::from(REPO_B)));
         assert_eq!(
             model.thread_filter(),
@@ -3716,7 +6318,7 @@ mod tests {
         );
 
         // Same project again: the filter survives.
-        model.thread_filter = ThreadFilter::Without;
+        model.filter.thread = ThreadFilter::Without;
         model.set_selected_project(Some(PathBuf::from(REPO_B)));
         assert_eq!(model.thread_filter(), &ThreadFilter::Without);
     }
@@ -3782,7 +6384,7 @@ mod tests {
             .collect();
         assert_eq!(
             labels,
-            vec!["All tasks", "#nav", "Without a thread"],
+            vec!["all", "#nav", "Without a thread"],
             "another project's thread must not offer itself here"
         );
         assert_eq!(model.list_picker_kind(), Some(ListPickerKind::ThreadFilter));
@@ -3819,6 +6421,114 @@ mod tests {
             .visible_list_picker_options()
             .iter()
             .any(|(_, option)| option.label == "#nav"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// When the board sits on the alias spelling that dedupe would drop,
+    /// the selector keeps that spelling and highlights it instead of falling back to Home.
+    #[cfg(unix)]
+    #[test]
+    fn project_selector_keeps_and_highlights_the_current_alias_spelling() {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "tsk-t152-highlight-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let real = root.join("alpha");
+        let alias = root.join("link").join("alpha");
+        fs::create_dir_all(&real).expect("real");
+        fs::create_dir_all(root.join("link")).expect("link parent");
+        symlink(&real, &alias).expect("alias");
+        let mut domain = DomainState::new();
+        // `root/alpha` sorts before `root/link/alpha`, so plain first-wins keeps `real`.
+        create(&mut domain, "twin", project(&real.to_string_lossy()));
+        create(&mut domain, "current", project(&alias.to_string_lossy()));
+        let mut model = BoardModel::from_domain(&domain, None);
+        model.board_location = BoardLocation::Project(alias.clone());
+
+        crate::ui::board::apply_intent(
+            &mut domain,
+            &mut model,
+            crate::ui::input::BoardIntent::OpenProjectSelector,
+            None,
+        )
+        .expect("open selector");
+        let picker = model.project_picker.as_ref().expect("selector open");
+        let projects: Vec<&ProjectScopeOption> = picker
+            .options
+            .iter()
+            .filter(|option| matches!(option, ProjectScopeOption::Project(_)))
+            .collect();
+        assert_eq!(projects, vec![&ProjectScopeOption::Project(alias.clone())]);
+        assert_eq!(
+            picker.options[picker.selected],
+            ProjectScopeOption::Project(alias)
+        );
+
+        model.project_picker = None;
+        model.board_location = BoardLocation::Projects;
+        let rows = model.project_rows();
+        assert_eq!(rows.len(), 1, "the Projects index lists the twin once");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// `/tmp/x` and `/private/tmp/x` (any symlink alias) are one project in the board
+    /// selector and the task page's project dropdown, even when the store holds both.
+    #[cfg(unix)]
+    #[test]
+    fn project_dropdowns_list_symlinked_aliases_once() {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "tsk-t152-alias-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let real = root.join("alpha");
+        let alias = root.join("link").join("alpha");
+        fs::create_dir_all(&real).expect("real");
+        fs::create_dir_all(root.join("link")).expect("link parent");
+        symlink(&real, &alias).expect("alias");
+        let alias_path = alias.to_string_lossy().into_owned();
+        let real_path = real.to_string_lossy().into_owned();
+        let mut domain = DomainState::new();
+        let stored = create(&mut domain, "stored", project(&alias_path));
+        create(&mut domain, "legacy twin", project(&real_path));
+
+        let model = BoardModel::from_domain(&domain, Some(real.clone()));
+        let projects = model
+            .project_options()
+            .into_iter()
+            .filter(|option| matches!(option, ProjectScopeOption::Project(_)))
+            .count();
+        assert_eq!(projects, 1, "selector lists one alpha");
+
+        let task = domain.get(stored).expect("stored task").clone();
+        let form = BoardForm::task(
+            &task,
+            Some(&real),
+            domain.tasks(),
+            CaptureField::Title,
+            &BTreeSet::new(),
+            &[],
+        );
+        let scopes: Vec<&TaskScope> = form
+            .scope_options
+            .iter()
+            .filter(|scope| matches!(scope, TaskScope::Project { .. }))
+            .collect();
+        assert_eq!(
+            scopes,
+            vec![&project(&alias_path)],
+            "the task keeps its own spelling"
+        );
+        assert_eq!(form.scope_selected, 0);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3897,6 +6607,339 @@ mod tests {
         );
         assert_eq!(model.projects_view(), &ProjectsView::Overview);
         assert!(!model.project_rows().is_empty());
+    }
+
+    fn labels(model: &BoardModel) -> Vec<String> {
+        model
+            .visible_list_picker_options()
+            .into_iter()
+            .map(|(_, option)| option.label)
+            .collect()
+    }
+
+    fn assign(domain: &mut DomainState, id: Uuid, name: &str) {
+        domain.assign(id, Some(name.to_string())).expect("assign");
+    }
+
+    fn thread(domain: &mut DomainState, id: Uuid, title: &str, scope: TaskScope, name: &str) {
+        domain
+            .edit(id, title, None, scope, Some(name.to_string()))
+            .expect("thread");
+    }
+
+    #[test]
+    fn filter_picker_tab_switches_between_threads_and_assignees() {
+        let mut domain = DomainState::new();
+        let a = create(&mut domain, "a1", project(REPO_A));
+        thread(&mut domain, a, "a1", project(REPO_A), "nav");
+        assign(&mut domain, a, "claude");
+        // A removed profile still on a task is listed so its tasks can be found.
+        let gone = create(&mut domain, "a2", project(REPO_A));
+        assign(&mut domain, gone, "retired");
+        create(&mut domain, "a3", project(REPO_A));
+        let other = create(&mut domain, "b1", project(REPO_B));
+        assign(&mut domain, other, "elsewhere");
+
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(REPO_A)));
+        model.agent_names = vec!["claude".to_string(), "pi".to_string()];
+        model.open_thread_filter_picker();
+        assert_eq!(model.list_picker_tab(), Some(FilterTab::Threads));
+        assert_eq!(labels(&model), vec!["all", "#nav", "Without a thread"]);
+        assert_eq!(model.list_picker_active(), Some(0), "all is marked");
+
+        model.list_picker_query_insert('n');
+        assert!(model.switch_list_picker_tab(None));
+        assert_eq!(model.list_picker_tab(), Some(FilterTab::Assignees));
+        assert_eq!(model.list_picker_query(), Some(""), "the query is per tab");
+        assert_eq!(
+            labels(&model),
+            vec!["all", "@claude", "@pi", "@retired", "unassigned"],
+            "profiles in config order, then removed names, then unassigned"
+        );
+        let counts: Vec<Option<usize>> = model
+            .visible_list_picker_options()
+            .into_iter()
+            .map(|(_, option)| option.count)
+            .collect();
+        assert_eq!(counts, vec![Some(3), Some(1), Some(0), Some(1), Some(1)]);
+
+        // Typing filters the current tab only.
+        model.list_picker_query_insert_text("un");
+        assert_eq!(labels(&model), vec!["unassigned"]);
+
+        assert!(model.switch_list_picker_tab(None));
+        assert_eq!(model.list_picker_tab(), Some(FilterTab::Threads));
+        assert_eq!(labels(&model), vec!["all", "#nav", "Without a thread"]);
+    }
+
+    #[test]
+    fn thread_and_assignee_filters_combine_and_all_clears_one_tab_only() {
+        let mut domain = DomainState::new();
+        let both = create(&mut domain, "both", project(REPO_A));
+        thread(&mut domain, both, "both", project(REPO_A), "release");
+        assign(&mut domain, both, "claude");
+        let thread_only = create(&mut domain, "thread only", project(REPO_A));
+        thread(
+            &mut domain,
+            thread_only,
+            "thread only",
+            project(REPO_A),
+            "release",
+        );
+        let assignee_only = create(&mut domain, "assignee only", project(REPO_A));
+        assign(&mut domain, assignee_only, "claude");
+
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(REPO_A)));
+        model.agent_names = vec!["claude".to_string()];
+        let tasks = |model: &BoardModel| -> BTreeSet<Uuid> {
+            model
+                .visible_ids()
+                .into_iter()
+                .filter(|id| *id != queue::INBOX_HEADER_ROW_ID)
+                .collect()
+        };
+
+        model.open_thread_filter_picker();
+        model.move_list_picker(true); // #release
+        assert_eq!(
+            model.confirm_list_picker(),
+            Some(ListPickerValue::ThreadNamed("release".to_string()))
+        );
+        model.open_thread_filter_picker();
+        model.switch_list_picker_tab(Some(FilterTab::Assignees));
+        model.move_list_picker(true); // @claude
+        assert_eq!(
+            model.confirm_list_picker(),
+            Some(ListPickerValue::AssigneeFilterNamed("claude".to_string()))
+        );
+        assert_eq!(tasks(&model), BTreeSet::from([both]), "thread AND assignee");
+        assert_eq!(model.board_filter().label(), "#release @claude");
+
+        // Reopening marks the active choice in each tab.
+        model.open_thread_filter_picker();
+        assert_eq!(model.list_picker_active(), Some(1));
+        assert_eq!(model.list_picker_selected(), 1);
+        model.switch_list_picker_tab(None);
+        assert_eq!(model.list_picker_active(), Some(1));
+
+        // `all` on the assignees tab clears only the assignee choice.
+        model.move_list_picker(false);
+        assert_eq!(
+            model.confirm_list_picker(),
+            Some(ListPickerValue::AssigneeFilterAll)
+        );
+        assert_eq!(
+            model.thread_filter(),
+            &ThreadFilter::Named("release".into())
+        );
+        assert_eq!(tasks(&model), BTreeSet::from([both, thread_only]));
+        assert_eq!(model.board_filter().label(), "#release");
+
+        // And `all` on the threads tab clears only the thread choice.
+        model.open_thread_filter_picker();
+        model.switch_list_picker_tab(Some(FilterTab::Assignees));
+        model.move_list_picker(true);
+        model.confirm_list_picker();
+        model.open_thread_filter_picker();
+        model.move_list_picker(false);
+        assert_eq!(
+            model.confirm_list_picker(),
+            Some(ListPickerValue::ThreadAll)
+        );
+        assert_eq!(
+            model.assignee_filter(),
+            &AssigneeFilter::Named("claude".into())
+        );
+        assert_eq!(tasks(&model), BTreeSet::from([both, assignee_only]));
+        assert_eq!(model.board_filter().label(), "@claude");
+    }
+
+    #[test]
+    fn unassigned_and_removed_profile_filters_narrow_the_board() {
+        let mut domain = DomainState::new();
+        let retired = create(&mut domain, "retired", project(REPO_A));
+        assign(&mut domain, retired, "retired");
+        let free = create(&mut domain, "free", project(REPO_A));
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(REPO_A)));
+        let tasks = |model: &BoardModel| -> Vec<Uuid> {
+            model
+                .visible_ids()
+                .into_iter()
+                .filter(|id| *id != queue::INBOX_HEADER_ROW_ID)
+                .collect()
+        };
+
+        model.open_thread_filter_picker();
+        model.switch_list_picker_tab(None);
+        assert_eq!(labels(&model), vec!["all", "@retired", "unassigned"]);
+        model.move_list_picker(false); // unassigned
+        assert_eq!(
+            model.confirm_list_picker(),
+            Some(ListPickerValue::AssigneeFilterUnassigned)
+        );
+        assert_eq!(tasks(&model), vec![free]);
+        assert_eq!(model.board_filter().label(), "unassigned");
+
+        model.open_thread_filter_picker();
+        model.switch_list_picker_tab(None);
+        // The cursor reopens on the active `unassigned`; one up is @retired.
+        model.move_list_picker(false);
+        assert_eq!(
+            model.confirm_list_picker(),
+            Some(ListPickerValue::AssigneeFilterNamed("retired".to_string()))
+        );
+        assert_eq!(tasks(&model), vec![retired]);
+    }
+
+    #[test]
+    fn switching_projects_clears_the_assignee_filter_too() {
+        let domain = DomainState::new();
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(REPO_A)));
+        model.filter.assignee = AssigneeFilter::Named("claude".to_string());
+        model.switch_location(BoardLocation::Project(PathBuf::from(REPO_B)));
+        assert!(model.board_filter().is_all());
+    }
+
+    #[test]
+    fn projects_view_picker_offers_assignee_views_across_projects() {
+        let mut domain = DomainState::new();
+        let a = create(&mut domain, "a1", project(REPO_A));
+        assign(&mut domain, a, "claude");
+        let b = create(&mut domain, "b1", project(REPO_B));
+        assign(&mut domain, b, "claude");
+        let desk = create(&mut domain, "desk", TaskScope::Global);
+        assign(&mut domain, desk, "claude");
+        let done = create(&mut domain, "done", project(REPO_A));
+        assign(&mut domain, done, "claude");
+        domain.set_status(done, HumanStatus::Done).expect("done");
+        let mine = create(&mut domain, "pi task", project(REPO_A));
+        assign(&mut domain, mine, "pi");
+        create(&mut domain, "unassigned", project(REPO_A));
+
+        let mut model = BoardModel::from_domain(&domain, None);
+        model.agent_names = vec!["claude".to_string(), "pi".to_string()];
+        model.board_location = BoardLocation::Projects;
+        model.open_projects_view_picker();
+        assert_eq!(model.list_picker_tab(), Some(FilterTab::Threads));
+        assert_eq!(labels(&model), vec!["Overview"]);
+        model.switch_list_picker_tab(None);
+        assert_eq!(
+            labels(&model),
+            vec!["@claude", "@pi"],
+            "no unassigned view on the overview"
+        );
+        assert_eq!(
+            model.list_picker_active(),
+            None,
+            "Overview is on the other tab"
+        );
+        assert_eq!(
+            model.confirm_list_picker(),
+            Some(ListPickerValue::ProjectsAssignee("claude".to_string()))
+        );
+        assert_eq!(
+            model.projects_view(),
+            &ProjectsView::Assignee("claude".to_string())
+        );
+        let view = model.queue_view();
+        let shown: BTreeSet<Uuid> = view
+            .sections
+            .iter()
+            .flat_map(|section| section.task_ids.iter().copied())
+            .collect();
+        assert_eq!(
+            shown,
+            BTreeSet::from([a, b, desk]),
+            "every scope, assignee only, done stays in the closed drawer"
+        );
+        assert!(view
+            .sections
+            .iter()
+            .all(|section| section.project_label.is_none()));
+
+        // The drawer behaves as in the thread view: opening it lists the done task.
+        model.drawer_open = true;
+        assert!(model
+            .queue_view()
+            .sections
+            .iter()
+            .any(|section| section.kind == SectionKind::Done && section.task_ids == [done]));
+
+        // An `@name` view reopens on its own tab with its row marked.
+        model.open_projects_view_picker();
+        assert_eq!(model.list_picker_tab(), Some(FilterTab::Assignees));
+        assert_eq!(model.list_picker_active(), Some(0));
+        model.switch_list_picker_tab(None);
+        assert_eq!(
+            model.confirm_list_picker(),
+            Some(ListPickerValue::ProjectsOverview)
+        );
+        assert_eq!(model.projects_view(), &ProjectsView::Overview);
+    }
+
+    #[test]
+    fn tab_in_an_untabbed_picker_still_moves_its_selection() {
+        let mut domain = DomainState::new();
+        let id = create(&mut domain, "a1", project(REPO_A));
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(REPO_A)));
+        model.agent_names = vec!["claude".to_string(), "pi".to_string()];
+        model.open_assignee_picker(vec![id], None);
+        assert_eq!(model.list_picker_tab(), None);
+        crate::ui::board::apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ListPickerTabNext,
+            None,
+        )
+        .expect("tab");
+        assert_eq!(model.list_picker_selected(), 1, "Tab moves to @pi");
+        crate::ui::board::apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ListPickerTabPrev,
+            None,
+        )
+        .expect("shift+tab");
+        assert_eq!(model.list_picker_selected(), 0);
+    }
+
+    #[test]
+    fn filter_change_clears_marks_and_reanchors_on_a_painted_row() {
+        let mut domain = DomainState::new();
+        let kept = create(&mut domain, "kept", project(REPO_A));
+        assign(&mut domain, kept, "claude");
+        let hidden = create(&mut domain, "hidden", project(REPO_A));
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(REPO_A)));
+        model.agent_names = vec!["claude".to_string()];
+        model.retarget_selection(Some(hidden), SelectionRetarget::Reanchor);
+        assert!(model.mark_selected());
+        assert_eq!(model.marked_count(), 1);
+
+        crate::ui::board::apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenThreadFilterPicker,
+            None,
+        )
+        .expect("open");
+        for intent in [
+            BoardIntent::ListPickerTabNext,
+            BoardIntent::ListPickerNext,
+            BoardIntent::ConfirmListPicker,
+        ] {
+            crate::ui::board::apply_intent(&mut domain, &mut model, intent, None).expect("filter");
+        }
+        assert_eq!(
+            model.assignee_filter(),
+            &AssigneeFilter::Named("claude".into())
+        );
+        assert_eq!(model.marked_count(), 0, "a filter change clears marks");
+        let selected = model.selection_id.expect("selection");
+        assert!(
+            model.visible_ids().contains(&selected),
+            "selection rests on a painted row"
+        );
+        assert_ne!(selected, hidden);
     }
 
     #[test]
@@ -3984,6 +7027,7 @@ mod tests {
             &right.tasks,
             CaptureField::Title,
             &right.archived_projects,
+            &right.agent_names,
         );
         form.editing = true;
         form.title.insert_char('!');

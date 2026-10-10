@@ -9,6 +9,9 @@ pub enum Surface {
     Steps,
     List,
     Status,
+    Reply,
+    Dispatch,
+    Clean,
     Edit,
     Trash,
     Archive,
@@ -19,11 +22,17 @@ pub enum Surface {
     Guide,
     FindBoardPane,
     FindBoardTab,
+    /// Internal: `tsk --name-agent <pane> <name>`, the detached helper `tsk dispatch` starts to
+    /// name its agent once Herdr detects it.
+    NameAgent,
     GlobalHelp,
     Help,
     Version,
     Usage,
 }
+
+/// The internal flag of the detached agent-naming helper.
+pub const NAME_AGENT_FLAG: &str = "--name-agent";
 
 /// Select a process surface from argv-style arguments, including argv0.
 ///
@@ -34,6 +43,14 @@ pub fn route<S: AsRef<str>>(
     args: impl IntoIterator<Item = S>,
     capture_env: Option<&str>,
 ) -> Surface {
+    let args: Vec<S> = args.into_iter().collect();
+    if args.get(1).map(AsRef::as_ref) == Some(NAME_AGENT_FLAG) {
+        return if args.len() == 4 {
+            Surface::NameAgent
+        } else {
+            Surface::Usage
+        };
+    }
     let mut args = args.into_iter();
     let _argv0 = args.next();
     let mut global = None;
@@ -63,6 +80,9 @@ pub fn route<S: AsRef<str>>(
             "steps" => Surface::Steps,
             "list" => Surface::List,
             "status" => Surface::Status,
+            "reply" => Surface::Reply,
+            "dispatch" => Surface::Dispatch,
+            "clean" => Surface::Clean,
             "edit" => Surface::Edit,
             "trash" => Surface::Trash,
             "archive" => Surface::Archive,
@@ -124,6 +144,23 @@ mod tests {
     }
 
     #[test]
+    fn name_agent_is_a_hidden_surface_taking_exactly_a_pane_and_a_name() {
+        assert_eq!(
+            route(["tsk", "--name-agent", "p1", "t12-claude"], None),
+            Surface::NameAgent
+        );
+        assert_eq!(route(["tsk", "--name-agent", "p1"], None), Surface::Usage);
+        assert_eq!(
+            route(["tsk", "--name-agent", "p1", "t12-claude", "x"], None),
+            Surface::Usage
+        );
+        assert_eq!(
+            route(["tsk", "add", "--name-agent", "p1", "t12-claude"], None),
+            Surface::Add
+        );
+    }
+
+    #[test]
     fn find_board_tab_is_a_hidden_global_surface() {
         assert_eq!(
             route(["tsk", "--find-board-tab"], Some("capture")),
@@ -162,6 +199,16 @@ mod tests {
             route(["tsk", "status", "T3", "started"], None),
             Surface::Status
         );
+    }
+
+    #[test]
+    fn reply_positional_selects_reply_surface() {
+        assert_eq!(route(["tsk", "reply", "T3", "yes"], None), Surface::Reply);
+    }
+
+    #[test]
+    fn clean_positional_selects_clean_surface() {
+        assert_eq!(route(["tsk", "clean", "T3"], None), Surface::Clean);
     }
 
     #[test]

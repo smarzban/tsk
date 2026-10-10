@@ -20,7 +20,7 @@ Clicking a task while the quick-add line is open discards the draft and selects 
 
 ## Details
 
-Press `Tab` from quick-add to add notes, steps, a thread, or a scope. The draft uses the full pane and opens in Notes. Its forward field ring is Title → Notes → steps → **+ step** → Thread → Scope → Title; `Shift+Tab` reverses it. In a project preview, its title stays in the right-column header while Notes is active.
+Press `Tab` from quick-add to add notes, steps, an assignee, a base branch, the tasks it runs after, a thread, or a scope. The draft uses the full pane and opens in Notes. Its forward field ring is Title → Notes → steps → **+ step** → Assignee → Base → After → Thread → Scope → Title; `Shift+Tab` reverses it. The footer uses that same left-to-right order. In a project preview, its title stays in the right-column header while Notes is active.
 
 - `Shift+Enter` saves.
 - `Esc` returns to the quick-add line.
@@ -42,22 +42,31 @@ Keeping an archived launch project archived changes the session's default to des
 
 ## Title tokens
 
-Add a project or thread while typing the title:
+Add a project, thread, assignee, base branch, or the tasks it runs after while typing the title:
 
 ```text
-Fix login timeout !p atlas !t auth
-Buy coffee !p
+Fix login timeout !p atlas !t auth !a reviewer !b main
+Ship the release notes !w T202 !w T205
+Buy coffee !p !a
 ```
 
-| Token | Destination or thread |
+| Token | Destination, thread, assignee, base, or after |
 | --- | --- |
 | `!p` | Desk |
 | `!p name` | Existing project uniquely matching that basename, ignoring case |
 | `!p /path` | Existing absolute directory, creating a project there if needed |
 | `!t` | No thread |
 | `!t name` | Named thread |
+| `!a` | Unassigned |
+| `!a name` | Exact configured agent profile name, normalized to lowercase |
+| `!b branch` | Explicit dispatch base branch in the task's project repository |
+| `!w T202` | Run after T202 ("wait for"); repeat for several. `!w 202` works too |
 
-Each token takes one whitespace-separated argument. Put bare `!p` or `!t` at the end, or before another token. A following `#word` also leaves the token bare.
+Each token takes one whitespace-separated argument. Put bare `!p`, `!t`, or `!a` at the end, or before another token. A following `#word` also leaves the token bare.
+
+`!b` takes an existing local or remote branch, such as `dispatch` or `origin/dispatch`, not a tag or commit. The board checks it against the branches already on disk without fetching: an unknown branch refuses on save and keeps the draft open, and the Base picker can fetch newer branches first. With no base, [dispatch](/docs/board/#base-branch) uses the repository's default branch (`origin/HEAD`). Choose **default** in the Base picker to clear a staged base.
+
+`!w T202`: run after T202. It takes a task number in any project or on the desk; a task that is not on the board or already done refuses and keeps the draft open. The task [waits](/docs/board/#after) until every task it runs after is done.
 
 Tokens are removed from the saved title. Remaining words are joined with single spaces. A title is required.
 
@@ -82,7 +91,7 @@ In Herdr, press **prefix+a** after [setup](/docs/install/#add-to-herdr). A popup
 | Action | Result |
 | --- | --- |
 | Type or edit the title | Name the task |
-| Add notes, a thread, or steps | Include details before saving |
+| Add notes, a thread, an assignee, a base, or steps | Include details before saving |
 | `Shift+Enter` | Save and close the popup |
 | `Esc` | Discard and close |
 

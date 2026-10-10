@@ -4,12 +4,13 @@ use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::agents::AgentProfiles;
 use crate::cli::parser::FlagAdd;
 use crate::context::snapshot_from_env;
 use crate::domain::{
     normalize_thread, thread_refusal_message, DomainState, ProvenanceOrigin, TaskScope,
 };
-use crate::scope::{resolve_flag_scope, resolve_project_path};
+use crate::scope::{adopt_stored_identity, resolve_flag_scope, resolve_project_path};
 use crate::store::{default_state_dir, TaskStore};
 
 /// A flag-add failure after parsing and before presenting an output.
@@ -21,6 +22,9 @@ pub enum AddError {
     UnknownProject(String),
     /// The resolved scope is an archived project (cwd default or explicit `-p`).
     ProjectArchived(String),
+    UnknownAgent(String),
+    UnknownBase(String),
+    AgentConfig(String),
     Store(String),
 }
 
@@ -31,6 +35,9 @@ impl AddError {
             Self::InvalidTitle => "invalid-title",
             Self::UnknownProject(_) => "unknown-project",
             Self::ProjectArchived(_) => "project-archived",
+            Self::UnknownAgent(_) => "unknown-agent",
+            Self::UnknownBase(_) => "unknown-base",
+            Self::AgentConfig(_) => "agent-config",
             Self::Store(_) => "store-error",
         }
     }
@@ -83,6 +90,12 @@ struct PlanItem {
     project: Option<Option<String>>,
     /// Missing and JSON null both leave the item unthreaded.
     thread: Option<String>,
+    /// Missing and JSON null both leave the item unassigned.
+    assignee: Option<String>,
+    /// Missing and JSON null both use dispatch's default base resolution.
+    base: Option<String>,
+    /// Task numbers the new task runs after.
+    after: Vec<u64>,
 }
 
 struct ResolvedPlanItem {
@@ -91,6 +104,9 @@ struct ResolvedPlanItem {
     notes: Option<String>,
     scope: TaskScope,
     thread: Option<String>,
+    assignee: Option<String>,
+    base: Option<String>,
+    after: Vec<u64>,
 }
 
 /// Result of one accepted flag add.
@@ -101,12 +117,14 @@ pub enum FlagAddResult {
         number: u64,
         title: String,
         project: Option<String>,
+        assignee: Option<String>,
     },
     Existing {
         id: Uuid,
         number: u64,
         title: String,
         project: Option<String>,
+        assignee: Option<String>,
     },
 }
 
@@ -122,14 +140,30 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
         return Err(AddError::EmptyTitle);
     }
 
-    let store = TaskStore::new(input.state_dir.unwrap_or_else(default_state_dir));
+    let state_dir = input.state_dir.unwrap_or_else(default_state_dir);
+    let assignee = match input.assignee.as_deref() {
+        Some(name) => {
+            let profiles = AgentProfiles::load(&state_dir)
+                .map_err(|error| AddError::AgentConfig(error.to_string()))?;
+            Some(
+                profiles
+                    .resolve_name(name)
+                    .map_err(AddError::UnknownAgent)?,
+            )
+        }
+        None => None,
+    };
+    let store = TaskStore::new(state_dir);
     let snapshot = snapshot_from_env();
     let project = input.project;
     let global = input.global;
     let notes = input.notes.filter(|notes| !notes.trim().is_empty());
     let thread = input.thread;
+    let base = input.base;
     store
         .locked_transition_if_changed(|domain| {
+            let mut snapshot = snapshot.clone();
+            adopt_stored_identity(&mut snapshot, domain);
             let scope = match resolve_flag_scope(project.as_deref(), global, domain, &snapshot) {
                 Ok(scope) => scope,
                 Err(error) => {
@@ -147,9 +181,19 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
                     return Ok((Err(AddError::ProjectArchived(short)), false));
                 }
             }
-            let outcome = if let Some(task) =
-                existing_task(domain, &title, &scope, thread.as_deref())
-            {
+            if let Some(base) = base.as_deref() {
+                if let Err(error) = crate::git_base::validate_task_base(&scope, base, true) {
+                    return Ok((Err(AddError::UnknownBase(error)), false));
+                }
+            }
+            let outcome = if let Some(task) = existing_task(
+                domain,
+                &title,
+                &scope,
+                thread.as_deref(),
+                assignee.as_deref(),
+                base.as_deref(),
+            ) {
                 Ok(FlagAddResult::Existing {
                     id: task.id,
                     number: task
@@ -157,16 +201,24 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
                         .expect("loaded tasks receive a number before CLI presentation"),
                     title: task.title.clone(),
                     project: scope_project(&task.scope),
+                    assignee: task.assignee.clone(),
                 })
             } else {
                 let project = scope_project(&scope);
-                let id =
-                    match domain.create(&title, notes, scope, ProvenanceOrigin::Capture, thread) {
-                        Ok(id) => id,
-                        Err(error) => {
-                            return Ok((Err(AddError::Store(error.to_string())), false));
-                        }
-                    };
+                let id = match domain.create_configured(
+                    &title,
+                    notes,
+                    scope,
+                    ProvenanceOrigin::Capture,
+                    thread,
+                    assignee,
+                    base,
+                ) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok((Err(AddError::Store(error.to_string())), false));
+                    }
+                };
                 domain.assign_numbers_for_persistence();
                 let number = domain
                     .get(id)
@@ -177,6 +229,7 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
                     number,
                     title,
                     project,
+                    assignee: domain.get(id).and_then(|task| task.assignee.clone()),
                 })
             };
             let changed = matches!(outcome, Ok(FlagAddResult::Created { .. }));
@@ -208,11 +261,20 @@ pub fn run_plan(
         });
     }
 
-    let store = TaskStore::new(state_dir.unwrap_or_else(default_state_dir));
+    let state_dir = state_dir.unwrap_or_else(default_state_dir);
+    let profiles = if valid.iter().any(|item| item.assignee.is_some()) {
+        AgentProfiles::load(&state_dir).map_err(|error| AddError::AgentConfig(error.to_string()))?
+    } else {
+        AgentProfiles::default()
+    };
+    let store = TaskStore::new(state_dir);
     let snapshot = snapshot_from_env();
     store
         .locked_transition_if_changed(|domain| {
-            let (resolved, resolution_failures) = resolve_plan_items(valid, domain, &snapshot);
+            let mut snapshot = snapshot.clone();
+            adopt_stored_identity(&mut snapshot, domain);
+            let (resolved, resolution_failures) =
+                resolve_plan_items(valid, domain, &snapshot, &profiles);
             failed.extend(resolution_failures);
             let mut created = Vec::with_capacity(resolved.len());
             let mut existing = Vec::new();
@@ -228,9 +290,30 @@ pub fn run_plan(
                         continue;
                     }
                 }
-                if let Some(task) =
-                    existing_task(domain, &item.title, &item.scope, item.thread.as_deref())
-                {
+                if let Some(base) = item.base.as_deref() {
+                    if let Err(error) = crate::git_base::validate_task_base(&item.scope, base, true)
+                    {
+                        failed.push(fail_item(item.i, Some(item.title), "unknown-base", error));
+                        continue;
+                    }
+                }
+                if let Err(error) = domain.check_new_after(&item.after) {
+                    failed.push(fail_item(
+                        item.i,
+                        Some(item.title),
+                        "invalid-after",
+                        error.to_string(),
+                    ));
+                    continue;
+                }
+                if let Some(task) = existing_task(
+                    domain,
+                    &item.title,
+                    &item.scope,
+                    item.thread.as_deref(),
+                    item.assignee.as_deref(),
+                    item.base.as_deref(),
+                ) {
                     existing.push(Existing {
                         i: item.i,
                         id: task.id,
@@ -242,15 +325,20 @@ pub fn run_plan(
                     continue;
                 }
                 let id = domain
-                    .create(
+                    .create_configured(
                         &item.title,
                         item.notes,
                         item.scope,
                         ProvenanceOrigin::Capture,
                         item.thread,
+                        item.assignee,
+                        item.base,
                     )
                     .expect("plan item titles and threads are validated before domain creation");
                 domain.assign_numbers_for_persistence();
+                domain
+                    .set_after_on_create(id, &item.after)
+                    .expect("plan item after links are validated before domain creation");
                 let number = domain
                     .get(id)
                     .and_then(|task| task.number)
@@ -282,6 +370,7 @@ fn resolve_plan_items(
     items: Vec<PlanItem>,
     domain: &DomainState,
     snapshot: &crate::context::InvocationSnapshot,
+    profiles: &AgentProfiles,
 ) -> (Vec<ResolvedPlanItem>, Vec<Failed>) {
     let mut resolved = Vec::with_capacity(items.len());
     let mut failed = Vec::new();
@@ -302,12 +391,25 @@ fn resolve_plan_items(
             },
             None => snapshot.default_scope.clone(),
         };
+        let assignee = match item.assignee.as_deref() {
+            Some(name) => match profiles.resolve_name(name) {
+                Ok(name) => Some(name),
+                Err(error) => {
+                    failed.push(fail_item(item.i, Some(item.title), "unknown-agent", error));
+                    continue;
+                }
+            },
+            None => None,
+        };
         resolved.push(ResolvedPlanItem {
             i: item.i,
             title: item.title,
             notes: item.notes,
             scope,
             thread: item.thread,
+            assignee,
+            base: item.base,
+            after: item.after,
         });
     }
     (resolved, failed)
@@ -325,6 +427,8 @@ fn existing_task<'a>(
     title: &str,
     scope: &TaskScope,
     thread: Option<&str>,
+    assignee: Option<&str>,
+    base: Option<&str>,
 ) -> Option<&'a crate::domain::Task> {
     // Notice rows are board-only (no CLI address reaches them, not even their UUID) and
     // deliberately carry no T number, so a title collision with a seeded guide or the
@@ -335,6 +439,8 @@ fn existing_task<'a>(
             && task.title == title
             && &task.scope == scope
             && task.thread.as_deref() == thread
+            && task.assignee.as_deref() == assignee
+            && task.base.as_deref() == base
     })
 }
 
@@ -411,12 +517,81 @@ fn parse_plan_item(i: usize, value: Value) -> Result<PlanItem, Failed> {
         }
     };
 
+    let assignee = match object.get("assignee") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(assignee)) => normalize_thread(assignee).map(Some).map_err(|error| {
+            fail_item(
+                i,
+                Some(trimmed_title.clone()),
+                "unknown-agent",
+                thread_refusal_message(error).replacen("thread", "agent name", 1),
+            )
+        })?,
+        Some(_) => {
+            return Err(fail_item(
+                i,
+                Some(trimmed_title),
+                "invalid-item",
+                "assignee must be a string or null",
+            ));
+        }
+    };
+    let base = match object.get("base") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(base)) => Some(base.clone()),
+        Some(_) => {
+            return Err(fail_item(
+                i,
+                Some(trimmed_title),
+                "invalid-item",
+                "base must be a string or null",
+            ));
+        }
+    };
+
+    let after = match object.get("after") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(values)) => {
+            let mut after = Vec::with_capacity(values.len());
+            for value in values {
+                let number = match value {
+                    Value::Number(number) => number.as_u64().filter(|number| *number > 0),
+                    Value::String(text) => crate::cli::parser::parse_after_number(text).ok(),
+                    _ => None,
+                };
+                match number {
+                    Some(number) => after.push(number),
+                    None => {
+                        return Err(fail_item(
+                            i,
+                            Some(trimmed_title),
+                            "invalid-item",
+                            "after must list task numbers",
+                        ));
+                    }
+                }
+            }
+            after
+        }
+        Some(_) => {
+            return Err(fail_item(
+                i,
+                Some(trimmed_title),
+                "invalid-item",
+                "after must be an array of task numbers or null",
+            ));
+        }
+    };
+
     Ok(PlanItem {
         i,
         title: trimmed_title,
         notes,
         project,
         thread,
+        assignee,
+        base,
+        after,
     })
 }
 
@@ -450,6 +625,10 @@ mod tests {
             notes: None,
             project: None,
             thread: None,
+            assignee: None,
+            unassign: false,
+            base: None,
+            clear_base: false,
             global: false,
             json: false,
             state_dir: None,

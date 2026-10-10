@@ -3,20 +3,20 @@
 │ desk  ·  tsk ▾  ·  projects                                              all ▾ │
 │                                                                                │
 │ NEEDS YOU ───────────────────────────────────────────────────────────────────2 │
-│                                                                                │
-│  ■ T5 Wi┌─ command ───────────────────────────────────────────── [x]─┐         │
-│  ▲ T6 Do│                                                            │         │
-│         │   set status: ready                                        │         │
-│ IN MOTIO│   set status: open                                         │───────2 │
-│         │   set status: started                                      │         │
-│▸ ● T1 Sm│ ▸ set status: blocked                                      │         │
-│  ● T2 Ed│   set status: review                                       │         │
-│         │                                                            │         │
-│ ON DECK ├────────────────────────────────────────────────────────────┤───────1 │
+│         ┌─ command ───────────────────────────────────────────── [x]─┐         │
+│  ■ T5 Wi│                                                            │         │
+│    └─ @c│   set status: ready                                        │         │
+│  ▲ T6 Do│   set status: open                                         │         │
+│    └─ ne│   set status: started                                      │         │
+│         │ ▸ set status: blocked                                      │         │
+│ IN MOTIO│   set status: review                                       │───────2 │
+│         │   set after…                                               │         │
+│▸ ● T1 Sm│                                                            │         │
+│  ● T2 Ed├────────────────────────────────────────────────────────────┤         │
 │         │ ↑↓ move · enter run · esc close                            │         │
-│  ○ T7 Gl└────────────────────────────────────────────────────────────┘         │
+│ ON DECK └────────────────────────────────────────────────────────────┘───────1 │
 │                                                                                │
-│                                                                                │
+│  ○ T7 Global backlog note                                                      │
 │                                                                                │
 │                                                                                │
 │                                                                                │

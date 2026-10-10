@@ -86,3 +86,86 @@ fn capture_entrypoint_skips_launch_card_and_exits_on_escape() {
         "quick capture writes no delivery record"
     );
 }
+
+/// A store that knows `work/alpha` as the symlink `links/beta`, launched from
+/// `work/alpha`. Returns the root, the launch directory, the stored scope, and context.
+fn aliased_launch(label: &str) -> (std::path::PathBuf, std::path::PathBuf, TaskScope, OsString) {
+    let root = pty::scratch_root(label);
+    let real = root.join("work").join("alpha");
+    fs::create_dir_all(real.join(".git")).unwrap();
+    fs::create_dir_all(root.join("links")).unwrap();
+    let alias = root.join("links").join("beta");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+    let stored = TaskScope::Project {
+        path: alias.to_string_lossy().into_owned(),
+    };
+    let mut state = DomainState::new();
+    state
+        .create(
+            "seeded",
+            None,
+            stored.clone(),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    TaskStore::new(root.join("state")).save(&state).unwrap();
+    let context = OsString::from(serde_json::json!({"focused_pane_cwd": real}).to_string());
+    (root, real, stored, context)
+}
+
+fn saved_scope(root: &std::path::Path, title: &str) -> TaskScope {
+    TaskStore::new(root.join("state"))
+        .load()
+        .unwrap()
+        .tasks()
+        .iter()
+        .find(|task| task.title == title)
+        .unwrap_or_else(|| panic!("{title} was not saved"))
+        .scope
+        .clone()
+}
+
+#[test]
+fn board_quick_add_from_an_aliased_launch_repo_saves_the_stored_scope() {
+    let (root, real, stored, context) = aliased_launch("t152-board-alias");
+    let mut session = pty::Session::spawn(
+        root.clone(),
+        &real,
+        &[],
+        &[("HERDR_PLUGIN_CONTEXT_JSON", context.as_os_str())],
+        24,
+        100,
+    );
+    session.output_until("seeded");
+    // The desk tab hands quick add the launch default rather than the open project.
+    session.send(b"1");
+    std::thread::sleep(Duration::from_millis(100));
+    session.send(b"+");
+    std::thread::sleep(Duration::from_millis(100));
+    session.output_until("add to");
+    session.send(b"board alias capture\r");
+    std::thread::sleep(Duration::from_millis(300));
+    session.send(b"\x11");
+    assert!(session.wait_exit(Duration::from_secs(5)).success());
+    assert_eq!(saved_scope(&root, "board alias capture"), stored);
+}
+
+#[test]
+fn capture_popup_from_an_aliased_launch_repo_saves_the_stored_scope() {
+    let (root, real, stored, context) = aliased_launch("t152-popup-alias");
+    let mut session = pty::Session::spawn(
+        root.clone(),
+        &real,
+        &["capture"],
+        &[("HERDR_PLUGIN_CONTEXT_JSON", context.as_os_str())],
+        24,
+        100,
+    );
+    session.output_until("cancel");
+    session.send(b"popup alias capture");
+    std::thread::sleep(Duration::from_millis(100));
+    session.send(b"\x1b[13;2u");
+    assert!(session.wait_exit(Duration::from_secs(5)).success());
+    assert_eq!(saved_scope(&root, "popup alias capture"), stored);
+}

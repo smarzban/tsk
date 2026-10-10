@@ -10,10 +10,11 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::{Frame, Terminal};
 use tsk_tui::domain::{
-    DomainState, HumanStatus, Notice, ProvenanceOrigin, Task, TaskEvent, TaskEventKind, TaskScope,
+    Dispatch, DomainState, HumanStatus, Notice, ProvenanceOrigin, Task, TaskEvent, TaskEventKind,
+    TaskScope,
 };
 use tsk_tui::ui::input::map_key;
-use tsk_tui::ui::queue::{self, BoardLens, NavTab, QueueView, ThreadFilter};
+use tsk_tui::ui::queue::{self, BoardFilter, BoardLens, NavTab, QueueView};
 use tsk_tui::ui::render::{
     assert_buffer_mono, assert_no_color_sgr, draw_queue_frame, BottomInputSlot, NavChipPaint,
     NavPaint, PaletteCommandRow, QueueFrameModel, QueueOverlay, VerbEntry,
@@ -48,13 +49,16 @@ fn task(id: u128, title: &str, status: HumanStatus, scope: TaskScope, secs_ago: 
         title: title.to_string(),
         notes: None,
         thread: None,
+        assignee: None,
+        base: None,
+        dispatch: None,
+        after: Vec::new(),
         status,
+        block: None,
+        past_blocks: Vec::new(),
         scope,
         provenance: ProvenanceOrigin::Manual,
-        history: vec![TaskEvent {
-            kind: TaskEventKind::Created,
-            at,
-        }],
+        history: vec![TaskEvent::new(TaskEventKind::Created, at)],
         steps: Vec::new(),
         soft_deleted: false,
         archived: false,
@@ -184,6 +188,15 @@ fn fixture_tasks() -> Vec<Task> {
     for (index, task) in tasks.iter_mut().enumerate() {
         task.number = Some((index + 1) as u64);
     }
+    // The blocked task carries an agent's block: its live line reads `@claude blocked on you`.
+    tasks[4].block = Some(tsk_tui::domain::Block::open(
+        tsk_tui::domain::BlockDraft {
+            why: Some("Which receipt format?".into()),
+            ..Default::default()
+        },
+        "claude",
+        at_secs_ago(41 * 60),
+    ));
     tasks
 }
 
@@ -192,6 +205,8 @@ fn fixture_tasks() -> Vec<Task> {
 /// selection.
 fn base_board_model() -> BoardModel {
     let mut model = BoardModel::from_tasks(fixture_tasks(), Some(PathBuf::from("/repos/tsk")));
+    // Painted ages (the live line's `· 41m`) read this fixed clock, never today's date.
+    model.set_clock(Some(now()));
     // The desk's NEEDS YOU lane is global now, so seeding no longer lands on task 1
     // (the started /repos/tsk row): the render fixtures pin task 1's legend explicitly.
     let pinned_index = model
@@ -270,7 +285,7 @@ fn accordion_verbs() -> Vec<VerbEntry<'static>> {
 ///
 /// Matches this file's palette scene: the fixture's selected task (1, Doing) with a "stat"
 /// query narrowed to the status tail, second row (`set status: blocked`) highlighted.
-fn palette_commands() -> Vec<PaletteCommandRow<'static>> {
+fn palette_commands() -> Vec<PaletteCommandRow> {
     let mut model = base_board_model();
     let mut domain = DomainState::new();
     apply_intent(
@@ -294,10 +309,10 @@ fn palette_commands() -> Vec<PaletteCommandRow<'static>> {
         "stat",
         "fixture query drifted from the scene's \"stat\" query"
     );
-    let labels: Vec<&str> = model
+    let labels: Vec<String> = model
         .visible_commands()
         .iter()
-        .map(|command| command.label)
+        .map(|command| command.label.clone())
         .collect();
     assert_eq!(
         labels,
@@ -307,9 +322,11 @@ fn palette_commands() -> Vec<PaletteCommandRow<'static>> {
             "set status: started",
             "set status: blocked",
             "set status: review",
+            "set after…",
         ],
         "the \"stat\" query against the real M1 catalog must narrow to exactly the five \
-         status commands (no dispatch, no other tail entry) -- if the product catalog \
+         status commands plus `set after…` (s-t-a-t is a subsequence of it; no dispatch, no \
+         other tail entry) -- if the product catalog \
          changed, this fixture must follow it, not be hand-patched"
     );
     for _ in 0..3 {
@@ -327,7 +344,7 @@ fn palette_commands() -> Vec<PaletteCommandRow<'static>> {
         .iter()
         .enumerate()
         .map(|(i, command)| PaletteCommandRow {
-            label: command.label,
+            label: command.label.clone(),
             selected: Some(i) == selected,
         })
         .collect()
@@ -340,7 +357,7 @@ fn fixture_view(tasks: &[Task], drawer_open: bool) -> QueueView {
         Some(Path::new("/repos/tsk")),
         BoardLens::Desk,
         drawer_open,
-        &ThreadFilter::All,
+        &BoardFilter::default(),
     )
 }
 
@@ -351,7 +368,7 @@ fn fixture_view_projects(tasks: &[Task], drawer_open: bool) -> QueueView {
         Some(Path::new("/repos/tsk")),
         BoardLens::Project(Path::new("/repos/tsk")),
         drawer_open,
-        &ThreadFilter::All,
+        &BoardFilter::default(),
     )
 }
 
@@ -379,8 +396,6 @@ fn fixture_model_on_tab<'a>(
             }),
         },
         surface: tsk_tui::ui::render::BoardSurface::Desk,
-        thread_labels: false,
-        show_project_meta: true,
         projects: &[],
         projects_index: false,
         projects_cursor: 0,
@@ -389,6 +404,7 @@ fn fixture_model_on_tab<'a>(
         summary: None,
         context: " desk".to_string(),
         has_update_notice: false,
+        reserve_context: None,
         status_message: None,
         status_undo_offset: None,
         status_undo_width: None,
@@ -396,6 +412,7 @@ fn fixture_model_on_tab<'a>(
         now: now(),
         overlay: QueueOverlay::None,
         detail_open: None,
+        row_reply: None,
         list_scroll: 0,
         follow_list: true,
         archived_collapsed: true,
@@ -738,9 +755,19 @@ fn standard_78x24_fixture_has_selector_list_rule_status_verb_and_no_other_chrome
         list.contains("Smoke-test worktree dispatch"),
         "task titles must appear:\n{list}"
     );
-    // Standard trailing meta keeps scope/thread identity without relative ages.
-    assert!(
-        !list.contains("└─"),
+    // Attribution lives in the peek only; the one `└─` a collapsed board paints is the live
+    // line under a blocked or review row.
+    let corners = list
+        .lines()
+        .filter(|line| line.contains("└─"))
+        .map(|line| line.trim().trim_end_matches(['▌', '█']).trim_end())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        corners,
+        [
+            "└─ @claude blocked on you · 41m",
+            "└─ needs your review · 3h"
+        ],
         "collapsed board must hide attribution:\n{list}"
     );
     assert!(
@@ -757,8 +784,14 @@ fn standard_78x24_fixture_has_selector_list_rule_status_verb_and_no_other_chrome
         list.contains("Docs refresh pass after F9 ships"),
         "review rows join blocked rows in the global lane:\n{list}"
     );
+    // A block's live line names who asks (`@claude blocked on you`); no other agent field
+    // paints.
     assert!(
-        !list.contains("claude") && !list.contains("grok") && !list.contains("agent"),
+        !list
+            .replace("└─ @claude blocked on you", "")
+            .contains("claude")
+            && !list.contains("grok")
+            && !list.contains("agent"),
         "M1 must not paint agent fields:\n{list}"
     );
 
@@ -980,7 +1013,11 @@ fn every_section_header_has_symmetric_spacing_and_scrolls_with_its_selected_task
             let mut model = fixture_model(&tasks, &desk_view);
             model.selection_id = Some(selected_id);
             let (rows, geo) = paint(width, height, &model);
-            assert_exact_header_spacing(&rows, geo, header, selected_title, &dimensions);
+            // At 40x10 the selected blocked row wraps its title and adds its live line,
+            // which fills the frame: the header's spacing gives way, the title does not.
+            if !(width == 40 && header == "NEEDS YOU") {
+                assert_exact_header_spacing(&rows, geo, header, selected_title, &dimensions);
+            }
 
             let top = geo.viewport_top as usize;
             let bottom = top + geo.viewport_height as usize;
@@ -1091,20 +1128,21 @@ fn overlay_rows_are_padded_exact_no_base_bleed() {
 
     // --- Palette query paints on status row; must be exact padded query, no status tail ---
     {
+        let commands = [
+            PaletteCommandRow {
+                label: "reopen".into(),
+                selected: true,
+            },
+            PaletteCommandRow {
+                label: "delete".into(),
+                selected: false,
+            },
+        ];
         let mut model = fixture_model(&tasks, &view);
         model.status_message = Some(status);
         model.overlay = QueueOverlay::Palette {
             query: "re",
-            commands: &[
-                PaletteCommandRow {
-                    label: "reopen",
-                    selected: true,
-                },
-                PaletteCommandRow {
-                    label: "delete",
-                    selected: false,
-                },
-            ],
+            commands: &commands,
         };
         let (rows, geo) = paint(80, 24, &model);
         let qrow = geo.status_row.expect("status row at 80x24");
@@ -1250,7 +1288,8 @@ fn compact_77x24_and_48x19_and_40x10_paint_glyph_title_only_rows_and_leq_5_verb_
         );
 
         // Glyph+title only: known age tokens from the fixture must not trail as meta.
-        // (Titles in the fixture contain none of these standalone age tokens.)
+        // (Titles in the fixture contain none of these standalone age tokens.) The live line
+        // under a row names its age on purpose, so its lines are left out.
         for age in ["3m", "12m", "41m", "1h", "1d", "2d", "3h", "5h", "6h"] {
             // Compact may still show counts like "2" on headers; ages are multi-char with unit.
             if let Some(verb_row) = geo.verb_row {
@@ -1259,6 +1298,7 @@ fn compact_77x24_and_48x19_and_40x10_paint_glyph_title_only_rows_and_leq_5_verb_
                     .enumerate()
                     .filter(|(i, _)| *i as u16 != verb_row && Some(*i as u16) != geo.status_row)
                     .map(|(_, r)| trimmed(r))
+                    .filter(|r| !r.trim_start().starts_with("└─"))
                     .collect::<Vec<_>>()
                     .join("\n");
                 assert!(
@@ -1453,6 +1493,230 @@ fn peek_keeps_the_identifier_on_its_task_row_not_in_detail_meta() {
 }
 
 #[test]
+fn assigned_task_renders_on_the_row_and_before_thread_in_the_page_footer() {
+    let mut domain = DomainState::new();
+    let id = domain
+        .create_assigned(
+            "assigned work",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            Some("release".into()),
+            Some("reviewer".into()),
+        )
+        .expect("create assigned");
+    let mut model = BoardModel::from_domain(&domain, None);
+    let closed = board_rows(&model, 80, 24).join("\n");
+    assert!(
+        !closed.contains("@reviewer"),
+        "a closed row shows no metadata under its title:\n{closed}"
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::PeekDetail, None).expect("open peek");
+    let rows = board_rows(&model, 80, 24);
+    let row_body = rows.join("\n");
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.contains("└─ @reviewer · #release · desk"))
+            .count(),
+        1,
+        "an assigned task's open peek must contain one ordered metadata footer:\n{row_body}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.trim_end() == "    └"),
+        "peek metadata must own the closing corner:\n{row_body}"
+    );
+
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+    assert_eq!(model.selected_id(), Some(id));
+    let page_body = board_rows(&model, 80, 24).join("\n");
+    assert!(
+        page_body.contains("@reviewer · ⎇ default · #release · desk"),
+        "task footer must order assignee, base, thread, project:\n{page_body}"
+    );
+}
+
+#[test]
+fn assigned_task_legend_shows_start_and_no_dispatch_chord() {
+    let mut domain = DomainState::new();
+    domain
+        .create_assigned(
+            "assigned work",
+            None,
+            project("/repos/atlas"),
+            ProvenanceOrigin::Manual,
+            None,
+            Some("reviewer".into()),
+        )
+        .expect("create assigned");
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from("/repos/atlas")));
+    let board = board_rows(&model, 100, 24).join("\n");
+    assert!(
+        board.contains("ctrl+s start · ") && !board.contains("ctrl+g"),
+        "starting an assigned task dispatches it; there is no ctrl+g:\n{board}"
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+    let page = board_rows(&model, 100, 24).join("\n");
+    assert!(
+        page.contains("ctrl+s start · ") && !page.contains("ctrl+g"),
+        "the task page legend has no dispatch chord:\n{page}"
+    );
+}
+
+#[test]
+fn task_page_footer_wraps_long_base_and_keeps_all_metadata_at_fifty_columns() {
+    let mut domain = DomainState::new();
+    let id = domain
+        .create_assigned(
+            "wrapped footer",
+            Some("notes remain above the footer".into()),
+            project("/repos/界desk"),
+            ProvenanceOrigin::Manual,
+            Some("release".into()),
+            Some("审阅者".into()),
+        )
+        .expect("create");
+    let base = "origin/feature-a-branch-long-enough-to-cross-the-footer-row-boundary";
+    domain.set_base(id, Some(base.into())).expect("base");
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from("/repos/界desk")));
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+    let rows = board_rows(&model, 50, 24);
+    let first = rows
+        .iter()
+        .position(|row| row.trim_start().starts_with("@审"))
+        .expect("assignee");
+    let footer: String = rows[first..]
+        .iter()
+        .take_while(|row| !row.contains('─'))
+        .flat_map(|row| row.chars().filter(|ch| !ch.is_whitespace()))
+        .collect();
+    let expected = format!("@审阅者·⎇{base}·#release·界desk");
+    assert_eq!(
+        footer,
+        expected,
+        "entire ordered footer must wrap, and the dates are gone:\n{}",
+        rows.join("\n")
+    );
+    assert!(rows[..first]
+        .iter()
+        .any(|row| row.contains("notes remain above")));
+}
+
+#[test]
+fn dispatched_started_task_uses_the_bullseye_glyph_on_rows_peek_and_page_only_while_started() {
+    let mut dispatched = task(
+        700,
+        "dispatched task",
+        HumanStatus::Started,
+        project("/repos/tsk"),
+        60,
+    );
+    dispatched.number = Some(70);
+    dispatched.base = Some("origin/main".into());
+    dispatched.dispatch = Some(Dispatch {
+        argv: vec!["agent".into()],
+        worktree: "/tmp/tsk-t70".into(),
+        branch: "tsk/t70-dispatched-task".into(),
+        base: Some("origin/main".into()),
+        base_commit: Some("0123456789abcdef".into()),
+        base_remote: None,
+        base_ref: None,
+        herdr_workspace_id: "workspace-70".into(),
+        at: at_secs_ago(30),
+        cleaned: false,
+    });
+    let mut model = BoardModel::from_tasks(vec![dispatched.clone()], None);
+    let board = board_rows(&model, 80, 24).join("\n");
+    assert!(
+        board.contains("◉ T70 dispatched task"),
+        "board row:\n{board}"
+    );
+
+    apply_intent(
+        &mut DomainState::new(),
+        &mut model,
+        BoardIntent::PeekDetail,
+        None,
+    )
+    .expect("open peek");
+    let peek = board_rows(&model, 80, 24).join("\n");
+    assert!(peek.contains("◉ T70 dispatched task"), "peek row:\n{peek}");
+    assert!(
+        peek.contains("⎇ origin/main"),
+        "peek must show only an explicit task base:\n{peek}"
+    );
+
+    apply_intent(
+        &mut DomainState::new(),
+        &mut model,
+        BoardIntent::OpenTaskPage,
+        None,
+    )
+    .expect("open page");
+    let page = board_rows(&model, 80, 24).join("\n");
+    assert!(
+        page.contains("◉ T70 dispatched task"),
+        "page header:\n{page}"
+    );
+
+    dispatched.status = HumanStatus::Review;
+    let review = board_rows(&BoardModel::from_tasks(vec![dispatched], None), 80, 24).join("\n");
+    assert!(
+        review.contains("▲ T70 dispatched task"),
+        "review row:\n{review}"
+    );
+    assert!(
+        !review.contains("◉ T70"),
+        "stale dispatch must not override review:\n{review}"
+    );
+}
+
+#[test]
+fn task_page_shows_default_base_and_recorded_dispatch_origin() {
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "dispatch details",
+            None,
+            project("/repos/tsk"),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    domain
+        .record_dispatch(
+            id,
+            Dispatch {
+                argv: vec!["agent".into()],
+                worktree: "/tmp/tsk-dispatch-details".into(),
+                branch: "tsk/dispatch-details".into(),
+                base: Some("origin/main".into()),
+                base_commit: Some("0123456789abcdef".into()),
+                base_remote: None,
+                base_ref: None,
+                herdr_workspace_id: "workspace-details".into(),
+                at: at_secs_ago(30),
+                cleaned: false,
+            },
+        )
+        .expect("dispatch");
+    let mut model = BoardModel::from_domain(&domain, None);
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+    let page = board_rows(&model, 80, 24).join("\n");
+    assert!(
+        page.contains("⎇ default"),
+        "unset task base must always show a nonblocking default fallback:\n{page}"
+    );
+    assert!(
+        !page.contains("⎇ default (default)"),
+        "unknown default name must not repeat itself:\n{page}"
+    );
+    assert!(
+        page.contains("from origin/main @ 0123456"),
+        "dispatch provenance must show the recorded ref and short commit:\n{page}"
+    );
+}
+
+#[test]
 fn task_page_header_shows_identifier_not_footer() {
     let tasks = fixture_tasks();
     let view = fixture_view(&tasks, false);
@@ -1473,8 +1737,15 @@ fn task_page_header_shows_identifier_not_footer() {
         step_scroll: 0,
         step_marked: None,
         inline_step_editor: None,
+        block_rows: Vec::new(),
+        block_cursor: None,
+        trail_rows: Vec::new(),
         bottom_input: None,
         meta: "desk · created 1m ago · updated 1m ago".to_string(),
+        meta_assignee_x: None,
+        meta_assignee_width: 0,
+        meta_base_x: None,
+        meta_base_width: 0,
         meta_scope_x: 0,
         meta_scope_width: 4,
         thread_slot_width: None,
@@ -1581,8 +1852,15 @@ fn task_page_renders_header_notes_and_meta_as_a_full_takeover_in_both_tiers() {
         step_scroll: 0,
         step_marked: None,
         inline_step_editor: None,
+        block_rows: Vec::new(),
+        block_cursor: None,
+        trail_rows: Vec::new(),
         bottom_input: None,
         meta: "tsk \u{b7} created 1h ago \u{b7} updated 1h ago".to_string(),
+        meta_assignee_x: None,
+        meta_assignee_width: 0,
+        meta_base_x: None,
+        meta_base_width: 0,
         meta_scope_x: 0,
         meta_scope_width: 11,
         thread_slot_width: None,
@@ -1597,13 +1875,14 @@ fn task_page_renders_header_notes_and_meta_as_a_full_takeover_in_both_tiers() {
             .map(|row| trimmed(row))
             .collect::<Vec<_>>()
             .join("\n");
-        // The meta footer clips at the 40x10 floor, so "updated" is only required at the
-        // 78-column standard width where the full line fits.
-        let mut expected = vec!["Rename this task", "ready", "first draft note", "created"];
-        if width >= 78 {
-            expected.push("updated");
-        }
-        for expected in expected {
+        // Even the 40x10 floor wraps dates instead of clipping the last field.
+        for expected in [
+            "Rename this task",
+            "ready",
+            "first draft note",
+            "created",
+            "updated",
+        ] {
             assert!(
                 body.contains(expected),
                 "{width}x{height} task page omitted {expected:?}:\n{body}"
@@ -1663,7 +1942,7 @@ fn task_page_paints_steps_section_between_notes_and_footer() {
     };
     let notes_row = find("the notes body", &shown);
     let label_row = find("steps 2/3", &shown);
-    let meta_row = find("created", &shown);
+    let meta_row = find("⎇", &shown);
     assert_eq!(
         label_row,
         notes_row + 3,
@@ -1685,8 +1964,8 @@ fn task_page_paints_steps_section_between_notes_and_footer() {
         shown.join("\n")
     );
 
-    // The compact tier stays operable: the notes and their two-row separation remain
-    // visible at the head, while the steps section can be reached by scrolling. Every
+    // The compact tier stays operable: notes and the first spacing row remain visible,
+    // while the rest of the content scrolls above the wrapped metadata. Every
     // scroll position must preserve the fixed chrome and the frame width.
     let compact = board_rows(&model, 40, 10);
     let compact_shown: Vec<String> = compact.iter().map(|row| trimmed(row)).collect();
@@ -1695,9 +1974,8 @@ fn task_page_paints_steps_section_between_notes_and_footer() {
         .position(|row| row.contains("the notes body"))
         .expect("compact page omitted the notes");
     assert!(
-        list_body(&compact[compact_note + 1]).is_empty()
-            && list_body(&compact[compact_note + 2]).is_empty(),
-        "compact page must keep two blank rows before steps:\n{}",
+        list_body(&compact[compact_note + 1]).is_empty(),
+        "compact page must keep visible spacing above the wrapped footer:\n{}",
         compact_shown.join("\n")
     );
 
@@ -1804,8 +2082,8 @@ fn task_page_without_steps_reaches_its_trailing_add_target() {
     }
 }
 
-/// At the 40x10 compact floor, a notes edit keeps its draft row visible and preserves
-/// the two blank rows before the steps section. The notes editor owns the viewport, so
+/// At the 40x10 compact floor, a notes edit keeps its draft row and visible spacing
+/// above the wrapped footer. The notes editor owns the viewport, so
 /// below-fold steps become reachable after Esc returns to page view.
 #[test]
 fn task_page_notes_edit_keeps_a_visible_row_and_spacing_at_the_compact_floor() {
@@ -1841,8 +2119,8 @@ fn task_page_notes_edit_keeps_a_visible_row_and_spacing_at_the_compact_floor() {
         .position(|row| row.contains("draft line under edit"))
         .expect("notes edit row missing");
     assert!(
-        list_body(&rows[note_row + 1]).is_empty() && list_body(&rows[note_row + 2]).is_empty(),
-        "notes edit must preserve two blank rows before steps:\n{body}"
+        list_body(&rows[note_row + 1]).is_empty(),
+        "notes edit must preserve visible spacing above the wrapped footer:\n{body}"
     );
     assert!(
         rows.iter().all(|row| row_display_width(row) == 40),
@@ -2119,6 +2397,15 @@ fn shift_tab_from_scope_resets_notes_stream_origin_and_aligns_caret() {
     .expect("Shift+Tab reaches Thread from Scope");
     assert_eq!(model.input_mode(), BoardInputMode::SelectThread);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
+        .expect("Shift+Tab reaches After from Thread");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectAfter);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
+        .expect("Shift+Tab reaches Base from After");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
+        .expect("Shift+Tab reaches Assignee from Base");
+    assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
         .expect("Shift+Tab selects the trailing add target");
     assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
@@ -2249,7 +2536,10 @@ fn task_page_scrolls_notes_and_steps_as_one_content_region() {
         shown[1].contains("Scrollable page"),
         "header must stay fixed"
     );
-    assert!(shown[20].contains("created"), "footer must stay fixed");
+    assert!(
+        shown[20].contains("⎇ default · desk"),
+        "footer must stay fixed"
+    );
     assert!(
         shown.iter().any(|row| row.contains('▌')),
         "overflow needs a scrollbar"
@@ -2276,7 +2566,10 @@ fn task_page_scrolls_notes_and_steps_as_one_content_region() {
         shown[1].contains("Scrollable page"),
         "header must stay fixed"
     );
-    assert!(shown[20].contains("created"), "footer must stay fixed");
+    assert!(
+        shown[20].contains("⎇ default · desk"),
+        "footer must stay fixed"
+    );
     assert!(shown.iter().any(|row| row.contains("steps 0/1")));
     let step_row = shown
         .iter()
@@ -2830,6 +3123,119 @@ struct GoldenScene {
     width: u16,
 }
 
+/// The project board's Filter picker on its `@assignees` tab, and the board it leaves
+/// behind with both a thread and an assignee applied, at the 40-column floor.
+fn filter_golden_rows() -> (Vec<String>, Vec<String>) {
+    let mut tasks = fixture_tasks();
+    for task in &mut tasks {
+        match task.id.as_u128() {
+            1 => task.assignee = Some("claude".to_string()),
+            10 => {
+                task.assignee = Some("claude".to_string());
+                task.thread = Some("release".to_string());
+            }
+            11 => task.thread = Some("release".to_string()),
+            _ => {}
+        }
+    }
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from("/repos/tsk")));
+    let mut apply = |model: &mut BoardModel, intent: BoardIntent| {
+        apply_intent(&mut domain, model, intent, None).expect("filter golden intent");
+    };
+    apply(&mut model, BoardIntent::SelectNavTab(NavTab::ProjectBoard));
+    apply(&mut model, BoardIntent::OpenThreadFilterPicker);
+    apply(&mut model, BoardIntent::ListPickerNext);
+    apply(&mut model, BoardIntent::ConfirmListPicker);
+    apply(&mut model, BoardIntent::OpenThreadFilterPicker);
+    apply(&mut model, BoardIntent::ListPickerTabNext);
+    apply(&mut model, BoardIntent::ListPickerNext);
+    let picker = board_rows(&model, 40, 24);
+    apply(&mut model, BoardIntent::ConfirmListPicker);
+    let board = board_rows(&model, 40, 24);
+    (picker, board)
+}
+
+/// Both filters active with long names at 40 columns: the chip and the footer wrap, so
+/// neither the thread nor the assignee choice is ever cut off.
+fn filter_long_golden_rows() -> Vec<String> {
+    let model = long_filter_model();
+    board_rows(&model, 40, 24)
+}
+
+fn long_filter_model() -> BoardModel {
+    let mut tasks = fixture_tasks();
+    for task in &mut tasks {
+        match task.id.as_u128() {
+            10 => {
+                task.assignee = Some("integration-agent".to_string());
+                task.thread = Some("release-coordination".to_string());
+            }
+            11 => task.thread = Some("release-coordination".to_string()),
+            _ => {}
+        }
+    }
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from("/repos/tsk")));
+    for intent in [
+        BoardIntent::SelectNavTab(NavTab::ProjectBoard),
+        BoardIntent::OpenThreadFilterPicker,
+        BoardIntent::ListPickerNext,
+        BoardIntent::ConfirmListPicker,
+        BoardIntent::OpenThreadFilterPicker,
+        BoardIntent::ListPickerTabNext,
+        BoardIntent::ListPickerNext,
+        BoardIntent::ConfirmListPicker,
+    ] {
+        apply_intent(&mut domain, &mut model, intent, None).expect("long filter intent");
+    }
+    model
+}
+
+#[test]
+fn long_combined_filter_wraps_chip_and_footer_without_losing_either_choice() {
+    let model = long_filter_model();
+    assert_eq!(
+        model.board_filter().label(),
+        "#release-coordination @integration-agent"
+    );
+    for (width, height) in [(40, 24), (40, 12), (50, 20)] {
+        let rows = board_rows(&model, width, height);
+        let text = rows.join("\n");
+        // The verb bar (last row) trims its own entries; every other row must not.
+        let above_verbs = rows[..rows.len() - 1].join("\n");
+        assert!(
+            !above_verbs.contains('…'),
+            "{width}x{height} truncated:\n{text}"
+        );
+        let top: String = rows[..5].join("\n");
+        assert!(
+            top.contains("#release-coordination"),
+            "chip thread:\n{text}"
+        );
+        assert!(
+            top.contains("@integration-agent ▾"),
+            "chip assignee:\n{text}"
+        );
+        let footer = rows[rows.len() - 4..].join("\n");
+        assert!(footer.contains("#release-coordination"), "footer:\n{text}");
+        assert!(footer.contains("@integration-agent"), "footer:\n{text}");
+        // A wrapped selected title that cannot fit keeps its head line, `▸` and number.
+        assert!(
+            text.contains("▸ ○ T3 Prototype"),
+            "the list keeps a row:\n{text}"
+        );
+    }
+    // Every wrapped chip row opens the picker.
+    let hits = tsk_tui::ui::board::board_hit_map(Rect::new(0, 0, 40, 24), &model);
+    let chips: Vec<_> = hits
+        .regions
+        .iter()
+        .filter(|hit| hit.target == FilterHitTarget::NavChip)
+        .collect();
+    assert_eq!(chips.len(), 2, "one hit per wrapped chip row");
+}
+
 fn golden_scenes() -> Vec<GoldenScene> {
     let tasks = fixture_tasks();
 
@@ -2983,7 +3389,9 @@ fn golden_scenes() -> Vec<GoldenScene> {
     // not a byte-for-byte comparison against a prototype dump the way the other five scenes
     // are; recorded here rather than left implicit.
     let done_view = fixture_view(&tasks, true);
-    let done_model = fixture_model(&tasks, &done_view);
+    let mut done_model = fixture_model(&tasks, &done_view);
+    // Live lines push DONE below a 24-row fold: select its first row so the drawer shows.
+    done_model.selection_id = Some(Uuid::from_u128(40));
     let (done_rows, _) = paint(80, 24, &done_model);
 
     // `inbox`: desk rows with picked work followed by an expanded inbox. This keeps the
@@ -3021,9 +3429,38 @@ fn golden_scenes() -> Vec<GoldenScene> {
     let archived_view = fixture_view(&archived_tasks, true);
     let mut archived_model = fixture_model(&archived_tasks, &archived_view);
     archived_model.archived_collapsed = false;
+    // Live lines push the drawer below a 24-row fold: select the last archived row so the
+    // DONE rows and the archived group both show.
+    archived_model.selection_id = Some(Uuid::from_u128(7302));
     let (archived_rows, _) = paint(80, 24, &archived_model);
 
+    let (filter_picker_rows, filtered_board_rows) = filter_golden_rows();
+    let filtered_long_rows = filter_long_golden_rows();
+    let mut long_message_model = long_filter_model();
+    long_message_model.set_message("moved T3 to started");
+    let filtered_long_message_rows = board_rows(&long_message_model, 40, 24);
+
     vec![
+        GoldenScene {
+            name: "filter_picker_40x24",
+            rows: filter_picker_rows,
+            width: 40,
+        },
+        GoldenScene {
+            name: "board_filtered_40x24",
+            rows: filtered_board_rows,
+            width: 40,
+        },
+        GoldenScene {
+            name: "board_filtered_long_40x24",
+            rows: filtered_long_rows,
+            width: 40,
+        },
+        GoldenScene {
+            name: "board_filtered_long_message_40x24",
+            rows: filtered_long_message_rows,
+            width: 40,
+        },
         GoldenScene {
             name: "board",
             rows: base_rows,
@@ -3189,7 +3626,10 @@ fn surface_goldens_board_accordion_palette_help_drawer_exist_for_reviewer_side_b
 #[test]
 fn palette_golden_scene_commands_are_bound_to_the_real_m1_catalog_and_exclude_dispatch() {
     let commands = palette_commands();
-    let labels: Vec<&str> = commands.iter().map(|command| command.label).collect();
+    let labels: Vec<String> = commands
+        .iter()
+        .map(|command| command.label.clone())
+        .collect();
     assert_eq!(
         labels,
         vec![
@@ -3198,6 +3638,7 @@ fn palette_golden_scene_commands_are_bound_to_the_real_m1_catalog_and_exclude_di
             "set status: started",
             "set status: blocked",
             "set status: review",
+            "set after…",
         ],
         "the palette golden scene's command rows must be exactly what \
          `BoardModel::visible_commands` produces for the fixture's selection and query, not \
@@ -3448,7 +3889,7 @@ fn board_with_thread_labels_paints_within_40x10_and_all_tasks_reachable() {
 }
 
 #[test]
-fn peek_omits_thread_metadata_for_every_task() {
+fn peek_footer_includes_thread_when_set_and_omits_only_the_unset_part() {
     let mut threaded = task(200, "threaded", HumanStatus::Ready, TaskScope::Global, 1);
     threaded.thread = Some("release".to_string());
     let mut threaded_model = BoardModel::from_tasks(vec![threaded], None);
@@ -3460,11 +3901,10 @@ fn peek_omits_thread_metadata_for_every_task() {
         None,
     )
     .expect("open threaded peek");
+    let threaded_body = board_rows(&threaded_model, 80, 24).join("\n");
     assert!(
-        !board_rows(&threaded_model, 80, 24)
-            .join("\n")
-            .contains("thread #release"),
-        "thread metadata belongs to the task page, not the peek"
+        threaded_body.contains("└─ #release · desk"),
+        "threaded peek footer:\n{threaded_body}"
     );
 
     let mut unthreaded_model = BoardModel::from_tasks(
@@ -3484,11 +3924,10 @@ fn peek_omits_thread_metadata_for_every_task() {
         None,
     )
     .expect("open unthreaded peek");
+    let unthreaded_body = board_rows(&unthreaded_model, 80, 24).join("\n");
     assert!(
-        !board_rows(&unthreaded_model, 80, 24)
-            .join("\n")
-            .contains("thread #"),
-        "unthreaded peek must not invent a thread line"
+        unthreaded_body.contains("└─ desk") && !unthreaded_body.contains("└─ #"),
+        "unthreaded peek footer:\n{unthreaded_body}"
     );
 }
 
@@ -3552,12 +3991,13 @@ fn all_golden_frames_pass_no_color_sgr_scan() {
         scanned += 1;
     }
     assert_eq!(
-        scanned, 16,
-        "expected the sixteen board surface goldens (board, board_marked, \
+        scanned, 20,
+        "expected the twenty board surface goldens (board, board_marked, \
          board_default_split_78, board_search, board_search_pinned, board_search_empty, \
          accordion, palette, help, done_drawer, inbox, done_drawer_archived, \
          projects_index_50x20, projects_index_110x30, projects_preview_split_110x30, \
-         projects_preview_rail_110x30) in {dir:?}"
+         projects_preview_rail_110x30, filter_picker_40x24, board_filtered_40x24, \
+         board_filtered_long_40x24, board_filtered_long_message_40x24) in {dir:?}"
     );
 }
 
@@ -4935,8 +5375,8 @@ fn project_picker_main_tab_advertises_archive_without_leaking_to_thread_picker()
     .expect("thread picker");
     let threads = board_rows(&model, 80, 24).join("\n");
     assert!(
-        threads.contains("↑↓ move \u{b7} enter choose \u{b7} esc close"),
-        "thread picker must keep its ordinary footer:\n{threads}"
+        threads.contains("tab switch \u{b7} ↑↓ move \u{b7} enter pick \u{b7} esc close"),
+        "the Filter picker advertises its tab switch:\n{threads}"
     );
     assert!(
         !threads.contains("ctrl+f archive"),
@@ -5315,12 +5755,13 @@ fn real_thread_picker_paints_query_and_options() {
     )
     .expect("open picker");
     let rows = board_rows(&model, 162, 43).join("\n");
+    assert!(rows.contains("Filter"), "picker title missing:\n{rows}");
     assert!(
-        rows.contains("thread filter"),
-        "picker title missing:\n{rows}"
+        rows.contains("threads \u{b7} @assignees"),
+        "picker tabs missing:\n{rows}"
     );
     assert!(
-        rows.contains("All tasks"),
+        rows.contains("▸ all  1  ✓"),
         "picker options missing:\n{rows}"
     );
     assert!(rows.contains("#release"), "thread option missing:\n{rows}");
@@ -5755,4 +6196,1092 @@ fn peek_project_label_wraps_all_content_below_notes() {
     }
     assert!(continuation_count >= 2);
     assert_eq!(copied, label);
+}
+
+#[test]
+fn unmerged_cleanup_card_explains_squash_retention_without_clipping_the_hint() {
+    use tsk_tui::ui::board::{CleanupPrompt, CleanupRow};
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "cleanup",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    let mut model = BoardModel::from_domain(&domain, None);
+    model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
+        merge_check: None,
+        check_failed: false,
+        unreachable_remote: None,
+        inspected: None,
+        number: 1,
+        task_id: id,
+        worktree: "/tmp/worktree".into(),
+        branch: "tsk/t1-cleanup".into(),
+        base: "origin/main".into(),
+        dirty: false,
+        branch_merged: false,
+        base_available: true,
+        warning: None,
+        workspace_exists: true,
+    }));
+    for width in [40, 80] {
+        let rows = board_rows(&model, width, 24);
+        let painted = rows.join("\n");
+        assert!(painted.contains("squash-merged?"), "{width}: {painted}");
+        assert!(painted.contains("delete it by"), "{width}: {painted}");
+        assert!(painted.contains("hand)"), "{width}: {painted}");
+        assert!(painted.contains("origin/main"), "{width}: {painted}");
+        assert!(painted.contains("keep branch"), "{width}: {painted}");
+    }
+}
+
+#[test]
+fn cleanup_card_exposes_an_offline_check_and_missing_base_without_a_squash_hint() {
+    use tsk_tui::ui::board::{CleanupPrompt, CleanupRow};
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "cleanup warning",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    for (available, merged, offline) in [(true, true, true), (false, false, false)] {
+        let mut model = BoardModel::from_domain(&domain, None);
+        model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
+            merge_check: None,
+            check_failed: false,
+            unreachable_remote: offline.then(|| "origin".into()),
+            inspected: None,
+            number: 1,
+            task_id: id,
+            worktree: "/tmp/worktree".into(),
+            branch: "tsk/t1-cleanup".into(),
+            base: "origin/main".into(),
+            dirty: false,
+            branch_merged: merged,
+            base_available: available,
+            warning: offline.then(|| "fetch failed: offline; merged status not confirmed".into()),
+            workspace_exists: true,
+        }));
+        for width in [40, 80] {
+            let painted = board_rows(&model, width, 24).join("\n");
+            assert!(!painted.contains("squash-merged?"), "{width}: {painted}");
+            assert!(painted.contains("keep branch"), "{width}: {painted}");
+            assert!(!painted.contains("delete branch"), "{width}: {painted}");
+            if offline {
+                // Cached refs read merged, but the card never claims it.
+                assert!(painted.contains("not confirmed"), "{width}: {painted}");
+                assert!(painted.contains("(offline)"), "{width}: {painted}");
+                assert!(!painted.contains("✓"), "{width}: {painted}");
+                assert!(painted.contains("fetch failed"), "{width}: {painted}");
+            } else {
+                assert!(painted.contains("unavailable"), "{width}: {painted}");
+            }
+        }
+    }
+}
+
+/// A record without an exact base ref keeps its branch and says so plainly, even when a
+/// branch of its display base exists.
+#[test]
+fn cleanup_cards_say_no_recorded_base_for_a_record_without_base_ref() {
+    use tsk_tui::ui::board::{CleanupPrompt, CleanupRow};
+    let record = tsk_tui::domain::Dispatch {
+        argv: vec!["agent".into()],
+        worktree: "/tmp/worktree".into(),
+        branch: "tsk/t1-cleanup".into(),
+        base: Some("main".into()),
+        base_ref: None,
+        base_commit: None,
+        base_remote: None,
+        herdr_workspace_id: "w1".into(),
+        at: std::time::SystemTime::UNIX_EPOCH,
+        cleaned: false,
+    };
+    let domain = DomainState::new();
+    let mut single = BoardModel::from_domain(&domain, None);
+    single.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
+        merge_check: None,
+        check_failed: false,
+        unreachable_remote: None,
+        inspected: Some(record.clone()),
+        number: 1,
+        task_id: Uuid::from_u128(1),
+        worktree: "/tmp/worktree".into(),
+        branch: "tsk/t1-cleanup".into(),
+        base: "main".into(),
+        dirty: false,
+        branch_merged: false,
+        base_available: false,
+        warning: None,
+        workspace_exists: true,
+    }));
+    let mut bulk = bulk_cleanup_model();
+    {
+        let row = &mut bulk.cleanup_prompt_mut().unwrap().rows[0];
+        row.inspected = Some(record);
+        row.base_available = false;
+        row.branch_merged = false;
+    }
+    for (model, expected) in [
+        (&single, "No recorded base, so the branch stays."),
+        (&bulk, "no recorded base"),
+    ] {
+        let painted = board_rows(model, 80, 30).join("\n");
+        assert!(painted.contains(expected), "{painted}");
+        assert!(!painted.contains("unavailable"), "{painted}");
+        assert!(painted.contains("keep branch"), "{painted}");
+    }
+}
+
+#[test]
+fn bulk_cleanup_card_marks_an_offline_row_not_confirmed_and_keeps_its_branch() {
+    let mut model = bulk_cleanup_model();
+    let before = board_rows(&model, 80, 30).join("\n");
+    assert!(before.contains("merged ✓") && before.contains("delete branch"));
+    // T148 is the merged row: its check could not reach the remote.
+    model.cleanup_prompt_mut().unwrap().rows[0].unreachable_remote = Some("origin".into());
+    let painted = board_rows(&model, 80, 30).join("\n");
+    assert!(painted.contains("not confirmed (offline)"), "{painted}");
+    assert!(!painted.contains("merged ✓"), "{painted}");
+    assert!(!painted.contains("delete branch"), "{painted}");
+}
+
+fn bulk_cleanup_model() -> BoardModel {
+    use tsk_tui::ui::board::{BulkCleanup, CleanupPrompt, CleanupRow};
+    let domain = DomainState::new();
+    let mut model = BoardModel::from_domain(&domain, None);
+    let row = |number: u64, dirty: bool, merged: bool| CleanupRow {
+        merge_check: None,
+        check_failed: false,
+        unreachable_remote: None,
+        inspected: None,
+        number,
+        task_id: Uuid::from_u128(u128::from(number)),
+        worktree: format!("/tmp/tsk-t{number}-bulk"),
+        branch: format!("tsk/t{number}-bulk"),
+        base: "origin/dispatch".into(),
+        dirty,
+        branch_merged: merged,
+        base_available: true,
+        warning: None,
+        workspace_exists: true,
+    };
+    model.begin_cleanup_prompt(CleanupPrompt {
+        rows: vec![
+            row(148, false, true),
+            row(157, false, false),
+            row(164, true, false),
+        ],
+        bulk: Some(BulkCleanup {
+            targets: (1..=4).map(Uuid::from_u128).collect(),
+            plain: vec!["T101".into()],
+            missing: Vec::new(),
+            refused: Vec::new(),
+        }),
+        scroll: 0,
+    });
+    model
+}
+
+#[test]
+fn bulk_cleanup_card_lists_each_dispatch_without_paths_and_wraps_at_forty_columns() {
+    let model = bulk_cleanup_model();
+    let painted = board_rows(&model, 80, 30).join("\n");
+    for text in [
+        "Done 4 tasks · clean up 2 of 3?",
+        "T148  merged ✓",
+        "delete branch · remove worktree · close pane",
+        "T157  not merged into origin/dispatch",
+        "keep branch · remove worktree · close pane",
+        "T164  uncommitted changes",
+        "keep everything",
+        "+ T101 has no dispatch, just marked done",
+        "y done all + clean up · n done only · esc cancel",
+    ] {
+        assert!(painted.contains(text), "missing {text:?}:\n{painted}");
+    }
+    assert!(
+        !painted.contains("/tmp/tsk-t148"),
+        "bulk rows omit paths:\n{painted}"
+    );
+    assert!(
+        !painted.contains("tsk/t148"),
+        "bulk rows omit branches:\n{painted}"
+    );
+
+    let narrow = board_rows(&model, 40, 30).join("\n");
+    for text in [
+        "merged ✓",
+        "close pane",
+        "keep everything",
+        "marked done",
+        "y clean up",
+    ] {
+        assert!(narrow.contains(text), "40 columns lost {text:?}:\n{narrow}");
+    }
+}
+
+#[test]
+fn a_bulk_cleanup_card_taller_than_the_frame_scrolls_like_help() {
+    let mut model = bulk_cleanup_model();
+    let first = board_rows(&model, 60, 8).join("\n");
+    assert!(first.contains("▼"), "more rows below:\n{first}");
+    assert!(first.contains("T148"), "{first}");
+    for _ in 0..20 {
+        model.scroll_cleanup(true);
+    }
+    let last = board_rows(&model, 60, 8).join("\n");
+    assert!(last.contains("▲") && !last.contains("▼"), "{last}");
+    assert!(last.contains("marked done"), "{last}");
+}
+
+fn large_bulk_cleanup_model(count: u64, dirty: bool) -> BoardModel {
+    use tsk_tui::ui::board::{BulkCleanup, CleanupPrompt, CleanupRow};
+    let domain = DomainState::new();
+    let mut model = BoardModel::from_domain(&domain, None);
+    let rows = (1..=count)
+        .map(|number| CleanupRow {
+            merge_check: None,
+            check_failed: false,
+            unreachable_remote: None,
+            inspected: None,
+            number,
+            task_id: Uuid::from_u128(u128::from(number)),
+            worktree: format!("/tmp/tsk-t{number}-bulk"),
+            branch: format!("tsk/t{number}-bulk"),
+            base: "origin/dispatch".into(),
+            // All dirty, or every row but the last clean.
+            dirty: dirty || number == count,
+            branch_merged: true,
+            base_available: true,
+            warning: None,
+            workspace_exists: true,
+        })
+        .collect();
+    model.begin_cleanup_prompt(CleanupPrompt {
+        rows,
+        bulk: Some(BulkCleanup {
+            targets: (1..=count)
+                .map(|n| Uuid::from_u128(u128::from(n)))
+                .collect(),
+            ..BulkCleanup::default()
+        }),
+        scroll: 0,
+    });
+    model
+}
+
+#[test]
+fn a_scrolling_bulk_cleanup_card_at_forty_columns_never_cuts_its_counts() {
+    for (count, dirty, question) in [
+        (10, false, "Clean up 9 of 10 worktrees?"),
+        (12, true, "Can't clean up any worktree."),
+    ] {
+        let model = large_bulk_cleanup_model(count, dirty);
+        let rows = board_rows(&model, 40, 24);
+        let painted = rows.join("\n");
+        let title = rows
+            .iter()
+            .find(|row| row.contains("[x]"))
+            .unwrap_or_else(|| panic!("card title row:\n{painted}"));
+        assert!(!title.contains('…'), "title cut: {title}\n{painted}");
+        assert!(title.contains(&format!("Done {count} tasks")), "{title}");
+        assert!(title.contains('▼'), "the card scrolls: {title}");
+        let body = rows
+            .iter()
+            .map(|row| row.trim_matches(|c: char| c == ' ' || c == '│'))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            body.contains(question),
+            "the counts move into the body:\n{painted}"
+        );
+    }
+    // Where the full title fits, the counts stay in the title and the body is unchanged.
+    let wide = board_rows(&large_bulk_cleanup_model(10, false), 80, 24).join("\n");
+    assert!(wide.contains("Done 10 tasks · clean up 9 of 10?"), "{wide}");
+    assert!(!wide.contains("worktrees?"), "{wide}");
+}
+
+use tsk_tui::ui::mouse::{left_click, map_board_mouse};
+use tsk_tui::ui::render::QueueHitTarget as FilterHitTarget;
+
+fn filter_hit(model: &BoardModel, target: FilterHitTarget) -> Rect {
+    tsk_tui::ui::board::board_hit_map(Rect::new(0, 0, 80, 24), model)
+        .regions
+        .iter()
+        .find(|hit| hit.target == target)
+        .unwrap_or_else(|| panic!("{target:?} must be painted"))
+        .area
+}
+
+#[test]
+fn filter_picker_tabs_and_options_are_clickable() {
+    let mut tasks = fixture_tasks();
+    tasks[0].assignee = Some("claude".to_string());
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from("/repos/tsk")));
+    for intent in [
+        BoardIntent::SelectNavTab(NavTab::ProjectBoard),
+        BoardIntent::OpenThreadFilterPicker,
+    ] {
+        apply_intent(&mut domain, &mut model, intent, None).expect("open filter");
+    }
+    let tab = filter_hit(
+        &model,
+        FilterHitTarget::ListPickerTab(tsk_tui::ui::board::FilterTab::Assignees),
+    );
+    let intent = map_board_mouse(&model, &board_hit_map_80(&model), left_click(tab.x, tab.y))
+        .expect("tab click");
+    apply_intent(&mut domain, &mut model, intent, None).expect("switch tab");
+    assert_eq!(
+        model.list_picker_tab(),
+        Some(tsk_tui::ui::board::FilterTab::Assignees)
+    );
+    let rows = board_rows(&model, 80, 24).join("\n");
+    assert!(rows.contains("@claude  1"), "assignees tab:\n{rows}");
+    assert!(rows.contains("all  3  ✓"), "active mark:\n{rows}");
+
+    // A row click inside the tabbed picker applies, never falls through to close.
+    let option = filter_hit(&model, FilterHitTarget::ListPickerOption(1));
+    let intent = map_board_mouse(
+        &model,
+        &board_hit_map_80(&model),
+        left_click(option.x + 2, option.y),
+    )
+    .expect("option click");
+    apply_intent(&mut domain, &mut model, intent, None).expect("apply");
+    assert!(!model.list_picker_open());
+    assert_eq!(
+        model.assignee_filter(),
+        &queue::AssigneeFilter::Named("claude".into())
+    );
+    let board = board_rows(&model, 80, 24).join("\n");
+    assert!(board.contains("@claude ▾"), "chip:\n{board}");
+    assert!(board.contains(" tsk · @claude"), "footer context:\n{board}");
+}
+
+fn board_hit_map_80(model: &BoardModel) -> tsk_tui::ui::render::QueueHitMap {
+    tsk_tui::ui::board::board_hit_map(Rect::new(0, 0, 80, 24), model)
+}
+
+#[test]
+fn overview_assignee_view_lists_assigned_work_across_projects_with_the_bullseye() {
+    let mut tasks = fixture_tasks();
+    for task in &mut tasks {
+        match task.id.as_u128() {
+            // Started on /repos/tsk and dispatched.
+            1 => {
+                task.assignee = Some("claude".to_string());
+                task.dispatch = Some(Dispatch {
+                    argv: vec!["agent".into()],
+                    worktree: "/tmp/tsk-t1".into(),
+                    branch: "tsk/t1".into(),
+                    base: None,
+                    base_commit: None,
+                    base_remote: None,
+                    base_ref: None,
+                    herdr_workspace_id: "workspace-1".into(),
+                    at: at_secs_ago(30),
+                    cleaned: false,
+                });
+            }
+            // Blocked on /repos/herdr, the desk, and a done task.
+            20 | 30 | 40 => task.assignee = Some("claude".to_string()),
+            _ => {}
+        }
+    }
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from("/repos/tsk")));
+    for intent in [
+        BoardIntent::SelectNavTab(NavTab::Projects),
+        BoardIntent::OpenProjectsViewPicker,
+        BoardIntent::ListPickerTabNext,
+        BoardIntent::ConfirmListPicker,
+    ] {
+        apply_intent(&mut domain, &mut model, intent, None).expect("assignee view");
+    }
+    let board = board_rows(&model, 80, 24).join("\n");
+    assert!(board.contains("@claude ▾"), "chip:\n{board}");
+    assert!(
+        board.contains("◉ T1 Smoke-test worktree dispatch"),
+        "{board}"
+    );
+    assert!(board.contains("Wire dispatch cleanup receipts"), "{board}");
+    assert!(board.contains("Global backlog note"), "{board}");
+    assert!(
+        !board.contains("Ship the queue board milestone"),
+        "done stays in the closed drawer:\n{board}"
+    );
+    assert!(
+        !board.contains("Prototype the queue-style board UI"),
+        "unassigned work is not in the view:\n{board}"
+    );
+}
+
+/// Many filtered rows so the 40-column list overflows its viewport.
+fn long_filter_overflow_model() -> BoardModel {
+    let tasks: Vec<Task> = (0..24u128)
+        .map(|index| {
+            let mut task = task(
+                9000 + index,
+                &format!("row {index}"),
+                HumanStatus::Ready,
+                project("/repos/tsk"),
+                600 + index as u64,
+            );
+            task.number = Some(100 + index as u64);
+            task.thread = Some("release-coordination".to_string());
+            task.assignee = Some("integration-agent".to_string());
+            task
+        })
+        .collect();
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from("/repos/tsk")));
+    for intent in [
+        BoardIntent::SelectNavTab(NavTab::ProjectBoard),
+        BoardIntent::OpenThreadFilterPicker,
+        BoardIntent::ListPickerNext,
+        BoardIntent::ConfirmListPicker,
+        BoardIntent::OpenThreadFilterPicker,
+        BoardIntent::ListPickerTabNext,
+        BoardIntent::ListPickerNext,
+        BoardIntent::ConfirmListPicker,
+    ] {
+        apply_intent(&mut domain, &mut model, intent, None).expect("filter");
+    }
+    assert_eq!(
+        model.board_filter().label(),
+        "#release-coordination @integration-agent"
+    );
+    model
+}
+
+/// The rule row's index: the list viewport ends right above it.
+fn rule_row_index(rows: &[String]) -> usize {
+    rows.iter()
+        .rposition(|row| !row.trim().is_empty() && row.trim().chars().all(|ch| ch == '─'))
+        .expect("rule row")
+}
+
+#[test]
+fn wrapped_filter_footer_keeps_the_list_height_through_messages_and_the_palette() {
+    let mut model = long_filter_overflow_model();
+    let mut domain = DomainState::new();
+    let idle = board_rows(&model, 40, 24);
+    let rule = rule_row_index(&idle);
+    assert!(
+        idle[rule + 1].contains("#release-coordination")
+            && idle[rule + 2].contains("@integration-agent"),
+        "the wrapped context sits under the rule:\n{}",
+        idle.join("\n")
+    );
+
+    // Mouse-select the bottom painted task row; the list stops following the cursor.
+    let hits = tsk_tui::ui::board::board_hit_map(Rect::new(0, 0, 40, 24), &model);
+    let bottom = hits
+        .regions
+        .iter()
+        .filter(|hit| matches!(hit.target, FilterHitTarget::Task(_)))
+        .max_by_key(|hit| hit.area.y)
+        .expect("task rows")
+        .clone();
+    let FilterHitTarget::Task(bottom_id) = bottom.target else {
+        unreachable!()
+    };
+    let click = map_board_mouse(&model, &hits, left_click(bottom.area.x + 2, bottom.area.y))
+        .expect("row click");
+    apply_intent(&mut domain, &mut model, click, None).expect("select bottom row");
+    assert_eq!(model.selected_id(), Some(bottom_id));
+    let selected = board_rows(&model, 40, 24);
+    let selected_row = selected
+        .iter()
+        .position(|row| row.starts_with('▸'))
+        .expect("selected row painted");
+    assert_eq!(rule_row_index(&selected), rule);
+
+    // A status message takes the status row; the list keeps its height and the selection.
+    model.set_message("moved T123 to ready");
+    let with_message = board_rows(&model, 40, 24);
+    assert_eq!(
+        rule_row_index(&with_message),
+        rule,
+        "message moved the list:\n{}",
+        with_message.join("\n")
+    );
+    assert!(with_message[rule_row_index(&with_message) + 2].contains("moved T123 to ready"));
+    assert_eq!(
+        with_message.iter().position(|row| row.starts_with('▸')),
+        Some(selected_row),
+        "the selected bottom row stays put"
+    );
+
+    // The palette over the board leaves the list height unchanged as well.
+    model.clear_message();
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenCommandPalette,
+        None,
+    )
+    .expect("palette");
+    let with_palette = board_rows(&model, 40, 24);
+    assert_eq!(
+        rule_row_index(&with_palette),
+        rule,
+        "palette moved the list:\n{}",
+        with_palette.join("\n")
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close");
+    let after = board_rows(&model, 40, 24);
+    assert_eq!(rule_row_index(&after), rule);
+    assert_eq!(
+        after.iter().position(|row| row.starts_with('▸')),
+        Some(selected_row),
+        "the selected bottom row is still visible after the palette:\n{}",
+        after.join("\n")
+    );
+}
+
+#[test]
+fn projects_index_reserves_the_longest_path_so_the_cursor_never_resizes_the_list() {
+    let long = "/repos/an/unusually/deep/checkout/of/the/release-coordination-service";
+    let tasks = vec![
+        task(9101, "short", HumanStatus::Ready, project("/repos/a"), 60),
+        task(9102, "deep", HumanStatus::Ready, project(long), 120),
+    ];
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from("/repos/a")));
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::SelectNavTab(NavTab::Projects),
+        None,
+    )
+    .expect("projects");
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        let rows = board_rows(&model, 40, 24);
+        let rule = rule_row_index(&rows);
+        let footer = rows[rule + 1..rows.len() - 1].join("\n");
+        seen.push((rule, footer));
+        apply_intent(&mut domain, &mut model, BoardIntent::SelectNext, None).expect("move");
+    }
+    assert_eq!(seen[0].0, seen[1].0, "the list height follows no cursor");
+    let both = format!("{}\n{}", seen[0].1, seen[1].1);
+    assert!(both.contains("/repos/a"), "{both}");
+    assert!(both.contains("release-coordination-service"), "{both}");
+    assert!(!both.contains('…'), "the long path wraps:\n{both}");
+}
+
+#[test]
+fn a_pending_update_notice_and_long_filters_keep_the_list_height_through_a_message() {
+    let mut model = long_filter_overflow_model();
+    model.set_update_notice(Some("tsk v9.9.9 available, run tsk update".to_string()));
+    let idle = board_rows(&model, 40, 24);
+    let rule = rule_row_index(&idle);
+    assert!(
+        idle[rule + 1..].join("\n").contains("v9.9.9 available"),
+        "the notice owns the idle footer:\n{}",
+        idle.join("\n")
+    );
+    let selected = idle.iter().position(|row| row.starts_with('▸'));
+
+    model.set_message("moved T100 to ready");
+    let with_message = board_rows(&model, 40, 24);
+    assert_eq!(
+        rule_row_index(&with_message),
+        rule,
+        "the message resized the list:\n{}",
+        with_message.join("\n")
+    );
+    assert_eq!(
+        with_message.iter().position(|row| row.starts_with('▸')),
+        selected
+    );
+    assert!(with_message[rule + 1..]
+        .join("\n")
+        .contains("moved T100 to ready"));
+}
+
+/// One task per live-line case, numbered from `T1`, plus the tasks they point at.
+fn live_line_tasks() -> Vec<Task> {
+    use tsk_tui::domain::{Block, BlockDraft, BlockOn, Check, CheckState, ReviewDraft, OWNER};
+    let numbered = |number: u64, title: &str, status: HumanStatus, secs_ago: u64| {
+        let mut task = task(
+            u128::from(number),
+            title,
+            status,
+            project("/repos/tsk"),
+            secs_ago,
+        );
+        task.number = Some(number);
+        task
+    };
+    let blocked = |number: u64, title: &str, by: &str, draft: BlockDraft, secs_ago: u64| {
+        let mut task = numbered(number, title, HumanStatus::Blocked, 9 * 3600);
+        task.block = Some(Block::open(draft, by, at_secs_ago(secs_ago)));
+        task
+    };
+    let review = |number: u64, title: &str, on: BlockOn, secs_ago: u64| {
+        let mut task = numbered(number, title, HumanStatus::Review, 9 * 3600);
+        let draft = ReviewDraft {
+            done: Some("Built the widget; empty input now handled.".into()),
+            checks: [
+                ("A works", CheckState::Passed),
+                ("B works on empty input", CheckState::Open),
+                ("C works", CheckState::Failed),
+            ]
+            .into_iter()
+            .map(|(text, state)| Check {
+                text: text.into(),
+                state,
+            })
+            .collect(),
+            next: None,
+            on,
+        };
+        task.block = Some(Block::open_review(
+            draft,
+            "claude",
+            at_secs_ago(secs_ago),
+            1,
+        ));
+        task
+    };
+    let on = |number: u64| BlockDraft {
+        on: BlockOn::Task(number),
+        ..Default::default()
+    };
+
+    let mut asks = blocked(
+        1,
+        "Agent asks",
+        "claude",
+        BlockDraft {
+            why: Some("Review found 2 file-safety issues in move-aside. Which way?".into()),
+            needs: Some("a decision".into()),
+            options: vec!["Drop move-aside".into(), "Keep it and fix F-1/F-2".into()],
+            on: BlockOn::You,
+        },
+        2 * 3600,
+    );
+    asks.notes = Some("These notes stay off a blocked peek.".into());
+    let mut finished = numbered(20, "Finished blocker", HumanStatus::Done, 9 * 3600);
+    finished
+        .history
+        .push(TaskEvent::new(TaskEventKind::Completed, at_secs_ago(3600)));
+    let mut deleted = numbered(21, "Deleted blocker", HumanStatus::Open, 9 * 3600);
+    deleted.soft_deleted = true;
+    deleted.history.push(TaskEvent::new(
+        TaskEventKind::SoftDeleted,
+        at_secs_ago(5 * 60),
+    ));
+    let mut after_open = numbered(8, "Waits on two", HumanStatus::Ready, 9 * 3600);
+    after_open.after = vec![22, 23, 20];
+    let mut after_done = numbered(9, "Waited on a done task", HumanStatus::Ready, 9 * 3600);
+    after_done.after = vec![20];
+    let mut assigned = numbered(10, "Assigned and started", HumanStatus::Started, 9 * 3600);
+    assigned.assignee = Some("claude".into());
+    let mut archived = blocked(11, "Archived block", "claude", BlockDraft::default(), 60);
+    archived.archived = true;
+    vec![
+        asks,
+        blocked(
+            2,
+            "Self block",
+            OWNER,
+            BlockDraft {
+                needs: Some("the vendor's reply".into()),
+                ..Default::default()
+            },
+            30 * 60,
+        ),
+        review(3, "Review on you", BlockOn::You, 40 * 60),
+        blocked(4, "Blocker finished", "claude", on(20), 3 * 3600),
+        blocked(5, "Blocker deleted", "claude", on(21), 3 * 3600),
+        blocked(6, "Blocker purged", "claude", on(99), 3 * 3600),
+        blocked(
+            7,
+            "Blocked elsewhere",
+            OWNER,
+            BlockDraft {
+                on: BlockOn::Other("design team".into()),
+                ..Default::default()
+            },
+            60,
+        ),
+        after_open,
+        after_done,
+        assigned,
+        archived,
+        blocked(12, "Waits on a started task", OWNER, on(22), 60),
+        review(13, "Review on pi", BlockOn::Agent("pi".into()), 60),
+        finished,
+        deleted,
+        {
+            let mut bare = numbered(14, "Bare review", HumanStatus::Review, 9 * 3600);
+            bare.notes = Some("Read me first".into());
+            bare
+        },
+        numbered(22, "Started prerequisite", HumanStatus::Started, 9 * 3600),
+        numbered(23, "Open prerequisite", HumanStatus::Open, 9 * 3600),
+    ]
+}
+
+#[test]
+fn live_line_says_what_is_going_on_for_every_case() {
+    use tsk_tui::ui::render::live_line;
+    let tasks = live_line_tasks();
+    let line = |number: u64| {
+        let task = tasks
+            .iter()
+            .find(|task| task.number == Some(number))
+            .expect("task");
+        live_line(task, &tasks, now())
+    };
+    let cases: [(u64, Option<&str>); 16] = [
+        (1, Some("@claude blocked on you · 2h")),
+        (2, Some("blocked on you · 30m")),
+        (3, Some("@claude needs your review · 40m")),
+        (4, Some("T20 is done · unblock it · 1h")),
+        (5, Some("T21 was deleted · unblock it · 5m")),
+        // A purged blocker has no time to show.
+        (6, Some("T99 was deleted · unblock it")),
+        (7, Some("waiting on design team")),
+        (8, Some("after T22 (started), T23 (open)")),
+        // Every prerequisite done: nothing left to say.
+        (9, None),
+        // A plain started task, assigned or not, says nothing.
+        (10, None),
+        (11, None),
+        (12, Some("waiting on T22")),
+        (13, Some("@pi reviewing")),
+        (20, None),
+        (22, None),
+        (23, None),
+    ];
+    for (number, expected) in cases {
+        assert_eq!(line(number).as_deref(), expected, "T{number}");
+    }
+}
+
+#[test]
+fn live_lines_sit_under_their_rows_and_the_right_edge_stays_empty() {
+    let tasks = live_line_tasks();
+    let view = fixture_view_projects(&tasks, false);
+    let mut model = fixture_model_on_tab(&tasks, &view, NavTab::ProjectBoard);
+    model.selection_id = Some(Uuid::from_u128(2));
+    for width in [40u16, 78, 109, 120] {
+        let (rows, _) = paint(width, 80, &model);
+        let body = rows.iter().map(|row| list_body(row)).collect::<Vec<_>>();
+        let under = |title: &str| {
+            let at = body
+                .iter()
+                .position(|row| row.contains(title))
+                .unwrap_or_else(|| panic!("{width}: {title} missing:\n{}", body.join("\n")));
+            assert!(
+                body[at].trim_end().ends_with(title),
+                "{width}: the right edge is empty: {:?}",
+                body[at]
+            );
+            // The live line and its wrapped continuations, rejoined.
+            let mut text = Vec::new();
+            for (index, row) in body[at + 1..].iter().enumerate() {
+                match (
+                    index,
+                    row.strip_prefix("    └─ "),
+                    row.strip_prefix("       "),
+                ) {
+                    (0, Some(head), _) => text.push(head.trim().to_string()),
+                    (1.., None, Some(tail)) if !text.is_empty() && !tail.starts_with(' ') => {
+                        text.push(tail.trim().to_string())
+                    }
+                    _ => break,
+                }
+            }
+            (!text.is_empty()).then(|| text.join(" "))
+        };
+        let expect = [
+            ("Agent asks", Some("@claude blocked on you · 2h")),
+            ("Self block", Some("blocked on you · 30m")),
+            ("Review on you", Some("@claude needs your review · 40m")),
+            ("Blocker finished", Some("T20 is done · unblock it · 1h")),
+            ("Blocker deleted", Some("T21 was deleted · unblock it · 5m")),
+            ("Blocked elsewhere", Some("waiting on design team")),
+            ("Waits on a started task", Some("waiting on T22")),
+            ("Review on pi", Some("@pi reviewing")),
+            ("Waits on two", Some("after T22 (started), T23 (open)")),
+            ("Waited on a done task", None),
+            ("Assigned and started", None),
+            ("Started prerequisite", None),
+        ];
+        for (title, live) in expect {
+            assert_eq!(under(title).as_deref(), live, "{width}: {title}");
+        }
+        // Nothing is cut: at 40 columns the long lines wrap under themselves.
+        if width == 40 {
+            let text = body.join("\n");
+            assert!(
+                text.contains("    └─ T21 was deleted · unblock it ·\n       5m")
+                    || text.contains("    └─ T21 was deleted · unblock\n"),
+                "{text}"
+            );
+        }
+    }
+}
+
+#[test]
+fn blocked_and_review_peeks_lead_with_the_live_line_and_drop_notes() {
+    let tasks = live_line_tasks();
+    let view = fixture_view_projects(&tasks, false);
+    for width in [40u16, 120] {
+        let peek = |id: u128| {
+            let mut model = fixture_model_on_tab(&tasks, &view, NavTab::ProjectBoard);
+            model.selection_id = Some(Uuid::from_u128(id));
+            model.detail_open = Some(Uuid::from_u128(id));
+            let (rows, _) = paint(width, 80, &model);
+            let body = rows.iter().map(|row| list_body(row)).collect::<Vec<_>>();
+            let at = body
+                .iter()
+                .position(|row| row.starts_with('▸'))
+                .unwrap_or_else(|| panic!("{width}: selected row:\n{}", body.join("\n")));
+            let mut lines = Vec::new();
+            for row in &body[at + 1..] {
+                if let Some(text) = row.strip_prefix("    │ ") {
+                    lines.push(text.trim_end().to_string());
+                } else {
+                    lines.push(row.trim_end().to_string());
+                    break;
+                }
+            }
+            lines
+        };
+        // At 40 columns the peek wraps; rejoin its rows to compare words, not breaks.
+        let joined = |lines: &[String]| lines.join(" ");
+
+        let blocked = peek(1);
+        assert_eq!(
+            blocked[0], "@claude blocked on you · 2h",
+            "{width}: {blocked:?}"
+        );
+        let text = joined(&blocked);
+        assert!(
+            text.contains("Review found 2 file-safety issues in move-aside. Which way?"),
+            "{width}: {blocked:?}"
+        );
+        assert!(
+            text.contains("Decide: Drop move-aside · Keep it and fix F-1/F-2"),
+            "{width}: {blocked:?}"
+        );
+        assert!(
+            !text.contains("a decision"),
+            "options replace needs: {blocked:?}"
+        );
+        assert!(
+            !text.contains("why") && !text.contains("needs"),
+            "{blocked:?}"
+        );
+        assert!(!text.contains("These notes"), "no notes: {blocked:?}");
+        assert!(!text.contains("no notes yet"), "{blocked:?}");
+        assert!(
+            blocked.last().unwrap().starts_with("    └─ "),
+            "{width}: the footer closes the peek: {blocked:?}"
+        );
+        assert!(
+            !text.contains("└─ @claude blocked on you"),
+            "the peek replaces the live line: {blocked:?}"
+        );
+
+        let needs = joined(&peek(2));
+        assert!(
+            needs.starts_with("blocked on you · 30m the vendor's reply"),
+            "{width}: needs follows with no label: {needs}"
+        );
+
+        let review = peek(3);
+        assert_eq!(
+            review[0], "@claude needs your review · 40m",
+            "{width}: {review:?}"
+        );
+        let text = joined(&review);
+        assert!(
+            text.contains("Built the widget; empty input now handled."),
+            "{width}: {review:?}"
+        );
+        assert!(
+            text.contains("✓ A works   ○ B works on empty input   ✗ C works")
+                || text.contains("✓ A works ○ B works on empty input ✗ C works"),
+            "{width}: checks on one wrapped line: {review:?}"
+        );
+        if width >= 110 {
+            assert_eq!(
+                review[2], "✓ A works   ○ B works on empty input   ✗ C works",
+                "{review:?}"
+            );
+        }
+        assert!(!text.contains("done "), "no label: {review:?}");
+
+        // A review with no recorded round (a notice, say) peeks as today: notes, no live line.
+        let bare = joined(&peek(14));
+        assert!(bare.starts_with("Read me first"), "{width}: {bare}");
+        assert!(!bare.contains("needs your review"), "{width}: {bare}");
+
+        // An after task keeps today's peek: its links, then the notes.
+        let after = joined(&peek(8));
+        assert!(
+            after.starts_with("after T22 · started, T23 · open, T20 · done no notes yet"),
+            "{width}: {after}"
+        );
+    }
+}
+
+#[test]
+fn a_click_on_the_live_line_acts_on_its_row() {
+    use tsk_tui::ui::render::QueueHitTarget;
+    let tasks = live_line_tasks();
+    let view = fixture_view_projects(&tasks, false);
+    let model = fixture_model_on_tab(&tasks, &view, NavTab::ProjectBoard);
+    let (width, height) = (40u16, 60u16);
+    let geo = tier::resolve(width, height);
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    let mut hits = None;
+    terminal
+        .draw(|frame: &mut Frame| {
+            hits = Some(draw_queue_frame(frame, &model, &geo, Rect::new(0, 0, width, height)).0);
+        })
+        .expect("draw");
+    let hits = hits.expect("hits");
+    let buffer = terminal.backend().buffer().clone();
+    let row_text = |y: u16| {
+        (0..width)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect::<String>()
+    };
+    let y = (0..height)
+        .find(|y| row_text(*y).contains("└─ T21 was deleted"))
+        .expect("live line");
+    // Both the live line and its wrapped tail hit the task, so a click selects or opens it.
+    for y in [y, y + 1] {
+        assert!(
+            hits.regions.iter().any(|hit| hit.area.y == y
+                && matches!(hit.target, QueueHitTarget::Task(id) if id == Uuid::from_u128(5))),
+            "{}: {hits:?}",
+            row_text(y)
+        );
+    }
+}
+
+#[test]
+fn a_tall_live_line_never_scrolls_its_selected_title_out_of_a_40x10_frame() {
+    let mut tasks = live_line_tasks();
+    // A short ready title whose live line names six unfinished prerequisites wraps to more
+    // rows than a 40x10 viewport holds.
+    let mut waits = task(30, "Waits", HumanStatus::Ready, project("/repos/tsk"), 60);
+    waits.number = Some(30);
+    waits.after = vec![22, 23, 31, 32, 33, 34];
+    tasks.push(waits);
+    for number in 31..=34 {
+        let mut prerequisite = task(
+            u128::from(number),
+            &format!("Prerequisite {number}"),
+            HumanStatus::Open,
+            project("/repos/tsk"),
+            60,
+        );
+        prerequisite.number = Some(number);
+        tasks.push(prerequisite);
+    }
+    let view = fixture_view_projects(&tasks, false);
+    let mut model = fixture_model_on_tab(&tasks, &view, NavTab::ProjectBoard);
+    model.selection_id = Some(Uuid::from_u128(30));
+    let (rows, geo) = paint(40, 10, &model);
+    let top = geo.viewport_top as usize;
+    let viewport = rows[top..top + geo.viewport_height as usize]
+        .iter()
+        .map(|row| list_body(row))
+        .collect::<Vec<_>>();
+    assert!(
+        viewport.iter().any(|row| row.starts_with("▸ ○ T30 Waits")),
+        "the selected title stays visible:\n{}",
+        viewport.join("\n")
+    );
+    assert!(
+        viewport
+            .iter()
+            .any(|row| row.starts_with("    └─ after T22 (started)")),
+        "and its live line starts under it:\n{}",
+        viewport.join("\n")
+    );
+    assert_visible_chrome(&rows, geo, "40x10");
+}
+
+#[test]
+fn notice_rows_carry_no_live_line_and_peek_their_notes() {
+    use tsk_tui::domain::{Block, BlockOn, ReviewDraft};
+    let mut tasks = live_line_tasks();
+    let mut notice = task(
+        40,
+        "What's new",
+        HumanStatus::Review,
+        project("/repos/tsk"),
+        60,
+    );
+    notice.notice = Some(Notice {
+        catalog_id: "release".into(),
+        number: Some(5),
+    });
+    notice.notes = Some("Release notes body.".into());
+    // Even with a recorded round, a notice stays a plain row and peeks its notes.
+    notice.block = Some(Block::open_review(
+        ReviewDraft {
+            done: Some("shipped".into()),
+            checks: Vec::new(),
+            next: None,
+            on: BlockOn::You,
+        },
+        "claude",
+        at_secs_ago(60),
+        1,
+    ));
+    assert_eq!(tsk_tui::ui::render::live_line(&notice, &tasks, now()), None);
+    tasks.push(notice);
+    let view = fixture_view_projects(&tasks, false);
+    for peek in [false, true] {
+        let mut model = fixture_model_on_tab(&tasks, &view, NavTab::ProjectBoard);
+        model.selection_id = Some(Uuid::from_u128(40));
+        model.detail_open = peek.then(|| Uuid::from_u128(40));
+        let body = paint(80, 80, &model)
+            .0
+            .iter()
+            .map(|row| list_body(row))
+            .collect::<Vec<_>>();
+        let at = body
+            .iter()
+            .position(|row| row.contains("N5 What's new"))
+            .expect("notice row");
+        if peek {
+            assert_eq!(body[at + 1], "    │ Release notes body.", "{body:#?}");
+        } else {
+            assert!(
+                !body[at + 1].starts_with("    └─"),
+                "no live line: {:?}",
+                body[at + 1]
+            );
+        }
+        assert!(
+            !body
+                .iter()
+                .any(|row| row.contains("needs your review · 1m")),
+            "{body:#?}"
+        );
+    }
 }

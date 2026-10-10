@@ -8,6 +8,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tsk_tui::domain::{DomainState, ProvenanceOrigin, TaskScope};
 use tsk_tui::store::TaskStore;
 
+#[cfg(unix)]
+#[path = "support/spawn.rs"]
+mod spawn;
+
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn binary() -> String {
@@ -25,8 +29,12 @@ fn temp_state_dir(label: &str) -> PathBuf {
     dir
 }
 
+/// A TUI never exits on its own, so the ceiling only has to outlast a loaded machine starting a
+/// fresh binary (a first-launch scan on macOS), not race it.
+const TUI_CEILING: Duration = Duration::from_secs(30);
+
 fn wait_with_output_before_deadline(mut child: Child, description: &str) -> Output {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + TUI_CEILING;
     loop {
         if child.try_wait().expect("poll child process").is_some() {
             return child
@@ -99,21 +107,20 @@ fn update_directs_a_homebrew_binary_to_brew_without_a_path_lookup() {
     std::fs::create_dir_all(executable.parent().expect("Homebrew binary parent"))
         .expect("create Homebrew test directory");
     std::fs::copy(binary(), &executable).expect("copy tsk into Homebrew Cellar");
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
             .expect("make copied binary executable");
     }
+    let mut command = Command::new(&executable);
+    command
+        .arg("update")
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let output = wait_with_output_before_deadline(
-        Command::new(&executable)
-            .arg("update")
-            .env_clear()
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn Homebrew update"),
+        spawn::spawn_fresh_copy(&mut command).expect("spawn Homebrew update"),
         "Homebrew update guidance",
     );
 
@@ -238,7 +245,7 @@ fn unknown_positional_exits_2_without_opening_the_board() {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn tsk foo");
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + TUI_CEILING;
     let status = loop {
         if let Some(status) = child.try_wait().expect("poll child process") {
             break status;
@@ -404,4 +411,326 @@ fn a_missing_home_refuses_instead_of_creating_a_board_in_the_working_directory()
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let _ = std::fs::remove_dir_all(cwd);
     let _ = std::fs::remove_dir_all(state);
+}
+
+#[test]
+fn a_dispatched_agent_signs_its_block_and_reply_with_tsk_agent() {
+    let dir = temp_state_dir("agent-actor");
+    let mut state = DomainState::new();
+    state
+        .create(
+            "agent work",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("seed task");
+    TaskStore::new(&dir).save(&state).expect("seed state");
+    let run = |args: &[&str], agent: Option<&str>| {
+        let mut command = Command::new(binary());
+        command
+            .args(args)
+            .args(["--state-dir", dir.to_str().expect("UTF-8 state dir")])
+            .env_remove("TSK_AGENT")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(agent) = agent {
+            command.env("TSK_AGENT", agent);
+        }
+        let output = wait_with_output_before_deadline(command.spawn().expect("spawn"), "tsk");
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+    };
+    run(
+        &["status", "T1", "blocked", "--why", "which one?"],
+        Some("Claude"),
+    );
+    run(&["reply", "T1", "this one"], None);
+    run(&["reply", "T1", "thanks"], Some("claude"));
+
+    let state = TaskStore::new(&dir).load().expect("load");
+    let block = state.tasks()[0].block.as_ref().expect("open block");
+    assert_eq!(block.by, "claude");
+    let authors: Vec<_> = block
+        .replies
+        .iter()
+        .map(|reply| reply.by.as_str())
+        .collect();
+    assert_eq!(authors, ["you", "claude"]);
+    assert!(!block.answered());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// `tsk status N started` on an assigned task that was never dispatched goes through the start
+/// route, not the old plain status flip: the task's own agent (`TSK_AGENT` names the assignee)
+/// gets a plain start, and anyone else outside Herdr gets a plain start that says why nothing
+/// launched.
+#[test]
+fn an_assigned_start_outside_herdr_starts_plainly_and_says_why() {
+    let dir = temp_state_dir("assigned-start");
+    std::fs::create_dir_all(&dir).expect("state dir");
+    std::fs::write(
+        dir.join("config.toml"),
+        "[agent.builder]\ncommand = [\"true\"]\n",
+    )
+    .expect("profiles");
+    let mut state = DomainState::new();
+    state
+        .create_assigned(
+            "assigned work",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+            Some("builder".into()),
+        )
+        .expect("seed task");
+    TaskStore::new(&dir).save(&state).expect("seed state");
+    let run = |agent: Option<&str>| {
+        let mut command = Command::new(binary());
+        command
+            .args(["status", "T1", "started"])
+            .args(["--state-dir", dir.to_str().expect("UTF-8 state dir")])
+            .env_remove("TSK_AGENT")
+            .env_remove("HERDR_ENV")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(agent) = agent {
+            command.env("TSK_AGENT", agent);
+        }
+        wait_with_output_before_deadline(command.spawn().expect("spawn"), "tsk")
+    };
+    let status = || TaskStore::new(&dir).load().expect("load").tasks()[0].status;
+
+    let own = run(Some("builder"));
+    assert_eq!(own.status.code(), Some(0), "{own:?}");
+    assert!(
+        !String::from_utf8_lossy(&own.stdout).contains("no launch"),
+        "{own:?}"
+    );
+    assert_eq!(status(), tsk_tui::domain::HumanStatus::Started);
+
+    let mut state = TaskStore::new(&dir).load().expect("load");
+    let id = state.tasks()[0].id;
+    state
+        .set_status(id, tsk_tui::domain::HumanStatus::Open)
+        .expect("reopen");
+    TaskStore::new(&dir).save(&state).expect("save");
+
+    let started = run(None);
+    assert_eq!(started.status.code(), Some(0), "{started:?}");
+    let stdout = String::from_utf8_lossy(&started.stdout);
+    assert!(stdout.starts_with("status T1 started"), "{stdout}");
+    assert!(stdout.contains("no launch: not in Herdr"), "{stdout}");
+    assert!(started.stderr.is_empty(), "{started:?}");
+    assert_eq!(status(), tsk_tui::domain::HumanStatus::Started);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A blocked project task assigned to `builder`, dispatched into Herdr workspace `w0`.
+fn blocked_dispatched_task(dir: &std::path::Path) {
+    use tsk_tui::domain::{BlockDraft, Dispatch};
+    let store = TaskStore::new(dir);
+    let mut state = DomainState::new();
+    let id = state
+        .create_assigned(
+            "agent asks",
+            None,
+            TaskScope::Project {
+                path: "/repos/app".into(),
+            },
+            ProvenanceOrigin::Manual,
+            None,
+            Some("builder".into()),
+        )
+        .expect("seed task");
+    store.reload_merge_save(&mut state).expect("save");
+    state
+        .record_dispatch(
+            id,
+            Dispatch {
+                argv: vec!["true".into()],
+                worktree: "/tmp/tsk-process-reply-worktree".into(),
+                branch: "tsk/t1".into(),
+                base: Some("main".into()),
+                base_ref: None,
+                base_commit: None,
+                base_remote: None,
+                herdr_workspace_id: "w0".into(),
+                at: SystemTime::now(),
+                cleaned: false,
+            },
+        )
+        .expect("record");
+    store.reload_merge_save(&mut state).expect("save");
+    let draft =
+        BlockDraft::from_input(Some("which db?"), None, &[], Default::default()).expect("draft");
+    state.block(id, draft, "builder").expect("block");
+    store.reload_merge_save(&mut state).expect("save");
+}
+
+fn reply_send(dir: &std::path::Path, text: &str, env: &[(&str, &str)], herdr: bool) -> Output {
+    let mut command = Command::new(binary());
+    command
+        .args(["reply", "T1", "--send", "--state-dir"])
+        .arg(dir)
+        .arg("--")
+        .arg(text)
+        .env_remove("TSK_AGENT")
+        .env_remove("HERDR_ENV")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if herdr {
+        command.env("HERDR_ENV", "1");
+    }
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    wait_with_output_before_deadline(command.spawn().expect("spawn"), "tsk reply --send")
+}
+
+fn still_blocked(dir: &std::path::Path) -> bool {
+    TaskStore::new(dir).load().expect("load").tasks()[0].status
+        == tsk_tui::domain::HumanStatus::Blocked
+}
+
+/// Outside Herdr `--send` stores the reply, says why nothing went out, and exits 0.
+#[test]
+fn reply_send_outside_herdr_stores_the_reply_and_says_not_sent() {
+    let dir = temp_state_dir("reply-send-outside");
+    blocked_dispatched_task(&dir);
+    let output = reply_send(&dir, "use postgres", &[], false);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(lines[0].starts_with("replied T1 as you"), "{stdout}");
+    assert_eq!(lines[1], "not sent: not in Herdr");
+    assert!(still_blocked(&dir));
+    let state = TaskStore::new(&dir).load().expect("load");
+    let block = state.tasks()[0].block.as_ref().expect("open block");
+    assert_eq!(
+        block.replies.last().map(|reply| reply.text.as_str()),
+        Some("use postgres")
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The real host's prompt goes through `herdr agent prompt <pane> <text>` with the text as
+/// one unchanged argument, after checking the pane's agent is the dispatched one; Herdr's
+/// `agent_blocked` reads as a waiting agent.
+#[cfg(unix)]
+#[test]
+fn reply_send_runs_herdr_agent_prompt_with_the_text_as_one_argument() {
+    let dir = temp_state_dir("reply-send-herdr");
+    let bin = dir.join("fake-bin");
+    std::fs::create_dir_all(&bin).expect("bin dir");
+    let source = dir.join("herdr.sh");
+    std::fs::write(
+        &source,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_HERDR_CALLS"
+case "$1 $2" in
+  "pane list")
+    if [ "$4" != w0 ]; then
+      echo '{"error":{"code":"workspace_not_found","message":"no such workspace"}}' >&2
+      exit 1
+    fi
+    echo '{"result":{"panes":[{"pane_id":"w0:p1"}]}}' ;;
+  "agent get")
+    printf '{"result":{"agent":{"name":"%s","pane_id":"%s"}}}\n' "$FAKE_HERDR_NAME" "$3" ;;
+  "agent prompt")
+    printf '%s\0' "$@" > "$FAKE_HERDR_PROMPT_ARGS"
+    if [ "$FAKE_HERDR_PROMPT" = blocked ]; then
+      echo '{"error":{"code":"agent_blocked","message":"agent is blocked"}}' >&2
+      exit 1
+    fi
+    echo '{"result":{"type":"agent_prompted"}}' ;;
+  *)
+    echo '{"error":{"code":"unexpected","message":"unexpected call"}}' >&2
+    exit 1 ;;
+esac
+"#,
+    )
+    .expect("write fake herdr");
+    // Copy it into place from another process, so no write descriptor of ours is open
+    // when tsk executes it (ETXTBSY on Linux).
+    let herdr = bin.join("herdr");
+    let copied = Command::new("cp")
+        .arg(&source)
+        .arg(&herdr)
+        .status()
+        .expect("cp");
+    assert!(copied.success());
+    let made = Command::new("chmod")
+        .arg("+x")
+        .arg(&herdr)
+        .status()
+        .expect("chmod");
+    assert!(made.success());
+
+    blocked_dispatched_task(&dir);
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let calls = dir.join("calls.log");
+    let args = dir.join("prompt-args");
+    let text = "line one\n\"quoted\" 'two' $HOME";
+    let env = |name: &'static str, prompt: &'static str| {
+        vec![
+            ("PATH", path.clone()),
+            ("FAKE_HERDR_CALLS", calls.display().to_string()),
+            ("FAKE_HERDR_PROMPT_ARGS", args.display().to_string()),
+            ("FAKE_HERDR_NAME", name.to_string()),
+            ("FAKE_HERDR_PROMPT", prompt.to_string()),
+        ]
+    };
+    let run = |vars: Vec<(&'static str, String)>| {
+        let pairs: Vec<(&str, &str)> = vars.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let output = reply_send(&dir, text, &pairs, true);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .nth(1)
+            .expect("second line")
+            .to_string()
+    };
+
+    assert_eq!(run(env("t1-builder", "ok")), "sent to @builder");
+    let captured = std::fs::read(&args).expect("prompt argv");
+    let argv: Vec<String> = captured
+        .split(|byte| *byte == 0)
+        .filter(|part| !part.is_empty())
+        .map(|part| String::from_utf8_lossy(part).into_owned())
+        .collect();
+    assert_eq!(
+        argv,
+        [
+            "agent".to_string(),
+            "prompt".to_string(),
+            "w0:p1".to_string(),
+            format!("[tsk T1 reply] {text}"),
+        ]
+    );
+    let log = std::fs::read_to_string(&calls).expect("calls");
+    assert!(log.contains("pane list --workspace w0"), "{log}");
+    assert!(log.contains("agent get w0:p1"), "{log}");
+
+    std::fs::remove_file(&args).expect("reset argv");
+    assert_eq!(
+        run(env("t1-builder", "blocked")),
+        "not sent: @builder is waiting on a prompt"
+    );
+    std::fs::remove_file(&args).expect("reset argv");
+    assert_eq!(
+        run(env("reviewer", "ok")),
+        "not sent: @builder is not in its pane"
+    );
+    assert!(!args.exists(), "another agent never gets a prompt");
+    assert!(still_blocked(&dir));
+    let _ = std::fs::remove_dir_all(dir);
 }

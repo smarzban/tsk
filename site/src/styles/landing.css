@@ -730,6 +730,21 @@ html[data-theme="light"] .pane {
   color: var(--ink);
 }
 
+.tsk-row.has-live {
+  flex-wrap: wrap;
+  gap: 0;
+}
+
+.tsk-live {
+  flex: 0 0 100%;
+  text-align: left;
+}
+
+.tsk-live-line {
+  display: block;
+  white-space: pre;
+}
+
 .tsk-row-main {
   min-width: 0;
   overflow: hidden;
@@ -886,6 +901,28 @@ html[data-theme="light"] .pane {
   padding: 0.15rem 1ch;
   border-top: 1px solid var(--ink-2);
   color: var(--dim);
+}
+
+/* The Filter / View picker's `threads · @assignees` tab row. */
+.tsk-filter-tabs {
+  display: flex;
+  gap: 1ch;
+  padding: 0.3rem 1ch 0.2rem;
+  border-bottom: 1px solid var(--dim);
+}
+
+.tsk-filter-tab {
+  appearance: none;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  padding: 0 1ch;
+  cursor: pointer;
+}
+
+.tsk-filter-tab.is-on {
+  font-weight: 700;
 }
 
 .tsk-pal-row {
@@ -2719,6 +2756,11 @@ html[data-theme="light"] .pane {
 .tsk-page-meta { flex: none; min-height: 1lh; white-space: pre-wrap; overflow-wrap: anywhere; }
 .tsk-page-meta .tsk-meta-selected { color: var(--bg); background: var(--ink); }
 .tsk-steps { margin-top: 2lh; }
+.tsk-trail { margin-top: 1lh; }
+.tsk-trail-heading { display: block; font: inherit; color: inherit; border: 0; background: none; padding: 0; text-align: left; cursor: pointer; }
+.tsk-page-block > span { display: block; white-space: pre; }
+.tsk-page-block-rule { height: 1px; margin: 0.25rem 2ch 1lh 0; background: var(--line-2); }
+.tsk-trail-entry { white-space: pre-wrap; overflow-wrap: anywhere; }
 .tsk-step { display: flex; align-items: start; cursor: pointer; }
 .tsk-step-glyph { flex: none; white-space: pre; }
 .tsk-step-text { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
@@ -2730,7 +2772,18 @@ html[data-theme="light"] .pane {
 .tsk-step { margin-left: -2ch; }
 .tsk-step-text > span { display: block; white-space: pre; }
 .tsk-step-add { white-space: pre; margin-left: -2ch; }
-.tsk-page-meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tsk-page-meta { white-space: pre; overflow: visible; margin-right: -2ch; }
+.tsk-meta-row { display: block; }
+.tsk-task-column { position: relative; }
+.tsk-task-column .tsk-task-surface.tsk-page { padding-bottom: 1lh; scrollbar-width: none; }
+.tsk-task-surface.tsk-page::-webkit-scrollbar { display: none; }
+.tsk-step-add { display: block; height: 1lh; line-height: inherit; }
+.tsk-page-scrollbar { position: absolute; right: 0; width: 1ch; pointer-events: none; white-space: pre; }
+.tsk-page-scrollbar > span { display: block; height: 1lh; }
+.board:has(.tsk-task-column) > .tsk-foot { flex: none; padding-top: 0; margin-top: 0; }
+.board:has(.tsk-task-column) > .tsk-foot .foot-rule { height: 1lh; margin: 0; background: linear-gradient(var(--line-2),var(--line-2)) center / 100% 1px no-repeat; }
+.board:has(.tsk-task-column) > .tsk-foot .tsk-verbs { height: 1lh; flex-wrap: nowrap; overflow: hidden; gap: 0; }
+.board:has(.tsk-task-column) > .tsk-foot .foot { font-size: inherit; line-height: inherit; }
 .tsk-task-column.is-narrow .tsk-task-rule { flex: none; height: 1lh; margin: 0; background: linear-gradient(var(--line-2), var(--line-2)) center / 100% 1px no-repeat; }
 
 .tsk-page-notes > span { display: block; white-space: pre; }
@@ -2823,3 +2876,5 @@ html[data-theme="light"] .pane {
 }
 
 .tsk-project-threads { text-align: left; white-space: pre; }
+
+.tsk-task-column:not(.is-narrow) .tsk-page-meta { padding-right: 0; margin-right: 0; }

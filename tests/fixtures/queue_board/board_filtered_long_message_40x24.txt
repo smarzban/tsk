@@ -1,0 +1,26 @@
+┌────────────────────────────────────────┐
+│                                        │
+│ desk  ·  tsk ▾  ·  projects            │
+│                                        │
+│               #release-coordination    │
+│                   @integration-agent ▾ │
+│                                        │
+│ ON DECK ─────────────────────────────1 │
+│                                        │
+│▸ ○ T3 Prototype the queue-style        │
+│       board UI                         │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│────────────────────────────────────────│
+│                                        │
+│ moved T3 to started                    │
+│ enter open · ctrl+s start · ctrl+o inb…│
+└────────────────────────────────────────┘
