@@ -19971,3 +19971,483 @@ mod bulk_cleanup_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod merge_cleanup_tests {
+    use std::collections::{HashMap, HashSet};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::SystemTime;
+
+    use super::{finish_queued_cleanup_with_host, handle_board_intent_with_host};
+    use crate::agents::MergeMethod;
+    use crate::dispatch::pr::{MergeJob, PrState};
+    use crate::dispatch::{
+        BranchDeletion, CleanupInspection, CreatedWorktree, DispatchHost, MergeRow, PrLookup,
+        PullRequest,
+    };
+    use crate::domain::{Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope};
+    use crate::save_recovery::SaveRecovery;
+    use crate::store::TaskStore;
+    use crate::ui::board::{apply_intent, BoardModel};
+    use crate::ui::input::BoardIntent;
+
+    const PROJECT: &str = "/repos/merge";
+
+    /// A fake `gh` per branch: the PR each `pr view` finds, the merges `pr merge` ran, and the
+    /// branches whose merge GitHub refuses. A merged PR reads MERGED afterwards.
+    #[derive(Default)]
+    struct MergeHost {
+        prs: HashMap<String, PullRequest>,
+        refuse: HashMap<String, String>,
+        dirty: HashSet<String>,
+        merges: Vec<(String, MergeMethod, String)>,
+        deleted_at_tip: Vec<String>,
+        removed: Vec<String>,
+        /// A slow `gh`: `m` hands the merges over and the test lands them by hand.
+        hold: bool,
+        /// No `gh` on PATH.
+        no_gh: bool,
+        held: Option<(MergeJob, Vec<MergeRow>, MergeMethod)>,
+    }
+
+    fn tip(branch: &str) -> String {
+        format!("tip-of-{branch}")
+    }
+
+    impl DispatchHost for MergeHost {
+        fn is_git_repo(&mut self, _: &Path) -> Result<bool, String> {
+            Ok(true)
+        }
+        fn create_worktree(
+            &mut self,
+            _: &Path,
+            _: &str,
+            _: Option<&str>,
+            _: &str,
+        ) -> Result<CreatedWorktree, String> {
+            Err("not used".into())
+        }
+        /// The run after `m` fetches: the base moved on GitHub. Ancestry still reads unmerged,
+        /// as after a squash.
+        fn inspect_cleanup(
+            &mut self,
+            project: &Path,
+            record: &Dispatch,
+            in_herdr: bool,
+        ) -> Result<CleanupInspection, String> {
+            self.inspect_cleanup_cached(project, record, in_herdr)
+        }
+        fn inspect_cleanup_cached(
+            &mut self,
+            _: &Path,
+            record: &Dispatch,
+            _: bool,
+        ) -> Result<CleanupInspection, String> {
+            Ok(CleanupInspection {
+                unreachable_remote: None,
+                worktree_exists: true,
+                dirty: self.dirty.contains(&record.branch),
+                branch_merged: false,
+                workspace_exists: true,
+                target_matches: true,
+                warning: None,
+                base_available: true,
+            })
+        }
+        fn remove_herdr_worktree(&mut self, workspace_id: &str) -> Result<(), String> {
+            self.removed.push(workspace_id.to_string());
+            Ok(())
+        }
+        fn pull_request(&mut self, _: &Path, branch: &str) -> PrLookup {
+            if self.no_gh {
+                return Err(crate::dispatch::PrLookupError::Missing);
+            }
+            Ok(self.prs.get(branch).cloned())
+        }
+        fn branch_tip(&mut self, _: &Path, branch: &str) -> Result<Option<String>, String> {
+            Ok(Some(tip(branch)))
+        }
+        fn merge_pull_request(
+            &mut self,
+            _: &Path,
+            branch: &str,
+            method: MergeMethod,
+            head: &str,
+        ) -> Result<(), String> {
+            self.merges.push((branch.into(), method, head.into()));
+            if let Some(reason) = self.refuse.get(branch) {
+                return Err(reason.clone());
+            }
+            if let Some(pr) = self.prs.get_mut(branch) {
+                pr.state = PrState::Merged;
+            }
+            Ok(())
+        }
+        fn delete_branch_at_tip(
+            &mut self,
+            _: &Path,
+            _: &str,
+            tip: &str,
+        ) -> Result<BranchDeletion, String> {
+            self.deleted_at_tip.push(tip.into());
+            Ok(BranchDeletion::Removed)
+        }
+        fn begin_merges(&mut self, job: MergeJob, rows: Vec<MergeRow>, method: MergeMethod) {
+            if self.hold {
+                self.held = Some((job, rows, method));
+            } else {
+                crate::dispatch::pr::run_merge_job(&job, &rows, method, self);
+            }
+        }
+        fn root_pane(&mut self, _: &str) -> Result<String, crate::dispatch::RootPaneError> {
+            Err("not used".into())
+        }
+        fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
+            Err("not used".into())
+        }
+    }
+
+    impl MergeHost {
+        fn open_pr(&mut self, branch: &str, base: &str) {
+            self.prs.insert(
+                branch.into(),
+                PullRequest {
+                    number: 7,
+                    url: "https://github.com/o/r/pull/7".into(),
+                    state: PrState::Open,
+                    head_oid: tip(branch),
+                    base: base.into(),
+                },
+            );
+        }
+    }
+
+    struct Board {
+        dir: PathBuf,
+        store: TaskStore,
+        domain: DomainState,
+        model: BoardModel,
+        ids: Vec<uuid::Uuid>,
+    }
+
+    impl Drop for Board {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Started tasks, each dispatched on `tsk/<title>` from `origin/main` unless titled
+    /// `plain`; `[merge] method = "squash"`. With more than one task, all are marked.
+    fn board(label: &str, titles: &[&str]) -> Board {
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "tsk-merge-cleanup-{label}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("state dir");
+        std::fs::write(dir.join("config.toml"), "[merge]\nmethod = \"squash\"\n").expect("config");
+        let store = TaskStore::new(&dir);
+        let mut domain = DomainState::new();
+        let mut ids = Vec::new();
+        for title in titles {
+            let id = domain
+                .create(
+                    title,
+                    None,
+                    TaskScope::Project {
+                        path: PROJECT.into(),
+                    },
+                    ProvenanceOrigin::Manual,
+                    None,
+                )
+                .expect("create");
+            domain.set_status(id, HumanStatus::Started).expect("start");
+            if *title != "plain" {
+                domain
+                    .record_dispatch(
+                        id,
+                        Dispatch {
+                            argv: vec!["agent".into()],
+                            worktree: format!("/tmp/tsk-merge-{title}"),
+                            branch: format!("tsk/{title}"),
+                            base: Some("origin/main".into()),
+                            base_commit: None,
+                            base_remote: Some("origin".into()),
+                            base_ref: Some("refs/remotes/origin/main".into()),
+                            herdr_workspace_id: format!("w-{title}"),
+                            at: SystemTime::now(),
+                            cleaned: false,
+                        },
+                    )
+                    .expect("dispatch");
+            }
+            ids.push(id);
+        }
+        store.reload_merge_save(&mut domain).expect("save");
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(PROJECT)));
+        let select = |domain: &mut DomainState, model: &mut BoardModel, id| {
+            let index = model
+                .visible_ids()
+                .iter()
+                .position(|visible| *visible == id)
+                .expect("visible");
+            apply_intent(domain, model, BoardIntent::SelectIndex(index), None).expect("select");
+        };
+        if ids.len() > 1 {
+            apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None)
+                .expect("mark mode");
+            for &id in &ids {
+                select(&mut domain, &mut model, id);
+                apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None)
+                    .expect("mark");
+            }
+        } else {
+            select(&mut domain, &mut model, ids[0]);
+        }
+        Board {
+            dir,
+            store,
+            domain,
+            model,
+            ids,
+        }
+    }
+
+    fn press(board: &mut Board, intent: BoardIntent, host: &mut MergeHost) {
+        let mut recovery = SaveRecovery::new();
+        handle_board_intent_with_host(
+            &board.store,
+            &mut board.domain,
+            &mut board.model,
+            intent,
+            &mut recovery,
+            false,
+            true,
+            host,
+            &mut |_| {},
+        )
+        .expect("intent");
+        assert!(!recovery.is_pending());
+    }
+
+    /// One board-loop step: land the merges, then advance the cleanup run.
+    fn tick(board: &mut Board, host: &mut MergeHost) {
+        let mut recovery = SaveRecovery::new();
+        super::land_cleanup_merges_with_host(
+            &board.store,
+            &mut board.domain,
+            &mut board.model,
+            &mut recovery,
+            true,
+            host,
+            &mut |_| {},
+        );
+        finish_queued_cleanup_with_host(
+            &board.store,
+            &mut board.domain,
+            &mut board.model,
+            &mut recovery,
+            true,
+            host,
+        )
+        .expect("loop step");
+        assert!(!recovery.is_pending());
+    }
+
+    fn status(board: &Board, index: usize) -> HumanStatus {
+        board.domain.get(board.ids[index]).unwrap().status
+    }
+
+    fn on_disk(board: &Board, index: usize) -> HumanStatus {
+        board.store.load().unwrap().get(board.ids[index]).unwrap().status
+    }
+
+    fn screen(model: &BoardModel) -> String {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut terminal = Terminal::new(TestBackend::new(110, 30)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                crate::ui::board::draw_board(frame, model);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (0..30)
+            .map(|y| (0..110).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn m_shows_only_for_a_clean_task_with_an_open_pr_into_its_recorded_base() {
+        for (label, pr_base, dirty, offered, line) in [
+            ("no pr", None, false, false, Some("no pull request")),
+            ("open", Some("main"), false, true, Some("PR #7 open")),
+            ("other base", Some("dev"), false, false, Some("PR #7 targets dev, not main")),
+            (
+                "dirty",
+                Some("main"),
+                true,
+                false,
+                Some("PR #7 open · commit or discard changes to merge"),
+            ),
+        ] {
+            let mut board = board("offer", &["task"]);
+            let mut host = MergeHost::default();
+            if let Some(base) = pr_base {
+                host.open_pr("tsk/task", base);
+            }
+            if dirty {
+                host.dirty.insert("tsk/task".into());
+            }
+            press(&mut board, BoardIntent::Complete, &mut host);
+            let prompt = board.model.cleanup_prompt().expect("card");
+            assert_eq!(prompt.can_merge_any(), offered, "{label}");
+            assert_eq!(prompt.rows[0].pr_line().as_deref(), line, "{label}");
+            let painted = screen(&board.model);
+            assert_eq!(painted.contains("m merge"), offered, "{label}: {painted}");
+        }
+        // Without gh the card reads exactly as before: no PR line, no `m`.
+        let mut board = board("no-gh", &["task"]);
+        let mut host = MergeHost {
+            no_gh: true,
+            ..MergeHost::default()
+        };
+        press(&mut board, BoardIntent::Complete, &mut host);
+        let prompt = board.model.cleanup_prompt().expect("card");
+        assert!(!prompt.can_merge_any());
+        assert_eq!(prompt.rows[0].pr_line(), None);
+    }
+
+    #[test]
+    fn m_merges_with_the_configured_method_then_completes_and_cleans_like_y() {
+        let mut board = board("merge", &["task"]);
+        let mut host = MergeHost::default();
+        host.open_pr("tsk/task", "main");
+        press(&mut board, BoardIntent::Complete, &mut host);
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        assert_eq!(
+            host.merges,
+            [("tsk/task".to_string(), MergeMethod::Squash, tip("tsk/task"))]
+        );
+        assert_eq!(status(&board, 0), HumanStatus::Started, "nothing before it lands");
+        tick(&mut board, &mut host);
+        assert_eq!(on_disk(&board, 0), HumanStatus::Done, "done saved after the merge");
+        tick(&mut board, &mut host);
+        assert_eq!(host.removed, ["w-task"], "the worktree went as on y");
+        assert_eq!(
+            host.deleted_at_tip,
+            [tip("tsk/task")],
+            "the squash-merged branch went at its exact tip"
+        );
+        assert!(board
+            .domain
+            .get(board.ids[0])
+            .unwrap()
+            .dispatch
+            .as_ref()
+            .unwrap()
+            .cleaned);
+        let message = board.model.message().unwrap_or_default().to_string();
+        assert!(message.contains("merged PR #7 (squash)"), "{message}");
+    }
+
+    #[test]
+    fn a_refused_merge_changes_nothing_and_the_card_says_why() {
+        let mut board = board("refused", &["task"]);
+        let mut host = MergeHost::default();
+        host.open_pr("tsk/task", "main");
+        host.refuse.insert(
+            "tsk/task".into(),
+            "Pull request is not mergeable: the base branch policy prohibits the merge.".into(),
+        );
+        press(&mut board, BoardIntent::Complete, &mut host);
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        tick(&mut board, &mut host);
+        assert_eq!(on_disk(&board, 0), HumanStatus::Started);
+        assert!(host.removed.is_empty() && host.deleted_at_tip.is_empty());
+        let prompt = board.model.cleanup_prompt().expect("the card stays");
+        assert!(board.model.cleanup_run().is_none());
+        assert_eq!(
+            prompt.rows[0].pr_line().as_deref(),
+            Some("merge failed: Pull request is not mergeable: the base branch policy prohibits the merge.")
+        );
+        assert!(prompt.can_merge_any(), "m may be tried again");
+        assert!(screen(&board.model).contains("base branch policy"));
+    }
+
+    #[test]
+    fn the_card_waits_for_gh_and_takes_no_choice_meanwhile() {
+        let mut board = board("hold", &["task"]);
+        let mut host = MergeHost {
+            hold: true,
+            ..MergeHost::default()
+        };
+        host.open_pr("tsk/task", "main");
+        press(&mut board, BoardIntent::Complete, &mut host);
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        for intent in [
+            BoardIntent::CancelCleanup,
+            BoardIntent::ConfirmCleanup,
+            BoardIntent::KeepCleanup,
+            BoardIntent::MergeCleanup,
+        ] {
+            press(&mut board, intent, &mut host);
+            assert!(board.model.cleanup_prompt().is_some_and(|p| p.merging()));
+            assert_eq!(status(&board, 0), HumanStatus::Started);
+        }
+        tick(&mut board, &mut host);
+        assert_eq!(status(&board, 0), HumanStatus::Started, "still merging");
+        assert!(screen(&board.model).contains("Merging with gh…"));
+        let (job, rows, method) = host.held.take().expect("held merges");
+        crate::dispatch::pr::run_merge_job(&job, &rows, method, &mut host);
+        tick(&mut board, &mut host);
+        assert_eq!(on_disk(&board, 0), HumanStatus::Done);
+    }
+
+    #[test]
+    fn bulk_m_completes_only_the_merged_tasks_as_one_batch() {
+        let mut board = board("bulk", &["good", "bad", "plain"]);
+        let mut host = MergeHost::default();
+        host.open_pr("tsk/good", "main");
+        host.open_pr("tsk/bad", "main");
+        host.refuse.insert("tsk/bad".into(), "merge conflicts".into());
+        press(&mut board, BoardIntent::Complete, &mut host);
+        assert!(screen(&board.model).contains("m merge"));
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        assert_eq!(host.merges.len(), 2, "one failure never stops the others");
+        tick(&mut board, &mut host);
+        assert_eq!(on_disk(&board, 0), HumanStatus::Done);
+        assert_eq!(on_disk(&board, 1), HumanStatus::Started, "the refused one stays");
+        assert_eq!(on_disk(&board, 2), HumanStatus::Started, "no PR, untouched");
+        assert!(matches!(
+            board.domain.last_undo(),
+            Some(crate::domain::UndoEntry::Batch { entries }) if entries.len() == 1
+        ));
+        tick(&mut board, &mut host);
+        assert_eq!(host.removed, ["w-good"]);
+        let painted = screen(&board.model);
+        assert!(
+            painted.contains("not merged, left as it was: merge conflicts"),
+            "the finished card says why: {painted}"
+        );
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        let message = board.model.message().unwrap_or_default().to_string();
+        assert!(message.contains("merged 1"), "{message}");
+        assert!(message.contains("not merged T"), "{message}");
+    }
+
+    #[test]
+    fn an_invalid_merge_setting_merges_nothing_and_says_why_on_the_card() {
+        let mut board = board("config", &["task"]);
+        std::fs::write(board.dir.join("config.toml"), "[merge]\nmethod = \"ff\"\n").unwrap();
+        let mut host = MergeHost::default();
+        host.open_pr("tsk/task", "main");
+        press(&mut board, BoardIntent::Complete, &mut host);
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        assert!(host.merges.is_empty());
+        let painted = screen(&board.model);
+        assert!(painted.contains("can't merge: config.toml: [merge] method"), "{painted}");
+    }
+}
