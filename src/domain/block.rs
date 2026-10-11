@@ -556,6 +556,28 @@ mod opt_time {
 mod tests {
     use super::*;
 
+    /// A send-back or unblock carries your live entries in order: deleted ones and the
+    /// agent's own replies are left out, an edited one reads as edited.
+    #[test]
+    fn owner_entries_skip_deleted_and_agent_replies() {
+        let at = std::time::SystemTime::UNIX_EPOCH;
+        let reply = |by: &str, text: &str, deleted: bool| Reply {
+            by: by.into(),
+            at,
+            text: text.into(),
+            edited: false,
+            deleted,
+        };
+        let mut block = Block::open(BlockDraft::default(), "builder", at);
+        block.replies = vec![
+            reply(OWNER, "first", false),
+            reply("builder", "aside", false),
+            reply(OWNER, "dropped", true),
+            reply(OWNER, "second", false),
+        ];
+        assert_eq!(block.owner_entries(), ["first", "second"]);
+    }
+
     #[test]
     fn on_round_trips_its_wire_spelling() {
         for on in [
