@@ -14091,6 +14091,40 @@ mod quick_assign_tests {
         assert_eq!(last_reply(&saved, ids[0]).as_deref(), Some("postgres"));
     }
 
+    /// An undo that never takes a task out of started claims no running agent, even with a
+    /// dispatch record still uncleaned (review K2): done or ready from review, then undo.
+    #[test]
+    fn undo_from_review_back_to_review_claims_no_running_agent() {
+        let temp = Temp::new("undo-review-no-agent", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["reviewed"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Review);
+        let mut host = fake_host(&temp);
+        let number = domain
+            .get(ids[0])
+            .and_then(|task| task.number)
+            .expect("number");
+
+        domain.complete(ids[0]).expect("done without cleanup");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        assert_eq!(
+            model.message(),
+            Some(format!("done undone · T{number} back to review").as_str())
+        );
+
+        domain
+            .change_status(&[ids[0]], HumanStatus::Ready, false)
+            .expect("ready");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        assert_eq!(
+            model.message(),
+            Some(format!("status undone · T{number} back to review").as_str())
+        );
+    }
+
     /// A reply-box unblock with the agent still running is a plain start: undo restores
     /// blocked and launches nothing.
     #[test]

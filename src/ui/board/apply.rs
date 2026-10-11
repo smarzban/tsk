@@ -56,6 +56,10 @@ struct UndoNote {
     action: &'static str,
     subjects: Vec<Uuid>,
     released: Vec<Uuid>,
+    /// Every other task the entry touches (a deletion's unlinked `after` lists).
+    others: Vec<Uuid>,
+    /// Tasks that were started before the undo: only these can leave a running agent behind.
+    was_started: Vec<Uuid>,
     restores_status: bool,
 }
 
@@ -100,6 +104,7 @@ impl UndoNote {
         let kind = std::mem::discriminant(first);
         let mut subjects = Vec::new();
         let mut released = Vec::new();
+        let mut others = Vec::new();
         for leaf in &leaves {
             let Some(id) = leaf_target(leaf) else {
                 continue;
@@ -110,15 +115,31 @@ impl UndoNote {
                 }
             } else if matches!(first, UndoEntry::Complete { .. })
                 && matches!(leaf, UndoEntry::Start { .. })
-                && !released.contains(&id)
             {
-                released.push(id);
+                if !released.contains(&id) {
+                    released.push(id);
+                }
+            } else if !others.contains(&id) {
+                others.push(id);
             }
         }
+        others.retain(|id| !subjects.contains(id) && !released.contains(id));
+        let was_started = subjects
+            .iter()
+            .chain(&released)
+            .copied()
+            .filter(|id| {
+                domain
+                    .get(*id)
+                    .is_some_and(|task| task.status == HumanStatus::Started)
+            })
+            .collect();
         Some(Self {
             action: undo_action_word(domain, first),
             subjects,
             released,
+            others,
+            was_started,
             restores_status: matches!(
                 first,
                 UndoEntry::Complete { .. }
@@ -150,11 +171,11 @@ impl UndoNote {
                 task_names(domain, &self.released)
             ));
         }
-        // Undo never stops an agent: a task whose dispatch is live keeps it running.
+        // Undo never stops an agent: a task the undo takes out of started (the board's `◉`
+        // rule: started with a live dispatch) leaves its agent running.
         let mut running: Vec<String> = self
-            .subjects
+            .was_started
             .iter()
-            .chain(&self.released)
             .filter(|_| self.restores_status)
             .filter_map(|id| domain.get(*id))
             .filter(|task| task.status != HumanStatus::Started)
@@ -259,18 +280,34 @@ fn stale_undo_message(domain: &DomainState, id: Uuid) -> String {
         Some(UndoEntry::SoftDelete { .. }) if !task.soft_deleted => Some("restored"),
         _ => None,
     });
-    let mut message = match cause {
-        Some(cause) => format!("{subject} changed {since} ({cause}); nothing undone"),
-        None => format!("{subject} changed {since}; nothing undone"),
-    };
-    let tasks = entry
-        .and_then(|entry| UndoNote::read(domain, entry))
-        .map(|note| note.subjects)
-        .unwrap_or_default();
-    if tasks.len() > 1 {
-        message.push_str(&format!(" ({})", task_names(domain, &tasks)));
+    let cause = cause.map(|cause| format!(" ({cause})")).unwrap_or_default();
+    let note = entry.and_then(|entry| UndoNote::read(domain, entry));
+    match note {
+        // An entry about more than the task that moved on names what it would have undone:
+        // `done of T1 not undone: T2 changed since it was started`.
+        Some(note)
+            if note.subjects != [id] || !note.released.is_empty() || !note.others.is_empty() =>
+        {
+            let extras: Vec<Uuid> = note
+                .released
+                .iter()
+                .chain(&note.others)
+                .copied()
+                .filter(|extra| *extra != id)
+                .collect();
+            let with = if extras.is_empty() {
+                String::new()
+            } else {
+                format!(" (with {})", task_names(domain, &extras))
+            };
+            format!(
+                "{} of {}{with} not undone: {subject} changed {since}{cause}",
+                note.action,
+                task_names(domain, &note.subjects)
+            )
+        }
+        _ => format!("{subject} changed {since}{cause}; nothing undone"),
     }
-    message
 }
 
 /// A **mutating board action**: an intent this reducer may report as persisting domain

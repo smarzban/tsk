@@ -8325,7 +8325,7 @@ fn a_refused_undo_names_its_tasks_and_a_pruned_one_never_hides_which_task_comes_
     model.sync_from_domain(&domain);
     assert_eq!(
         undo_message(&mut domain, &mut model),
-        "T3 changed since it was completed (reopened); nothing undone (T2, T3)"
+        "done of T2, T3 not undone: T3 changed since it was completed (reopened)"
     );
     assert_eq!(domain.get(ids[1]).expect("T2").status, HumanStatus::Done);
 
@@ -8337,4 +8337,54 @@ fn a_refused_undo_names_its_tasks_and_a_pruned_one_never_hides_which_task_comes_
         "done undone · T1 back to started"
     );
     assert_eq!(domain.get(ids[1]).expect("T2").status, HumanStatus::Done);
+}
+
+/// A refused done that had started a waiting task names the done, whichever of the two moved
+/// on (review K1).
+#[test]
+fn a_refused_done_with_a_released_start_names_the_done_and_the_task_that_changed() {
+    for stale_is_released in [true, false] {
+        let (mut domain, mut model, ids, _store, _guard) =
+            numbered_board(&["one", "two"], HumanStatus::Started);
+        domain.set_after(ids[1], &[1]).expect("T2 after T1");
+        domain
+            .set_status(ids[1], HumanStatus::Ready)
+            .expect("T2 ready");
+        domain.complete(ids[0]).expect("done T1");
+        let done = domain.take_completed();
+        for (id, after) in domain.released_by(&done) {
+            domain.start_released(id, after).expect("released start");
+        }
+        assert_eq!(domain.get(ids[1]).expect("T2").status, HumanStatus::Started);
+        let expected = if stale_is_released {
+            domain
+                .set_status(ids[1], HumanStatus::Blocked)
+                .expect("T2 moves on");
+            "done of T1 not undone: T2 changed since it was started"
+        } else {
+            domain
+                .set_status(ids[0], HumanStatus::Ready)
+                .expect("T1 moves on");
+            "done of T1 (with T2) not undone: T1 changed since it was completed (reopened)"
+        };
+        model.sync_from_domain(&domain);
+        assert_eq!(undo_message(&mut domain, &mut model), expected);
+    }
+}
+
+/// A refused delete that also unlinked another task's `after` names the deleted task.
+#[test]
+fn a_refused_delete_names_the_deleted_task_when_an_unlinked_one_changed() {
+    let (mut domain, mut model, ids, _store, _guard) =
+        numbered_board(&["one", "two"], HumanStatus::Ready);
+    domain.set_after(ids[1], &[1]).expect("T2 after T1");
+    domain.soft_delete(ids[0]).expect("delete T1");
+    domain
+        .set_status(ids[1], HumanStatus::Started)
+        .expect("T2 moves on");
+    model.sync_from_domain(&domain);
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "delete of T1 not undone: T2 changed since its after change"
+    );
 }
