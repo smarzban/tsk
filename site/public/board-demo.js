@@ -1656,6 +1656,19 @@ import { parseCapture } from "./capture.js";
     ].join("");
   }
 
+  // A row whose live line shows carries a dim `│` in the live line's `└` column beside each
+  // wrapped title line, padded to the prefix so the title keeps its column.
+  function liveGutter(live, titleLines, prefixCells) {
+    if (!live) return "";
+    return titleLines
+      .slice(1)
+      .map(
+        () =>
+          `\n    <span class="dim">│</span>${" ".repeat(Math.max(0, prefixCells - 5))}`,
+      )
+      .join("");
+  }
+
   // The live line inside its row's button (a click on it acts on the task), `columns` wide.
   function liveHtml(task, columns) {
     const live = liveLine(task);
@@ -2703,7 +2716,12 @@ import { parseCapture } from "./capture.js";
         const peekOpen = rail && preview.peekId === task.id;
         const peek = peekOpen ? peekHtml(task, width) : "";
         const live = peekOpen ? "" : liveHtml(task, width);
-        return `<button type="button" class="tsk-row ${row.dim ? "dim" : ""} ${live ? "has-live" : ""} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-preview-task="${esc(task.id)}"><span class="tsk-row-main"><span class="tsk-row-prefix">${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> </span><span class="tsk-row-title">${title}</span></span>${live}</button>${peek}`;
+        const gutter = liveGutter(
+          live,
+          titleLines,
+          4 + `T${task.number} `.length,
+        );
+        return `<button type="button" class="tsk-row ${row.dim ? "dim" : ""} ${live ? "has-live" : ""} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-preview-task="${esc(task.id)}"><span class="tsk-row-main"><span class="tsk-row-prefix">${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> ${gutter}</span><span class="tsk-row-title">${title}</span></span>${live}</button>${peek}`;
       })
       .join("");
     const project = esc(preview.project || "project");
@@ -2871,7 +2889,12 @@ import { parseCapture } from "./capture.js";
         const dimRow = row.dim ? "dim" : "";
         // The peek replaces the live line.
         const live = peekOpen ? "" : liveHtml(task, columns);
-        return `<button type="button" class="tsk-row ${dimRow} ${live ? "has-live" : ""} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-task="${task.id}"><span class="tsk-row-main"><span class="tsk-row-prefix">${indent}${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> </span><span class="tsk-row-title">${title}</span></span>${live}</button>${peek}`;
+        const gutter = liveGutter(
+          live,
+          titleLines,
+          indent.length + 4 + `T${task.number} `.length,
+        );
+        return `<button type="button" class="tsk-row ${dimRow} ${live ? "has-live" : ""} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-task="${task.id}"><span class="tsk-row-main"><span class="tsk-row-prefix">${indent}${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> ${gutter}</span><span class="tsk-row-title">${title}</span></span>${live}</button>${peek}`;
       })
       .join("");
 

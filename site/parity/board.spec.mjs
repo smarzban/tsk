@@ -51,6 +51,33 @@ async function open(page, width) {
   await expect(row(page, 12)).toBeVisible();
   await page.locator("#board-demo").focus();
 }
+// A row's painted lines: each prefix line (the live line's `│` gutter on wrapped title
+// lines) beside its title line. `aligned` says each prefix line sits on its title line's row.
+async function paintedRow(locator) {
+  return locator.evaluate((el) => {
+    const prefixEl = el.querySelector(".tsk-row-prefix");
+    const prefix = prefixEl.textContent.split("\n");
+    const titles = [...el.querySelectorAll(".tsk-title-line")];
+    const lines = titles.map((line, i) =>
+      `${prefix[i] ?? " ".repeat(prefix[0].length)}${line.textContent}`.trimEnd(),
+    );
+    // Offsets from each column's first row: inline and block boxes differ by leading.
+    const offsets = (tops) =>
+      [...new Set(tops.map(Math.round))]
+        .sort((a, b) => a - b)
+        .map((top, _, all) => top - all[0]);
+    const range = document.createRange();
+    range.selectNodeContents(prefixEl);
+    const prefixRows = offsets([...range.getClientRects()].map((r) => r.top));
+    const titleRows = offsets(
+      titles.map((line) => line.getBoundingClientRect().top),
+    );
+    const aligned =
+      prefix.length === 1 ||
+      JSON.stringify(prefixRows) === JSON.stringify(titleRows);
+    return { lines, aligned };
+  });
+}
 async function capture(page, testInfo, name) {
   await page.locator("#tsk-demo").screenshot({
     path: testInfo.outputPath(`${name}.png`),
@@ -170,7 +197,7 @@ test("marked task sets complete, delete, and undo as one demo action", async ({
   await page.keyboard.press("x");
   await expect(row(page, 12)).toHaveCount(0);
   await expect(page.locator("#tsk-demo")).toContainText(
-    'Deleted "Check the release notes" · u undo',
+    'Deleted "Check the release notes and the migration guide before the announcement goes out tomorrow" · u undo',
   );
   await page.keyboard.press("u");
   await expect(row(page, 12)).toBeVisible();
@@ -246,6 +273,10 @@ for (const width of [40, 78, 109, 110]) {
     await expect(row(page, 12).locator(".tsk-live-line")).toHaveText(
       await readReference(`live-${width}`),
     );
+    // Its wrapped title lines carry the live line's gutter, as the app paints them.
+    await expect
+      .poll(() => paintedRow(row(page, 12)))
+      .toEqual({ lines: await readReference(`row-${width}`), aligned: true });
     await capture(page, info, "initial");
     await page.keyboard.press("ArrowDown");
     await expect(row(page, 13)).toHaveClass(/is-sel/);
@@ -340,6 +371,12 @@ for (const width of [110, 130])
     await expect(previewRow.locator(".tsk-live-line")).toHaveText(
       await readReference(`preview-live-${width}`),
     );
+    await expect
+      .poll(() => paintedRow(previewRow))
+      .toEqual({
+        lines: await readReference(`preview-row-${width}`),
+        aligned: true,
+      });
     await page.keyboard.press("l");
     const preview = page.locator(".tsk-project-preview");
     await expect(preview.locator(".tsk-peek, .tsk-attribution")).toHaveText(

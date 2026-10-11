@@ -186,7 +186,7 @@ Cleanup closes the dispatch's Herdr workspace, removes its recorded worktree, an
 
 Status glyphs are `◌` open, `○` ready, `●` started, `■` blocked, `▲` review, and `✓` done. A started task with a live [dispatch](#dispatch) shows `◉` instead of `●`; any other status, or a cleaned dispatch, shows the normal glyph. A task blocked on another task or on something else shows `□`; a review on an agent or on something else shows `△`.
 
-A row with something to say carries a dim **live line** under it, in the peek's `└─` style, wrapped and never cut. It is part of its row: selection never stops on it and a click on it acts on the task. The right edge of a row stays empty.
+A row with something to say carries a dim **live line** under it, in the peek's `└─` style, wrapped and never cut. It is part of its row: selection never stops on it and a click on it acts on the task. When the row's title wraps, each wrapped title line carries a dim `│` in the `└` column, so the title and its live line read as one block; the title keeps its wrap width. The right edge of a row stays empty.
 
 | Row | Live line |
 | --- | --- |

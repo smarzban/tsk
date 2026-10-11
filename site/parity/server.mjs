@@ -14,7 +14,7 @@ const tasks = fixture.tasks.map((t) => ({
   block: t.block && { ...t.block, at: t.block.at[0] * 1000 },
 }));
 const html = `<!doctype html><html data-theme="dark"><head><link rel="stylesheet" href="/src/styles/landing.css"><style>
-:root { --font-mono: monospace; } body { margin:0; padding:20px; background:var(--bg); } #board-demo { width:max-content; outline:0; } #tsk-demo { box-sizing:content-box; width:78ch; height:24lh; min-height:0; padding:0; font:14px/20px monospace; }
+:root { --font-mono: monospace; } body { margin:0; padding:20px; background:var(--bg); } #board-demo { width:max-content; outline:0; } #tsk-demo { box-sizing:content-box; width:78ch; height:28lh; min-height:0; padding:0; font:14px/20px monospace; }
 </style></head><body><div id="board-demo" tabindex="0"><div id="tsk-demo" class="board"></div></div>
 <script type="application/json" id="tsk-demo-fixture">${JSON.stringify({ tasks, now, selectedProject: "tsk-parity" })}</script><script type="module" src="/public/board-demo.js"></script></body></html>`;
 createServer(async (req, res) => {

@@ -322,6 +322,89 @@ fn projects_preview_stages_bind_a_nested_project_board_and_keep_the_index_cursor
 }
 
 #[test]
+fn project_preview_wrapped_titles_carry_the_live_line_gutter_in_split_and_rail() {
+    let mut domain = DomainState::new();
+    let alpha = || TaskScope::Project {
+        path: PROJECT_A.to_string(),
+    };
+    let long = "Blocked task whose title is long enough to wrap in the project preview at every \
+                wide width the slider paints so the gutter shows END";
+    let blocked = domain
+        .create(long, None, alpha(), ProvenanceOrigin::Manual, None)
+        .expect("create blocked task");
+    domain
+        .block(blocked, tsk_tui::domain::BlockDraft::default(), "claude")
+        .expect("block it");
+    domain
+        .create(
+            "Plain task with a title just as long so it wraps in the preview too but has \
+             no live line under it and keeps the plain indent END",
+            None,
+            alpha(),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create plain task");
+    // Board rows carry their numbers; the gutter sits in the identifier's indent.
+    let mut tasks = domain.tasks().to_vec();
+    tasks[0].number = Some(5);
+    tasks[1].number = Some(6);
+    let mut model = BoardModel::from_tasks(tasks, None);
+    go(
+        &mut domain,
+        &mut model,
+        BoardIntent::SelectNavTab(tsk_tui::ui::queue::NavTab::Projects),
+    );
+    for stage in [WideStage::Split, WideStage::Rail] {
+        go(&mut domain, &mut model, BoardIntent::StageRight);
+        assert_eq!(model.wide_stage(), stage);
+        for width in [110u16, 130, 160] {
+            let (rows, _) = render(&model, width, 40);
+            let column = resolve_responsive(width, 40, stage).task_content();
+            let lines: Vec<String> = (column.y..column.bottom())
+                .map(|y| column_text(&rows, column, y))
+                .collect();
+            let block = |head: &str| -> Vec<&String> {
+                let at = lines
+                    .iter()
+                    .position(|line| line.contains(head))
+                    .unwrap_or_else(|| panic!("{width}: {head}:\n{}", lines.join("\n")));
+                lines[at + 1..]
+                    .iter()
+                    .take_while(|line| !line.contains("END"))
+                    .chain(lines[at + 1..].iter().find(|line| line.contains("END")))
+                    .collect()
+            };
+            let live = block("Blocked task");
+            let plain = block("Plain task");
+            assert!(!live.is_empty() && !plain.is_empty(), "{width}: both wrap");
+            for line in &live {
+                assert!(
+                    line.starts_with("    │  ") && !line.starts_with("    │   "),
+                    "{width} {stage:?}: {line:?}"
+                );
+            }
+            for line in &plain {
+                assert!(
+                    line.starts_with("       ") && !line.starts_with("        "),
+                    "{width} {stage:?}: {line:?}"
+                );
+            }
+            // The live line follows the title's last wrapped line.
+            let after_end = lines
+                .iter()
+                .position(|line| line.contains("T5 Blocked"))
+                .and_then(|at| lines.get(at + 1 + live.len()));
+            assert!(
+                after_end.is_some_and(|line| line.starts_with("    └─ @claude blocked on you")),
+                "{width} {stage:?}:\n{}",
+                lines.join("\n")
+            );
+        }
+    }
+}
+
+#[test]
 fn projects_preview_stage_left_walks_back_without_reaching_full_task() {
     let (mut domain, mut model) = projects_fixture();
     go(&mut domain, &mut model, BoardIntent::StageRight);

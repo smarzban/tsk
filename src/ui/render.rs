@@ -123,10 +123,13 @@ pub struct TaskRowLine {
 
 /// Paint one task as ONE OR MORE list lines. Persisted tasks lead with a dim,
 /// presentation-only identifier; wrapped title continuations align under the title text.
+/// A row that paints a live line under it (`live_gutter`) carries a dim `│` on each
+/// continuation in the live line's `└` column, inside the indent, so the title wraps as before.
 pub fn paint_task_row_lines(
     row: &TaskRowPaint<'_>,
     geo: &TierGeometry,
     leading_indent: usize,
+    live_gutter: bool,
 ) -> Vec<TaskRowLine> {
     let row_w = geo.row_width.saturating_sub(2) as usize;
     let title_budget = row_w;
@@ -174,15 +177,24 @@ pub fn paint_task_row_lines(
     } else {
         style_plain()
     };
+    // The gutter takes indent cells only: the title column never moves.
+    let gutter_cells = LIVE_GUTTER_INDENT.len() + 1;
+    let gutter =
+        (live_gutter && title_x > gutter_cells).then(|| " ".repeat(title_x - gutter_cells));
     for segment in segments.iter().skip(1) {
+        let line = match &gutter {
+            Some(pad) => Line::from(vec![
+                Span::styled(LIVE_GUTTER_INDENT, style_plain()),
+                Span::styled("│", style_dim()),
+                Span::styled(format!("{pad}{segment}"), continuation_style),
+            ]),
+            None => Line::from(Span::styled(
+                format!("{indent}{segment}"),
+                continuation_style,
+            )),
+        };
         lines.push(TaskRowLine {
-            line: bound_line(
-                Line::from(Span::styled(
-                    format!("{indent}{segment}"),
-                    continuation_style,
-                )),
-                row_w,
-            ),
+            line: bound_line(line, row_w),
             content_x: title_content_x,
             content_width: title_content_width,
             identifier: None,
@@ -190,6 +202,10 @@ pub fn paint_task_row_lines(
     }
     lines
 }
+
+/// The cells before the live line's `└` (`    └─ `): wrapped title lines above a live line
+/// carry their `│` gutter right after them.
+const LIVE_GUTTER_INDENT: &str = "    ";
 
 /// The dim line under a board row that says in plain words what is going on: who a block or
 /// review waits on and for how long, or what an on-deck task still runs after. `None` for a
@@ -343,7 +359,7 @@ pub fn before_numbers(task: &Task, tasks: &[Task]) -> Vec<u64> {
 // Unit-test adapter: inspect the same first wrapped line the board paints.
 #[cfg(test)]
 fn paint_task_row(row: &TaskRowPaint<'_>, geo: &TierGeometry) -> Line<'static> {
-    paint_task_row_lines(row, geo, 0).remove(0).line
+    paint_task_row_lines(row, geo, 0, false).remove(0).line
 }
 
 /// Paint a task row with extra leading cells reserved for a containing visual group.
@@ -5345,6 +5361,11 @@ fn build_list_rows_inner(
         // A long title wraps onto continuation lines indented under its own first
         // row; every painted line carries the task's hit target and selection.
         let identifier = task.board_identifier();
+        // The live line belongs to its row: every wrapped line is a task line, so a click on
+        // it acts on the task and selection follow keeps it in view. The peek replaces it.
+        let live_text = (!rail && detail_target != Some(task.id))
+            .then(|| live_line(task, model.tasks, model.now))
+            .flatten();
         let lines = if rail {
             paint_rail_row_lines(
                 task,
@@ -5368,13 +5389,10 @@ fn build_list_rows_inner(
                 },
                 geo,
                 0,
+                live_text.is_some(),
             )
         };
-        // The live line belongs to its row: every wrapped line is a task line, so a click on
-        // it acts on the task and selection follow keeps it in view. The peek replaces it.
-        let live = (!rail && detail_target != Some(task.id))
-            .then(|| live_line(task, model.tasks, model.now))
-            .flatten()
+        let live = live_text
             .map(|text| live_line_rows(&super::terminal_text(&text), geo.row_width))
             .unwrap_or_default();
         if selected {
@@ -6928,7 +6946,7 @@ mod tests {
                 title_bold: false,
                 dim: false,
             };
-            let lines = paint_task_row_lines(&row, &geo, 0);
+            let lines = paint_task_row_lines(&row, &geo, 0, false);
             assert_eq!(lines.len(), 2);
             assert_eq!(plain(&lines[0].line).matches('X').count(), room);
             assert!(!plain(&lines[0].line).contains("public-launch"));
@@ -6960,7 +6978,7 @@ mod tests {
                         title_bold: selected,
                         dim: false,
                     };
-                    for line in paint_task_row_lines(&row, &geo, 0) {
+                    for line in paint_task_row_lines(&row, &geo, 0, false) {
                         assert!(
                             line.line.width() <= geo.row_width as usize,
                             "{width}x{height} overflow"

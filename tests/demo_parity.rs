@@ -16,6 +16,10 @@ use tsk_tui::{
     },
 };
 
+/// The harness's terminal rows, matching `height` in `site/parity/server.mjs`. Tall enough for
+/// the 40-column desk to fit T12's wrapped title without a scrollbar.
+const HEIGHT: u16 = 28;
+
 fn key(
     state: &mut DomainState,
     model: &mut BoardModel,
@@ -27,7 +31,7 @@ fn key(
     let intent = match route_responsive_key(
         model.input_mode(),
         model.wide_stage(),
-        tsk_tui::ui::tier::resolve_responsive(width, 24, model.wide_stage()).presentation,
+        tsk_tui::ui::tier::resolve_responsive(width, HEIGHT, model.wide_stage()).presentation,
         event,
     ) {
         ResponsiveKeyRoute::Intent(intent) => Some(intent),
@@ -39,14 +43,14 @@ fn key(
     }
 }
 fn capture(model: &BoardModel, width: u16, _name: &str) -> String {
-    let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(width, HEIGHT)).unwrap();
     terminal
         .draw(|f| {
             draw_board(f, model);
         })
         .unwrap();
     let buffer = terminal.backend().buffer();
-    let text = (0..24)
+    let text = (0..HEIGHT)
         .map(|y| {
             (0..width)
                 .map(|x| buffer[(x, y)].symbol())
@@ -114,6 +118,14 @@ fn export_reference(text: &str, width: u16, name: &str) {
                 &format!("{name}-{width}.json"),
                 &under_row(text, "T12 ", column),
             );
+            if name == "preview-live" {
+                // The row's wrapped title, with the live line's gutter beside it.
+                write_json(
+                    &dir,
+                    &format!("preview-row-{width}.json"),
+                    &row_lines(text, "T12 ", column),
+                );
+            }
         }
         if name == "blocked-page" {
             // The BLOCKED section from its top line through the options, without the gutter.
@@ -139,6 +151,12 @@ fn export_reference(text: &str, width: u16, name: &str) {
                 &dir,
                 &format!("live-{width}.json"),
                 &under_row(text, "T12 ", 0),
+            );
+            // The blocked row's wrapped title, with the live line's gutter beside it.
+            write_json(
+                &dir,
+                &format!("row-{width}.json"),
+                &row_lines(text, "T12 ", 0),
             );
             let lines: Vec<_> = text
                 .lines()
@@ -179,11 +197,49 @@ fn fixture_board() -> (DomainState, BoardModel) {
     (state, model)
 }
 
+/// The first row containing `row` as painted from column `skip` on: its head line, then its
+/// own wrapped title lines with the live line's `│` gutter when it carries one.
+fn row_lines(text: &str, row: &str, skip: usize) -> Vec<String> {
+    let mut lines = text
+        .lines()
+        .skip_while(|line| !line.contains(row))
+        .map(|line| line.chars().skip(skip).collect::<Vec<char>>());
+    let Some(head) = lines.next() else {
+        return Vec::new();
+    };
+    let row_cells: Vec<char> = row.chars().collect();
+    let title_x = (0..head.len())
+        .find(|at| head[*at..].starts_with(&row_cells))
+        .map_or(0, |at| at + row_cells.len());
+    std::iter::once(head)
+        .chain(lines.take_while(|cells| {
+            cells.len() > title_x
+                && cells[title_x] != ' '
+                && cells[..title_x].iter().all(|c| matches!(c, ' ' | '│'))
+        }))
+        .map(|cells| {
+            let line: String = cells.into_iter().collect();
+            let line = line.trim_end().trim_end_matches(['▌', '█']).trim_end();
+            let line = if skip > 0 {
+                line.strip_prefix(' ').unwrap_or(line)
+            } else {
+                line
+            };
+            line.to_string()
+        })
+        .collect()
+}
+
 /// The lines painted under the first row containing `row`, from column `skip` on: its live
 /// line or its open peek, up to the peek's `└` footer or the first line of anything else.
+/// The row's own wrapped title lines ([`row_lines`]) are not part of it.
 fn under_row(text: &str, row: &str, skip: usize) -> Vec<String> {
     let mut out = Vec::new();
-    for line in text.lines().skip_while(|line| !line.contains(row)).skip(1) {
+    let lines = text
+        .lines()
+        .skip_while(|line| !line.contains(row))
+        .skip(row_lines(text, row, skip).len());
+    for line in lines {
         let line: String = line.chars().skip(skip).collect();
         let line = line.trim_end().trim_end_matches(['▌', '█']).trim_end();
         let line = if skip > 0 {
