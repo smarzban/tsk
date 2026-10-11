@@ -3165,7 +3165,7 @@ fn route_board_start(
                 .copied()
                 .collect::<Vec<_>>();
             model.clear_marks();
-            match start_plain_and_save(
+            if let Some(started) = start_plain_and_save(
                 store,
                 domain,
                 model,
@@ -3178,8 +3178,7 @@ fn route_board_start(
                 in_herdr,
                 host,
             ) {
-                Some(started) => model.set_message(started.with_delivery(message)),
-                None => {}
+                model.set_message(started.with_delivery(message));
             }
             return true;
         }
