@@ -1172,7 +1172,12 @@ pub fn arrange_view(
 fn group_key(task: &Task, group: GroupBy) -> (String, String) {
     match (group, &task.scope, task.thread.as_deref()) {
         (GroupBy::Project, TaskScope::Project { path }, _) => (
-            format!("p:{}", path.trim_end_matches(['/', '\\'])),
+            format!(
+                "p:{}",
+                path.trim_end_matches(
+                    |character| character == '/' || (cfg!(windows) && character == '\\')
+                )
+            ),
             short_project_name(path).to_string(),
         ),
         (GroupBy::Project, TaskScope::Global, _) => ("desk".to_string(), "desk".to_string()),
