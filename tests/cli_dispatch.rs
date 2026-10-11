@@ -1920,7 +1920,7 @@ fn stub_gh_with(
         format!(
             "#!/bin/sh\necho \"$@\" >> '{log}'\ncase \"$1 $2\" in\n\
              'pr view') printf '{{\"number\":7,\"url\":\"https://github.com/o/r/pull/7\",\"state\":\"%s\",\"headRefOid\":\"{head}\",\"baseRefName\":\"base\"}}\\n' \"$(cat '{state}')\" ;;\n\
-             'pr merge') if [ {merge_exit} != 0 ]; then echo 'X Pull request o/r#7 is not mergeable: the base branch policy prohibits the merge.' >&2; exit {merge_exit}; fi\n{on_merge}\n{merged} ;;\n\
+             'pr merge') if [ {merge_exit} != 0 ]; then printf 'X Pull request o/r#7 is not mergeable: the base branch policy prohibits the merge.\\n\\nTo have the pull request merged after all the requirements have been met, add the `--auto` flag.\\n' >&2; exit {merge_exit}; fi\n{on_merge}\n{merged} ;;\n\
              esac\n",
             log = log.display(),
             state = state_file.display(),
@@ -2019,10 +2019,12 @@ fn merge_runs_gh_pr_merge_with_the_configured_method_and_refuses_without_changin
     )
     .expect_err("gh refused the merge");
     assert_eq!(refused.code(), "merge-failed");
-    // gh's message verbatim, without the `X ` glyph gh leads it with.
+    // gh's whole message, every line, without the `X ` glyph gh leads it with.
     assert!(
         refused.message().contains(
-            "Pull request o/r#7 is not mergeable: the base branch policy prohibits the merge."
+            "Pull request o/r#7 is not mergeable: the base branch policy prohibits the merge. \
+             To have the pull request merged after all the requirements have been met, add the \
+             `--auto` flag."
         ) && !refused.message().contains("X Pull request"),
         "{}",
         refused.message()

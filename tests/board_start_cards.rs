@@ -11,7 +11,12 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::Terminal;
-use tsk_tui::domain::DomainState;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use tsk_tui::agents::AgentProfiles;
+use tsk_tui::domain::{DomainState, ProvenanceOrigin, TaskScope};
+use tsk_tui::store::TaskStore;
 use tsk_tui::ui::board::{
     apply_intent, board_hit_map, draw_board, BoardInputMode, BoardModel, DispatchPrompt,
     RelaunchPrompt, StartAnywayPrompt, CARD_ENTER_GUARD, ROW_DOUBLE_CLICK_WINDOW,
@@ -60,6 +65,62 @@ fn bulk() -> BoardModel {
         ("T5".into(), Uuid::from_u128(5)),
     ];
     prompt.skipped = vec![("T6".into(), "unknown agent builder".into())];
+    card(prompt)
+}
+
+static SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn temp_dir(label: &str) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("tsk-start-cards-{label}-{nanos}-{seq}"))
+}
+
+/// A marked set where T1 (assigned to `claude`) launches and T2 only starts, built through the
+/// same eligibility check `ctrl+s` runs.
+fn bulk_launching() -> BoardModel {
+    let dir = temp_dir("launch");
+    std::fs::create_dir_all(&dir).expect("state dir");
+    std::fs::write(
+        dir.join("config.toml"),
+        "[agent.claude]\ncommand = [\"true\"]\n",
+    )
+    .expect("profiles");
+    let profiles = AgentProfiles::load(&dir).expect("load profiles");
+    let scope = TaskScope::Project {
+        path: "/repos/app".into(),
+    };
+    let mut state = DomainState::new();
+    let launch = state
+        .create_assigned(
+            "first job",
+            None,
+            scope.clone(),
+            ProvenanceOrigin::Manual,
+            None,
+            Some("claude".into()),
+        )
+        .expect("assigned task");
+    let start = state
+        .create("second job", None, scope, ProvenanceOrigin::Manual, None)
+        .expect("plain task");
+    let store = TaskStore::new(&dir);
+    store.save(&state).expect("save");
+    let state = store.load().expect("numbered");
+    let eligible =
+        tsk_tui::dispatch::check_task(&state, launch, &profiles, true).expect("eligible");
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut prompt = DispatchPrompt::start_anyway(StartAnywayPrompt {
+        waiting: Vec::new(),
+        intent: BoardIntent::PrimaryVerb,
+    });
+    prompt.start_anyway = None;
+    prompt.any_status = false;
+    prompt.launch = vec![eligible];
+    prompt.start_only = vec![("T2".into(), start)];
     card(prompt)
 }
 
@@ -222,6 +283,57 @@ fn the_start_anyway_and_bulk_cards_say_what_y_does() {
             "▸ y start T4 and T5 · T6 not started",
             "esc cancel",
         ],
+    );
+}
+
+#[test]
+fn the_bulk_card_with_a_launch_names_it_and_runs_it_like_every_card() {
+    let mut model = bulk_launching();
+    assert_says(
+        &model,
+        &[
+            "T1 @claude from default",
+            "start only T2 started, no launch",
+            "▸ y dispatch T1 · start T2 without launching",
+            "esc cancel",
+        ],
+    );
+    for width in WIDTHS {
+        assert!(
+            rows(&model, width, 30).join("\n").contains("Dispatch"),
+            "{width}: the title says it dispatches"
+        );
+        assert!(bold_row(&model, width, "y  dispatch"), "{width}: y is bold");
+    }
+    assert_eq!(selected(&model), Some(0));
+    let opened = model.dispatch_prompt().unwrap().selector.opened_at;
+    assert_eq!(
+        model.resolve_card_choice(
+            BoardIntent::CleanupRunSelected,
+            opened + CARD_ENTER_GUARD / 2
+        ),
+        None,
+        "an Enter right after the card opened is ignored"
+    );
+    assert_eq!(
+        model.resolve_card_choice(BoardIntent::CleanupRunSelected, opened + CARD_ENTER_GUARD),
+        Some(BoardIntent::ConfirmDispatch)
+    );
+    let hits = board_hit_map(Rect::new(0, 0, 110, 30), &model);
+    let click_intent = click(&model, &hits, QueueHitTarget::CleanupOption(0)).expect("click");
+    assert_eq!(
+        model.resolve_card_choice(click_intent.clone(), opened),
+        None
+    );
+    assert_eq!(
+        model.resolve_card_choice(click_intent, opened + Duration::from_millis(100)),
+        Some(BoardIntent::ConfirmDispatch),
+        "a double click runs it"
+    );
+    assert_eq!(
+        model.resolve_card_choice(key(KeyCode::Char('n')), opened),
+        None,
+        "`n` is the relaunch card's alone"
     );
 }
 

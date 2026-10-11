@@ -479,16 +479,25 @@ fn first_line(bytes: &[u8]) -> String {
         .to_string()
 }
 
-/// gh's first stderr line without the failure glyph it leads with (`X `, `✗ `, `✘ `); the
-/// rest of gh's message stays verbatim.
+/// gh's whole stderr message without the failure glyph it leads with (`X `, `✗ `, `✘ `): every
+/// non-empty line, trimmed and joined with a space so it stays one line that the card and the
+/// status row wrap. Nothing else is reworded.
 pub fn gh_message(stderr: &[u8]) -> String {
-    let line = first_line(stderr);
-    ["X ", "✗ ", "✘ "]
+    let text = String::from_utf8_lossy(stderr);
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let Some(first) = lines.next() else {
+        return "no output".to_string();
+    };
+    let first = ["X ", "✗ ", "✘ "]
         .iter()
-        .find_map(|glyph| line.strip_prefix(glyph))
+        .find_map(|glyph| first.strip_prefix(glyph))
         .map(str::trim_start)
         .filter(|rest| !rest.is_empty())
-        .map_or(line.clone(), str::to_string)
+        .unwrap_or(first);
+    std::iter::once(first)
+        .chain(lines)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Why gh refused before reaching GitHub, when it was one of these.
@@ -658,13 +667,20 @@ mod tests {
             "X Pull request o/r#189 is not mergeable: the head branch is not up to date.\n",
             "✗ Pull request o/r#189 is not mergeable: the head branch is not up to date.\n",
             "✘ Pull request o/r#189 is not mergeable: the head branch is not up to date.\n",
-            "\n  X Pull request o/r#189 is not mergeable: the head branch is not up to date.\nmore\n",
+            "\n  X Pull request o/r#189 is not mergeable: the head branch is not up to date.\n",
         ] {
             assert_eq!(
                 gh_message(raw.as_bytes()),
                 "Pull request o/r#189 is not mergeable: the head branch is not up to date."
             );
         }
+        // Every line of gh's message stays, joined into one.
+        assert_eq!(
+            gh_message(
+                b"X Pull request o/r#189 is not mergeable: the head branch is not up to date.\n\nTo have the pull request merged after all the requirements have been met, add the `--auto` flag.\n"
+            ),
+            "Pull request o/r#189 is not mergeable: the head branch is not up to date. To have the pull request merged after all the requirements have been met, add the `--auto` flag."
+        );
         // Anything else stays verbatim, a word starting with X included.
         assert_eq!(gh_message(b"XML parse error"), "XML parse error");
         assert_eq!(
@@ -733,7 +749,10 @@ mod tests {
         assert_eq!(PrLookupError::NoGithubRemote.message(), "no GitHub remote");
         assert_eq!(
             pr_view_outcome(Some(1), b"", b"\nGraphQL: something broke\nmore\n"),
-            Err(PrLookupError::Failed("GraphQL: something broke".into()))
+            // gh's whole message, every line, on one line.
+            Err(PrLookupError::Failed(
+                "GraphQL: something broke more".into()
+            ))
         );
     }
 

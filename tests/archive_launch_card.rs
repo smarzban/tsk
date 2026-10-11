@@ -470,16 +470,20 @@ fn launch_card_asks_on_one_line_then_lists_its_options_with_the_cursor_on_keep()
     }
     let flat = board_rows(&model, 110, STANDARD.1).join(" ");
     assert!(flat.contains("▸ y"), "the cursor moved to `y`:\n{flat}");
-    let now = Instant::now();
+    // Times count from the card's own open, so a slow runner cannot expire the guard.
+    let opened = model.launch_card().expect("card").selector.opened_at;
     assert_eq!(
-        model.resolve_card_choice(BoardIntent::CleanupRunSelected, now),
+        model.resolve_card_choice(
+            BoardIntent::CleanupRunSelected,
+            opened + tsk_tui::ui::board::CARD_ENTER_GUARD / 2
+        ),
         None,
         "an Enter right as the card opened is ignored"
     );
     assert_eq!(
         model.resolve_card_choice(
             BoardIntent::CleanupRunSelected,
-            now + tsk_tui::ui::board::CARD_ENTER_GUARD
+            opened + tsk_tui::ui::board::CARD_ENTER_GUARD
         ),
         Some(BoardIntent::LaunchUnarchive)
     );

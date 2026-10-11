@@ -2970,6 +2970,11 @@ impl BoardModel {
         true
     }
 
+    /// The launch card while it is up.
+    pub fn launch_card(&self) -> Option<&super::launch_card::LaunchPrompt> {
+        self.launch_card.as_ref()
+    }
+
     /// The one hidden predicate every working-lens surface filters on.
     fn is_hidden(&self, task: &Task) -> bool {
         if task.archived {
