@@ -154,7 +154,7 @@ Archiving hides work without changing its status.
 | Task: select it and press `ctrl+f` | Open the done drawer's archived group, select it, then press `ctrl+u` or `ctrl+f` |
 | Project: press `p`, select it, then `ctrl+f` | Switch to the picker's **archived** tab, select it, then `ctrl+u` or `ctrl+f` |
 
-Use `Tab`, `←`, or `→` to switch project-picker tabs. Archiving has no undo entry, and it changes the task, so an earlier completion or deletion of that task can no longer be undone (see [Delete and undo](#delete-and-undo)).
+Use `Tab`, `←`, or `→` to switch project-picker tabs. Archiving has no undo entry, and it changes the task, so an earlier completion of that task can no longer be undone (see [Delete and undo](#delete-and-undo)).
 
 ### View an archived project
 

@@ -35,7 +35,7 @@ The heading shows completed/total steps. In view mode, status shortcuts change t
 
 `Enter` retains the rename in the edit session without saving that session. Moving to another existing step retains the previous draft. `Esc` cancels the field; cancelling task editing restores staged changes.
 
-A step cannot be saved empty. If you clear a step's text, saving the task edit reopens that step with `text required` on its row and saves nothing until you type text, remove the step, or cancel.
+A step cannot be saved empty. If you clear a step's text, saving the task edit reopens that step with `text required` on its row and saves nothing until you type text, remove the step, or cancel. If a new step you typed is still open, that row keeps the editor so its text is not lost, and the status row says `a cleared step needs text` instead.
 
 ## Remove
 
