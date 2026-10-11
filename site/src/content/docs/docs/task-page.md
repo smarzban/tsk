@@ -55,7 +55,7 @@ Thread is optional and follows the [thread name rules](/docs/capture/#thread-nam
 | Existing step | Keep the rename in the current edit session |
 | New step | Save that step and open another empty row |
 
-New steps save independently. Cancelling the task edit does not remove new steps already saved. [Step editing details](/docs/steps/).
+New steps and step moves save independently. Cancelling the task edit does not remove new steps already saved or undo moves. [Step editing details](/docs/steps/).
 
 Press `Esc` to discard changes to the current field. Other staged changes remain until you save or cancel the task edit. Cancelling the task edit also restores removed steps. Save or cancel before selecting a different task.
 

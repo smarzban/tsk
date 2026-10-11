@@ -35,9 +35,15 @@ export class TaskSteps {
   begin(task, id = null) {
     this.bind(task);
     if (id) this.staged ??= structuredClone(task.steps);
-    this.selected = id ?? "add";
+    // A new step lands below the selected stored step; the selector stays on it.
+    const after =
+      !id && this.rows(task).some((step) => step.id === this.selected)
+        ? this.selected
+        : null;
+    this.selected = id ?? after ?? "add";
     this.editor = {
       id,
+      after,
       text: id ? this.rows(task).find((step) => step.id === id).text : "",
     };
     this.refusal = "";
@@ -55,10 +61,17 @@ export class TaskSteps {
         this.editor = null;
       } else {
         const step = { id: crypto.randomUUID(), text, done: false };
-        task.steps.push(step);
-        if (this.staged) this.staged.push(structuredClone(step));
+        const after = this.editor.after;
+        const insert = (rows, value) => {
+          const at = rows.findIndex((row) => row.id === after);
+          rows.splice(at < 0 ? rows.length : at + 1, 0, value);
+        };
+        insert(task.steps, step);
+        if (this.staged) insert(this.staged, structuredClone(step));
         this.selected = step.id;
-        this.editor = finish ? null : { id: null, text: "" };
+        this.editor = finish
+          ? null
+          : { id: null, after: after ? step.id : null, text: "" };
       }
     }
     if (finish && this.staged) {
@@ -84,6 +97,23 @@ export class TaskSteps {
       const saved = task.steps.find((row) => row.id === step.id);
       if (saved) saved.done = step.done;
     }
+  }
+  // alt+↑/↓: swap the selected step with its neighbour. Moves save at once, like adds.
+  shift(task, delta) {
+    const rows = this.rows(task);
+    const from = rows.findIndex((step) => step.id === this.selected);
+    const to = from + delta;
+    if (from < 0 || to < 0 || to >= rows.length) return false;
+    const neighbour = rows[to].id;
+    [rows[from], rows[to]] = [rows[to], rows[from]];
+    if (this.staged) {
+      const saved = task.steps.findIndex((step) => step.id === this.selected);
+      const [step] = task.steps.splice(saved, 1);
+      const at = task.steps.findIndex((row) => row.id === neighbour);
+      task.steps.splice(delta < 0 ? at : at + 1, 0, step);
+    }
+    this.marked = null;
+    return true;
   }
   remove(task) {
     if (!this.rows(task).some((step) => step.id === this.selected))

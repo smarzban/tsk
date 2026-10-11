@@ -2120,7 +2120,18 @@ import { parseCapture } from "./capture.js";
       ["task actions", "f", "archive / restore (archived: z drawer)", "file hide restore"],
       ["create & edit", "+", "quick-add", "capture new task"],
       ["create & edit", "e", "edit title", "rename"],
-      ["create & edit", "a", "add step (task page)", "checklist"],
+      [
+        "create & edit",
+        "a",
+        "add step below selected (task page)",
+        "checklist insert",
+      ],
+      [
+        "task actions",
+        "alt+↑ / alt+↓",
+        "move selected step (task page)",
+        "checklist reorder",
+      ],
       ["views & find", "1", "desk", "switch view"],
       ["views & find", "2", "selected project", "switch view"],
       ["views & find", "3", "projects", "switch view"],
@@ -2347,11 +2358,17 @@ import { parseCapture } from "./capture.js";
                 )
                   .map((line) => `<span>${esc(line)}</span>`)
                   .join("")}</span>`
-          }</div>`,
+          }</div>${
+            pageSteps.editor &&
+            !pageSteps.editor.id &&
+            pageSteps.editor.after === step.id
+              ? `<div class="tsk-step-new">${inlineEditor}</div>`
+              : ""
+          }`,
       )
       .join(
         "",
-      )}${pageSteps.editor && !pageSteps.editor.id ? `<div class="tsk-step-new">${inlineEditor}</div>` : `<button type="button" class="tsk-step-add dim" ${addAttribute}="1">   + step</button>`}</div>`;
+      )}${pageSteps.editor && !pageSteps.editor.id && !pageSteps.editor.after ? `<div class="tsk-step-new">${inlineEditor}</div>` : `<button type="button" class="tsk-step-add dim" ${addAttribute}="1">   + step</button>`}</div>`;
     const metaField = (field, text) =>
       editing === field
         ? `<span class="tsk-meta-selected" data-page-field="${field}">${text}</span>`
@@ -3014,6 +3031,19 @@ import { parseCapture } from "./capture.js";
       render();
       return true;
     }
+    if (
+      e.altKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      ["ArrowUp", "ArrowDown"].includes(e.key)
+    ) {
+      e.preventDefault();
+      if (previewSteps.shift(task, e.key === "ArrowUp" ? -1 : 1)) {
+        task.updatedAt = clock();
+        render();
+      }
+      return true;
+    }
     if (bare && ["Tab", "ArrowDown", "ArrowUp", "j", "k"].includes(e.key)) {
       e.preventDefault();
       previewSteps.move(
@@ -3430,6 +3460,19 @@ import { parseCapture } from "./capture.js";
         steps.save(task, true);
         task.updatedAt = clock();
         render();
+        return;
+      }
+      if (
+        e.altKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        ["ArrowUp", "ArrowDown"].includes(e.key)
+      ) {
+        e.preventDefault();
+        if (steps.shift(task, e.key === "ArrowUp" ? -1 : 1)) {
+          task.updatedAt = clock();
+          render();
+        }
         return;
       }
       if (bare && ["Tab", "ArrowDown", "ArrowUp", "j", "k"].includes(e.key)) {

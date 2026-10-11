@@ -1,4 +1,4 @@
-//! Headless step creation, toggling, rename, and remove by step short id.
+//! Headless step creation, toggling, rename, move, and remove by step short id.
 
 use std::path::PathBuf;
 
@@ -13,10 +13,33 @@ use uuid::Uuid;
 /// The `steps` action parsed from argv.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StepsAction {
-    Add { text: String },
-    Toggle { short_id: String },
-    Rename { short_id: String, text: String },
-    Remove { short_id: String },
+    Add {
+        text: String,
+        at: Option<StepPlacement>,
+    },
+    Toggle {
+        short_id: String,
+    },
+    Rename {
+        short_id: String,
+        text: String,
+    },
+    Move {
+        short_id: String,
+        to: StepPlacement,
+    },
+    Remove {
+        short_id: String,
+    },
+}
+
+/// Where `add` inserts or `move` places a step. Anchors are step short ids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StepPlacement {
+    Before(String),
+    After(String),
+    First,
+    Last,
 }
 
 /// A steps failure after parsing and before presenting output.
@@ -28,6 +51,7 @@ pub enum StepsError {
     InvalidStepText,
     UnknownStep,
     AmbiguousStep,
+    SameStep,
     Store(String),
 }
 
@@ -40,6 +64,7 @@ impl StepsError {
             Self::InvalidStepText => "invalid-step-text",
             Self::UnknownStep => "unknown-step",
             Self::AmbiguousStep => "ambiguous-step",
+            Self::SameStep => "same-step",
             Self::Store(_) => "store-error",
         }
     }
@@ -61,13 +86,19 @@ pub enum StepsResult {
         short_id: String,
         text: String,
     },
+    Moved {
+        short_id: String,
+        text: String,
+        position: usize,
+        count: usize,
+    },
     Removed {
         short_id: String,
         text: String,
     },
 }
 
-/// Add one step or toggle one step, refusing before any mutation.
+/// Apply one steps action, refusing before any mutation.
 ///
 /// Refusals are resolved at the boundary under the store lock and never reach
 /// the durable write, so a refused steps command persists nothing.
@@ -106,7 +137,7 @@ fn apply(
         _ => {}
     }
     match action {
-        StepsAction::Add { text } => {
+        StepsAction::Add { text, at } => {
             // Same boundary rule as task titles: any C0 control refuses before trimming.
             if has_c0_control(text) {
                 return Err(StepsError::InvalidStepText);
@@ -115,7 +146,14 @@ fn apply(
             if text.is_empty() {
                 return Err(StepsError::EmptyStepText);
             }
-            let step_id = domain.add_step(task_id, text).map_err(map_domain_error)?;
+            let steps = &domain.get(task_id).expect("task exists").steps;
+            let index = match at {
+                Some(placement) => placement_index(steps, placement)?,
+                None => steps.len(),
+            };
+            let step_id = domain
+                .insert_step(task_id, text, index)
+                .map_err(map_domain_error)?;
             let steps = &domain.get(task_id).expect("task exists").steps;
             Ok((
                 StepsResult::Added {
@@ -182,6 +220,51 @@ fn apply(
                 changed,
             ))
         }
+        StepsAction::Move { short_id, to } => {
+            let steps = domain.get(task_id).expect("task exists").steps.clone();
+            let step_id = resolve_existing_step(&steps, short_id)?;
+            let printed = step_short_id(&steps, step_id);
+            // Anchors resolve against the full list (the printed short ids), then place the
+            // step among the others, so `--after` its own predecessor is a no-op.
+            if let StepPlacement::Before(anchor) | StepPlacement::After(anchor) = to {
+                if resolve_existing_step(&steps, anchor)? == step_id {
+                    return Err(StepsError::SameStep);
+                }
+            }
+            let others: Vec<Step> = steps
+                .iter()
+                .filter(|step| step.id != step_id)
+                .cloned()
+                .collect();
+            let index = match to {
+                StepPlacement::Before(anchor) | StepPlacement::After(anchor) => {
+                    let anchor = resolve_existing_step(&steps, anchor)?;
+                    let position = others
+                        .iter()
+                        .position(|step| step.id == anchor)
+                        .expect("anchor is another step");
+                    position + usize::from(matches!(to, StepPlacement::After(_)))
+                }
+                StepPlacement::First => 0,
+                StepPlacement::Last => others.len(),
+            };
+            let changed = domain
+                .move_step(task_id, step_id, index)
+                .map_err(map_domain_error)?;
+            let step = steps
+                .iter()
+                .find(|step| step.id == step_id)
+                .expect("moved step exists");
+            Ok((
+                StepsResult::Moved {
+                    short_id: printed,
+                    text: step.text.clone(),
+                    position: index + 1,
+                    count: steps.len(),
+                },
+                changed,
+            ))
+        }
         StepsAction::Remove { short_id } => {
             let steps = domain.get(task_id).expect("task exists").steps.clone();
             let step_id = resolve_existing_step(&steps, short_id)?;
@@ -203,6 +286,23 @@ fn apply(
                 true,
             ))
         }
+    }
+}
+
+/// The insert index an `add` placement names in the current list.
+fn placement_index(steps: &[Step], placement: &StepPlacement) -> Result<usize, StepsError> {
+    let anchor_index = |short_id: &str| {
+        let anchor = resolve_existing_step(steps, short_id)?;
+        Ok(steps
+            .iter()
+            .position(|step| step.id == anchor)
+            .expect("resolved step exists"))
+    };
+    match placement {
+        StepPlacement::Before(anchor) => anchor_index(anchor),
+        StepPlacement::After(anchor) => anchor_index(anchor).map(|index| index + 1),
+        StepPlacement::First => Ok(0),
+        StepPlacement::Last => Ok(steps.len()),
     }
 }
 

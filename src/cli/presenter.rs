@@ -119,7 +119,7 @@ pub fn top_level_help() -> String {
         "  list     inspect tasks\n",
         "  status   set a task's human status\n",
         "  edit     update a task's title or notes\n",
-        "  steps    add, toggle, rename, or remove one step on a task\n\n",
+        "  steps    add, toggle, rename, move, or remove one step on a task\n\n",
         "Board\n",
         "  archive    keep a task off the working views\n",
         "  unarchive  put an archived task back\n",
@@ -774,27 +774,41 @@ fn path_segments(path: &str) -> Vec<String> {
 pub fn steps_help() -> CliOutput {
     help(HelpDoc {
         usage: vec![
-            "tsk steps <task> add <text> [--state-dir <dir>]".into(),
+            "tsk steps <task> add <text> [<place>] [--state-dir <dir>]".into(),
             "tsk steps <task> toggle <step-short-id> [--state-dir <dir>]".into(),
             "tsk steps <task> rename <step-short-id> <text> [--state-dir <dir>]".into(),
+            "tsk steps <task> move <step-short-id> <place> [--state-dir <dir>]".into(),
             "tsk steps <task> remove <step-short-id> [--state-dir <dir>]".into(),
         ],
-        purpose: "Add, toggle, rename, or remove one step on a task.".into(),
-        groups: vec![group(
-            "Values",
-            &[
-                ("<task>", "a task number or UUID"),
-                (
-                    "<step-short-id>",
-                    "an unambiguous prefix from tsk list <task> --json",
-                ),
-                ("--state-dir <dir>", "use another board store"),
-            ],
-        )],
+        purpose: "Add, toggle, rename, move, or remove one step on a task.".into(),
+        groups: vec![
+            group(
+                "Place",
+                &[
+                    ("--before <step-short-id>", "directly above that step"),
+                    ("--after <step-short-id>", "directly below that step"),
+                    ("--first", "at the top"),
+                    ("--last", "at the bottom (add's default)"),
+                ],
+            ),
+            group(
+                "Values",
+                &[
+                    ("<task>", "a task number or UUID"),
+                    (
+                        "<step-short-id>",
+                        "an unambiguous prefix from tsk list <task> --json",
+                    ),
+                    ("--state-dir <dir>", "use another board store"),
+                ],
+            ),
+        ],
         examples: vec![
             "tsk steps T12 add \"Write the failing test\"".into(),
+            "tsk steps T12 add \"Reproduce it\" --before a3".into(),
             "tsk steps T12 toggle a3".into(),
             "tsk steps T12 rename a3 \"Write the failing test first\"".into(),
+            "tsk steps T12 move a3 --first".into(),
         ],
         refusals: vec![
             "empty-step-text".into(),
@@ -803,9 +817,10 @@ pub fn steps_help() -> CliOutput {
             "soft-deleted-task".into(),
             "unknown-step".into(),
             "ambiguous-step".into(),
+            "same-step".into(),
         ],
         exit: exit_line(
-            "step created, toggled, renamed, or removed",
+            "step created, toggled, renamed, moved, or removed",
             Some("step refusal, verify with list before retrying"),
             true,
         ),
@@ -829,6 +844,15 @@ pub fn steps(result: StepsResult) -> CliOutput {
         StepsResult::Renamed { short_id, text } => {
             format!("renamed {short_id} {}\n", terminal_text(&text))
         }
+        StepsResult::Moved {
+            short_id,
+            text,
+            position,
+            count,
+        } => format!(
+            "moved {short_id} to {position}/{count} {}\n",
+            terminal_text(&text)
+        ),
         StepsResult::Removed { short_id, text } => {
             format!("removed {short_id} {}\n", terminal_text(&text))
         }
@@ -844,7 +868,7 @@ pub fn steps_usage(reason: &str) -> CliOutput {
     CliOutput {
         stdout: String::new(),
         stderr: format!(
-            "tsk steps: {}\nusage: tsk steps <task> add <text> | toggle <step-short-id> | rename <step-short-id> <text> | remove <step-short-id> [--state-dir <dir>]\n",
+            "tsk steps: {}\nusage: tsk steps <task> add <text> [<place>] | toggle <step-short-id> | rename <step-short-id> <text> | move <step-short-id> <place> | remove <step-short-id> [--state-dir <dir>]\nplace: --before <step-short-id> | --after <step-short-id> | --first | --last\n",
             human_reason(reason)
         ),
         code: 2,
@@ -864,6 +888,7 @@ fn task_refusal_message(code: &str, task: TaskAddress) -> String {
         "invalid-step-text" => "the step text contains control characters".to_string(),
         "unknown-step" => format!("no step on {display} matches that id"),
         "ambiguous-step" => format!("more than one step on {display} matches that id"),
+        "same-step" => "a step cannot be placed relative to itself".to_string(),
         _ => return code.to_string(),
     };
     format!("{code}: {message}")

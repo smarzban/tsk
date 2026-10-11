@@ -1876,3 +1876,40 @@ fn ctrl_j_in_notes_paints_the_shift_enter_hint_and_keeps_the_draft() {
         assert!(painted.contains("draft"), "draft lost:\n{painted}");
     }
 }
+
+/// #159: alt+↑/↓ move the selected step on the task page, the one mutating chord without
+/// Ctrl (macOS takes ctrl+arrows). Other modifier mixes stay inert there.
+#[test]
+fn alt_arrows_on_the_task_page_move_the_selected_step() {
+    let key = |code, modifiers| KeyEvent::new(code, modifiers);
+    assert_eq!(
+        map_key(
+            BoardInputMode::TaskPage,
+            key(KeyCode::Up, KeyModifiers::ALT)
+        ),
+        Some(BoardIntent::MoveStepUp)
+    );
+    assert_eq!(
+        map_key(
+            BoardInputMode::TaskPage,
+            key(KeyCode::Down, KeyModifiers::ALT)
+        ),
+        Some(BoardIntent::MoveStepDown)
+    );
+    for modifiers in [
+        KeyModifiers::ALT | KeyModifiers::CONTROL,
+        KeyModifiers::ALT | KeyModifiers::SUPER,
+        KeyModifiers::CONTROL,
+    ] {
+        assert_eq!(
+            map_key(BoardInputMode::TaskPage, key(KeyCode::Up, modifiers)),
+            None,
+            "{modifiers:?}"
+        );
+    }
+    assert_ne!(
+        map_key(BoardInputMode::Normal, key(KeyCode::Up, KeyModifiers::ALT)),
+        Some(BoardIntent::MoveStepUp),
+        "the board list has no step to move"
+    );
+}

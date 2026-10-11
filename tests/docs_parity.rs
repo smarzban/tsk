@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tsk_tui::domain::{DomainState, HumanStatus, ProvenanceOrigin, TaskScope};
-use tsk_tui::ui::board::{BoardInputMode, BoardModel};
+use tsk_tui::ui::board::{apply_intent, BoardInputMode, BoardModel};
 use tsk_tui::ui::input::{map_key, BoardIntent};
 
 fn docs_dir() -> PathBuf {
@@ -84,6 +84,26 @@ fn selected_model() -> BoardModel {
     model
 }
 
+/// A task page open with its first step under the cursor.
+fn step_selected_model() -> BoardModel {
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "palette step witness",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("seed task");
+    domain.add_step(id, "a step").expect("seed step");
+    let mut model = BoardModel::from_tasks(domain.tasks().to_vec(), None);
+    for intent in [BoardIntent::OpenTaskPage, BoardIntent::SelectStep(0)] {
+        apply_intent(&mut domain, &mut model, intent, None).expect("open the step");
+    }
+    model
+}
+
 fn labels(model: &BoardModel) -> Vec<String> {
     model
         .available_commands()
@@ -109,6 +129,8 @@ fn board_md_palette_table_matches_the_palette_catalog() {
     model.begin_save_recovery("disk full");
     let recovery = labels(&model);
 
+    let with_step = labels(&step_selected_model());
+
     let mut documented: Vec<(String, &str)> = Vec::new();
     for row in &rows {
         let (actions, when) = (&row[0], &row[1]);
@@ -116,6 +138,7 @@ fn board_md_palette_table_matches_the_palette_catalog() {
             "Always" => &always,
             "A task is selected" => &with_selection,
             "A save has failed" => &recovery,
+            "A task-page step is selected" => &with_step,
             other => panic!("unknown palette condition {other:?} in board.md"),
         };
         for label in promised_labels(actions) {
@@ -139,6 +162,10 @@ fn board_md_palette_table_matches_the_palette_catalog() {
                 with_selection.contains(label),
                 "{label:?} is documented as always available but vanishes with a selection"
             ),
+            "A task-page step is selected" => assert!(
+                !with_selection.contains(label),
+                "{label:?} is documented as step-only but the board selection offers it"
+            ),
             _ => {}
         }
     }
@@ -160,6 +187,19 @@ fn board_md_palette_table_matches_the_palette_catalog() {
         assert!(
             covers(label, &["Always", "A task is selected"]),
             "a selected board offers {label:?} but board.md's table does not list it"
+        );
+    }
+    for label in &with_step {
+        assert!(
+            covers(
+                label,
+                &[
+                    "Always",
+                    "A task is selected",
+                    "A task-page step is selected"
+                ]
+            ),
+            "a selected task-page step offers {label:?} but board.md's table does not list it"
         );
     }
     for label in &recovery {

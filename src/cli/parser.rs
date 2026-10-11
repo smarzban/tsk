@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use uuid::Uuid;
 
-use super::steps::StepsAction;
+use super::steps::{StepPlacement, StepsAction};
 use crate::domain::{normalize_thread, thread_refusal_message, HumanStatus};
 
 /// A direct task operand, either the internal UUID or its human task number.
@@ -423,7 +423,7 @@ mod tests {
         parse_flag_edit, parse_flag_status, parse_flag_steps, parse_flag_trash, parse_task_address,
         FlagEdit, FlagStatus, TaskAddress, TrashAction,
     };
-    use crate::cli::steps::StepsAction;
+    use crate::cli::steps::{StepPlacement, StepsAction};
     use crate::domain::HumanStatus;
 
     #[test]
@@ -536,6 +536,78 @@ mod tests {
                 state_dir: None,
                 help: false,
             }
+        );
+    }
+
+    #[test]
+    fn steps_parse_places_add_and_move() {
+        let args = |rest: &[&str]| {
+            ["tsk", "steps", "T2"]
+                .iter()
+                .chain(rest)
+                .map(|arg| arg.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            parse_flag_steps(&args(&["add", "text", "--before", "ab"]))
+                .expect("add before")
+                .action,
+            Some(StepsAction::Add {
+                text: "text".into(),
+                at: Some(StepPlacement::Before("ab".into())),
+            })
+        );
+        assert_eq!(
+            parse_flag_steps(&args(&["--after=cd", "add", "text"]))
+                .expect("add after, flag first")
+                .action,
+            Some(StepsAction::Add {
+                text: "text".into(),
+                at: Some(StepPlacement::After("cd".into())),
+            })
+        );
+        assert_eq!(
+            parse_flag_steps(&args(&["add", "text"]))
+                .expect("plain add")
+                .action,
+            Some(StepsAction::Add {
+                text: "text".into(),
+                at: None,
+            })
+        );
+        for (flag, to) in [
+            ("--first", StepPlacement::First),
+            ("--last", StepPlacement::Last),
+        ] {
+            assert_eq!(
+                parse_flag_steps(&args(&["move", "ab", flag]))
+                    .expect("move to an end")
+                    .action,
+                Some(StepsAction::Move {
+                    short_id: "ab".into(),
+                    to,
+                })
+            );
+        }
+        assert_eq!(
+            parse_flag_steps(&args(&["move", "ab"])).unwrap_err(),
+            "move needs --before, --after, --first, or --last"
+        );
+        assert_eq!(
+            parse_flag_steps(&args(&["move", "ab", "--first", "--after", "cd"])).unwrap_err(),
+            "--after cannot be combined with --first"
+        );
+        assert_eq!(
+            parse_flag_steps(&args(&["toggle", "ab", "--first"])).unwrap_err(),
+            "--first only applies to add and move"
+        );
+        assert_eq!(
+            parse_flag_steps(&args(&["move", "ab", "--before"])).unwrap_err(),
+            "missing value for --before"
+        );
+        assert_eq!(
+            parse_flag_steps(&args(&["move", "ab", "--before="])).unwrap_err(),
+            "missing value for --before"
         );
     }
 
@@ -750,6 +822,14 @@ pub fn parse_flag_steps(args: &[String]) -> Result<FlagSteps, String> {
         help: false,
     };
     let mut positionals: Vec<&str> = Vec::new();
+    let mut placement: Option<(String, StepPlacement)> = None;
+    let mut place = |flag: &str, value: StepPlacement| {
+        if let Some((previous, _)) = &placement {
+            return Err(format!("{flag} cannot be combined with {previous}"));
+        }
+        placement = Some((flag.to_owned(), value));
+        Ok(())
+    };
     let mut index = 2;
     while let Some(flag) = args.get(index).map(String::as_str) {
         let value = |name: &str| match args.get(index + 1) {
@@ -759,6 +839,42 @@ pub fn parse_flag_steps(args: &[String]) -> Result<FlagSteps, String> {
         match flag {
             "--help" => {
                 parsed.help = true;
+                index += 1;
+            }
+            "--first" => {
+                place(flag, StepPlacement::First)?;
+                index += 1;
+            }
+            "--last" => {
+                place(flag, StepPlacement::Last)?;
+                index += 1;
+            }
+            "--before" | "--after" => {
+                let anchor = value(flag)?;
+                place(
+                    flag,
+                    if flag == "--before" {
+                        StepPlacement::Before(anchor)
+                    } else {
+                        StepPlacement::After(anchor)
+                    },
+                )?;
+                index += 2;
+            }
+            flag if flag.starts_with("--before=") || flag.starts_with("--after=") => {
+                let (name, anchor) = flag.split_once('=').expect("matched an = form");
+                if anchor.is_empty() {
+                    return Err(format!("missing value for {name}"));
+                }
+                let anchor = anchor.to_owned();
+                place(
+                    name,
+                    if name == "--before" {
+                        StepPlacement::Before(anchor)
+                    } else {
+                        StepPlacement::After(anchor)
+                    },
+                )?;
                 index += 1;
             }
             flag if flag.starts_with("--state-dir=") => {
@@ -795,7 +911,14 @@ pub fn parse_flag_steps(args: &[String]) -> Result<FlagSteps, String> {
                 .map(|positional| format!("unexpected steps argument {positional}"))
         };
         let task = parse_task_address(positionals[0])?;
-        parsed.action = Some(match positionals[1] {
+        let action = positionals[1];
+        if let Some((flag, _)) = &placement {
+            if !matches!(action, "add" | "move") {
+                return Err(format!("{flag} only applies to add and move"));
+            }
+        }
+        let placement = placement.map(|(_, placement)| placement);
+        parsed.action = Some(match action {
             "add" => {
                 if let Some(reason) = extra(3) {
                     return Err(reason);
@@ -806,6 +929,22 @@ pub fn parse_flag_steps(args: &[String]) -> Result<FlagSteps, String> {
                         .copied()
                         .map(str::to_owned)
                         .ok_or_else(|| "step text is required".to_owned())?,
+                    at: placement,
+                }
+            }
+            "move" => {
+                if let Some(reason) = extra(3) {
+                    return Err(reason);
+                }
+                StepsAction::Move {
+                    short_id: positionals
+                        .get(2)
+                        .copied()
+                        .map(str::to_owned)
+                        .ok_or_else(|| "step short id is required".to_owned())?,
+                    to: placement.ok_or_else(|| {
+                        "move needs --before, --after, --first, or --last".to_owned()
+                    })?,
                 }
             }
             "toggle" => {

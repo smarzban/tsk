@@ -90,6 +90,13 @@ impl BoardModel {
                 command("change scope", BoardIntent::BeginEditScope),
             ]);
         }
+        // A step selected on the open task page: the alt+↑/↓ moves, findable by name.
+        if self.page_step_selected() {
+            commands.extend_from_slice(&[
+                command("move step up", BoardIntent::MoveStepUp),
+                command("move step down", BoardIntent::MoveStepDown),
+            ]);
+        }
         // Always-available board commands, then selection-gated delete when present.
         // The status commands above are absolute, so `set status: open` replaces the old
         // done-only `reopen` entry and stays useful from every status.
@@ -107,6 +114,16 @@ impl BoardModel {
         ]);
         // Park / resume / link / dispatch stay out of the palette.
         commands
+    }
+
+    /// Whether the focused task page has a stored step under its cursor (the palette's own
+    /// mode is ignored: it opens over the page without changing the page's input mode).
+    fn page_step_selected(&self) -> bool {
+        self.focused_surface() == crate::ui::tier::FocusedSurface::Task
+            && self.input_mode == crate::ui::board::BoardInputMode::TaskPage
+            && self.form.as_ref().is_some_and(|form| {
+                form.is_task() && form.steps.cursor.is_some() && !form.steps.add_selected
+            })
     }
 
     /// Commands the open palette currently shows (the palette applies its query).

@@ -80,7 +80,7 @@ pub struct Task {
     pub provenance: ProvenanceOrigin,
     /// Append-only domain event history.
     pub history: Vec<TaskEvent>,
-    /// Flat, ordered steps; never reordered by a verb.
+    /// Flat, ordered steps. Only an explicit insert or move changes a step's position.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<Step>,
     pub soft_deleted: bool,
@@ -587,7 +587,8 @@ impl DomainState {
         Ok(())
     }
 
-    /// Atomically apply task fields, staged step renames, and staged step removals.
+    /// Atomically apply task fields, staged step renames, staged step removals, and new steps
+    /// (placed after `step_adds_after` when that step remains, otherwise appended).
     ///
     /// All input is validated before the task changes. The session takes one revision based on
     /// the pre-edit task, which keeps a locked store save mergeable instead of making each
@@ -604,6 +605,7 @@ impl DomainState {
         step_renames: &[(Uuid, String)],
         step_removals: &[Uuid],
         step_adds: &[String],
+        step_adds_after: Option<Uuid>,
     ) -> Result<(), DomainError> {
         let title = title.as_ref().trim();
         if title.is_empty() {
@@ -661,7 +663,11 @@ impl DomainState {
             })
             .collect();
         let added_count = added.len();
-        task.steps.extend(added);
+        // Adds land after their anchor step, or at the end when it is absent or removed.
+        let insert_at = step_adds_after
+            .and_then(|anchor| task.steps.iter().position(|step| step.id == anchor))
+            .map_or(task.steps.len(), |anchor| anchor + 1);
+        task.steps.splice(insert_at..insert_at, added);
         record_mutation(task, TaskEventKind::Edited);
         let at = task.updated_at;
         task.history
@@ -686,6 +692,19 @@ impl DomainState {
     /// Trims text and refuses empty-after-trim. Returns the new step's id.
     /// Never touches status, scope, or notes.
     pub fn add_step(&mut self, task_id: Uuid, text: impl AsRef<str>) -> Result<Uuid, DomainError> {
+        self.insert_step(task_id, text, usize::MAX)
+    }
+
+    /// Insert one step at `index` in the task's steps; an index past the end appends.
+    ///
+    /// Trims text and refuses empty-after-trim. Returns the new step's id.
+    /// Never touches status, scope, or notes.
+    pub fn insert_step(
+        &mut self,
+        task_id: Uuid,
+        text: impl AsRef<str>,
+        index: usize,
+    ) -> Result<Uuid, DomainError> {
         let text = text.as_ref().trim();
         if text.is_empty() {
             return Err(DomainError::EmptyStepText);
@@ -697,9 +716,37 @@ impl DomainState {
             done: false,
         };
         let step_id = step.id;
-        task.steps.push(step);
+        let index = index.min(task.steps.len());
+        task.steps.insert(index, step);
         record_mutation(task, TaskEventKind::StepAdded);
         Ok(step_id)
+    }
+
+    /// Move one step so it ends at `index` in the task's steps (clamped to the last slot).
+    ///
+    /// The step keeps its id, text, and done flag, so its short id never changes. Returns
+    /// whether the order changed; a move onto its own slot records nothing. A move journals
+    /// as a step edit: a dedicated event kind would be a store format change.
+    pub fn move_step(
+        &mut self,
+        task_id: Uuid,
+        step_id: Uuid,
+        index: usize,
+    ) -> Result<bool, DomainError> {
+        let task = self.task_mut(task_id)?;
+        let from = task
+            .steps
+            .iter()
+            .position(|step| step.id == step_id)
+            .ok_or(DomainError::UnknownStep(step_id))?;
+        let to = index.min(task.steps.len() - 1);
+        if from == to {
+            return Ok(false);
+        }
+        let step = task.steps.remove(from);
+        task.steps.insert(to, step);
+        record_mutation(task, TaskEventKind::StepRenamed);
+        Ok(true)
     }
 
     /// Flip one step's done flag.
@@ -1556,6 +1603,7 @@ mod tests {
                 ],
                 &[],
                 &[],
+                None,
             )
             .expect("atomic session edit");
 
@@ -1601,6 +1649,7 @@ mod tests {
                 ],
                 &[removed, removed],
                 &[],
+                None,
             )
             .expect("normalize overlapping changes");
 
@@ -1730,6 +1779,102 @@ mod tests {
         state.remove_step(id, step).expect("remove step");
         assert_journaled(&state, TaskEventKind::StepRemoved);
         assert!(state.get(id).expect("task").steps.is_empty());
+    }
+
+    #[test]
+    fn insert_and_move_steps_keep_identity_and_done() {
+        let mut state = DomainState::new();
+        let id = create_sample(&mut state);
+        let a = state.add_step(id, "a").expect("a");
+        let c = state.add_step(id, "c").expect("c");
+        let b = state.insert_step(id, "b", 1).expect("insert b");
+        let tail = state.insert_step(id, "tail", 99).expect("insert past end");
+        let order = |state: &DomainState| {
+            state
+                .get(id)
+                .expect("task")
+                .steps
+                .iter()
+                .map(|step| step.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(order(&state), vec![a, b, c, tail]);
+
+        state.toggle_step(id, c).expect("check c");
+        let revision = state.get(id).expect("task").revision;
+        assert_eq!(state.move_step(id, c, 0), Ok(true));
+        assert_eq!(order(&state), vec![c, a, b, tail]);
+        let task = state.get(id).expect("task");
+        assert!(task.steps[0].done, "a moved step keeps its done flag");
+        assert_eq!(task.steps[0].text, "c");
+        assert_ne!(task.revision, revision);
+        assert_eq!(
+            task.history.last().map(|event| event.kind),
+            Some(TaskEventKind::StepRenamed),
+            "a move journals as a step edit"
+        );
+
+        assert_eq!(
+            state.move_step(id, c, 99),
+            Ok(true),
+            "clamps to the last slot"
+        );
+        assert_eq!(order(&state), vec![a, b, tail, c]);
+        let history = state.get(id).expect("task").history.len();
+        assert_eq!(state.move_step(id, c, 3), Ok(false), "own slot is a no-op");
+        assert_eq!(state.get(id).expect("task").history.len(), history);
+        let missing = Uuid::new_v4();
+        assert_eq!(
+            state.move_step(id, missing, 0),
+            Err(DomainError::UnknownStep(missing))
+        );
+    }
+
+    #[test]
+    fn task_session_edit_places_new_steps_after_their_anchor() {
+        let mut state = DomainState::new();
+        let id = create_sample(&mut state);
+        let first = state.add_step(id, "first").expect("first");
+        let second = state.add_step(id, "second").expect("second");
+        state
+            .edit_with_step_changes(
+                id,
+                "Sample task",
+                None,
+                TaskScope::Global,
+                None,
+                &[],
+                &[],
+                &["between".into()],
+                Some(first),
+            )
+            .expect("anchored add");
+        let texts = |state: &DomainState| {
+            state
+                .get(id)
+                .expect("task")
+                .steps
+                .iter()
+                .map(|step| step.text.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(texts(&state), vec!["first", "between", "second"]);
+        // A removed anchor falls back to the end.
+        state
+            .edit_with_step_changes(
+                id,
+                "Sample task",
+                None,
+                TaskScope::Global,
+                None,
+                &[],
+                &[first],
+                &["last".into()],
+                Some(first),
+            )
+            .expect("anchor removed");
+        assert_eq!(texts(&state), vec!["between", "second", "last"]);
+        assert_eq!(state.get(id).expect("task").steps[1].id, second);
     }
 
     #[test]

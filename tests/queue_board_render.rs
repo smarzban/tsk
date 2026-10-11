@@ -2302,6 +2302,54 @@ fn task_page_scrolls_notes_and_steps_as_one_content_region() {
     );
 }
 
+/// #159: a positioned add row paints directly below its anchor step. It is not a stored step,
+/// so the count still covers the last stored step and the selector stays on the anchor.
+#[test]
+fn positioned_add_row_paints_below_its_anchor() {
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "Insert page",
+            Some("the notes body".into()),
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create task");
+    for text in ["first step", "second step", "third step"] {
+        domain.add_step(id, text).expect("add step");
+    }
+    let third = domain.get(id).expect("task").steps[2].id;
+    domain.toggle_step(id, third).expect("check third");
+    let mut model = BoardModel::from_domain(&domain, None);
+    for intent in [
+        BoardIntent::OpenTaskPage,
+        BoardIntent::SelectStep(0),
+        BoardIntent::BeginAddStep,
+        BoardIntent::EditInsert('x'),
+    ] {
+        apply_intent(&mut domain, &mut model, intent, None).expect("intent");
+    }
+    let shown: Vec<String> = board_rows(&model, 78, 24)
+        .iter()
+        .map(|row| trimmed(row))
+        .collect();
+    let label = shown
+        .iter()
+        .position(|row| row.contains("steps 1/3"))
+        .unwrap_or_else(|| panic!("count must skip the draft row:\n{}", shown.join("\n")));
+    let rows = &shown[label + 1..label + 5];
+    assert!(
+        rows[0].contains("▸ ▪ first step")
+            && rows[1].contains("▪ x")
+            && !rows[1].contains('▸')
+            && rows[2].contains("▪ second step")
+            && rows[3].contains("✓ third step"),
+        "the draft sits between its anchor and the next step:\n{}",
+        shown.join("\n")
+    );
+}
+
 /// Steps stack from the top of their section, with step 1 directly under the section
 /// label and each next step directly below the previous, never pinned to the footer.
 #[test]

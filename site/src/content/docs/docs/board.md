@@ -176,12 +176,13 @@ Deleted tasks remain available through [trash commands](/docs/cli/#trash) for a 
 
 ## Palette
 
-Press `:` and type to find an action. Use arrows or `Tab` to select, `Enter` to run, and `Esc` to close.
+Press `:` on the board or a task page and type to find an action. Use arrows or `Tab` to select, `Enter` to run, and `Esc` to close.
 
 | Available actions | When |
 | --- | --- |
 | New task, undo, done drawer, help, quit | Always |
 | Set open/ready/started/blocked/review, edit notes, change scope, delete | A task is selected |
+| Move step up, move step down | A task-page step is selected |
 | Retry save, cancel save | A save has failed |
 
 Search matches letters in order: `ssr` finds `set status: review`.

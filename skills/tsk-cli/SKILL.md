@@ -1,7 +1,7 @@
 ---
 name: tsk-cli
 description: Work the user's tsk task board from the command line. Use when asked to add, update, edit, start, block, finish, archive, or restore a task on the board (or "tsk", "the tsk board", "the desk"), to add or tick steps, to answer "what's on the board", "what's next", "what's on deck", "what needs me", or to refine a task ("refine T12", "let's discuss T12", "what's missing from T12", "improve / rewrite this task"). Always `tsk add|list|status|edit|steps|archive|trash`, never the TUI.
-version: 1.4.0
+version: 1.5.0
 ---
 
 # tsk: the user's task board
@@ -84,7 +84,10 @@ Tick steps as you go: `tsk steps T12 toggle <short_id>`.
 Blocked on the user: `tsk status T12 blocked` and ask the question.
 
 **Plan as steps.** When the user wants order of work tracked on the task: `tsk steps T12 add
-"…"` per step, in order. Do not add steps for your own bookkeeping.
+"…"` per step, in order. Do not add steps for your own bookkeeping. To fit a step into an existing
+list, `add "…" --after <short_id>` (or `--before`); to reorder, `tsk steps T12 move <short_id>
+--before|--after <short_id>` or `--first`/`--last`. A moved step keeps its short id and checked
+state, and a repeated move is safe.
 
 **Capture many.** `cat plan.json | tsk add` with
 `[{"title": "…", "notes": "…", "project": "…", "thread": "…"}]`; only `title` is required, an

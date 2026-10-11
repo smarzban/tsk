@@ -4029,8 +4029,15 @@ fn step_editor_shift_enter_reopens_and_retains_task_editing() {
         model.task_editing(),
         "saving a step must retain the whole task edit session"
     );
-    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
-        .expect("Tab reaches the next existing step after a step save");
+    // The add row was anchored below the selected alpha, so the selector rode along onto
+    // each new step (#159); Shift+Tab reaches the previous existing step after a step save.
+    assert_eq!(
+        model.step_cursor(),
+        Some(2),
+        "the selector rests on the newest step"
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
+        .expect("Shift+Tab reaches the previous existing step after a step save");
     assert_eq!(model.input_mode(), BoardInputMode::EditStep);
     assert!(rendered_board(&model, 80, 24).contains("▸ ▪ bravo step"));
     let texts: Vec<&str> = domain

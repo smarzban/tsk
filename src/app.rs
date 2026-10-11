@@ -5795,6 +5795,233 @@ mod tests {
         );
     }
 
+    /// Seed a task with `steps`, persist it, and open its page with a store-backed board.
+    fn step_order_fixture(
+        label: &str,
+        steps: &[&str],
+    ) -> (TempStore, DomainState, BoardModel, uuid::Uuid) {
+        let temp = TempStore::new(label);
+        let mut domain = DomainState::new();
+        let id = domain
+            .create(
+                "Order",
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("seed task");
+        for text in steps {
+            domain.add_step(id, text).expect("seed step");
+        }
+        temp.store.save(&domain).expect("seed store");
+        let mut model = BoardModel::from_domain(&domain, None);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open");
+        (temp, domain, model, id)
+    }
+
+    fn drive(
+        temp: &TempStore,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        recovery: &mut SaveRecovery<DomainState>,
+        intents: impl IntoIterator<Item = BoardIntent>,
+    ) {
+        for intent in intents {
+            handle_board_intent(&temp.store, domain, model, intent.clone(), recovery, false)
+                .unwrap_or_else(|error| panic!("{intent:?}: {error}"));
+            assert!(!recovery.is_pending(), "{intent:?} saved");
+        }
+    }
+
+    fn typed(text: &str) -> Vec<BoardIntent> {
+        text.chars().map(BoardIntent::EditInsert).collect()
+    }
+
+    fn stored_step_texts(temp: &TempStore, id: uuid::Uuid) -> Vec<String> {
+        temp.store
+            .load()
+            .expect("reload")
+            .get(id)
+            .expect("task")
+            .steps
+            .iter()
+            .map(|step| step.text.clone())
+            .collect()
+    }
+
+    /// #159: ctrl+a with a step selected inserts below it, and Enter's next row follows the
+    /// step it just added, so a burst keeps its typed order between the neighbours.
+    #[test]
+    fn add_step_with_a_selected_step_inserts_below_it() {
+        let (temp, mut domain, mut model, id) = step_order_fixture("insert-below", &["a", "b"]);
+        let mut recovery = SaveRecovery::new();
+        let mut intents = vec![BoardIntent::SelectStep(0), BoardIntent::BeginAddStep];
+        intents.extend(typed("x"));
+        intents.push(BoardIntent::ConfirmEdit);
+        intents.extend(typed("y"));
+        intents.push(BoardIntent::ConfirmEdit);
+        drive(&temp, &mut domain, &mut model, &mut recovery, intents);
+        assert_eq!(stored_step_texts(&temp, id), vec!["a", "x", "y", "b"]);
+        assert_eq!(
+            model.step_cursor(),
+            Some(2),
+            "the selector rides on the newest step"
+        );
+        assert_eq!(model.input_mode(), BoardInputMode::EditStep);
+
+        // With no step selected, ctrl+a still appends.
+        let (temp, mut domain, mut model, id) = step_order_fixture("append", &["a", "b"]);
+        let mut intents = vec![BoardIntent::BeginAddStep];
+        intents.extend(typed("z"));
+        intents.push(BoardIntent::ConfirmEdit);
+        drive(&temp, &mut domain, &mut model, &mut recovery, intents);
+        assert_eq!(stored_step_texts(&temp, id), vec!["a", "b", "z"]);
+    }
+
+    /// #159: Shift+Enter on a positioned add row saves through the task session, which must
+    /// keep the row's position instead of appending.
+    #[test]
+    fn shift_enter_on_a_positioned_add_row_keeps_its_place() {
+        let (temp, mut domain, mut model, id) = step_order_fixture("insert-session", &["a", "b"]);
+        let mut recovery = SaveRecovery::new();
+        let mut intents = vec![
+            BoardIntent::BeginEditTitle,
+            BoardIntent::CancelEdit,
+            BoardIntent::SelectStep(0),
+            BoardIntent::BeginAddStep,
+        ];
+        intents.extend(typed("x"));
+        intents.push(BoardIntent::ConfirmEditNext);
+        drive(&temp, &mut domain, &mut model, &mut recovery, intents);
+        assert_eq!(stored_step_texts(&temp, id), vec!["a", "x", "b"]);
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+    }
+
+    /// #159: alt+↑/↓ move the selected step and save at once; the selector follows it, and
+    /// the step keeps its id and done flag. An end of the list is a quiet no-op.
+    #[test]
+    fn move_step_reorders_the_selected_step_and_saves() {
+        let (temp, mut domain, mut model, id) = step_order_fixture("move", &["a", "b", "c"]);
+        let a = domain.get(id).expect("task").steps[0].id;
+        domain.toggle_step(id, a).expect("check a");
+        temp.store.save(&domain).expect("save check");
+        let mut recovery = SaveRecovery::new();
+        drive(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            [
+                BoardIntent::SelectStep(0),
+                BoardIntent::MoveStepDown,
+                BoardIntent::MoveStepDown,
+            ],
+        );
+        assert_eq!(stored_step_texts(&temp, id), vec!["b", "c", "a"]);
+        assert_eq!(model.step_cursor(), Some(2));
+        let stored = temp.store.load().expect("reload");
+        let moved = &stored.get(id).expect("task").steps[2];
+        assert_eq!((moved.id, moved.done), (a, true));
+
+        let revision = stored.get(id).expect("task").revision;
+        drive(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            [BoardIntent::MoveStepDown],
+        );
+        assert_eq!(
+            temp.store
+                .load()
+                .expect("reload")
+                .get(id)
+                .expect("task")
+                .revision,
+            revision,
+            "moving past the end writes nothing"
+        );
+        drive(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            [BoardIntent::MoveStepUp],
+        );
+        assert_eq!(stored_step_texts(&temp, id), vec!["b", "a", "c"]);
+        assert_eq!(model.step_cursor(), Some(1));
+    }
+
+    /// #159: `:` opens the palette over the task page, which offers the step moves only
+    /// while a step is selected; running one moves and saves exactly like alt+↓.
+    #[test]
+    fn palette_moves_the_selected_step() {
+        let (temp, mut domain, mut model, id) = step_order_fixture("palette-move", &["a", "b"]);
+        let colon = KeyEvent::new(KeyCode::Char(':'), KeyModifiers::SHIFT);
+        assert_eq!(
+            map_key(model.input_mode(), colon),
+            Some(BoardIntent::OpenCommandPalette)
+        );
+        let labels = |model: &BoardModel| {
+            model
+                .available_commands()
+                .iter()
+                .map(|command| command.label)
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            !labels(&model).contains(&"move step down"),
+            "no step selected yet"
+        );
+        let mut recovery = SaveRecovery::new();
+        let mut intents = vec![BoardIntent::SelectStep(0), BoardIntent::OpenCommandPalette];
+        intents.extend(
+            "move step down"
+                .chars()
+                .map(BoardIntent::CommandQueryInsert),
+        );
+        drive(&temp, &mut domain, &mut model, &mut recovery, intents);
+        assert_eq!(
+            model.selected_command().map(|command| command.label),
+            Some("move step down")
+        );
+        drive(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            [BoardIntent::ConfirmCommand],
+        );
+        assert_eq!(stored_step_texts(&temp, id), vec!["b", "a"]);
+        assert_eq!(model.step_cursor(), Some(1));
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+    }
+
+    /// #159: during task editing a move skips a step staged for removal, which the page no
+    /// longer paints.
+    #[test]
+    fn move_step_skips_rows_staged_for_removal() {
+        let (temp, mut domain, mut model, id) = step_order_fixture("move-staged", &["a", "b", "c"]);
+        let mut recovery = SaveRecovery::new();
+        drive(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            [
+                BoardIntent::BeginEditTitle,
+                BoardIntent::CancelEdit,
+                BoardIntent::SelectStep(1),
+                BoardIntent::SoftDelete,
+                // The staged removal of b leaves the selector on c (source index 2).
+                BoardIntent::MoveStepUp,
+            ],
+        );
+        assert_eq!(stored_step_texts(&temp, id), vec!["c", "a", "b"]);
+        assert_eq!(model.step_cursor(), Some(0));
+    }
+
     /// fix2 B1: `a` on the real board must create a task through the exact intent
     /// route the running app takes — `handle_board_intent`, which decides the snapshot the
     /// same way the live loop does — not through `apply_intent` hand-fed a snapshot the

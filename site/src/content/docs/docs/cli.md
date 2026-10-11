@@ -33,7 +33,7 @@ Use `--json` on `add` or `list` for machine-readable output. Read the [exit cont
 | `tsk list` | Read tasks |
 | `tsk status` | Set task status |
 | `tsk edit` | Replace title or notes |
-| `tsk steps` | Add, toggle, rename, or remove steps |
+| `tsk steps` | Add, toggle, rename, move, or remove steps |
 | `tsk archive` / `tsk unarchive` | Hide or restore a task |
 | `tsk project archive` / `tsk project unarchive` | Hide or restore a project |
 | `tsk trash restore` | Restore a task from trash |
@@ -208,19 +208,23 @@ Output: `edited T12 <title>`. Repeating the same values is safe.
 ## steps
 
 ```text
-tsk steps <task> add <text> [--state-dir <dir>]
+tsk steps <task> add <text> [<place>] [--state-dir <dir>]
 tsk steps <task> toggle <step-short-id> [--state-dir <dir>]
 tsk steps <task> rename <step-short-id> <text> [--state-dir <dir>]
+tsk steps <task> move <step-short-id> <place> [--state-dir <dir>]
 tsk steps <task> remove <step-short-id> [--state-dir <dir>]
 ```
 
-Read short IDs with `tsk list T12 --json`. Full step UUIDs also work.
+`<place>` is one of `--before <step-short-id>`, `--after <step-short-id>`, `--first`, or `--last`. `add` appends without one; `move` requires one. Other actions refuse a place as a usage error (exit 2).
+
+Read short IDs with `tsk list T12 --json`. Full step UUIDs also work. A moved step keeps its ID, short ID, and checked state.
 
 | Action | Output prefix | Safe to repeat unchanged? |
 | --- | --- | --- |
 | Add | `added <short-id> <text>` | No; creates another step |
 | Toggle | `toggled <short-id> [x] <text>` | No; flips the value again |
 | Rename | `renamed <short-id> <text>` | Yes |
+| Move | `moved <short-id> to <position>/<count> <text>` | Yes; an unchanged position writes nothing |
 | Remove | `removed <short-id> <text>` | No; refuses after removal |
 
 Read back with `tsk list T12 --json` before retrying an uncertain result. [Using steps on the board](/docs/steps/).
@@ -353,7 +357,7 @@ After an uncertain add, inspect `tsk list --all --json`. Also check `--done` and
 | Command | Refusal codes |
 | --- | --- |
 | Add | `empty-title`, `invalid-title`, `invalid-thread`, `invalid-item`, `unknown-project`, `project-archived` |
-| Steps | `empty-step-text`, `invalid-step-text`, `unknown-task`, `soft-deleted-task`, `unknown-step`, `ambiguous-step` |
+| Steps | `empty-step-text`, `invalid-step-text`, `unknown-task`, `soft-deleted-task`, `unknown-step`, `ambiguous-step`, `same-step` |
 | Status | `unknown-task`, `soft-deleted-task` |
 | Edit | `unknown-task`, `soft-deleted-task`, `empty-title`, `invalid-title` |
 | Archive / unarchive | `unknown-task`, `soft-deleted-task` |

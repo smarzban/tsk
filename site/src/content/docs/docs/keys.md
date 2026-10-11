@@ -59,15 +59,19 @@ These keys apply in **view mode**:
 | Select steps and **+ step** | `Tab` / `Shift+Tab` |
 | Activate first step, then move among steps | `↓`, then `↑` / `↓` |
 | Toggle selected step | `Enter` |
-| Add step | `ctrl+a` |
+| Add step (below the selected step, else at the end) | `ctrl+a` |
+| Move selected step up or down | `alt+↑` / `alt+↓` |
 | Edit title or selected step | `ctrl+e` |
 | Change task status | Board status shortcuts above |
 | Mark/remove selected step; otherwise confirm/delete task | `ctrl+x` |
+| Command palette | `:` |
 | All shortcuts | `?` |
 | Close task | `Esc` |
 | Quit the board | `ctrl+q` |
 
 Click a step to select it. Click **+ step** to add. Field clicks become editable only after task editing starts.
+
+`alt+↑` / `alt+↓` is the one mutating shortcut without `ctrl`: macOS reserves `ctrl+arrows` for Mission Control. It also works during task editing while a step is selected and no field is open.
 
 ## Editing
 

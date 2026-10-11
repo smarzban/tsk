@@ -18,10 +18,11 @@ Canonical terms for this repo. No implementation detail.
 - **exactly once**: one `list` row per task id.
 - **closed global-flag set**: `--find-board-pane` and `--help`. Recognized only before the first positional argument. Nothing else selects a surface.
 - **stdin_is_tty seam**: injected boolean the headless parser uses instead of asking the live process whether stdin is a TTY.
-- **steps**: the flat ordered list of step entries attached to one task. Exactly one level deep; there is no nesting.
+- **steps**: the flat ordered list of step entries attached to one task. Exactly one level deep; there is no nesting (#159 decided against it). Order changes only by an explicit insert (`add --before/--after`, `ctrl+a` below the step cursor) or **move**.
 - **step**: a single step entry: stable identity, one line of text, a done flag. Nothing else.
 - **step done**: a step's checked state. Progress information only; it never implies, drives, or auto-applies a task status change.
 - **toggle**: flip one step's done flag. The only step state change that is not a text change.
+- **move**: change one step's position in its task's list. The step keeps its identity, short id and done flag; a move onto its own slot changes nothing.
 - **step cursor**: the task page's step-row focus. Inactive on page open; a bare ↓ activates it (again after any deactivation), ↑ from the first step deactivates it. While active, bare arrows move it and modifier-protected verbs act on it; a single click on a step row moves it.
 - **task number**: the store-global sequential integer assigned when a task is durably created. Spoken and typed as `12`. Unique across desk, every project, and every thread, including done and soft-deleted tasks. An address, not identity and not an ordering promise. Never reused.
 - **step short id**: an unambiguous prefix of a step's stable identity, used to address a step within one task from the CLI.

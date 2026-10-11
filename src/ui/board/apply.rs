@@ -148,6 +148,8 @@ pub fn board_intent_may_persist(intent: &BoardIntent) -> bool {
             | BoardIntent::ToggleBlock
             | BoardIntent::ToggleReview
             | BoardIntent::ToggleStep
+            | BoardIntent::MoveStepUp
+            | BoardIntent::MoveStepDown
             | BoardIntent::QuickAddSave
             | BoardIntent::QuickAddSaveNext
     )
@@ -916,8 +918,19 @@ fn apply_board_intent(
             // Ctrl+A and the trailing target both open the independent add row from a task
             // page or an expanded capture. Park a rename first, so Ctrl+A never drops an
             // existing staged rename while replacing its cursor with the add row.
+            // A selected stored step anchors the row: the new step lands directly below it.
+            let anchor = selected_step(domain, model).map(|(_, step_id)| step_id);
             if model.form.is_some() && model.park_rename_step_draft() {
                 open_step_editor(model, "", None);
+                if let Some(editor) = model
+                    .form
+                    .as_mut()
+                    .filter(|form| form.is_task())
+                    .and_then(|form| form.steps.editor.as_mut())
+                    .filter(|editor| editor.rename.is_none())
+                {
+                    editor.insert_after = anchor;
+                }
             }
             return Ok(IntentOutcome::None);
         }
@@ -1664,6 +1677,35 @@ fn apply_board_intent(
                 return Ok(IntentOutcome::None);
             };
             domain.toggle_step(task_id, step_id)?;
+        }
+        BoardIntent::MoveStepUp | BoardIntent::MoveStepDown => {
+            model.close_popup();
+            let Some((task_id, step_id)) = selected_step(domain, model) else {
+                return Ok(IntentOutcome::None);
+            };
+            let Some(form) = model.form.as_mut().filter(|form| form.is_task()) else {
+                return Ok(IntentOutcome::None);
+            };
+            let steps = &domain.get(task_id).expect("selected_step checked").steps;
+            let from = steps
+                .iter()
+                .position(|step| step.id == step_id)
+                .expect("selected_step checked");
+            // Swap with the nearest painted neighbour; staged removals are already gone from
+            // the page, so a move never seems to stall behind an invisible row.
+            let visible = |index: &usize| !form.steps.removals.contains(&steps[*index].id);
+            let target = if intent == BoardIntent::MoveStepUp {
+                (0..from).rev().find(visible)
+            } else {
+                (from + 1..steps.len()).find(visible)
+            };
+            let Some(target) = target else {
+                return Ok(IntentOutcome::None);
+            };
+            domain.move_step(task_id, step_id, target)?;
+            form.steps.cursor = Some(target);
+            form.steps.add_selected = false;
+            steps_scroll_to_cursor(form, target);
         }
         BoardIntent::PrimaryVerb => {
             model.close_popup();
@@ -2944,7 +2986,7 @@ fn normalize_optional_thread(value: &str) -> Result<Option<String>, ThreadError>
 fn confirm_edit(
     domain: &mut DomainState,
     model: &mut BoardModel,
-    extra_step: Option<&str>,
+    extra_step: Option<(&str, Option<Uuid>)>,
 ) -> Result<IntentOutcome, DomainError> {
     // The task bound at open, not `model.selected_id()`: refresh may move the visible pin, but
     // it never changes the form's immutable id or any of its three drafts.
@@ -2996,8 +3038,9 @@ fn confirm_edit(
         .map(|(step_id, text)| (*step_id, text.clone()))
         .collect::<Vec<_>>();
     let extra_steps = extra_step
-        .map(|text| vec![text.trim().to_string()])
+        .map(|(text, _)| vec![text.trim().to_string()])
         .unwrap_or_default();
+    let extra_after = extra_step.and_then(|(_, insert_after)| insert_after);
     domain.edit_with_step_changes(
         id,
         &title,
@@ -3007,6 +3050,7 @@ fn confirm_edit(
         &step_rename_list,
         &step_removals.iter().copied().collect::<Vec<_>>(),
         &extra_steps,
+        extra_after,
     )?;
 
     // Retain the complete form and mode until the persistence boundary confirms this exact
@@ -3455,6 +3499,7 @@ fn open_step_editor(model: &mut BoardModel, text: &str, rename: Option<Uuid>) {
             buffer,
             rename,
             pending_index: None,
+            insert_after: None,
             refusal: None,
         });
         model.input_mode = BoardInputMode::EditStep;
@@ -3482,6 +3527,7 @@ fn open_capture_pending_step_editor(model: &mut BoardModel, index: usize) {
             buffer: crate::ui::edit::seeded_draft(&text),
             rename: None,
             pending_index: Some(index),
+            insert_after: None,
             refusal: None,
         });
         model.input_mode = BoardInputMode::EditStep;
@@ -3529,12 +3575,17 @@ fn confirm_add_step(
             .editor
             .as_ref()
             .filter(|editor| editor.rename.is_none())
-            .map(|editor| editor.buffer.value().trim().to_string())
+            .map(|editor| {
+                (
+                    editor.buffer.value().trim().to_string(),
+                    editor.insert_after,
+                )
+            })
     });
-    let Some(text) = extra_step.filter(|text| !text.is_empty()) else {
+    let Some((text, insert_after)) = extra_step.filter(|(text, _)| !text.is_empty()) else {
         return confirm_step_editor(domain, model, false, true);
     };
-    confirm_edit(domain, model, Some(&text))
+    confirm_edit(domain, model, Some((&text, insert_after)))
 }
 
 fn stage_capture_step(
@@ -3567,6 +3618,7 @@ fn stage_capture_step(
             buffer: crate::ui::edit::seeded_draft(""),
             rename: None,
             pending_index: None,
+            insert_after: None,
             refusal: None,
         });
         model.input_mode = BoardInputMode::EditStep;
@@ -3612,7 +3664,17 @@ fn confirm_step_editor(
         editor.rename.is_none(),
         "existing-step drafts are staged by the task session"
     );
-    let touched = match domain.add_step(task_id, &text) {
+    let index = editor
+        .insert_after
+        .and_then(|anchor| {
+            domain
+                .get(task_id)?
+                .steps
+                .iter()
+                .position(|step| step.id == anchor)
+        })
+        .map_or(usize::MAX, |anchor| anchor + 1);
+    let touched = match domain.insert_step(task_id, &text, index) {
         Ok(step) => step,
         Err(DomainError::EmptyStepText) => {
             if let Some(editor) = model

@@ -578,3 +578,174 @@ fn steps_rename_refuses_empty_and_control_char_text_without_mutation() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Seed a task with steps `a`, `b`, `c` (and `b` checked) and return the store's step ids.
+fn seed_three_steps(dir: &std::path::Path) -> (Uuid, Vec<Uuid>) {
+    let mut state = DomainState::new();
+    let task = state
+        .create(
+            "order target",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("seed task");
+    let ids: Vec<Uuid> = ["a", "b", "c"]
+        .into_iter()
+        .map(|text| state.add_step(task, text).expect("seed step"))
+        .collect();
+    state.toggle_step(task, ids[1]).expect("check b");
+    TaskStore::new(dir).save(&state).expect("seed store");
+    (task, ids)
+}
+
+fn stored_texts(dir: &std::path::Path) -> Vec<String> {
+    TaskStore::new(dir).load().expect("reload store").tasks()[0]
+        .steps
+        .iter()
+        .map(|step| step.text.clone())
+        .collect()
+}
+
+fn run_steps(dir: &std::path::Path, task: Uuid, rest: &[&str]) -> tsk_tui::cli::CliOutput {
+    let mut args = steps_args(dir, task);
+    args.extend(rest.iter().map(|arg| arg.to_string()));
+    steps(&args)
+}
+
+#[test]
+fn steps_add_inserts_before_or_after_a_step() {
+    let dir = temp_state_dir("add-placed");
+    let (task, ids) = seed_three_steps(&dir);
+    let b = ids[1].to_string();
+
+    let before = run_steps(&dir, task, &["add", "before b", "--before", &b]);
+    assert_eq!(before.code, 0, "add --before: {}", before.stderr);
+    assert!(before.stdout.starts_with("added "), "{}", before.stdout);
+    let after = run_steps(&dir, task, &[&format!("--after={b}"), "add", "after b"]);
+    assert_eq!(after.code, 0, "add --after: {}", after.stderr);
+    let first = run_steps(&dir, task, &["add", "top", "--first"]);
+    assert_eq!(first.code, 0, "add --first: {}", first.stderr);
+    assert_eq!(
+        stored_texts(&dir),
+        vec!["top", "a", "before b", "b", "after b", "c"]
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn steps_move_keeps_identity_short_id_and_done() {
+    let dir = temp_state_dir("move");
+    let (task, ids) = seed_three_steps(&dir);
+    let list = || {
+        steps(&[
+            "tsk".into(),
+            "list".into(),
+            task.to_string(),
+            "--json".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+        ])
+    };
+    let before = step_lines(&list().stdout);
+    let b_short = before[1].short_id.clone();
+
+    let moved = run_steps(&dir, task, &["move", &b_short, "--first"]);
+    assert_eq!(moved.code, 0, "move --first: {}", moved.stderr);
+    assert_eq!(moved.stdout, format!("moved {b_short} to 1/3 b\n"));
+    let after = step_lines(&list().stdout);
+    assert_eq!(
+        after
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["b", "a", "c"]
+    );
+    assert_eq!(after[0].short_id, b_short, "the short id survives a move");
+    assert!(after[0].done, "the done flag survives a move");
+    let state = TaskStore::new(&dir).load().expect("reload store");
+    assert_eq!(state.tasks()[0].steps[0].id, ids[1], "same step identity");
+
+    let a = ids[0].to_string();
+    let c = ids[2].to_string();
+    let moved = run_steps(&dir, task, &["move", &b_short, "--after", &c]);
+    assert_eq!(moved.code, 0, "move --after: {}", moved.stderr);
+    assert_eq!(stored_texts(&dir), vec!["a", "c", "b"]);
+    let moved = run_steps(&dir, task, &["move", &c, "--before", &a]);
+    assert_eq!(moved.code, 0, "move --before: {}", moved.stderr);
+    assert_eq!(stored_texts(&dir), vec!["c", "a", "b"]);
+    let moved = run_steps(&dir, task, &["move", &c, "--last"]);
+    assert_eq!(moved.code, 0, "move --last: {}", moved.stderr);
+    assert_eq!(stored_texts(&dir), vec!["a", "b", "c"]);
+
+    // Already in place: exit 0 and nothing written.
+    let revision = TaskStore::new(&dir).load().expect("reload").tasks()[0].revision;
+    let again = run_steps(&dir, task, &["move", &c, "--after", &ids[1].to_string()]);
+    assert_eq!(again.code, 0, "no-op move: {}", again.stderr);
+    let c_short = &step_lines(&list().stdout)[2].short_id;
+    assert_eq!(again.stdout, format!("moved {c_short} to 3/3 c\n"));
+    assert_eq!(
+        TaskStore::new(&dir).load().expect("reload").tasks()[0].revision,
+        revision,
+        "a move onto its own slot persists nothing"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn steps_move_and_placed_add_refuse_without_mutation() {
+    let dir = temp_state_dir("move-refusal");
+    let (task, ids) = seed_three_steps(&dir);
+    let a = ids[0].to_string();
+
+    let same = run_steps(&dir, task, &["move", &a, "--before", &a]);
+    assert_eq!(same.code, 1);
+    assert_eq!(
+        same.stderr,
+        "tsk steps: same-step: a step cannot be placed relative to itself\n"
+    );
+    let unknown_anchor = run_steps(&dir, task, &["move", &a, "--after", "ffffffff"]);
+    assert_eq!(unknown_anchor.code, 1);
+    assert_eq!(
+        unknown_anchor.stderr,
+        format!("tsk steps: unknown-step: no step on {task} matches that id\n")
+    );
+    let unknown_step = run_steps(&dir, task, &["move", "ffffffff", "--first"]);
+    assert_eq!(unknown_step.code, 1);
+    assert!(unknown_step.stderr.contains("unknown-step"));
+    let unknown_add_anchor = run_steps(&dir, task, &["add", "x", "--before", "ffffffff"]);
+    assert_eq!(unknown_add_anchor.code, 1);
+    assert!(unknown_add_anchor.stderr.contains("unknown-step"));
+
+    let missing_place = run_steps(&dir, task, &["move", &a]);
+    assert_eq!(missing_place.code, 2);
+    assert!(missing_place
+        .stderr
+        .starts_with("tsk steps: move needs --before, --after, --first, or --last"));
+    let wrong_verb = run_steps(&dir, task, &["toggle", &a, "--first"]);
+    assert_eq!(wrong_verb.code, 2);
+
+    assert_eq!(stored_texts(&dir), vec!["a", "b", "c"]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn steps_move_resolves_ambiguous_anchor_as_a_refusal() {
+    let dir = temp_state_dir("move-ambiguous");
+    let (mut state, task) = state_with_shared_prefix_steps();
+    state.add_step(task, "third").expect("third step");
+    TaskStore::new(&dir).save(&state).expect("seed store");
+    let third = state.get(task).expect("task").steps[2].id.to_string();
+
+    let moved = run_steps(&dir, task, &["move", &third, "--before", "abcdef01"]);
+    assert_eq!(moved.code, 1);
+    assert!(moved.stderr.contains("ambiguous-step"), "{}", moved.stderr);
+    assert_eq!(
+        stored_texts(&dir),
+        vec!["shared one", "shared two", "third"]
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -565,6 +565,9 @@ pub(super) struct StepEditor {
     /// Expanded capture has no durable step ids yet, so an existing staged row is addressed by
     /// its stable draft index until the capture saves.
     pub(super) pending_index: Option<usize>,
+    /// A task-page add row lands directly below this stored step (`ctrl+a` with a step
+    /// selected); `None` appends. An id, not an index, so other writers cannot shift it.
+    pub(super) insert_after: Option<Uuid>,
     pub(super) refusal: Option<String>,
 }
 
@@ -2840,14 +2843,28 @@ impl BoardModel {
             self.input_mode = BoardInputMode::TaskPage;
         } else if pending.reopen {
             // The rapid-capture loop: the in-place row reopens empty for the next step, its
-            // mode never having left it.
+            // mode never having left it. A positioned row follows the step it just added, so
+            // consecutive steps keep their typed order and the selector rides along.
+            let anchored = form
+                .steps
+                .editor
+                .as_ref()
+                .is_some_and(|editor| editor.insert_after.is_some());
             form.steps.add_selected = false;
             form.steps.editor = Some(StepEditor {
                 buffer: seeded_draft(""),
                 rename: None,
                 pending_index: None,
+                insert_after: anchored.then_some(pending.step),
                 refusal: None,
             });
+            if anchored {
+                form.steps.cursor = self
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == task_id)
+                    .and_then(|task| task.steps.iter().position(|step| step.id == pending.step));
+            }
         } else {
             form.steps.editor = None;
             form.steps.cursor = self
