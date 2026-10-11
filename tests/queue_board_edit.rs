@@ -10,6 +10,7 @@ use ratatui::Terminal;
 use tsk_tui::domain::{DomainState, HumanStatus, ProvenanceOrigin, TaskScope};
 use tsk_tui::ui::board::{
     apply_intent, board_hit_map, draw_board, BoardInputMode, BoardModel, IntentOutcome,
+    SHIFT_ENTER_AS_CTRL_J_HINT,
 };
 use tsk_tui::ui::capture::CaptureField;
 use tsk_tui::ui::input::{map_board_form_key, map_key, BoardIntent};
@@ -1803,5 +1804,75 @@ fn tab_and_field_focus_on_a_read_only_task_page_stay_in_view_mode() {
             !model.task_session_dirty(),
             "{intent:?} started no edit session"
         );
+    }
+}
+
+fn ctrl_j() -> KeyEvent {
+    KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL)
+}
+
+/// #125: a terminal bound to send a bare line feed for Shift+Enter delivers Ctrl+J. Every
+/// form editor where Shift+Enter saves maps it to the hint, never to a save.
+#[test]
+fn ctrl_j_in_a_form_editor_maps_to_the_shift_enter_hint_not_a_save() {
+    for mode in [
+        BoardInputMode::EditTitle,
+        BoardInputMode::EditNotes,
+        BoardInputMode::EditStep,
+        BoardInputMode::EditThread,
+    ] {
+        assert_eq!(
+            map_key(mode, ctrl_j()),
+            Some(BoardIntent::ShiftEnterAsCtrlJ),
+            "{mode:?}"
+        );
+    }
+    for field in [
+        CaptureField::Title,
+        CaptureField::Notes,
+        CaptureField::Thread,
+        CaptureField::Scope,
+    ] {
+        assert_eq!(
+            map_board_form_key(field, false, ctrl_j()),
+            Some(BoardIntent::ShiftEnterAsCtrlJ),
+            "{field:?}"
+        );
+    }
+}
+
+/// #125: the hint paints on the status row while the editor keeps its mode and draft.
+#[test]
+fn ctrl_j_in_notes_paints_the_shift_enter_hint_and_keeps_the_draft() {
+    let mut domain = DomainState::new();
+    domain
+        .create(
+            "Task",
+            Some("draft".into()),
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginEditNotes, None).expect("open");
+    let intent = map_key(model.input_mode(), ctrl_j()).expect("ctrl+j maps");
+    let outcome = apply_intent(&mut domain, &mut model, intent, None).expect("hint");
+
+    assert_eq!(outcome, IntentOutcome::None);
+    assert_eq!(model.input_mode(), BoardInputMode::EditNotes);
+    assert_eq!(model.message(), Some(SHIFT_ENTER_AS_CTRL_J_HINT));
+    assert_eq!(
+        SHIFT_ENTER_AS_CTRL_J_HINT,
+        "Shift+Enter sent Ctrl+J: check terminal keys"
+    );
+    // 52 columns is a common split-pane width; the row must not clip the hint there.
+    for width in [52, 100] {
+        let painted = rendered_board(&model, width, 30);
+        assert!(
+            painted.contains(SHIFT_ENTER_AS_CTRL_J_HINT),
+            "missing hint at {width} columns:\n{painted}"
+        );
+        assert!(painted.contains("draft"), "draft lost:\n{painted}");
     }
 }
