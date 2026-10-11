@@ -3838,18 +3838,12 @@ fn cleanup_card(model: &mut BoardModel, id: uuid::Uuid, dirty: bool) {
         branch: "tsk/t1-mouse".into(),
         base: "origin/main".into(),
         dirty,
+        dirty_files: Vec::new(),
         branch_merged: true,
         base_available: true,
         warning: None,
         workspace_exists: true,
     }));
-}
-
-fn cleanup_option(hits: &QueueHitMap, index: usize) -> &QueueHit {
-    hits.regions
-        .iter()
-        .find(|hit| matches!(hit.target, QueueHitTarget::CleanupOption(i) if i == index))
-        .unwrap_or_else(|| panic!("cleanup footer entry {index} must be clickable"))
 }
 
 #[test]
@@ -3875,113 +3869,4 @@ fn cleanup_card_close_control_cancels_like_esc() {
             .expect("card chrome");
         assert_eq!(click(chrome, &model, &hits), None, "the border stays inert");
     }
-}
-
-#[test]
-fn cleanup_card_footer_choices_dispatch_like_their_keys() {
-    let (_domain, mut model, id) = board_with_task("cleanup footer", HumanStatus::Started);
-    cleanup_card(&mut model, id, false);
-    assert_eq!(model.input_mode(), BoardInputMode::CleanupConfirm);
-    let hits = board_hit_map(STANDARD, &model);
-    for (index, intent) in [
-        BoardIntent::ConfirmCleanup,
-        BoardIntent::KeepCleanup,
-        BoardIntent::CancelCleanup,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        assert_eq!(
-            click(cleanup_option(&hits, index), &model, &hits),
-            Some(intent)
-        );
-    }
-
-    // The dirty card has no `y`: its first entry is `n`.
-    let (_domain, mut model, id) = board_with_task("cleanup dirty", HumanStatus::Started);
-    cleanup_card(&mut model, id, true);
-    assert_eq!(model.input_mode(), BoardInputMode::CleanupDirtyConfirm);
-    let hits = board_hit_map(STANDARD, &model);
-    assert_eq!(
-        click(cleanup_option(&hits, 0), &model, &hits),
-        Some(BoardIntent::KeepCleanup)
-    );
-    assert_eq!(
-        click(cleanup_option(&hits, 1), &model, &hits),
-        Some(BoardIntent::CancelCleanup)
-    );
-    assert!(!hits
-        .regions
-        .iter()
-        .any(|hit| matches!(hit.target, QueueHitTarget::CleanupOption(2))));
-}
-
-/// A card whose task has an open pull request into its recorded base: the footer reads
-/// `y` · `m` · `n` · `esc`, and each click must run its own choice. `n` must never merge.
-#[test]
-fn a_cleanup_card_with_an_open_pr_maps_each_of_its_four_footer_clicks() {
-    use tsk_tui::dispatch::pr::{PrProbeResult, PrState};
-    use tsk_tui::dispatch::PullRequest;
-    let (_domain, mut model, id) = board_with_task("cleanup merge", HumanStatus::Started);
-    model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
-        merge_check: None,
-        check_failed: false,
-        pr: tsk_tui::ui::board::CleanupPr {
-            landed: Some(PrProbeResult {
-                lookup: Ok(Some(PullRequest {
-                    number: 7,
-                    url: String::new(),
-                    state: PrState::Open,
-                    head_oid: "abc".into(),
-                    base: "main".into(),
-                })),
-                tip: Some("abc".into()),
-            }),
-            ..Default::default()
-        },
-        unreachable_remote: None,
-        inspected: Some(tsk_tui::domain::Dispatch {
-            argv: vec!["agent".into()],
-            worktree: "/tmp/tsk-mouse-cleanup".into(),
-            branch: "tsk/t1-mouse".into(),
-            base: Some("origin/main".into()),
-            base_ref: Some("refs/remotes/origin/main".into()),
-            base_commit: None,
-            base_remote: Some("origin".into()),
-            herdr_workspace_id: "w1".into(),
-            at: std::time::SystemTime::UNIX_EPOCH,
-            cleaned: false,
-        }),
-        number: 1,
-        task_id: id,
-        worktree: "/tmp/tsk-mouse-cleanup".into(),
-        branch: "tsk/t1-mouse".into(),
-        base: "origin/main".into(),
-        dirty: false,
-        branch_merged: false,
-        base_available: true,
-        warning: None,
-        workspace_exists: true,
-    }));
-    assert!(model.cleanup_prompt().unwrap().can_merge_any());
-    let hits = board_hit_map(STANDARD, &model);
-    for (index, intent) in [
-        (0, BoardIntent::ConfirmCleanup),
-        (1, BoardIntent::MergeCleanup),
-        (2, BoardIntent::KeepCleanup),
-        (3, BoardIntent::CancelCleanup),
-    ] {
-        assert_eq!(
-            click(cleanup_option(&hits, index), &model, &hits),
-            Some(intent),
-            "footer entry {index}"
-        );
-    }
-    assert_eq!(
-        map_key(
-            BoardInputMode::CleanupConfirm,
-            KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE)
-        ),
-        Some(BoardIntent::MergeCleanup)
-    );
 }

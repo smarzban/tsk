@@ -290,15 +290,43 @@ pub fn merge_row(
         Ok(None) => return Err(MergeError::NotMergedYet("no pull request".into())),
         Err(error) => return Err(MergeError::NotMergedYet(error.message())),
     };
-    let remote_branch_left = record.base_remote.as_deref().and_then(|remote| {
-        host.remote_branch_exists(project, remote, &record.branch)
-            .ok()
-    });
+    let remote_branch_left = record
+        .base_remote
+        .as_deref()
+        .and_then(|remote| remote_branch_after_merge(host, project, remote, &record.branch));
     Ok(MergeOutcome {
         pr,
         method,
         remote_branch_left,
     })
+}
+
+/// Waits between remote-branch checks after a merge: GitHub deletes a merged PR's branch
+/// (`delete_branch_on_merge`) a moment after the merge answers, so one early look reads it
+/// as kept.
+const REMOTE_DELETE_WAITS: [Duration; 3] = [
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+    Duration::from_millis(1250),
+];
+
+/// Whether the merged PR's branch is still on `remote`: asked again over a short grace while
+/// it still is, so a branch GitHub deletes on merge reads as deleted. `None`: unknown.
+fn remote_branch_after_merge(
+    host: &mut impl DispatchHost,
+    project: &Path,
+    remote: &str,
+    branch: &str,
+) -> Option<bool> {
+    let mut left = host.remote_branch_exists(project, remote, branch).ok()?;
+    for wait in REMOTE_DELETE_WAITS {
+        if !left {
+            break;
+        }
+        host.pause(wait);
+        left = host.remote_branch_exists(project, remote, branch).ok()?;
+    }
+    Some(left)
 }
 
 /// A cleanup card's PR lookup, with the branch tip it was compared against.

@@ -1010,6 +1010,8 @@ pub struct QueueHitMap {
     pub help_max_scroll: Option<usize>,
     /// Furthest cleanup-card scroll the painted frame could show, when the card was up.
     pub cleanup_max_scroll: Option<usize>,
+    /// Where the cleanup card's option lines sit among its scrollable rows, when it was up.
+    pub cleanup_layout: Option<CleanupLayout>,
     /// Footer rectangle recorded by the painter, including any rows reserved for a bottom
     /// input. Mouse routing uses this instead of reconstructing a footer height.
     pub footer: Option<Rect>,
@@ -3988,8 +3990,23 @@ fn paint_page_form_dropdown(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CleanupCardLine {
     Text(String),
+    /// A section break: the first thing dropped when the card is taller than the frame.
     Blank,
-    Field { label: String, value: String },
+    Field {
+        label: String,
+        value: String,
+    },
+    /// One option: its key, then what it does, wrapped under the text. `index` is its place
+    /// in the card's option list, and the line is that option's mouse target.
+    Option {
+        index: usize,
+        key: &'static str,
+        text: String,
+        bold: bool,
+        selected: bool,
+    },
+    /// The dim, right-aligned way out (`esc cancel`): the cancel target.
+    Esc(String),
 }
 
 /// A cleanup card's title at three lengths. The question it asks (the counts, on a bulk card)
@@ -4003,25 +4020,12 @@ pub struct CleanupTitle {
     pub question: String,
 }
 
-/// Which choices a cleanup card offers.
+/// Which choices a confirmation card's footer offers. The cleanup card has no footer: its
+/// options and its `esc` line are body lines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CleanupFooter {
-    /// One cursor task that can be cleaned.
-    Single,
-    /// A marked set with at least one worktree that can be cleaned.
-    Bulk,
-    /// [`Self::Single`] whose task has an open pull request: `m` merges it first.
-    SingleMerge,
-    /// [`Self::Bulk`] with at least one open pull request: `m` merges each first.
-    BulkMerge,
-    /// `m` is merging: no choice until gh answers.
-    Merging,
-    /// Nothing on the card can be cleaned: done-without-cleanup or cancel.
-    Dirty,
-    /// `y` confirmed and the run is working: Esc hides the card, cleanup continues.
-    Running,
-    /// The run finished with something kept: Esc closes the card.
-    Finished,
+    /// The cleanup card: no footer.
+    Options,
     /// The bulk start card launching this many tasks (none: it only starts).
     Dispatch(usize),
     /// The relaunch card for one task whose agent is gone.
@@ -4031,22 +4035,12 @@ pub enum CleanupFooter {
 }
 
 impl CleanupFooter {
-    fn legend(self, short: bool) -> &'static [VerbEntry<'static>] {
-        match (self, short) {
-            (Self::Single, false) => CLEANUP_FOOTER,
-            (Self::Bulk, false) => BULK_CLEANUP_FOOTER,
-            (Self::Dirty, false) => DIRTY_CLEANUP_FOOTER,
-            (Self::Single | Self::Bulk, true) => SHORT_CLEANUP_FOOTER,
-            (Self::SingleMerge, false) => MERGE_CLEANUP_FOOTER,
-            (Self::BulkMerge, false) => BULK_MERGE_CLEANUP_FOOTER,
-            (Self::SingleMerge | Self::BulkMerge, true) => SHORT_MERGE_CLEANUP_FOOTER,
-            (Self::Merging, _) => &[],
-            (Self::Dirty, true) => SHORT_DIRTY_CLEANUP_FOOTER,
-            (Self::Running, _) => RUNNING_CLEANUP_FOOTER,
-            (Self::Finished, _) => FINISHED_CLEANUP_FOOTER,
-            (Self::Dispatch(_), _) => SHORT_DISPATCH_FOOTER,
-            (Self::Relaunch, _) => RELAUNCH_FOOTER,
-            (Self::StartAnyway, _) => START_ANYWAY_FOOTER,
+    fn legend(self) -> &'static [VerbEntry<'static>] {
+        match self {
+            Self::Options => &[],
+            Self::Dispatch(_) => SHORT_DISPATCH_FOOTER,
+            Self::Relaunch => RELAUNCH_FOOTER,
+            Self::StartAnyway => START_ANYWAY_FOOTER,
         }
     }
 
@@ -4060,15 +4054,15 @@ impl CleanupFooter {
     }
 }
 
-pub(crate) const RUNNING_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[VerbEntry {
-    key: "esc",
-    label: "hide, keep cleaning",
-}];
+/// Where a painted cleanup card's option lines sit among its scrollable rows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CleanupLayout {
+    /// Body rows the frame shows at once.
+    pub capacity: usize,
+    /// Each option's first row and one past its last, in option order.
+    pub options: Vec<(usize, usize)>,
+}
 
-pub(crate) const FINISHED_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[VerbEntry {
-    key: "esc",
-    label: "close",
-}];
 const RELAUNCH_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "y",
@@ -4106,130 +4100,6 @@ const SHORT_DISPATCH_FOOTER: &[VerbEntry<'static>] = &[
     },
 ];
 
-pub(crate) const DIRTY_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[
-    VerbEntry {
-        key: "n",
-        label: "mark done, keep everything",
-    },
-    VerbEntry {
-        key: "esc",
-        label: "cancel",
-    },
-];
-
-const SHORT_DIRTY_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[
-    VerbEntry {
-        key: "n",
-        label: "done, keep all",
-    },
-    VerbEntry {
-        key: "esc",
-        label: "cancel",
-    },
-];
-
-pub(crate) const CLEANUP_FOOTER: &[VerbEntry<'static>] = &[
-    VerbEntry {
-        key: "y",
-        label: "done + clean up",
-    },
-    VerbEntry {
-        key: "n",
-        label: "done only",
-    },
-    VerbEntry {
-        key: "esc",
-        label: "cancel",
-    },
-];
-
-pub(crate) const MERGE_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[
-    VerbEntry {
-        key: "y",
-        label: "done + clean up",
-    },
-    VerbEntry {
-        key: "m",
-        label: "merge PR · done · clean",
-    },
-    VerbEntry {
-        key: "n",
-        label: "done only",
-    },
-    VerbEntry {
-        key: "esc",
-        label: "cancel",
-    },
-];
-
-pub(crate) const BULK_MERGE_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[
-    VerbEntry {
-        key: "y",
-        label: "done all + clean up",
-    },
-    VerbEntry {
-        key: "m",
-        label: "merge PRs · done · clean",
-    },
-    VerbEntry {
-        key: "n",
-        label: "done only",
-    },
-    VerbEntry {
-        key: "esc",
-        label: "cancel",
-    },
-];
-
-const SHORT_MERGE_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[
-    VerbEntry {
-        key: "y",
-        label: "clean up",
-    },
-    VerbEntry {
-        key: "m",
-        label: "merge",
-    },
-    VerbEntry {
-        key: "n",
-        label: "done",
-    },
-    VerbEntry {
-        key: "esc",
-        label: "cancel",
-    },
-];
-
-pub(crate) const BULK_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[
-    VerbEntry {
-        key: "y",
-        label: "done all + clean up",
-    },
-    VerbEntry {
-        key: "n",
-        label: "done only",
-    },
-    VerbEntry {
-        key: "esc",
-        label: "cancel",
-    },
-];
-
-const SHORT_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[
-    VerbEntry {
-        key: "y",
-        label: "clean up",
-    },
-    VerbEntry {
-        key: "n",
-        label: "done",
-    },
-    VerbEntry {
-        key: "esc",
-        label: "cancel",
-    },
-];
-
 struct CleanupCard<'a> {
     title: &'a CleanupTitle,
     lines: &'a [CleanupCardLine],
@@ -4247,10 +4117,34 @@ fn wrapped_rows(text: &str, width: usize) -> Vec<String> {
         .collect()
 }
 
+/// One laid-out row of a cleanup card body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CleanupCardRow {
+    pub text: String,
+    pub bold: bool,
+    pub dim: bool,
+    /// The option this row belongs to (any of its wrapped rows).
+    pub option: Option<usize>,
+    /// The `esc` line.
+    pub esc: bool,
+}
+
+impl CleanupCardRow {
+    fn plain(text: String) -> Self {
+        Self {
+            text,
+            bold: false,
+            dim: false,
+            option: None,
+            esc: false,
+        }
+    }
+}
+
 /// Lay a cleanup card's body out at `width` cells: labels in one fixed column, values wrapped
 /// with a hanging indent, or stacked label then indented value when the column leaves too
-/// little room. Never truncates.
-pub(crate) fn cleanup_card_rows(lines: &[CleanupCardLine], width: usize) -> Vec<String> {
+/// little room; options wrapped under their text column. Never truncates.
+pub(crate) fn cleanup_card_layout(lines: &[CleanupCardLine], width: usize) -> Vec<CleanupCardRow> {
     let label_w = lines
         .iter()
         .filter_map(|line| match line {
@@ -4261,33 +4155,84 @@ pub(crate) fn cleanup_card_rows(lines: &[CleanupCardLine], width: usize) -> Vec<
         .unwrap_or(0);
     let stacked = width < label_w + 2 + CLEANUP_MIN_VALUE_WIDTH;
     let mut rows = Vec::new();
+    let plain = |rows: &mut Vec<CleanupCardRow>, texts: Vec<String>| {
+        rows.extend(texts.into_iter().map(CleanupCardRow::plain));
+    };
     for line in lines {
         match line {
-            CleanupCardLine::Blank => rows.push(String::new()),
-            CleanupCardLine::Text(text) => rows.extend(wrapped_rows(text, width)),
+            CleanupCardLine::Blank => rows.push(CleanupCardRow::plain(String::new())),
+            CleanupCardLine::Text(text) => plain(&mut rows, wrapped_rows(text, width)),
             CleanupCardLine::Field { label, value } if stacked => {
                 if !label.is_empty() {
-                    rows.extend(wrapped_rows(label, width));
+                    plain(&mut rows, wrapped_rows(label, width));
                 }
                 let indent = 2.min(width.saturating_sub(1));
-                rows.extend(
+                plain(
+                    &mut rows,
                     wrapped_rows(value, width - indent)
                         .into_iter()
-                        .map(|row| format!("{}{row}", " ".repeat(indent))),
+                        .map(|row| format!("{}{row}", " ".repeat(indent)))
+                        .collect(),
                 );
             }
             CleanupCardLine::Field { label, value } => {
                 let gutter = " ".repeat(label_w + 2);
-                for (index, row) in wrapped_rows(value, width - label_w - 2)
+                let texts = wrapped_rows(value, width - label_w - 2)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, row)| {
+                        if index == 0 {
+                            let pad = " ".repeat(label_w - display_width(label));
+                            format!("{label}{pad}  {row}")
+                        } else {
+                            format!("{gutter}{row}")
+                        }
+                    })
+                    .collect();
+                plain(&mut rows, texts);
+            }
+            CleanupCardLine::Option {
+                index,
+                key,
+                text,
+                bold,
+                selected,
+            } => {
+                let marker = if *selected { "▸ " } else { "  " };
+                let column = (display_width(marker) + display_width(key) + 2).min(width / 2);
+                let gutter = " ".repeat(column);
+                for (row_index, row) in wrapped_rows(text, width.saturating_sub(column))
                     .into_iter()
                     .enumerate()
                 {
-                    if index == 0 {
-                        let pad = " ".repeat(label_w - display_width(label));
-                        rows.push(format!("{label}{pad}  {row}"));
+                    let text = if row_index == 0 {
+                        format!("{marker}{key}  {row}")
                     } else {
-                        rows.push(format!("{gutter}{row}"));
-                    }
+                        format!("{gutter}{row}")
+                    };
+                    rows.push(CleanupCardRow {
+                        text,
+                        bold: *bold,
+                        dim: false,
+                        option: Some(*index),
+                        esc: false,
+                    });
+                }
+            }
+            CleanupCardLine::Esc(label) => {
+                let pad = width.saturating_sub(display_width(label));
+                for (row_index, row) in wrapped_rows(label, width).into_iter().enumerate() {
+                    rows.push(CleanupCardRow {
+                        text: if row_index == 0 {
+                            format!("{}{row}", " ".repeat(pad))
+                        } else {
+                            row
+                        },
+                        bold: false,
+                        dim: true,
+                        option: None,
+                        esc: true,
+                    });
                 }
             }
         }
@@ -4320,19 +4265,15 @@ fn paint_cleanup_card(
     let inner = usize::from(card_w.saturating_sub(2));
     let counted = card.footer.counted_label();
     let legend: Vec<VerbEntry<'_>> = {
-        let full = match counted.as_deref() {
-            // The counted entry replaces the first (`y`) label of the short legend.
-            Some(label) => {
-                let mut entries = card.footer.legend(true).to_vec();
-                entries[0].label = label;
-                entries
-            }
-            None => card.footer.legend(false).to_vec(),
-        };
-        if legend_width(&full) <= inner {
-            full
+        let mut entries = card.footer.legend().to_vec();
+        // The counted entry replaces the first (`y`) label.
+        if let (Some(label), Some(first)) = (counted.as_deref(), entries.first_mut()) {
+            first.label = label;
+        }
+        if legend_width(&entries) <= inner {
+            entries
         } else {
-            card.footer.legend(true).to_vec()
+            card.footer.legend().to_vec()
         }
     };
     let legend = legend.as_slice();
@@ -4346,7 +4287,8 @@ fn paint_cleanup_card(
     } else {
         (
             card.title.bare.as_str(),
-            Some(CleanupCardLine::Text(card.title.question.clone())),
+            Some(CleanupCardLine::Text(card.title.question.clone()))
+                .filter(|_| !card.title.question.is_empty()),
         )
     };
     let wrap_width = usize::from(card_w.saturating_sub(2 + 2 * pad).max(1));
@@ -4354,16 +4296,38 @@ fn paint_cleanup_card(
         .into_iter()
         .chain(card.lines.iter().cloned())
         .collect();
-    let rows = cleanup_card_rows(&lines, wrap_width);
     let capacity = usize::from(
         bounds
             .height
             .saturating_sub(modal_chrome_rows(geo.tier, !legend.is_empty())),
     );
+    // A card taller than the frame drops its section breaks before it scrolls.
+    let mut rows = cleanup_card_layout(&lines, wrap_width);
+    if rows.len() > capacity {
+        let packed: Vec<CleanupCardLine> = lines
+            .iter()
+            .filter(|line| **line != CleanupCardLine::Blank)
+            .cloned()
+            .collect();
+        rows = cleanup_card_layout(&packed, wrap_width);
+    }
     let max_scroll = rows.len().saturating_sub(capacity);
     hits.cleanup_max_scroll = Some(max_scroll);
+    let mut options: Vec<(usize, usize)> = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        let Some(option) = row.option else {
+            continue;
+        };
+        if options.len() <= option {
+            options.resize(option + 1, (index, index));
+            options[option] = (index, index + 1);
+        } else {
+            options[option].1 = index + 1;
+        }
+    }
+    hits.cleanup_layout = Some(CleanupLayout { capacity, options });
     let scroll = card.scroll.min(max_scroll);
-    let window: Vec<&String> = rows.iter().skip(scroll).take(capacity).collect();
+    let window: Vec<&CleanupCardRow> = rows.iter().skip(scroll).take(capacity).collect();
     let title =
         titled_with_scroll_marker(base_title, scroll > 0, scroll + window.len() < rows.len());
     let content = paint_modal_card(
@@ -4382,12 +4346,37 @@ fn paint_cleanup_card(
         hits,
     );
     for (row, line) in window.iter().enumerate().take(content.height as usize) {
+        let style = if line.bold {
+            style_bold()
+        } else if line.dim {
+            style_dim()
+        } else {
+            style_plain()
+        };
+        let area = Rect::new(content.x, content.y + row as u16, content.width, 1);
         put_line_at(
             frame,
             surface,
-            Rect::new(content.x, content.y + row as u16, content.width, 1),
-            paint_bounded_line(line, content.width, style_plain()),
+            area,
+            paint_bounded_line(&line.text, content.width, style),
         );
+        if let Some(option) = line.option {
+            hits.push(QueueHitTarget::CleanupOption(option), area);
+        } else if line.esc {
+            let label = line.text.trim_start();
+            let width = u16::try_from(display_width(label))
+                .unwrap_or(u16::MAX)
+                .min(content.width);
+            hits.push(
+                QueueHitTarget::ModalClose,
+                Rect::new(
+                    content.x + content.width.saturating_sub(width),
+                    area.y,
+                    width,
+                    1,
+                ),
+            );
+        }
     }
 }
 

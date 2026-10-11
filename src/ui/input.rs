@@ -340,6 +340,14 @@ pub enum BoardIntent {
     /// Scroll a cleanup card whose rows outgrow the frame.
     CleanupScrollUp,
     CleanupScrollDown,
+    /// Cleanup card `↑`/`↓`: move the option cursor, stopping at the ends.
+    CleanupSelectUp,
+    CleanupSelectDown,
+    /// Cleanup card `Enter`: run the option under the cursor.
+    CleanupRunSelected,
+    /// A click on a cleanup card's option line (its index): select it, or run it on a double
+    /// click.
+    CleanupClickOption(usize),
     /// `ctrl+b` — block with the block card, or unblock a blocked task to ready.
     ToggleBlock,
     /// Block card: Enter blocks (or saves an edit), Esc cancels, Tab/Shift+Tab move fields.
@@ -1479,7 +1487,13 @@ pub fn map_key(mode: BoardInputMode, key: KeyEvent) -> Option<BoardIntent> {
         BoardInputMode::SaveRecovery => map_save_recovery(key),
         BoardInputMode::LaunchCard => map_launch_card(key),
         BoardInputMode::CleanupConfirm => map_cleanup_confirm(key),
-        BoardInputMode::CleanupDirtyConfirm => map_cleanup_dirty_confirm(key),
+        // Nothing on the card can be cleaned or merged: `n` and the cursor only.
+        BoardInputMode::CleanupDirtyConfirm => map_cleanup_confirm(key).filter(|intent| {
+            !matches!(
+                intent,
+                BoardIntent::ConfirmCleanup | BoardIntent::MergeCleanup
+            )
+        }),
         BoardInputMode::DispatchConfirm => map_dispatch_confirm(key),
         BoardInputMode::Palette => map_palette(key),
         BoardInputMode::Help => map_help(key),
@@ -2090,6 +2104,10 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::StartWithoutRelaunch
         | BoardIntent::CleanupScrollUp
         | BoardIntent::CleanupScrollDown
+        | BoardIntent::CleanupSelectUp
+        | BoardIntent::CleanupSelectDown
+        | BoardIntent::CleanupRunSelected
+        | BoardIntent::CleanupClickOption(_)
         | BoardIntent::ToggleBlock
         | BoardIntent::BlockCardConfirm
         | BoardIntent::BlockCardCancel
@@ -2311,29 +2329,8 @@ fn map_reply_edit(key: KeyEvent) -> Option<BoardIntent> {
     }
 }
 
-/// Cleanup card with nothing cleanable: no `y`, and no `Enter` default.
-fn map_cleanup_dirty_confirm(key: KeyEvent) -> Option<BoardIntent> {
-    if key
-        .modifiers
-        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
-    {
-        return None;
-    }
-    match key.code {
-        KeyCode::Char('n') => Some(BoardIntent::KeepCleanup),
-        KeyCode::Esc => Some(BoardIntent::CancelCleanup),
-        code => map_cleanup_scroll(code),
-    }
-}
-
-fn map_cleanup_scroll(code: KeyCode) -> Option<BoardIntent> {
-    match code {
-        KeyCode::Up | KeyCode::PageUp => Some(BoardIntent::CleanupScrollUp),
-        KeyCode::Down | KeyCode::PageDown => Some(BoardIntent::CleanupScrollDown),
-        _ => None,
-    }
-}
-
+/// Cleanup card: `m`/`y`/`n` run their option, `↑`/`↓` move the option cursor and `Enter`
+/// runs it, page keys scroll. Which keys act is the card's to say (`CleanupPrompt::accepts`).
 fn map_cleanup_confirm(key: KeyEvent) -> Option<BoardIntent> {
     if key
         .modifiers
@@ -2346,7 +2343,20 @@ fn map_cleanup_confirm(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Char('n') => Some(BoardIntent::KeepCleanup),
         KeyCode::Char('m') => Some(BoardIntent::MergeCleanup),
         KeyCode::Esc => Some(BoardIntent::CancelCleanup),
-        code => map_cleanup_scroll(code),
+        KeyCode::Up => Some(BoardIntent::CleanupSelectUp),
+        KeyCode::Down => Some(BoardIntent::CleanupSelectDown),
+        KeyCode::Enter => Some(BoardIntent::CleanupRunSelected),
+        KeyCode::PageUp => Some(BoardIntent::CleanupScrollUp),
+        KeyCode::PageDown => Some(BoardIntent::CleanupScrollDown),
+        _ => None,
+    }
+}
+
+fn map_cleanup_scroll(code: KeyCode) -> Option<BoardIntent> {
+    match code {
+        KeyCode::Up | KeyCode::PageUp => Some(BoardIntent::CleanupScrollUp),
+        KeyCode::Down | KeyCode::PageDown => Some(BoardIntent::CleanupScrollDown),
+        _ => None,
     }
 }
 

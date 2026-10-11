@@ -29,6 +29,7 @@ use crate::ui::terminal_text;
 use crate::ui::text_select::TextSelection;
 use crate::ui::tier::{FocusedSurface, WideStage};
 
+use super::cleanup_card::CleanupChoice;
 use super::commands::CommandSurface;
 
 /// Visible board title. Also the herdr pane title.
@@ -1035,6 +1036,8 @@ pub struct BoardModel {
     pub(super) save_recovery_proxy: bool,
     /// Furthest cleanup-card scroll the last painted card could show (renderer-recorded).
     pub(super) cleanup_max_scroll: Cell<usize>,
+    /// The painted cleanup card's option rows, so `↑`/`↓` scroll the selection into view.
+    pub(super) cleanup_layout: std::cell::RefCell<crate::ui::render::CleanupLayout>,
     /// Underlying surface to restore after Help closes.
     pub(super) help_return_mode: BoardInputMode,
     /// Underlying board mode to restore after the search input closes or pins.
@@ -1178,6 +1181,8 @@ pub struct CleanupRow {
     pub branch: String,
     pub base: String,
     pub dirty: bool,
+    /// The uncommitted paths, for the card to name the first few.
+    pub dirty_files: Vec<String>,
     pub branch_merged: bool,
     pub workspace_exists: bool,
     pub warning: Option<String>,
@@ -1608,16 +1613,41 @@ pub struct CleanupPrompt {
     pub merging: Option<(crate::dispatch::pr::MergeJob, Vec<Uuid>)>,
     /// Why `m` merged nothing before it started, such as an invalid `[merge]` setting.
     pub merge_note: Option<String>,
+    /// `[merge] method`, for the `m` line's verb (`squash-merge PR #7`).
+    pub method: crate::agents::MergeMethod,
+    /// The option under the `▸` cursor; `None` rests on the card's likely option.
+    pub selected: Option<CleanupChoice>,
+    /// When the card opened: an `Enter` this soon after is the tail of a double tap.
+    pub opened_at: Instant,
+    /// The last single click on an option line, for its double click.
+    pub option_click: Option<(Instant, CleanupChoice)>,
+    /// `m` went nothing on: one line per task saying why it is unchanged. The card then only
+    /// closes.
+    pub settled: Option<Vec<(String, String)>>,
 }
 
 impl CleanupPrompt {
     pub fn single(row: CleanupRow) -> Self {
+        Self::new(vec![row], None)
+    }
+
+    /// The card over a marked set.
+    pub fn bulk(rows: Vec<CleanupRow>, bulk: BulkCleanup) -> Self {
+        Self::new(rows, Some(bulk))
+    }
+
+    fn new(rows: Vec<CleanupRow>, bulk: Option<BulkCleanup>) -> Self {
         Self {
-            rows: vec![row],
-            bulk: None,
+            rows,
+            bulk,
             scroll: 0,
             merging: None,
             merge_note: None,
+            method: crate::agents::MergeMethod::default(),
+            selected: None,
+            opened_at: Instant::now(),
+            option_click: None,
+            settled: None,
         }
     }
 
@@ -1740,14 +1770,33 @@ pub struct CleanupRun {
     pub plan: Vec<crate::dispatch::CleanupPlanRow>,
     pub start_deadline: Instant,
     pub started: bool,
-    /// `m`: each merged task and its PR (`T12`, `PR #7 (squash)`), with any remote branch
-    /// the merge left.
-    pub merged: Vec<(String, String)>,
-    /// `m`: merged PRs whose remote branch the merge left in place (tsk never deletes it).
-    pub remote_kept: usize,
-    /// `m`: tasks it did not merge, with why (gh's reason, or why they were no candidate,
-    /// such as `no pull request`). They stayed as they were.
+    /// `m`: each merged task, its PR, and what became of the remote branch.
+    pub merged: Vec<MergedPr>,
+    /// Tasks the card left exactly as they were, with why (gh's reason, uncommitted files,
+    /// not merged under `m`).
     pub unmerged: Vec<(String, String)>,
+}
+
+/// One pull request a cleanup card's `m` merged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergedPr {
+    /// `T12`.
+    pub identifier: String,
+    /// `PR #7 (squash)`.
+    pub pr: String,
+    /// Whether the PR's branch was still on the remote after the merge; `None`: unknown.
+    pub remote_left: Option<bool>,
+}
+
+impl MergedPr {
+    /// What became of the remote branch, when known. tsk never deletes it.
+    pub fn remote_note(&self) -> Option<&'static str> {
+        match self.remote_left {
+            Some(true) => Some("remote branch kept"),
+            Some(false) => Some("remote branch deleted by GitHub"),
+            None => None,
+        }
+    }
 }
 
 impl CleanupRun {
@@ -1790,36 +1839,75 @@ impl CleanupRun {
         format!("cleaning {} of {total}…", (landed + 1).min(total.max(1)))
     }
 
+    /// The merge `m` made for a task, if any.
+    pub fn merged_for(&self, identifier: &str) -> Option<&MergedPr> {
+        self.merged
+            .iter()
+            .find(|merged| merged.identifier == identifier)
+    }
+
+    /// One task's outcome after `Done T7 · ` or `T7  `: what merged, what was cleaned, what
+    /// stayed. `None` while its row still works.
+    pub fn row_outcome(&self, row: &CleanupRunRow) -> Option<String> {
+        let identifier = format!("T{}", row.number);
+        let merged = self.merged_for(&identifier);
+        let mut parts = Vec::new();
+        if let Some(merged) = merged {
+            parts.push(format!("merged {}", merged.pr));
+        }
+        match &row.state {
+            CleanupRowState::Cleaned { branch_kept } => {
+                if self.bulk.is_some() {
+                    parts.push("done".into());
+                }
+                parts.push("cleaned".into());
+                if let Some((short, _)) = branch_kept {
+                    parts.push(format!("branch kept ({short})"));
+                }
+            }
+            CleanupRowState::Kept { full, .. } => {
+                if self.bulk.is_some() {
+                    parts.push("done".into());
+                }
+                parts.push(format!("cleanup refused: {full}"));
+            }
+            CleanupRowState::Checking | CleanupRowState::Queued | CleanupRowState::Removing => {
+                return None
+            }
+        }
+        if let Some(note) = merged.and_then(MergedPr::remote_note) {
+            parts.push(note.into());
+        }
+        Some(parts.join(" · "))
+    }
+
     /// The status-row outcome: counts, naming only the tasks that kept something. The bool
     /// is true when nothing was kept, so the line may expire on its own.
     pub fn summary(&self) -> (String, bool) {
         let (text, clean) = self.cleanup_summary();
-        if self.merged.is_empty() && self.unmerged.is_empty() {
+        let clean = clean && self.unmerged.is_empty();
+        if self.bulk.is_none() {
             return (text, clean);
         }
-        let mut parts = vec![text];
-        match (self.bulk, self.merged.as_slice()) {
-            (_, []) => {}
-            (None, [(_, detail)]) => parts.push(format!("merged {detail}")),
-            (_, merged) => {
-                parts.push(format!("merged {}", merged.len()));
-                match self.remote_kept {
-                    0 => {}
-                    1 => parts.push("1 remote branch kept".into()),
-                    kept => parts.push(format!("{kept} remote branches kept")),
-                }
-            }
+        let mut parts = Vec::new();
+        if !self.merged.is_empty() {
+            parts.push(format!("merged {}", self.merged.len()));
+        }
+        parts.push(text);
+        match self
+            .merged
+            .iter()
+            .filter(|merged| merged.remote_left == Some(true))
+            .count()
+        {
+            0 => {}
+            1 => parts.push("1 remote branch kept".into()),
+            kept => parts.push(format!("{kept} remote branches kept")),
         }
         if !self.unmerged.is_empty() {
-            let named = self
-                .unmerged
-                .iter()
-                .map(|(identifier, _)| identifier.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            parts.push(format!("not merged {named}"));
+            parts.push(format!("unchanged {}", self.unmerged.len()));
         }
-        (parts.join(" · "), clean && self.unmerged.is_empty())
+        (parts.join(" · "), clean)
     }
 
     fn cleanup_summary(&self) -> (String, bool) {
@@ -1829,18 +1917,13 @@ impl CleanupRun {
                 return ("done".into(), true);
             };
             let text = match &row.state {
-                CleanupRowState::Cleaned { branch_kept: None } => {
-                    format!("done T{} · cleaned", row.number)
-                }
-                CleanupRowState::Cleaned {
-                    branch_kept: Some((short, _)),
-                } => format!("done T{} · cleaned · branch kept ({short})", row.number),
                 CleanupRowState::Kept { short, .. } => {
                     format!("done T{} · kept ({short})", row.number)
                 }
-                CleanupRowState::Checking | CleanupRowState::Queued | CleanupRowState::Removing => {
-                    format!("done T{}", row.number)
-                }
+                _ => match self.row_outcome(row) {
+                    Some(outcome) => format!("done T{} · {outcome}", row.number),
+                    None => format!("done T{}", row.number),
+                },
             };
             return (text, clean);
         };
@@ -1971,6 +2054,7 @@ impl BoardModel {
             help_scroll: 0,
             help_max_scroll: Cell::new(usize::MAX),
             cleanup_max_scroll: Cell::new(usize::MAX),
+            cleanup_layout: std::cell::RefCell::default(),
             save_recovery_proxy: false,
             help_return_mode: BoardInputMode::Normal,
             search_return_mode: BoardInputMode::Normal,
@@ -2070,6 +2154,7 @@ impl BoardModel {
             self.clear_marks();
         }
         self.cleanup_max_scroll.set(usize::MAX);
+        self.cleanup_layout.take();
         self.close_help();
         self.close_command_surface();
         self.cleanup_prompt = Some(prompt);
@@ -2483,6 +2568,36 @@ impl BoardModel {
     }
 
     /// Scroll the cleanup or bulk dispatch card one row; the painter records how far it may go.
+    /// Cleanup card `↑`/`↓`: move the option cursor (stopping at the ends) and scroll its
+    /// line into view. A card without options (a run, a check still running) scrolls instead.
+    pub fn step_cleanup_selection(&mut self, down: bool) {
+        let running = self.cleanup_running();
+        let index = match self.cleanup_prompt.as_mut() {
+            Some(prompt) if !running => prompt.step_selection(down),
+            _ => None,
+        };
+        let Some(index) = index else {
+            self.scroll_cleanup(down);
+            return;
+        };
+        let layout = self.cleanup_layout.borrow();
+        let Some(&(start, end)) = layout.options.get(index) else {
+            return;
+        };
+        let max_scroll = self.cleanup_max_scroll.get();
+        let Some(prompt) = self.cleanup_prompt.as_mut() else {
+            return;
+        };
+        let scroll = prompt.scroll.min(max_scroll);
+        prompt.scroll = if start < scroll {
+            start
+        } else if layout.capacity > 0 && end > scroll + layout.capacity {
+            end.saturating_sub(layout.capacity)
+        } else {
+            scroll
+        };
+    }
+
     pub fn scroll_cleanup(&mut self, down: bool) {
         let horizon = self.cleanup_max_scroll.get();
         let scroll = match (self.cleanup_prompt.as_mut(), self.dispatch_prompt.as_mut()) {
@@ -3299,6 +3414,9 @@ impl BoardModel {
     pub(crate) fn cancel_project_header_double_click(&mut self) {
         self.last_project_header_click = None;
         self.last_project_row_click = None;
+        if let Some(prompt) = self.cleanup_prompt.as_mut() {
+            prompt.option_click = None;
+        }
     }
 
     /// Record a left-button press cell and drop any finished selection's highlight.
@@ -6090,7 +6208,6 @@ mod tests {
             start_deadline: Instant::now(),
             started: true,
             merged: Vec::new(),
-            remote_kept: 0,
             unmerged: Vec::new(),
         }
     }

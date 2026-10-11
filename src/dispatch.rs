@@ -76,6 +76,8 @@ pub struct CleanupInspection {
     pub base_available: bool,
     pub worktree_exists: bool,
     pub dirty: bool,
+    /// The uncommitted paths `git status` listed, in its order, for the card to name.
+    pub dirty_files: Vec<String>,
     pub branch_merged: bool,
     pub workspace_exists: bool,
     /// The recorded path is a non-root worktree registered to the project, and any Herdr
@@ -674,6 +676,8 @@ pub trait DispatchHost {
     ) -> Result<bool, String> {
         Err("remote branch check is not supported".into())
     }
+    /// Wait between remote-branch checks after a merge. Only the real host sleeps.
+    fn pause(&mut self, _duration: Duration) {}
     /// Start a cleanup card's PR lookup off the event loop. This default runs inline.
     fn begin_pr_probe(&mut self, project: &Path, branch: &str) -> PrProbe
     where
@@ -1284,6 +1288,10 @@ impl DispatchHost for SystemDispatchHost {
         pr::system_remote_branch_exists(project, remote, branch)
     }
 
+    fn pause(&mut self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+
     fn begin_pr_probe(&mut self, project: &Path, branch: &str) -> PrProbe {
         let probe = PrProbe::default();
         if !pr::gh_available(&self.gh) {
@@ -1873,10 +1881,27 @@ fn system_inspect_cleanup(
         base_available,
         worktree_exists: true,
         dirty: !status.stdout.is_empty(),
+        dirty_files: porcelain_paths(&status.stdout),
         branch_merged,
         workspace_exists,
         target_matches: workspace_matches,
     })
+}
+
+/// The paths in `git status --porcelain` output: the text after each two-letter status, and
+/// a rename's new name.
+fn porcelain_paths(stdout: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .filter_map(|line| line.get(3..))
+        .map(|path| {
+            path.rsplit_once(" -> ")
+                .map_or(path, |(_, to)| to)
+                .trim_matches('"')
+                .to_string()
+        })
+        .filter(|path| !path.is_empty())
+        .collect()
 }
 
 /// Ancestry against the recorded base from the refs on disk now. `fetch_failure` is the
@@ -4662,6 +4687,7 @@ mod tests {
             base_available: true,
             worktree_exists: true,
             dirty: false,
+            dirty_files: Vec::new(),
             branch_merged: true,
             workspace_exists: true,
             target_matches: true,
@@ -5068,6 +5094,7 @@ mod tests {
         // removal, not as uncommitted changes.
         let dirty = CleanupInspection {
             dirty: true,
+            dirty_files: Vec::new(),
             ..clean_inspection()
         };
         let mut host = FakeHost {
@@ -5933,6 +5960,7 @@ mod tests {
                     base_available: true,
                     worktree_exists: true,
                     dirty: true,
+                    dirty_files: Vec::new(),
                     branch_merged: false,
                     workspace_exists: true,
                     target_matches: true,
@@ -5949,6 +5977,7 @@ mod tests {
                     base_available: true,
                     worktree_exists: true,
                     dirty: false,
+                    dirty_files: Vec::new(),
                     branch_merged: false,
                     workspace_exists: true,
                     target_matches: true,
@@ -5965,6 +5994,7 @@ mod tests {
                     base_available: true,
                     worktree_exists: true,
                     dirty: false,
+                    dirty_files: Vec::new(),
                     branch_merged: true,
                     workspace_exists: true,
                     target_matches: true,
@@ -5981,6 +6011,7 @@ mod tests {
                     base_available: true,
                     worktree_exists: false,
                     dirty: false,
+                    dirty_files: Vec::new(),
                     branch_merged: false,
                     workspace_exists: false,
                     target_matches: true,
@@ -6334,6 +6365,7 @@ mod tests {
                 base_available: true,
                 worktree_exists: true,
                 dirty: false,
+                dirty_files: Vec::new(),
                 branch_merged: true,
                 workspace_exists: true,
                 target_matches: false,
@@ -6396,6 +6428,7 @@ mod tests {
                     base_available: true,
                     worktree_exists: true,
                     dirty: false,
+                    dirty_files: Vec::new(),
                     branch_merged: true,
                     workspace_exists: true,
                     target_matches: true,
@@ -6480,6 +6513,7 @@ mod tests {
                     base_available: true,
                     worktree_exists: false,
                     dirty: false,
+                    dirty_files: Vec::new(),
                     branch_merged: false,
                     workspace_exists: false,
                     target_matches: true,
@@ -6819,6 +6853,7 @@ mod tests {
                 base_available: true,
                 worktree_exists: false,
                 dirty: false,
+                dirty_files: Vec::new(),
                 branch_merged: false,
                 workspace_exists: false,
                 target_matches: true,

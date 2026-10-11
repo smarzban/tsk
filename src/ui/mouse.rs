@@ -942,49 +942,17 @@ pub fn map_board_mouse(
             _ => None,
         },
         BoardInputMode::SaveRecovery => None,
-        // `[x]` is Esc; the footer choices dispatch like their keys. The dirty card has no `y`.
-        // A confirmed card only reports its run: every choice it shows is Esc.
-        BoardInputMode::CleanupConfirm | BoardInputMode::CleanupDirtyConfirm
-            if model.cleanup_run().is_some() =>
-        {
+        // The `esc` line (and `[x]`) is Esc. An option line selects its option; a double click
+        // on it runs it. A confirmed card only reports its run, so its options are gone.
+        BoardInputMode::CleanupConfirm | BoardInputMode::CleanupDirtyConfirm => {
             match hit_at(hits, pos) {
-                Some(QueueHitTarget::ModalClose | QueueHitTarget::CleanupOption(_)) => {
-                    Some(BoardIntent::CancelCleanup)
+                Some(QueueHitTarget::ModalClose) => Some(BoardIntent::CancelCleanup),
+                Some(QueueHitTarget::CleanupOption(index)) if model.cleanup_run().is_none() => {
+                    Some(BoardIntent::CleanupClickOption(index))
                 }
                 _ => None,
             }
         }
-        // With an open pull request the footer reads `y` · `m` · `n` · `esc`.
-        BoardInputMode::CleanupConfirm
-            if model
-                .cleanup_prompt()
-                .is_some_and(|prompt| prompt.can_merge_any()) =>
-        {
-            match hit_at(hits, pos) {
-                Some(QueueHitTarget::ModalClose | QueueHitTarget::CleanupOption(3)) => {
-                    Some(BoardIntent::CancelCleanup)
-                }
-                Some(QueueHitTarget::CleanupOption(0)) => Some(BoardIntent::ConfirmCleanup),
-                Some(QueueHitTarget::CleanupOption(1)) => Some(BoardIntent::MergeCleanup),
-                Some(QueueHitTarget::CleanupOption(2)) => Some(BoardIntent::KeepCleanup),
-                _ => None,
-            }
-        }
-        BoardInputMode::CleanupConfirm => match hit_at(hits, pos) {
-            Some(QueueHitTarget::ModalClose | QueueHitTarget::CleanupOption(2)) => {
-                Some(BoardIntent::CancelCleanup)
-            }
-            Some(QueueHitTarget::CleanupOption(0)) => Some(BoardIntent::ConfirmCleanup),
-            Some(QueueHitTarget::CleanupOption(1)) => Some(BoardIntent::KeepCleanup),
-            _ => None,
-        },
-        BoardInputMode::CleanupDirtyConfirm => match hit_at(hits, pos) {
-            Some(QueueHitTarget::ModalClose | QueueHitTarget::CleanupOption(1)) => {
-                Some(BoardIntent::CancelCleanup)
-            }
-            Some(QueueHitTarget::CleanupOption(0)) => Some(BoardIntent::KeepCleanup),
-            _ => None,
-        },
         // The relaunch card: `y relaunch`, `n just start`, `esc cancel`.
         BoardInputMode::DispatchConfirm
             if model

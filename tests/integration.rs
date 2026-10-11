@@ -8,6 +8,7 @@ pub(crate) mod stub;
 
 mod archive_launch_card;
 mod board_blocks;
+mod board_cleanup_card;
 mod board_paper_trail;
 mod cli_after;
 mod cli_archive;

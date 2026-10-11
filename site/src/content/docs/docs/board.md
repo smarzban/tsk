@@ -156,32 +156,73 @@ In the palette, **dispatch again** relaunches the cursor task without asking. Bo
 
 ### Complete and clean up
 
-With no marks, `ctrl+d` on a task with a live dispatch asks before completing. The card, `Done T12 · clean up?`, opens at once with `Checking merge into origin/main…` while a background fetch checks the branch against its recorded base. It then reads `Merged into origin/main ✓`, `Pull request merged into origin/main ✓` (a squash or rebase merge [`gh`](#merge-the-pull-request) confirmed), `Not merged into origin/main (squash-merged? delete it by hand)`, or, when the remote cannot be reached, `Merge into origin/main not confirmed (offline), so the branch stays.`, followed by what `y` does to the branch (`delete branch` or `keep branch`), the worktree (`remove worktree`), and the agent pane (`close`).
+With no marks, `ctrl+d` on a task with a live dispatch asks before completing. The card, titled `Done T12`, says where the task stands, then lists its options, one line each, starting with its key and saying first what happens to the pull request or branch, then what happens locally. Below them are the worktree and branch paths, and a dim `esc cancel` at the bottom right. For example, with an open pull request:
 
-| Key | Result |
+```text
+PR #193 is still open:
+
+▸ m  squash-merge PR #193 to main · mark done · remove worktree, branch and agent pane
+  y  don't merge · mark done · remove worktree and agent pane · keep the branch and the PR open
+  n  don't merge · mark done · keep everything
+
+worktree  ~/.herdr/worktrees/…
+branch    tsk/t12-…
+
+                                                                               esc cancel
+```
+
+| Where the task stands | Options |
 | --- | --- |
-| `y` | Mark done now and clean up in the background |
-| `m` | Only with an open pull request: [merge it](#merge-the-pull-request), then mark done and clean up as `y` |
-| `n` | Mark done and keep everything |
-| `Esc` or `[x]` | Change nothing |
+| `PR #193 is still open:` | `m` merges it ([below](#merge-the-pull-request)), `y`, `n` |
+| `PR #194 merged into main ✓`, or `Merged into main ✓` | `y` mark done · remove worktree, branch and agent pane; `n` mark done · keep everything |
+| `Not merged into main · no pull request` (or `PR #193 closed`, `PR #193 targets dev, not main`, `gh is not logged in (gh auth login)`; without `gh`, `squash-merged? delete it by hand`) | `y` mark done · remove worktree and agent pane · keep the branch (not merged); `n` |
+| `PR #193 merged, but the branch has newer commits: the branch is kept`, or `PR #193 merged into dev, not main: the branch is kept` | `y` keeps the branch; `n` |
+| `Can't tell if it's merged: offline (base fetch failed) · the branch is kept` (or `the check timed out`, `base no longer available`, `no recorded base`) | `y` keeps the branch; `n` |
+| `3 uncommitted files in the worktree (src/ui/input.rs, src/app.rs, …): commit or discard them to merge or tidy up` | only `n` don't merge · mark done · keep everything |
+| `Checking merge into main…` | `y` marks done, removes the worktree, and deletes the branch if the check confirms the merge; `n` |
 
-The choices and `[x]` are clickable. `y` before the check finishes still marks the task done at once, and the cleanup starts when the check lands. After `y` the board stays usable and the card reports progress: `removing worktree…`, then `✓ cleaned · branch deleted`, `✓ cleaned · branch kept` with the reason, or `kept: <reason>`. `Esc` hides the card while cleanup continues; the status row shows `cleaning 1 of 1…`, then the outcome, such as `done T12 · cleaned` or `done T12 · cleaned · branch kept (not merged)`. A clean outcome clears after a few seconds; one that kept something stays until your next action. Closing the project preview that started a cleanup does not stop it. While a cleanup runs, `ctrl+d` refuses with `cleanup still running; try again when it finishes`, and quitting shows `finishing cleanup…` and waits for it, up to 30 seconds.
+The likely option is bold: `m` with an open pull request, `y` when the branch is already merged. A line that would not apply is left out: no agent pane, no mention of one. `↑`/`↓` move the `▸` cursor between options (stopping at the ends) and `Enter` runs it; the cursor starts on the bold option. An `Enter` within a moment of the card opening is ignored, so a double tap of the key that opened it cannot merge by accident. `m`, `y` and `n` still run their option directly, and `Esc` or `[x]` changes nothing. With the mouse, a click on an option line (any of its wrapped rows) moves the cursor there, a double click runs it, and a click on `esc cancel` cancels. While the pull request lookup runs, the card reads `checking pull request…` and shows no options yet. When the card is taller than the frame, it drops its blank lines first, then scrolls with page keys or the wheel.
 
-A worktree with uncommitted changes cannot be cleaned: the card reads `Done T12 · can't clean up` and offers only `n` or cancel. A worktree that is already gone is marked cleaned without a card. Done tasks, archived tasks, and archived project views complete without one.
+`y` before the merged check finishes still marks the task done at once, and the cleanup starts when the check lands. After `y` the board stays usable and the card reports progress (`Cleaning up…`), then the outcome: `Done T12 · cleaned`, `Done T12 · cleaned · branch kept (not merged)`, or `Cleanup refused: files in use`, closed with `esc close`. `Esc` hides the card while cleanup continues; the status row shows `cleaning 1 of 1…`, then the outcome, such as `done T12 · cleaned` or `done T12 · cleaned · branch kept (not merged)`. A clean outcome clears after a few seconds; one that kept something stays until your next action. Closing the project preview that started a cleanup does not stop it. While a cleanup runs, `ctrl+d` refuses with `cleanup still running; try again when it finishes`, and quitting shows `finishing cleanup…` and waits for it, up to 30 seconds.
 
-With tasks marked, `ctrl+d` on a set that holds live dispatches opens one card for the set, titled for example `Done 4 tasks · clean up 2 of 3?`. Each dispatch gets a row with its merged status (`checking…`, then `merged ✓`, `not merged into <ref>`, `not confirmed (offline)`, or `uncommitted changes`) and what `y` will do (`delete branch · remove worktree · close pane`, `keep branch · …`, or `keep everything`). Tasks without a dispatch are listed as `+ T<n> has no dispatch, just marked done`. `y` marks the whole set done and cleans every clean worktree in the background, updating each row as it lands (`Done 5 tasks · cleaning 2 of 4`); one failure never stops the others. The outcome counts, naming only tasks that kept something: `done 5 · cleaned 4 · kept T14 (uncommitted changes)`. `n` marks the set done and keeps everything; `Esc` before `y` keeps the marks. A long set scrolls with `↑`/`↓`, page keys, or the wheel. A marked set with no live dispatch completes at once.
+A worktree that is already gone is marked cleaned without a card. Done tasks, archived tasks, and archived project views complete without one.
 
-Either way, completion is one save and one undo step, saved before any worktree is touched. Undo restores the status, not a removed worktree.
+With tasks marked, `ctrl+d` on a set that holds live dispatches opens one card for the set, titled for example `Done 4 tasks`. Each task gets one row saying only where it stands:
+
+```text
+T7   PR #193 is still open
+T8   PR #190 merged into main ✓
+T9   not merged · no pull request
+T10  3 uncommitted files · src/ui/input.rs, src/app.rs, …
+```
+
+Tasks without a dispatch read `no dispatch`, and a dispatch whose worktree is already gone `worktree already gone`. Each option line names exactly the tasks it touches:
+
+```text
+▸ m  squash-merge PR #193 (T7) · mark T7 and T8 done · remove their worktrees, branches and agent panes · T9 and T10 unchanged
+  y  don't merge · mark T7, T8 and T9 done · remove their worktrees and agent panes · delete T8's branch · keep T7's and T9's branches · T10 unchanged
+  n  mark all 4 done · keep everything
+```
+
+| Key | Open PR | Already merged | Not merged | Uncommitted |
+| --- | --- | --- | --- | --- |
+| `m` | merge, then done and full tidy | done and full tidy | unchanged | unchanged |
+| `y` | done and tidy, keep the branch and the PR open | done and full tidy | done and tidy, keep the branch | unchanged |
+| `n` | done | done | done | done |
+
+Past six tasks a line counts them (`mark 7 tasks done`) and the rows stay the detail. `m` never marks an unmerged task done; under `y` and `n`, tasks without a dispatch are marked done. `↑`/`↓` move between options and keep the selected one in view; page keys and the wheel scroll the rows. While the set works, each row says its step (`Merging PR #193 with gh…`, `Cleaning 1 of 2…`); then one line per task: `merged PR #193 (squash) · done · cleaned · remote branch deleted by GitHub`, `done · cleaned`, `unchanged · not merged`, `unchanged · 3 uncommitted files`, or `merge failed: <reason> · unchanged`. One failure never stops the others. The status row counts it all, naming the tasks that kept something: `merged 1 · done 2 · cleaned 2 · unchanged 2`. `Esc` before a choice keeps the marks. A marked set with no live dispatch completes at once.
+
+Either way, completion is one save and one undo step, saved before any worktree is touched. One `ctrl+u` reverts every task the card marked done; it cannot un-merge a pull request or restore a removed worktree.
 
 Cleanup closes the dispatch's Herdr workspace, removes its recorded worktree, and deletes its branch only when the branch is merged into the recorded base. It fetches the base first, so a merge on GitHub counts without a local pull. A squash or rebase merge leaves no Git ancestry, so when the branch reads unmerged and the [GitHub CLI](https://cli.github.com/) (`gh`) is installed and logged in, cleanup asks GitHub about the branch's pull request: it deletes the branch only when that pull request is merged into the recorded base **and** its head is exactly the local branch tip. A pull request merged into another branch keeps the branch (`PR merged into dev, not origin/main; delete by hand`). A merged pull request whose head differs keeps the branch (`PR merged but the branch has newer commits; delete by hand`). Without `gh`, nothing changes. It keeps the branch, and says why, when the branch is not merged, when the merge cannot be confirmed because the fetch failed, when the base no longer exists, or when the branch is checked out elsewhere or changed during cleanup. It never touches a worktree with uncommitted changes, the project root, or a path that does not match the recorded worktree, and it leaves alone a task relaunched after the card opened (`kept: changed since the card opened`). The task keeps its dispatch record, marked cleaned. From a script, use [`tsk clean`](/docs/cli/#clean).
 
 ### Merge the pull request
 
-When `gh` is installed and logged in, the cleanup card also looks up each task's pull request by its branch name, in the background, and adds a `pull request` line: `PR #41 open`, `no pull request`, `PR #41 closed`, `PR #41 targets main, not dispatch`, `PR #41 merged into dev, not main`, or `gh is not logged in (run gh auth login)`. Without `gh` on PATH the card shows no such line, not even while it looks. When a listed task with a clean worktree has an open pull request into its recorded base, the card offers `m` (`merge PR · done · clean`).
+When `gh` is installed and logged in, the cleanup card also looks up each task's pull request by its branch name, in the background, and says where it stands (see the table above). Without `gh` on PATH the card never mentions a pull request. When a listed task with a clean worktree has an open pull request into its recorded base, the card offers `m`, worded after the merge method: `merge`, `squash-merge`, or `rebase-merge PR #193 to main`.
 
-`m` runs `gh pr merge <branch> --<method> --match-head-commit <tip>` in the background, with the method from [`[merge]` in `config.toml`](/docs/storage/#merge-method) (a merge commit by default). It merges only when GitHub's pull request head is exactly the local branch tip. It never passes `--admin`, `--auto`, or `--delete-branch`, so branch protection, required checks, and reviews apply as on GitHub. While it runs the card reads `Merging with gh…` and takes no choice; quitting (`ctrl+q`) waits, bounded by gh's own time limits, until the merge lands, done is saved, and its cleanup runs, then exits. A successful `gh` is not taken as proof: tsk asks GitHub again and goes on only when the pull request shows merged. A merge queue or auto-merge that only accepted the request leaves the task as it was, with `merge failed: queued or not merged yet: open`. On success the task is marked done and cleaned exactly as with `y`; the cleanup fetches the base again, and GitHub's answer confirms a squash or rebase merge, so the branch is deleted. tsk never deletes the remote branch; when the merge left it, the outcome says so. The status row reads, for example, `done T12 · cleaned · merged PR #41 (squash) · remote branch kept`. When the merge fails (checks failing, conflicts, protection, review required), nothing changes: the task keeps its status, nothing is cleaned, and the card shows gh's reason (`merge failed: …`), so you can press `m` again, `y`, `n`, or `Esc`. An invalid `[merge]` setting merges nothing and says why on the card.
+`m` runs `gh pr merge <branch> --<method> --match-head-commit <tip>` in the background, with the method from [`[merge]` in `config.toml`](/docs/storage/#merge-method) (a merge commit by default). It merges only when GitHub's pull request head is exactly the local branch tip. It never passes `--admin`, `--auto`, or `--delete-branch`, so branch protection, required checks, and reviews apply as on GitHub. While it runs the card reads `Merging PR #193 with gh…` and takes no choice; quitting (`ctrl+q`) waits, bounded by gh's own time limits, until the merge lands, done is saved, and its cleanup runs, then exits. A successful `gh` is not taken as proof: tsk asks GitHub again and goes on only when the pull request shows merged. A merge queue or auto-merge that only accepted the request leaves the task as it was, and the card says `PR #193 is queued, not merged yet · nothing changed`. On success the task is marked done and cleaned exactly as with `y`; the cleanup fetches the base again, and GitHub's answer confirms a squash or rebase merge, so the branch is deleted. tsk never deletes the remote branch; after the merge it looks again (briefly, since GitHub deletes a merged branch a moment later when the repository says so) and reports it truthfully: `Done T12 · merged PR #193 (squash) · cleaned · remote branch deleted by GitHub`, or `· remote branch kept`. When the merge fails (checks failing, conflicts, protection, review required), nothing changes: the task keeps its status, nothing is cleaned, and the card says `Merge failed: <gh's reason> · nothing changed` and closes with `esc close`. An invalid `[merge]` setting merges nothing and says why on the card.
 
-On a marked set, `m` merges every listed task that has an open pull request into its base, one after another; one failure never stops the others. Only the tasks whose pull request merged are marked done (one save, one undo step) and cleaned. Every other task in the set (its merge failed, it has no pull request or one that is closed or into another base, uncommitted changes, no dispatch) stays exactly as it was, and the finished card lists each with the reason (`not merged, left as it was: no pull request`). The outcome counts the merges and any remote branches left, and names the rest: `done 1 · cleaned 1 · merged 1 · 1 remote branch kept · not merged T14, T15`. From a script, use [`tsk status T12 done --merge`](/docs/cli/#status).
+On a marked set, `m` merges every listed task that has an open pull request into its base, one after another; one failure never stops the others. The tasks whose pull request merged, and those already merged, are marked done (one save, one undo step) and fully tidied. Every other task (its merge failed, no pull request, uncommitted changes, no dispatch) stays exactly as it was, and the finished card says why for each. From a script, use [`tsk status T12 done --merge`](/docs/cli/#status).
 
 ## Status
 

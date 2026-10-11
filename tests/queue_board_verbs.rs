@@ -269,6 +269,7 @@ fn cleanup_popup_maps_explicit_choices_and_paints_the_guardrail_state() {
         branch: "tsk/t1-clean-me".into(),
         base: "origin/main".into(),
         dirty: false,
+        dirty_files: Vec::new(),
         branch_merged: false,
         workspace_exists: true,
         warning: None,
@@ -293,25 +294,34 @@ fn cleanup_popup_maps_explicit_choices_and_paints_the_guardrail_state() {
     ] {
         assert_eq!(
             map_key(mode, press(KeyCode::Down)),
-            Some(BoardIntent::CleanupScrollDown)
+            Some(BoardIntent::CleanupSelectDown)
         );
         assert_eq!(
             map_key(mode, press(KeyCode::Up)),
+            Some(BoardIntent::CleanupSelectUp)
+        );
+        assert_eq!(
+            map_key(mode, press(KeyCode::Enter)),
+            Some(BoardIntent::CleanupRunSelected)
+        );
+        assert_eq!(
+            map_key(mode, press(KeyCode::PageDown)),
+            Some(BoardIntent::CleanupScrollDown)
+        );
+        assert_eq!(
+            map_key(mode, press(KeyCode::PageUp)),
             Some(BoardIntent::CleanupScrollUp)
         );
     }
     let screen = rendered_board(&model, 100, 30);
     for text in [
-        "Done T1 · clean up?",
+        "Done T1",
         "Not merged into origin/main",
-        "keep branch",
-        "tsk/t1-clean-me",
-        "remove worktree",
-        "/tmp/tsk-t1-clean-me",
-        "close",
-        "agent pane",
-        "y done + clean up",
-        "n done only",
+        "▸ y  mark done · remove worktree and agent pane · keep",
+        "     the branch (not merged)",
+        "  n  mark done · keep everything",
+        "worktree  /tmp/tsk-t1-clean-me",
+        "branch    tsk/t1-clean-me",
         "esc cancel",
     ] {
         assert!(screen.contains(text), "missing {text:?}:\n{screen}");
@@ -363,6 +373,7 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
             unreachable_remote: None,
             worktree_exists: true,
             dirty: true,
+            dirty_files: Vec::new(),
             branch_merged: false,
             workspace_exists: true,
             target_matches: true,
@@ -418,12 +429,18 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
         "dirty worktrees do not offer cleanup"
     );
     let screen = rendered_board(&model, 100, 30);
-    assert!(!screen.contains("y done + clean up"), "{screen}");
-    assert!(screen.contains("n mark done, keep everything"), "{screen}");
-    assert!(screen.contains("can't clean up"), "{screen}");
+    assert!(!screen.contains(" y  "), "{screen}");
     assert!(
-        screen.contains("stays open") && !screen.contains("close  "),
-        "a dirty card never claims the pane closes:\n{screen}"
+        screen.contains("▸ n  don't merge · mark done · keep everything"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("Uncommitted changes in the worktree: commit or discard"),
+        "{screen}"
+    );
+    assert!(
+        !screen.contains("remove worktree"),
+        "a dirty card never claims anything goes:\n{screen}"
     );
     let run = confirm_cleanup_with_host(&mut domain, &mut model, true, true, &mut host)
         .expect("completion")
@@ -549,6 +566,7 @@ fn merge_check_host(cached_merged: bool, fetched_merged: bool) -> MergeCheckHost
         unreachable_remote: None,
         worktree_exists: true,
         dirty: false,
+        dirty_files: Vec::new(),
         branch_merged,
         workspace_exists: true,
         target_matches: true,
@@ -575,7 +593,7 @@ fn cleanup_card_opens_from_cached_refs_and_a_background_check_fills_merged_statu
     assert!(model.cleanup_prompt().unwrap().checking());
     let screen = rendered_board(&model, 100, 30);
     assert!(
-        screen.contains("Checking merge into origin/main…"),
+        screen.contains("Checking merge into main…"),
         "card paints before the fetch lands:\n{screen}"
     );
     assert!(!screen.contains("squash-merged"), "{screen}");
@@ -591,8 +609,11 @@ fn cleanup_card_opens_from_cached_refs_and_a_background_check_fills_merged_statu
     assert!(model.poll_cleanup_check());
     assert!(!model.cleanup_prompt().unwrap().checking());
     let screen = rendered_board(&model, 100, 30);
-    assert!(screen.contains("Merged into origin/main ✓"), "{screen}");
-    assert!(screen.contains("delete branch"), "{screen}");
+    assert!(screen.contains("Merged into main ✓"), "{screen}");
+    assert!(
+        screen.contains("▸ y  mark done · remove worktree, branch and agent pane"),
+        "{screen}"
+    );
 
     // Esc drops the check with its card; a late verdict reaches no other prompt.
     apply_intent(&mut domain, &mut model, BoardIntent::CancelCleanup, None).expect("cancel");
@@ -626,10 +647,10 @@ fn a_confirmed_card_reports_each_row_and_esc_closes_it_once_finished() {
     run.rows[0].state = CleanupRowState::Removing;
     model.begin_cleanup_run(run);
     let screen = rendered_board(&model, 100, 30);
-    assert!(screen.contains("Done T1 · cleaning up"), "{screen}");
-    assert!(screen.contains("T1  removing worktree…"), "{screen}");
+    assert!(screen.contains("Done T1"), "{screen}");
+    assert!(screen.contains("Cleaning up…"), "{screen}");
     assert!(screen.contains("esc hide, keep cleaning"), "{screen}");
-    assert!(!screen.contains("y done + clean up"), "{screen}");
+    assert!(!screen.contains(" y  "), "{screen}");
 
     let mut run = model.cleanup_run_mut().expect("run");
     run.rows[0].state = CleanupRowState::Cleaned {
@@ -638,9 +659,10 @@ fn a_confirmed_card_reports_each_row_and_esc_closes_it_once_finished() {
     run.settled = true;
     drop(run);
     let screen = rendered_board(&model, 100, 30);
-    assert!(screen.contains("Done T1 · cleanup finished"), "{screen}");
-    assert!(screen.contains("✓ cleaned · branch kept"), "{screen}");
-    assert!(screen.contains("not merged into main"), "{screen}");
+    assert!(
+        screen.contains("Done T1 · cleaned · branch kept (not merged)"),
+        "{screen}"
+    );
     assert!(screen.contains("esc close"), "{screen}");
     apply_intent(&mut domain, &mut model, BoardIntent::CancelCleanup, None).expect("close");
     assert!(model.cleanup_run().is_none());
@@ -652,7 +674,7 @@ fn a_confirmed_card_reports_each_row_and_esc_closes_it_once_finished() {
 }
 
 #[test]
-fn a_kept_row_on_the_card_says_kept_once_for_every_cleanup_refusal() {
+fn a_refused_cleanup_on_the_card_says_why_once_for_every_refusal() {
     // Some refusals carry `kept:` in their CLI wording; the card writes its own lead.
     let (mut domain, mut model, id, dir) = dispatched_board_for_merge_check("kept-once");
     let mut host = merge_check_host(true, true);
@@ -666,22 +688,19 @@ fn a_kept_row_on_the_card_says_kept_once_for_every_cleanup_refusal() {
     run.settled = true;
     model.begin_cleanup_run(run);
     for (error, reason) in [
-        (CleanupError::FilesInUse, "kept: files in use"),
-        (CleanupError::PathTooLong, "kept: path too long"),
-        (CleanupError::RemovalTimedOut, "kept: removal timed out"),
-        (
-            CleanupError::DirtyWorktree,
-            "kept: worktree has uncommitted",
-        ),
-        (
-            CleanupError::DispatchChanged,
-            "kept: changed since the card",
-        ),
+        (CleanupError::FilesInUse, "files in use"),
+        (CleanupError::PathTooLong, "path too long"),
+        (CleanupError::RemovalTimedOut, "removal timed out"),
+        (CleanupError::DirtyWorktree, "worktree has uncommitted"),
+        (CleanupError::DispatchChanged, "changed since the card"),
     ] {
         model.cleanup_run_mut().expect("run").rows[0].state = CleanupRowState::kept(&error);
         let screen = rendered_board(&model, 120, 30);
-        assert!(screen.contains(&format!("T1  {reason}")), "{screen}");
-        assert!(!screen.contains("kept: kept:"), "{screen}");
+        assert!(
+            screen.contains(&format!("Cleanup refused: {reason}")),
+            "{screen}"
+        );
+        assert!(!screen.contains("refused: kept"), "{screen}");
     }
     std::fs::remove_dir_all(dir).expect("cleanup temp store");
 }
@@ -756,6 +775,7 @@ fn missing_worktree_converges_cleaned_and_done_in_one_board_save_without_a_popup
             unreachable_remote: None,
             worktree_exists: false,
             dirty: false,
+            dirty_files: Vec::new(),
             branch_merged: false,
             workspace_exists: false,
             target_matches: true,
@@ -833,6 +853,7 @@ fn cleanup_offer_skips_done_and_archived_tasks_without_inspection_or_mutation() 
                 unreachable_remote: None,
                 worktree_exists: true,
                 dirty: false,
+                dirty_files: Vec::new(),
                 branch_merged: true,
                 workspace_exists: true,
                 target_matches: true,
@@ -893,6 +914,7 @@ fn cleanup_offer_defers_to_the_archived_project_read_only_refusal() {
             unreachable_remote: None,
             worktree_exists: true,
             dirty: false,
+            dirty_files: Vec::new(),
             branch_merged: true,
             workspace_exists: true,
             target_matches: true,
@@ -959,6 +981,7 @@ fn successful_popup_cleanup_saves_completion_first_and_undo_reverses_only_status
             unreachable_remote: None,
             worktree_exists: true,
             dirty: false,
+            dirty_files: Vec::new(),
             branch_merged: false,
             workspace_exists: true,
             target_matches: true,

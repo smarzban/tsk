@@ -1784,7 +1784,10 @@ fn board_mouse_intent(
     };
     let intent = map_responsive_board_mouse(model, &hits, area, mouse);
     if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
-        && !matches!(intent, Some(BoardIntent::SelectProjectRow(_)))
+        && !matches!(
+            intent,
+            Some(BoardIntent::SelectProjectRow(_) | BoardIntent::CleanupClickOption(_))
+        )
     {
         // Any left press that is not an index-row click disarms a pending index-row
         // double-click: inert cells and other controls (tabs, chips, search) alike.
@@ -2115,6 +2118,14 @@ pub fn offer_cleanup_prompt_with_host(
     Ok(CleanupOffer::Prompted)
 }
 
+/// Name the configured merge method on a card that just opened, for its `m` line. A broken
+/// `[merge]` setting reads as the default here; `m` itself refuses it on the card.
+fn adopt_merge_method(store: &TaskStore, model: &mut BoardModel) {
+    if let Some(prompt) = model.cleanup_prompt_mut() {
+        prompt.method = crate::agents::MergeMethod::load(store.path()).unwrap_or_default();
+    }
+}
+
 /// Start a dispatched task's background merged check, when it has a recorded base to check.
 fn begin_cleanup_merge_check(
     task: &crate::domain::Task,
@@ -2174,6 +2185,7 @@ fn cleanup_row(
             .or(preview.record.base_ref)
             .unwrap_or_else(|| "unknown".to_string()),
         dirty: preview.inspection.dirty,
+        dirty_files: preview.inspection.dirty_files,
         branch_merged: preview.inspection.branch_merged,
         base_available: preview.inspection.base_available,
         warning: preview.inspection.warning,
@@ -2297,13 +2309,7 @@ pub fn offer_bulk_cleanup_prompt_with_host(
             missing,
         });
     }
-    model.begin_cleanup_prompt(CleanupPrompt {
-        rows,
-        bulk: Some(bulk),
-        scroll: 0,
-        merging: None,
-        merge_note: None,
-    });
+    model.begin_cleanup_prompt(CleanupPrompt::bulk(rows, bulk));
     Ok(BulkCleanupOffer::Prompted)
 }
 
@@ -2347,6 +2353,27 @@ pub fn confirm_cleanup_with_host(
             None => return Ok(None),
         },
     };
+    // A marked set's `y` leaves uncommitted work exactly as it was: not even done.
+    let unchanged = prompt
+        .rows
+        .iter()
+        .filter(|row| clean && prompt.bulk.is_some() && row.dirty)
+        .filter(|row| targets.contains(&row.task_id))
+        .map(|row| {
+            (
+                row.task_id,
+                format!("T{}", row.number),
+                row.unchanged_reason(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let targets = targets
+        .into_iter()
+        .filter(|id| !unchanged.iter().any(|(dirty, ..)| dirty == id))
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        return Ok(None);
+    }
     let mut plan = Vec::new();
     let mut waiting = Vec::new();
     let mut rows = Vec::new();
@@ -2457,8 +2484,10 @@ pub fn confirm_cleanup_with_host(
         start_deadline: Instant::now() + dispatch::MERGE_CHECK_TIMEOUT,
         started: false,
         merged: Vec::new(),
-        remote_kept: 0,
-        unmerged: Vec::new(),
+        unmerged: unchanged
+            .into_iter()
+            .map(|(_, identifier, reason)| (identifier, reason))
+            .collect(),
     };
     Ok(Some(CleanupConfirmed {
         run: Some(run),
@@ -2475,9 +2504,7 @@ struct CleanupChoice {
 /// What a cleanup card's `m` did, for the run's card and status-row summary.
 #[derive(Default)]
 struct MergeReport {
-    merged: Vec<(String, String)>,
-    /// Merged PRs whose remote branch the merge left in place.
-    remote_kept: usize,
+    merged: Vec<crate::ui::board::MergedPr>,
     unmerged: Vec<(String, String)>,
 }
 
@@ -2521,8 +2548,7 @@ fn confirm_cleanup_and_save(
             run: Some(mut run), ..
         }) => {
             run.merged = choice.merges.merged;
-            run.remote_kept = choice.merges.remote_kept;
-            run.unmerged = choice.merges.unmerged;
+            run.unmerged.splice(0..0, choice.merges.unmerged);
             model.begin_cleanup_run(run);
             poll_cleanup_runs(store, domain, model, save_recovery, in_herdr, host);
         }
@@ -2649,36 +2675,53 @@ fn land_cleanup_merges_on(
         let identifier = format!("T{}", row.number);
         match result {
             Ok(outcome) => {
-                let mut detail = format!("PR #{} ({})", outcome.pr.number, outcome.method.name());
-                // Short enough for the status row; tsk never deletes the remote branch.
-                if outcome.remote_branch_left == Some(true) {
-                    detail.push_str(" · remote branch kept");
-                }
-                report.merged.push((identifier, detail));
-                if outcome.remote_branch_left == Some(true) {
-                    report.remote_kept += 1;
-                }
+                report.merged.push(crate::ui::board::MergedPr {
+                    identifier,
+                    pr: format!("PR #{} ({})", outcome.pr.number, outcome.method.name()),
+                    remote_left: outcome.remote_branch_left,
+                });
                 // The run fetches the base itself; the card's pre-merge check is moot.
                 row.merge_check = None;
                 row.pr.merged = Some(outcome);
                 merged.push(*id);
             }
             Err(error) => {
+                let reason = match &error {
+                    dispatch::pr::MergeError::NotMergedYet(_) => {
+                        let number = row
+                            .pr_number()
+                            .map_or(String::new(), |number| format!(" #{number}"));
+                        format!("PR{number} is queued, not merged yet")
+                    }
+                    _ => format!("merge failed: {}", error.message()),
+                };
                 row.pr.merge_failed = Some(error.message());
-                report.unmerged.push((identifier, error.message()));
+                report.unmerged.push((identifier, reason));
             }
         }
     }
-    if merged.is_empty() {
-        return;
+    // Rows already merged go on with the ones `m` just merged: done and fully tidied. The
+    // rest stay exactly as they were, and the card names each and why.
+    let go_on = prompt
+        .rows
+        .iter()
+        .filter(|row| {
+            merged.contains(&row.task_id)
+                || (!ids.contains(&row.task_id)
+                    && matches!(row.verdict(), crate::ui::board::RowVerdict::Merged { .. }))
+        })
+        .map(|row| row.task_id)
+        .collect::<Vec<_>>();
+    for row in prompt
+        .rows
+        .iter()
+        .filter(|row| !go_on.contains(&row.task_id) && !ids.contains(&row.task_id))
+    {
+        report
+            .unmerged
+            .push((format!("T{}", row.number), row.unchanged_reason()));
     }
-    // A marked set's tasks `m` never merged stay as they were too: the run names each, and why.
     if let Some(bulk) = prompt.bulk.as_ref() {
-        for row in prompt.rows.iter().filter(|row| !ids.contains(&row.task_id)) {
-            report
-                .unmerged
-                .push((format!("T{}", row.number), row.merge_skip_reason()));
-        }
         for (_, identifier, _) in &bulk.missing {
             report
                 .unmerged
@@ -2695,10 +2738,14 @@ fn land_cleanup_merges_on(
                 .push((identifier.clone(), "no dispatch".into()));
         }
     }
-    // Only the merged tasks go on: done and cleaned as `y` would. The rest stay as they were.
-    prompt.rows.retain(|row| merged.contains(&row.task_id));
+    if go_on.is_empty() {
+        // Nothing went on: the card says why for each task, and only closes.
+        prompt.settled = Some(report.unmerged);
+        return;
+    }
+    prompt.rows.retain(|row| go_on.contains(&row.task_id));
     if let Some(bulk) = prompt.bulk.as_mut() {
-        bulk.targets.retain(|id| merged.contains(id));
+        bulk.targets.retain(|id| go_on.contains(id));
         bulk.plain.clear();
         bulk.missing.clear();
         bulk.refused.clear();
@@ -3344,7 +3391,10 @@ fn approve_review(
         model.close_reply_box();
     }
     match offer_cleanup_prompt_with_host(domain, model, id, in_herdr, host) {
-        Ok(CleanupOffer::Prompted) => return Ok(()),
+        Ok(CleanupOffer::Prompted) => {
+            adopt_merge_method(store, model);
+            return Ok(());
+        }
         Ok(CleanupOffer::MissingConverged(result)) => {
             let Some(baseline) = load_baseline(store, model)? else {
                 return Ok(());
@@ -4193,6 +4243,38 @@ fn handle_board_intent(
     )
 }
 
+/// A cleanup card's `Enter` or option click becomes the option it runs; a choice key the card
+/// does not offer does nothing. `None`: nothing to do. Other intents pass through.
+fn resolve_cleanup_choice(model: &mut BoardModel, intent: BoardIntent) -> Option<BoardIntent> {
+    if !matches!(
+        intent,
+        BoardIntent::CleanupRunSelected
+            | BoardIntent::CleanupClickOption(_)
+            | BoardIntent::ConfirmCleanup
+            | BoardIntent::KeepCleanup
+            | BoardIntent::MergeCleanup
+    ) {
+        return Some(intent);
+    }
+    // A confirmed card only reports its run.
+    if model.cleanup_run().is_some() {
+        return None;
+    }
+    let prompt = model.cleanup_prompt_mut()?;
+    let choice = match intent {
+        BoardIntent::CleanupRunSelected => prompt.enter_choice(Instant::now())?,
+        BoardIntent::CleanupClickOption(index) => prompt.click_option(
+            index,
+            Instant::now(),
+            crate::ui::board::ROW_DOUBLE_CLICK_WINDOW,
+        )?,
+        BoardIntent::ConfirmCleanup => crate::ui::board::CleanupChoice::Clean,
+        BoardIntent::KeepCleanup => crate::ui::board::CleanupChoice::Keep,
+        _ => crate::ui::board::CleanupChoice::Merge,
+    };
+    prompt.accepts(choice).then(|| choice.intent())
+}
+
 /// [`handle_board_intent`] over an explicit git/Herdr seam, so tests drive dispatch and
 /// cleanup through the real boundary with a fake host.
 #[allow(clippy::too_many_arguments)]
@@ -4208,6 +4290,9 @@ fn handle_board_intent_with_host(
     name_agent: &mut dyn FnMut(dispatch::AgentNaming),
 ) -> io::Result<bool> {
     let Some(intent) = resolve_board_command(model, intent) else {
+        return Ok(false);
+    };
+    let Some(intent) = resolve_cleanup_choice(model, intent) else {
         return Ok(false);
     };
     if let BoardIntent::CopyTaskNumber(id) = intent {
@@ -4332,7 +4417,10 @@ fn handle_board_intent_with_host(
 
     if intent == BoardIntent::Complete && !save_recovery.is_pending() && model.bulk_verb_active() {
         match offer_bulk_cleanup_prompt_with_host(domain, model, in_herdr, host) {
-            Ok(BulkCleanupOffer::Prompted) => return Ok(false),
+            Ok(BulkCleanupOffer::Prompted) => {
+                adopt_merge_method(store, model);
+                return Ok(false);
+            }
             Ok(BulkCleanupOffer::MissingConverged { done, missing }) => {
                 let dispatch_running = model.bulk_dispatch_running();
                 let released = match save_releasing(store, domain, dispatch_running, in_herdr, host)
@@ -4366,7 +4454,10 @@ fn handle_board_intent_with_host(
     if intent == BoardIntent::Complete && !save_recovery.is_pending() {
         if let Some(target) = model.selected_id() {
             match offer_cleanup_prompt_with_host(domain, model, target, in_herdr, host) {
-                Ok(CleanupOffer::Prompted) => return Ok(false),
+                Ok(CleanupOffer::Prompted) => {
+                    adopt_merge_method(store, model);
+                    return Ok(false);
+                }
                 Ok(CleanupOffer::MissingConverged(result)) => {
                     let dispatch_running = model.bulk_dispatch_running();
                     let released =
@@ -11004,6 +11095,7 @@ mod quick_assign_tests {
                 unreachable_remote: None,
                 worktree_exists: true,
                 dirty: false,
+                dirty_files: Vec::new(),
                 branch_merged: true,
                 workspace_exists: true,
                 target_matches: true,
@@ -18849,6 +18941,7 @@ mod queued_cleanup_tests {
                 unreachable_remote: None,
                 worktree_exists: true,
                 dirty: false,
+                dirty_files: Vec::new(),
                 branch_merged: self.cached_merged,
                 workspace_exists: true,
                 target_matches: true,
@@ -19925,6 +20018,7 @@ mod bulk_cleanup_tests {
                 unreachable_remote: None,
                 worktree_exists: !self.missing.contains(&record.worktree),
                 dirty: self.dirty.contains(&record.worktree),
+                dirty_files: Vec::new(),
                 branch_merged: self.cached_merged,
                 workspace_exists: true,
                 target_matches: true,
@@ -20203,7 +20297,8 @@ mod bulk_cleanup_tests {
     }
 
     #[test]
-    fn y_cleans_every_clean_worktree_keeps_dirty_ones_and_completes_the_set_as_one_undo() {
+    fn y_cleans_every_clean_worktree_leaves_dirty_ones_unchanged_and_completes_the_rest_as_one_undo(
+    ) {
         let mut board = marked_board("yes");
         let mut host = host();
         press(&mut board, BoardIntent::Complete, &mut host);
@@ -20211,44 +20306,37 @@ mod bulk_cleanup_tests {
         tick(&mut board, &mut host);
         assert!(!board.model.cleanup_prompt().unwrap().checking());
         press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
-        // The dirty row is kept, so the finished card stays on its rows until Esc.
+        // The dirty row stays unchanged, so the finished card stays on its rows until Esc.
         assert!(board.model.cleanup_run().is_some_and(|run| run.finished()));
         press(&mut board, BoardIntent::CancelCleanup, &mut host);
         assert!(board.model.cleanup_prompt().is_none());
-        assert!(statuses(&board)
-            .iter()
-            .all(|status| *status == HumanStatus::Done));
+        assert_eq!(
+            statuses(&board),
+            [HumanStatus::Done, HumanStatus::Started, HumanStatus::Done],
+            "uncommitted work is not even marked done"
+        );
         assert_eq!(host.removed, vec!["w-clean".to_string()]);
         assert_eq!(host.deleted, vec!["tsk/clean".to_string()]);
         assert!(cleaned(&board, 0));
         assert!(!cleaned(&board, 1), "a dirty worktree is never cleaned");
         assert!(board.model.marked_ids().is_empty());
         let message = board.model.message().unwrap_or_default().to_string();
-        assert!(message.contains("done 3"), "{message}");
-        assert!(message.contains("cleaned 1"), "{message}");
-        assert!(
-            message.contains("kept T2 (uncommitted changes)"),
-            "{message}"
-        );
+        assert_eq!(message, "done 2 · cleaned 1 · unchanged 1");
 
         let disk = board
             .store
             .load()
             .expect("completion and cleaned markers persisted");
-        assert!(disk
-            .tasks()
-            .iter()
-            .all(|task| task.status == HumanStatus::Done));
+        assert_eq!(disk.get(board.ids[1]).unwrap().status, HumanStatus::Started);
         assert!(matches!(
             disk.last_undo(),
-            Some(UndoEntry::Batch { entries }) if entries.len() == 3
+            Some(UndoEntry::Batch { entries }) if entries.len() == 2
         ));
         press(&mut board, BoardIntent::Undo, &mut host);
-        assert!(
-            statuses(&board)
-                .iter()
-                .all(|status| *status == HumanStatus::Open),
-            "one undo reopens the whole set"
+        assert_eq!(
+            statuses(&board),
+            [HumanStatus::Open, HumanStatus::Started, HumanStatus::Open],
+            "one undo reopens every task it completed"
         );
         assert!(
             cleaned(&board, 0),
@@ -20298,9 +20386,10 @@ mod bulk_cleanup_tests {
         assert!(!board.model.cleanup_prompt().unwrap().checking());
         host.cached_merged = true;
         press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
-        assert!(statuses(&board)
-            .iter()
-            .all(|status| *status == HumanStatus::Done));
+        assert_eq!(
+            statuses(&board),
+            [HumanStatus::Done, HumanStatus::Started, HumanStatus::Done]
+        );
         assert_eq!(host.removed, vec!["w-clean".to_string()]);
         assert!(
             host.deleted.is_empty(),
@@ -20326,9 +20415,10 @@ mod bulk_cleanup_tests {
         tick(&mut board, &mut host);
         assert!(!board.model.cleanup_prompt().unwrap().checking());
         press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
-        assert!(statuses(&board)
-            .iter()
-            .all(|status| *status == HumanStatus::Done));
+        assert_eq!(
+            statuses(&board),
+            [HumanStatus::Done, HumanStatus::Started, HumanStatus::Done]
+        );
         assert_eq!(host.removed, vec!["w-clean".to_string()]);
         assert!(
             host.deleted.is_empty(),
@@ -20347,10 +20437,11 @@ mod bulk_cleanup_tests {
         // No check ever lands here: a `y` that waited for them would block until their bound.
         // Half that bound still catches it, with seconds to spare for a loaded runner's save.
         assert!(pressed.elapsed() < crate::dispatch::MERGE_CHECK_TIMEOUT / 2);
-        // The set is done at once; only the worker waits for the checks.
-        assert!(disk_statuses(&board)
-            .iter()
-            .all(|status| *status == HumanStatus::Done));
+        // The set is done at once (but for the dirty row); only the worker waits for checks.
+        assert_eq!(
+            disk_statuses(&board),
+            [HumanStatus::Done, HumanStatus::Started, HumanStatus::Done]
+        );
         tick(&mut board, &mut host);
         assert!(
             !board.model.cleanup_run().unwrap().started,
@@ -20639,9 +20730,18 @@ mod bulk_cleanup_tests {
     fn a_row_the_worker_kept_says_kept_once_on_the_card() {
         // These refusals carry `kept:` in their CLI wording; the card writes its own lead.
         for (error, reason) in [
-            (CleanupError::FilesInUse, "kept: files in use"),
-            (CleanupError::PathTooLong, "kept: path too long"),
-            (CleanupError::RemovalTimedOut, "kept: removal timed out"),
+            (
+                CleanupError::FilesInUse,
+                "done · cleanup refused: files in use",
+            ),
+            (
+                CleanupError::PathTooLong,
+                "done · cleanup refused: path too long",
+            ),
+            (
+                CleanupError::RemovalTimedOut,
+                "done · cleanup refused: removal timed out",
+            ),
         ] {
             let (mut board, mut host) = slow_board("kept-once");
             press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
@@ -20653,7 +20753,7 @@ mod bulk_cleanup_tests {
             assert!(board.model.cleanup_card_open(), "a kept row is not missed");
             let card = rendered_card(&board);
             assert!(card.contains(&format!("T1  {reason}")), "{card}");
-            assert!(!card.contains("kept: kept:"), "{card}");
+            assert!(!card.contains("refused: kept"), "{card}");
         }
     }
 
@@ -21022,6 +21122,10 @@ mod merge_cleanup_tests {
         queue: bool,
         /// The merge leaves the remote branch.
         remote_left: bool,
+        /// GitHub deletes the branch on merge, a moment late: the first this many checks
+        /// still find it.
+        remote_gone_after: Option<usize>,
+        remote_checks: usize,
         held: Option<(MergeJob, Vec<MergeRow>, MergeMethod)>,
     }
 
@@ -21062,6 +21166,7 @@ mod merge_cleanup_tests {
                 unreachable_remote: None,
                 worktree_exists: true,
                 dirty: self.dirty.contains(&record.branch),
+                dirty_files: Vec::new(),
                 branch_merged: false,
                 workspace_exists: true,
                 target_matches: true,
@@ -21101,7 +21206,11 @@ mod merge_cleanup_tests {
             Ok(())
         }
         fn remote_branch_exists(&mut self, _: &Path, _: &str, _: &str) -> Result<bool, String> {
-            Ok(self.remote_left)
+            self.remote_checks += 1;
+            Ok(match self.remote_gone_after {
+                Some(checks) => self.remote_checks <= checks,
+                None => self.remote_left,
+            })
         }
         fn delete_branch_at_tip(
             &mut self,
@@ -21347,7 +21456,11 @@ mod merge_cleanup_tests {
             assert_eq!(prompt.can_merge_any(), offered, "{label}");
             assert_eq!(prompt.rows[0].pr_line().as_deref(), line, "{label}");
             let painted = screen(&board.model);
-            assert_eq!(painted.contains("m merge"), offered, "{label}: {painted}");
+            assert_eq!(
+                painted.contains("m  squash-merge PR #7 to main"),
+                offered,
+                "{label}: {painted}"
+            );
         }
         // Without gh the card reads exactly as before: no PR line, no `m`.
         let mut board = board("no-gh", &["task"]);
@@ -21420,12 +21533,19 @@ mod merge_cleanup_tests {
         assert!(host.removed.is_empty() && host.deleted_at_tip.is_empty());
         let prompt = board.model.cleanup_prompt().expect("the card stays");
         assert!(board.model.cleanup_run().is_none());
-        assert_eq!(
-            prompt.rows[0].pr_line().as_deref(),
-            Some("merge failed: Pull request is not mergeable: the base branch policy prohibits the merge.")
+        assert!(prompt.options().is_empty(), "the card only closes now");
+        let painted = screen(&board.model);
+        assert!(
+            painted.contains("Merge failed: Pull request is not mergeable"),
+            "{painted}"
         );
-        assert!(prompt.can_merge_any(), "m may be tried again");
-        assert!(screen(&board.model).contains("base branch policy"));
+        assert!(painted.contains("nothing changed"), "{painted}");
+        assert!(painted.contains("esc close"), "{painted}");
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        assert!(host.removed.is_empty(), "y is gone with the options");
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        assert!(board.model.cleanup_prompt().is_none());
+        assert_eq!(status(&board, 0), HumanStatus::Started);
     }
 
     #[test]
@@ -21450,7 +21570,7 @@ mod merge_cleanup_tests {
         }
         tick(&mut board, &mut host);
         assert_eq!(status(&board, 0), HumanStatus::Started, "still merging");
-        assert!(screen(&board.model).contains("Merging with gh…"));
+        assert!(screen(&board.model).contains("Merging PR #7 with gh…"));
         let (job, rows, method) = host.held.take().expect("held merges");
         crate::dispatch::pr::run_merge_job(&job, &rows, method, &mut host);
         tick(&mut board, &mut host);
@@ -21584,11 +21704,10 @@ mod merge_cleanup_tests {
         tick(&mut board, &mut host);
         assert_eq!(on_disk(&board, 0), HumanStatus::Started);
         assert!(host.removed.is_empty());
-        assert_eq!(
-            board.model.cleanup_prompt().unwrap().rows[0]
-                .pr_line()
-                .as_deref(),
-            Some("merge failed: queued or not merged yet: open")
+        let painted = screen(&board.model);
+        assert!(
+            painted.contains("PR #7 is queued, not merged yet · nothing changed"),
+            "{painted}"
         );
     }
 
@@ -21633,7 +21752,7 @@ mod merge_cleanup_tests {
         assert_eq!(order.len(), 2);
         host.refuse
             .insert(order[0].clone(), "merge conflicts".into());
-        assert!(screen(&board.model).contains("m merge"));
+        assert!(screen(&board.model).contains("m  squash-merge PR #"));
         press(&mut board, BoardIntent::MergeCleanup, &mut host);
         let attempted = host
             .merges
@@ -21682,9 +21801,9 @@ mod merge_cleanup_tests {
         assert_eq!(host.removed.len(), 1);
         let painted = screen(&board.model);
         for line in [
-            "not merged, left as it was: merge conflicts",
-            "not merged, left as it was: no pull request",
-            "not merged, left as it was: no dispatch",
+            "merge failed: merge conflicts · unchanged",
+            "unchanged · not merged",
+            "unchanged · no dispatch",
         ] {
             assert!(
                 painted.contains(line),
@@ -21692,18 +21811,10 @@ mod merge_cleanup_tests {
             );
         }
         press(&mut board, BoardIntent::CancelCleanup, &mut host);
-        let message = board.model.message().unwrap_or_default().to_string();
-        assert!(
-            message.contains("merged 1 · 1 remote branch kept"),
-            "{message}"
+        assert_eq!(
+            board.model.message(),
+            Some("merged 1 · done 1 · cleaned 1 · 1 remote branch kept · unchanged 3")
         );
-        let (nopr, plain) = (number_of(&board, 2), number_of(&board, 3));
-        assert!(message.contains(&format!("T{nopr}")), "{message}");
-        assert!(message.contains(&format!("T{plain}")), "{message}");
-    }
-
-    fn number_of(board: &Board, index: usize) -> u64 {
-        board.domain.get(board.ids[index]).unwrap().number.unwrap()
     }
 
     #[test]
@@ -21720,5 +21831,241 @@ mod merge_cleanup_tests {
             painted.contains("can't merge: config.toml: [merge] method"),
             "{painted}"
         );
+    }
+
+    /// Age the open card past its early-Enter guard.
+    fn settle_card(board: &mut Board) {
+        let prompt = board.model.cleanup_prompt_mut().expect("card");
+        prompt.opened_at -= crate::ui::board::CLEANUP_ENTER_GUARD;
+    }
+
+    #[test]
+    fn enter_runs_the_selected_option_but_not_right_after_the_card_opens() {
+        let mut board = board("enter", &["task"]);
+        let mut host = MergeHost::default();
+        host.open_pr("tsk/task", "main");
+        press(&mut board, BoardIntent::Complete, &mut host);
+        assert_eq!(
+            key(&board, crossterm::event::KeyCode::Enter, false),
+            Some(BoardIntent::CleanupRunSelected)
+        );
+        // The tail of a double tap on the key that opened the card.
+        press(&mut board, BoardIntent::CleanupRunSelected, &mut host);
+        assert!(host.merges.is_empty(), "too soon: nothing runs");
+        assert!(board.model.cleanup_prompt().is_some());
+        settle_card(&mut board);
+        // The cursor starts on the bold `m`; move it to `n` and back to `y`.
+        press(&mut board, BoardIntent::CleanupSelectDown, &mut host);
+        press(&mut board, BoardIntent::CleanupSelectDown, &mut host);
+        press(&mut board, BoardIntent::CleanupSelectUp, &mut host);
+        press(&mut board, BoardIntent::CleanupRunSelected, &mut host);
+        assert!(host.merges.is_empty(), "y never merges");
+        assert_eq!(on_disk(&board, 0), HumanStatus::Done);
+        tick(&mut board, &mut host);
+        assert_eq!(host.removed, ["w-task"], "y removed the worktree");
+        assert!(
+            host.deleted_at_tip.is_empty(),
+            "and kept the open PR's branch"
+        );
+    }
+
+    #[test]
+    fn enter_on_the_likely_option_merges() {
+        let mut board = board("enter-merge", &["task"]);
+        let mut host = MergeHost::default();
+        host.open_pr("tsk/task", "main");
+        press(&mut board, BoardIntent::Complete, &mut host);
+        settle_card(&mut board);
+        press(&mut board, BoardIntent::CleanupRunSelected, &mut host);
+        assert_eq!(host.merges.len(), 1, "the cursor started on m");
+    }
+
+    #[test]
+    fn a_double_click_runs_its_option_and_one_across_two_lines_runs_neither() {
+        let mut board = board("click", &["task"]);
+        let mut host = MergeHost::default();
+        host.open_pr("tsk/task", "main");
+        press(&mut board, BoardIntent::Complete, &mut host);
+        // `m` then `y`: two lines, each click only selects.
+        press(&mut board, BoardIntent::CleanupClickOption(0), &mut host);
+        press(&mut board, BoardIntent::CleanupClickOption(1), &mut host);
+        assert!(host.merges.is_empty());
+        assert_eq!(status(&board, 0), HumanStatus::Started);
+        assert_eq!(
+            board.model.cleanup_prompt().unwrap().selected,
+            Some(crate::ui::board::CleanupChoice::Clean)
+        );
+        // A press elsewhere disarms the pending double click.
+        board.model.cancel_project_header_double_click();
+        press(&mut board, BoardIntent::CleanupClickOption(1), &mut host);
+        assert_eq!(status(&board, 0), HumanStatus::Started);
+        press(&mut board, BoardIntent::CleanupClickOption(1), &mut host);
+        assert_eq!(
+            on_disk(&board, 0),
+            HumanStatus::Done,
+            "the double click ran y"
+        );
+        assert!(host.merges.is_empty());
+    }
+
+    #[test]
+    fn a_choice_the_card_does_not_offer_does_nothing() {
+        let mut board = board("unoffered", &["task"]);
+        let mut host = MergeHost::default();
+        host.prs.insert(
+            "tsk/task".into(),
+            PullRequest {
+                number: 9,
+                url: String::new(),
+                state: PrState::Merged,
+                head_oid: tip("tsk/task"),
+                base: "main".into(),
+            },
+        );
+        press(&mut board, BoardIntent::Complete, &mut host);
+        // Already merged: no `m` on the card, so the key does nothing.
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        assert!(host.merges.is_empty());
+        assert!(board.model.cleanup_prompt().is_some());
+    }
+
+    /// T: `open` (open PR), `merged` (merged at its tip), `nopr` (not merged), `dirty`
+    /// (uncommitted, with an open PR).
+    fn four_kinds(label: &str, host: &mut MergeHost) -> Board {
+        let board = board(label, &["open", "merged", "nopr", "dirty"]);
+        host.open_pr("tsk/open", "main");
+        host.open_pr("tsk/dirty", "main");
+        host.prs.insert(
+            "tsk/merged".into(),
+            PullRequest {
+                number: 8,
+                url: String::new(),
+                state: PrState::Merged,
+                head_oid: tip("tsk/merged"),
+                base: "main".into(),
+            },
+        );
+        host.dirty.insert("tsk/dirty".into());
+        board
+    }
+
+    #[test]
+    fn bulk_m_merges_open_prs_tidies_merged_rows_and_leaves_the_rest_unchanged() {
+        let mut host = MergeHost {
+            remote_gone_after: Some(0),
+            ..MergeHost::default()
+        };
+        let mut board = four_kinds("bulk-kinds", &mut host);
+        press(&mut board, BoardIntent::Complete, &mut host);
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        assert_eq!(
+            host.merges
+                .iter()
+                .map(|(branch, ..)| branch.as_str())
+                .collect::<Vec<_>>(),
+            ["tsk/open"],
+            "only the clean open PR merges"
+        );
+        tick(&mut board, &mut host);
+        tick(&mut board, &mut host);
+        assert_eq!(
+            [0, 1, 2, 3].map(|index| on_disk(&board, index)),
+            [
+                HumanStatus::Done,
+                HumanStatus::Done,
+                HumanStatus::Started,
+                HumanStatus::Started,
+            ],
+            "m never marks an unmerged task done"
+        );
+        let mut removed = host.removed.clone();
+        removed.sort();
+        assert_eq!(removed, ["w-merged", "w-open"], "both merged rows tidied");
+        assert_eq!(
+            host.deleted_at_tip.len(),
+            2,
+            "both branches deleted at their tips"
+        );
+        let painted = screen(&board.model);
+        for line in [
+            "T1  merged PR #7 (squash) · done · cleaned · remote",
+            "branch deleted by GitHub",
+            "done · cleaned",
+            "unchanged · not merged",
+            "unchanged · uncommitted changes",
+        ] {
+            assert!(painted.contains(line), "{line}:\n{painted}");
+        }
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        assert_eq!(
+            board.model.message(),
+            Some("merged 1 · done 2 · cleaned 2 · unchanged 2")
+        );
+        assert!(matches!(
+            board.domain.last_undo(),
+            Some(crate::domain::UndoEntry::Batch { entries }) if entries.len() == 2
+        ));
+    }
+
+    #[test]
+    fn a_failed_merge_never_stops_an_already_merged_row_from_tidying() {
+        let mut host = MergeHost::default();
+        let mut board = four_kinds("bulk-fail", &mut host);
+        host.refuse
+            .insert("tsk/open".into(), "merge conflicts".into());
+        press(&mut board, BoardIntent::Complete, &mut host);
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        tick(&mut board, &mut host);
+        tick(&mut board, &mut host);
+        assert_eq!(
+            on_disk(&board, 0),
+            HumanStatus::Started,
+            "refused: unchanged"
+        );
+        assert_eq!(
+            on_disk(&board, 1),
+            HumanStatus::Done,
+            "merged: tidied anyway"
+        );
+        assert_eq!(host.removed, ["w-merged"]);
+        let painted = screen(&board.model);
+        assert!(
+            painted.contains("merge failed: merge conflicts · unchanged"),
+            "{painted}"
+        );
+    }
+
+    #[test]
+    fn the_remote_branch_is_reported_as_it_really_is_after_the_merge() {
+        // GitHub deletes the branch on merge a moment late: the first look still finds it.
+        for (host, note) in [
+            (
+                MergeHost {
+                    remote_gone_after: Some(2),
+                    ..MergeHost::default()
+                },
+                "remote branch deleted by GitHub",
+            ),
+            (
+                MergeHost {
+                    remote_left: true,
+                    ..MergeHost::default()
+                },
+                "remote branch kept",
+            ),
+        ] {
+            let mut host = host;
+            let mut board = board("remote", &["task"]);
+            host.open_pr("tsk/task", "main");
+            press(&mut board, BoardIntent::Complete, &mut host);
+            press(&mut board, BoardIntent::MergeCleanup, &mut host);
+            tick(&mut board, &mut host);
+            tick(&mut board, &mut host);
+            // A clean finish closes the card onto the status row.
+            assert_eq!(
+                board.model.message(),
+                Some(format!("done T1 · merged PR #7 (squash) · cleaned · {note}").as_str())
+            );
+        }
     }
 }
