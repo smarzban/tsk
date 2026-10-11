@@ -123,8 +123,8 @@ pub struct TaskRowLine {
 
 /// Paint one task as ONE OR MORE list lines. Persisted tasks lead with a dim,
 /// presentation-only identifier; wrapped title continuations align under the title text.
-/// A row that paints a live line under it (`live_gutter`) carries a dim `│` on each
-/// continuation in the live line's `└` column, inside the indent, so the title wraps as before.
+/// A row with a live line or an open peek under it (`live_gutter`) carries a dim `│` on each
+/// continuation in the `└` column, inside the indent, so the title wraps as before.
 pub fn paint_task_row_lines(
     row: &TaskRowPaint<'_>,
     geo: &TierGeometry,
@@ -5087,14 +5087,12 @@ fn detail_lines_for_task(
         .max(1);
     let block_lines = peek_block_lines(task, tasks, now);
     let has_block = !block_lines.is_empty();
-    let links = after_peek_lines(task, tasks)
-        .into_iter()
-        .map(|text| (text, style_dim()));
-    for (text, style) in block_lines.into_iter().chain(links) {
+    // Peek text is dim, whatever it says: the row above stays the one thing at full weight.
+    for text in block_lines.into_iter().chain(after_peek_lines(task, tasks)) {
         for row in crate::ui::edit::wrap_text(&text, room) {
             push(
                 &mut lines,
-                paint_bounded_line(&format!("{indent}{}", row.text), width, style),
+                paint_bounded_line(&format!("{indent}{}", row.text), width, style_dim()),
             );
         }
     }
@@ -5220,7 +5218,7 @@ fn row_reply_rows(
 /// The peek's block or review lines, one per item before wrapping: the live line, then why
 /// and `Decide:` the options (or the needs) for a block, the done text and every check on one
 /// line for a review. Empty unless the task is blocked or in review with a recorded block.
-fn peek_block_lines(task: &Task, tasks: &[Task], now: SystemTime) -> Vec<(String, Style)> {
+fn peek_block_lines(task: &Task, tasks: &[Task], now: SystemTime) -> Vec<String> {
     let mut lines = Vec::new();
     // A notice peeks its notes, whatever its status: it has no live line to lead with.
     if !matches!(task.status, HumanStatus::Blocked | HumanStatus::Review) || task.is_notice() {
@@ -5238,11 +5236,11 @@ fn peek_block_lines(task: &Task, tasks: &[Task], now: SystemTime) -> Vec<(String
         return lines;
     };
     if let Some(live) = live_line(task, tasks, now) {
-        lines.push((super::terminal_text(&live), style_plain()));
+        lines.push(super::terminal_text(&live));
     }
     if review {
         if let Some(done) = block.done.as_deref() {
-            lines.push((one_line(done), style_plain()));
+            lines.push(one_line(done));
         }
         if !block.checks.is_empty() {
             let checks = block
@@ -5251,12 +5249,12 @@ fn peek_block_lines(task: &Task, tasks: &[Task], now: SystemTime) -> Vec<(String
                 .map(|check| format!("{} {}", check_glyph(check.state), one_line(&check.text)))
                 .collect::<Vec<_>>()
                 .join("   ");
-            lines.push((checks, style_plain()));
+            lines.push(checks);
         }
         return lines;
     }
     if let Some(why) = block.why.as_deref() {
-        lines.push((one_line(why), style_plain()));
+        lines.push(one_line(why));
     }
     if !block.options.is_empty() {
         let options = block
@@ -5265,9 +5263,9 @@ fn peek_block_lines(task: &Task, tasks: &[Task], now: SystemTime) -> Vec<(String
             .map(|option| one_line(option))
             .collect::<Vec<_>>()
             .join(" · ");
-        lines.push((format!("Decide: {options}"), style_plain()));
+        lines.push(format!("Decide: {options}"));
     } else if let Some(needs) = block.needs.as_deref() {
-        lines.push((one_line(needs), style_plain()));
+        lines.push(one_line(needs));
     }
     lines
 }
@@ -5389,7 +5387,9 @@ fn build_list_rows_inner(
                 },
                 geo,
                 0,
-                live_text.is_some(),
+                // Whatever hangs under the row at the `└` column, its live line or its open
+                // peek, joins the wrapped title through the gutter.
+                live_text.is_some() || detail_target == Some(task.id),
             )
         };
         let live = live_text

@@ -335,6 +335,13 @@ for (const width of [40, 78, 109])
       await readReference(`peek-${width}`),
     );
     await expect(row(page, 12).locator(".tsk-live-line")).toHaveCount(0);
+    // The peek keeps the gutter on the wrapped title, so no gap opens above it.
+    await expect
+      .poll(() => paintedRow(row(page, 12)))
+      .toEqual({
+        lines: await readReference(`peek-row-${width}`),
+        aligned: true,
+      });
     await capture(page, info, "project-peek");
     await page.keyboard.press("Escape");
     await expect(page.locator(".tsk-attribution")).toHaveCount(0);
@@ -383,6 +390,12 @@ for (const width of [110, 130])
       await readReference(`preview-peek-${width}`),
     );
     await expect(previewRow.locator(".tsk-live-line")).toHaveCount(0);
+    await expect
+      .poll(() => paintedRow(previewRow))
+      .toEqual({
+        lines: await readReference(`preview-peek-row-${width}`),
+        aligned: true,
+      });
     await page.keyboard.press("h");
     await expect(preview.locator(".tsk-peek")).toHaveCount(0);
     await expect(previewRow.locator(".tsk-live-line")).toHaveText(

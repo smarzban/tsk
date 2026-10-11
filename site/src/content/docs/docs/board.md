@@ -186,7 +186,7 @@ Cleanup closes the dispatch's Herdr workspace, removes its recorded worktree, an
 
 Status glyphs are `◌` open, `○` ready, `●` started, `■` blocked, `▲` review, and `✓` done. A started task with a live [dispatch](#dispatch) shows `◉` instead of `●`; any other status, or a cleaned dispatch, shows the normal glyph. A task blocked on another task or on something else shows `□`; a review on an agent or on something else shows `△`.
 
-A row with something to say carries a dim **live line** under it, in the peek's `└─` style, wrapped and never cut. It is part of its row: selection never stops on it and a click on it acts on the task. When the row's title wraps, each wrapped title line carries a dim `│` in the `└` column, so the title and its live line read as one block; the title keeps its wrap width. The right edge of a row stays empty.
+A row with something to say carries a dim **live line** under it, in the peek's `└─` style, wrapped and never cut. It is part of its row: selection never stops on it and a click on it acts on the task. When the row's title wraps, each wrapped title line carries a dim `│` in the `└` column, so the title and its live line (or its open peek) read as one block; the title keeps its wrap width. The right edge of a row stays empty.
 
 | Row | Live line |
 | --- | --- |
@@ -200,7 +200,7 @@ A row with something to say carries a dim **live line** under it, in the peek's 
 
 The age is how long the row has been in that state: since the block or review round opened, or since the blocking task finished. A started task, a done or archived task, a [notice](#notices), and a waiting task whose prerequisites are all done have no live line. When the blocking task is done, the blocked task returns to NEEDS YOU; tsk never changes the status itself.
 
-The [peek](#mouse) replaces the live line, and closing it brings the line back. A blocked task's peek opens with the live line's text, then the why, then `Decide: <option> · <option>` when there are options or else the needs, then the footer. A review's peek opens with the live line's text, then what was done, then every check on one wrapped line (`○` open, `✓` passed, `✗` failed), then the footer. Neither shows the notes; `Enter` opens the task page for them. A notice, or a blocked or review task with no recorded block or round, peeks its notes as usual.
+The [peek](#mouse) replaces the live line, and closing it brings the line back. Everything in a peek is dim. A blocked task's peek opens with the live line's text, then the why, then `Decide: <option> · <option>` when there are options or else the needs, then the footer. A review's peek opens with the live line's text, then what was done, then every check on one wrapped line (`○` open, `✓` passed, `✗` failed), then the footer. Neither shows the notes; `Enter` opens the task page for them. A notice, or a blocked or review task with no recorded block or round, peeks its notes as usual.
 
 ### Block with a reason
 

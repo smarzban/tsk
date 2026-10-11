@@ -7108,23 +7108,68 @@ fn wrapped_titles_above_a_live_line_carry_a_gutter_in_its_column() {
         );
     }
 
-    // An open peek replaces the live line, and with it the gutter.
-    model.selection_id = Some(Uuid::from_u128(13));
-    model.detail_open = Some(Uuid::from_u128(13));
-    let (rows, _) = paint(40, 80, &model);
-    let body = rows.iter().map(|row| list_body(row)).collect::<Vec<_>>();
-    let lines = block(&body, 13);
-    assert_eq!(
-        lines[1..]
-            .iter()
-            .position(|line| line.starts_with("    │ @pi reviewing")),
-        Some(5),
-        "{lines:?}"
-    );
-    assert!(
-        lines[1..6].iter().all(|line| line.starts_with("        ")),
-        "{lines:?}"
-    );
+    // An open peek replaces the live line and keeps the gutter, so the title runs into the
+    // peek's own `│` with no gap; a row with no live line gains it while its peek is open.
+    for (number, first_peek) in [(13, "    │ @pi reviewing"), (9, "    │ ")] {
+        model.selection_id = Some(Uuid::from_u128(number.into()));
+        model.detail_open = Some(Uuid::from_u128(number.into()));
+        let (rows, _) = paint(40, 80, &model);
+        let body = rows.iter().map(|row| list_body(row)).collect::<Vec<_>>();
+        let lines = block(&body, number);
+        assert!(
+            lines[1..6].iter().all(|line| line.starts_with("    │  ")),
+            "T{number}: {lines:?}"
+        );
+        assert!(lines[6].starts_with(first_peek), "T{number}: {lines:?}");
+    }
+}
+
+#[test]
+fn blocked_and_review_peek_text_stays_dim() {
+    let tasks = live_line_tasks();
+    let view = fixture_view_projects(&tasks, false);
+    // T1 a block with options, T3 a review with checks, T8 an after link.
+    for id in [1u128, 3, 8] {
+        let mut model = fixture_model_on_tab(&tasks, &view, NavTab::ProjectBoard);
+        model.selection_id = Some(Uuid::from_u128(id));
+        model.detail_open = Some(Uuid::from_u128(id));
+        let (width, height) = (78u16, 60u16);
+        let geo = tier::resolve(width, height);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|frame: &mut Frame| {
+                let _ = draw_queue_frame(frame, &model, &geo, Rect::new(0, 0, width, height));
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let row = |y: u16| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        };
+        let top = (0..height)
+            .find(|y| row(*y).starts_with('▸'))
+            .expect("selected row");
+        let mut checked = 0;
+        for y in top + 1..height {
+            if !row(y).starts_with("    │ ") {
+                break;
+            }
+            for x in 6..width {
+                let cell = &buffer[(x, y)];
+                if cell.symbol() != " " {
+                    assert!(
+                        cell.style().add_modifier.contains(Modifier::DIM),
+                        "T{id}: {:?} at {x} is not dim in {:?}",
+                        cell.symbol(),
+                        row(y)
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0, "T{id}: no peek text");
+    }
 }
 
 #[test]

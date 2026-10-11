@@ -1656,10 +1656,10 @@ import { parseCapture } from "./capture.js";
     ].join("");
   }
 
-  // A row whose live line shows carries a dim `│` in the live line's `└` column beside each
-  // wrapped title line, padded to the prefix so the title keeps its column.
-  function liveGutter(live, titleLines, prefixCells) {
-    if (!live) return "";
+  // A row with a live line or an open peek under it carries a dim `│` in the `└` column
+  // beside each wrapped title line, padded to the prefix so the title keeps its column.
+  function liveGutter(hanging, titleLines, prefixCells) {
+    if (!hanging) return "";
     return titleLines
       .slice(1)
       .map(
@@ -2717,7 +2717,7 @@ import { parseCapture } from "./capture.js";
         const peek = peekOpen ? peekHtml(task, width) : "";
         const live = peekOpen ? "" : liveHtml(task, width);
         const gutter = liveGutter(
-          live,
+          live || peekOpen,
           titleLines,
           4 + `T${task.number} `.length,
         );
@@ -2890,7 +2890,7 @@ import { parseCapture } from "./capture.js";
         // The peek replaces the live line.
         const live = peekOpen ? "" : liveHtml(task, columns);
         const gutter = liveGutter(
-          live,
+          live || peekOpen,
           titleLines,
           indent.length + 4 + `T${task.number} `.length,
         );

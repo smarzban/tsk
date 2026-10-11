@@ -104,6 +104,12 @@ fn export_reference(text: &str, width: u16, name: &str) {
                 &format!("peek-{width}.json"),
                 &under_row(text, "T12 ", 0),
             );
+            // The open peek keeps the row's gutter on its wrapped title.
+            write_json(
+                &dir,
+                &format!("peek-row-{width}.json"),
+                &row_lines(text, "T12 ", 0),
+            );
         }
         if name.starts_with("preview-") {
             // The project preview is the right column: drop the index column and its rule.
@@ -118,11 +124,11 @@ fn export_reference(text: &str, width: u16, name: &str) {
                 &format!("{name}-{width}.json"),
                 &under_row(text, "T12 ", column),
             );
-            if name == "preview-live" {
+            if name == "preview-live" || name == "preview-peek" {
                 // The row's wrapped title, with the live line's gutter beside it.
                 write_json(
                     &dir,
-                    &format!("preview-row-{width}.json"),
+                    &format!("{}-row-{width}.json", name.trim_end_matches("-live")),
                     &row_lines(text, "T12 ", column),
                 );
             }

@@ -28,7 +28,8 @@ the GitHub release notes verbatim.
 
 ### Changed
 
-- A row whose title wraps above its live line carries a dim `│` beside each wrapped title line, in the live line's `└` column, so the row reads as one block, on the board, in the wide split, and in the project preview.
+- A row whose title wraps above its live line or an open peek carries a dim `│` beside each wrapped title line, in the `└` column, so the row reads as one block, on the board, in the wide split, and in the project preview.
+- A blocked or review task's peek is dim throughout, like every other peek.
 - The task page footer no longer shows created and updated dates; the paper trail has both.
 - `ctrl+r` and palette **set status: review** open the review card instead of setting review at once; `Enter` on the empty card still sets it immediately, and `ctrl+r` on a task in review still returns it to ready.
 - `tsk reply` also adds feedback to a task in review; `not-blocked` now means the task is neither blocked nor in review.
