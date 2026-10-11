@@ -110,8 +110,13 @@ branch, open a pull request into the base without merging, then set the task to 
 **Clean up a dispatch.** Only when the user asks, after review and merge: `tsk clean T12`, or
 `tsk status T12 done --clean` when they also said the task is done. Never clean the worktree you are
 running in. Cleanup removes a clean worktree and deletes the branch only when it is merged into the
-recorded base; otherwise it keeps the branch and says why (`branch.reason` in `--json`). Uncommitted
-work refuses with `dirty-worktree`. Deleting a kept branch is the user's decision.
+recorded base, or, with `gh` logged in, when its pull request merged at exactly the branch tip (a
+squash or rebase); otherwise it keeps the branch and says why (`branch.reason` in `--json`).
+Uncommitted work refuses with `dirty-worktree`. Deleting a kept branch is the user's decision.
+`tsk status T12 done --merge` (or `tsk clean T12 --merge`) merges the task's open pull request with
+`gh` first, then sets done and cleans; run it only when the user asked you to merge. A refusal
+(`no-pr`, `pr-not-open`, `merge-failed`, …) changed nothing: report gh's reason, never retry with
+other tools.
 
 **Hand back.** `tsk status T12 review --done "…" --check "…" [--check "…"] [--next "…"]`: what you
 did, one `--check` per thing the user should verify (they mark each passed or failed), and what comes

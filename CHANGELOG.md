@@ -25,6 +25,7 @@ the GitHub release notes verbatim.
 - Paper trail: the task page lists who did what, newest first, below the steps (`open → started · @claude 2m`, `notes edited · you 1h`, `dispatched tsk/t12-fix from origin/main @ 3333b79`). It opens collapsed and dim as `PAPER TRAIL · 14 ▸`; `g`, `Enter` on the heading, or a click shows every entry. Closed blocks and review rounds expand in place with `Enter` or a click, and repeats within a minute group (`3 steps checked`). `tsk list T12` prints the latest entries under `activity`, and `tsk list T12 --json` adds `activity` with `at`, `by`, `kind`, and `detail`.
 - After: a task can run after other tasks, in any project, and waits until they are done. Set it with the task page's After field, palette **set after…** (a task picker: `Space` ticks several, **none** clears), `!w T202` in quick-add, `tsk edit --after`, or `"after"` in add plans; **chain in order** links marked tasks in the order you marked them, as one undo. A waiting ready or open row's line reads `after T202 (started), T205 (open)`, the peek and page footer `after T202 · started` and `before T203`. When the last prerequisite is done, each waiting ready task starts in the same save (an assigned one then dispatches; a failed launch puts it back to ready, and while a marked-set dispatch is landing it waits) (`T203 started · T202 done`; the paper trail reads `started · after T202`), from the board, the cleanup card, or `tsk status T202 done`; `ctrl+u` reverts the statuses and leaves a launched agent running. Starting a waiting task asks first on the board and refuses with `after-not-done` in the CLI unless `--force`. Deleting a task drops it from every after list, and undo restores the links. `tsk list --json` adds `after` (each `task` and `done`) and a read-only `before`.
 - `tsk dispatch` and `tsk clean`, plus `--assignee` and `--base` on `tsk add`/`tsk edit`. Agent skill 1.5.0; `tsk update` refreshes installed copies.
+- Merge a task's pull request from the cleanup card: with the GitHub CLI (`gh`) installed and logged in, the card shows the task's pull request, and `m` merges an open one into the recorded base (`gh pr merge`, never `--admin`), then marks the task done and cleans up as `y` does. A failed merge changes nothing and the card shows gh's reason; on a marked set only the merged tasks complete. `[merge] method` in `config.toml` picks `merge` (the default), `squash`, or `rebase`. From a script: `tsk status T12 done --merge` or `tsk clean T12 --merge`.
 
 ### Changed
 
@@ -36,6 +37,7 @@ the GitHub release notes verbatim.
 
 ### Fixed
 
+- Cleanup deletes a squash- or rebase-merged branch when `gh` confirms its pull request merged at exactly the branch's tip; before, it was always kept as not merged. Without `gh` nothing changes.
 - A project reached through a symlinked path, such as `/tmp/repo` and `/private/tmp/repo` on macOS, is one project.
 - With tasks marked, `Esc` in the thread or view picker closes the picker and keeps the marks.
 - The task page's project chooser lists options top to bottom, so `↓` moves down.

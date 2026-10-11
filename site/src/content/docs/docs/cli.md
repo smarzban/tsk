@@ -200,12 +200,15 @@ tsk status T12 started
 tsk status T12 started --no-dispatch
 tsk status T12 review
 tsk status T12 done --clean
+tsk status T12 done --merge
 tsk status T13 started --force
 ```
 
 Accepts `open`, `ready`, `started` (or `start`), `blocked`, `review`, and `done`.
 
 Unlike keyboard toggles, this command sets the requested status directly. Repeating the same value is safe. `--clean` is valid only with `done`: tsk saves done first, then runs [`tsk clean`](#clean) when the task has a live dispatch. With no dispatch, or one already cleaned, it exits 0 and prints `nothing to clean`. A real cleanup refusal (such as `dirty-worktree`) exits 1 and leaves the task done.
+
+`--merge` is valid only with `done` and implies `--clean`. Before anything else it merges the task's open pull request with the GitHub CLI: `gh pr merge <branch> --<method> --match-head-commit <tip>`, the method from [`[merge]` in `config.toml`](/docs/storage/#merge-method), never `--admin`, `--auto`, or `--delete-branch`. It refuses, changing nothing, when the task has no live dispatch, its worktree has uncommitted changes, `gh` is missing or not logged in (`gh-unavailable`), there is no pull request for the branch (`no-pr`), the pull request is not open (`pr-not-open`), it targets another branch than the recorded base (`pr-base-mismatch`), the `[merge]` setting is invalid (`merge-config`), or GitHub refuses the merge or the pull request head is not the local branch tip (`merge-failed`, with gh's reason). Only after the merge succeeds does it set done and clean, as `--clean` does. The first line says what merged: `merged T12 pull request #41 (squash)`, adding `· remote branch origin/tsk/t12-… left in place` when the merge left it (tsk never deletes remote branches).
 
 Output: `status T12 <status> <title>`. The output uses `started`, even when the input was `start`.
 
@@ -328,20 +331,22 @@ Refusal codes: `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agen
 ```sh
 tsk clean T12
 tsk clean T12 --json
+tsk clean T12 --merge
 ```
 
-Removes a dispatched task's worktree after review, without changing its status. To complete and clean in one step, use `tsk status T12 done --clean`.
+Removes a dispatched task's worktree after review, without changing its status. To complete and clean in one step, use `tsk status T12 done --clean`. `--merge` first merges the task's pull request, then marks it done and cleans, exactly as [`tsk status T12 done --merge`](#status); with `--json` the result adds `merge` (`pr`, `url`, `method`, and `remote_branch`: `kept`, `deleted`, or `null` when unknown) and `"status": "done"`.
 
 - A worktree with uncommitted changes refuses with `dirty-worktree` and nothing is touched.
 - Otherwise tsk checks that the recorded path is a Git worktree of the project, not its root, and matches the recorded Herdr workspace (`worktree-mismatch` if not). It closes that workspace when running inside Herdr and removes the worktree.
 - The branch is deleted only when it is merged into the recorded base. tsk fetches the base first (unless inside the [fetch window](/docs/storage/#fetch-window)), so a merge on GitHub counts without a local pull.
-- The branch is kept, with a reason, when it is not merged (squash merges do not count: "not merged into origin/main; squash-merged? delete by hand"), when the fetch fails and the merge cannot be confirmed (`could not reach <remote> to confirm the merge`), when the base no longer exists, or when the branch is checked out elsewhere or changes during cleanup.
+- A squash or rebase merge leaves no Git ancestry. When the branch reads unmerged and `gh` is installed and logged in, tsk asks GitHub (`gh pr view <branch>`): it deletes the branch only when the pull request is merged and its head is exactly the local branch tip, comparing that tip as it deletes. A merged pull request whose head differs keeps the branch: "PR merged but the branch has newer commits; delete by hand".
+- The branch is kept, with a reason, when it is not merged (without `gh`, a squash merge reads as "not merged into origin/main; squash-merged? delete by hand"), when the fetch fails and the merge cannot be confirmed (`could not reach <remote> to confirm the merge`), when the base no longer exists, or when the branch is checked out elsewhere or changes during cleanup.
 - A worktree that is already gone counts as cleaned.
 - On Windows, cleanup can also refuse with `files-in-use`, `path-too-long`, `removal-timed-out`, or `partly-removed`, keeping the dispatch; see [Dispatch on Windows](/docs/board/#dispatch-on-windows-preview) for what to do.
 
 The task keeps its dispatch record, marked `cleaned`. Human output says whether the worktree, branch, and workspace were removed or kept, and says `already closed` for a workspace that was gone before cleanup ran, such as one an earlier refused Windows cleanup closed. `--json` returns the same outcomes (`workspace.outcome` is `removed`, `kept`, or `missing`), with `branch.reason` for a kept branch (`null` when deleted) and `warning` naming a failed fetch (`null` otherwise).
 
-Refusal codes: `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`, and `herdr-failed`; these exit 1. Store failures exit 3 with `store-error`. There is no force option.
+Refusal codes: `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`, and `herdr-failed`; with `--merge` also `gh-unavailable`, `no-pr`, `pr-not-open`, `pr-base-mismatch`, `merge-failed`, `merge-config`. These exit 1. Store failures exit 3 with `store-error`. There is no force option.
 
 ## steps
 
@@ -493,9 +498,9 @@ After an uncertain add, inspect `tsk list --all --json`. Also check `--done` and
 | Add | `empty-title`, `invalid-title`, `invalid-thread`, `invalid-item`, `unknown-project`, `unknown-agent`, `unknown-base`, `project-archived`, `invalid-after` |
 | Edit | `empty-title`, `invalid-title`, `unknown-task`, `soft-deleted-task`, `unknown-agent`, `unknown-base`, `invalid-after`, `after-loop` |
 | Dispatch | `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `unsupported-platform`, `unsafe-state-dir`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, `unknown-base`, `no-default-base`, `herdr-failed` |
-| Clean | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`, `herdr-failed` |
+| Clean | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`, `herdr-failed`; with `--merge` also `gh-unavailable`, `no-pr`, `pr-not-open`, `pr-base-mismatch`, `merge-failed`, `merge-config` |
 | Steps | `empty-step-text`, `invalid-step-text`, `unknown-task`, `soft-deleted-task`, `unknown-step`, `ambiguous-step` |
-| Status | `unknown-task`, `soft-deleted-task`, `text-too-long`, `invalid-blocker`; `started` adds `after-not-done`, `agent-gone`, and the launch codes `unknown-agent`, `agent-config`, `unsupported-platform`, `unsafe-state-dir`, `needs-git-project`, `unknown-base`, `no-default-base`, `herdr-failed`; with `--clean`, cleanup codes above except `not-dispatched` and `already-cleaned` |
+| Status | `unknown-task`, `soft-deleted-task`, `text-too-long`, `invalid-blocker`; `started` adds `after-not-done`, `agent-gone`, and the launch codes `unknown-agent`, `agent-config`, `unsupported-platform`, `unsafe-state-dir`, `needs-git-project`, `unknown-base`, `no-default-base`, `herdr-failed`; with `--clean`, cleanup codes above except `not-dispatched` and `already-cleaned`; with `--merge`, every cleanup code above plus `gh-unavailable`, `no-pr`, `pr-not-open`, `pr-base-mismatch`, `merge-failed`, `merge-config` |
 | Reply | `unknown-task`, `soft-deleted-task`, `not-blocked`, `empty-reply`, `text-too-long` |
 | Archive / unarchive | `unknown-task`, `soft-deleted-task` |
 
