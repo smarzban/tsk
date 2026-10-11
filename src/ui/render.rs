@@ -128,6 +128,22 @@ pub fn paint_task_row_lines(
     geo: &TierGeometry,
     leading_indent: usize,
 ) -> Vec<TaskRowLine> {
+    paint_labelled_task_row_lines(row, geo, leading_indent, None)
+}
+
+/// Narrowest board row that labels tasks with their `#thread · project`.
+pub const ROW_LABEL_MIN_WIDTH: u16 = 78;
+
+/// [`paint_task_row_lines`] with an optional dim label at the first line's right edge.
+/// The title wraps exactly as it would unlabelled; the label paints only when it fits
+/// beside the first title line with a two-cell gap, and otherwise drops. It never
+/// shortens or truncates the title.
+pub fn paint_labelled_task_row_lines(
+    row: &TaskRowPaint<'_>,
+    geo: &TierGeometry,
+    leading_indent: usize,
+    label: Option<&str>,
+) -> Vec<TaskRowLine> {
     let row_w = geo.row_width.saturating_sub(2) as usize;
     let title_budget = row_w;
     let glyph_cells = display_width(&super::terminal_text(row.glyph));
@@ -161,7 +177,7 @@ pub fn paint_task_row_lines(
     let mut title_geo = *geo;
     title_geo.row_width = row_w as u16;
     lines.push(TaskRowLine {
-        line: paint_task_row_with_indent(&head, &title_geo, leading_indent),
+        line: paint_task_row_with_indent(&head, &title_geo, leading_indent, label),
         content_x: head_content_x,
         content_width: head_content_width,
         identifier,
@@ -197,11 +213,24 @@ fn paint_task_row(row: &TaskRowPaint<'_>, geo: &TierGeometry) -> Line<'static> {
     paint_task_row_lines(row, geo, 0).remove(0).line
 }
 
+// Unit-test adapter for the labelled first line.
+#[cfg(test)]
+fn paint_labelled_task_row(
+    row: &TaskRowPaint<'_>,
+    geo: &TierGeometry,
+    label: &str,
+) -> Line<'static> {
+    paint_labelled_task_row_lines(row, geo, 0, Some(label))
+        .remove(0)
+        .line
+}
+
 /// Paint a task row with extra leading cells reserved for a containing visual group.
 fn paint_task_row_with_indent(
     row: &TaskRowPaint<'_>,
     geo: &TierGeometry,
     leading_indent: usize,
+    label: Option<&str>,
 ) -> Line<'static> {
     let row_w = geo.row_width as usize;
     let title_budget = row_w;
@@ -226,7 +255,11 @@ fn paint_task_row_with_indent(
         .saturating_add(display_width(identifier_gap))
         .saturating_add(display_width(&title));
 
-    let leader = " ".repeat(row_w.saturating_sub(left_w));
+    let label = label
+        .map(|label| present_line(label, row_w))
+        .filter(|label| !label.is_empty() && left_w + 2 + display_width(label) <= row_w);
+    let label_w = label.as_deref().map(display_width).unwrap_or(0);
+    let leader = " ".repeat(row_w.saturating_sub(left_w).saturating_sub(label_w));
 
     let (title_style, identifier_style, leader_style) = if row.dim {
         (style_dim(), style_dim(), style_dim())
@@ -251,6 +284,9 @@ fn paint_task_row_with_indent(
     spans.push(Span::styled(title, title_style));
     if !leader.is_empty() {
         spans.push(Span::styled(leader, leader_style));
+    }
+    if let Some(label) = label {
+        spans.push(Span::styled(label, style_dim()));
     }
     bound_line(Line::from(spans), row_w)
 }
@@ -571,6 +607,8 @@ pub struct QueueFrameModel<'a> {
     pub inbox_header_selected: bool,
     /// Every task row paints dim: the read-only archived focus (AC-41).
     pub rows_dim: bool,
+    /// Sub-header ids of folded groups (session-only).
+    pub folded_groups: BTreeSet<Uuid>,
 }
 
 /// Persistent navigation row paint: three fixed tabs plus the destination control.
@@ -585,6 +623,8 @@ pub struct NavPaint {
     pub slot2_project: bool,
     /// Right-side control of the active destination.
     pub chip: Option<NavChipPaint>,
+    /// The `group: … · sort: …` indicator, beside the chip; `None` at the default layout.
+    pub layout: Option<String>,
 }
 
 /// The right-side destination control: the project board's thread filter, or the
@@ -593,6 +633,9 @@ pub struct NavPaint {
 pub struct NavChipPaint {
     pub label: String,
     pub kind: NavChipKind,
+    /// An idle control that is dropped instead of taking its own row when it does not
+    /// fit beside the tabs (the unfiltered desk's `all ▾`).
+    pub optional: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -610,12 +653,14 @@ pub enum BoardSurface {
     ThreadView,
 }
 
-/// The project picker's tab row: which list is active and how many entries the
-/// archived one carries.
+/// A picker's tab row: the project picker's `projects · archived (n)`, or the desk
+/// filter's `threads · projects` (`filter`). `archived_active` marks the second tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PickerTabsPaint {
     pub archived_active: bool,
     pub archived_count: usize,
+    /// The desk filter's tab pair instead of the project picker's.
+    pub filter: bool,
 }
 
 /// Logical control under a painted rectangle (rebuilt every frame).
@@ -646,6 +691,10 @@ pub enum QueueHitTarget {
     ArchivedHeader,
     /// The ON DECK inbox group header: selects the row and toggles the group.
     InboxHeader,
+    /// A group sub-header inside a status section (its chrome row id): toggles the group.
+    GroupHeader(Uuid),
+    /// The selector row's `group: … · sort: …` indicator: opens the group picker.
+    NavLayout,
     /// One painted row of the open palette, indexed exactly as
     /// `BoardModel::visible_commands()` orders them, so a click resolves straight to that
     /// command's own intent ( residual: mapped through the model's command list, never
@@ -1213,12 +1262,11 @@ fn draw_queue_frame_impl(
                 if selector_chip_wraps(model, width) {
                     let chip_row = row.saturating_add(2);
                     if chip_row < geo.rule_row.unwrap_or(geo.height) {
-                        let (chip, x, chip_width) = paint_selector_chip(model, width);
+                        let (chip, regions) = paint_selector_chip(model, width);
                         put_line(frame, surface, chip_row, width, chip);
-                        hits.push(
-                            QueueHitTarget::NavChip,
-                            Rect::new(x, chip_row, chip_width, 1),
-                        );
+                        for (target, x, w) in regions {
+                            hits.push(target, Rect::new(x, chip_row, w, 1));
+                        }
                     }
                 }
             }
@@ -2265,6 +2313,22 @@ const PROJECT_PICKER_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "ctrl+f",
         label: "archive",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "close",
+    },
+];
+
+/// The desk filter's tabbed picker: arrows flip tabs, the rest is the list contract.
+const FILTER_FOOTER: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "←→",
+        label: "tab",
+    },
+    VerbEntry {
+        key: "enter",
+        label: "choose",
     },
     VerbEntry {
         key: "esc",
@@ -3467,6 +3531,7 @@ fn paint_scope_dropdown(
                 0
             },
             legend: match tabs {
+                Some(tabs) if tabs.filter => FILTER_FOOTER,
                 Some(tabs) if tabs.archived_active => ARCHIVED_TAB_FOOTER,
                 // Keyed on the painted width, not the tier: a tall-but-narrow frame and a
                 // wide-but-short one both get the largest legend their card can hold.
@@ -3485,8 +3550,14 @@ fn paint_scope_dropdown(
     // The picker's tab row: `projects · archived (n)`, active bold, inactive dim.
     if let Some(tabs) = tabs {
         let y = content.y;
-        let main = " projects ";
-        let archived = format!(" archived ({}) ", tabs.archived_count);
+        let (main, archived) = if tabs.filter {
+            (" threads ", " projects ".to_string())
+        } else {
+            (
+                " projects ",
+                format!(" archived ({}) ", tabs.archived_count),
+            )
+        };
         let main_w = display_width(main) as u16;
         let archived_w = display_width(&archived) as u16;
         let (main_style, archived_style) = if tabs.archived_active {
@@ -3533,7 +3604,7 @@ fn paint_scope_dropdown(
             surface,
             Rect::new(content.x, y, content.width, 1),
             paint_bounded_line(
-                if tabs.is_some() {
+                if tabs.is_some_and(|tabs| !tabs.filter) {
                     "  no archived projects"
                 } else {
                     "  no matching options"
@@ -3566,7 +3637,7 @@ fn paint_scope_dropdown(
         );
         // `j` remains the source index after windowing, so a click selects the same option
         // Up/Down plus Enter would confirm rather than its position within this paint slice.
-        if tabs.is_none() && title_override.is_some() {
+        if tabs.is_none_or(|tabs| tabs.filter) && title_override.is_some() {
             hits.push(QueueHitTarget::ListPickerOption(j), rect);
         } else {
             hits.push(QueueHitTarget::ProjectOption(j), rect);
@@ -3586,6 +3657,12 @@ enum ListRow {
     },
     /// The ON DECK inbox group header (sticky, selectable, hits map to the toggle).
     InboxHeader {
+        line: Line<'static>,
+    },
+    /// A group sub-header inside a status section (selectable while folded; hits map to
+    /// the group's fold toggle).
+    GroupHeader {
+        id: Uuid,
         line: Line<'static>,
     },
     /// One selectable projects index row (navigation, never a task). The selected
@@ -3695,6 +3772,15 @@ fn paint_list_row(
             if base_list_interactive {
                 hits.push(
                     QueueHitTarget::InboxHeader,
+                    Rect::new(0, y, content_width, 1),
+                );
+            }
+        }
+        ListRow::GroupHeader { id, line } => {
+            put_line(frame, surface, y, content_width, line.clone());
+            if base_list_interactive {
+                hits.push(
+                    QueueHitTarget::GroupHeader(*id),
                     Rect::new(0, y, content_width, 1),
                 );
             }
@@ -3823,7 +3909,8 @@ fn build_list_rows(
                      anchor_last_idx: &mut Option<usize>,
                      project_attribution: bool,
                      thread_label: bool,
-                     dim: bool| {
+                     dim: bool,
+                     project_label: bool| {
         let Some(task) = model.tasks.iter().find(|task| task.id == id) else {
             // Stale ids may outlive a snapshot refresh. Skip them without inventing a row.
             return;
@@ -3840,6 +3927,11 @@ fn build_list_rows(
         // A long title wraps onto continuation lines indented under its own first
         // row; every painted line carries the task's hit target and selection.
         let identifier = task.board_identifier();
+        // Wide rows carry the same attribution as a dim right-edge label; an open peek
+        // states it on its closing line instead, so it never paints twice.
+        let label = (geo.row_width >= ROW_LABEL_MIN_WIDTH && detail_target != Some(task.id))
+            .then(|| row_label(task, model.thread_labels && thread_label, project_label))
+            .filter(|label| !label.is_empty());
         let lines = if rail {
             paint_rail_row_lines(
                 task,
@@ -3850,7 +3942,7 @@ fn build_list_rows(
                 0,
             )
         } else {
-            paint_task_row_lines(
+            paint_labelled_task_row_lines(
                 &TaskRowPaint {
                     glyph: status_glyph(task.status),
                     identifier: identifier.as_deref(),
@@ -3863,6 +3955,7 @@ fn build_list_rows(
                 },
                 geo,
                 0,
+                label.as_deref(),
             )
         };
         if selected {
@@ -3988,6 +4081,7 @@ fn build_list_rows(
                     false,
                     false,
                     true,
+                    false,
                 );
             }
             continue;
@@ -4013,6 +4107,9 @@ fn build_list_rows(
                 continue;
             }
             let thread_label = model.thread_labels;
+            // Every desk inbox row is a desk task; its section already says so.
+            let inbox_project_label =
+                model.show_project_meta && model.surface != BoardSurface::Desk;
             for id in section.task_ids.iter().copied() {
                 push_task(
                     id,
@@ -4022,6 +4119,7 @@ fn build_list_rows(
                     false,
                     thread_label,
                     false,
+                    inbox_project_label,
                 );
             }
             continue;
@@ -4040,10 +4138,48 @@ fn build_list_rows(
             out.push(ListRow::Hint(paint_empty_hint(geo.row_width)));
             continue;
         }
-        // Thread labels paint beside project-board rows while no filter narrows the
-        // board (a selected thread makes every label the same word). Cross-project
-        // surfaces carry project attribution instead, through the meta flag.
+        // Row labels omit whatever the surface, its filter, or its grouping already says
+        // (the frame model's two dimension flags).
         let thread_label = model.thread_labels;
+        // `ON DECK · desk` already names its rows' scope.
+        let section_project_label = model.show_project_meta
+            && !(model.surface == BoardSurface::Desk && section.kind == SectionKind::OnDeck);
+        if !section.groups.is_empty() {
+            for group in &section.groups {
+                let folded = model.folded_groups.contains(&group.header_id);
+                let header_selected = model.selection_id == Some(group.header_id);
+                out.push(ListRow::GroupHeader {
+                    id: group.header_id,
+                    line: paint_group_header(
+                        &group.label,
+                        group.task_ids.len(),
+                        geo.row_width,
+                        header_selected,
+                        folded,
+                        true,
+                    ),
+                });
+                if header_selected {
+                    selected_idx = Some(out.len() - 1);
+                }
+                if folded {
+                    continue;
+                }
+                for id in group.task_ids.iter().copied() {
+                    push_task(
+                        id,
+                        &mut out,
+                        &mut selected_idx,
+                        &mut anchor_last_idx,
+                        false,
+                        thread_label,
+                        false,
+                        section_project_label,
+                    );
+                }
+            }
+            continue;
+        }
         for id in section.task_ids.iter().copied() {
             push_task(
                 id,
@@ -4053,6 +4189,7 @@ fn build_list_rows(
                 false,
                 thread_label,
                 false,
+                section_project_label,
             );
         }
     }
@@ -4395,7 +4532,7 @@ fn paint_rail_row_lines(
 /// A collapsible group header: `{chevron} {word} · {n}` with no rule. Selected,
 /// the word is bold and the rest dim; unselected, everything is dim. Never reverse.
 fn paint_group_header(
-    word: &'static str,
+    word: &str,
     count: usize,
     width: u16,
     selected: bool,
@@ -4711,17 +4848,80 @@ fn selector_tab_texts(model: &QueueFrameModel<'_>, width: usize) -> [(NavTab, St
 /// Whether the destination control needs a dedicated row to keep tabs and its selected
 /// value readable without overlap, especially at the 40-column operating floor.
 fn selector_chip_wraps(model: &QueueFrameModel<'_>, width: u16) -> bool {
-    let Some(chip) = model.nav.chip.as_ref() else {
-        return false;
-    };
-    let tabs = selector_tab_texts(model, width as usize);
-    let tabs_width = tabs
+    let controls = selector_controls(model, width);
+    !controls.is_empty()
+        && selector_tabs_width(model, width) + controls_width(&controls) > width as usize
+}
+
+fn selector_tabs_width(model: &QueueFrameModel<'_>, width: u16) -> usize {
+    selector_tab_texts(model, width as usize)
         .iter()
         .map(|(_, tab)| display_width(tab))
         .sum::<usize>()
-        + 6;
-    let chip_width = display_width(&format!(" {} ▾ ", chip.label));
-    tabs_width.saturating_add(chip_width) > width as usize
+        + 6
+}
+
+/// The selector row's right-side controls, left to right: the layout indicator
+/// (`group: … · sort: …`, only when not the default) and the destination chip. An
+/// optional idle chip that does not fit beside the tabs is dropped, never wrapped.
+fn selector_controls(model: &QueueFrameModel<'_>, width: u16) -> Vec<(QueueHitTarget, String)> {
+    let mut controls = Vec::new();
+    if let Some(layout) = model.nav.layout.as_deref() {
+        controls.push((QueueHitTarget::NavLayout, format!(" {layout} ")));
+    }
+    if let Some(chip) = model.nav.chip.as_ref() {
+        controls.push((
+            QueueHitTarget::NavChip,
+            format!(" {} \u{25be} ", chip.label),
+        ));
+    }
+    let droppable =
+        model.nav.layout.is_none() && model.nav.chip.as_ref().is_some_and(|chip| chip.optional);
+    if droppable && selector_tabs_width(model, width) + controls_width(&controls) > width as usize {
+        controls.clear();
+    }
+    controls
+}
+
+fn controls_width(controls: &[(QueueHitTarget, String)]) -> usize {
+    controls
+        .iter()
+        .map(|(_, text)| display_width(text))
+        .sum::<usize>()
+        + controls.len().saturating_sub(1)
+}
+
+/// Paint `controls` right-aligned after `left_width` cells already used, pushing hits.
+/// When they do not all fit, the leading controls (the layout indicator) drop first;
+/// the chip is clipped only when it alone exceeds the row.
+fn push_selector_controls(
+    spans: &mut Vec<Span<'static>>,
+    hits: &mut Vec<(QueueHitTarget, u16, u16)>,
+    mut controls: Vec<(QueueHitTarget, String)>,
+    left_width: usize,
+    width: usize,
+) {
+    while controls.len() > 1 && left_width + controls_width(&controls) > width {
+        controls.remove(0);
+    }
+    let room = width.saturating_sub(left_width);
+    let shown: Vec<(QueueHitTarget, String)> = controls
+        .into_iter()
+        .map(|(target, text)| (target, present_line(&text, room)))
+        .collect();
+    let total = controls_width(&shown).min(room);
+    let mut x = left_width + room.saturating_sub(total);
+    spans.push(Span::styled(" ".repeat(x - left_width), style_plain()));
+    for (index, (target, text)) in shown.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" ".to_string(), style_plain()));
+            x += 1;
+        }
+        let w = display_width(&text);
+        hits.push((target, x as u16, w.max(1) as u16));
+        spans.push(Span::styled(text, style_dim()));
+        x += w;
+    }
 }
 
 /// Active tab labels keep a cell of padding for hit targets; underline only the word,
@@ -4799,32 +4999,29 @@ fn paint_selector_row(
     // The active destination's control rides the row's right side when it fits. Narrow
     // frames paint it on the dedicated row added by `draw_queue_frame_impl`.
     if !selector_chip_wraps(model, geo.row_width) {
-        if let Some(chip) = model.nav.chip.as_ref() {
-            let chip_text = present_line(&format!(" {} \u{25be} ", chip.label), width);
-            let chip_w = display_width(&chip_text);
-            let spacer_w = width.saturating_sub(left_width).saturating_sub(chip_w);
-            let chip_x = (left_width + spacer_w) as u16;
-            spans.push(Span::styled(" ".repeat(spacer_w), style_plain()));
-            spans.push(Span::styled(chip_text, style_dim()));
-            hits.push((QueueHitTarget::NavChip, chip_x, chip_w.max(1) as u16));
+        let controls = selector_controls(model, geo.row_width);
+        if !controls.is_empty() {
+            push_selector_controls(&mut spans, &mut hits, controls, left_width, width);
         }
     }
 
     (bound_line(Line::from(spans), width), hits)
 }
 
-fn paint_selector_chip(model: &QueueFrameModel<'_>, width: u16) -> (Line<'static>, u16, u16) {
-    let Some(chip) = model.nav.chip.as_ref() else {
-        return (Line::from(""), 0, 0);
-    };
-    let chip_text = present_line(&format!(" {} \u{25be} ", chip.label), width as usize);
-    let chip_width = display_width(&chip_text).min(width as usize);
-    let x = (width as usize).saturating_sub(chip_width) as u16;
-    let line = Line::from(vec![
-        Span::styled(" ".repeat(x as usize), style_plain()),
-        Span::styled(chip_text, style_dim()),
-    ]);
-    (line, x, chip_width.max(1) as u16)
+fn paint_selector_chip(
+    model: &QueueFrameModel<'_>,
+    width: u16,
+) -> (Line<'static>, Vec<(QueueHitTarget, u16, u16)>) {
+    let mut spans = Vec::new();
+    let mut hits = Vec::new();
+    push_selector_controls(
+        &mut spans,
+        &mut hits,
+        selector_controls(model, width),
+        0,
+        width as usize,
+    );
+    (bound_line(Line::from(spans), width as usize), hits)
 }
 
 /// Verb bar: ` key label · key label …`, trimmed to `budget` entries.
@@ -4877,6 +5074,18 @@ fn paint_verb_bar(
     // Drop hits that fall entirely past the clipped width.
     hits.retain(|(_, start, w)| (*start as usize) < width as usize && *w > 0);
     (line, hits)
+}
+
+/// The wide row label: `#thread · project`, each part only when its flag is set.
+fn row_label(task: &Task, thread: bool, project: bool) -> String {
+    let thread = thread
+        .then(|| task.thread.as_deref().map(|name| format!("#{name}")))
+        .flatten();
+    let project = project.then(|| match &task.scope {
+        TaskScope::Project { path } => short_project(path).to_string(),
+        TaskScope::Global => "desk".to_string(),
+    });
+    fit_row_meta(thread, project)
 }
 
 fn row_meta(
@@ -5039,6 +5248,43 @@ mod tests {
             .collect::<String>()
     }
 
+    #[test]
+    fn a_row_label_paints_dim_at_the_right_edge_and_drops_rather_than_truncating_the_title() {
+        let geo = tier::resolve(80, 24);
+        let row = |title| TaskRowPaint {
+            glyph: "○",
+            identifier: Some("T3"),
+            title,
+            selected: false,
+            marked: false,
+            title_bold: false,
+            dim: false,
+        };
+        let short = paint_labelled_task_row(&row("Short title"), &geo, "#release · tsk");
+        let text = plain(&short);
+        assert!(text.trim_end().ends_with("#release · tsk"), "{text:?}");
+        let label = short.spans.last().expect("label span");
+        assert_eq!(label.content.as_ref(), "#release · tsk");
+        assert_eq!(label.style, style_dim());
+        assert_eq!(display_width(&text), 78, "the row keeps its width");
+
+        // A first title line that leaves no room for gap + label keeps every title cell.
+        let long_title = "word ".repeat(15);
+        let unlabelled = paint_task_row(&row(&long_title), &geo);
+        let labelled = paint_labelled_task_row(&row(&long_title), &geo, "#release · tsk");
+        assert_eq!(plain(&labelled), plain(&unlabelled), "the label drops");
+        let full = paint_labelled_task_row_lines(&row(&long_title), &geo, 0, Some("#x"));
+        let wrapped = paint_task_row_lines(&row(&long_title), &geo, 0);
+        assert_eq!(
+            full.iter()
+                .map(|line| plain(&line.line))
+                .collect::<Vec<_>>()
+                .len(),
+            wrapped.len(),
+            "a label never changes how the title wraps"
+        );
+    }
+
     fn paint_to_buffer(line: Line<'static>, width: u16) -> Buffer {
         let backend = TestBackend::new(width, 1);
         let mut terminal = Terminal::new(backend).expect("test terminal");
@@ -5067,6 +5313,7 @@ mod tests {
                 slot2_label: "x".repeat(32),
                 slot2_project: true,
                 chip: None,
+                layout: None,
             },
             surface: BoardSurface::Projects,
             thread_labels: false,
@@ -5093,6 +5340,7 @@ mod tests {
             inbox_collapsed: false,
             inbox_header_selected: false,
             rows_dim: false,
+            folded_groups: BTreeSet::new(),
         };
         let (line, hits) = paint_selector_row(&model, &tier::resolve(40, 24));
         let text = plain(&line);
@@ -5128,6 +5376,7 @@ mod tests {
                 slot2_label: "tsk".to_string(),
                 slot2_project: true,
                 chip: None,
+                layout: None,
             },
             surface: BoardSurface::Desk,
             thread_labels: false,
@@ -5154,6 +5403,7 @@ mod tests {
             inbox_collapsed: false,
             inbox_header_selected: false,
             rows_dim: false,
+            folded_groups: BTreeSet::new(),
         }
     }
 
@@ -5254,6 +5504,7 @@ mod tests {
                 slot2_label: "select project".into(),
                 slot2_project: false,
                 chip: None,
+                layout: None,
             },
             surface: BoardSurface::Projects,
             thread_labels: false,
@@ -5280,6 +5531,7 @@ mod tests {
             inbox_collapsed: false,
             inbox_header_selected: false,
             rows_dim: false,
+            folded_groups: BTreeSet::new(),
         };
         // The status row paints the selected path, escaped.
         let idle = idle_context(&model);

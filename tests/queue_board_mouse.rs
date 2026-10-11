@@ -1458,7 +1458,7 @@ fn wheel_scrolls_the_open_command_surface_so_every_command_becomes_reachable() {
     let commands = model.visible_commands();
     assert_eq!(
         commands.len(),
-        13,
+        16,
         "this ready fixture must expose every palette command a ready selection has: {commands:?}"
     );
     let last = commands.len() - 1;

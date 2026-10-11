@@ -1168,7 +1168,10 @@ pub fn apply_board_intent_with_save_recovery(
             | BoardIntent::PageWheelScrollDown
             | BoardIntent::ToggleDoneDrawer
             | BoardIntent::ToggleArchivedGroup
-            | BoardIntent::ToggleInboxGroup => return apply_intent(domain, model, intent, None),
+            | BoardIntent::ToggleInboxGroup
+            | BoardIntent::FoldGroup
+            | BoardIntent::FoldAllGroups
+            | BoardIntent::ToggleGroupFold(_) => return apply_intent(domain, model, intent, None),
             _ => {
                 model.begin_save_recovery(recovery.error().unwrap_or("save failed"));
                 return Ok(IntentOutcome::None);
@@ -2920,6 +2923,36 @@ mod tests {
         let close = route_board_intent(&model, BoardIntent::CloseLayer);
         assert_eq!(close.target, BoardIntentTarget::Focused);
         assert!(!close.return_to_index);
+    }
+
+    #[test]
+    fn projects_preview_keeps_its_own_group_state() {
+        let (mut domain, mut model, _id) = projects_preview_fixture();
+        let area = Rect::new(0, 0, 110, 30);
+        let intent = preview_key_intent(
+            &mut model,
+            area,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+        );
+        assert_eq!(intent, BoardIntent::OpenGroupPicker);
+        apply_intent(&mut domain, model.input_target_mut(), intent, None).expect("open picker");
+        let thread = model
+            .right_seat()
+            .expect("preview seat")
+            .visible_list_picker_options()
+            .iter()
+            .position(|(_, option)| option.label == "thread")
+            .expect("a project board offers thread grouping");
+        apply_intent(
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::SelectListOption(thread),
+            None,
+        )
+        .expect("group the preview");
+        let right = model.right_seat().expect("preview seat");
+        assert_eq!(right.layout().group, crate::ui::queue::GroupBy::Thread);
+        assert_eq!(model.layout().group, crate::ui::queue::GroupBy::None);
     }
 
     #[test]

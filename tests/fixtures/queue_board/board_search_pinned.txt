@@ -1,10 +1,10 @@
 ┌────────────────────────────────────────────────────────────────────────────────┐
 │                                                                                │
-│ desk  ·  tsk ▾  ·  projects                                                    │
+│ desk  ·  tsk ▾  ·  projects                                              all ▾ │
 │                                                                                │
 │ IN MOTION ───────────────────────────────────────────────────────────────────1 │
 │                                                                                │
-│▸ ● T1 Smoke-test worktree dispatch                                             │
+│▸ ● T1 Smoke-test worktree dispatch                                        tsk  │
 │                                                                                │
 │                                                                                │
 │                                                                                │

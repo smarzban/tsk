@@ -4,13 +4,13 @@
 │                                                                                │
 │ NEEDS YOU ───────────────────────────────────────────────────────────────────2 │
 │                                                                                │
-│  ■ T5 Wire dispatch cleanup receipts                                           │
-│  ▲ T6 Do┌─ help ▼ ────────────────────────────────────────────── [x]─┐         │
+│  ■ T5 Wire dispatch cleanup receipts                                    herdr  │
+│  ▲ T6 Do┌─ help ▼ ────────────────────────────────────────────── [x]─┐  herdr  │
 │         │                                                            │         │
 │ IN MOTIO│  / search keys or actions…                                 │───────2 │
 │         │ ────────────────────────────────────────────────────────── │         │
-│▸ ● T1 Sm│  NAVIGATION                                                │         │
-│  ● T2 Ed│  ↑↓ / jk            move                                   │         │
+│▸ ● T1 Sm│  NAVIGATION                                                │    tsk  │
+│  ● T2 Ed│  ↑↓ / jk            move                                   │  herdr  │
 │         │  shift+M            multi-select                           │         │
 │ ON DECK │  shift+↑↓           mark and move (multi-select)           │───────1 │
 │         │                                                            │         │

@@ -824,6 +824,14 @@ fn apply_board_intent(
             if !model.mark_mode_active() && !model.task_list_owns_input() {
                 return Ok(IntentOutcome::None);
             }
+            // Shift+M on a sub-header marks that whole group as one set.
+            if !model.mark_mode_active() && model.group_header_selected() {
+                if let Some(header_id) = model.selection_id {
+                    model.mark_group(header_id);
+                }
+                model.clear_message();
+                return Ok(IntentOutcome::None);
+            }
             model.toggle_mark_mode();
             model.clear_message();
             return Ok(IntentOutcome::None);
@@ -1423,7 +1431,11 @@ fn apply_board_intent(
             model.close_command_surface();
             model.close_popup();
             model.close_help();
-            model.open_thread_filter_picker();
+            if matches!(model.board_location, BoardLocation::Desk) {
+                model.open_desk_filter_picker(crate::ui::board::FilterTab::Threads);
+            } else {
+                model.open_thread_filter_picker();
+            }
             if model.list_picker.is_some() {
                 model.input_mode = BoardInputMode::ListPicker;
             }
@@ -1680,14 +1692,71 @@ fn apply_board_intent(
             }
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::ToggleAllGroups => {
-            model.clear_marks();
+        BoardIntent::FoldGroup => {
+            if !model.task_list_owns_input() {
+                return Ok(IntentOutcome::None);
+            }
+            let previous_visible = model.visible_ids();
+            match model.fold_cursor_group() {
+                Some(target) => {
+                    model.clear_marks();
+                    model.select_row(target);
+                    model.reanchor_selection(Some(target), &previous_visible);
+                    model.clear_message();
+                }
+                None => model.set_message("nothing to fold here"),
+            }
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::FoldAllGroups => {
+            if !model.task_list_owns_input() {
+                return Ok(IntentOutcome::None);
+            }
             let previous_visible = model.visible_ids();
             let previous = model.selection_id;
-            if model.toggle_all_groups() {
-                model.reanchor_selection(previous, &previous_visible);
+            if model.toggle_all_folds() {
+                model.clear_marks();
+                // A row the fold hid hands the selection to its own group's header.
+                let hidden_into = previous
+                    .filter(|id| !model.visible_ids().contains(id))
+                    .and_then(|id| model.fold_landing(id));
+                model.reanchor_selection(hidden_into.or(previous), &previous_visible);
+                model.clear_message();
+            } else {
+                model.set_message("nothing to fold here");
             }
-            model.clear_message();
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::ToggleGroupFold(header_id) => {
+            let Some(group) = model.group_at(header_id) else {
+                return Ok(IntentOutcome::None);
+            };
+            model.clear_marks();
+            let previous_visible = model.visible_ids();
+            let target = model.toggle_group(&group);
+            model.select_row(target);
+            model.reanchor_selection(Some(target), &previous_visible);
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::OpenGroupPicker | BoardIntent::OpenSortPicker => {
+            if model.project_picker.is_some() || model.popup == BoardPopup::SaveRecovery {
+                return Ok(IntentOutcome::None);
+            }
+            model.close_command_surface();
+            model.close_popup();
+            model.close_help();
+            if matches!(intent, BoardIntent::OpenGroupPicker) {
+                model.open_group_picker();
+            } else {
+                model.open_sort_picker();
+            }
+            if model.list_picker.is_some() {
+                model.input_mode = BoardInputMode::ListPicker;
+            }
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::SwitchListPickerTab(tab) => {
+            model.switch_desk_filter_tab(tab);
             return Ok(IntentOutcome::None);
         }
         // The app-level save-recovery boundary handles these while unresolved.
@@ -1874,6 +1943,14 @@ fn apply_board_intent(
                 model.toggle_inbox_collapsed();
                 model.reanchor_selection(Some(INBOX_HEADER_ROW_ID), &previous_visible);
                 return Ok(IntentOutcome::None);
+            }
+            if let Some(header_id) = model.selection_id.filter(|_| model.group_header_selected()) {
+                return apply_board_intent(
+                    domain,
+                    model,
+                    BoardIntent::ToggleGroupFold(header_id),
+                    snapshot,
+                );
             }
             // A capture's staged rows have no domain task identity. Their page owns Enter, so
             // it must never fall through to the board selection hidden behind the draft.

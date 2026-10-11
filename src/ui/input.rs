@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::domain::HumanStatus;
 
-use super::board::{BoardInputMode, PickerTab};
+use super::board::{BoardInputMode, FilterTab, PickerTab};
 use super::capture::{CaptureField, CaptureScopeChoice};
 use super::tier::{ResponsivePresentation, WideStage};
 
@@ -367,12 +367,23 @@ pub enum BoardIntent {
     OpenHelp,
     /// `Esc` — layered close. Full layer order lands in.
     CloseLayer,
-    /// Toggle all group headers on the active home tab (`Ctrl+G`).
-    ToggleAllGroups,
+    /// `g` — open the group-by picker (none · project · thread).
+    OpenGroupPicker,
+    /// `s` — open the sort-by picker (recent · project · thread · title).
+    OpenSortPicker,
+    /// `f` — fold / unfold the group the cursor is in (a sub-group, the inbox, or archived).
+    FoldGroup,
+    /// `F` — fold every group in view, or unfold them all when all are folded.
+    FoldAllGroups,
+    /// Enter or a click on a group sub-header: flip that one sub-group.
+    ToggleGroupFold(uuid::Uuid),
+    /// Desk filter picker `←` / `→` (or a tab click): switch between its threads and
+    /// projects tabs; `None` flips to the other tab.
+    SwitchListPickerTab(Option<FilterTab>),
 }
 
 /// Bottom chrome: compact key legend for primary board actions.
-pub const BOARD_HELP_LINE: &str = "↑↓/jk  ·  shift+M multi-select  ·  shift+↑↓/space mark  ·  ctrl+s start  ·  ctrl+n next  ·  enter open  ·  h/l close/peek  ·  ctrl+d done  ·  ctrl+o inbox  ·  ctrl+b block  ·  ctrl+r review  ·  + add  ·  ctrl+e title  ·  ctrl+x del  ·  ctrl+u undo  ·  ctrl+f archive  ·  d drawer  ·  g fold / unfold group  ·  p projects  ·  / search  ·  : palette  ·  ? help  ·  ctrl+q quit";
+pub const BOARD_HELP_LINE: &str = "↑↓/jk  ·  shift+M multi-select  ·  shift+↑↓/space mark  ·  ctrl+s start  ·  ctrl+n next  ·  enter open  ·  h/l close/peek  ·  ctrl+d done  ·  ctrl+o inbox  ·  ctrl+b block  ·  ctrl+r review  ·  + add  ·  ctrl+e title  ·  ctrl+x del  ·  ctrl+u undo  ·  ctrl+f archive  ·  d drawer  ·  g group  ·  s sort  ·  f fold  ·  p projects  ·  / search  ·  : palette  ·  ? help  ·  ctrl+q quit";
 /// Compact legend shown while the action sheet or command palette is open.
 pub const COMMAND_SURFACE_HELP_LINE: &str = "↑↓ select · type to filter · enter run · esc close";
 /// Compact legend shown while the help card is open.
@@ -594,12 +605,34 @@ const NORMAL_KEYMAP: &[NormalKeyEntry] = &[
         help_label: "done drawer",
         modifier: NormalModifier::Bare,
     },
-    // Bare `g` folds inbox, or archived while the drawer is open.
+    // Bare `g` / `s` open the group and sort pickers; bare `f` / `F` fold. Like `d`, the
+    // bare letters are navigation beside their Ctrl verbs (`ctrl+s` start, `ctrl+f` archive).
     NormalKeyEntry {
         code: KeyCode::Char('g'),
-        intent: BoardIntent::ToggleAllGroups,
+        intent: BoardIntent::OpenGroupPicker,
         help_chord: "g",
+        help_label: "group by",
+        modifier: NormalModifier::Bare,
+    },
+    NormalKeyEntry {
+        code: KeyCode::Char('s'),
+        intent: BoardIntent::OpenSortPicker,
+        help_chord: "s",
+        help_label: "sort by",
+        modifier: NormalModifier::Bare,
+    },
+    NormalKeyEntry {
+        code: KeyCode::Char('f'),
+        intent: BoardIntent::FoldGroup,
+        help_chord: "f",
         help_label: "fold / unfold group",
+        modifier: NormalModifier::Bare,
+    },
+    NormalKeyEntry {
+        code: KeyCode::Char('F'),
+        intent: BoardIntent::FoldAllGroups,
+        help_chord: "shift+F",
+        help_label: "fold / unfold all groups",
         modifier: NormalModifier::Bare,
     },
     // The project slot is mouse-clickable; `p` gives the keyboard the same route.
@@ -617,7 +650,7 @@ const NORMAL_KEYMAP: &[NormalKeyEntry] = &[
         code: KeyCode::Char('t'),
         intent: BoardIntent::OpenThreadFilterPicker,
         help_chord: "t",
-        help_label: "threads",
+        help_label: "filter",
         modifier: NormalModifier::Bare,
     },
     NormalKeyEntry {
@@ -779,7 +812,10 @@ fn board_help_group(intent: &BoardIntent) -> HelpGroup {
         | BoardIntent::File => HelpGroup::TaskActions,
         BoardIntent::OpenCapture | BoardIntent::BeginEditTitle => HelpGroup::CreateEdit,
         BoardIntent::ToggleDoneDrawer
-        | BoardIntent::ToggleAllGroups
+        | BoardIntent::OpenGroupPicker
+        | BoardIntent::OpenSortPicker
+        | BoardIntent::FoldGroup
+        | BoardIntent::FoldAllGroups
         | BoardIntent::OpenProjectSelector
         | BoardIntent::OpenThreadFilterPicker
         | BoardIntent::FocusSearch
@@ -1040,6 +1076,12 @@ fn help_bindings() -> Vec<HelpBinding> {
             "tab / ← / →",
             "switch project-picker tab",
             "main archived view",
+        ),
+        help_binding(
+            HelpGroup::SurfaceControls,
+            "← / →",
+            "switch desk-filter tab",
+            "filter threads projects view",
         ),
         help_binding(
             HelpGroup::SurfaceControls,
@@ -1822,7 +1864,12 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::File
         | BoardIntent::OpenHelp
         | BoardIntent::CloseLayer
-        | BoardIntent::ToggleAllGroups => None,
+        | BoardIntent::OpenGroupPicker
+        | BoardIntent::OpenSortPicker
+        | BoardIntent::FoldGroup
+        | BoardIntent::FoldAllGroups
+        | BoardIntent::ToggleGroupFold(_)
+        | BoardIntent::SwitchListPickerTab(_) => None,
     }
 }
 
@@ -2042,6 +2089,7 @@ fn map_list_picker(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Enter => Some(BoardIntent::ConfirmListPicker),
         KeyCode::Down => Some(BoardIntent::ListPickerNext),
         KeyCode::Up => Some(BoardIntent::ListPickerPrev),
+        KeyCode::Left | KeyCode::Right => Some(BoardIntent::SwitchListPickerTab(None)),
         KeyCode::Backspace => Some(BoardIntent::ListPickerQueryBackspace),
         KeyCode::Tab => Some(BoardIntent::ListPickerNext),
         KeyCode::BackTab => Some(BoardIntent::ListPickerPrev),

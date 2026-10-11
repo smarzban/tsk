@@ -4,15 +4,15 @@
 │                                                                                │
 │ NEEDS YOU ───────────────────────────────────────────────────────────────────2 │
 │                                                                                │
-│  ■ T5 Wire dispatch cleanup receipts                                           │
-│  ▲ T6 Docs refresh pass after F9 ships                                         │
+│  ■ T5 Wire dispatch cleanup receipts                                    herdr  │
+│  ▲ T6 Docs refresh pass after F9 ships                                  herdr  │
 │                                                                                │
 │ IN MOTION ───────────────────────────────────────────────────────────────────2 │
 │                                                                                │
 │▸ ● T1 Smoke-test worktree dispatch                                             │
 │    │ no notes yet                                                              │
 │    └─ tsk                                                                      │
-│  ● T2 Edit target binding pin                                                  │
+│  ● T2 Edit target binding pin                                           herdr  │
 │                                                                                │
 │ ON DECK · desk ──────────────────────────────────────────────────────────────1 │
 │                                                                                │

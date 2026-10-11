@@ -20,7 +20,8 @@ use crate::ui::input::{
 use crate::ui::mouse::BoardPopup;
 pub use crate::ui::queue::BoardTab;
 use crate::ui::queue::{
-    self, visible_task_ids, BoardLens, NavTab, ProjectRow, QueueView, SectionKind, ThreadFilter,
+    self, visible_row_ids, BoardLens, DeskFilter, GroupBy, NavTab, ProjectFilter, ProjectRow,
+    QueueView, SectionKind, SortBy, ThreadFilter,
 };
 use crate::ui::selection;
 use crate::ui::terminal_text;
@@ -38,7 +39,40 @@ fn is_header_row(id: Uuid) -> bool {
     matches!(
         id,
         queue::ARCHIVED_HEADER_ROW_ID | queue::INBOX_HEADER_ROW_ID
-    )
+    ) || queue::is_group_header_id(id)
+}
+
+/// One surface's session group, sort, and folded sub-groups. Never persisted.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BoardLayout {
+    pub group: GroupBy,
+    pub sort: SortBy,
+    /// Sub-header ids of folded groups. Cleared whenever the grouping changes.
+    pub folded: BTreeSet<Uuid>,
+}
+
+impl BoardLayout {
+    /// The header indicator, e.g. `group: project · sort: thread`; `None` at the default.
+    pub fn label(&self) -> Option<String> {
+        match (self.group, self.sort) {
+            (GroupBy::None, SortBy::Recent) => None,
+            (GroupBy::None, sort) => Some(format!("sort: {}", sort.word())),
+            (group, SortBy::Recent) => Some(format!("group: {}", group.word())),
+            (group, sort) => Some(format!(
+                "group: {} \u{b7} sort: {}",
+                group.word(),
+                sort.word()
+            )),
+        }
+    }
+}
+
+/// Which board's layout applies: the desk, project boards, or the cross-project thread View.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LayoutSlot {
+    Desk,
+    Project,
+    ThreadView,
 }
 
 fn nearest_surviving_task(
@@ -209,6 +243,20 @@ pub enum ListPickerKind {
     ThreadFilter,
     /// The projects index's View selector (bare `v`).
     ProjectsView,
+    /// The desk's filter (bare `t` on the desk): a threads tab and a projects tab.
+    DeskFilter,
+    /// The group-by picker (bare `g`).
+    GroupBy,
+    /// The sort-by picker (bare `s`).
+    SortBy,
+}
+
+/// The desk filter picker's two tabs. Each tab sets its own dimension; they combine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FilterTab {
+    #[default]
+    Threads,
+    Projects,
 }
 
 /// One choice inside a searchable list picker.
@@ -227,12 +275,19 @@ pub enum ListPickerValue {
     ThreadWithout,
     ProjectsOverview,
     ProjectsThread(String),
+    DeskProjectAll,
+    DeskProjectDesk,
+    DeskProject(String),
+    Group(GroupBy),
+    Sort(SortBy),
 }
 
 /// An open searchable list picker (thread filter / projects view). Session-only.
 #[derive(Debug, Clone)]
 pub(super) struct ListPickerState {
     pub kind: ListPickerKind,
+    /// The desk filter's active tab; unused by single-list pickers.
+    pub tab: FilterTab,
     pub options: Vec<ListPickerOption>,
     pub selected: usize,
     pub query: String,
@@ -729,6 +784,12 @@ pub struct BoardModel {
     /// The project board's session thread filter. It narrows every status section and
     /// is cleared whenever the selected project changes.
     pub(super) thread_filter: ThreadFilter,
+    /// The desk's session project + thread filter (bare `t` on the desk).
+    pub(super) desk_filter: DeskFilter,
+    /// Session group / sort / fold state of the desk, project boards, and thread View.
+    pub(super) desk_layout: BoardLayout,
+    pub(super) project_layout: BoardLayout,
+    pub(super) thread_view_layout: BoardLayout,
     /// The projects index's View: the project overview, or one cross-project thread.
     pub(super) projects_view: ProjectsView,
     /// The active lens's content-search query. Session-only.
@@ -885,6 +946,10 @@ impl BoardModel {
             wide_stage: WideStage::FullBoard,
             stage_origin: None,
             thread_filter: ThreadFilter::All,
+            desk_filter: DeskFilter::default(),
+            desk_layout: BoardLayout::default(),
+            project_layout: BoardLayout::default(),
+            thread_view_layout: BoardLayout::default(),
             projects_view: ProjectsView::Overview,
             search_query: String::new(),
             search_pinned: false,
@@ -1699,7 +1764,9 @@ impl BoardModel {
     /// The active destination's right-side control kind, when one is painted.
     pub fn nav_chip_kind(&self) -> Option<crate::ui::render::NavChipKind> {
         Some(match (&self.board_location, self.projects_view()) {
-            (BoardLocation::Project(_), _) => crate::ui::render::NavChipKind::ThreadFilter,
+            (BoardLocation::Project(_) | BoardLocation::Desk, _) => {
+                crate::ui::render::NavChipKind::ThreadFilter
+            }
             (BoardLocation::Projects, _) => crate::ui::render::NavChipKind::ProjectsView,
             _ => return None,
         })
@@ -1977,9 +2044,18 @@ impl BoardModel {
                 self.effective_lens(),
                 self.drawer_open,
                 &self.thread_filter,
+                &self.desk_filter,
                 &self.search_query,
             )
         };
+        let layout = self.layout();
+        queue::arrange_view(
+            &mut view,
+            &self.tasks,
+            self.effective_lens(),
+            layout.group,
+            layout.sort,
+        );
         if self.projects_overview() {
             // Overview rows retain their existing name-or-path substring search.
             let query = self.search_query.trim().to_lowercase();
@@ -2006,6 +2082,143 @@ impl BoardModel {
     /// The thread filter active on slot 2's board.
     pub fn thread_filter(&self) -> &ThreadFilter {
         &self.thread_filter
+    }
+
+    /// The desk's session project + thread filter.
+    pub fn desk_filter(&self) -> &DeskFilter {
+        &self.desk_filter
+    }
+
+    pub(super) fn layout_slot(&self) -> LayoutSlot {
+        match self.effective_lens() {
+            BoardLens::Desk | BoardLens::Projects => LayoutSlot::Desk,
+            BoardLens::Project(_) | BoardLens::ArchivedProject(_) => LayoutSlot::Project,
+            BoardLens::ThreadView(_) => LayoutSlot::ThreadView,
+        }
+    }
+
+    /// The active surface's group / sort / fold state.
+    pub fn layout(&self) -> &BoardLayout {
+        match self.layout_slot() {
+            LayoutSlot::Desk => &self.desk_layout,
+            LayoutSlot::Project => &self.project_layout,
+            LayoutSlot::ThreadView => &self.thread_view_layout,
+        }
+    }
+
+    pub(super) fn layout_mut(&mut self) -> &mut BoardLayout {
+        match self.layout_slot() {
+            LayoutSlot::Desk => &mut self.desk_layout,
+            LayoutSlot::Project => &mut self.project_layout,
+            LayoutSlot::ThreadView => &mut self.thread_view_layout,
+        }
+    }
+
+    /// Group choices this surface offers: a project board never groups by project and the
+    /// thread View never by thread (every row shares that value).
+    pub fn group_choices(&self) -> Vec<GroupBy> {
+        match self.layout_slot() {
+            LayoutSlot::Desk => vec![GroupBy::None, GroupBy::Project, GroupBy::Thread],
+            LayoutSlot::Project => vec![GroupBy::None, GroupBy::Thread],
+            LayoutSlot::ThreadView => vec![GroupBy::None, GroupBy::Project],
+        }
+    }
+
+    /// Sort choices this surface offers, with the same dimension rule as [`Self::group_choices`].
+    pub fn sort_choices(&self) -> Vec<SortBy> {
+        match self.layout_slot() {
+            LayoutSlot::Desk => vec![
+                SortBy::Recent,
+                SortBy::Project,
+                SortBy::Thread,
+                SortBy::Title,
+            ],
+            LayoutSlot::Project => vec![SortBy::Recent, SortBy::Thread, SortBy::Title],
+            LayoutSlot::ThreadView => vec![SortBy::Recent, SortBy::Project, SortBy::Title],
+        }
+    }
+
+    /// Whether wide rows label their thread / project: a dimension is omitted where the
+    /// surface, its filter, or its grouping already says it.
+    pub fn row_label_dimensions(&self) -> (bool, bool) {
+        let group = self.layout().group;
+        match self.effective_lens() {
+            BoardLens::Desk => (
+                group != GroupBy::Thread
+                    && !matches!(self.desk_filter.thread, ThreadFilter::Named(_)),
+                group != GroupBy::Project && self.desk_filter.project == ProjectFilter::All,
+            ),
+            BoardLens::Project(_) | BoardLens::ArchivedProject(_) => (
+                group != GroupBy::Thread && !matches!(self.thread_filter, ThreadFilter::Named(_)),
+                false,
+            ),
+            BoardLens::ThreadView(_) => (false, group != GroupBy::Project),
+            BoardLens::Projects => (false, false),
+        }
+    }
+
+    /// The sub-group whose header is `id`, or whose rows include `id`, in the current view.
+    pub(super) fn group_at(&self, id: Uuid) -> Option<queue::QueueGroup> {
+        self.queue_view()
+            .sections
+            .into_iter()
+            .flat_map(|section| section.groups)
+            .find(|group| group.header_id == id || group.task_ids.contains(&id))
+    }
+
+    /// Whether the selection rests on a (folded) group sub-header.
+    pub fn group_header_selected(&self) -> bool {
+        self.selection_id.is_some_and(queue::is_group_header_id)
+    }
+
+    /// Fold or unfold one sub-group. Session-only.
+    pub(super) fn toggle_group_folded(&mut self, header_id: Uuid) {
+        let folded = &mut self.layout_mut().folded;
+        if !folded.remove(&header_id) {
+            folded.insert(header_id);
+        }
+    }
+
+    /// `F`: fold every group in view (sub-groups, inbox, and the archived group while the
+    /// drawer shows it) when any is open; otherwise unfold them all. Returns whether
+    /// anything foldable exists.
+    pub(super) fn toggle_all_folds(&mut self) -> bool {
+        let view = self.queue_view();
+        let headers: Vec<Uuid> = view
+            .sections
+            .iter()
+            .flat_map(|section| section.groups.iter().map(|group| group.header_id))
+            .collect();
+        let has_inbox = view
+            .sections
+            .iter()
+            .any(|section| section.kind == SectionKind::Inbox);
+        let has_archived = view
+            .sections
+            .iter()
+            .any(|section| section.kind == SectionKind::Archived);
+        if headers.is_empty() && !has_inbox && !has_archived {
+            return false;
+        }
+        let folded = &self.layout().folded;
+        let any_open = headers.iter().any(|id| !folded.contains(id))
+            || (has_inbox && !self.inbox_collapsed)
+            || (has_archived && !self.archived_collapsed);
+        let layout = self.layout_mut();
+        if any_open {
+            layout.folded.extend(headers);
+        } else {
+            for id in &headers {
+                layout.folded.remove(id);
+            }
+        }
+        if has_inbox {
+            self.inbox_collapsed = any_open;
+        }
+        if has_archived {
+            self.archived_collapsed = any_open;
+        }
+        true
     }
 
     /// The projects index's current View control.
@@ -2131,6 +2344,7 @@ impl BoardModel {
             .unwrap_or(0);
         self.list_picker = Some(ListPickerState {
             kind: ListPickerKind::ThreadFilter,
+            tab: FilterTab::Threads,
             options,
             selected,
             query: String::new(),
@@ -2179,6 +2393,195 @@ impl BoardModel {
             .unwrap_or(0);
         self.list_picker = Some(ListPickerState {
             kind: ListPickerKind::ProjectsView,
+            tab: FilterTab::Threads,
+            options,
+            selected,
+            query: String::new(),
+        });
+    }
+
+    /// Open the desk's filter picker (bare `t` on the desk) on `tab`.
+    pub(super) fn open_desk_filter_picker(&mut self, tab: FilterTab) {
+        if !matches!(self.board_location, BoardLocation::Desk) {
+            return;
+        }
+        let mut threads: BTreeMap<String, usize> = BTreeMap::new();
+        let mut unthreaded = 0usize;
+        let mut projects: BTreeMap<String, usize> = BTreeMap::new();
+        let mut desk = 0usize;
+        let mut open = 0usize;
+        for task in &self.tasks {
+            if task.soft_deleted
+                || task.archived
+                || task.status == HumanStatus::Done
+                || self.is_hidden(task)
+            {
+                continue;
+            }
+            open += 1;
+            match task.thread.as_deref() {
+                Some(name) => *threads.entry(name.to_ascii_lowercase()).or_default() += 1,
+                None => unthreaded += 1,
+            }
+            match &task.scope {
+                TaskScope::Project { path } => {
+                    let key = projects
+                        .keys()
+                        .find(|known| paths_equivalent(known, path))
+                        .cloned()
+                        .unwrap_or_else(|| path.clone());
+                    *projects.entry(key).or_default() += 1;
+                }
+                TaskScope::Global => desk += 1,
+            }
+        }
+        let options = match tab {
+            FilterTab::Threads => {
+                let mut options = vec![ListPickerOption {
+                    label: "All threads".to_string(),
+                    count: Some(open),
+                    value: ListPickerValue::ThreadAll,
+                }];
+                let mut named: Vec<(String, usize)> = threads.into_iter().collect();
+                named.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                options.extend(named.into_iter().map(|(name, count)| ListPickerOption {
+                    label: format!("#{name}"),
+                    count: Some(count),
+                    value: ListPickerValue::ThreadNamed(name),
+                }));
+                options.push(ListPickerOption {
+                    label: "Without a thread".to_string(),
+                    count: Some(unthreaded),
+                    value: ListPickerValue::ThreadWithout,
+                });
+                options
+            }
+            FilterTab::Projects => {
+                let mut options = vec![
+                    ListPickerOption {
+                        label: "All projects".to_string(),
+                        count: Some(open),
+                        value: ListPickerValue::DeskProjectAll,
+                    },
+                    ListPickerOption {
+                        label: "desk".to_string(),
+                        count: Some(desk),
+                        value: ListPickerValue::DeskProjectDesk,
+                    },
+                ];
+                let mut named: Vec<(String, usize)> = projects.into_iter().collect();
+                named.sort_by(|a, b| {
+                    queue::short_project_name(&a.0)
+                        .cmp(queue::short_project_name(&b.0))
+                        .then_with(|| a.0.cmp(&b.0))
+                });
+                options.extend(named.into_iter().map(|(path, count)| ListPickerOption {
+                    label: project_option_label(Path::new(&path)),
+                    count: Some(count),
+                    value: ListPickerValue::DeskProject(path),
+                }));
+                options
+            }
+        };
+        let filter = &self.desk_filter;
+        let selected = options
+            .iter()
+            .position(|option| match &option.value {
+                ListPickerValue::ThreadAll => filter.thread == ThreadFilter::All,
+                ListPickerValue::ThreadNamed(name) => {
+                    filter.thread == ThreadFilter::Named(name.clone())
+                }
+                ListPickerValue::ThreadWithout => filter.thread == ThreadFilter::Without,
+                ListPickerValue::DeskProjectAll => filter.project == ProjectFilter::All,
+                ListPickerValue::DeskProjectDesk => filter.project == ProjectFilter::Desk,
+                ListPickerValue::DeskProject(path) => {
+                    matches!(&filter.project, ProjectFilter::Named(active) if paths_equivalent(active, path))
+                }
+                _ => false,
+            })
+            .unwrap_or(0);
+        self.list_picker = Some(ListPickerState {
+            kind: ListPickerKind::DeskFilter,
+            tab,
+            options,
+            selected,
+            query: String::new(),
+        });
+    }
+
+    /// Flip the desk filter picker between its threads and projects tabs.
+    pub(super) fn switch_desk_filter_tab(&mut self, tab: Option<FilterTab>) {
+        let Some(picker) = self.list_picker.as_ref() else {
+            return;
+        };
+        if picker.kind != ListPickerKind::DeskFilter {
+            return;
+        }
+        let next = tab.unwrap_or(match picker.tab {
+            FilterTab::Threads => FilterTab::Projects,
+            FilterTab::Projects => FilterTab::Threads,
+        });
+        self.open_desk_filter_picker(next);
+    }
+
+    /// The open list picker's tab, for pickers that have tabs (the desk filter).
+    pub fn list_picker_tab(&self) -> Option<FilterTab> {
+        self.list_picker
+            .as_ref()
+            .filter(|picker| picker.kind == ListPickerKind::DeskFilter)
+            .map(|picker| picker.tab)
+    }
+
+    /// Open the group-by picker (bare `g`) on any task board.
+    pub(super) fn open_group_picker(&mut self) {
+        if self.projects_overview() {
+            return;
+        }
+        let current = self.layout().group;
+        let options: Vec<ListPickerOption> = self
+            .group_choices()
+            .into_iter()
+            .map(|group| ListPickerOption {
+                label: group.word().to_string(),
+                count: None,
+                value: ListPickerValue::Group(group),
+            })
+            .collect();
+        let selected = options
+            .iter()
+            .position(|option| option.value == ListPickerValue::Group(current))
+            .unwrap_or(0);
+        self.list_picker = Some(ListPickerState {
+            kind: ListPickerKind::GroupBy,
+            tab: FilterTab::Threads,
+            options,
+            selected,
+            query: String::new(),
+        });
+    }
+
+    /// Open the sort-by picker (bare `s`) on any task board.
+    pub(super) fn open_sort_picker(&mut self) {
+        if self.projects_overview() {
+            return;
+        }
+        let current = self.layout().sort;
+        let options: Vec<ListPickerOption> = self
+            .sort_choices()
+            .into_iter()
+            .map(|sort| ListPickerOption {
+                label: sort.word().to_string(),
+                count: None,
+                value: ListPickerValue::Sort(sort),
+            })
+            .collect();
+        let selected = options
+            .iter()
+            .position(|option| option.value == ListPickerValue::Sort(current))
+            .unwrap_or(0);
+        self.list_picker = Some(ListPickerState {
+            kind: ListPickerKind::SortBy,
+            tab: FilterTab::Threads,
             options,
             selected,
             query: String::new(),
@@ -2288,6 +2691,42 @@ impl BoardModel {
                 self.projects_selected = 0;
                 true
             }
+            (ListPickerKind::DeskFilter, ListPickerValue::ThreadAll) => {
+                self.desk_filter.thread = ThreadFilter::All;
+                true
+            }
+            (ListPickerKind::DeskFilter, ListPickerValue::ThreadNamed(name)) => {
+                self.desk_filter.thread = ThreadFilter::Named(name.clone());
+                true
+            }
+            (ListPickerKind::DeskFilter, ListPickerValue::ThreadWithout) => {
+                self.desk_filter.thread = ThreadFilter::Without;
+                true
+            }
+            (ListPickerKind::DeskFilter, ListPickerValue::DeskProjectAll) => {
+                self.desk_filter.project = ProjectFilter::All;
+                true
+            }
+            (ListPickerKind::DeskFilter, ListPickerValue::DeskProjectDesk) => {
+                self.desk_filter.project = ProjectFilter::Desk;
+                true
+            }
+            (ListPickerKind::DeskFilter, ListPickerValue::DeskProject(path)) => {
+                self.desk_filter.project = ProjectFilter::Named(path.clone());
+                true
+            }
+            (ListPickerKind::GroupBy, ListPickerValue::Group(group)) => {
+                let layout = self.layout_mut();
+                if layout.group != *group {
+                    layout.group = *group;
+                    layout.folded.clear();
+                }
+                true
+            }
+            (ListPickerKind::SortBy, ListPickerValue::Sort(sort)) => {
+                self.layout_mut().sort = *sort;
+                true
+            }
             _ => false,
         };
         if applied {
@@ -2302,28 +2741,89 @@ impl BoardModel {
         self.list_picker = None;
     }
 
-    /// Fold the group `g` addresses: archived while the drawer is open and that
-    /// group is painted, otherwise inbox when it is painted.
-    pub(super) fn toggle_all_groups(&mut self) -> bool {
-        let view = self.queue_view();
-        let archived_joins = self.drawer_open
-            && view
-                .sections
-                .iter()
-                .any(|section| section.kind == SectionKind::Archived);
-        if archived_joins {
-            self.archived_collapsed = !self.archived_collapsed;
-            return true;
-        }
-        if view
-            .sections
-            .iter()
-            .any(|section| section.kind == SectionKind::Inbox)
-        {
+    /// `f`: fold or unfold the group the cursor is in: its sub-group, else the inbox or
+    /// archived group it belongs to. Returns the row the selection should land on (the
+    /// folded header, or an unfolded group's first row), `None` when nothing folds here.
+    pub(super) fn fold_cursor_group(&mut self) -> Option<Uuid> {
+        let id = self.selection_id?;
+        if id == queue::INBOX_HEADER_ROW_ID {
             self.inbox_collapsed = !self.inbox_collapsed;
-            return true;
+            return Some(id);
         }
-        false
+        if id == queue::ARCHIVED_HEADER_ROW_ID {
+            self.archived_collapsed = !self.archived_collapsed;
+            return Some(id);
+        }
+        if let Some(group) = self.group_at(id) {
+            return Some(self.toggle_group(&group));
+        }
+        let kind = self
+            .queue_view()
+            .sections
+            .into_iter()
+            .find(|section| section.task_ids.contains(&id))
+            .map(|section| section.kind)?;
+        match kind {
+            SectionKind::Inbox => {
+                self.inbox_collapsed = true;
+                Some(queue::INBOX_HEADER_ROW_ID)
+            }
+            SectionKind::Archived => {
+                self.archived_collapsed = true;
+                Some(queue::ARCHIVED_HEADER_ROW_ID)
+            }
+            _ => None,
+        }
+    }
+
+    /// Flip one sub-group and name where the selection lands: the header once folded,
+    /// the group's first row once unfolded.
+    pub(super) fn toggle_group(&mut self, group: &queue::QueueGroup) -> Uuid {
+        self.toggle_group_folded(group.header_id);
+        if self.layout().folded.contains(&group.header_id) {
+            group.header_id
+        } else {
+            group.task_ids.first().copied().unwrap_or(group.header_id)
+        }
+    }
+
+    /// Shift+M on a sub-header: unfold the group, enter mark mode, and mark every row of
+    /// it as one set. Marks only ever rest on painted rows.
+    pub(super) fn mark_group(&mut self, header_id: Uuid) -> bool {
+        let Some(group) = self.group_at(header_id) else {
+            return false;
+        };
+        self.layout_mut().folded.remove(&group.header_id);
+        self.marked_ids = group.task_ids.iter().copied().collect();
+        self.mark_mode = true;
+        if let Some(first) = group.task_ids.first().copied() {
+            self.retarget_selection(Some(first), SelectionRetarget::Explicit);
+        }
+        true
+    }
+
+    /// Where a row hidden by a fold hands the selection: its sub-group's header, else the
+    /// inbox or archived header of its section.
+    pub(super) fn fold_landing(&self, id: Uuid) -> Option<Uuid> {
+        if let Some(group) = self.group_at(id) {
+            return Some(group.header_id);
+        }
+        let kind = self
+            .queue_view()
+            .sections
+            .into_iter()
+            .find(|section| section.task_ids.contains(&id))
+            .map(|section| section.kind)?;
+        match kind {
+            SectionKind::Inbox => Some(queue::INBOX_HEADER_ROW_ID),
+            SectionKind::Archived => Some(queue::ARCHIVED_HEADER_ROW_ID),
+            _ => None,
+        }
+    }
+
+    /// Pin the selection on `id` (a visible task or header row) as an explicit move.
+    pub(super) fn select_row(&mut self, id: Uuid) -> bool {
+        self.retarget_selection(Some(id), SelectionRetarget::Explicit)
     }
 
     /// Whether the done drawer is open (session-only).
@@ -2379,10 +2879,11 @@ impl BoardModel {
 
     /// Visible task ids from the queue section query (flat section order).
     pub fn visible_ids(&self) -> Vec<Uuid> {
-        visible_task_ids(
+        visible_row_ids(
             &self.queue_view(),
             self.archived_collapsed,
             self.inbox_collapsed,
+            &self.layout().folded,
         )
     }
 
@@ -2403,10 +2904,7 @@ impl BoardModel {
     /// Selected task id, if any. Header rows are chrome, not a task: with one
     /// selected every task verb refuses with `select a task first`.
     pub fn selected_id(&self) -> Option<Uuid> {
-        if matches!(
-            self.selection_id,
-            Some(queue::ARCHIVED_HEADER_ROW_ID) | Some(queue::INBOX_HEADER_ROW_ID)
-        ) {
+        if self.selection_id.is_some_and(is_header_row) {
             None
         } else {
             self.selection_id
@@ -3446,7 +3944,13 @@ impl BoardModel {
                 SelectionRetarget::Reanchor,
             );
         } else {
-            self.retarget_selection(None, SelectionRetarget::Reanchor);
+            // Every live row may sit in folded groups: their sub-headers are the only
+            // selectable rows left, so rest on the first rather than on nothing.
+            let first_header = self
+                .visible_ids()
+                .into_iter()
+                .find(|id| queue::is_group_header_id(*id));
+            self.retarget_selection(first_header, SelectionRetarget::Reanchor);
         }
         self.follow_list.set(true);
     }
@@ -3713,33 +4217,32 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_g_addresses_inbox_unless_the_open_drawer_has_archived_rows() {
+    fn shift_f_folds_every_group_in_view_then_unfolds_them_all() {
         let mut domain = DomainState::new();
         let task_a = create(&mut domain, "task-a", project(REPO_A));
         create(&mut domain, "task-b", project(REPO_B));
-
-        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(REPO_A)));
-        // New tasks are open, so with the drawer closed g folds the inbox.
-        assert!(model.toggle_all_groups());
-        assert!(model.inbox_collapsed);
-        assert!(model.toggle_all_groups());
-        assert!(!model.inbox_collapsed);
-
-        // An open drawer without archived rows still addresses the inbox.
-        model.drawer_open = true;
-        assert!(model.toggle_all_groups());
-        assert!(model.inbox_collapsed);
-        model.inbox_collapsed = false;
-
+        let started = create(&mut domain, "task-c", TaskScope::Global);
+        domain
+            .set_status(started, HumanStatus::Started)
+            .expect("start");
         domain.archive_task(task_a).expect("archive");
-        model.sync_from_domain(&domain);
+
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(REPO_B)));
+        model.set_board_scope(ProjectScopeOption::Home);
+        model.desk_layout.group = GroupBy::Project;
         model.drawer_open = true;
-        // The archived group starts collapsed; the open drawer gives it priority.
-        assert!(model.toggle_all_groups());
-        assert!(!model.archived_collapsed);
-        assert!(model.toggle_all_groups());
+        let header = model.queue_view().sections[0].groups[0].header_id;
+
+        // The archived group starts folded but the sub-group is open: fold everything.
+        assert!(model.toggle_all_folds());
+        assert!(model.desk_layout.folded.contains(&header));
         assert!(model.archived_collapsed);
-        assert!(!model.inbox_collapsed, "archived takes priority over inbox");
+        assert!(model.visible_ids().contains(&header));
+
+        assert!(model.toggle_all_folds());
+        assert!(model.desk_layout.folded.is_empty());
+        assert!(!model.archived_collapsed);
+        assert!(!model.visible_ids().contains(&header));
     }
 
     #[test]

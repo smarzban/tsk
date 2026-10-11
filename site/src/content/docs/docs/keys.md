@@ -30,10 +30,14 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 | Undo completion/deletion; restore an archived selection | `ctrl+u` |
 | Archive / restore selected task (archived tasks live in the done drawer's archived group) | `ctrl+f` |
 | Open / close done drawer | `d` |
-| Fold or unfold the group: the inbox, or archived in the done drawer | `g` |
+| Group by none / project / thread | `g` |
+| Sort by recent / project / thread / title | `s` |
+| Fold or unfold the cursor's group: a sub-group, the inbox, or archived in the done drawer | `f` |
+| Fold or unfold every group in view | `Shift+F` |
 | Desk / selected project / projects | `1` / `2` / `3` |
 | Project picker | `p` |
-| Project thread filter | `t` |
+| Filter: thread and project on the desk, thread on a project board | `t` |
+| Switch the desk filter's threads / projects tab | `←` / `→` |
 | Cross-project view selector | `v` on Projects |
 | Search current board rows | `/` |
 | Command palette | `:` |
@@ -46,7 +50,9 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 
 `Esc` leaves multi-select and clears its marks first, then closes the current layer. At the full-board root on any tab, with multi-select inactive, it quits without confirmation rather than switching back to the desk. In either wide split, `Esc` closes the right column after any editor or overlay is dismissed. A further `Esc` at the full-board root quits. A project preview with unsaved work refuses to close. If narrowing the terminal hides the right column, the visible board/index is already at the root: `Esc` quits without an extra collapse, unless a parked draft blocks quitting.
 
-`Shift+M` enters or leaves multi-select while the board owns input. While it is active, `Space`, shifted arrows, and a plain task click change marks instead of opening a task. Removing the last mark leaves the mode active. `Shift+M` again from the board, `Esc`, a task action, or a lens change leaves it and clears the set. Text entry keeps `Shift+M` as a capital `M`; `Esc` leaves multi-select before cancelling that surface.
+Bare `s` and `f` are navigation beside their Ctrl verbs, like `d` beside `ctrl+d`: `s` sorts while `ctrl+s` starts, and `f` folds while `ctrl+f` archives.
+
+`Shift+M` enters or leaves multi-select while the board owns input. On a folded group sub-header it unfolds the group and marks all its tasks. While it is active, `Space`, shifted arrows, and a plain task click change marks instead of opening a task. Removing the last mark leaves the mode active. `Shift+M` again from the board, `Esc`, a task action, or a lens change leaves it and clears the set. Text entry keeps `Shift+M` as a capital `M`; `Esc` leaves multi-select before cancelling that surface.
 
 When tasks are marked, the status, delete, and archive shortcuts act on that set; without marks they act on the cursor. `Enter` and `ctrl+e` remain cursor-only. `ctrl+s` starts each eligible open or ready task and leaves started, blocked, and review tasks unchanged. Marked done tasks are skipped too, and the status row says so: `started N · skipped M done (ctrl+n or ctrl+o reopens them)`. Bulk block and review toggles send every target to blocked or review unless all targets already have that status, in which case they all return to ready. `ctrl+n` and `ctrl+o` can send done tasks directly to ready or open. One `ctrl+u` reverses an entire marked completion or deletion.
 
@@ -150,7 +156,7 @@ On **Projects Overview** at 110+ columns, clicking a row or moving the index sel
 | Split, index focused | Rail | Full board | Full board |
 | Rail, right board focused | Narrow board keys | Return to index | Return to index |
 
-The right seat keeps its own project-board cursor, multi-select, marked set, and state. Its `→` / `l` and `←` / `h` are peek controls, and `Enter` opens a task page inside the column. `ctrl+d`, `d`, `g`, `+`, and the other board actions apply to the right seat while it is focused.
+The right seat keeps its own project-board cursor, multi-select, marked set, and state. Its `→` / `l` and `←` / `h` are peek controls, and `Enter` opens a task page inside the column. `ctrl+d`, `d`, `g`, `s`, `f`, `+`, and the other board actions apply to the right seat while it is focused; its group, sort, and folds are its own.
 
 `h` and `l` are navigation aliases only while a board or task view owns input. Text editors, quick-add, search, filters, the palette, and Help continue to insert them as ordinary characters.
 

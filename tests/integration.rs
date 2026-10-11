@@ -20,6 +20,7 @@ mod host_scripts;
 mod host_scripts_windows;
 mod manifest;
 mod queue_board_edit;
+mod queue_board_groups;
 mod queue_board_model;
 mod queue_board_mouse;
 mod queue_board_render;

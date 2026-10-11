@@ -898,6 +898,12 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::ListPickerOption(index)) => {
                 Some(BoardIntent::SelectListOption(index))
             }
+            Some(QueueHitTarget::PickerTab(tab)) => {
+                Some(BoardIntent::SwitchListPickerTab(Some(match tab {
+                    crate::ui::board::PickerTab::Main => crate::ui::board::FilterTab::Threads,
+                    crate::ui::board::PickerTab::Archived => crate::ui::board::FilterTab::Projects,
+                })))
+            }
             Some(QueueHitTarget::ModalChrome) => None,
             Some(QueueHitTarget::ModalClose) => Some(BoardIntent::CancelListPicker),
             _ => Some(BoardIntent::CancelListPicker),
@@ -931,6 +937,8 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::Drawer) => Some(BoardIntent::ToggleDoneDrawer),
             Some(QueueHitTarget::ArchivedHeader) => Some(BoardIntent::ToggleArchivedGroup),
             Some(QueueHitTarget::InboxHeader) => Some(BoardIntent::ToggleInboxGroup),
+            Some(QueueHitTarget::GroupHeader(id)) => Some(BoardIntent::ToggleGroupFold(id)),
+            Some(QueueHitTarget::NavLayout) => Some(BoardIntent::OpenGroupPicker),
             Some(QueueHitTarget::TaskNumber(id))
                 if model.mark_mode_active() && mouse.modifiers.is_empty() =>
             {

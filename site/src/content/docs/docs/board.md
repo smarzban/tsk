@@ -54,16 +54,38 @@ Press `Enter` to pin the query and return to board keys. Navigation, task action
 
 ## Threads
 
-A thread groups related tasks within a project, such as `release` or `login-fix`.
+A thread groups related tasks, such as `release` or `login-fix`. A thread name can span projects and the desk, so it also works as a cross-repo initiative.
 
 | Where | Action |
 | --- | --- |
+| Desk | Press `t` or click the filter to narrow by thread and project |
 | Project board | Press `t` or click the filter to choose a thread |
 | Projects overview | Press `v` or click **Overview** to view a thread across projects |
 
 Type to filter the choices. Use arrows or `Tab` to select, `Enter` to choose, and `Esc` to close. `j` and `k` are search text in these selectors.
 
+The desk filter has two tabs, **threads** and **projects**; press `←` or `→` (or click a tab) to switch. Each tab sets its own choice and the two combine, so `herdr-tsk #release` shows only that project's `release` tasks. The filter narrows every desk section, the done drawer included, and the control on the tab row names it (`all` when nothing is chosen). On a narrow desk with no filter, the `all` control is left off rather than taking a row of its own.
+
 Assign threads when [capturing](/docs/capture/#title-tokens) or [editing a task](/docs/task-page/#scope-and-thread).
+
+## Group and sort
+
+On 78 columns or wider, every task row ends with a dim `#thread · project` label (`desk` for a desk task). A label leaves out what the view already says: a project board never names its own project, a thread filter or thread grouping drops the thread, a project filter or project grouping drops the project, and rows under **ON DECK · desk** never repeat `desk`. A label that does not fit beside the title's first line is dropped; it never shortens the title. Below 78 columns labels are hidden; grouping and sorting still apply.
+
+| Key | Action |
+| --- | --- |
+| `g` | Group by: **none**, **project**, or **thread** (a project board offers none or thread) |
+| `s` | Sort by: **recent**, **project**, **thread**, or **title** (a project board has no project sort) |
+| `f` | Fold or unfold the group the cursor is in: its sub-group, the inbox, or the archived group |
+| `Shift+F` | Fold every group in view, or unfold them all when all are folded |
+
+Grouping adds dim sub-headers such as `▾ herdr-tsk · 3`, `▾ #release · 2`, `▾ no thread · 1`, or `▾ desk · 1` inside **NEEDS YOU**, **IN MOTION**, and **ON DECK**. The section header keeps its total; each sub-header counts its own rows. Groups are ordered hottest first: the group whose newest row changed status most recently leads. The inbox, the done drawer, and the archived group never group, and grouping the desk by project leaves **ON DECK · desk** alone because it only holds desk tasks.
+
+Sorting reorders rows inside each group, or inside each section while ungrouped (the inbox included). **recent** is each section's normal order; the others sort by project name (desk last), thread name (unthreaded last), or title, and ties keep the normal order. `N` notices still lead.
+
+The tab row shows the active layout, for example `group: project · sort: thread`, beside the filter control; click it to change the grouping. A fresh board starts ungrouped and sorted by recent. The desk, project boards, and the cross-project thread view (which groups by project) each keep their own choice for the session, and the wide Projects preview keeps its own.
+
+A folded group shows only its sub-header (`▸`), which the cursor can then rest on; open sub-headers are skipped by the arrows. `Enter` or a click on a sub-header folds or unfolds it. `Shift+M` on a folded sub-header unfolds it and marks every task in that group as one set. Folding, or changing the grouping, sorting, or filter, clears multi-select marks.
 
 ## Status
 
@@ -75,7 +97,7 @@ Assign threads when [capturing](/docs/capture/#title-tokens) or [editing a task]
 | ↳ **inbox** | `open` |
 | Done drawer | `done` |
 
-On your desk, **ON DECK** contains only desk tasks. On a project board, it contains that project's ready and open tasks. Ready tasks are the picked queue; open tasks are the untriaged inbox below it. Ready tasks sort by oldest pick first, open tasks by oldest capture first, and notice tasks lead within each group. The **inbox** group starts expanded; press `Enter` on its heading or `g` while the done drawer is closed to fold or unfold it. With the drawer open and archived tasks available, `g` addresses its archived group; otherwise it addresses the inbox. Use the thread filter to narrow the tasks.
+On your desk, **ON DECK** contains only desk tasks. On a project board, it contains that project's ready and open tasks. Ready tasks are the picked queue; open tasks are the untriaged inbox below it. Ready tasks sort by oldest pick first, open tasks by oldest capture first, and notice tasks lead within each group. The **inbox** group starts expanded; press `Enter` on its heading, or `f` with the cursor inside it, to fold or unfold it. Use the filter to narrow the tasks, and [group and sort](#group-and-sort) to arrange them.
 
 Sections hold their order while you work: NEEDS YOU, IN MOTION, DONE, and the drawer's ARCHIVED group keep the most recent status change on top, while ON DECK lists ready and inbox backlogs oldest first. (`N` tasks lead each group until you clear them.) Editing a task or ticking a step never moves it; setting a status moves it to the top of its new section.
 
@@ -105,6 +127,8 @@ Your first board open seeds four desk tasks with `N` ids (not `T`). They teach t
 | Action | Result |
 | --- | --- |
 | Click a tab or selector | Change view or open its choices |
+| Click the `group: …` control | Open group by |
+| Click a group sub-header | Fold or unfold that group |
 | Click a task outside multi-select | Peek in narrow panes; open or update details beside the board in wide panes |
 | Click a task or its `T`/`N` number in multi-select | Move the cursor there and toggle its mark |
 | Click the same task again in a narrow pane | Close its peek |
@@ -114,7 +138,7 @@ Your first board open seeds four desk tasks with `N` ids (not `T`). They teach t
 | Wheel or drag a scrollbar | Scroll |
 | Drag across text | Select and copy on release |
 
-Open peeks show notes and the task's project or thread. Below 110 columns, `→` or `l` opens a peek and `←` or `h` closes it. Peeks show up to five wrapped note lines; the [task page](/docs/task-page/) shows the rest.
+Open peeks show notes and the task's project or thread; a peeked row moves its label into the peek. Below 110 columns, `→` or `l` opens a peek and `←` or `h` closes it. Peeks show up to five wrapped note lines; the [task page](/docs/task-page/) shows the rest.
 
 ## Wide stage slider
 
@@ -143,7 +167,7 @@ Narrowing the pane shows one surface; widening it restores the selected view. Ea
 
 Press `d` to open or close the done drawer. Select a done task and press `ctrl+n` to return it to ready, or `ctrl+o` to send it to the inbox.
 
-The drawer's **archived** group starts closed. Click its heading or press `Enter` on it to expand. `g` folds or unfolds the group while the drawer is open.
+The drawer's **archived** group starts closed. Click its heading or press `Enter` on it to expand. `f` with the cursor inside it folds it again; `Shift+F` folds or unfolds it with every other group.
 
 ## Archive
 
@@ -180,12 +204,12 @@ Press `:` on the board or a task page and type to find an action. Use arrows or 
 
 | Available actions | When |
 | --- | --- |
-| New task, undo, done drawer, help, quit | Always |
+| New task, undo, done drawer, group by…, sort by…, fold / unfold group, help, quit | Always |
 | Set open/ready/started/blocked/review, edit notes, change scope, delete | A task is selected |
 | Move step up, move step down | A task-page step is selected |
 | Retry save, cancel save | A save has failed |
 
-Search matches letters in order: `ssr` finds `set status: review`.
+Group by…, sort by…, and fold / unfold group are left out on the projects overview, which has no task rows. Search matches letters in order: `ssr` finds `set status: review`.
 
 ## Help
 

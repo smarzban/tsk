@@ -314,7 +314,7 @@ fn bulk_start_names_skipped_done_marks_on_the_status_row() {
 }
 
 #[test]
-fn help_names_where_archived_tasks_live_and_g_folds_a_group() {
+fn help_names_where_archived_tasks_live_and_the_group_sort_fold_keys() {
     let lines = tsk_tui::ui::input::help_card_lines();
     let row = |chord: &str| {
         lines
@@ -328,11 +328,18 @@ fn help_names_where_archived_tasks_live_and_g_folds_a_group() {
         archive.contains("restore") && archive.contains("archived: d drawer"),
         "ctrl+f help must say where archived tasks live: {archive}"
     );
-    let fold = row("g");
-    assert!(
-        fold.contains("fold / unfold group"),
-        "g help must name its generic fold action: {fold}"
-    );
+    for (chord, label) in [
+        ("g", "group by"),
+        ("s", "sort by"),
+        ("f", "fold / unfold group"),
+        ("shift+F", "fold / unfold all groups"),
+    ] {
+        let line = row(chord);
+        assert!(
+            line.contains(label),
+            "{chord} help must say {label}: {line}"
+        );
+    }
 }
 
 #[test]
@@ -1333,13 +1340,15 @@ fn palette_lists_exactly_m1_commands_for_selection_filters_by_subsequence_and_di
         "delete",
         "undo",
         "done drawer",
+        "group by…",
+        "sort by…",
+        "fold / unfold group",
         "help",
         "quit",
     ];
     assert_eq!(
         labels, expected,
-        "palette catalog with a selection must match exactly (no toggle-groups entry: \
-         the destinations have no collapsible task groups)"
+        "palette catalog with a selection must match exactly"
     );
     assert!(
         labels.contains(&"set status: open"),
@@ -5534,8 +5543,7 @@ fn ctrl_f_on_the_archived_tab_still_unarchives_from_read_only_focus() {
 }
 
 #[test]
-fn toggle_all_groups_folds_and_unfolds_the_archived_group_with_the_others_when_the_drawer_is_open()
-{
+fn shift_f_folds_and_unfolds_the_archived_group_with_the_inbox_when_the_drawer_is_open() {
     let mut domain = DomainState::new();
     let live = domain
         .create(
@@ -5566,39 +5574,38 @@ fn toggle_all_groups_folds_and_unfolds_the_archived_group_with_the_others_when_t
         None,
     )
     .expect("expand archived");
-    assert!(model.visible_ids().contains(&live), "live rows open");
+    assert!(model.visible_ids().contains(&live), "inbox open");
     assert!(model.visible_ids().contains(&filed), "archived group open");
 
-    let toggle_all =
-        map_key(BoardInputMode::Normal, press(KeyCode::Char('g'))).expect("g is bound");
+    let fold_all = map_key(
+        BoardInputMode::Normal,
+        KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT),
+    )
+    .expect("shift+F is bound");
     assert_eq!(
-        toggle_all,
-        BoardIntent::ToggleAllGroups,
-        "bare g folds the groups"
+        fold_all,
+        BoardIntent::FoldAllGroups,
+        "shift+F folds every group"
     );
 
-    apply_intent(&mut domain, &mut model, toggle_all.clone(), None).expect("fold all");
+    apply_intent(&mut domain, &mut model, fold_all.clone(), None).expect("fold all");
     let visible = model.visible_ids();
-    assert!(
-        !visible.contains(&filed),
-        "the archived group folded with the drawer open"
-    );
-    assert!(
-        visible.contains(&live),
-        "live rows never fold; they are not a group"
-    );
+    assert!(!visible.contains(&filed), "the archived group folded");
+    assert!(!visible.contains(&live), "the inbox folded with it");
 
-    apply_intent(&mut domain, &mut model, toggle_all.clone(), None).expect("unfold all");
+    apply_intent(&mut domain, &mut model, fold_all.clone(), None).expect("unfold all");
     assert!(
         model.visible_ids().contains(&filed),
-        "and the archived group unfolded again"
+        "archived unfolded again"
     );
+    assert!(model.visible_ids().contains(&live), "inbox unfolded again");
 
-    // Drawer closed: no group answers the chord, and the archived group's own state
-    // is left alone (one press, so a regression cannot cancel itself out).
+    // Drawer closed: only the inbox answers, and the archived group's own state is left
+    // alone (one press, so a regression cannot cancel itself out).
     apply_intent(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer, None)
         .expect("close drawer");
-    apply_intent(&mut domain, &mut model, toggle_all, None).expect("inert with the drawer shut");
+    apply_intent(&mut domain, &mut model, fold_all, None).expect("fold inbox only");
+    assert!(!model.visible_ids().contains(&live), "inbox folded");
     apply_intent(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer, None)
         .expect("reopen drawer");
     assert!(

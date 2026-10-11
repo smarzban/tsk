@@ -1,6 +1,6 @@
 ┌────────────────────────────────────────────────────────────────────────────────┐
 │                                                                                │
-│ desk  ·  tsk ▾  ·  projects                                                    │
+│ desk  ·  tsk ▾  ·  projects                                              all ▾ │
 │                                                                                │
 │    no tasks match "nothing-here"                                               │
 │                                                                                │
