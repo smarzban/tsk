@@ -7612,3 +7612,261 @@ fn altgr_insertion_leaves_ctrl_alt_and_super_chords_alone() {
         Some(BoardIntent::CancelEdit)
     );
 }
+
+/// Undo the top entry from the board and say whether it took.
+fn board_undo(domain: &mut DomainState, model: &mut BoardModel) {
+    assert_eq!(
+        apply_intent(domain, model, BoardIntent::Undo, None).expect("ctrl+u"),
+        IntentOutcome::Persist
+    );
+}
+
+/// Every status verb on the board is one undo step that restores the status it left
+/// (#173 finding 4): a plain start, ready, open, and toggling a block or review off.
+#[test]
+fn ctrl_u_after_a_status_verb_restores_the_status_it_left() {
+    let cases = [
+        (
+            HumanStatus::Open,
+            BoardIntent::PrimaryVerb,
+            HumanStatus::Started,
+        ),
+        (
+            HumanStatus::Ready,
+            BoardIntent::PrimaryVerb,
+            HumanStatus::Started,
+        ),
+        (
+            HumanStatus::Started,
+            BoardIntent::SetStatus(HumanStatus::Ready),
+            HumanStatus::Ready,
+        ),
+        (
+            HumanStatus::Ready,
+            BoardIntent::SetStatus(HumanStatus::Open),
+            HumanStatus::Open,
+        ),
+        (
+            HumanStatus::Open,
+            BoardIntent::SetStatus(HumanStatus::Started),
+            HumanStatus::Started,
+        ),
+        (HumanStatus::Started, BoardIntent::Reopen, HumanStatus::Open),
+        (
+            HumanStatus::Blocked,
+            BoardIntent::ToggleBlock,
+            HumanStatus::Ready,
+        ),
+        (
+            HumanStatus::Review,
+            BoardIntent::ToggleReview,
+            HumanStatus::Ready,
+        ),
+    ];
+    for (before, intent, after) in cases {
+        let (mut domain, mut model, id) = board_with_task("status witness", before);
+        assert_eq!(
+            apply_intent(&mut domain, &mut model, intent.clone(), None).expect("status verb"),
+            IntentOutcome::Persist,
+            "{intent:?} from {before:?}"
+        );
+        assert_eq!(domain.get(id).expect("task").status, after);
+        board_undo(&mut domain, &mut model);
+        assert_eq!(
+            domain.get(id).expect("task").status,
+            before,
+            "ctrl+u after {intent:?} from {before:?}"
+        );
+    }
+}
+
+/// Undoing an unblock reopens the very block it closed, reasons and all.
+#[test]
+fn ctrl_u_after_an_unblock_reopens_the_block_it_closed() {
+    let (mut domain, mut model, id) = board_with_task("blocked witness", HumanStatus::Open);
+    domain
+        .block(
+            id,
+            tsk_tui::domain::BlockDraft {
+                why: Some("needs the API key".into()),
+                ..Default::default()
+            },
+            "you",
+        )
+        .expect("block");
+    model.sync_from_domain(&domain);
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None).expect("unblock");
+    assert!(domain.get(id).expect("task").block.is_none());
+    board_undo(&mut domain, &mut model);
+    let task = domain.get(id).expect("task");
+    assert_eq!(task.status, HumanStatus::Blocked);
+    assert_eq!(
+        task.block.as_ref().and_then(|block| block.why.as_deref()),
+        Some("needs the API key")
+    );
+}
+
+/// A marked status verb is one batch undo entry: one ctrl+u puts every task back to the
+/// status it left, and a task the verb did not move stays as it is.
+#[test]
+fn ctrl_u_after_a_marked_status_verb_restores_each_status_as_one_step() {
+    let marked_cases = [
+        BoardIntent::SetStatus(HumanStatus::Ready),
+        BoardIntent::SetStatus(HumanStatus::Open),
+        BoardIntent::PrimaryVerb,
+        BoardIntent::Reopen,
+    ];
+    for intent in marked_cases {
+        let (mut domain, mut model, first) = board_with_task("first", HumanStatus::Open);
+        let mut ids = vec![first];
+        for (title, status) in [
+            ("second", HumanStatus::Ready),
+            ("third", HumanStatus::Started),
+        ] {
+            let id = domain
+                .create(
+                    title,
+                    None,
+                    project(THIS_REPO),
+                    ProvenanceOrigin::Manual,
+                    None,
+                )
+                .expect("create");
+            domain.set_status(id, status).expect("status");
+            ids.push(id);
+        }
+        model.sync_from_domain(&domain);
+        let statuses = |domain: &DomainState| -> Vec<HumanStatus> {
+            ids.iter()
+                .map(|id| domain.get(*id).expect("task").status)
+                .collect()
+        };
+        let before = statuses(&domain);
+        mark_tasks(&mut domain, &mut model, &ids);
+        assert_eq!(
+            apply_intent(&mut domain, &mut model, intent.clone(), None).expect("marked verb"),
+            IntentOutcome::Persist,
+            "{intent:?}"
+        );
+        assert_ne!(statuses(&domain), before, "{intent:?} moves the set");
+        let stack = serde_json::to_value(&domain).expect("state")["undo_stack"].clone();
+        assert!(
+            stack
+                .as_array()
+                .and_then(|stack| stack.last())
+                .is_some_and(|entry| entry.get("batch").is_some()),
+            "{intent:?} on a marked set is one batch entry: {stack}"
+        );
+        board_undo(&mut domain, &mut model);
+        assert_eq!(
+            statuses(&domain),
+            before,
+            "one ctrl+u after a marked {intent:?}"
+        );
+    }
+}
+
+fn step_view(domain: &DomainState, id: uuid::Uuid) -> Vec<(String, bool)> {
+    domain
+        .get(id)
+        .expect("task")
+        .steps
+        .iter()
+        .map(|step| (step.text.clone(), step.done))
+        .collect()
+}
+
+/// Ticking and unticking a step are each one undo step on the task page (#173 finding 4).
+#[test]
+fn ctrl_u_on_the_page_reverts_a_step_tick_and_an_untick() {
+    let (mut domain, mut model, id) =
+        board_with_steps("Tick witness", None, &["alpha step", "bravo step"]);
+    apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("leave edit");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("select first step");
+    let untouched = step_view(&domain, id);
+
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleStep, None).expect("tick");
+    assert!(domain.get(id).expect("task").steps[0].done);
+    let ticked = step_view(&domain, id);
+    board_undo(&mut domain, &mut model);
+    assert_eq!(step_view(&domain, id), untouched, "ctrl+u unticks");
+    assert!(
+        rendered_board(&model, 80, 24).contains("steps 0/2"),
+        "the page follows the undo"
+    );
+
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleStep, None).expect("tick again");
+    assert_eq!(step_view(&domain, id), ticked);
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleStep, None).expect("untick");
+    assert_eq!(step_view(&domain, id), untouched);
+    board_undo(&mut domain, &mut model);
+    assert_eq!(step_view(&domain, id), ticked, "ctrl+u ticks it back");
+}
+
+/// Removing a step (ctrl+x twice) is one undo step that puts it back in place.
+#[test]
+fn ctrl_u_on_the_page_restores_a_removed_step() {
+    let (mut domain, mut model, id) =
+        board_with_steps("Remove witness", None, &["alpha step", "bravo step"]);
+    apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("leave edit");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("select first step");
+    let before = step_view(&domain, id);
+    apply_intent(&mut domain, &mut model, BoardIntent::SoftDelete, None).expect("mark step");
+    assert_eq!(
+        apply_intent(&mut domain, &mut model, BoardIntent::SoftDelete, None).expect("remove"),
+        IntentOutcome::Persist
+    );
+    assert_eq!(step_view(&domain, id).len(), 1);
+    board_undo(&mut domain, &mut model);
+    assert_eq!(step_view(&domain, id), before);
+    assert!(
+        !domain.get(id).expect("task").soft_deleted,
+        "the task is untouched"
+    );
+}
+
+/// Adding a step is one undo step that takes it away again.
+#[test]
+fn ctrl_u_on_the_page_takes_back_an_added_step() {
+    let (mut domain, mut model, id) = board_with_steps("Add witness", None, &["alpha step"]);
+    apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("leave edit");
+    let before = step_view(&domain, id);
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginAddStep, None).expect("add step");
+    for character in "zed step".chars() {
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsert(character),
+            None,
+        )
+        .expect("type");
+    }
+    apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).expect("save step");
+    assert_eq!(step_view(&domain, id).len(), 2);
+    apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close editor");
+    board_undo(&mut domain, &mut model);
+    assert_eq!(step_view(&domain, id), before);
+}
+
+/// New step text is one undo step that restores the old text.
+#[test]
+fn ctrl_u_on_the_page_restores_a_step_s_old_text() {
+    let (mut domain, mut model, id) =
+        board_with_steps("Rename witness", None, &["alpha step", "bravo step"]);
+    apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("leave edit");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("select first step");
+    let before = step_view(&domain, id);
+    let edit = map_key(BoardInputMode::TaskPage, ctrl(KeyCode::Char('e'))).expect("ctrl+e");
+    apply_intent(&mut domain, &mut model, edit, None).expect("edit step");
+    apply_intent(&mut domain, &mut model, BoardIntent::EditInsert('!'), None).expect("type");
+    let save = map_key(model.input_mode(), shift(KeyCode::Enter)).expect("shift+enter");
+    apply_intent(&mut domain, &mut model, save, None).expect("rename step");
+    model.sync_from_domain(&domain);
+    assert_eq!(domain.get(id).expect("task").steps[0].text, "alpha step!");
+    board_undo(&mut domain, &mut model);
+    assert_eq!(step_view(&domain, id), before);
+    assert_eq!(domain.get(id).expect("task").title, "Rename witness");
+}

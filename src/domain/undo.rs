@@ -1,13 +1,18 @@
-//! Undo stack for soft-delete, complete, assignment, base, block, `after`, and a start that
-//! dispatched.
+//! Undo stack for soft-delete, complete, status changes, steps, assignment, base, block,
+//! `after`, and a start that dispatched.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{DomainError, DomainState, HumanStatus};
+use super::{DomainError, DomainState, HumanStatus, Step};
 
 /// Maximum undo entries retained in a saved document.
 pub const UNDO_CAP: usize = 50;
+
+/// What a done entry written before store v13 restores: `open`.
+fn pre_v13_previous() -> HumanStatus {
+    HumanStatus::Open
+}
 
 /// One reversible user action on the undo stack.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,8 +22,12 @@ pub enum UndoEntry {
         id: Uuid,
         expected_revision: Uuid,
     },
+    /// A done; reversing restores `previous`. An entry written before store v13 carries no
+    /// `previous` and reads as `open`, the status such an undo always went back to.
     Complete {
         id: Uuid,
+        #[serde(default = "pre_v13_previous")]
+        previous: HumanStatus,
         expected_revision: Uuid,
     },
     Assign {
@@ -42,6 +51,20 @@ pub enum UndoEntry {
     Start {
         id: Uuid,
         previous: HumanStatus,
+        expected_revision: Uuid,
+    },
+    /// A plain status change on the board (a start that launched nothing, ready, open, an
+    /// unblock); reversing restores `previous`.
+    Status {
+        id: Uuid,
+        previous: HumanStatus,
+        expected_revision: Uuid,
+    },
+    /// A change to a task's steps (tick, untick, add, remove, or new text); reversing puts the
+    /// `previous` steps back.
+    Steps {
+        id: Uuid,
+        previous: Vec<Step>,
         expected_revision: Uuid,
     },
     /// A change to a task's `after` list (set, chain, or a delete that unlinked it); reversing
@@ -72,6 +95,8 @@ impl UndoEntry {
                 | UndoEntry::SetBase { .. }
                 | UndoEntry::Block { .. }
                 | UndoEntry::Start { .. }
+                | UndoEntry::Status { .. }
+                | UndoEntry::Steps { .. }
                 | UndoEntry::SetAfter { .. } => leaves.push(entry),
             }
         }
@@ -92,6 +117,7 @@ impl UndoEntry {
                 | UndoEntry::Complete {
                     id,
                     expected_revision,
+                    ..
                 }
                 | UndoEntry::Assign {
                     id,
@@ -109,6 +135,16 @@ impl UndoEntry {
                     ..
                 }
                 | UndoEntry::Start {
+                    id,
+                    expected_revision,
+                    ..
+                }
+                | UndoEntry::Status {
+                    id,
+                    expected_revision,
+                    ..
+                }
+                | UndoEntry::Steps {
                     id,
                     expected_revision,
                     ..
@@ -138,6 +174,7 @@ impl UndoEntry {
             | UndoEntry::Complete {
                 id: target,
                 expected_revision,
+                ..
             }
             | UndoEntry::Assign {
                 id: target,
@@ -159,6 +196,16 @@ impl UndoEntry {
                 expected_revision,
                 ..
             }
+            | UndoEntry::Status {
+                id: target,
+                expected_revision,
+                ..
+            }
+            | UndoEntry::Steps {
+                id: target,
+                expected_revision,
+                ..
+            }
             | UndoEntry::SetAfter {
                 id: target,
                 expected_revision,
@@ -174,11 +221,14 @@ impl UndoEntry {
     fn reverse(self, state: &mut DomainState) -> Result<(), DomainError> {
         match self {
             UndoEntry::SoftDelete { id, .. } => state.restore(id),
-            UndoEntry::Complete { id, .. } => state.reopen(id),
+            UndoEntry::Complete { id, previous, .. } => state.restore_uncompleted(id, previous),
             UndoEntry::Assign { id, previous, .. } => state.restore_assignee(id, previous),
             UndoEntry::SetBase { id, previous, .. } => state.restore_base(id, previous),
             UndoEntry::Block { id, previous, .. } => state.restore_unblocked(id, previous),
-            UndoEntry::Start { id, previous, .. } => state.restore_unstarted(id, previous),
+            UndoEntry::Start { id, previous, .. } | UndoEntry::Status { id, previous, .. } => {
+                state.restore_status(id, previous)
+            }
+            UndoEntry::Steps { id, previous, .. } => state.restore_steps(id, previous),
             UndoEntry::SetAfter { id, previous, .. } => state.restore_after(id, previous),
             UndoEntry::Batch { entries } => {
                 for entry in entries.into_iter().rev() {
@@ -633,6 +683,7 @@ mod tests {
                 "complete",
                 UndoEntry::Complete {
                     id,
+                    previous: HumanStatus::Open,
                     expected_revision,
                 },
             ),
@@ -773,6 +824,189 @@ mod tests {
             Some("release")
         );
         assert_eq!(state.get(second).expect("second").base, None);
+    }
+
+    /// The statuses a done can leave, each set up the way the board reaches it.
+    fn task_in(state: &mut DomainState, status: HumanStatus) -> Uuid {
+        let id = create_sample(state);
+        match status {
+            HumanStatus::Open => {}
+            HumanStatus::Blocked => state
+                .block(
+                    id,
+                    crate::domain::BlockDraft {
+                        why: Some("waiting on design".into()),
+                        ..Default::default()
+                    },
+                    "you",
+                )
+                .expect("block"),
+            other => state.set_status(id, other).expect("set status"),
+        }
+        id
+    }
+
+    const BEFORE_DONE: [HumanStatus; 5] = [
+        HumanStatus::Open,
+        HumanStatus::Ready,
+        HumanStatus::Started,
+        HumanStatus::Blocked,
+        HumanStatus::Review,
+    ];
+
+    #[test]
+    fn undo_of_done_restores_the_status_it_left() {
+        for previous in BEFORE_DONE {
+            let mut state = DomainState::new();
+            let id = task_in(&mut state, previous);
+            state.complete(id).expect("done");
+            assert_eq!(
+                state.last_undo(),
+                Some(&UndoEntry::Complete {
+                    id,
+                    previous,
+                    expected_revision: state.get(id).expect("task").revision,
+                })
+            );
+            state.undo().expect("undo the done");
+            let task = state.get(id).expect("task");
+            assert_eq!(task.status, previous, "undo of a done from {previous:?}");
+            assert_eq!(
+                task.history.last().map(|event| event.kind),
+                Some(crate::domain::TaskEventKind::Reopened)
+            );
+        }
+    }
+
+    #[test]
+    fn undo_of_a_marked_done_restores_each_status_it_left() {
+        let mut state = DomainState::new();
+        let ids: Vec<Uuid> = BEFORE_DONE
+            .iter()
+            .map(|status| task_in(&mut state, *status))
+            .collect();
+        state.complete_batch(&ids).expect("bulk done");
+        assert!(ids
+            .iter()
+            .all(|id| state.get(*id).expect("task").status == HumanStatus::Done));
+        state.undo().expect("undo the bulk done");
+        for (id, previous) in ids.iter().zip(BEFORE_DONE) {
+            assert_eq!(state.get(*id).expect("task").status, previous);
+        }
+    }
+
+    #[test]
+    fn undo_of_done_from_blocked_reopens_the_same_block() {
+        let mut state = DomainState::new();
+        let id = task_in(&mut state, HumanStatus::Blocked);
+        state.complete(id).expect("done");
+        assert!(state.get(id).expect("task").block.is_none());
+        state.undo().expect("undo the done");
+        let task = state.get(id).expect("task");
+        let block = task.block.as_ref().expect("the block is open again");
+        assert_eq!(block.why.as_deref(), Some("waiting on design"));
+        assert_eq!(block.closed_at, None);
+    }
+
+    #[test]
+    fn undo_of_done_survives_a_save_and_reload() {
+        let dir = temp_state_dir("previous");
+        let _guard = TempDirGuard(dir.clone());
+        let store = crate::store::TaskStore::new(&dir);
+        let mut state = DomainState::new();
+        let id = task_in(&mut state, HumanStatus::Started);
+        state.complete(id).expect("done");
+        store.save(&state).expect("save");
+        let mut loaded = store.load().expect("reload");
+        loaded.undo().expect("undo the done");
+        assert_eq!(loaded.get(id).expect("task").status, HumanStatus::Started);
+    }
+
+    #[test]
+    fn undo_of_a_reopen_puts_the_done_back_single_and_marked() {
+        let mut state = DomainState::new();
+        let first = task_in(&mut state, HumanStatus::Started);
+        let second = task_in(&mut state, HumanStatus::Blocked);
+        state.complete(first).expect("done");
+        state.complete(second).expect("done");
+        state.take_completed();
+
+        assert!(state
+            .change_status(&[first], HumanStatus::Open, false)
+            .expect("reopen"));
+        assert!(matches!(state.last_undo(), Some(UndoEntry::Status { .. })));
+        state.undo().expect("undo the reopen");
+        assert_eq!(state.get(first).expect("first").status, HumanStatus::Done);
+
+        assert!(state
+            .change_status(&[first, second], HumanStatus::Open, true)
+            .expect("marked reopen"));
+        assert!(
+            matches!(state.last_undo(), Some(UndoEntry::Batch { entries }) if entries.len() == 2)
+        );
+        state.undo().expect("undo the marked reopen");
+        for id in [first, second] {
+            assert_eq!(state.get(id).expect("task").status, HumanStatus::Done);
+        }
+        assert!(
+            state.get(second).expect("second").block.is_none(),
+            "done keeps no open block"
+        );
+        assert!(
+            state.take_completed().is_empty(),
+            "undoing a reopen releases nothing: the release belonged to the original done"
+        );
+    }
+
+    #[test]
+    fn change_status_skips_tasks_already_there_and_pushes_nothing_when_none_move() {
+        let mut state = DomainState::new();
+        let id = task_in(&mut state, HumanStatus::Ready);
+        while state.pop_undo().is_some() {}
+        assert!(!state
+            .change_status(&[id], HumanStatus::Ready, false)
+            .expect("no-op"));
+        assert_eq!(persisted_undo_len(&state), 0);
+    }
+
+    #[test]
+    fn steps_undo_restores_ticks_text_adds_and_removals_and_skips_no_ops() {
+        let mut state = DomainState::new();
+        let id = create_sample(&mut state);
+        let alpha = state.add_step(id, "alpha").expect("alpha");
+        let bravo = state.add_step(id, "bravo").expect("bravo");
+        while state.pop_undo().is_some() {}
+        let original = state.get(id).expect("task").steps.clone();
+        let changes: [(
+            &str,
+            Box<dyn Fn(&mut DomainState) -> Result<(), DomainError>>,
+        ); 4] = [
+            ("tick", Box::new(move |s| s.toggle_step(id, alpha))),
+            (
+                "rename",
+                Box::new(move |s| s.rename_step(id, bravo, "bravo!")),
+            ),
+            (
+                "add",
+                Box::new(move |s| s.add_step(id, "charlie").map(|_| ())),
+            ),
+            ("remove", Box::new(move |s| s.remove_step(id, alpha))),
+        ];
+        for (label, change) in changes {
+            state.with_steps_undo(id, |s| change(s)).expect(label);
+            assert_ne!(state.get(id).expect("task").steps, original, "{label}");
+            state.undo().expect(label);
+            assert_eq!(
+                state.get(id).expect("task").steps,
+                original,
+                "undo of {label}"
+            );
+        }
+        state.with_steps_undo(id, |_| Ok(())).expect("no-op");
+        assert!(
+            !matches!(state.last_undo(), Some(UndoEntry::Steps { .. })),
+            "a change that leaves the steps alone pushes nothing"
+        );
     }
 
     #[test]

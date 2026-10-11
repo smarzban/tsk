@@ -50,48 +50,6 @@ fn take_verb_targets(model: &mut BoardModel) -> (Vec<Uuid>, bool) {
     (targets, bulk)
 }
 
-fn set_status_batch(
-    domain: &mut DomainState,
-    targets: &[Uuid],
-    status: HumanStatus,
-) -> Result<bool, DomainError> {
-    let baseline = domain.clone();
-    let mut changed = false;
-    for &id in targets {
-        if domain.get(id).is_some_and(|task| task.status == status) {
-            continue;
-        }
-        if let Err(error) = domain.set_status(id, status) {
-            *domain = baseline;
-            return Err(error);
-        }
-        changed = true;
-    }
-    Ok(changed)
-}
-
-fn reopen_batch(domain: &mut DomainState, targets: &[Uuid]) -> Result<bool, DomainError> {
-    let baseline = domain.clone();
-    let mut changed = false;
-    for &id in targets {
-        let Some(status) = domain.get(id).map(|task| task.status) else {
-            *domain = baseline;
-            return Err(DomainError::UnknownId(id));
-        };
-        let result = match status {
-            HumanStatus::Open => continue,
-            HumanStatus::Done => domain.reopen(id),
-            _ => domain.set_status(id, HumanStatus::Open),
-        };
-        if let Err(error) = result {
-            *domain = baseline;
-            return Err(error);
-        }
-        changed = true;
-    }
-    Ok(changed)
-}
-
 fn file_batch(domain: &mut DomainState, targets: &[Uuid]) -> Result<bool, DomainError> {
     let baseline = domain.clone();
     let mut changed = false;
@@ -2374,7 +2332,7 @@ fn apply_board_intent(
             let Some((task_id, step_id)) = selected_step(domain, model) else {
                 return Ok(IntentOutcome::None);
             };
-            domain.toggle_step(task_id, step_id)?;
+            domain.with_steps_undo(task_id, |domain| domain.toggle_step(task_id, step_id))?;
         }
         BoardIntent::DispatchAgain => {
             // Host work and its one durable save are owned by the application boundary.
@@ -2412,28 +2370,22 @@ fn apply_board_intent(
         BoardIntent::PrimaryVerb => {
             model.close_popup();
             // Status verbs always act on tasks, even with a step selected: Enter owns steps.
-            let (targets, _) = take_verb_targets(model);
+            let (targets, bulk) = take_verb_targets(model);
             if targets.is_empty() {
                 model.set_message(NO_SELECTION);
                 return Ok(IntentOutcome::None);
             }
-            let baseline = domain.clone();
-            let mut changed = false;
+            let mut moving = Vec::with_capacity(targets.len());
             for id in targets {
                 let Some(status) = domain.get(id).map(|task| task.status) else {
-                    *domain = baseline;
                     model.set_message("that task is no longer here");
                     return Ok(IntentOutcome::None);
                 };
                 if matches!(status, HumanStatus::Open | HumanStatus::Ready) {
-                    if let Err(error) = domain.set_status(id, HumanStatus::Started) {
-                        *domain = baseline;
-                        return Err(error);
-                    }
-                    changed = true;
+                    moving.push(id);
                 }
             }
-            if !changed {
+            if !domain.change_status(&moving, HumanStatus::Started, bulk)? {
                 return Ok(IntentOutcome::None);
             }
         }
@@ -2468,7 +2420,7 @@ fn apply_board_intent(
                 return Ok(IntentOutcome::None);
             }
             model.clear_marks();
-            set_status_batch(domain, &targets, HumanStatus::Ready)?;
+            domain.change_status(&targets, HumanStatus::Ready, bulk)?;
         }
         BoardIntent::ToggleReview => {
             model.close_popup();
@@ -2501,7 +2453,7 @@ fn apply_board_intent(
                 return Ok(IntentOutcome::None);
             }
             model.clear_marks();
-            set_status_batch(domain, &targets, HumanStatus::Ready)?;
+            domain.change_status(&targets, HumanStatus::Ready, bulk)?;
         }
         BoardIntent::StageRight => {
             stage_right(domain, model);
@@ -3065,12 +3017,12 @@ fn apply_board_intent(
             return Ok(IntentOutcome::None);
         }
         BoardIntent::SetStatus(status) => {
-            let (targets, _) = take_verb_targets(model);
+            let (targets, bulk) = take_verb_targets(model);
             if targets.is_empty() {
                 model.set_message(NO_SELECTION);
                 return Ok(IntentOutcome::None);
             }
-            if !set_status_batch(domain, &targets, status)? {
+            if !domain.change_status(&targets, status, bulk)? {
                 model.close_popup();
                 return Ok(IntentOutcome::None);
             }
@@ -3099,12 +3051,12 @@ fn apply_board_intent(
         }
         BoardIntent::Reopen => {
             model.close_popup();
-            let (targets, _) = take_verb_targets(model);
+            let (targets, bulk) = take_verb_targets(model);
             if targets.is_empty() {
                 model.set_message(NO_SELECTION);
                 return Ok(IntentOutcome::None);
             }
-            if !reopen_batch(domain, &targets)? {
+            if !domain.change_status(&targets, HumanStatus::Open, bulk)? {
                 return Ok(IntentOutcome::None);
             }
         }
@@ -3809,19 +3761,22 @@ fn confirm_edit(
     let extra_steps = extra_step
         .map(|text| vec![text.trim().to_string()])
         .unwrap_or_default();
-    domain.edit_with_step_changes_and_base(
-        id,
-        &title,
-        notes.clone(),
-        scope.clone(),
-        thread.clone(),
-        assignee.clone(),
-        base.clone(),
-        &step_rename_list,
-        &step_removals.iter().copied().collect::<Vec<_>>(),
-        &extra_steps,
-    )?;
-    domain.stage_after_in_edit(id, &after)?;
+    // Only the steps part of the save is undoable.
+    domain.with_steps_undo(id, |domain| {
+        domain.edit_with_step_changes_and_base(
+            id,
+            &title,
+            notes.clone(),
+            scope.clone(),
+            thread.clone(),
+            assignee.clone(),
+            base.clone(),
+            &step_rename_list,
+            &step_removals.iter().copied().collect::<Vec<_>>(),
+            &extra_steps,
+        )?;
+        domain.stage_after_in_edit(id, &after)
+    })?;
 
     // Retain the complete form and mode until the persistence boundary confirms this exact
     // task-session save. A failed save can then Retry or Cancel without orphaning drafts.
@@ -4245,7 +4200,7 @@ fn page_step_delete(
         model.set_message("press ctrl+x again to remove");
         return Ok(PageStepDelete::Marked);
     }
-    domain.remove_step(task_id, step_id)?;
+    domain.with_steps_undo(task_id, |domain| domain.remove_step(task_id, step_id))?;
     let len = domain
         .get(task_id)
         .map(|task| task.steps.len())
@@ -4445,7 +4400,7 @@ fn confirm_step_editor(
         editor.rename.is_none(),
         "existing-step drafts are staged by the task session"
     );
-    let touched = match domain.add_step(task_id, &text) {
+    let touched = match domain.with_steps_undo(task_id, |domain| domain.add_step(task_id, &text)) {
         Ok(step) => step,
         Err(DomainError::EmptyStepText) => {
             if let Some(editor) = model

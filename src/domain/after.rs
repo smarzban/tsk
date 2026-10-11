@@ -808,6 +808,9 @@ mod tests {
         let (mut state, ids) = board(2);
         state.set_after(ids[1], &[1]).expect("set");
         state.set_status(ids[1], HumanStatus::Ready).expect("ready");
+        state
+            .set_status(ids[0], HumanStatus::Started)
+            .expect("started");
         state.complete(ids[0]).expect("done");
         let done = state.take_completed();
         for (id, after) in state.released_by(&done) {
@@ -825,7 +828,11 @@ mod tests {
             Some("started · after T1")
         );
         state.undo().expect("undo the done");
-        assert_eq!(state.get(ids[0]).expect("task").status, HumanStatus::Open);
+        assert_eq!(
+            state.get(ids[0]).expect("task").status,
+            HumanStatus::Started,
+            "the done goes back to the status it left"
+        );
         assert_eq!(state.get(ids[1]).expect("task").status, HumanStatus::Ready);
     }
 }

@@ -1358,7 +1358,7 @@ pub(super) fn save_reply(
             None => Some(domain.reply(id, &text, OWNER)?),
         };
         if let Some(status) = unblock {
-            domain.set_status(id, status)?;
+            domain.change_status(&[id], status, false)?;
         }
         Ok(index)
     });

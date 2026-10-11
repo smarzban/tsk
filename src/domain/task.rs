@@ -383,7 +383,7 @@ fn base_detail(base: &Option<String>) -> Option<EventDetail> {
 }
 
 /// Document version written by this binary.
-pub const STORE_FORMAT_VERSION: u32 = 12;
+pub const STORE_FORMAT_VERSION: u32 = 13;
 
 fn default_next_notice_number() -> u64 {
     1
@@ -1096,10 +1096,12 @@ impl DomainState {
 
     /// Complete: set human status to `done`. Pushes an undo entry.
     pub fn complete(&mut self, id: Uuid) -> Result<(), DomainError> {
+        let previous = self.task_mut(id)?.status;
         self.apply_status(id, HumanStatus::Done, TaskEventKind::Completed)?;
         let expected_revision = self.get(id).expect("completed task exists").revision;
         self.undo_stack.push(UndoEntry::Complete {
             id,
+            previous,
             expected_revision,
         });
         Ok(())
@@ -1149,6 +1151,7 @@ impl DomainState {
             );
             entries.push(UndoEntry::Complete {
                 id,
+                previous: from,
                 expected_revision: task.revision,
             });
             self.completed.push(id);
@@ -1177,6 +1180,16 @@ impl DomainState {
     /// Reopen a `done` task to `open` (inbox).
     pub fn reopen(&mut self, id: Uuid) -> Result<(), DomainError> {
         self.apply_status(id, HumanStatus::Open, TaskEventKind::Reopened)
+    }
+
+    /// Reverse a done: restore the status it left, reopening the block or review round that
+    /// status had. Recorded as a reopen.
+    pub(crate) fn restore_uncompleted(
+        &mut self,
+        id: Uuid,
+        previous: HumanStatus,
+    ) -> Result<(), DomainError> {
+        self.restore_status_as(id, previous, TaskEventKind::Reopened)
     }
 
     /// Soft-delete: mark excluded from board views until restore. Stays in store.
@@ -1471,12 +1484,23 @@ impl DomainState {
         Ok(true)
     }
 
-    /// Reverse a start that dispatched: restore the earlier status. A start out of `blocked`
-    /// closed the block, so going back reopens that block rather than an empty one.
-    pub(crate) fn restore_unstarted(
+    /// Reverse a start or a plain status change: restore the earlier status. A change out of
+    /// `blocked` or `review` closed that record, so going back reopens it rather than an empty
+    /// one. Undoing a reopen puts a task back to done without releasing what runs after it:
+    /// the release belonged to the original done, and nothing here could undo it.
+    pub(crate) fn restore_status(
         &mut self,
         id: Uuid,
         previous: HumanStatus,
+    ) -> Result<(), DomainError> {
+        self.restore_status_as(id, previous, TaskEventKind::StatusSet)
+    }
+
+    fn restore_status_as(
+        &mut self,
+        id: Uuid,
+        previous: HumanStatus,
+        kind: TaskEventKind,
     ) -> Result<(), DomainError> {
         let by = current_actor();
         let task = self.task_mut(id)?;
@@ -1487,11 +1511,116 @@ impl DomainState {
         sync_block_with_status(task, at, &by);
         record_event(
             task,
-            TaskEventKind::StatusSet,
+            kind,
             at,
             Some(&by),
             Some(EventDetail::status(from, previous)),
         );
+        Ok(())
+    }
+
+    /// Set `ids` to `status` as one undoable action: one [`UndoEntry::Status`] for a single
+    /// task, an [`UndoEntry::Batch`] for a marked set. Tasks already there are skipped; a done
+    /// going back to open is recorded as a reopen. All or nothing. Returns whether any changed.
+    pub fn change_status(
+        &mut self,
+        ids: &[Uuid],
+        status: HumanStatus,
+        marked: bool,
+    ) -> Result<bool, DomainError> {
+        let ids = self.prevalidate_batch_ids(ids)?;
+        let baseline = self.clone();
+        let mut entries = Vec::new();
+        for id in ids {
+            let previous = self.task_mut(id)?.status;
+            if previous == status {
+                continue;
+            }
+            let kind = if previous == HumanStatus::Done && status == HumanStatus::Open {
+                TaskEventKind::Reopened
+            } else {
+                TaskEventKind::StatusSet
+            };
+            if let Err(error) = self.apply_status(id, status, kind) {
+                *self = baseline;
+                return Err(error);
+            }
+            entries.push(UndoEntry::Status {
+                id,
+                previous,
+                expected_revision: self.task_mut(id)?.revision,
+            });
+        }
+        if entries.is_empty() {
+            return Ok(false);
+        }
+        self.undo_stack.push(if marked {
+            UndoEntry::Batch { entries }
+        } else {
+            entries.pop().expect("one status undo")
+        });
+        Ok(true)
+    }
+
+    /// Run `change` on task `id` and make what it did to the steps undoable as one
+    /// [`UndoEntry::Steps`]. A change that leaves the steps as they were pushes nothing.
+    pub fn with_steps_undo<T>(
+        &mut self,
+        id: Uuid,
+        change: impl FnOnce(&mut Self) -> Result<T, DomainError>,
+    ) -> Result<T, DomainError> {
+        let previous = self.task_mut(id)?.steps.clone();
+        let value = change(self)?;
+        let task = self.task_mut(id)?;
+        if task.steps != previous {
+            let expected_revision = task.revision;
+            self.undo_stack.push(UndoEntry::Steps {
+                id,
+                previous,
+                expected_revision,
+            });
+        }
+        Ok(value)
+    }
+
+    /// Reverse a steps change: put `previous` back, journaling each step it adds back, removes,
+    /// renames, or ticks.
+    pub(crate) fn restore_steps(
+        &mut self,
+        id: Uuid,
+        previous: Vec<Step>,
+    ) -> Result<(), DomainError> {
+        let task = self.task_mut(id)?;
+        let mut kinds = Vec::new();
+        for step in &previous {
+            match task.steps.iter().find(|current| current.id == step.id) {
+                None => kinds.push(TaskEventKind::StepAdded),
+                Some(current) => {
+                    if current.text != step.text {
+                        kinds.push(TaskEventKind::StepRenamed);
+                    }
+                    if current.done != step.done {
+                        kinds.push(if step.done {
+                            TaskEventKind::StepChecked
+                        } else {
+                            TaskEventKind::StepUnchecked
+                        });
+                    }
+                }
+            }
+        }
+        kinds.extend(
+            task.steps
+                .iter()
+                .filter(|current| !previous.iter().any(|step| step.id == current.id))
+                .map(|_| TaskEventKind::StepRemoved),
+        );
+        task.steps = previous;
+        let mut kinds = kinds.into_iter();
+        record_mutation(task, kinds.next().unwrap_or(TaskEventKind::Edited));
+        let at = task.updated_at;
+        task.history
+            .extend(kinds.map(|kind| event(kind, at, None, None)));
         Ok(())
     }
 
@@ -2102,6 +2231,10 @@ impl DomainState {
                                 task.last_event_at(TaskEventKind::Dispatched)
                             }
                             UndoEntry::SetAfter { .. } => task.last_event_at(TaskEventKind::Edited),
+                            // A live entry's target was last changed by the action it records.
+                            UndoEntry::Status { .. } | UndoEntry::Steps { .. } => {
+                                Some(task.updated_at)
+                            }
                             UndoEntry::Batch { .. } => unreachable!("batches are flattened"),
                         }
                     })
