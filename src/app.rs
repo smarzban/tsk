@@ -728,6 +728,7 @@ fn run_board_loop(
                     }
                 }
                 Event::Resize(_, _) => {
+                    model.follow_cleanup_selection();
                     // Dragging a pane edge fires a burst of resizes; wait them out
                     // so the next paint rebuilds layout once at the settled size.
                     pending_event = scheduler::coalesce_resizes(event::poll, event::read)?;
@@ -2186,6 +2187,7 @@ fn cleanup_row(
             .unwrap_or_else(|| "unknown".to_string()),
         dirty: preview.inspection.dirty,
         dirty_files: preview.inspection.dirty_files,
+        checked_out_elsewhere: preview.inspection.checked_out_elsewhere,
         branch_merged: preview.inspection.branch_merged,
         base_available: preview.inspection.base_available,
         warning: preview.inspection.warning,
@@ -6093,6 +6095,64 @@ mod tests {
             "right-seat selection must remain on a painted row"
         );
         assert_ne!(selected_row(right), Some(header));
+    }
+
+    #[test]
+    fn projects_preview_inert_click_disarms_the_right_seat_cleanup_card_double_click() {
+        let area = Rect::new(0, 0, 110, 30);
+        let (_domain, mut model) = projects_preview_open_tasks_fixture();
+        sync_frame_presentation(area, &model);
+        assert!(model.project_right_seat_focused());
+        let task = model
+            .right_seat()
+            .and_then(BoardModel::selected_id)
+            .expect("right seat task");
+        let row = CleanupRow {
+            merge_check: None,
+            check_failed: false,
+            pr: crate::ui::board::CleanupPr::default(),
+            unreachable_remote: None,
+            inspected: None,
+            task_id: task,
+            number: 1,
+            worktree: "/tmp/tsk-t1-preview".into(),
+            branch: "tsk/t1-preview".into(),
+            base: "main".into(),
+            dirty: false,
+            dirty_files: Vec::new(),
+            checked_out_elsewhere: false,
+            branch_merged: true,
+            base_available: true,
+            warning: None,
+            workspace_exists: true,
+        };
+        let seat = model.input_target_mut();
+        seat.begin_cleanup_prompt(crate::ui::board::CleanupPrompt::single(row));
+        seat.cleanup_prompt_mut().expect("card").option_click = Some((
+            std::time::Instant::now(),
+            crate::ui::board::CleanupChoice::Clean,
+        ));
+        // A press on the card's verdict line, above its first option, through the real mouse
+        // boundary.
+        let option = board_hit_map(area, &model)
+            .regions
+            .iter()
+            .find(|hit| hit.target == crate::ui::render::QueueHitTarget::CleanupOption(0))
+            .expect("first option painted")
+            .area;
+        assert_eq!(
+            board_mouse_intent(area, &mut model, left_click(option.x, option.y - 1)),
+            None
+        );
+        assert_eq!(
+            model
+                .right_seat()
+                .and_then(BoardModel::cleanup_prompt)
+                .expect("card stays open")
+                .option_click,
+            None,
+            "the preview's card must lose its pending double click"
+        );
     }
 
     #[test]
@@ -11096,6 +11156,7 @@ mod quick_assign_tests {
                 worktree_exists: true,
                 dirty: false,
                 dirty_files: Vec::new(),
+                checked_out_elsewhere: false,
                 branch_merged: true,
                 workspace_exists: true,
                 target_matches: true,
@@ -18942,6 +19003,7 @@ mod queued_cleanup_tests {
                 worktree_exists: true,
                 dirty: false,
                 dirty_files: Vec::new(),
+                checked_out_elsewhere: false,
                 branch_merged: self.cached_merged,
                 workspace_exists: true,
                 target_matches: true,
@@ -20019,6 +20081,7 @@ mod bulk_cleanup_tests {
                 worktree_exists: !self.missing.contains(&record.worktree),
                 dirty: self.dirty.contains(&record.worktree),
                 dirty_files: Vec::new(),
+                checked_out_elsewhere: false,
                 branch_merged: self.cached_merged,
                 workspace_exists: true,
                 target_matches: true,
@@ -21167,6 +21230,7 @@ mod merge_cleanup_tests {
                 worktree_exists: true,
                 dirty: self.dirty.contains(&record.branch),
                 dirty_files: Vec::new(),
+                checked_out_elsewhere: false,
                 branch_merged: false,
                 workspace_exists: true,
                 target_matches: true,
@@ -21727,6 +21791,35 @@ mod merge_cleanup_tests {
         assert!(!row.branch_deletable());
         let painted = screen(&board.model);
         assert!(!painted.contains("Pull request merged"), "{painted}");
+    }
+
+    #[test]
+    fn bulk_m_that_merges_nothing_keeps_the_marks_and_says_why_on_close() {
+        let mut board = board("bulk-none", &["one", "nopr"]);
+        let mut host = MergeHost::default();
+        host.open_pr("tsk/one", "main");
+        host.refuse
+            .insert("tsk/one".into(), "merge conflicts".into());
+        press(&mut board, BoardIntent::Complete, &mut host);
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        tick(&mut board, &mut host);
+        assert!(
+            board.model.cleanup_prompt().unwrap().settled.is_some(),
+            "nothing went on: the card only closes"
+        );
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        assert!(board.model.cleanup_prompt().is_none());
+        assert_eq!(board.model.marked_count(), 2, "the marks stay for a retry");
+        let message = board.model.message().unwrap_or_default().to_string();
+        assert!(
+            message.starts_with("nothing merged · marks kept")
+                && message.contains("merge failed: merge conflicts")
+                && message.contains("not merged"),
+            "{message}"
+        );
+        for index in 0..2 {
+            assert_eq!(on_disk(&board, index), HumanStatus::Started);
+        }
     }
 
     #[test]

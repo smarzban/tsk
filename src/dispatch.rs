@@ -78,6 +78,8 @@ pub struct CleanupInspection {
     pub dirty: bool,
     /// The uncommitted paths `git status` listed, in its order, for the card to name.
     pub dirty_files: Vec<String>,
+    /// Another worktree has the dispatch branch checked out, so cleanup keeps the branch.
+    pub checked_out_elsewhere: bool,
     pub branch_merged: bool,
     pub workspace_exists: bool,
     /// The recorded path is a non-root worktree registered to the project, and any Herdr
@@ -1722,16 +1724,34 @@ fn normalize_windows_path(path: &str) -> String {
 /// nor be the recorded target, so they are skipped instead of failing the whole listing:
 /// one stale entry must not disable cleanup offers for unrelated tasks.
 fn git_worktree_paths(project: &Path) -> Result<Vec<PathBuf>, String> {
+    Ok(git_worktree_entries(project)?
+        .into_iter()
+        .filter_map(|(path, _)| path)
+        .collect())
+}
+
+/// One worktree git lists: its canonical path (`None` for a stale entry whose directory is
+/// gone) and the branch ref it has checked out.
+type WorktreeEntry = (Option<PathBuf>, Option<String>);
+
+/// Each worktree git lists for the project.
+fn git_worktree_entries(project: &Path) -> Result<Vec<WorktreeEntry>, String> {
     let listed = cleanup_query(project, &["worktree", "list", "--porcelain"])
         .map_err(|error| cleanup_inspection_error("worktree listing", error))?;
     if !listed.status.success() {
         return Err(command_failure("git worktree list", &listed));
     }
-    Ok(String::from_utf8_lossy(&listed.stdout)
-        .lines()
-        .filter_map(|line| line.strip_prefix("worktree "))
-        .filter_map(|path| canonical_cleanup_path(Path::new(path)).ok())
-        .collect())
+    let mut entries: Vec<WorktreeEntry> = Vec::new();
+    for line in String::from_utf8_lossy(&listed.stdout).lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            entries.push((canonical_cleanup_path(Path::new(path)).ok(), None));
+        } else if let (Some(reference), Some(entry)) =
+            (line.strip_prefix("branch "), entries.last_mut())
+        {
+            entry.1 = Some(reference.to_string());
+        }
+    }
+    Ok(entries)
 }
 
 /// The branch is checked out in a worktree (or the listing timed out): a deletion keeps it.
@@ -1809,9 +1829,20 @@ fn system_inspect_cleanup(
             ..CleanupInspection::default()
         });
     }
-    let registered = git_worktree_paths(project)?
-        .iter()
-        .any(|listed| same_path(listed, &worktree_path));
+    let entries = git_worktree_entries(project)?;
+    let registered = entries.iter().any(|(listed, _)| {
+        listed
+            .as_ref()
+            .is_some_and(|listed| same_path(listed, &worktree_path))
+    });
+    // Branch deletion keeps a branch any worktree has checked out: say so before cleanup.
+    let branch_ref = format!("refs/heads/{}", dispatch.branch);
+    let checked_out_elsewhere = entries.iter().any(|(listed, branch)| {
+        branch.as_deref() == Some(branch_ref.as_str())
+            && !listed
+                .as_ref()
+                .is_some_and(|listed| same_path(listed, &worktree_path))
+    });
     if !registered {
         return Ok(CleanupInspection {
             worktree_exists: true,
@@ -1882,6 +1913,7 @@ fn system_inspect_cleanup(
         worktree_exists: true,
         dirty: !status.stdout.is_empty(),
         dirty_files: porcelain_paths(&status.stdout),
+        checked_out_elsewhere,
         branch_merged,
         workspace_exists,
         target_matches: workspace_matches,
@@ -4688,6 +4720,7 @@ mod tests {
             worktree_exists: true,
             dirty: false,
             dirty_files: Vec::new(),
+            checked_out_elsewhere: false,
             branch_merged: true,
             workspace_exists: true,
             target_matches: true,
@@ -5095,6 +5128,7 @@ mod tests {
         let dirty = CleanupInspection {
             dirty: true,
             dirty_files: Vec::new(),
+            checked_out_elsewhere: false,
             ..clean_inspection()
         };
         let mut host = FakeHost {
@@ -5961,6 +5995,7 @@ mod tests {
                     worktree_exists: true,
                     dirty: true,
                     dirty_files: Vec::new(),
+                    checked_out_elsewhere: false,
                     branch_merged: false,
                     workspace_exists: true,
                     target_matches: true,
@@ -5978,6 +6013,7 @@ mod tests {
                     worktree_exists: true,
                     dirty: false,
                     dirty_files: Vec::new(),
+                    checked_out_elsewhere: false,
                     branch_merged: false,
                     workspace_exists: true,
                     target_matches: true,
@@ -5995,6 +6031,7 @@ mod tests {
                     worktree_exists: true,
                     dirty: false,
                     dirty_files: Vec::new(),
+                    checked_out_elsewhere: false,
                     branch_merged: true,
                     workspace_exists: true,
                     target_matches: true,
@@ -6012,6 +6049,7 @@ mod tests {
                     worktree_exists: false,
                     dirty: false,
                     dirty_files: Vec::new(),
+                    checked_out_elsewhere: false,
                     branch_merged: false,
                     workspace_exists: false,
                     target_matches: true,
@@ -6366,6 +6404,7 @@ mod tests {
                 worktree_exists: true,
                 dirty: false,
                 dirty_files: Vec::new(),
+                checked_out_elsewhere: false,
                 branch_merged: true,
                 workspace_exists: true,
                 target_matches: false,
@@ -6429,6 +6468,7 @@ mod tests {
                     worktree_exists: true,
                     dirty: false,
                     dirty_files: Vec::new(),
+                    checked_out_elsewhere: false,
                     branch_merged: true,
                     workspace_exists: true,
                     target_matches: true,
@@ -6514,6 +6554,7 @@ mod tests {
                     worktree_exists: false,
                     dirty: false,
                     dirty_files: Vec::new(),
+                    checked_out_elsewhere: false,
                     branch_merged: false,
                     workspace_exists: false,
                     target_matches: true,
@@ -6854,6 +6895,7 @@ mod tests {
                 worktree_exists: false,
                 dirty: false,
                 dirty_files: Vec::new(),
+                checked_out_elsewhere: false,
                 branch_merged: false,
                 workspace_exists: false,
                 target_matches: true,
@@ -6902,6 +6944,94 @@ mod tests {
         assert_eq!(host.creates, 0);
         assert!(state.get(id).expect("task").dispatch.is_none());
         fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn system_inspection_sees_the_branch_checked_out_in_another_worktree() {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "tsk-dispatch-elsewhere-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let project = root.join("repo");
+        std::fs::create_dir_all(&project).expect("mkdir");
+        let git = |dir: &Path, args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .expect("run git");
+            assert!(output.status.success(), "{args:?}: {output:?}");
+        };
+        git(&project, &["init", "-q"]);
+        git(
+            &project,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ],
+        );
+        let worktree = root.join("repo-t1");
+        git(
+            &project,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "tsk/t1-x",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        let record = Dispatch {
+            argv: vec!["agent".into()],
+            worktree: worktree.to_string_lossy().into_owned(),
+            branch: "tsk/t1-x".into(),
+            base: None,
+            base_ref: None,
+            base_commit: None,
+            base_remote: None,
+            herdr_workspace_id: "w9".into(),
+            at: SystemTime::now(),
+            cleaned: false,
+        };
+        let inspect = || {
+            SystemDispatchHost::in_state_dir(root.join("state"))
+                .inspect_cleanup(&project, &record, false)
+                .expect("inspect")
+        };
+        assert!(
+            !inspect().checked_out_elsewhere,
+            "the dispatch's own worktree is not elsewhere"
+        );
+        let second = root.join("repo-t1-again");
+        git(
+            &project,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--force",
+                second.to_str().unwrap(),
+                "tsk/t1-x",
+            ],
+        );
+        let inspection = inspect();
+        assert!(inspection.worktree_exists);
+        assert!(
+            inspection.checked_out_elsewhere,
+            "a second checkout keeps the branch, so the card must say so"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -600,6 +600,8 @@ pub enum QueueOverlay<'a> {
         footer: CleanupFooter,
         /// First visible body row; clamped to what fits.
         scroll: usize,
+        /// Scroll the `▸` option into view over `scroll`.
+        follow: bool,
     },
     /// Project-scope dropdown from the selector chip.
     ScopeDropdown {
@@ -2142,6 +2144,7 @@ fn paint_overlay(
             lines,
             footer,
             scroll,
+            follow,
         } => {
             paint_cleanup_card(
                 frame,
@@ -2152,6 +2155,7 @@ fn paint_overlay(
                     lines,
                     footer: *footer,
                     scroll: *scroll,
+                    follow: *follow,
                 },
                 hits,
             );
@@ -4059,6 +4063,8 @@ impl CleanupFooter {
 pub struct CleanupLayout {
     /// Body rows the frame shows at once.
     pub capacity: usize,
+    /// The first body row painted, after clamping and any scroll to the `▸` option.
+    pub scroll: usize,
     /// Each option's first row and one past its last, in option order.
     pub options: Vec<(usize, usize)>,
 }
@@ -4105,6 +4111,7 @@ struct CleanupCard<'a> {
     lines: &'a [CleanupCardLine],
     footer: CleanupFooter,
     scroll: usize,
+    follow: bool,
 }
 
 /// Below this many value cells beside the label column, fields stack label over value.
@@ -4325,8 +4332,30 @@ fn paint_cleanup_card(
             options[option].1 = index + 1;
         }
     }
-    hits.cleanup_layout = Some(CleanupLayout { capacity, options });
-    let scroll = card.scroll.min(max_scroll);
+    let mut scroll = card.scroll.min(max_scroll);
+    if card.follow {
+        let selected = card.lines.iter().find_map(|line| match line {
+            CleanupCardLine::Option {
+                index,
+                selected: true,
+                ..
+            } => Some(*index),
+            _ => None,
+        });
+        if let Some(&(start, end)) = selected.and_then(|index| options.get(index)) {
+            // Show the whole `▸` option, or its first rows when it is taller than the frame.
+            if start < scroll {
+                scroll = start;
+            } else if end > scroll + capacity {
+                scroll = end.saturating_sub(capacity).min(start).min(max_scroll);
+            }
+        }
+    }
+    hits.cleanup_layout = Some(CleanupLayout {
+        capacity,
+        scroll,
+        options,
+    });
     let window: Vec<&CleanupCardRow> = rows.iter().skip(scroll).take(capacity).collect();
     let title =
         titled_with_scroll_marker(base_title, scroll > 0, scroll + window.len() < rows.len());

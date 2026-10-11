@@ -87,7 +87,7 @@ fn bulk_extra_lines(bulk: &super::BulkCleanup, lines: &mut Vec<CleanupCardLine>)
     for (_, identifier, _) in &bulk.missing {
         lines.push(CleanupCardLine::Field {
             label: identifier.clone(),
-            value: "worktree already gone".into(),
+            value: "can't tell if merged: worktree already gone".into(),
         });
     }
     for identifier in &bulk.plain {
@@ -201,6 +201,7 @@ pub(crate) fn cleanup_overlay<'a>(prompt: &CleanupPrompt, home: Option<&str>) ->
         lines,
         footer: CleanupFooter::Options,
         scroll: prompt.scroll,
+        follow: prompt.follow,
     }
 }
 
@@ -280,6 +281,7 @@ pub(crate) fn cleanup_run_overlay<'a>(
         lines,
         footer: CleanupFooter::Options,
         scroll: prompt.scroll,
+        follow: false,
     }
 }
 
@@ -421,6 +423,7 @@ pub(crate) fn dispatch_overlay<'a>(
         lines,
         footer: CleanupFooter::Dispatch(count),
         scroll: prompt.scroll,
+        follow: false,
     }
 }
 
@@ -442,6 +445,7 @@ fn start_anyway_overlay<'a>(prompt: &StartAnywayPrompt, scroll: usize) -> QueueO
         lines,
         footer: CleanupFooter::StartAnyway,
         scroll,
+        follow: false,
     }
 }
 
@@ -467,6 +471,7 @@ fn relaunch_overlay<'a>(prompt: &RelaunchPrompt, scroll: usize) -> QueueOverlay<
         lines,
         footer: CleanupFooter::Relaunch,
         scroll,
+        follow: false,
     }
 }
 

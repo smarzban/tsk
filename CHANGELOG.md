@@ -35,11 +35,12 @@ the GitHub release notes verbatim.
 - `ctrl+r` and palette **set status: review** open the review card instead of setting review at once; `Enter` on the empty card still sets it immediately, and `ctrl+r` on a task in review still returns it to ready.
 - `tsk reply` also adds feedback to a task in review; `not-blocked` now means the task is neither blocked nor in review.
 - The cleanup card puts each option on its own line saying what it does to the pull request or branch, then locally (`m  squash-merge PR #193 to main · mark done · remove worktree, branch and agent pane`), shows only the options that apply with the likely one in bold, and drops the footer key list. `↑`/`↓` and `Enter` pick an option (a click selects one, a double click runs it), and a marked set's option lines name the tasks each one touches.
-- On a marked set, the cleanup card's `m` also marks done and tidies the tasks already merged, and `y` leaves tasks with uncommitted changes exactly as they were instead of marking them done.
+- On a marked set, the cleanup card's `m` also marks done and tidies the tasks already merged, and `y` leaves tasks with uncommitted changes exactly as they were instead of marking them done. When `m` merges nothing, the marks stay and the status row says why.
 
 ### Fixed
 
 - Sending a review back delivers every feedback entry of the round to the running agent, including the ones saved earlier with `Shift+Enter`, numbered one per line when there are several; before, only the box's last entry arrived. Unblocking does the same with the block's replies, from the reply box, `ctrl+b`, palette set status, a marked start (the bulk start card included), or `tsk status T12 started`/`ready`; a save that fails sends only once Retry saves it, and a reply `tsk reply --send` already delivered is not sent again, and `tsk list T12 --json` shows it with `sent: true`. The status row counts the entries (`started · 2 feedback entries sent to @claude`).
+- The cleanup card says `Can't tell if it's merged: branch checked out in another worktree · the branch is kept` when another worktree has the dispatch branch checked out; it promised to delete a branch cleanup then kept.
 - When GitHub deletes a pull request's branch on merge, the cleanup card now says `remote branch deleted by GitHub` and `--merge` reports `remote_branch: deleted`; both read it as kept before, because they looked a moment too early.
 - Cleanup deletes a squash- or rebase-merged branch when `gh` confirms its pull request merged at exactly the branch's tip; before, it was always kept as not merged. Without `gh` nothing changes.
 - A project reached through a symlinked path, such as `/tmp/repo` and `/private/tmp/repo` on macOS, is one project.

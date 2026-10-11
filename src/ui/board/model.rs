@@ -1183,6 +1183,8 @@ pub struct CleanupRow {
     pub dirty: bool,
     /// The uncommitted paths, for the card to name the first few.
     pub dirty_files: Vec<String>,
+    /// Another worktree has the branch checked out: cleanup keeps it, merged or not.
+    pub checked_out_elsewhere: bool,
     pub branch_merged: bool,
     pub workspace_exists: bool,
     pub warning: Option<String>,
@@ -1609,6 +1611,9 @@ pub struct CleanupPrompt {
     pub bulk: Option<BulkCleanup>,
     /// First visible card row; the painter clamps it to the rows that fit.
     pub scroll: usize,
+    /// The painter scrolls the `▸` option into view: from the card opening, after an arrow
+    /// and after a resize, until a page key scrolls the card by hand.
+    pub follow: bool,
     /// `m`'s merges running off the event loop, with the task each job slot merges.
     pub merging: Option<(crate::dispatch::pr::MergeJob, Vec<Uuid>)>,
     /// Why `m` merged nothing before it started, such as an invalid `[merge]` setting.
@@ -1641,6 +1646,7 @@ impl CleanupPrompt {
             rows,
             bulk,
             scroll: 0,
+            follow: true,
             merging: None,
             merge_note: None,
             method: crate::agents::MergeMethod::default(),
@@ -2225,8 +2231,28 @@ impl BoardModel {
         {
             return;
         }
+        // A marked set's `m` that went on with nothing keeps the marks for a retry, and says
+        // on the status row why nothing merged.
+        let settled = self
+            .cleanup_prompt
+            .as_ref()
+            .filter(|prompt| prompt.bulk.is_some())
+            .and_then(|prompt| prompt.settled.as_ref())
+            .map(|settled| {
+                std::iter::once("nothing merged · marks kept".to_string())
+                    .chain(
+                        settled
+                            .iter()
+                            .map(|(identifier, reason)| format!("{identifier} {reason}")),
+                    )
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            });
         let finished = self.cleanup_run().is_some_and(|run| run.finished());
-        if !finished {
+        if let Some(summary) = settled {
+            self.close_popup();
+            self.post_cleanup_summary(summary, false);
+        } else if !finished {
             self.close_popup();
         } else if let Some((summary, clean)) = self.finish_cleanup_run() {
             self.post_cleanup_summary(summary, clean);
@@ -2590,7 +2616,13 @@ impl BoardModel {
         let Some(prompt) = self.cleanup_prompt.as_mut() else {
             return;
         };
-        let scroll = prompt.scroll.min(max_scroll);
+        let scroll = if prompt.follow {
+            layout.scroll
+        } else {
+            prompt.scroll
+        }
+        .min(max_scroll);
+        prompt.follow = true;
         prompt.scroll = if start < scroll {
             start
         } else if layout.capacity > 0 && end > scroll + layout.capacity {
@@ -2602,8 +2634,16 @@ impl BoardModel {
 
     pub fn scroll_cleanup(&mut self, down: bool) {
         let horizon = self.cleanup_max_scroll.get();
+        let painted = self.cleanup_layout.borrow().scroll;
+        let running = self.cleanup_running();
         let scroll = match (self.cleanup_prompt.as_mut(), self.dispatch_prompt.as_mut()) {
-            (Some(prompt), _) => &mut prompt.scroll,
+            (Some(prompt), _) => {
+                // A page key takes over from the painter's scroll to the `▸` option.
+                if std::mem::take(&mut prompt.follow) && !running {
+                    prompt.scroll = painted;
+                }
+                &mut prompt.scroll
+            }
             (None, Some(prompt)) => &mut prompt.scroll,
             (None, None) => return,
         };
@@ -2612,6 +2652,17 @@ impl BoardModel {
         } else {
             scroll.saturating_sub(1)
         };
+    }
+
+    /// The frame changed size: scroll the cleanup card's `▸` option back into view, here and
+    /// in the project preview.
+    pub fn follow_cleanup_selection(&mut self) {
+        if let Some(prompt) = self.cleanup_prompt.as_mut() {
+            prompt.follow = true;
+        }
+        if let Some(seat) = self.right_seat.as_deref_mut() {
+            seat.follow_cleanup_selection();
+        }
     }
 
     /// Present a failed board save without replacing its visible working state.
@@ -3418,6 +3469,10 @@ impl BoardModel {
         self.last_project_row_click = None;
         if let Some(prompt) = self.cleanup_prompt.as_mut() {
             prompt.option_click = None;
+        }
+        // The project preview's card takes clicks through the same boundary.
+        if let Some(seat) = self.right_seat.as_deref_mut() {
+            seat.cancel_project_header_double_click();
         }
     }
 

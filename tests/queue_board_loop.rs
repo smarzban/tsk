@@ -704,6 +704,7 @@ fn board_frame_paints_a_cleanup_verdict_that_landed_while_idle() {
         base: "origin/main".into(),
         dirty: false,
         dirty_files: Vec::new(),
+        checked_out_elsewhere: false,
         branch_merged: false,
         workspace_exists: true,
         warning: None,

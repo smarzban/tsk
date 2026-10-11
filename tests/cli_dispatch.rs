@@ -303,6 +303,7 @@ fn clean_cli_help_and_success_report_each_removed_resource() {
             worktree_exists: true,
             dirty: false,
             dirty_files: Vec::new(),
+            checked_out_elsewhere: false,
             branch_merged: true,
             workspace_exists: true,
             target_matches: true,

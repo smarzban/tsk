@@ -3839,6 +3839,7 @@ fn cleanup_card(model: &mut BoardModel, id: uuid::Uuid, dirty: bool) {
         base: "origin/main".into(),
         dirty,
         dirty_files: Vec::new(),
+        checked_out_elsewhere: false,
         branch_merged: true,
         base_available: true,
         warning: None,

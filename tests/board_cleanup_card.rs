@@ -11,7 +11,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::Terminal;
 use tsk_tui::agents::MergeMethod;
-use tsk_tui::dispatch::pr::{PrLookupError, PrProbeResult, PrState};
+use tsk_tui::dispatch::pr::{MergeJob, PrLookupError, PrProbeResult, PrState};
 use tsk_tui::dispatch::PullRequest;
 use tsk_tui::domain::{Dispatch, DomainState};
 use tsk_tui::ui::board::{
@@ -62,6 +62,7 @@ fn row(number: u64) -> CleanupRow {
         base: "origin/main".into(),
         dirty: false,
         dirty_files: Vec::new(),
+        checked_out_elsewhere: false,
         branch_merged: false,
         base_available: true,
         warning: None,
@@ -393,7 +394,14 @@ fn f_an_unconfirmed_merge_says_why_and_keeps_the_branch() {
         row.base_available = false;
         row
     };
+    // Merged, even at its PR's tip, but a second worktree holds the branch: deletion keeps it.
+    let elsewhere = {
+        let mut row = merged(7, 194);
+        row.checked_out_elsewhere = true;
+        row
+    };
     for (row, reason) in [
+        (elsewhere, "branch checked out in another worktree"),
         (offline, "offline (base fetch failed)"),
         (timed_out, "the check timed out"),
         (gone, "base no longer available"),
@@ -408,7 +416,32 @@ fn f_an_unconfirmed_merge_says_why_and_keeps_the_branch() {
             ],
         );
         assert!(!body(&model, 110, 40).contains('✓'));
+        assert!(!options(&model)
+            .iter()
+            .any(|(_, text, _)| text.contains("branch and")));
     }
+}
+
+#[test]
+fn f_a_marked_set_names_a_gone_worktree_and_keeps_a_branch_checked_out_elsewhere() {
+    let mut elsewhere = merged(8, 194);
+    elsewhere.checked_out_elsewhere = true;
+    let mut model = bulk(vec![merged(7, 193), elsewhere], &[]);
+    {
+        let prompt = model.cleanup_prompt_mut().expect("card");
+        let bulk = prompt.bulk.as_mut().expect("bulk");
+        bulk.targets.push(Uuid::from_u128(9));
+        bulk.missing
+            .push((Uuid::from_u128(9), "T9".into(), record(9)));
+    }
+    assert_says(
+        &model,
+        &[
+            "T8 can't tell if merged: branch checked out in another worktree",
+            "T9 can't tell if merged: worktree already gone",
+            "delete T7's branch · keep T8's branch",
+        ],
+    );
 }
 
 #[test]
@@ -419,6 +452,47 @@ fn g_while_the_pr_lookup_or_a_merge_runs_the_card_offers_nothing() {
     let model = single(checking);
     assert_says(&model, &["Checking pull request…", "esc cancel"]);
     assert!(options(&model).is_empty());
+}
+
+#[test]
+fn g_while_m_merges_the_card_names_the_pr_and_offers_nothing() {
+    let mut prompt = CleanupPrompt::single(open_pr(7, 193));
+    prompt.merging = Some((MergeJob::new(1), vec![Uuid::from_u128(7)]));
+    let model = card(prompt);
+    assert_says(&model, &["Merging PR #193 with gh…"]);
+    assert!(options(&model).is_empty());
+
+    let mut model = bulk(vec![open_pr(7, 193), open_pr(8, 190)], &[]);
+    model.cleanup_prompt_mut().unwrap().merging = Some((
+        MergeJob::new(2),
+        vec![Uuid::from_u128(7), Uuid::from_u128(8)],
+    ));
+    assert_says(
+        &model,
+        &["T7 Merging PR #193 with gh…", "T8 Merging PR #190 with gh…"],
+    );
+    assert!(options(&model).is_empty());
+}
+
+#[test]
+fn g_while_the_cleanup_runs_the_card_counts_it() {
+    let mut model = single(merged(7, 193));
+    let mut run = finished_run(vec![run_row(7, CleanupRowState::Removing)], None);
+    run.settled = false;
+    model.begin_cleanup_run(run);
+    assert_says(&model, &["Cleaning up…"]);
+
+    let mut model = bulk(vec![merged(7, 193), merged(8, 190)], &[]);
+    let mut run = finished_run(
+        vec![
+            run_row(7, CleanupRowState::Removing),
+            run_row(8, CleanupRowState::Queued),
+        ],
+        Some((2, 2)),
+    );
+    run.settled = false;
+    model.begin_cleanup_run(run);
+    assert_says(&model, &["T7 Cleaning 1 of 2…", "T8 waiting"]);
 }
 
 #[test]
@@ -730,9 +804,20 @@ fn arrows_move_the_cursor_and_stop_at_the_ends() {
 fn page_keys_scroll_the_set_and_arrows_keep_the_selected_option_in_view() {
     let mut domain = DomainState::new();
     let mut model = bulk((1..=12).map(row).collect(), &[]);
-    let height = 16;
+    let height = 12;
     let first = rows(&model, 78, height).join("\n");
-    assert!(first.contains("T1 ") && first.contains('▼'), "{first}");
+    assert!(
+        first.contains("▸ ") && first.contains('▲'),
+        "the card opens scrolled to the ▸ option, so Enter never runs one out of sight:\n{first}"
+    );
+    for _ in 0..20 {
+        apply_intent(&mut domain, &mut model, BoardIntent::CleanupScrollUp, None).unwrap();
+    }
+    let top = rows(&model, 78, height).join("\n");
+    assert!(
+        top.contains("T1 ") && !top.contains('▲'),
+        "page keys reach the first task:\n{top}"
+    );
     apply_intent(
         &mut domain,
         &mut model,
@@ -745,7 +830,9 @@ fn page_keys_scroll_the_set_and_arrows_keep_the_selected_option_in_view() {
         !paged.contains("T1  "),
         "page keys scroll the rows:\n{paged}"
     );
-    apply_intent(&mut domain, &mut model, BoardIntent::CleanupScrollUp, None).unwrap();
+    for _ in 0..20 {
+        apply_intent(&mut domain, &mut model, BoardIntent::CleanupScrollUp, None).unwrap();
+    }
     rows(&model, 78, height);
     apply_intent(
         &mut domain,
@@ -758,5 +845,16 @@ fn page_keys_scroll_the_set_and_arrows_keep_the_selected_option_in_view() {
     assert!(
         selected.contains("▸ n"),
         "the selected option is in view:\n{selected}"
+    );
+    // Paged back to the top, then the frame shrinks: the ▸ option comes back into view.
+    for _ in 0..20 {
+        apply_intent(&mut domain, &mut model, BoardIntent::CleanupScrollUp, None).unwrap();
+    }
+    assert!(!rows(&model, 78, height).join("\n").contains("▸ "));
+    model.follow_cleanup_selection();
+    let resized = rows(&model, 70, height - 2).join("\n");
+    assert!(
+        resized.contains("▸ n"),
+        "a resize scrolls the ▸ option back into view:\n{resized}"
     );
 }

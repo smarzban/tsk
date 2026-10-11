@@ -110,6 +110,10 @@ impl CleanupRow {
         if self.pr.probe.is_some() {
             return RowVerdict::CheckingPr;
         }
+        // Cleanup never deletes a branch another worktree has checked out, merged or not.
+        if self.checked_out_elsewhere {
+            return RowVerdict::Unconfirmed("branch checked out in another worktree".into());
+        }
         if self.branch_deletable() {
             let pr = self
                 .landed_pr()
@@ -270,6 +274,7 @@ impl CleanupRow {
         }
         match self.verdict() {
             RowVerdict::Uncommitted => self.uncommitted().0,
+            RowVerdict::Unconfirmed(reason) => format!("can't tell if merged: {reason}"),
             _ => "not merged".into(),
         }
     }

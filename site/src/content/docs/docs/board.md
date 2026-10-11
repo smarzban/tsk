@@ -177,7 +177,7 @@ branch    tsk/t12-…
 | `PR #194 merged into main ✓`, or `Merged into main ✓` | `y` mark done · remove worktree, branch and agent pane; `n` mark done · keep everything |
 | `Not merged into main · no pull request` (or `PR #193 closed`, `PR #193 targets dev, not main`, `gh is not logged in (gh auth login)`; without `gh`, `squash-merged? delete it by hand`) | `y` mark done · remove worktree and agent pane · keep the branch (not merged); `n` |
 | `PR #193 merged, but the branch has newer commits: the branch is kept`, or `PR #193 merged into dev, not main: the branch is kept` | `y` keeps the branch; `n` |
-| `Can't tell if it's merged: offline (base fetch failed) · the branch is kept` (or `the check timed out`, `base no longer available`, `no recorded base`) | `y` keeps the branch; `n` |
+| `Can't tell if it's merged: offline (base fetch failed) · the branch is kept` (or `the check timed out`, `base no longer available`, `no recorded base`, `branch checked out in another worktree`) | `y` keeps the branch; `n` |
 | `3 uncommitted files in the worktree (src/ui/input.rs, src/app.rs, …): commit or discard them to merge or tidy up` | only `n` don't merge · mark done · keep everything |
 | `Checking merge into main…` | `y` marks done, removes the worktree, and deletes the branch if the check confirms the merge; `n` |
 
@@ -196,7 +196,7 @@ T9   not merged · no pull request
 T10  3 uncommitted files · src/ui/input.rs, src/app.rs, …
 ```
 
-Tasks without a dispatch read `no dispatch`, and a dispatch whose worktree is already gone `worktree already gone`. Each option line names exactly the tasks it touches:
+Tasks without a dispatch read `no dispatch`, a dispatch whose worktree is already gone `can't tell if merged: worktree already gone` (its branch is kept), and a branch another worktree has checked out `can't tell if merged: branch checked out in another worktree`. Each option line names exactly the tasks it touches:
 
 ```text
 ▸ m  squash-merge PR #193 (T7) · mark T7 and T8 done · remove their worktrees, branches and agent panes · T9 and T10 unchanged
@@ -210,7 +210,7 @@ Tasks without a dispatch read `no dispatch`, and a dispatch whose worktree is al
 | `y` | done and tidy, keep the branch and the PR open | done and full tidy | done and tidy, keep the branch | unchanged |
 | `n` | done | done | done | done |
 
-Past six tasks a line counts them (`mark 7 tasks done`) and the rows stay the detail. `m` never marks an unmerged task done; under `y` and `n`, tasks without a dispatch are marked done. `↑`/`↓` move between options and keep the selected one in view; page keys and the wheel scroll the rows. While the set works, each row says its step (`Merging PR #193 with gh…`, `Cleaning 1 of 2…`); then one line per task: `merged PR #193 (squash) · done · cleaned · remote branch deleted by GitHub`, `done · cleaned`, `unchanged · not merged`, `unchanged · 3 uncommitted files`, or `merge failed: <reason> · unchanged`. One failure never stops the others. The status row counts it all, naming the tasks that kept something: `merged 1 · done 2 · cleaned 2 · unchanged 2`. `Esc` before a choice keeps the marks. A marked set with no live dispatch completes at once.
+Past six tasks a line counts them (`mark 7 tasks done`) and the rows stay the detail. `m` never marks an unmerged task done; under `y` and `n`, tasks without a dispatch are marked done. The card opens scrolled to the selected option, and scrolls back to it after the frame is resized, so `Enter` never runs an option out of sight. `↑`/`↓` move between options and keep the selected one in view; page keys and the wheel scroll the rows. While the set works, each row says its step (`Merging PR #193 with gh…`, `Cleaning 1 of 2…`); then one line per task: `merged PR #193 (squash) · done · cleaned · remote branch deleted by GitHub`, `done · cleaned`, `unchanged · not merged`, `unchanged · 3 uncommitted files`, or `merge failed: <reason> · unchanged`. One failure never stops the others. The status row counts it all, naming the tasks that kept something: `merged 1 · done 2 · cleaned 2 · unchanged 2`. `Esc` before a choice keeps the marks. When `m` merges nothing (every merge failed, and no task was already merged), the card lists why for each task and closes with `esc close`; the marks stay for a retry and the status row reads `nothing merged · marks kept · T7 merge failed: <reason> · T9 not merged`. A marked set with no live dispatch completes at once.
 
 Either way, completion is one save and one undo step, saved before any worktree is touched. One `ctrl+u` reverts every task the card marked done; it cannot un-merge a pull request or restore a removed worktree.
 
