@@ -2278,7 +2278,8 @@ pub fn offer_bulk_cleanup_prompt_with_host(
                 bulk.missing.push((id, identifier, preview.record));
             }
             Ok(preview) => {
-                let pr_probe = begin_cleanup_pr_probe(task_project(domain, id), &preview.record, host);
+                let pr_probe =
+                    begin_cleanup_pr_probe(task_project(domain, id), &preview.record, host);
                 rows.push(cleanup_row(id, preview, merge_check, pr_probe));
             }
             Err(error) => bulk.refused.push((identifier, error.reason())),
@@ -2513,7 +2514,9 @@ fn confirm_cleanup_and_save(
     // The cleanup card owns the status row: its summary carries what started.
     model.released_note = report_released(&released, name_agent);
     match confirmed {
-        Some(CleanupConfirmed { run: Some(mut run), .. }) => {
+        Some(CleanupConfirmed {
+            run: Some(mut run), ..
+        }) => {
             run.merged = choice.merges.merged;
             run.unmerged = choice.merges.unmerged;
             model.begin_cleanup_run(run);
@@ -2594,9 +2597,25 @@ fn land_cleanup_merges_with_host(
     if save_recovery.is_pending() {
         return;
     }
-    land_cleanup_merges_on(store, domain, model, save_recovery, in_herdr, host, name_agent);
+    land_cleanup_merges_on(
+        store,
+        domain,
+        model,
+        save_recovery,
+        in_herdr,
+        host,
+        name_agent,
+    );
     if let Some(seat) = model.preview_seat_mut() {
-        land_cleanup_merges_on(store, domain, seat, save_recovery, in_herdr, host, name_agent);
+        land_cleanup_merges_on(
+            store,
+            domain,
+            seat,
+            save_recovery,
+            in_herdr,
+            host,
+            name_agent,
+        );
     }
 }
 
@@ -2627,12 +2646,9 @@ fn land_cleanup_merges_on(
         match result {
             Ok(outcome) => {
                 let mut detail = format!("PR #{} ({})", outcome.pr.number, outcome.method.name());
-                if let Some(note) = row
-                    .inspected
-                    .as_ref()
-                    .and_then(|record| outcome.remote_note(record))
-                {
-                    detail.push_str(&format!(" · {note}"));
+                // Short enough for the status row; tsk never deletes the remote branch.
+                if outcome.remote_branch_left == Some(true) {
+                    detail.push_str(" · remote branch kept");
                 }
                 report.merged.push((identifier, detail));
                 // The run fetches the base itself; the card's pre-merge check is moot.
@@ -20200,8 +20216,7 @@ mod merge_cleanup_tests {
                 .expect("mark mode");
             for &id in &ids {
                 select(&mut domain, &mut model, id);
-                apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None)
-                    .expect("mark");
+                apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
             }
         } else {
             select(&mut domain, &mut model, ids[0]);
@@ -20261,7 +20276,13 @@ mod merge_cleanup_tests {
     }
 
     fn on_disk(board: &Board, index: usize) -> HumanStatus {
-        board.store.load().unwrap().get(board.ids[index]).unwrap().status
+        board
+            .store
+            .load()
+            .unwrap()
+            .get(board.ids[index])
+            .unwrap()
+            .status
     }
 
     fn screen(model: &BoardModel) -> String {
@@ -20274,7 +20295,11 @@ mod merge_cleanup_tests {
             .expect("draw");
         let buffer = terminal.backend().buffer().clone();
         (0..30)
-            .map(|y| (0..110).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .map(|y| {
+                (0..110)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -20284,7 +20309,13 @@ mod merge_cleanup_tests {
         for (label, pr_base, dirty, offered, line) in [
             ("no pr", None, false, false, Some("no pull request")),
             ("open", Some("main"), false, true, Some("PR #7 open")),
-            ("other base", Some("dev"), false, false, Some("PR #7 targets dev, not main")),
+            (
+                "other base",
+                Some("dev"),
+                false,
+                false,
+                Some("PR #7 targets dev, not main"),
+            ),
             (
                 "dirty",
                 Some("main"),
@@ -20331,9 +20362,17 @@ mod merge_cleanup_tests {
             host.merges,
             [("tsk/task".to_string(), MergeMethod::Squash, tip("tsk/task"))]
         );
-        assert_eq!(status(&board, 0), HumanStatus::Started, "nothing before it lands");
+        assert_eq!(
+            status(&board, 0),
+            HumanStatus::Started,
+            "nothing before it lands"
+        );
         tick(&mut board, &mut host);
-        assert_eq!(on_disk(&board, 0), HumanStatus::Done, "done saved after the merge");
+        assert_eq!(
+            on_disk(&board, 0),
+            HumanStatus::Done,
+            "done saved after the merge"
+        );
         tick(&mut board, &mut host);
         assert_eq!(host.removed, ["w-task"], "the worktree went as on y");
         assert_eq!(
@@ -20341,14 +20380,16 @@ mod merge_cleanup_tests {
             [tip("tsk/task")],
             "the squash-merged branch went at its exact tip"
         );
-        assert!(board
-            .domain
-            .get(board.ids[0])
-            .unwrap()
-            .dispatch
-            .as_ref()
-            .unwrap()
-            .cleaned);
+        assert!(
+            board
+                .domain
+                .get(board.ids[0])
+                .unwrap()
+                .dispatch
+                .as_ref()
+                .unwrap()
+                .cleaned
+        );
         let message = board.model.message().unwrap_or_default().to_string();
         assert!(message.contains("merged PR #7 (squash)"), "{message}");
     }
@@ -20412,14 +20453,19 @@ mod merge_cleanup_tests {
         let mut host = MergeHost::default();
         host.open_pr("tsk/good", "main");
         host.open_pr("tsk/bad", "main");
-        host.refuse.insert("tsk/bad".into(), "merge conflicts".into());
+        host.refuse
+            .insert("tsk/bad".into(), "merge conflicts".into());
         press(&mut board, BoardIntent::Complete, &mut host);
         assert!(screen(&board.model).contains("m merge"));
         press(&mut board, BoardIntent::MergeCleanup, &mut host);
         assert_eq!(host.merges.len(), 2, "one failure never stops the others");
         tick(&mut board, &mut host);
         assert_eq!(on_disk(&board, 0), HumanStatus::Done);
-        assert_eq!(on_disk(&board, 1), HumanStatus::Started, "the refused one stays");
+        assert_eq!(
+            on_disk(&board, 1),
+            HumanStatus::Started,
+            "the refused one stays"
+        );
         assert_eq!(on_disk(&board, 2), HumanStatus::Started, "no PR, untouched");
         assert!(matches!(
             board.domain.last_undo(),
@@ -20448,6 +20494,9 @@ mod merge_cleanup_tests {
         press(&mut board, BoardIntent::MergeCleanup, &mut host);
         assert!(host.merges.is_empty());
         let painted = screen(&board.model);
-        assert!(painted.contains("can't merge: config.toml: [merge] method"), "{painted}");
+        assert!(
+            painted.contains("can't merge: config.toml: [merge] method"),
+            "{painted}"
+        );
     }
 }

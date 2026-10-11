@@ -1254,19 +1254,22 @@ impl CleanupRow {
             Ok(Some(pr)) => format!("PR #{}", pr.number),
             _ => String::new(),
         };
-        Some(match crate::dispatch::pr::mergeable(&landed.lookup, record) {
-            Ok(_) if self.dirty => format!("{number} open · commit or discard changes to merge"),
-            Ok(_) => format!("{number} open"),
-            Err(MergeRefusal::GhUnavailable(PrLookupError::Missing)) => return None,
-            Err(MergeRefusal::GhUnavailable(error)) => error.message(),
-            Err(MergeRefusal::NoPr) => "no pull request".into(),
-            Err(MergeRefusal::NotOpen(state)) => format!("{number} {}", state.name()),
-            Err(MergeRefusal::BaseMismatch { pr_base, base }) => {
-                format!("{number} targets {pr_base}, not {base}")
-            }
-        })
+        Some(
+            match crate::dispatch::pr::mergeable(&landed.lookup, record) {
+                Ok(_) if self.dirty => {
+                    format!("{number} open · commit or discard changes to merge")
+                }
+                Ok(_) => format!("{number} open"),
+                Err(MergeRefusal::GhUnavailable(PrLookupError::Missing)) => return None,
+                Err(MergeRefusal::GhUnavailable(error)) => error.message(),
+                Err(MergeRefusal::NoPr) => "no pull request".into(),
+                Err(MergeRefusal::NotOpen(state)) => format!("{number} {}", state.name()),
+                Err(MergeRefusal::BaseMismatch { pr_base, base }) => {
+                    format!("{number} targets {pr_base}, not {base}")
+                }
+            },
+        )
     }
-
 
     /// The inspected record has no exact base ref, so no ancestry target is known and the
     /// branch stays whatever the refs say.
@@ -2083,7 +2086,11 @@ impl BoardModel {
     /// the run finished it closes with the summary.
     pub fn cancel_cleanup_card(&mut self) {
         // `m` is merging: the card stays until gh answers, so the merge lands on it.
-        if self.cleanup_prompt.as_ref().is_some_and(CleanupPrompt::merging) {
+        if self
+            .cleanup_prompt
+            .as_ref()
+            .is_some_and(CleanupPrompt::merging)
+        {
             return;
         }
         let finished = self.cleanup_run().is_some_and(|run| run.finished());

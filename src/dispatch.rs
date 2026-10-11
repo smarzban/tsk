@@ -1239,7 +1239,12 @@ impl DispatchHost for SystemDispatchHost {
     fn branch_tip(&mut self, project: &Path, branch: &str) -> Result<Option<String>, String> {
         let tip = crate::git_base::git_process_output(
             project,
-            &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")],
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ],
         )?;
         Ok(tip
             .status
@@ -1704,10 +1709,7 @@ fn git_worktree_paths(project: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 /// The branch is checked out in a worktree (or the listing timed out): a deletion keeps it.
-fn branch_checked_out(
-    project: &Path,
-    reference: &str,
-) -> Result<Option<BranchDeletion>, String> {
+fn branch_checked_out(project: &Path, reference: &str) -> Result<Option<BranchDeletion>, String> {
     let listed = match cleanup_query(project, &["worktree", "list", "--porcelain"]) {
         Ok(output) => output,
         Err(error) if error == "git timed out" => {
@@ -5932,16 +5934,22 @@ mod tests {
 
     #[test]
     fn a_squash_merged_pr_whose_head_is_the_branch_tip_deletes_the_branch() {
-        let (result, host) = clean_unmerged_with_gh(Some(pr_lookup(pr::PrState::Merged, "abc")), "abc");
+        let (result, host) =
+            clean_unmerged_with_gh(Some(pr_lookup(pr::PrState::Merged, "abc")), "abc");
         assert_eq!(result.branch, BranchCleanup::Removed);
         assert_eq!(result.branch_reason, None);
-        assert_eq!(host.deleted_at_tip, ["abc"], "deleted against the exact tip");
+        assert_eq!(
+            host.deleted_at_tip,
+            ["abc"],
+            "deleted against the exact tip"
+        );
         assert_eq!(host.deleted_branches, 0, "never the unchecked delete");
     }
 
     #[test]
     fn a_merged_pr_with_another_head_keeps_the_branch_and_says_why() {
-        let (result, host) = clean_unmerged_with_gh(Some(pr_lookup(pr::PrState::Merged, "abc")), "def");
+        let (result, host) =
+            clean_unmerged_with_gh(Some(pr_lookup(pr::PrState::Merged, "abc")), "def");
         assert_eq!(result.branch, BranchCleanup::Kept);
         assert_eq!(
             result.branch_reason,
@@ -6043,7 +6051,10 @@ mod tests {
                 ..FakeHost::default()
             };
             let outcome = pr::merge_row(&mut host, &row, method).expect("merged");
-            assert_eq!(host.merges, [(row.record.branch.clone(), method, "abc".into())]);
+            assert_eq!(
+                host.merges,
+                [(row.record.branch.clone(), method, "abc".into())]
+            );
             assert_eq!(outcome.method, method);
             assert_eq!(outcome.remote_branch_left, Some(true));
         }
@@ -6063,10 +6074,30 @@ mod tests {
         for (label, pr, tip, code) in [
             ("no gh", None, Some("abc"), "gh-unavailable"),
             ("no pr", Some(Ok(None)), Some("abc"), "no-pr"),
-            ("closed", Some(pr_lookup(pr::PrState::Closed, "abc")), Some("abc"), "pr-not-open"),
-            ("merged", Some(pr_lookup(pr::PrState::Merged, "abc")), Some("abc"), "pr-not-open"),
-            ("unpushed", Some(pr_lookup(pr::PrState::Open, "abc")), Some("def"), "merge-failed"),
-            ("branch gone", Some(pr_lookup(pr::PrState::Open, "abc")), None, "merge-failed"),
+            (
+                "closed",
+                Some(pr_lookup(pr::PrState::Closed, "abc")),
+                Some("abc"),
+                "pr-not-open",
+            ),
+            (
+                "merged",
+                Some(pr_lookup(pr::PrState::Merged, "abc")),
+                Some("abc"),
+                "pr-not-open",
+            ),
+            (
+                "unpushed",
+                Some(pr_lookup(pr::PrState::Open, "abc")),
+                Some("def"),
+                "merge-failed",
+            ),
+            (
+                "branch gone",
+                Some(pr_lookup(pr::PrState::Open, "abc")),
+                None,
+                "merge-failed",
+            ),
         ] {
             let mut host = FakeHost {
                 pr,
@@ -6080,7 +6111,9 @@ mod tests {
         let mut host = FakeHost {
             pr: Some(pr_lookup(pr::PrState::Open, "abc")),
             tip: Some("abc".into()),
-            merge_error: Some("Pull request is not mergeable: the base branch policy prohibits the merge.".into()),
+            merge_error: Some(
+                "Pull request is not mergeable: the base branch policy prohibits the merge.".into(),
+            ),
             ..FakeHost::default()
         };
         let error = pr::merge_row(&mut host, &row, MergeMethod::Squash).expect_err("gh refused");

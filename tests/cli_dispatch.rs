@@ -239,7 +239,9 @@ fn clean_cli_help_and_success_report_each_removed_resource() {
         true,
     );
     assert_eq!(help.code, 0, "{}", help.stderr);
-    assert!(help.stdout.contains("usage: tsk clean <task> [--merge] [--json]"));
+    assert!(help
+        .stdout
+        .contains("usage: tsk clean <task> [--merge] [--json]"));
     for code in [
         "unknown-task",
         "not-dispatched",
@@ -1976,7 +1978,11 @@ fn merge_runs_gh_pr_merge_with_the_configured_method_and_refuses_without_changin
     let state_dir = repo.root.join("state");
     let store = TaskStore::new(&state_dir);
     store.save(&state).unwrap();
-    fs::write(state_dir.join("config.toml"), "[merge]\nmethod = \"squash\"\n").unwrap();
+    fs::write(
+        state_dir.join("config.toml"),
+        "[merge]\nmethod = \"squash\"\n",
+    )
+    .unwrap();
     let before = fs::read_to_string(state_dir.join("tsk.json")).unwrap();
 
     // gh refuses: the reason comes back, and the task and branch are untouched.
@@ -1989,11 +1995,20 @@ fn merge_runs_gh_pr_merge_with_the_configured_method_and_refuses_without_changin
     )
     .expect_err("gh refused the merge");
     assert_eq!(refused.code(), "merge-failed");
-    assert!(refused.message().contains("base branch policy"), "{}", refused.message());
-    assert_eq!(fs::read_to_string(state_dir.join("tsk.json")).unwrap(), before);
+    assert!(
+        refused.message().contains("base branch policy"),
+        "{}",
+        refused.message()
+    );
+    assert_eq!(
+        fs::read_to_string(state_dir.join("tsk.json")).unwrap(),
+        before
+    );
     let calls = fs::read_to_string(&log).unwrap();
     assert!(
-        calls.contains(&format!("pr merge tsk/t1-clean --squash --match-head-commit {tip}")),
+        calls.contains(&format!(
+            "pr merge tsk/t1-clean --squash --match-head-commit {tip}"
+        )),
         "{calls}"
     );
 

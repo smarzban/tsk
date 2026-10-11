@@ -1362,34 +1362,31 @@ pub fn cleaned_merged(
         .branch_reason
         .map(|reason| reason.message(result.base.as_deref(), result.remote.as_deref()));
     let stdout = if json {
-        format!(
-            "{}\n",
-            {
-                let mut value = serde_json::json!({
-                    "number": result.number,
-                    "title": result.title,
-                    "worktree": {"path": result.worktree_path, "outcome": worktree},
-                    "branch": {"name": result.branch_name, "outcome": branch, "reason": branch_reason},
-                    "workspace": {"id": result.workspace_id, "outcome": workspace},
-                    "warning": result.warning,
+        format!("{}\n", {
+            let mut value = serde_json::json!({
+                "number": result.number,
+                "title": result.title,
+                "worktree": {"path": result.worktree_path, "outcome": worktree},
+                "branch": {"name": result.branch_name, "outcome": branch, "reason": branch_reason},
+                "workspace": {"id": result.workspace_id, "outcome": workspace},
+                "warning": result.warning,
+            });
+            if let Some(merged) = merged {
+                let outcome = &merged.outcome;
+                value["merge"] = serde_json::json!({
+                    "pr": outcome.pr.number,
+                    "url": outcome.pr.url,
+                    "method": outcome.method.name(),
+                    "remote_branch": match outcome.remote_branch_left {
+                        Some(true) => Some("kept"),
+                        Some(false) => Some("deleted"),
+                        None => None,
+                    },
                 });
-                if let Some(merged) = merged {
-                    let outcome = &merged.outcome;
-                    value["merge"] = serde_json::json!({
-                        "pr": outcome.pr.number,
-                        "url": outcome.pr.url,
-                        "method": outcome.method.name(),
-                        "remote_branch": match outcome.remote_branch_left {
-                            Some(true) => Some("kept"),
-                            Some(false) => Some("deleted"),
-                            None => None,
-                        },
-                    });
-                    value["status"] = serde_json::json!("done");
-                }
-                value
+                value["status"] = serde_json::json!("done");
             }
-        )
+            value
+        })
     } else {
         let branch_detail = match branch_reason {
             Some(reason) => format!("{branch}, {}", terminal_text(&reason)),

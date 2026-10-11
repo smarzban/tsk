@@ -894,8 +894,9 @@ mod tests {
             parse_flag_status(&args(&["T4", "review", "--merge"])).unwrap_err(),
             "--merge requires done status"
         );
-        let clean = super::parse_flag_clean(&["tsk".into(), "clean".into(), "T4".into(), "--merge".into()])
-            .expect("parse");
+        let clean =
+            super::parse_flag_clean(&["tsk".into(), "clean".into(), "T4".into(), "--merge".into()])
+                .expect("parse");
         assert!(clean.merge);
     }
 

@@ -496,8 +496,7 @@ pub(super) fn system_merge_pull_request(
 ) -> Result<(), String> {
     let args = merge_args(branch, method, head);
     let args = args.iter().map(String::as_str).collect::<Vec<_>>();
-    let output = gh(program, project, &args, GH_MERGE_TIMEOUT)
-    .map_err(|reason| {
+    let output = gh(program, project, &args, GH_MERGE_TIMEOUT).map_err(|reason| {
         if reason.starts_with("could not run gh") {
             PrLookupError::Missing.message()
         } else {
@@ -552,7 +551,14 @@ mod tests {
             let args = merge_args("tsk/t1-x", method, "abc");
             assert_eq!(
                 args,
-                ["pr", "merge", "tsk/t1-x", flag, "--match-head-commit", "abc"]
+                [
+                    "pr",
+                    "merge",
+                    "tsk/t1-x",
+                    flag,
+                    "--match-head-commit",
+                    "abc"
+                ]
             );
             for forbidden in ["--admin", "--auto", "--delete-branch", "-d"] {
                 assert!(!args.iter().any(|arg| arg == forbidden), "{forbidden}");
@@ -565,13 +571,20 @@ mod tests {
         let json = br#"{"number":7,"url":"https://github.com/o/r/pull/7","state":"MERGED","headRefOid":"abc","baseRefName":"main"}"#;
         let pr = pr_view_outcome(Some(0), json, b"").unwrap().unwrap();
         assert_eq!(pr.state, PrState::Merged);
-        assert_eq!((pr.number, pr.head_oid.as_str(), pr.base.as_str()), (7, "abc", "main"));
+        assert_eq!(
+            (pr.number, pr.head_oid.as_str(), pr.base.as_str()),
+            (7, "abc", "main")
+        );
         assert_eq!(
             pr_view_outcome(Some(1), b"", b"no pull requests found for branch \"x\"\n"),
             Ok(None)
         );
         assert_eq!(
-            pr_view_outcome(Some(4), b"", b"To get started with GitHub CLI, please run:  gh auth login\n"),
+            pr_view_outcome(
+                Some(4),
+                b"",
+                b"To get started with GitHub CLI, please run:  gh auth login\n"
+            ),
             Err(PrLookupError::NotLoggedIn)
         );
         assert_eq!(
@@ -625,7 +638,9 @@ mod tests {
         };
         assert!(mergeable(&pr(PrState::Open, "main"), &record).is_ok());
         assert_eq!(
-            mergeable(&pr(PrState::Open, "dev"), &record).unwrap_err().code(),
+            mergeable(&pr(PrState::Open, "dev"), &record)
+                .unwrap_err()
+                .code(),
             "pr-base-mismatch"
         );
         assert_eq!(
@@ -633,12 +648,19 @@ mod tests {
             MergeRefusal::NotOpen(PrState::Closed)
         );
         assert_eq!(
-            mergeable(&pr(PrState::Merged, "main"), &record).unwrap_err().code(),
+            mergeable(&pr(PrState::Merged, "main"), &record)
+                .unwrap_err()
+                .code(),
             "pr-not-open"
         );
-        assert_eq!(mergeable(&Ok(None), &record).unwrap_err(), MergeRefusal::NoPr);
         assert_eq!(
-            mergeable(&Err(PrLookupError::Missing), &record).unwrap_err().code(),
+            mergeable(&Ok(None), &record).unwrap_err(),
+            MergeRefusal::NoPr
+        );
+        assert_eq!(
+            mergeable(&Err(PrLookupError::Missing), &record)
+                .unwrap_err()
+                .code(),
             "gh-unavailable"
         );
     }

@@ -816,14 +816,20 @@ command = ["pi"]
     fn an_unknown_merge_method_or_key_is_a_clear_config_error() {
         let dir = TempDir::new("merge-method-bad");
         for (content, needle) in [
-            ("[merge]\nmethod = \"fast-forward\"\n", "method \"fast-forward\" is not merge, squash, or rebase"),
+            (
+                "[merge]\nmethod = \"fast-forward\"\n",
+                "method \"fast-forward\" is not merge, squash, or rebase",
+            ),
             ("[merge]\nmethod = 1\n", "method must be a string"),
             ("[merge]\nmetod = \"squash\"\n", "unknown key \"metod\""),
             ("merge = \"squash\"\n", "[merge] must be a table"),
         ] {
             dir.write(content);
             let error = MergeMethod::load(dir.path()).expect_err(content);
-            assert!(error.to_string().starts_with("config.toml: [merge]"), "{error}");
+            assert!(
+                error.to_string().starts_with("config.toml: [merge]"),
+                "{error}"
+            );
             assert!(error.to_string().contains(needle), "{error}");
         }
     }

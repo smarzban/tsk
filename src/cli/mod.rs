@@ -258,9 +258,11 @@ fn finish_done(
         }
         Err(error) => {
             let refused = presenter::clean_rejected(error, task);
-            output
-                .stderr
-                .push_str(&refused.stderr.replacen("tsk clean:", &format!("tsk {verb}:"), 1));
+            output.stderr.push_str(&refused.stderr.replacen(
+                "tsk clean:",
+                &format!("tsk {verb}:"),
+                1,
+            ));
             output.code = refused.code;
         }
     }
