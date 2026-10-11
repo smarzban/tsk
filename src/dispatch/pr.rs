@@ -66,6 +66,8 @@ pub enum PrLookupError {
     /// No `gh` on PATH (`gh.exe` on Windows).
     Missing,
     NotLoggedIn,
+    /// No git remote of the repository points at a GitHub host gh knows.
+    NoGithubRemote,
     Failed(String),
 }
 
@@ -74,6 +76,7 @@ impl PrLookupError {
         match self {
             Self::Missing => "gh not found on PATH".into(),
             Self::NotLoggedIn => "gh is not logged in (run gh auth login)".into(),
+            Self::NoGithubRemote => "no GitHub remote".into(),
             Self::Failed(reason) => format!("gh failed: {reason}"),
         }
     }
@@ -476,9 +479,18 @@ fn first_line(bytes: &[u8]) -> String {
         .to_string()
 }
 
-fn not_logged_in(code: Option<i32>, stderr: &str) -> bool {
+/// Why gh refused before reaching GitHub, when it was one of these.
+fn gh_refusal(code: Option<i32>, stderr: &str) -> Option<PrLookupError> {
+    // A repository whose remotes are not GitHub: gh's advice names `gh auth login` too, but
+    // being logged in would not help.
+    if stderr.contains("point to a known GitHub host") {
+        return Some(PrLookupError::NoGithubRemote);
+    }
     // gh exits 4 when authentication is required.
-    code == Some(4) || stderr.contains("gh auth login")
+    (code == Some(4)
+        || stderr.contains("To get started with GitHub CLI")
+        || stderr.contains("not logged into any GitHub hosts"))
+    .then_some(PrLookupError::NotLoggedIn)
 }
 
 /// Whether `program` can run: a path that exists, or a name on PATH (`gh.exe` on Windows).
@@ -529,8 +541,8 @@ pub fn pr_view_outcome(code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> PrLoo
         if text.contains("no pull requests found") {
             return Ok(None);
         }
-        if not_logged_in(code, &text) {
-            return Err(PrLookupError::NotLoggedIn);
+        if let Some(error) = gh_refusal(code, &text) {
+            return Err(error);
         }
         return Err(PrLookupError::Failed(first_line(stderr)));
     }
@@ -594,8 +606,8 @@ pub(super) fn system_merge_pull_request(
         return Ok(());
     }
     let text = String::from_utf8_lossy(&output.stderr);
-    if not_logged_in(output.status.code(), &text) {
-        return Err(PrLookupError::NotLoggedIn.message());
+    if let Some(error) = gh_refusal(output.status.code(), &text) {
+        return Err(error.message());
     }
     Err(first_line(&output.stderr))
 }
@@ -674,6 +686,16 @@ mod tests {
             ),
             Err(PrLookupError::NotLoggedIn)
         );
+        // gh's advice names `gh auth login`, but the repository has no GitHub remote.
+        assert_eq!(
+            pr_view_outcome(
+                Some(1),
+                b"",
+                b"none of the git remotes configured for this repository point to a known GitHub host. To tell gh about a new GitHub host, please use gh auth login\n"
+            ),
+            Err(PrLookupError::NoGithubRemote)
+        );
+        assert_eq!(PrLookupError::NoGithubRemote.message(), "no GitHub remote");
         assert_eq!(
             pr_view_outcome(Some(1), b"", b"\nGraphQL: something broke\nmore\n"),
             Err(PrLookupError::Failed("GraphQL: something broke".into()))

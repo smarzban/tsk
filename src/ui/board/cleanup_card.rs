@@ -190,6 +190,9 @@ impl CleanupRow {
             Err(MergeRefusal::GhUnavailable(PrLookupError::NotLoggedIn)) => {
                 Some("gh is not logged in (gh auth login)".into())
             }
+            Err(MergeRefusal::GhUnavailable(PrLookupError::NoGithubRemote)) => {
+                Some("no GitHub remote".into())
+            }
             Err(MergeRefusal::GhUnavailable(error)) => Some(error.message()),
             Err(MergeRefusal::NoPr) => Some("no pull request".into()),
             Err(MergeRefusal::NotOpen(state)) => Some(format!("PR #{number} {}", state.name())),
@@ -228,10 +231,15 @@ impl CleanupRow {
                     .open_pr()
                     .map(|pr| format!("PR #{pr} is still open · "))
                     .unwrap_or_default();
+                let it = if self.dirty_files.len() == 1 {
+                    "it"
+                } else {
+                    "them"
+                };
                 let (count, names) = self.uncommitted();
                 let names = names.map(|names| format!(" ({names})")).unwrap_or_default();
                 format!(
-                    "{open}{count} in the worktree{names}: commit or discard them to merge or tidy up"
+                    "{open}{count} in the worktree{names}: commit or discard {it} to merge or tidy up"
                 )
             }
             RowVerdict::CheckingPr => "checking pull request…".into(),

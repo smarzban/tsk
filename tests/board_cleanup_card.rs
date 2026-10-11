@@ -11,7 +11,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::Terminal;
 use tsk_tui::agents::MergeMethod;
-use tsk_tui::dispatch::pr::{MergeJob, PrLookupError, PrProbeResult, PrState};
+use tsk_tui::dispatch::pr::{pr_view_outcome, MergeJob, PrLookupError, PrProbeResult, PrState};
 use tsk_tui::dispatch::PullRequest;
 use tsk_tui::domain::{Dispatch, DomainState};
 use tsk_tui::ui::board::{
@@ -262,7 +262,7 @@ fn b_uncommitted_files_leave_only_n() {
     let without_pr = single(dirty(row(7), &files[..1]));
     assert_says(
         &without_pr,
-        &["1 uncommitted file in the worktree (src/ui/input.rs): commit"],
+        &["1 uncommitted file in the worktree (src/ui/input.rs): commit or discard it to merge"],
     );
     assert!(!body(&without_pr, 110, 40).contains("PR #"));
 }
@@ -302,6 +302,20 @@ fn d_not_merged_names_why_and_keeps_the_branch() {
         });
         row
     };
+    // gh is logged in, but the repository's remotes are not GitHub: its advice still names
+    // `gh auth login`.
+    let no_github = {
+        let mut row = row(7);
+        row.pr.landed = Some(PrProbeResult {
+            lookup: pr_view_outcome(
+                Some(1),
+                b"",
+                b"none of the git remotes configured for this repository point to a known GitHub host. To tell gh about a new GitHub host, please use gh auth login\n",
+            ),
+            tip: None,
+        });
+        row
+    };
     let no_gh = {
         let mut row = row(7);
         row.pr.landed = Some(PrProbeResult {
@@ -328,6 +342,7 @@ fn d_not_merged_names_why_and_keeps_the_branch() {
             no_gh,
             "Not merged into main · squash-merged? delete it by hand",
         ),
+        (no_github, "Not merged into main · no GitHub remote"),
     ] {
         let model = single(row);
         assert_says(

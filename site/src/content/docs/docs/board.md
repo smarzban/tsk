@@ -175,7 +175,7 @@ branch    tsk/t12-…
 | --- | --- |
 | `PR #193 is still open:` | `m` merges it ([below](#merge-the-pull-request)), `y`, `n` |
 | `PR #194 merged into main ✓`, or `Merged into main ✓` | `y` mark done · remove worktree, branch and agent pane; `n` mark done · keep everything |
-| `Not merged into main · no pull request` (or `PR #193 closed`, `PR #193 targets dev, not main`, `gh is not logged in (gh auth login)`; without `gh`, `squash-merged? delete it by hand`) | `y` mark done · remove worktree and agent pane · keep the branch (not merged); `n` |
+| `Not merged into main · no pull request` (or `PR #193 closed`, `PR #193 targets dev, not main`, `gh is not logged in (gh auth login)`, `no GitHub remote`; without `gh`, `squash-merged? delete it by hand`) | `y` mark done · remove worktree and agent pane · keep the branch (not merged); `n` |
 | `PR #193 merged, but the branch has newer commits: the branch is kept`, or `PR #193 merged into dev, not main: the branch is kept` | `y` keeps the branch; `n` |
 | `Can't tell if it's merged: offline (base fetch failed) · the branch is kept` (or `the check timed out`, `base no longer available`, `no recorded base`, `branch checked out in another worktree`) | `y` keeps the branch; `n` |
 | `3 uncommitted files in the worktree (src/ui/input.rs, src/app.rs, …): commit or discard them to merge or tidy up` | only `n` don't merge · mark done · keep everything |
