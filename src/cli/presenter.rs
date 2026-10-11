@@ -482,6 +482,7 @@ fn reply_json(block: &crate::domain::Block) -> Vec<ReplyJson<'_>> {
             by: &reply.by,
             text: &reply.text,
             edited: reply.edited,
+            sent: reply.sent,
         })
         .collect()
 }
@@ -494,6 +495,8 @@ struct ReplyJson<'a> {
     text: &'a str,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     edited: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    sent: bool,
 }
 
 fn serialize_closed_at<S: serde::Serializer>(
@@ -2395,6 +2398,36 @@ mod tests {
     #[test]
     fn path_labels_keep_a_literal_unix_backslash() {
         assert_eq!(path_segments(r"/work/tsk\name"), ["work", r"tsk\name"]);
+    }
+
+    /// A reply or feedback entry that went out on its own carries `sent: true`, like
+    /// `edited: true`; one that did not leaves both off. Deleted entries stay out.
+    #[test]
+    fn reply_json_marks_sent_entries_and_omits_the_rest() {
+        use crate::domain::{Block, BlockDraft, Reply, OWNER};
+        let at = std::time::SystemTime::UNIX_EPOCH;
+        let entry = |text: &str, edited, deleted, sent| Reply {
+            by: OWNER.into(),
+            at,
+            text: text.into(),
+            edited,
+            deleted,
+            sent,
+        };
+        let mut block = Block::open(BlockDraft::default(), "claude", at);
+        block.replies = vec![
+            entry("use postgres", false, false, true),
+            entry("add an index", true, false, false),
+            entry("scratch that", false, true, true),
+        ];
+        let json = serde_json::to_value(reply_json(&block)).expect("encode");
+        assert_eq!(
+            json,
+            serde_json::json!([
+                {"at": [0, 0], "by": OWNER, "text": "use postgres", "sent": true},
+                {"at": [0, 0], "by": OWNER, "text": "add an index", "edited": true},
+            ])
+        );
     }
 
     #[test]
