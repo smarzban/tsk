@@ -28,7 +28,7 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 | Toggle blocked / ready; blocking opens the block card | `ctrl+b` |
 | Review with the review card; on a task in review, return it to ready | `ctrl+r` |
 | Delete, with a second press to confirm | `ctrl+x` or `ctrl+Delete` |
-| Undo completion/deletion/block; restore an archived selection | `ctrl+u` |
+| Undo the last done, delete, block, review, status change, or step change; restore an archived selection | `ctrl+u` |
 | Reply to the blocked cursor row, or give feedback on a review row, inline under it | `r` |
 | Archive / restore selected task | `ctrl+f` |
 | Open / close done drawer | `d` |

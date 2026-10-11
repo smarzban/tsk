@@ -11,7 +11,7 @@ the GitHub release notes verbatim.
 
 ### Breaking
 
-- Store format 12: tasks can carry an assignee, a base branch, a dispatch record, blocks with replies (each marked once `tsk reply --send` delivered it), review rounds with checks and feedback, and the tasks they run after; every change records who made it and what it changed; and undo can revert a start that dispatched. Rolling back refuses the file; restore `tsk.json.v5`.
+- Store format 13: tasks can carry an assignee, a base branch, a dispatch record, blocks with replies (each marked once `tsk reply --send` delivered it), review rounds with checks and feedback, and the tasks they run after; every change records who made it and what it changed; and undo can revert a start that dispatched, any status change, and step changes, and remembers the status a done left. Rolling back refuses the file; restore `tsk.json.v5`.
 
 ### Added
 
@@ -26,6 +26,7 @@ the GitHub release notes verbatim.
 - After: a task can run after other tasks, in any project, and waits until they are done. Set it with the task page's After field, palette **set after…** (a task picker: `Space` ticks several, **none** clears), `!w T202` in quick-add, `tsk edit --after`, or `"after"` in add plans; **chain in order** links marked tasks in the order you marked them, as one undo. A waiting ready or open row's line reads `after T202 (started), T205 (open)`, the peek and page footer `after T202 · started` and `before T203`. When the last prerequisite is done, each waiting ready task starts in the same save (an assigned one then dispatches; a failed launch puts it back to ready, and while a marked-set dispatch is landing it waits) (`T203 started · T202 done`; the paper trail reads `started · after T202`), from the board, the cleanup card, or `tsk status T202 done`; `ctrl+u` reverts the statuses and leaves a launched agent running. Starting a waiting task asks first on the board and refuses with `after-not-done` in the CLI unless `--force`. Deleting a task drops it from every after list, and undo restores the links. `tsk list --json` adds `after` (each `task` and `done`) and a read-only `before`.
 - `tsk dispatch` and `tsk clean`, plus `--assignee` and `--base` on `tsk add`/`tsk edit`. Agent skill 1.5.0; `tsk update` refreshes installed copies.
 - Merge a task's pull request from the cleanup card: with the GitHub CLI (`gh`) installed and logged in, the card shows the task's pull request, and `m` merges an open one into the recorded base (`gh pr merge`, never `--admin`), then, once GitHub shows it merged, marks the task done and cleans up as `y` does; quitting waits for a running merge. A failed merge changes nothing and the card shows gh's reason; on a marked set only the merged tasks complete. `[merge] method` in `config.toml` picks `merge` (the default), `squash`, or `rebase`. From a script: `tsk status T12 done --merge` or `tsk clean T12 --merge`.
+- Undo for status changes and steps: `ctrl+u` reverts a plain start, ready, open, a reopen, or an unblock (the reply box's too), putting back any block or review round it closed, and a step tick, untick, new step, removal, or new step text. A start that launched an agent undoes the status only and says `start undone · @claude kept running`. A marked set is one undo step. Thanks @LukasGold (#173).
 
 ### Changed
 
@@ -41,6 +42,7 @@ the GitHub release notes verbatim.
 
 ### Fixed
 
+- Undoing a done puts the task back to the status it had (started, ready, blocked, in review…), reopening its block or review round; before, it always went to the inbox as open. A done saved by an older version still undoes to open. Thanks @LukasGold (#173).
 - Sending a review back delivers every feedback entry of the round to the running agent, including the ones saved earlier with `Shift+Enter`, numbered one per line when there are several; before, only the box's last entry arrived. Unblocking does the same with the block's replies, from the reply box, `ctrl+b`, palette set status, a marked start (the bulk start card included), or `tsk status T12 started`/`ready`; a save that fails sends only once Retry saves it, and a reply `tsk reply --send` already delivered is not sent again, and `tsk list T12 --json` shows it with `sent: true`. The status row counts the entries (`started · 2 feedback entries sent to @claude`).
 - A repository whose remotes are not on GitHub reads `no GitHub remote` on the cleanup card and in `--merge` refusals; it read `gh is not logged in` before, though gh was logged in.
 - The cleanup card says `Can't tell if it's merged: branch checked out in another worktree · the branch is kept` when another worktree has the dispatch branch checked out; it promised to delete a branch cleanup then kept.

@@ -977,10 +977,8 @@ mod tests {
         let bravo = state.add_step(id, "bravo").expect("bravo");
         while state.pop_undo().is_some() {}
         let original = state.get(id).expect("task").steps.clone();
-        let changes: [(
-            &str,
-            Box<dyn Fn(&mut DomainState) -> Result<(), DomainError>>,
-        ); 4] = [
+        type StepChange = Box<dyn Fn(&mut DomainState) -> Result<(), DomainError>>;
+        let changes: [(&str, StepChange); 4] = [
             ("tick", Box::new(move |s| s.toggle_step(id, alpha))),
             (
                 "rename",
