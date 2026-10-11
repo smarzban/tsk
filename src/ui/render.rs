@@ -19,7 +19,7 @@ use uuid::Uuid;
 use super::capture::CaptureField;
 use super::edit::{escaped_line_window, place_edit_cursor, place_edit_cursor_at, EditBuffer};
 use super::present_line;
-use super::queue::{NavTab, ProjectRow, QueueSection, QueueView, SectionKind};
+use super::queue::{GroupBy, NavTab, ProjectRow, QueueSection, QueueView, SectionKind};
 use super::scrollbar;
 use super::tier::{Tier, TierGeometry};
 use crate::domain::{HumanStatus, Task, TaskScope};
@@ -4076,15 +4076,16 @@ fn build_list_rows(
                 continue;
             }
             for id in section.task_ids.iter().copied() {
+                // Archived rows paint dim but carry the same label as drawer rows.
                 push_task(
                     id,
                     &mut out,
                     &mut selected_idx,
                     &mut anchor_last_idx,
                     false,
-                    false,
                     true,
-                    false,
+                    true,
+                    model.show_project_meta,
                 );
             }
             continue;
@@ -4143,9 +4144,13 @@ fn build_list_rows(
         }
         // Row labels omit whatever the surface, its filter, or its grouping already says
         // (the frame model's two dimension flags).
-        let thread_label = model.thread_labels;
+        // A section that actually groups drops its grouped dimension; ungrouped sections
+        // (inbox, done drawer) keep it.
+        let grouped = !section.groups.is_empty();
+        let thread_label = model.thread_labels && !(grouped && model.view.group == GroupBy::Thread);
         // `ON DECK · desk` already names its rows' scope.
         let section_project_label = model.show_project_meta
+            && !(grouped && model.view.group == GroupBy::Project)
             && !(model.surface == BoardSurface::Desk && section.kind == SectionKind::OnDeck);
         if !section.groups.is_empty() {
             for group in &section.groups {
@@ -5305,6 +5310,7 @@ mod tests {
             sections: vec![],
             counts: crate::ui::queue::StatusCounts::default(),
             projects: vec![],
+            group: GroupBy::None,
         };
         let model = QueueFrameModel {
             tasks: &[],
@@ -5368,6 +5374,7 @@ mod tests {
             sections: vec![],
             counts: crate::ui::queue::StatusCounts::default(),
             projects: vec![],
+            group: GroupBy::None,
         });
         QueueFrameModel {
             tasks: &[],
@@ -5496,6 +5503,7 @@ mod tests {
             sections: vec![],
             counts: crate::ui::queue::StatusCounts::default(),
             projects: projects.clone(),
+            group: GroupBy::None,
         };
         let model = QueueFrameModel {
             tasks: &[],

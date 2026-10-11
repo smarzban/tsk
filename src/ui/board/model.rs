@@ -2139,20 +2139,18 @@ impl BoardModel {
     }
 
     /// Whether wide rows label their thread / project: a dimension is omitted where the
-    /// surface, its filter, or its grouping already says it.
+    /// surface or its filter already says it. Grouping drops its dimension per section,
+    /// only in sections that actually group (the renderer decides from the view).
     pub fn row_label_dimensions(&self) -> (bool, bool) {
-        let group = self.layout().group;
         match self.effective_lens() {
             BoardLens::Desk => (
-                group != GroupBy::Thread
-                    && !matches!(self.desk_filter.thread, ThreadFilter::Named(_)),
-                group != GroupBy::Project && self.desk_filter.project == ProjectFilter::All,
+                !matches!(self.desk_filter.thread, ThreadFilter::Named(_)),
+                self.desk_filter.project == ProjectFilter::All,
             ),
-            BoardLens::Project(_) | BoardLens::ArchivedProject(_) => (
-                group != GroupBy::Thread && !matches!(self.thread_filter, ThreadFilter::Named(_)),
-                false,
-            ),
-            BoardLens::ThreadView(_) => (false, group != GroupBy::Project),
+            BoardLens::Project(_) | BoardLens::ArchivedProject(_) => {
+                (!matches!(self.thread_filter, ThreadFilter::Named(_)), false)
+            }
+            BoardLens::ThreadView(_) => (false, true),
             BoardLens::Projects => (false, false),
         }
     }
@@ -2787,14 +2785,17 @@ impl BoardModel {
         }
     }
 
-    /// Shift+M on a sub-header: unfold the group, enter mark mode, and mark every row of
-    /// it as one set. Marks only ever rest on painted rows.
+    /// Shift+M on a sub-header: unfold the group, enter mark mode, and add every row of it
+    /// to the marked set. Marks only ever rest on painted rows.
     pub(super) fn mark_group(&mut self, header_id: Uuid) -> bool {
         let Some(group) = self.group_at(header_id) else {
             return false;
         };
         self.layout_mut().folded.remove(&group.header_id);
-        self.marked_ids = group.task_ids.iter().copied().collect();
+        if !self.mark_mode {
+            self.marked_ids.clear();
+        }
+        self.marked_ids.extend(group.task_ids.iter().copied());
         self.mark_mode = true;
         if let Some(first) = group.task_ids.first().copied() {
             self.retarget_selection(Some(first), SelectionRetarget::Explicit);

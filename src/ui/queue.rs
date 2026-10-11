@@ -329,6 +329,8 @@ pub struct QueueView {
     pub counts: StatusCounts,
     /// The projects index rows, present only for the Projects lens.
     pub projects: Vec<ProjectRow>,
+    /// The dimension [`arrange_view`] grouped by. Only sections with `groups` are grouped.
+    pub group: GroupBy,
 }
 
 /// Derive queue sections for the active board lens.
@@ -577,6 +579,7 @@ fn query_desk(
         sections,
         counts: status_counts(&live),
         projects: Vec::new(),
+        group: GroupBy::None,
     }
 }
 
@@ -708,6 +711,7 @@ fn query_projects_index(
         sections: Vec::new(),
         counts: status_counts(&live),
         projects,
+        group: GroupBy::None,
     }
 }
 
@@ -777,6 +781,7 @@ fn query_thread_view(
         sections,
         counts: status_counts(&live),
         projects: Vec::new(),
+        group: GroupBy::None,
     }
 }
 
@@ -876,6 +881,7 @@ fn query_project_focus(
         sections,
         counts: status_counts(&counted),
         projects: Vec::new(),
+        group: GroupBy::None,
     }
 }
 
@@ -1089,9 +1095,11 @@ pub fn arrange_view(
     group: GroupBy,
     sort: SortBy,
 ) {
+    view.group = group;
     if group == GroupBy::None && sort == SortBy::Recent {
         return;
     }
+    let identities = PathIdentityCache::default();
     let by_id: HashMap<Uuid, &Task> = tasks.iter().map(|task| (task.id, task)).collect();
     for section in &mut view.sections {
         let groupable = matches!(
@@ -1120,8 +1128,21 @@ pub fn arrange_view(
         let mut buckets: Vec<(String, String, Vec<&Task>)> = Vec::new();
         for task in rows {
             let (key, label) = group_key(task, group);
-            match buckets.iter_mut().find(|bucket| bucket.0 == key) {
-                Some(bucket) => bucket.2.push(task),
+            // One project, one group: path spellings of the same repository (a trailing
+            // slash, `/tmp` vs `/private/tmp`, a symlink) share a bucket, keyed by the
+            // smallest spelling so the fold id survives re-sorting.
+            let same = |other: &str| match (key.strip_prefix("p:"), other.strip_prefix("p:")) {
+                (Some(a), Some(b)) => identities.equivalent(a, b),
+                _ => other == key,
+            };
+            match buckets.iter_mut().find(|bucket| same(&bucket.0)) {
+                Some(bucket) => {
+                    if key < bucket.0 {
+                        bucket.0 = key;
+                        bucket.1 = label;
+                    }
+                    bucket.2.push(task);
+                }
                 None => buckets.push((key, label, vec![task])),
             }
         }
@@ -1150,9 +1171,10 @@ pub fn arrange_view(
 /// A task's group identity and painted label for one grouping dimension.
 fn group_key(task: &Task, group: GroupBy) -> (String, String) {
     match (group, &task.scope, task.thread.as_deref()) {
-        (GroupBy::Project, TaskScope::Project { path }, _) => {
-            (format!("p:{path}"), short_project_name(path).to_string())
-        }
+        (GroupBy::Project, TaskScope::Project { path }, _) => (
+            format!("p:{}", path.trim_end_matches(['/', '\\'])),
+            short_project_name(path).to_string(),
+        ),
         (GroupBy::Project, TaskScope::Global, _) => ("desk".to_string(), "desk".to_string()),
         (GroupBy::Thread, _, Some(thread)) => {
             let thread = thread.to_ascii_lowercase();

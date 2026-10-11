@@ -70,7 +70,7 @@ Assign threads when [capturing](/docs/capture/#title-tokens) or [editing a task]
 
 ## Group and sort
 
-On 78 columns or wider, every task row ends with a dim `#thread · project` label (`desk` for a desk task). A label leaves out what the view already says: a project board never names its own project, a thread filter or thread grouping drops the thread, a project filter or project grouping drops the project, and rows under **ON DECK · desk** never repeat `desk`. A label that does not fit beside the title's first line is dropped; it never shortens the title. Below 78 columns labels are hidden; grouping and sorting still apply.
+On 78 columns or wider, every task row ends with a dim `#thread · project` label (`desk` for a desk task). A label leaves out what the view already says: a project board never names its own project, a thread filter drops the thread and a project filter the project, grouping drops its dimension inside the sections that actually group (the inbox and done drawer keep it), and rows under **ON DECK · desk** never repeat `desk`. Archived rows carry the same label as done rows. A label that does not fit beside the title's first line is dropped; it never shortens the title. Below 78 columns labels are hidden; grouping and sorting still apply.
 
 | Key | Action |
 | --- | --- |
@@ -85,7 +85,7 @@ Sorting reorders rows inside each group, or inside each section while ungrouped 
 
 The tab row shows the active layout, for example `group: project · sort: thread`, beside the filter control; click it to change the grouping. A fresh board starts ungrouped and sorted by recent. The desk, project boards, and the cross-project thread view (which groups by project) each keep their own choice for the session, and the wide Projects preview keeps its own.
 
-A folded group shows only its sub-header (`▸`), which the cursor can then rest on; open sub-headers are skipped by the arrows. `Enter` or a click on a sub-header folds or unfolds it. `Shift+M` on a folded sub-header unfolds it and marks every task in that group as one set. Folding, or changing the grouping, sorting, or filter, clears multi-select marks.
+A folded group shows only its sub-header (`▸`), which the cursor can then rest on; open sub-headers are skipped by the arrows. `Enter` or a click on a sub-header folds or unfolds it. `Shift+M` on a folded sub-header unfolds it and marks every task in that group as one set; inside multi-select it adds the group to the marked set. Folding, or changing the grouping, sorting, or filter, clears multi-select marks.
 
 ## Status
 

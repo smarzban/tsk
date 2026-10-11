@@ -648,7 +648,9 @@ import { parseCapture } from "./capture.js";
   // Push an arranged section: a folded group paints only its (selectable) sub-header.
   function pushArranged(rows, arranged, layout, pushTask) {
     if (!arranged.groups) {
-      arranged.tasks.forEach((task) => pushTask(task));
+      arranged.tasks.forEach((task) =>
+        pushTask(task, Boolean(arranged.groups)),
+      );
       return;
     }
     for (const group of arranged.groups) {
@@ -663,26 +665,31 @@ import { parseCapture } from "./capture.js";
         id: `group:${group.key}`,
         taskIds: group.tasks.map((task) => task.id),
       });
-      if (!collapsed) group.tasks.forEach((task) => pushTask(task));
+      if (!collapsed)
+        group.tasks.forEach((task) => pushTask(task, Boolean(arranged.groups)));
     }
   }
   // Which parts a wide row label carries on this surface: a dimension is dropped where
   // the surface, its filter or its grouping already says it.
+  // Dimensions the surface or its filter leaves to the row label. Grouping drops its
+  // dimension only in sections that actually group (see omitGrouped).
   function rowLabelDims() {
-    const group = boardLayout().group;
     if (isDeskLens())
       return {
-        thread: group !== "thread" && !state.deskFilter.thread,
-        project: group !== "project" && state.deskFilter.project === null,
+        thread: !state.deskFilter.thread,
+        project: state.deskFilter.project === null,
       };
     if (state.focusProject)
-      return {
-        thread: group !== "thread" && !state.threadFilter,
-        project: false,
-      };
-    if (isProjectsThreadView())
-      return { thread: false, project: group !== "project" };
+      return { thread: !state.threadFilter, project: false };
+    if (isProjectsThreadView()) return { thread: false, project: true };
     return { thread: false, project: false };
+  }
+  function omitGrouped(dims, layout, grouped) {
+    if (!grouped) return dims;
+    return {
+      thread: dims.thread && layout.group !== "thread",
+      project: dims.project && layout.group !== "project",
+    };
   }
   function rowLabel(task, dims) {
     if (!dims) return "";
@@ -1081,25 +1088,22 @@ import { parseCapture } from "./capture.js";
     const pushHeader = (label, count) =>
       rows.push({ kind: "section", label, count, selectable: false });
     const layout = preview.layout;
-    const dims = {
-      thread: layout.group !== "thread" && !preview.threadFilter,
-      project: false,
-    };
-    const pushTask = (task, dim = false) =>
+    const dims = { thread: !preview.threadFilter, project: false };
+    const pushTask = (task, dim = false, grouped = false) =>
       rows.push({
         kind: "task",
         task,
         selectable: true,
         id: task.id,
         dim,
-        label: dim ? "" : rowLabel(task, dims),
+        label: rowLabel(task, omitGrouped(dims, layout, grouped)),
       });
     const arranged = (tasks, section) =>
       pushArranged(
         rows,
         arrangeSection(tasks, section, layout),
         layout,
-        (task) => pushTask(task),
+        (task, grouped) => pushTask(task, false, grouped),
       );
     const need = [...v.review, ...v.blocked].sort(byStatusChange);
     if (need.length) {
@@ -1442,7 +1446,8 @@ import { parseCapture } from "./capture.js";
         rows,
         arrangeSection(tasks, section, layout, options),
         layout,
-        (task) => pushTask(task, labelDims),
+        (task, grouped) =>
+          pushTask(task, omitGrouped(labelDims, layout, grouped)),
       );
 
     if (state.tab === "desk" && !state.focusProject) {
@@ -1500,6 +1505,7 @@ import { parseCapture } from "./capture.js";
                 selectable: true,
                 id: t.id,
                 dim: true,
+                label: rowLabel(t, dims),
               }),
             );
         }
@@ -1553,6 +1559,7 @@ import { parseCapture } from "./capture.js";
                 selectable: true,
                 id: t.id,
                 dim: true,
+                label: rowLabel(t, dims),
               }),
             );
         }
@@ -1616,6 +1623,7 @@ import { parseCapture } from "./capture.js";
                 selectable: true,
                 id: t.id,
                 dim: true,
+                label: rowLabel(t, dims),
               }),
             );
         }
@@ -1647,6 +1655,7 @@ import { parseCapture } from "./capture.js";
               selectable: true,
               id: t.id,
               dim: true,
+              label: rowLabel(t, dims),
             }),
           );
       }

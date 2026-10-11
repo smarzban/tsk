@@ -4,10 +4,12 @@
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
+use ratatui::Terminal;
 use tsk_tui::domain::{DomainState, HumanStatus, ProvenanceOrigin, TaskScope};
 use tsk_tui::ui::board::{
-    apply_intent, board_hit_map, BoardInputMode, BoardModel, FilterTab, ListPickerKind,
+    apply_intent, board_hit_map, draw_board, BoardInputMode, BoardModel, FilterTab, ListPickerKind,
 };
 use tsk_tui::ui::input::{map_key, BoardIntent};
 use tsk_tui::ui::mouse::{left_click, map_board_mouse};
@@ -160,6 +162,35 @@ impl Board {
         assert_eq!(self.model.selected_id(), Some(id));
     }
 
+    fn rows(&self, width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let _ = draw_board(frame, &self.model);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    fn click(&mut self, target: QueueHitTarget) {
+        let hits = board_hit_map(Rect::new(0, 0, 80, 24), &self.model);
+        let region = hits
+            .regions
+            .iter()
+            .find(|hit| hit.target == target)
+            .unwrap_or_else(|| panic!("{target:?} is painted and clickable"));
+        let intent = map_board_mouse(
+            &self.model,
+            &hits,
+            left_click(region.area.x + region.area.width / 2, region.area.y),
+        )
+        .expect("click maps");
+        self.apply(intent);
+    }
+
     fn motion_groups(&self) -> Vec<(String, Vec<Uuid>, Uuid)> {
         self.model
             .queue_view()
@@ -225,8 +256,13 @@ fn grouping_adds_hottest_first_sub_groups_and_the_header_shows_the_layout() {
     );
     assert_eq!(board.model.layout().sort, SortBy::Title);
 
-    // Grouped by project, rows stop repeating the project; the thread stays.
-    assert_eq!(board.model.row_label_dimensions(), (true, false));
+    // Grouped by project, grouped rows stop repeating the project; the thread stays.
+    let rows = board.rows(80, 24);
+    let row = rows
+        .iter()
+        .find(|row| row.contains("alpha one"))
+        .expect("row");
+    assert!(row.trim_end().ends_with("#ship"), "{row}");
 }
 
 #[test]
@@ -473,4 +509,207 @@ fn layout_commands_stay_off_an_open_task_page() {
     board.apply(BoardIntent::OpenGroupPicker);
     assert_eq!(board.model.input_mode(), BoardInputMode::TaskPage);
     assert_eq!(board.model.list_picker_kind(), None);
+}
+
+#[test]
+fn shift_m_on_a_sub_header_marks_its_group_even_inside_multi_select() {
+    let mut board = board();
+    board.pick(BoardIntent::OpenGroupPicker, "project");
+    board.select(board.alpha_one);
+    board.key(press(KeyCode::Char('f')));
+    let alpha_header = board.motion_groups()[0].2;
+    // Multi-select on: mark beta's row, then arrow back to alpha's folded header.
+    board.select(board.beta);
+    board.apply(BoardIntent::ToggleMarkMode);
+    board.apply(BoardIntent::MarkToggle);
+    assert!(board.model.visible_ids().contains(&alpha_header));
+    while board.model.visible_ids()[board.model.selected_index().expect("cursor")] != alpha_header {
+        board.apply(BoardIntent::SelectPrev);
+    }
+    assert!(board.model.mark_mode_active());
+    let shift_m = KeyEvent::new(KeyCode::Char('M'), KeyModifiers::SHIFT);
+    let intent = map_key(board.model.input_mode(), shift_m).expect("bound");
+    board.apply(intent);
+    assert!(board.model.mark_mode_active(), "multi-select stays on");
+    let mut expected = vec![board.alpha_one, board.alpha_two, board.beta];
+    expected.sort();
+    let marked: Vec<Uuid> = board.model.marked_ids().iter().copied().collect();
+    assert_eq!(marked, expected, "the group joins the existing set");
+    assert!(
+        board.model.visible_ids().contains(&board.alpha_one),
+        "and unfolds"
+    );
+}
+
+#[test]
+fn ungrouped_sections_keep_the_grouped_dimension_on_their_labels() {
+    let mut board = board();
+    let inbox = add(
+        &mut board.domain,
+        "alpha inbox item",
+        project(ALPHA),
+        Some("ship"),
+        HumanStatus::Open,
+    );
+    let done = add(
+        &mut board.domain,
+        "alpha done item",
+        project(ALPHA),
+        Some("ship"),
+        HumanStatus::Done,
+    );
+    let _ = (inbox, done);
+    board.model.sync_from_domain(&board.domain);
+    board.model.set_selected_project(Some(PathBuf::from(ALPHA)));
+    board.pick(BoardIntent::OpenGroupPicker, "thread");
+    board.apply(BoardIntent::ToggleDoneDrawer);
+    let rows = board.rows(80, 40);
+    for title in ["alpha inbox item", "alpha done item"] {
+        let row = rows.iter().find(|row| row.contains(title)).expect(title);
+        assert!(row.trim_end().ends_with("#ship"), "{title}: {row}");
+    }
+    let grouped = rows
+        .iter()
+        .find(|row| row.contains("alpha one"))
+        .expect("grouped row");
+    assert!(
+        !grouped.contains("#ship"),
+        "a grouped row drops it: {grouped}"
+    );
+}
+
+#[test]
+fn archived_rows_carry_the_same_label_as_drawer_rows() {
+    let mut board = board();
+    let filed = add(
+        &mut board.domain,
+        "filed",
+        project(ALPHA),
+        Some("ship"),
+        HumanStatus::Done,
+    );
+    board.domain.archive_task(filed).expect("archive");
+    board.model.sync_from_domain(&board.domain);
+    board.apply(BoardIntent::ToggleDoneDrawer);
+    board.apply(BoardIntent::ToggleArchivedGroup);
+    let rows = board.rows(80, 40);
+    let row = rows
+        .iter()
+        .find(|row| row.contains("filed"))
+        .expect("archived row");
+    assert!(row.trim_end().ends_with("#ship · alpha"), "{row}");
+}
+
+#[test]
+fn project_groups_merge_spellings_of_the_same_repository() {
+    let mut board = board();
+    let slashed = add(
+        &mut board.domain,
+        "alpha via slash",
+        project("/repos/alpha/"),
+        None,
+        HumanStatus::Started,
+    );
+    board.model.sync_from_domain(&board.domain);
+    board.pick(BoardIntent::OpenGroupPicker, "project");
+    let alpha: Vec<_> = board
+        .motion_groups()
+        .into_iter()
+        .filter(|group| group.0 == "alpha")
+        .collect();
+    assert_eq!(alpha.len(), 1, "one project, one group");
+    assert!(alpha[0].1.contains(&slashed) && alpha[0].1.contains(&board.alpha_one));
+}
+
+#[test]
+fn clicking_the_layout_control_and_the_desk_filter_tabs() {
+    let mut board = board();
+    board.pick(BoardIntent::OpenGroupPicker, "project");
+    board.click(QueueHitTarget::NavLayout);
+    assert_eq!(
+        board.model.list_picker_kind(),
+        Some(ListPickerKind::GroupBy)
+    );
+    board.apply(BoardIntent::CancelListPicker);
+
+    board.click(QueueHitTarget::NavChip);
+    assert_eq!(
+        board.model.list_picker_kind(),
+        Some(ListPickerKind::DeskFilter)
+    );
+    board.click(QueueHitTarget::PickerTab(
+        tsk_tui::ui::board::PickerTab::Archived,
+    ));
+    assert_eq!(board.model.list_picker_tab(), Some(FilterTab::Projects));
+    let beta = board
+        .picker_labels()
+        .iter()
+        .position(|label| label == "beta")
+        .expect("beta");
+    board.click(QueueHitTarget::ListPickerOption(beta));
+    assert_eq!(board.model.desk_filter().label(), "beta");
+    board.click(QueueHitTarget::NavChip);
+    board.click(QueueHitTarget::PickerTab(
+        tsk_tui::ui::board::PickerTab::Main,
+    ));
+    assert_eq!(board.model.list_picker_tab(), Some(FilterTab::Threads));
+    board.click(QueueHitTarget::ListPickerOption(1));
+    assert_eq!(board.model.desk_filter().label(), "beta #ship");
+    assert_eq!(board.model.visible_ids(), [board.beta]);
+
+    // The header paints the active filter like a project board's control.
+    let rows = board.rows(80, 24);
+    assert!(
+        rows.iter().take(4).any(|row| row.contains("beta #ship ▾")),
+        "{}",
+        rows.join("\n")
+    );
+}
+
+#[test]
+fn a_board_whose_every_row_is_folded_still_seeds_a_header() {
+    let mut board = board();
+    board.pick(BoardIntent::OpenGroupPicker, "project");
+    board.key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT));
+    board.apply(BoardIntent::SelectNavTab(NavTab::Projects));
+    board.apply(BoardIntent::SelectNavTab(NavTab::Desk));
+    let index = board
+        .model
+        .selected_index()
+        .expect("the cursor rests on a folded header, not on nothing");
+    assert!(is_group_header_id(board.model.visible_ids()[index]));
+}
+
+#[test]
+fn merged_tasks_never_move_the_tab_or_pin_a_hidden_row_under_groups() {
+    let mut board = board();
+    board.pick(BoardIntent::OpenGroupPicker, "project");
+    board.select(board.beta);
+    // A task from disk that becomes the hottest group reorders groups, not the cursor.
+    add(
+        &mut board.domain,
+        "gamma from disk",
+        project("/repos/gamma"),
+        None,
+        HumanStatus::Started,
+    );
+    board.model.sync_from_domain(&board.domain);
+    assert_eq!(board.model.nav_tab(), NavTab::Desk);
+    assert_eq!(board.model.selected_id(), Some(board.beta));
+    assert_eq!(board.motion_groups()[0].0, "gamma");
+
+    // A merged change that moves the selected row into a folded group re-pins the cursor
+    // on a painted row.
+    board.select(board.alpha_one);
+    board.key(press(KeyCode::Char('f')));
+    board.select(board.desk);
+    board
+        .domain
+        .edit(board.desk, "desk chore", None, project(ALPHA), None)
+        .expect("merged edit");
+    board.model.sync_from_domain(&board.domain);
+    let index = board.model.selected_index().expect("a selection survives");
+    let id = board.model.visible_ids()[index];
+    assert_ne!(id, board.desk, "the hidden row is not pinned");
+    assert_eq!(board.model.nav_tab(), NavTab::Desk);
 }

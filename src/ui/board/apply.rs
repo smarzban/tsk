@@ -824,8 +824,9 @@ fn apply_board_intent(
             if !model.mark_mode_active() && !model.task_list_owns_input() {
                 return Ok(IntentOutcome::None);
             }
-            // Shift+M on a sub-header marks that whole group as one set.
-            if !model.mark_mode_active() && model.group_header_selected() {
+            // Shift+M on a sub-header marks that whole group as one set, whether or not
+            // multi-select is already on.
+            if model.task_list_owns_input() && model.group_header_selected() {
                 if let Some(header_id) = model.selection_id {
                     model.mark_group(header_id);
                 }
