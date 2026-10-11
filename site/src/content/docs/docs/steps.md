@@ -41,7 +41,7 @@ Select a step and press `alt+↑` or `alt+↓` to move it one place. The selecti
 
 A moved step keeps its ID, short ID, and checked state. Moves save at once, including during task editing, and skip steps staged for removal; cancelling the task edit does not undo them.
 
-`alt+↑` / `alt+↓` is the one changing shortcut without `ctrl`: macOS reserves `ctrl+arrows` for Mission Control.
+`alt+↑` / `alt+↓` is the one changing shortcut without `ctrl`: macOS reserves `ctrl+arrows` for Mission Control. Your terminal must send `alt+↑` as one modified key (xterm's default); a terminal set to prefix Option or Alt with `Esc` delivers `Esc` and then the arrow, which closes the task page.
 
 ## Remove
 
