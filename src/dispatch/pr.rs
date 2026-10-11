@@ -99,6 +99,9 @@ impl MergeRefusal {
         match self {
             Self::GhUnavailable(error) => error.message(),
             Self::NoPr => "no pull request for the branch".into(),
+            Self::NotOpen(PrState::Merged) => {
+                "pull request is already merged; tsk clean (without --merge) cleans it".into()
+            }
             Self::NotOpen(state) => format!("pull request is {}", state.name()),
             Self::BaseMismatch { pr_base, base } => {
                 format!("pull request targets {pr_base}, not {base}")
