@@ -2251,3 +2251,33 @@ fn a_squash_merged_branch_checked_out_elsewhere_is_kept() {
         "the ref stays"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_merge_whose_cleanup_is_refused_still_reports_the_merge_and_the_done_in_json() {
+    let repo = CleanupRepo::new();
+    let (state_dir, tip) = merge_repo(&repo);
+    // Work lands in the worktree while gh merges: the cleanup after it refuses.
+    let on_merge = format!("echo late > '{}'", repo.worktree.join("late.txt").display());
+    let (gh, _) = stub_gh_with(&repo, "OPEN", &tip, 0, false, &on_merge);
+    let output = tsk_tui::cli::merge_done_clean_with_host(
+        TaskAddress::Number(1),
+        state_dir.clone(),
+        "clean",
+        true,
+        false,
+        &mut system_host().with_gh(&gh),
+    );
+    assert_eq!(output.code, 1, "{}", output.stderr);
+    let value: serde_json::Value = serde_json::from_str(&output.stdout).expect("JSON still");
+    assert_eq!(value["merge"]["method"], "squash");
+    assert_eq!(value["status"], "done");
+    assert_eq!(value["error"]["stage"], "cleanup");
+    assert_eq!(value["error"]["code"], "dirty-worktree");
+    assert_eq!(
+        value["error"]["message"],
+        "worktree has uncommitted changes"
+    );
+    assert_eq!(task_on_disk(&state_dir).status, HumanStatus::Done);
+    assert!(repo.worktree.exists());
+}
