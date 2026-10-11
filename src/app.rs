@@ -20028,7 +20028,7 @@ mod merge_cleanup_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::SystemTime;
 
-    use super::{finish_queued_cleanup_with_host, handle_board_intent_with_host};
+    use super::handle_board_intent_with_host;
     use crate::agents::MergeMethod;
     use crate::dispatch::pr::{MergeJob, PrState};
     use crate::dispatch::{
