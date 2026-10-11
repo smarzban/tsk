@@ -120,6 +120,14 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 
 # [agent.pi-win]
 # command = ["pi", "--model", "anthropic/claude-opus-5-5", "--thinking", "high"]
+
+# --- Merging a task's pull request ------------------------------------------
+
+# `m` on the cleanup card (and `tsk status N done --merge`) merges the task's
+# open pull request with the GitHub CLI (`gh`), then marks the task done and
+# cleans up. `method` is "merge" (the default), "squash", or "rebase".
+# [merge]
+# method = "squash"
 "##;
 
 /// Seed the commented profile examples on a full board open.
@@ -390,6 +398,74 @@ function TskProgram([string]$Name) {
 fn base64_text(value: &str) -> String {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     STANDARD.encode(value.as_bytes())
+}
+
+/// How `m` on the cleanup card and `--merge` merge a task's pull request: `[merge] method`
+/// in `config.toml`. Without the setting, a merge commit, as GitHub's own default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MergeMethod {
+    #[default]
+    Merge,
+    Squash,
+    Rebase,
+}
+
+impl MergeMethod {
+    /// The setting's value, and the `gh pr merge` flag without its dashes.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Merge => "merge",
+            Self::Squash => "squash",
+            Self::Rebase => "rebase",
+        }
+    }
+
+    /// Read `[merge] method` from `<state_dir>/config.toml`. A missing file or table is the
+    /// default; only the `[merge]` table is validated, so a broken profile never blocks it.
+    pub fn load(state_dir: impl AsRef<Path>) -> Result<Self, AgentLoadError> {
+        let path = state_dir.as_ref().join(CONFIG_FILE);
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(source) => return Err(AgentLoadError::Io { path, source }),
+        };
+        Self::parse(&content)
+    }
+
+    fn parse(content: &str) -> Result<Self, AgentLoadError> {
+        let document: DocumentMut =
+            content
+                .parse()
+                .map_err(|source| AgentLoadError::MalformedToml {
+                    source: Box::new(source),
+                })?;
+        let invalid = |message: String| AgentLoadError::InvalidDocument {
+            message: format!("[merge] {message}"),
+        };
+        let Some(merge) = document.get("merge") else {
+            return Ok(Self::default());
+        };
+        let table = merge
+            .as_table_like()
+            .ok_or_else(|| invalid("must be a table".into()))?;
+        if let Some(key) = table
+            .iter()
+            .map(|(key, _)| key)
+            .find(|key| *key != "method")
+        {
+            return Err(invalid(format!("unknown key {key:?}")));
+        }
+        match table.get("method").map(|item| item.as_str()) {
+            None => Ok(Self::default()),
+            Some(Some("merge")) => Ok(Self::Merge),
+            Some(Some("squash")) => Ok(Self::Squash),
+            Some(Some("rebase")) => Ok(Self::Rebase),
+            Some(Some(other)) => Err(invalid(format!(
+                "method {other:?} is not merge, squash, or rebase"
+            ))),
+            Some(None) => Err(invalid("method must be a string".into())),
+        }
+    }
 }
 
 /// Typed failures from reading or validating `config.toml`.
@@ -712,6 +788,44 @@ command = ["pi"]
         dir.write("[board]\nwide = true\n");
         let profiles = AgentProfiles::load(dir.path()).expect("settings without profiles");
         assert!(profiles.is_empty());
+    }
+
+    #[test]
+    fn merge_method_defaults_to_merge_and_reads_each_value() {
+        let dir = TempDir::new("merge-method");
+        assert_eq!(MergeMethod::load(dir.path()).unwrap(), MergeMethod::Merge);
+        dir.write("[agent.x]\ncommand = [\"x\"]\n");
+        assert_eq!(MergeMethod::load(dir.path()).unwrap(), MergeMethod::Merge);
+        for (value, method) in [
+            ("merge", MergeMethod::Merge),
+            ("squash", MergeMethod::Squash),
+            ("rebase", MergeMethod::Rebase),
+        ] {
+            dir.write(&format!("[merge]\nmethod = \"{value}\"\n"));
+            assert_eq!(MergeMethod::load(dir.path()).unwrap(), method);
+            assert_eq!(method.name(), value);
+        }
+        // A broken profile never blocks the merge setting, and the reverse.
+        dir.write("[merge]\nmethod = \"squash\"\n[agent.x]\nprompt = 1\n");
+        assert_eq!(MergeMethod::load(dir.path()).unwrap(), MergeMethod::Squash);
+        dir.write("[merge]\nmethod = \"fast-forward\"\n[agent.x]\ncommand = [\"x\"]\n");
+        assert_eq!(AgentProfiles::load(dir.path()).unwrap().names().count(), 1);
+    }
+
+    #[test]
+    fn an_unknown_merge_method_or_key_is_a_clear_config_error() {
+        let dir = TempDir::new("merge-method-bad");
+        for (content, needle) in [
+            ("[merge]\nmethod = \"fast-forward\"\n", "method \"fast-forward\" is not merge, squash, or rebase"),
+            ("[merge]\nmethod = 1\n", "method must be a string"),
+            ("[merge]\nmetod = \"squash\"\n", "unknown key \"metod\""),
+            ("merge = \"squash\"\n", "[merge] must be a table"),
+        ] {
+            dir.write(content);
+            let error = MergeMethod::load(dir.path()).expect_err(content);
+            assert!(error.to_string().starts_with("config.toml: [merge]"), "{error}");
+            assert!(error.to_string().contains(needle), "{error}");
+        }
     }
 
     #[test]

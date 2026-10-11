@@ -188,10 +188,83 @@ fn run_clean(args: Vec<String>) -> CliOutput {
         return presenter::clean_usage("task number is required");
     };
     share_fetch_window(&input.state_dir);
+    if input.merge {
+        // Merge first; the done and the cleanup follow only a merge that succeeded.
+        let merged = match clean::merge(task, input.state_dir.clone()) {
+            Ok(merged) => merged,
+            Err(refused) => return presenter::merge_rejected("clean", &refused),
+        };
+        return finish_done(task, input.state_dir, Some(merged), "clean", input.json);
+    }
     match clean::run(task, input.state_dir) {
         Ok(result) => presenter::cleaned(result, input.json),
         Err(error) => presenter::clean_rejected(error, task),
     }
+}
+
+/// Set the task done, then clean its dispatch: `status done --clean`, and both `--merge`
+/// forms once their merge succeeded. A cleanup refusal leaves the task done and exits 1.
+fn finish_done(
+    task: parser::TaskAddress,
+    state_dir: Option<std::path::PathBuf>,
+    merged: Option<clean::Merged>,
+    verb: &str,
+    json: bool,
+) -> CliOutput {
+    let mut output = CliOutput {
+        stdout: String::new(),
+        stderr: String::new(),
+        code: 0,
+    };
+    if let (Some(merged), false) = (&merged, json) {
+        output.stdout.push_str(&presenter::merged(merged));
+    }
+    let (result, released) = match status::run_done(task, state_dir.clone()) {
+        Ok(done) => done,
+        Err(error) => {
+            let refused = presenter::status_rejected(error, task);
+            output.stderr.push_str(&refused.stderr);
+            output.code = refused.code;
+            return output;
+        }
+    };
+    let lines = if json {
+        &mut output.stderr
+    } else {
+        &mut output.stdout
+    };
+    if !json {
+        lines.push_str(&presenter::status(result).stdout);
+    }
+    if let Some(line) = crate::dispatch::released_message(&released) {
+        lines.push_str(&crate::ui::terminal_text(&line));
+        lines.push('\n');
+    }
+    // The done and the start are durable: a lost record or rollback is a warning.
+    for warning in crate::dispatch::released_warnings(&released) {
+        output.stderr.push_str(&crate::ui::terminal_text(&format!(
+            "tsk {verb}: warning: {warning}"
+        )));
+        output.stderr.push('\n');
+    }
+    share_fetch_window(&state_dir);
+    match clean::run(task, state_dir) {
+        Ok(result) => output
+            .stdout
+            .push_str(&presenter::cleaned_merged(result, merged.as_ref(), json).stdout),
+        // `--clean` means clean what is there: no live dispatch is success.
+        Err(CleanupError::NotDispatched | CleanupError::AlreadyCleaned) if !json => {
+            output.stdout.push_str("nothing to clean\n")
+        }
+        Err(error) => {
+            let refused = presenter::clean_rejected(error, task);
+            output
+                .stderr
+                .push_str(&refused.stderr.replacen("tsk clean:", &format!("tsk {verb}:"), 1));
+            output.code = refused.code;
+        }
+    }
+    output
 }
 
 fn run_status(args: Vec<String>) -> CliOutput {
@@ -229,6 +302,14 @@ fn run_status(args: Vec<String>) -> CliOutput {
             }
             Err(error) => presenter::status_rejected(error, task),
         };
+    }
+    if input.merge {
+        share_fetch_window(&input.state_dir);
+        let merged = match clean::merge(task, input.state_dir.clone()) {
+            Ok(merged) => merged,
+            Err(refused) => return presenter::merge_rejected("status", &refused),
+        };
+        return finish_done(task, input.state_dir, Some(merged), "status", false);
     }
     let state_dir = input.state_dir.clone();
     let outcome = if status == crate::domain::HumanStatus::Done {

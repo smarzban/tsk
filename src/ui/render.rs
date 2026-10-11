@@ -4010,6 +4010,12 @@ pub enum CleanupFooter {
     Single,
     /// A marked set with at least one worktree that can be cleaned.
     Bulk,
+    /// [`Self::Single`] whose task has an open pull request: `m` merges it first.
+    SingleMerge,
+    /// [`Self::Bulk`] with at least one open pull request: `m` merges each first.
+    BulkMerge,
+    /// `m` is merging: no choice until gh answers.
+    Merging,
     /// Nothing on the card can be cleaned: done-without-cleanup or cancel.
     Dirty,
     /// `y` confirmed and the run is working: Esc hides the card, cleanup continues.
@@ -4031,6 +4037,10 @@ impl CleanupFooter {
             (Self::Bulk, false) => BULK_CLEANUP_FOOTER,
             (Self::Dirty, false) => DIRTY_CLEANUP_FOOTER,
             (Self::Single | Self::Bulk, true) => SHORT_CLEANUP_FOOTER,
+            (Self::SingleMerge, false) => MERGE_CLEANUP_FOOTER,
+            (Self::BulkMerge, false) => BULK_MERGE_CLEANUP_FOOTER,
+            (Self::SingleMerge | Self::BulkMerge, true) => SHORT_MERGE_CLEANUP_FOOTER,
+            (Self::Merging, _) => &[],
             (Self::Dirty, true) => SHORT_DIRTY_CLEANUP_FOOTER,
             (Self::Running, _) => RUNNING_CLEANUP_FOOTER,
             (Self::Finished, _) => FINISHED_CLEANUP_FOOTER,
@@ -4126,6 +4136,63 @@ pub(crate) const CLEANUP_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "n",
         label: "done only",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "cancel",
+    },
+];
+
+pub(crate) const MERGE_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "y",
+        label: "done + clean up",
+    },
+    VerbEntry {
+        key: "m",
+        label: "merge PR · done · clean",
+    },
+    VerbEntry {
+        key: "n",
+        label: "done only",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "cancel",
+    },
+];
+
+pub(crate) const BULK_MERGE_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "y",
+        label: "done all + clean up",
+    },
+    VerbEntry {
+        key: "m",
+        label: "merge PRs · done · clean",
+    },
+    VerbEntry {
+        key: "n",
+        label: "done only",
+    },
+    VerbEntry {
+        key: "esc",
+        label: "cancel",
+    },
+];
+
+const SHORT_MERGE_CLEANUP_FOOTER: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "y",
+        label: "clean up",
+    },
+    VerbEntry {
+        key: "m",
+        label: "merge",
+    },
+    VerbEntry {
+        key: "n",
+        label: "done",
     },
     VerbEntry {
         key: "esc",

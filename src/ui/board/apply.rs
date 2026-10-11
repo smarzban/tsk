@@ -2380,7 +2380,7 @@ fn apply_board_intent(
             // Host work and its one durable save are owned by the application boundary.
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::ConfirmCleanup | BoardIntent::KeepCleanup => {
+        BoardIntent::ConfirmCleanup | BoardIntent::KeepCleanup | BoardIntent::MergeCleanup => {
             // Cleanup host work and completion persistence are owned by the app boundary.
             return Ok(IntentOutcome::None);
         }

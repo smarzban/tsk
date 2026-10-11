@@ -260,6 +260,7 @@ fn cleanup_popup_maps_explicit_choices_and_paints_the_guardrail_state() {
     model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
         merge_check: None,
         check_failed: false,
+        pr: Default::default(),
         unreachable_remote: None,
         inspected: None,
         number: 1,

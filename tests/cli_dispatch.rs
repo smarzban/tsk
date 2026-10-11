@@ -239,7 +239,7 @@ fn clean_cli_help_and_success_report_each_removed_resource() {
         true,
     );
     assert_eq!(help.code, 0, "{}", help.stderr);
-    assert!(help.stdout.contains("usage: tsk clean <task> [--json]"));
+    assert!(help.stdout.contains("usage: tsk clean <task> [--merge] [--json]"));
     for code in [
         "unknown-task",
         "not-dispatched",
@@ -247,6 +247,12 @@ fn clean_cli_help_and_success_report_each_removed_resource() {
         "dirty-worktree",
         "herdr-failed",
         "store-error",
+        "gh-unavailable",
+        "no-pr",
+        "pr-not-open",
+        "pr-base-mismatch",
+        "merge-failed",
+        "merge-config",
     ] {
         assert!(help.stdout.contains(code), "missing {code}");
     }
@@ -1876,4 +1882,143 @@ fn the_naming_helper_exits_within_its_window_when_herdr_hangs() {
     assert!(herdr.is_some(), "the helper never ran herdr");
     assert!(!herdr_alive, "the hung herdr was left running");
     assert!(started.elapsed() < std::time::Duration::from_secs(40));
+}
+
+/// A stub `gh` for [`CleanupRepo`]: `pr view` answers `state` with `head` into `base`, and
+/// `pr merge` exits `merge_exit`. Every call's arguments are logged, one line each.
+#[cfg(unix)]
+fn stub_gh(repo: &CleanupRepo, state: &str, head: &str, merge_exit: u8) -> (PathBuf, PathBuf) {
+    let gh = repo.root.join("gh");
+    let log = repo.root.join("gh.log");
+    stub::write_stub(
+        &gh,
+        format!(
+            "#!/bin/sh\necho \"$@\" >> '{log}'\ncase \"$1 $2\" in\n\
+             'pr view') printf '{{\"number\":7,\"url\":\"https://github.com/o/r/pull/7\",\"state\":\"{state}\",\"headRefOid\":\"{head}\",\"baseRefName\":\"base\"}}\\n' ;;\n\
+             'pr merge') [ {merge_exit} = 0 ] || echo 'X Pull request o/r#7 is not mergeable: the base branch policy prohibits the merge.' >&2; exit {merge_exit} ;;\n\
+             esac\n",
+            log = log.display()
+        ),
+        0o700,
+    );
+    (gh, log)
+}
+
+#[cfg(unix)]
+fn clean_with_gh(repo: &CleanupRepo, gh: &Path) -> tsk_tui::dispatch::CleanupResult {
+    let (mut state, id) = repo.state("base", None);
+    let mut host = system_host().with_gh(gh);
+    tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut host).expect("cleaned")
+}
+
+#[cfg(unix)]
+#[test]
+fn a_squash_merged_branch_is_deleted_when_gh_confirms_its_exact_tip() {
+    let repo = CleanupRepo::new();
+    repo.commit_files(&[("feature.txt", "work\n")]);
+    let tip = repo.git(&["rev-parse", "tsk/t1-clean"]);
+    let (gh, log) = stub_gh(&repo, "MERGED", &tip, 0);
+    let result = clean_with_gh(&repo, &gh);
+    assert_eq!(result.branch, tsk_tui::dispatch::BranchCleanup::Removed);
+    assert_eq!(result.branch_reason, None);
+    assert_eq!(
+        repo.git(&["branch", "--list", "tsk/t1-clean"]),
+        "",
+        "the squash-merged branch is gone"
+    );
+    let calls = fs::read_to_string(log).unwrap();
+    assert!(calls.starts_with("pr view tsk/t1-clean --json"), "{calls}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_merged_pr_whose_head_is_not_the_branch_tip_keeps_the_branch() {
+    let repo = CleanupRepo::new();
+    repo.commit_files(&[("feature.txt", "work\n")]);
+    let merged = repo.git(&["rev-parse", "tsk/t1-clean"]);
+    repo.commit_files(&[("later.txt", "after the merge\n")]);
+    let (gh, _) = stub_gh(&repo, "MERGED", &merged, 0);
+    let result = clean_with_gh(&repo, &gh);
+    assert_eq!(result.branch, tsk_tui::dispatch::BranchCleanup::Kept);
+    let output = tsk_tui::cli::presenter::cleaned(result, false);
+    assert!(
+        output
+            .stdout
+            .contains("PR merged but the branch has newer commits; delete by hand"),
+        "{}",
+        output.stdout
+    );
+    assert_ne!(repo.git(&["branch", "--list", "tsk/t1-clean"]), "");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_open_pr_keeps_an_unmerged_branch_with_todays_reason() {
+    let repo = CleanupRepo::new();
+    repo.commit_files(&[("feature.txt", "work\n")]);
+    let tip = repo.git(&["rev-parse", "tsk/t1-clean"]);
+    let (gh, _) = stub_gh(&repo, "OPEN", &tip, 0);
+    let result = clean_with_gh(&repo, &gh);
+    assert_eq!(
+        result.branch_reason,
+        Some(tsk_tui::dispatch::BranchRetentionReason::NotMerged)
+    );
+    assert_ne!(repo.git(&["branch", "--list", "tsk/t1-clean"]), "");
+}
+
+#[cfg(unix)]
+#[test]
+fn merge_runs_gh_pr_merge_with_the_configured_method_and_refuses_without_changing_anything() {
+    let repo = CleanupRepo::new();
+    repo.commit_files(&[("feature.txt", "work\n")]);
+    let tip = repo.git(&["rev-parse", "tsk/t1-clean"]);
+    let (state, _) = repo.state("base", None);
+    let state_dir = repo.root.join("state");
+    let store = TaskStore::new(&state_dir);
+    store.save(&state).unwrap();
+    fs::write(state_dir.join("config.toml"), "[merge]\nmethod = \"squash\"\n").unwrap();
+    let before = fs::read_to_string(state_dir.join("tsk.json")).unwrap();
+
+    // gh refuses: the reason comes back, and the task and branch are untouched.
+    let (gh, log) = stub_gh(&repo, "OPEN", &tip, 1);
+    let refused = clean::merge_with_host(
+        TaskAddress::Number(1),
+        Some(state_dir.clone()),
+        false,
+        &mut system_host().with_gh(&gh),
+    )
+    .expect_err("gh refused the merge");
+    assert_eq!(refused.code(), "merge-failed");
+    assert!(refused.message().contains("base branch policy"), "{}", refused.message());
+    assert_eq!(fs::read_to_string(state_dir.join("tsk.json")).unwrap(), before);
+    let calls = fs::read_to_string(&log).unwrap();
+    assert!(
+        calls.contains(&format!("pr merge tsk/t1-clean --squash --match-head-commit {tip}")),
+        "{calls}"
+    );
+
+    // gh merges.
+    let (gh, _) = stub_gh(&repo, "OPEN", &tip, 0);
+    let merged = clean::merge_with_host(
+        TaskAddress::Number(1),
+        Some(state_dir.clone()),
+        false,
+        &mut system_host().with_gh(&gh),
+    )
+    .expect("merged");
+    assert_eq!(merged.outcome.pr.number, 7);
+    assert_eq!(merged.outcome.method.name(), "squash");
+
+    // An invalid method refuses before gh is asked anything.
+    fs::write(state_dir.join("config.toml"), "[merge]\nmethod = \"ff\"\n").unwrap();
+    fs::remove_file(&log).unwrap();
+    let refused = clean::merge_with_host(
+        TaskAddress::Number(1),
+        Some(state_dir),
+        false,
+        &mut system_host().with_gh(&gh),
+    )
+    .expect_err("bad config");
+    assert_eq!(refused.code(), "merge-config");
+    assert!(!log.exists(), "gh never ran");
 }

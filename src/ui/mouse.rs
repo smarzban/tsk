@@ -954,6 +954,22 @@ pub fn map_board_mouse(
                 _ => None,
             }
         }
+        // With an open pull request the footer reads `y` · `m` · `n` · `esc`.
+        BoardInputMode::CleanupConfirm
+            if model
+                .cleanup_prompt()
+                .is_some_and(|prompt| prompt.can_merge_any()) =>
+        {
+            match hit_at(hits, pos) {
+                Some(QueueHitTarget::ModalClose | QueueHitTarget::CleanupOption(3)) => {
+                    Some(BoardIntent::CancelCleanup)
+                }
+                Some(QueueHitTarget::CleanupOption(0)) => Some(BoardIntent::ConfirmCleanup),
+                Some(QueueHitTarget::CleanupOption(1)) => Some(BoardIntent::MergeCleanup),
+                Some(QueueHitTarget::CleanupOption(2)) => Some(BoardIntent::KeepCleanup),
+                _ => None,
+            }
+        }
         BoardInputMode::CleanupConfirm => match hit_at(hits, pos) {
             Some(QueueHitTarget::ModalClose | QueueHitTarget::CleanupOption(2)) => {
                 Some(BoardIntent::CancelCleanup)

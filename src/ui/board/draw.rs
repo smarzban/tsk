@@ -66,10 +66,18 @@ fn cleanup_branch_action(row: &CleanupRow) -> &'static str {
 
 /// The cleanup card's semantic body. Both cards say what `y` will do, never what happened.
 pub(crate) fn cleanup_overlay<'a>(prompt: &CleanupPrompt, home: Option<&str>) -> QueueOverlay<'a> {
-    let footer = match (prompt.can_clean_any(), prompt.bulk.is_some()) {
-        (false, _) => CleanupFooter::Dirty,
-        (true, false) => CleanupFooter::Single,
-        (true, true) => CleanupFooter::Bulk,
+    let footer = match (
+        prompt.merging(),
+        prompt.can_clean_any(),
+        prompt.bulk.is_some(),
+        prompt.can_merge_any(),
+    ) {
+        (true, ..) => CleanupFooter::Merging,
+        (false, false, ..) => CleanupFooter::Dirty,
+        (false, true, false, false) => CleanupFooter::Single,
+        (false, true, true, false) => CleanupFooter::Bulk,
+        (false, true, false, true) => CleanupFooter::SingleMerge,
+        (false, true, true, true) => CleanupFooter::BulkMerge,
     };
     let (title, lines) = match (&prompt.bulk, prompt.rows.first()) {
         (None, Some(row)) => single_cleanup_lines(row, home),
@@ -111,6 +119,8 @@ pub(crate) fn cleanup_overlay<'a>(prompt: &CleanupPrompt, home: Option<&str>) ->
                         format!("base {} unavailable", row.base)
                     } else if row.branch_merged {
                         "merged ✓".to_string()
+                    } else if row.pr_merged_at_tip() {
+                        "PR merged ✓".to_string()
                     } else {
                         format!("not merged into {}", row.base)
                     };
@@ -132,6 +142,12 @@ pub(crate) fn cleanup_overlay<'a>(prompt: &CleanupPrompt, home: Option<&str>) ->
                     lines.push(CleanupCardLine::Field {
                         label: String::new(),
                         value: warning.clone(),
+                    });
+                }
+                if let Some(pr) = row.pr_line() {
+                    lines.push(CleanupCardLine::Field {
+                        label: String::new(),
+                        value: pr,
                     });
                 }
             }
@@ -158,6 +174,13 @@ pub(crate) fn cleanup_overlay<'a>(prompt: &CleanupPrompt, home: Option<&str>) ->
             Vec::new(),
         ),
     };
+    let mut lines = lines;
+    if let Some(note) = &prompt.merge_note {
+        lines.push(CleanupCardLine::Text(format!("can't merge: {note}")));
+    }
+    if prompt.merging() {
+        lines.push(CleanupCardLine::Text("Merging with gh…".into()));
+    }
     QueueOverlay::CleanupConfirm {
         title,
         lines,
@@ -249,6 +272,18 @@ pub(crate) fn cleanup_run_overlay<'a>(
         lines.push(CleanupCardLine::Field {
             label: identifier.clone(),
             value: format!("kept: can't inspect: {reason}"),
+        });
+    }
+    for (identifier, detail) in &run.merged {
+        lines.push(CleanupCardLine::Field {
+            label: identifier.clone(),
+            value: format!("merged {detail}"),
+        });
+    }
+    for (identifier, reason) in &run.unmerged {
+        lines.push(CleanupCardLine::Field {
+            label: identifier.clone(),
+            value: format!("not merged, left as it was: {reason}"),
         });
     }
     if let Some(bulk) = &prompt.bulk {
@@ -508,6 +543,8 @@ fn single_cleanup_lines(
         format!("Base {base} is unavailable, so the branch stays.")
     } else if row.branch_merged {
         format!("Merged into {base} ✓")
+    } else if row.pr_merged_at_tip() {
+        format!("Pull request merged into {base} ✓")
     } else {
         format!("Not merged into {base} (squash-merged? delete it by hand)")
     };
@@ -541,6 +578,9 @@ fn single_cleanup_lines(
         } else {
             lines.push(field("agent pane", "already closed".into()));
         }
+    }
+    if let Some(pr) = row.pr_line() {
+        lines.push(field("pull request", pr));
     }
     (title, lines)
 }

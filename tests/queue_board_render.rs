@@ -6215,6 +6215,7 @@ fn unmerged_cleanup_card_explains_squash_retention_without_clipping_the_hint() {
     model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
         merge_check: None,
         check_failed: false,
+        pr: Default::default(),
         unreachable_remote: None,
         inspected: None,
         number: 1,
@@ -6257,6 +6258,7 @@ fn cleanup_card_exposes_an_offline_check_and_missing_base_without_a_squash_hint(
         model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
             merge_check: None,
             check_failed: false,
+            pr: Default::default(),
             unreachable_remote: offline.then(|| "origin".into()),
             inspected: None,
             number: 1,
@@ -6310,6 +6312,7 @@ fn cleanup_cards_say_no_recorded_base_for_a_record_without_base_ref() {
     single.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
         merge_check: None,
         check_failed: false,
+        pr: Default::default(),
         unreachable_remote: None,
         inspected: Some(record.clone()),
         number: 1,
@@ -6361,6 +6364,7 @@ fn bulk_cleanup_model() -> BoardModel {
     let row = |number: u64, dirty: bool, merged: bool| CleanupRow {
         merge_check: None,
         check_failed: false,
+        pr: Default::default(),
         unreachable_remote: None,
         inspected: None,
         number,
@@ -6387,6 +6391,8 @@ fn bulk_cleanup_model() -> BoardModel {
             refused: Vec::new(),
         }),
         scroll: 0,
+        merging: None,
+        merge_note: None,
     });
     model
 }
@@ -6451,6 +6457,7 @@ fn large_bulk_cleanup_model(count: u64, dirty: bool) -> BoardModel {
         .map(|number| CleanupRow {
             merge_check: None,
             check_failed: false,
+            pr: Default::default(),
             unreachable_remote: None,
             inspected: None,
             number,
@@ -6475,6 +6482,8 @@ fn large_bulk_cleanup_model(count: u64, dirty: bool) -> BoardModel {
             ..BulkCleanup::default()
         }),
         scroll: 0,
+        merging: None,
+        merge_note: None,
     });
     model
 }

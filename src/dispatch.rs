@@ -7,8 +7,12 @@ use std::time::{Duration, Instant, SystemTime};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::agents::{AgentProfiles, RenderContext};
+use crate::agents::{AgentProfiles, MergeMethod, RenderContext};
 use crate::domain::{Dispatch, DomainState, HumanStatus, Task, TaskScope};
+
+pub mod pr;
+
+pub use pr::{MergeError, MergeOutcome, MergeRow, PrLookup, PrLookupError, PrProbe, PullRequest};
 
 /// Cleanup metadata queries (full untracked-file status, merge-base ancestry) read a real
 /// checkout rather than a quick plumbing ref, so git_base's 250ms metadata deadline false-times
@@ -183,6 +187,9 @@ pub enum BranchRetentionReason {
     /// The recorded base's remote could not be fetched: cached refs may predate a
     /// force-push or reset that dropped the task's commits, so the merge is unconfirmed.
     RemoteUnreachable,
+    /// GitHub merged the branch's PR (a squash or rebase), but the local branch tip is not
+    /// the PR head it merged: the commits that differ were never merged.
+    PrMergedNewerCommits,
 }
 
 impl BranchRetentionReason {
@@ -199,6 +206,7 @@ impl BranchRetentionReason {
             Self::AncestryCheckTimedOut | Self::WorktreeListingTimedOut => "check timed out",
             Self::MergeCheckUnfinished => "merge unconfirmed",
             Self::RemoteUnreachable => "offline",
+            Self::PrMergedNewerCommits => "newer commits",
         }
     }
 
@@ -223,6 +231,9 @@ impl BranchRetentionReason {
                 "could not reach {} to confirm the merge",
                 remote.unwrap_or("the remote")
             ),
+            Self::PrMergedNewerCommits => {
+                "PR merged but the branch has newer commits; delete by hand".into()
+            }
         }
     }
 }
@@ -614,6 +625,61 @@ pub trait DispatchHost {
         self.delete_branch(project, branch)?;
         Ok(BranchDeletion::Removed)
     }
+    /// The PR whose head is `branch`, through `gh pr view` in `project`. The default has no
+    /// `gh`, so every caller behaves as before pull requests were known.
+    fn pull_request(&mut self, _project: &Path, _branch: &str) -> PrLookup {
+        Err(PrLookupError::Missing)
+    }
+    /// `gh pr merge <branch> --<method> --match-head-commit <head>`; gh's reason on failure.
+    fn merge_pull_request(
+        &mut self,
+        _project: &Path,
+        _branch: &str,
+        _method: MergeMethod,
+        _head: &str,
+    ) -> Result<(), String> {
+        Err(PrLookupError::Missing.message())
+    }
+    /// The local branch's tip commit; `None` when the branch is gone.
+    fn branch_tip(&mut self, _project: &Path, _branch: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    /// Delete `branch` only while its tip is still `tip`, without an ancestry check: GitHub
+    /// confirmed this exact tip merged. Never one checked out in another worktree.
+    fn delete_branch_at_tip(
+        &mut self,
+        project: &Path,
+        branch: &str,
+        _tip: &str,
+    ) -> Result<BranchDeletion, String> {
+        self.delete_branch(project, branch)?;
+        Ok(BranchDeletion::Removed)
+    }
+    /// Whether `branch` is still on `remote`, after a merge.
+    fn remote_branch_exists(
+        &mut self,
+        _project: &Path,
+        _remote: &str,
+        _branch: &str,
+    ) -> Result<bool, String> {
+        Err("remote branch check is not supported".into())
+    }
+    /// Start a cleanup card's PR lookup off the event loop. This default runs inline.
+    fn begin_pr_probe(&mut self, project: &Path, branch: &str) -> PrProbe
+    where
+        Self: Sized,
+    {
+        let probe = PrProbe::default();
+        probe.complete(pr::probe(self, project, branch));
+        probe
+    }
+    /// Run a board `m`'s merges off the event loop, filling `job`. This default runs inline.
+    fn begin_merges(&mut self, job: pr::MergeJob, rows: Vec<MergeRow>, method: MergeMethod)
+    where
+        Self: Sized,
+    {
+        pr::run_merge_job(&job, &rows, method, self);
+    }
     /// Run a board cleanup's host work off the event loop, filling `job`: the board polls it
     /// and applies each row's outcome as it lands. This default runs inline.
     fn begin_cleanup(&mut self, job: CleanupJob, plan: Vec<CleanupPlanRow>, in_herdr: bool)
@@ -819,13 +885,22 @@ pub const WINDOWS_REMOVAL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 #[derive(Debug, Clone)]
 pub struct SystemDispatchHost {
     state_dir: PathBuf,
+    /// The GitHub CLI: `gh` from PATH (`gh.exe` on Windows).
+    gh: PathBuf,
 }
 
 impl SystemDispatchHost {
     pub fn in_state_dir(state_dir: impl Into<PathBuf>) -> Self {
         Self {
             state_dir: state_dir.into(),
+            gh: PathBuf::from("gh"),
         }
+    }
+
+    /// Run this `gh` instead of the one on PATH: tests point it at a stub.
+    pub fn with_gh(mut self, program: impl Into<PathBuf>) -> Self {
+        self.gh = program.into();
+        self
     }
 
     /// The mark of a Windows removal under way, beside the store.
@@ -1108,25 +1183,8 @@ impl DispatchHost for SystemDispatchHost {
         base_ref: &str,
     ) -> Result<BranchDeletion, String> {
         let reference = format!("refs/heads/{branch}");
-        let listed = match cleanup_query(project, &["worktree", "list", "--porcelain"]) {
-            Ok(output) => output,
-            Err(error) if error == "git timed out" => {
-                return Ok(BranchDeletion::Kept(
-                    BranchRetentionReason::WorktreeListingTimedOut,
-                ));
-            }
-            Err(error) => return Err(error),
-        };
-        if !listed.status.success() {
-            return Err(command_failure("git worktree list", &listed));
-        }
-        if String::from_utf8_lossy(&listed.stdout)
-            .lines()
-            .any(|line| line == format!("branch {reference}"))
-        {
-            return Ok(BranchDeletion::Kept(
-                BranchRetentionReason::CheckedOutElsewhere,
-            ));
+        if let Some(kept) = branch_checked_out(project, &reference)? {
+            return Ok(kept);
         }
         let tip =
             crate::git_base::git_process_output(project, &["rev-parse", "--verify", &reference])?;
@@ -1161,22 +1219,67 @@ impl DispatchHost for SystemDispatchHost {
         if !merged.status.success() {
             return Err(command_failure("git merge-base", &merged));
         }
-        // update-ref compares the exact checked OID atomically. Git's -d instead
-        // consults this checkout's stale HEAD for an untracked dispatch branch.
-        let deleted = crate::git_base::git_process_output_timeout(
+        delete_exact_tip(project, &reference, tip)
+    }
+
+    fn pull_request(&mut self, project: &Path, branch: &str) -> PrLookup {
+        pr::system_pull_request(&self.gh, project, branch)
+    }
+
+    fn merge_pull_request(
+        &mut self,
+        project: &Path,
+        branch: &str,
+        method: MergeMethod,
+        head: &str,
+    ) -> Result<(), String> {
+        pr::system_merge_pull_request(&self.gh, project, branch, method, head)
+    }
+
+    fn branch_tip(&mut self, project: &Path, branch: &str) -> Result<Option<String>, String> {
+        let tip = crate::git_base::git_process_output(
             project,
-            &["update-ref", "--no-deref", "-d", &reference, tip],
-            Duration::from_secs(5),
+            &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")],
         )?;
-        if deleted.status.success() {
-            return Ok(BranchDeletion::Removed);
+        Ok(tip
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&tip.stdout).trim().to_string()))
+    }
+
+    fn delete_branch_at_tip(
+        &mut self,
+        project: &Path,
+        branch: &str,
+        tip: &str,
+    ) -> Result<BranchDeletion, String> {
+        let reference = format!("refs/heads/{branch}");
+        if let Some(kept) = branch_checked_out(project, &reference)? {
+            return Ok(kept);
         }
-        let current =
-            crate::git_base::git_process_output(project, &["rev-parse", "--verify", &reference])?;
-        if current.status.success() && String::from_utf8_lossy(&current.stdout).trim() != tip {
-            return Ok(BranchDeletion::Kept(BranchRetentionReason::Advanced));
-        }
-        Err(command_failure("git update-ref", &deleted))
+        delete_exact_tip(project, &reference, tip)
+    }
+
+    fn remote_branch_exists(
+        &mut self,
+        project: &Path,
+        remote: &str,
+        branch: &str,
+    ) -> Result<bool, String> {
+        pr::system_remote_branch_exists(project, remote, branch)
+    }
+
+    fn begin_pr_probe(&mut self, project: &Path, branch: &str) -> PrProbe {
+        let probe = PrProbe::default();
+        let (job, mut host) = (probe.clone(), self.clone());
+        let (project, branch) = (project.to_path_buf(), branch.to_string());
+        std::thread::spawn(move || job.complete(pr::probe(&mut host, &project, &branch)));
+        probe
+    }
+
+    fn begin_merges(&mut self, job: pr::MergeJob, rows: Vec<MergeRow>, method: MergeMethod) {
+        let mut host = self.clone();
+        std::thread::spawn(move || pr::run_merge_job(&job, &rows, method, &mut host));
     }
 
     fn begin_cleanup(&mut self, job: CleanupJob, plan: Vec<CleanupPlanRow>, in_herdr: bool) {
@@ -1598,6 +1701,51 @@ fn git_worktree_paths(project: &Path) -> Result<Vec<PathBuf>, String> {
         .filter_map(|line| line.strip_prefix("worktree "))
         .filter_map(|path| canonical_cleanup_path(Path::new(path)).ok())
         .collect())
+}
+
+/// The branch is checked out in a worktree (or the listing timed out): a deletion keeps it.
+fn branch_checked_out(
+    project: &Path,
+    reference: &str,
+) -> Result<Option<BranchDeletion>, String> {
+    let listed = match cleanup_query(project, &["worktree", "list", "--porcelain"]) {
+        Ok(output) => output,
+        Err(error) if error == "git timed out" => {
+            return Ok(Some(BranchDeletion::Kept(
+                BranchRetentionReason::WorktreeListingTimedOut,
+            )));
+        }
+        Err(error) => return Err(error),
+    };
+    if !listed.status.success() {
+        return Err(command_failure("git worktree list", &listed));
+    }
+    Ok(String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .any(|line| line == format!("branch {reference}"))
+        .then_some(BranchDeletion::Kept(
+            BranchRetentionReason::CheckedOutElsewhere,
+        )))
+}
+
+/// Delete `reference` only while it still points at `tip`.
+fn delete_exact_tip(project: &Path, reference: &str, tip: &str) -> Result<BranchDeletion, String> {
+    // update-ref compares the exact checked OID atomically. Git's -d instead
+    // consults this checkout's stale HEAD for an untracked dispatch branch.
+    let deleted = crate::git_base::git_process_output_timeout(
+        project,
+        &["update-ref", "--no-deref", "-d", reference, tip],
+        Duration::from_secs(5),
+    )?;
+    if deleted.status.success() {
+        return Ok(BranchDeletion::Removed);
+    }
+    let current =
+        crate::git_base::git_process_output(project, &["rev-parse", "--verify", reference])?;
+    if current.status.success() && String::from_utf8_lossy(&current.stdout).trim() != tip {
+        return Ok(BranchDeletion::Kept(BranchRetentionReason::Advanced));
+    }
+    Err(command_failure("git update-ref", &deleted))
 }
 
 /// Cleanup inspection for the real host. `fetch` refreshes the recorded base's remote first
@@ -2049,7 +2197,8 @@ pub fn clean_planned_with_host(
             host.delete_merged_branch(&preview.project, &preview.record.branch, base)
                 .map_err(CleanupError::Herdr)?
         } else {
-            BranchDeletion::Kept(BranchRetentionReason::NotMerged)
+            pr::pr_merged_deletion(host, &preview.project, &preview.record.branch)
+                .map_err(CleanupError::Herdr)?
         };
         let workspace = if workspace_removed {
             WorkspaceCleanup::Removed
@@ -3741,6 +3890,15 @@ mod tests {
         dirty_after_close: bool,
         /// The repository has no `origin/HEAD`.
         no_default_base: bool,
+        /// What fake `gh pr view` answers; `None` is no `gh` at all.
+        pr: Option<PrLookup>,
+        pr_lookups: usize,
+        /// The local branch tip.
+        tip: Option<String>,
+        deleted_at_tip: Vec<String>,
+        /// Every fake `gh pr merge`: branch, method, head.
+        merges: Vec<(String, MergeMethod, String)>,
+        merge_error: Option<String>,
     }
 
     impl DispatchHost for FakeHost {
@@ -3884,6 +4042,43 @@ mod tests {
         fn delete_branch(&mut self, _: &Path, _: &str) -> Result<(), String> {
             self.deleted_branches += 1;
             Ok(())
+        }
+
+        fn pull_request(&mut self, _: &Path, _: &str) -> PrLookup {
+            self.pr_lookups += 1;
+            self.pr.clone().unwrap_or(Err(PrLookupError::Missing))
+        }
+
+        fn branch_tip(&mut self, _: &Path, _: &str) -> Result<Option<String>, String> {
+            Ok(self.tip.clone())
+        }
+
+        fn delete_branch_at_tip(
+            &mut self,
+            _: &Path,
+            _: &str,
+            tip: &str,
+        ) -> Result<BranchDeletion, String> {
+            self.deleted_at_tip.push(tip.into());
+            Ok(BranchDeletion::Removed)
+        }
+
+        fn merge_pull_request(
+            &mut self,
+            _: &Path,
+            branch: &str,
+            method: MergeMethod,
+            head: &str,
+        ) -> Result<(), String> {
+            self.merges.push((branch.into(), method, head.into()));
+            match self.merge_error.clone() {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
+        }
+
+        fn remote_branch_exists(&mut self, _: &Path, _: &str, _: &str) -> Result<bool, String> {
+            Ok(true)
         }
 
         fn root_pane(&mut self, _: &str) -> Result<String, crate::dispatch::RootPaneError> {
@@ -5699,6 +5894,198 @@ mod tests {
                 );
             }
         }
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    fn pr_lookup(state: pr::PrState, head: &str) -> PrLookup {
+        Ok(Some(PullRequest {
+            number: 7,
+            url: "https://github.com/o/r/pull/7".into(),
+            state,
+            head_oid: head.into(),
+            base: "main".into(),
+        }))
+    }
+
+    /// Clean a dispatched task whose ancestry reads unmerged, with a fake `gh`.
+    fn clean_unmerged_with_gh(pr: Option<PrLookup>, tip: &str) -> (CleanupResult, FakeHost) {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let mut launch = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        run_with_host(&mut state, id, &profiles, false, true, &mut launch).expect("dispatch");
+        let mut host = FakeHost {
+            cleanup: Some(CleanupInspection {
+                branch_merged: false,
+                ..clean_inspection()
+            }),
+            pr,
+            tip: Some(tip.into()),
+            ..FakeHost::default()
+        };
+        let result = clean_with_host(&mut state, id, true, &mut host).expect("cleaned");
+        fs::remove_dir_all(path).expect("cleanup");
+        (result, host)
+    }
+
+    #[test]
+    fn a_squash_merged_pr_whose_head_is_the_branch_tip_deletes_the_branch() {
+        let (result, host) = clean_unmerged_with_gh(Some(pr_lookup(pr::PrState::Merged, "abc")), "abc");
+        assert_eq!(result.branch, BranchCleanup::Removed);
+        assert_eq!(result.branch_reason, None);
+        assert_eq!(host.deleted_at_tip, ["abc"], "deleted against the exact tip");
+        assert_eq!(host.deleted_branches, 0, "never the unchecked delete");
+    }
+
+    #[test]
+    fn a_merged_pr_with_another_head_keeps_the_branch_and_says_why() {
+        let (result, host) = clean_unmerged_with_gh(Some(pr_lookup(pr::PrState::Merged, "abc")), "def");
+        assert_eq!(result.branch, BranchCleanup::Kept);
+        assert_eq!(
+            result.branch_reason,
+            Some(BranchRetentionReason::PrMergedNewerCommits)
+        );
+        assert_eq!(
+            BranchRetentionReason::PrMergedNewerCommits.message(None, None),
+            "PR merged but the branch has newer commits; delete by hand"
+        );
+        assert!(host.deleted_at_tip.is_empty());
+    }
+
+    #[test]
+    fn an_open_or_closed_pr_or_no_gh_keeps_an_unmerged_branch_as_before() {
+        for (label, pr) in [
+            ("open", Some(pr_lookup(pr::PrState::Open, "abc"))),
+            ("closed", Some(pr_lookup(pr::PrState::Closed, "abc"))),
+            ("no pr", Some(Ok(None))),
+            ("no gh", None),
+            ("gh not logged in", Some(Err(PrLookupError::NotLoggedIn))),
+            ("gh failed", Some(Err(PrLookupError::Failed("boom".into())))),
+        ] {
+            let (result, host) = clean_unmerged_with_gh(pr, "abc");
+            assert_eq!(result.branch, BranchCleanup::Kept, "{label}");
+            assert_eq!(
+                result.branch_reason,
+                Some(BranchRetentionReason::NotMerged),
+                "{label}"
+            );
+            assert!(host.deleted_at_tip.is_empty(), "{label}");
+            assert_eq!(host.deleted_branches, 0, "{label}");
+            assert_eq!(host.pr_lookups, 1, "{label}: gh asked once");
+        }
+    }
+
+    #[test]
+    fn gh_is_never_asked_when_ancestry_confirms_or_the_merge_is_unconfirmed() {
+        let (path, profiles) = profiles();
+        for inspection in [
+            clean_inspection(),
+            CleanupInspection {
+                branch_merged: false,
+                unreachable_remote: Some("origin".into()),
+                ..clean_inspection()
+            },
+            CleanupInspection {
+                branch_merged: false,
+                base_available: false,
+                ..clean_inspection()
+            },
+        ] {
+            let (mut state, id) = task();
+            let mut launch = FakeHost {
+                git: true,
+                ..FakeHost::default()
+            };
+            run_with_host(&mut state, id, &profiles, false, true, &mut launch).expect("dispatch");
+            let mut host = FakeHost {
+                cleanup: Some(inspection.clone()),
+                pr: Some(pr_lookup(pr::PrState::Merged, "abc")),
+                tip: Some("abc".into()),
+                ..FakeHost::default()
+            };
+            clean_with_host(&mut state, id, true, &mut host).expect("cleaned");
+            assert_eq!(host.pr_lookups, 0, "{inspection:?}");
+            assert!(host.deleted_at_tip.is_empty());
+        }
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    fn merge_row_for(state: &DomainState, id: Uuid) -> MergeRow {
+        let task = state.get(id).expect("task");
+        MergeRow {
+            task_id: id,
+            number: task.number.expect("number"),
+            project: PathBuf::from("/tmp/project"),
+            record: Dispatch {
+                base_ref: Some("refs/remotes/origin/main".into()),
+                base_remote: Some("origin".into()),
+                ..task.dispatch.clone().expect("dispatch")
+            },
+        }
+    }
+
+    #[test]
+    fn a_merge_passes_the_configured_method_and_the_checked_tip() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let mut launch = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        run_with_host(&mut state, id, &profiles, false, true, &mut launch).expect("dispatch");
+        let row = merge_row_for(&state, id);
+        for method in [MergeMethod::Merge, MergeMethod::Squash, MergeMethod::Rebase] {
+            let mut host = FakeHost {
+                pr: Some(pr_lookup(pr::PrState::Open, "abc")),
+                tip: Some("abc".into()),
+                ..FakeHost::default()
+            };
+            let outcome = pr::merge_row(&mut host, &row, method).expect("merged");
+            assert_eq!(host.merges, [(row.record.branch.clone(), method, "abc".into())]);
+            assert_eq!(outcome.method, method);
+            assert_eq!(outcome.remote_branch_left, Some(true));
+        }
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn a_merge_refuses_before_gh_merge_unless_an_open_pr_heads_the_local_tip() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let mut launch = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        run_with_host(&mut state, id, &profiles, false, true, &mut launch).expect("dispatch");
+        let row = merge_row_for(&state, id);
+        for (label, pr, tip, code) in [
+            ("no gh", None, Some("abc"), "gh-unavailable"),
+            ("no pr", Some(Ok(None)), Some("abc"), "no-pr"),
+            ("closed", Some(pr_lookup(pr::PrState::Closed, "abc")), Some("abc"), "pr-not-open"),
+            ("merged", Some(pr_lookup(pr::PrState::Merged, "abc")), Some("abc"), "pr-not-open"),
+            ("unpushed", Some(pr_lookup(pr::PrState::Open, "abc")), Some("def"), "merge-failed"),
+            ("branch gone", Some(pr_lookup(pr::PrState::Open, "abc")), None, "merge-failed"),
+        ] {
+            let mut host = FakeHost {
+                pr,
+                tip: tip.map(str::to_string),
+                ..FakeHost::default()
+            };
+            let error = pr::merge_row(&mut host, &row, MergeMethod::Squash).expect_err(label);
+            assert_eq!(error.code(), code, "{label}");
+            assert!(host.merges.is_empty(), "{label}: gh pr merge never ran");
+        }
+        let mut host = FakeHost {
+            pr: Some(pr_lookup(pr::PrState::Open, "abc")),
+            tip: Some("abc".into()),
+            merge_error: Some("Pull request is not mergeable: the base branch policy prohibits the merge.".into()),
+            ..FakeHost::default()
+        };
+        let error = pr::merge_row(&mut host, &row, MergeMethod::Squash).expect_err("gh refused");
+        assert_eq!(error.code(), "merge-failed");
+        assert!(error.message().contains("base branch policy"));
         fs::remove_dir_all(path).expect("cleanup");
     }
 

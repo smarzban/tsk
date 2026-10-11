@@ -694,6 +694,7 @@ fn board_frame_paints_a_cleanup_verdict_that_landed_while_idle() {
     model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
         merge_check: Some(check.clone()),
         check_failed: false,
+        pr: Default::default(),
         unreachable_remote: None,
         inspected: None,
         number: 1,

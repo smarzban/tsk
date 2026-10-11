@@ -1191,9 +1191,83 @@ pub struct CleanupRow {
     /// The background check could not fetch this remote: the refs on disk confirm nothing,
     /// so the card says `not confirmed (offline)` and the branch stays.
     pub unreachable_remote: Option<String>,
+    /// The row's pull request, through `gh`, and what `m` did with it.
+    pub pr: CleanupPr,
+}
+
+/// A cleanup row's pull request: the card's lookup, then `m`'s merge.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CleanupPr {
+    /// The lookup still running off the event loop.
+    pub probe: Option<crate::dispatch::PrProbe>,
+    /// What the lookup found.
+    pub landed: Option<crate::dispatch::pr::PrProbeResult>,
+    /// `m` merged this PR: the row's cleanup fetches the base itself rather than trusting the
+    /// card's pre-merge check, and gh's answer confirms a squash or rebase.
+    pub merged: Option<crate::dispatch::MergeOutcome>,
+    /// `m`'s merge failed: gh's reason, on one line. Nothing about the task changed.
+    pub merge_failed: Option<String>,
 }
 
 impl CleanupRow {
+    /// Copy a landed PR lookup onto the row. True when one landed.
+    pub fn poll_pr(&mut self) -> bool {
+        let Some(result) = self.pr.probe.as_ref().and_then(|probe| probe.take()) else {
+            return false;
+        };
+        self.pr.probe = None;
+        self.pr.landed = Some(result);
+        true
+    }
+
+    /// `m` would merge this row: clean, not merged yet, with an open PR into the recorded base.
+    pub fn mergeable(&self) -> bool {
+        !self.dirty
+            && self.pr.merged.is_none()
+            && match (&self.pr.landed, &self.inspected) {
+                (Some(landed), Some(record)) => {
+                    crate::dispatch::pr::mergeable(&landed.lookup, record).is_ok()
+                }
+                _ => false,
+            }
+    }
+
+    /// GitHub merged this exact branch tip, though ancestry reads unmerged (a squash or rebase).
+    pub fn pr_merged_at_tip(&self) -> bool {
+        self.pr
+            .landed
+            .as_ref()
+            .is_some_and(crate::dispatch::pr::PrProbeResult::merged_at_tip)
+    }
+
+    /// The card's line about the PR: `None` without `gh`, so a card without it reads as before.
+    pub fn pr_line(&self) -> Option<String> {
+        use crate::dispatch::pr::{MergeRefusal, PrLookupError};
+        if let Some(reason) = &self.pr.merge_failed {
+            return Some(format!("merge failed: {reason}"));
+        }
+        if self.pr.probe.is_some() {
+            return Some("checking pull request…".into());
+        }
+        let (landed, record) = (self.pr.landed.as_ref()?, self.inspected.as_ref()?);
+        let number = match &landed.lookup {
+            Ok(Some(pr)) => format!("PR #{}", pr.number),
+            _ => String::new(),
+        };
+        Some(match crate::dispatch::pr::mergeable(&landed.lookup, record) {
+            Ok(_) if self.dirty => format!("{number} open · commit or discard changes to merge"),
+            Ok(_) => format!("{number} open"),
+            Err(MergeRefusal::GhUnavailable(PrLookupError::Missing)) => return None,
+            Err(MergeRefusal::GhUnavailable(error)) => error.message(),
+            Err(MergeRefusal::NoPr) => "no pull request".into(),
+            Err(MergeRefusal::NotOpen(state)) => format!("{number} {}", state.name()),
+            Err(MergeRefusal::BaseMismatch { pr_base, base }) => {
+                format!("{number} targets {pr_base}, not {base}")
+            }
+        })
+    }
+
+
     /// The inspected record has no exact base ref, so no ancestry target is known and the
     /// branch stays whatever the refs say.
     pub fn no_recorded_base(&self) -> bool {
@@ -1225,19 +1299,23 @@ impl CleanupRow {
         self.checking() || self.check_failed
     }
 
-    /// `y` deletes the branch: a completed check confirmed the merge into an available base.
+    /// `y` deletes the branch: a completed check confirmed the merge into an available base,
+    /// or GitHub merged the branch's exact tip (a squash or rebase).
     pub fn branch_deletable(&self) -> bool {
         !self.merge_unconfirmed()
             && self.unreachable_remote.is_none()
             && self.base_available
-            && self.branch_merged
+            && (self.branch_merged || self.pr_merged_at_tip())
     }
 
     /// The ref policy `y` cleans this row with: the card already refreshed the base off the
     /// event loop, so cleanup never fetches; an unfinished, failed or offline check keeps
     /// the branch.
     pub fn cleanup_refs(&self) -> crate::dispatch::CleanupRefs {
-        if self.merge_unconfirmed() {
+        if self.pr.merged.is_some() {
+            // The base moved on GitHub after the card checked it: fetch it again.
+            crate::dispatch::CleanupRefs::Fetch
+        } else if self.merge_unconfirmed() {
             crate::dispatch::CleanupRefs::Unconfirmed
         } else if self.unreachable_remote.is_some() {
             crate::dispatch::CleanupRefs::Offline
@@ -1488,6 +1566,10 @@ pub struct CleanupPrompt {
     pub bulk: Option<BulkCleanup>,
     /// First visible card row; the painter clamps it to the rows that fit.
     pub scroll: usize,
+    /// `m`'s merges running off the event loop, with the task each job slot merges.
+    pub merging: Option<(crate::dispatch::pr::MergeJob, Vec<Uuid>)>,
+    /// Why `m` merged nothing before it started, such as an invalid `[merge]` setting.
+    pub merge_note: Option<String>,
 }
 
 impl CleanupPrompt {
@@ -1496,7 +1578,19 @@ impl CleanupPrompt {
             rows: vec![row],
             bulk: None,
             scroll: 0,
+            merging: None,
+            merge_note: None,
         }
+    }
+
+    /// Whether `m` is offered: at least one listed PR can be merged.
+    pub fn can_merge_any(&self) -> bool {
+        self.merging.is_none() && self.rows.iter().any(CleanupRow::mergeable)
+    }
+
+    /// `m` is merging: the card waits for gh and takes no choice until it lands.
+    pub fn merging(&self) -> bool {
+        self.merging.is_some()
     }
 
     pub fn checking(&self) -> bool {
@@ -1608,6 +1702,11 @@ pub struct CleanupRun {
     pub plan: Vec<crate::dispatch::CleanupPlanRow>,
     pub start_deadline: Instant,
     pub started: bool,
+    /// `m`: each merged task and its PR (`T12`, `PR #7 (squash)`), with any remote branch
+    /// the merge left.
+    pub merged: Vec<(String, String)>,
+    /// `m`: tasks whose merge failed, with gh's reason. They stayed as they were.
+    pub unmerged: Vec<(String, String)>,
 }
 
 impl CleanupRun {
@@ -1653,6 +1752,29 @@ impl CleanupRun {
     /// The status-row outcome: counts, naming only the tasks that kept something. The bool
     /// is true when nothing was kept, so the line may expire on its own.
     pub fn summary(&self) -> (String, bool) {
+        let (text, clean) = self.cleanup_summary();
+        if self.merged.is_empty() && self.unmerged.is_empty() {
+            return (text, clean);
+        }
+        let mut parts = vec![text];
+        match (self.bulk, self.merged.as_slice()) {
+            (_, []) => {}
+            (None, [(_, detail)]) => parts.push(format!("merged {detail}")),
+            (_, merged) => parts.push(format!("merged {}", merged.len())),
+        }
+        if !self.unmerged.is_empty() {
+            let named = self
+                .unmerged
+                .iter()
+                .map(|(identifier, _)| identifier.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            parts.push(format!("not merged {named}"));
+        }
+        (parts.join(" · "), clean && self.unmerged.is_empty())
+    }
+
+    fn cleanup_summary(&self) -> (String, bool) {
         let clean = self.refused.is_empty() && !self.rows.iter().any(|row| row.state.exception());
         let Some((done, missing)) = self.bulk else {
             let Some(row) = self.rows.first() else {
@@ -1955,10 +2077,15 @@ impl BoardModel {
         Some(run.summary())
     }
 
-    /// Esc or `[x]` on the cleanup card. Before `y` it cancels; while the run works it hides
+    /// Esc or `[x]` on the cleanup card. Before `y` it cancels (never while `m` merges); while
+    /// the run works it hides
     /// the card (completion stays saved, cleanup continues, the status row reports it); once
     /// the run finished it closes with the summary.
     pub fn cancel_cleanup_card(&mut self) {
+        // `m` is merging: the card stays until gh answers, so the merge lands on it.
+        if self.cleanup_prompt.as_ref().is_some_and(CleanupPrompt::merging) {
+            return;
+        }
         let finished = self.cleanup_run().is_some_and(|run| run.finished());
         if !finished {
             self.close_popup();
@@ -2216,6 +2343,7 @@ impl BoardModel {
         let mut landed = false;
         for row in &mut prompt.rows {
             landed |= row.apply_landed_check();
+            landed |= row.poll_pr();
         }
         landed || nested
     }
@@ -5879,6 +6007,8 @@ mod tests {
             plan: Vec::new(),
             start_deadline: Instant::now(),
             started: true,
+            merged: Vec::new(),
+            unmerged: Vec::new(),
         }
     }
 

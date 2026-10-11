@@ -328,6 +328,9 @@ pub enum BoardIntent {
     ConfirmCleanup,
     KeepCleanup,
     CancelCleanup,
+    /// Cleanup card `m`, offered when a listed task has an open pull request into its base:
+    /// merge it with gh first, then done and clean up as `y` does.
+    MergeCleanup,
     /// Start card choices: y launches every eligible task (or relaunches the gone agent) and
     /// starts the rest, Esc changes nothing.
     ConfirmDispatch,
@@ -2050,6 +2053,7 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::ConfirmCleanup
         | BoardIntent::KeepCleanup
         | BoardIntent::CancelCleanup
+        | BoardIntent::MergeCleanup
         | BoardIntent::ConfirmDispatch
         | BoardIntent::CancelDispatch
         | BoardIntent::StartWithoutRelaunch
@@ -2309,6 +2313,7 @@ fn map_cleanup_confirm(key: KeyEvent) -> Option<BoardIntent> {
     match key.code {
         KeyCode::Char('y') => Some(BoardIntent::ConfirmCleanup),
         KeyCode::Char('n') => Some(BoardIntent::KeepCleanup),
+        KeyCode::Char('m') => Some(BoardIntent::MergeCleanup),
         KeyCode::Esc => Some(BoardIntent::CancelCleanup),
         code => map_cleanup_scroll(code),
     }

@@ -120,6 +120,8 @@ pub fn parse_flag_dispatch(args: &[String]) -> Result<FlagDispatch, String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlagClean {
     pub task: Option<TaskAddress>,
+    /// `--merge`: merge the task's pull request first, then mark it done and clean.
+    pub merge: bool,
     pub json: bool,
     pub state_dir: Option<PathBuf>,
     pub help: bool,
@@ -131,6 +133,7 @@ pub fn parse_flag_clean(args: &[String]) -> Result<FlagClean, String> {
     }
     let mut parsed = FlagClean {
         task: None,
+        merge: false,
         json: false,
         state_dir: None,
         help: false,
@@ -144,6 +147,10 @@ pub fn parse_flag_clean(args: &[String]) -> Result<FlagClean, String> {
         match flag {
             "--json" => {
                 parsed.json = true;
+                index += 1;
+            }
+            "--merge" => {
+                parsed.merge = true;
                 index += 1;
             }
             "--help" => {
@@ -393,6 +400,8 @@ pub struct FlagStatus {
     pub task: Option<TaskAddress>,
     pub status: Option<HumanStatus>,
     pub clean: bool,
+    /// `--merge`: with `done`, merge the task's pull request first; implies `--clean`.
+    pub merge: bool,
     /// `--again`: with `started`, relaunch a dispatched task whose agent is gone.
     pub again: bool,
     /// `--no-dispatch`: with `started`, change the status only, never launch.
@@ -442,6 +451,7 @@ pub fn parse_flag_status(args: &[String]) -> Result<FlagStatus, String> {
         task: None,
         status: None,
         clean: false,
+        merge: false,
         again: false,
         no_dispatch: false,
         force: false,
@@ -471,6 +481,11 @@ pub fn parse_flag_status(args: &[String]) -> Result<FlagStatus, String> {
         }
         match flag {
             "--clean" => {
+                parsed.clean = true;
+                index += 1;
+            }
+            "--merge" => {
+                parsed.merge = true;
                 parsed.clean = true;
                 index += 1;
             }
@@ -522,6 +537,9 @@ pub fn parse_flag_status(args: &[String]) -> Result<FlagStatus, String> {
             parsed.status = Some(parse_human_status(status)?);
         }
         _ => unreachable!("positionals are capped at two"),
+    }
+    if parsed.merge && parsed.status.is_some() && parsed.status != Some(HumanStatus::Done) {
+        return Err("--merge requires done status".into());
     }
     if parsed.clean && parsed.status.is_some() && parsed.status != Some(HumanStatus::Done) {
         return Err("--clean requires done status".into());
@@ -862,6 +880,26 @@ mod tests {
     }
 
     #[test]
+    fn merge_requires_done_and_implies_clean() {
+        let args = |rest: &[&str]| {
+            ["tsk", "status"]
+                .iter()
+                .chain(rest)
+                .map(|arg| arg.to_string())
+                .collect::<Vec<_>>()
+        };
+        let parsed = parse_flag_status(&args(&["T4", "done", "--merge"])).expect("parse");
+        assert!(parsed.merge && parsed.clean);
+        assert_eq!(
+            parse_flag_status(&args(&["T4", "review", "--merge"])).unwrap_err(),
+            "--merge requires done status"
+        );
+        let clean = super::parse_flag_clean(&["tsk".into(), "clean".into(), "T4".into(), "--merge".into()])
+            .expect("parse");
+        assert!(clean.merge);
+    }
+
+    #[test]
     fn status_parse_accepts_task_and_status() {
         let parsed = parse_flag_status(&[
             "tsk".into(),
@@ -878,6 +916,7 @@ mod tests {
                 task: Some(TaskAddress::Number(4)),
                 status: Some(HumanStatus::Blocked),
                 clean: false,
+                merge: false,
                 again: false,
                 no_dispatch: false,
                 force: false,

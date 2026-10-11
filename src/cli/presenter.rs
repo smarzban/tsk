@@ -1265,12 +1265,16 @@ pub fn dispatch_help() -> CliOutput {
 
 pub fn clean_help() -> CliOutput {
     help(HelpDoc {
-        usage: vec!["tsk clean <task> [--json] [--state-dir <dir>]".into()],
-        purpose: "Remove a clean dispatched worktree, keeping an unmerged branch.".into(),
+        usage: vec!["tsk clean <task> [--merge] [--json] [--state-dir <dir>]".into()],
+        purpose: "Remove a clean dispatched worktree, keeping an unmerged branch. A branch whose pull request GitHub merged (squash or rebase) at its exact tip counts as merged when gh is available. --merge first merges the task's open pull request, then marks the task done and cleans.".into(),
         groups: vec![
             group(
                 "Options",
                 &[
+                    (
+                        "--merge",
+                        "merge the task's pull request with gh (config.toml [merge] method), then done and clean",
+                    ),
                     ("--json", "print one machine-readable cleanup result"),
                     ("--state-dir <dir>", "use another board store"),
                 ],
@@ -1280,7 +1284,11 @@ pub fn clean_help() -> CliOutput {
                 &[("store-error (exit 3)", "verify the task with tsk list")],
             ),
         ],
-        examples: vec!["tsk clean T12".into(), "tsk clean 12 --json".into()],
+        examples: vec![
+            "tsk clean T12".into(),
+            "tsk clean 12 --json".into(),
+            "tsk clean T12 --merge".into(),
+        ],
         refusals: vec![
             "unknown-task".into(),
             "not-dispatched".into(),
@@ -1292,6 +1300,12 @@ pub fn clean_help() -> CliOutput {
             "removal-timed-out".into(),
             "partly-removed".into(),
             "herdr-failed".into(),
+            "gh-unavailable".into(),
+            "no-pr".into(),
+            "pr-not-open".into(),
+            "pr-base-mismatch".into(),
+            "merge-failed".into(),
+            "merge-config".into(),
         ],
         exit: exit_line(
             "dispatch cleaned, or its worktree was already missing",
@@ -1301,7 +1315,36 @@ pub fn clean_help() -> CliOutput {
     })
 }
 
+/// `--merge`'s first line: which PR merged and how, and a remote branch the merge left.
+pub fn merged(merged: &crate::cli::clean::Merged) -> String {
+    let outcome = &merged.outcome;
+    let mut line = format!(
+        "merged T{} pull request #{} ({})",
+        merged.number,
+        outcome.pr.number,
+        outcome.method.name()
+    );
+    if let Some(note) = outcome.remote_note(&merged.record) {
+        line.push_str(&format!(" · {note}"));
+    }
+    format!("{}\n", terminal_text(&line))
+}
+
+/// A `--merge` that merged nothing: exit 3 when the store failed, 1 otherwise.
+pub fn merge_rejected(verb: &str, refused: &crate::cli::clean::MergeRefused) -> CliOutput {
+    verb_rejected(verb, refused.code(), refused.is_store(), &refused.message())
+}
+
 pub fn cleaned(result: CleanupResult, json: bool) -> CliOutput {
+    cleaned_merged(result, None, json)
+}
+
+/// The cleanup result; after `--merge`, the JSON form also carries what merged.
+pub fn cleaned_merged(
+    result: CleanupResult,
+    merged: Option<&crate::cli::clean::Merged>,
+    json: bool,
+) -> CliOutput {
     let worktree = match result.worktree {
         WorktreeCleanup::Removed => "removed",
         WorktreeCleanup::Missing => "missing",
@@ -1321,14 +1364,31 @@ pub fn cleaned(result: CleanupResult, json: bool) -> CliOutput {
     let stdout = if json {
         format!(
             "{}\n",
-            serde_json::json!({
-                "number": result.number,
-                "title": result.title,
-                "worktree": {"path": result.worktree_path, "outcome": worktree},
-                "branch": {"name": result.branch_name, "outcome": branch, "reason": branch_reason},
-                "workspace": {"id": result.workspace_id, "outcome": workspace},
-                "warning": result.warning,
-            })
+            {
+                let mut value = serde_json::json!({
+                    "number": result.number,
+                    "title": result.title,
+                    "worktree": {"path": result.worktree_path, "outcome": worktree},
+                    "branch": {"name": result.branch_name, "outcome": branch, "reason": branch_reason},
+                    "workspace": {"id": result.workspace_id, "outcome": workspace},
+                    "warning": result.warning,
+                });
+                if let Some(merged) = merged {
+                    let outcome = &merged.outcome;
+                    value["merge"] = serde_json::json!({
+                        "pr": outcome.pr.number,
+                        "url": outcome.pr.url,
+                        "method": outcome.method.name(),
+                        "remote_branch": match outcome.remote_branch_left {
+                            Some(true) => Some("kept"),
+                            Some(false) => Some("deleted"),
+                            None => None,
+                        },
+                    });
+                    value["status"] = serde_json::json!("done");
+                }
+                value
+            }
         )
     } else {
         let branch_detail = match branch_reason {
@@ -1362,7 +1422,7 @@ pub fn clean_usage(reason: &str) -> CliOutput {
     CliOutput {
         stdout: String::new(),
         stderr: format!(
-            "tsk clean: {}\nusage: tsk clean <task> [--json] [--state-dir <dir>]\n",
+            "tsk clean: {}\nusage: tsk clean <task> [--merge] [--json] [--state-dir <dir>]\n",
             human_reason(reason)
         ),
         code: 2,
@@ -1427,6 +1487,7 @@ pub fn status_help() -> CliOutput {
     help(HelpDoc {
         usage: vec![
             "tsk status <task> <status> [--clean] [--state-dir <dir>]".into(),
+            "tsk status <task> done --merge [--state-dir <dir>]".into(),
             "tsk status <task> started [--again | --no-dispatch] [--force] [--state-dir <dir>]".into(),
             "tsk status <task> blocked --why <text> [--needs <text>] [--option <text>]... [--on you|T<n>|<text>]".into(),
             "tsk status <task> review --done <text> [--check <text>]... [--next <text>] [--on you|<agent>|<text>]".into(),
@@ -1445,6 +1506,10 @@ pub fn status_help() -> CliOutput {
                     (
                         "--clean",
                         "after setting done, safely clean its dispatch if it has a live one",
+                    ),
+                    (
+                        "--merge",
+                        "with done, first merge the task's pull request with gh (config.toml [merge] method), then done and clean",
                     ),
                     (
                         "--again",
@@ -1497,6 +1562,7 @@ pub fn status_help() -> CliOutput {
             "tsk status T12 ready".into(),
             "tsk status T12 review".into(),
             "tsk status T12 started --no-dispatch".into(),
+            "tsk status T12 done --merge".into(),
             "tsk status T12 blocked --why \"Which database?\" --option postgres --option sqlite".into(),
             "tsk status T12 blocked --why \"Needs the API from T9\" --on T9".into(),
             "tsk status T12 review --done \"Opened PR #41\" --check \"tests pass\" --check \"no flicker at 80 cols\" --next \"docs\"".into(),
@@ -1516,6 +1582,12 @@ pub fn status_help() -> CliOutput {
             "herdr-failed".into(),
             "unsupported-platform".into(),
             "unsafe-state-dir".into(),
+            "gh-unavailable".into(),
+            "no-pr".into(),
+            "pr-not-open".into(),
+            "pr-base-mismatch".into(),
+            "merge-failed".into(),
+            "merge-config".into(),
         ],
         exit: exit_line(
             "status set, or it already had the value",

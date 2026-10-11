@@ -2105,7 +2105,13 @@ pub fn offer_cleanup_prompt_with_host(
             workspace,
         }));
     }
-    model.begin_cleanup_prompt(CleanupPrompt::single(cleanup_row(id, preview, merge_check)));
+    let pr_probe = begin_cleanup_pr_probe(task_project(domain, id), &preview.record, host);
+    model.begin_cleanup_prompt(CleanupPrompt::single(cleanup_row(
+        id,
+        preview,
+        merge_check,
+        pr_probe,
+    )));
     Ok(CleanupOffer::Prompted)
 }
 
@@ -2126,14 +2132,36 @@ fn begin_cleanup_merge_check(
     }
 }
 
+/// The project a task lives in, for host work on its repository.
+fn task_project(domain: &DomainState, id: uuid::Uuid) -> Option<std::path::PathBuf> {
+    match domain.get(id).map(|task| &task.scope) {
+        Some(crate::domain::TaskScope::Project { path }) => Some(path.into()),
+        _ => None,
+    }
+}
+
+/// Start the card's pull-request lookup through `gh`, off the event loop.
+fn begin_cleanup_pr_probe(
+    project: Option<std::path::PathBuf>,
+    record: &crate::domain::Dispatch,
+    host: &mut impl DispatchHost,
+) -> Option<dispatch::PrProbe> {
+    project.map(|project| host.begin_pr_probe(&project, &record.branch))
+}
+
 fn cleanup_row(
     id: uuid::Uuid,
     preview: dispatch::CleanupPreview,
     merge_check: Option<dispatch::MergeCheck>,
+    pr_probe: Option<dispatch::PrProbe>,
 ) -> CleanupRow {
-    CleanupRow {
+    let mut row = CleanupRow {
         merge_check,
         check_failed: false,
+        pr: crate::ui::board::CleanupPr {
+            probe: pr_probe,
+            ..Default::default()
+        },
         unreachable_remote: preview.inspection.unreachable_remote.clone(),
         inspected: Some(preview.record.clone()),
         task_id: id,
@@ -2150,7 +2178,10 @@ fn cleanup_row(
         base_available: preview.inspection.base_available,
         warning: preview.inspection.warning,
         workspace_exists: preview.inspection.workspace_exists,
-    }
+    };
+    // A lookup that already answered (no gh, or a host that runs it inline) lands at once.
+    row.poll_pr();
+    row
 }
 
 /// A board save failed: keep the working state aside and show save recovery for it.
@@ -2246,7 +2277,10 @@ pub fn offer_bulk_cleanup_prompt_with_host(
             Ok(preview) if !preview.inspection.worktree_exists => {
                 bulk.missing.push((id, identifier, preview.record));
             }
-            Ok(preview) => rows.push(cleanup_row(id, preview, merge_check)),
+            Ok(preview) => {
+                let pr_probe = begin_cleanup_pr_probe(task_project(domain, id), &preview.record, host);
+                rows.push(cleanup_row(id, preview, merge_check, pr_probe));
+            }
             Err(error) => bulk.refused.push((identifier, error.reason())),
         }
     }
@@ -2266,6 +2300,8 @@ pub fn offer_bulk_cleanup_prompt_with_host(
         rows,
         bulk: Some(bulk),
         scroll: 0,
+        merging: None,
+        merge_note: None,
     });
     Ok(BulkCleanupOffer::Prompted)
 }
@@ -2419,11 +2455,223 @@ pub fn confirm_cleanup_with_host(
         plan,
         start_deadline: Instant::now() + dispatch::MERGE_CHECK_TIMEOUT,
         started: false,
+        merged: Vec::new(),
+        unmerged: Vec::new(),
     };
     Ok(Some(CleanupConfirmed {
         run: Some(run),
         message: None,
     }))
+}
+
+/// A cleanup card's choice: `y` (clean) or `n`, and what an `m` merged first.
+struct CleanupChoice {
+    clean: bool,
+    merges: MergeReport,
+}
+
+/// What a cleanup card's `m` did, for the run's card and status-row summary.
+#[derive(Default)]
+struct MergeReport {
+    merged: Vec<(String, String)>,
+    unmerged: Vec<(String, String)>,
+}
+
+/// Apply a cleanup card's choice and make the completion durable before any worktree is
+/// touched; with `y`, start the run that reports the card's rows.
+#[allow(clippy::too_many_arguments)]
+fn confirm_cleanup_and_save(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    save_recovery: &mut SaveRecovery<DomainState>,
+    baseline: DomainState,
+    choice: CleanupChoice,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
+) {
+    let confirmed = match confirm_cleanup_with_host(domain, model, choice.clean, in_herdr, host) {
+        Ok(confirmed) => confirmed,
+        Err(error) => {
+            model.close_popup();
+            model.set_message(board_rejection_message(&error));
+            return;
+        }
+    };
+    let dispatch_running = model.bulk_dispatch_running();
+    // Completion is durable before any worktree is touched.
+    let released = match save_releasing(store, domain, dispatch_running, in_herdr, host) {
+        Ok(released) => released,
+        Err(error) => {
+            model.close_popup();
+            fail_board_save(domain, model, save_recovery, baseline, error.to_string());
+            return;
+        }
+    };
+    model.sync_from_domain(domain);
+    // The cleanup card owns the status row: its summary carries what started.
+    model.released_note = report_released(&released, name_agent);
+    match confirmed {
+        Some(CleanupConfirmed { run: Some(mut run), .. }) => {
+            run.merged = choice.merges.merged;
+            run.unmerged = choice.merges.unmerged;
+            model.begin_cleanup_run(run);
+            poll_cleanup_runs(store, domain, model, save_recovery, in_herdr, host);
+        }
+        // Worktrees kept on purpose are still kept: the outcome stays until the next action.
+        Some(CleanupConfirmed {
+            message: Some(message),
+            ..
+        }) => model.post_cleanup_summary(message, false),
+        _ => {}
+    }
+    record_notice_dismissals_without_blocking_persist(store, domain);
+}
+
+/// Cleanup card `m`: merge each listed open pull request with gh, off the event loop. Nothing
+/// about the tasks changes until the merges land ([`land_cleanup_merges_with_host`]); an
+/// invalid `[merge]` setting merges nothing and says why on the card.
+fn begin_cleanup_merges(
+    store: &TaskStore,
+    domain: &DomainState,
+    model: &mut BoardModel,
+    host: &mut impl DispatchHost,
+) {
+    let Some(prompt) = model.cleanup_prompt_mut() else {
+        return;
+    };
+    if !prompt.can_merge_any() {
+        return;
+    }
+    let method = match crate::agents::MergeMethod::load(store.path()) {
+        Ok(method) => method,
+        Err(error) => {
+            prompt.merge_note = Some(error.to_string());
+            return;
+        }
+    };
+    prompt.merge_note = None;
+    let mut rows = Vec::new();
+    for row in prompt.rows.iter_mut().filter(|row| row.mergeable()) {
+        row.pr.merge_failed = None;
+        let project = task_project(domain, row.task_id);
+        match (project, &row.inspected) {
+            (Some(project), Some(record))
+                if dispatch_unchanged(domain, row.task_id, Some(record)) =>
+            {
+                rows.push(dispatch::MergeRow {
+                    task_id: row.task_id,
+                    number: row.number,
+                    project,
+                    record: record.clone(),
+                });
+            }
+            _ => row.pr.merge_failed = Some(CleanupError::DispatchChanged.reason()),
+        }
+    }
+    if rows.is_empty() {
+        return;
+    }
+    let job = dispatch::pr::MergeJob::new(rows.len());
+    prompt.merging = Some((job.clone(), rows.iter().map(|row| row.task_id).collect()));
+    host.begin_merges(job, rows, method);
+}
+
+/// Land a cleanup card's `m` once every merge answered, on this board and its project preview.
+/// Merged rows go on exactly as `y` (done in one save, one undo entry, then cleanup); a row
+/// whose merge failed stays as it was, its card line saying why. Nothing merged: the card
+/// stays open with each reason.
+fn land_cleanup_merges_with_host(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    save_recovery: &mut SaveRecovery<DomainState>,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
+) {
+    if save_recovery.is_pending() {
+        return;
+    }
+    land_cleanup_merges_on(store, domain, model, save_recovery, in_herdr, host, name_agent);
+    if let Some(seat) = model.preview_seat_mut() {
+        land_cleanup_merges_on(store, domain, seat, save_recovery, in_herdr, host, name_agent);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn land_cleanup_merges_on(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    board: &mut BoardModel,
+    save_recovery: &mut SaveRecovery<DomainState>,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
+) {
+    let Some(prompt) = board.cleanup_prompt_mut() else {
+        return;
+    };
+    let Some(results) = prompt.merging.as_ref().and_then(|(job, _)| job.results()) else {
+        return;
+    };
+    let (_, ids) = prompt.merging.take().expect("merging");
+    let mut report = MergeReport::default();
+    let mut merged = Vec::new();
+    for (id, result) in ids.iter().zip(results) {
+        let Some(row) = prompt.rows.iter_mut().find(|row| row.task_id == *id) else {
+            continue;
+        };
+        let identifier = format!("T{}", row.number);
+        match result {
+            Ok(outcome) => {
+                let mut detail = format!("PR #{} ({})", outcome.pr.number, outcome.method.name());
+                if let Some(note) = row
+                    .inspected
+                    .as_ref()
+                    .and_then(|record| outcome.remote_note(record))
+                {
+                    detail.push_str(&format!(" · {note}"));
+                }
+                report.merged.push((identifier, detail));
+                // The run fetches the base itself; the card's pre-merge check is moot.
+                row.merge_check = None;
+                row.pr.merged = Some(outcome);
+                merged.push(*id);
+            }
+            Err(error) => {
+                row.pr.merge_failed = Some(error.message());
+                report.unmerged.push((identifier, error.message()));
+            }
+        }
+    }
+    if merged.is_empty() {
+        return;
+    }
+    // Only the merged tasks go on: done and cleaned as `y` would. The rest stay as they were.
+    prompt.rows.retain(|row| merged.contains(&row.task_id));
+    if let Some(bulk) = prompt.bulk.as_mut() {
+        bulk.targets.retain(|id| merged.contains(id));
+        bulk.plain.clear();
+        bulk.missing.clear();
+        bulk.refused.clear();
+    }
+    let baseline = domain.clone();
+    confirm_cleanup_and_save(
+        store,
+        domain,
+        board,
+        save_recovery,
+        baseline,
+        CleanupChoice {
+            clean: true,
+            merges: report,
+        },
+        in_herdr,
+        host,
+        name_agent,
+    );
 }
 
 /// Start the run's worker once its merged checks landed (or their bound passed), cleaning each
@@ -3667,6 +3915,15 @@ fn board_background_step(
     model.poll_base_picker_results();
     model.poll_dispatch_checks();
     finish_queued_cleanup_with_host(store, domain, model, save_recovery, in_herdr, host)?;
+    land_cleanup_merges_with_host(
+        store,
+        domain,
+        model,
+        save_recovery,
+        in_herdr,
+        host,
+        name_agent,
+    );
     land_bulk_dispatch_with_host(store, domain, model, save_recovery, name_agent)
 }
 
@@ -3913,48 +4170,33 @@ fn handle_board_intent_with_host(
 
     if matches!(
         intent,
-        BoardIntent::ConfirmCleanup | BoardIntent::KeepCleanup
+        BoardIntent::ConfirmCleanup | BoardIntent::KeepCleanup | BoardIntent::MergeCleanup
     ) && !save_recovery.is_pending()
     {
-        // The card already confirmed: it now reports the run, and only Esc acts on it.
-        if model.cleanup_run().is_some() {
+        // The card already confirmed: it now reports the run, and only Esc acts on it. While
+        // `m` merges, the card waits for gh and takes no choice.
+        if model.cleanup_run().is_some()
+            || model.cleanup_prompt().is_some_and(CleanupPrompt::merging)
+        {
+            return Ok(false);
+        }
+        if intent == BoardIntent::MergeCleanup {
+            begin_cleanup_merges(store, domain, model, host);
             return Ok(false);
         }
         let clean = intent == BoardIntent::ConfirmCleanup;
-        let confirmed = match confirm_cleanup_with_host(domain, model, clean, in_herdr, host) {
-            Ok(confirmed) => confirmed,
-            Err(error) => {
-                model.close_popup();
-                model.set_message(board_rejection_message(&error));
-                return Ok(false);
-            }
-        };
-        let dispatch_running = model.bulk_dispatch_running();
-        // Completion is durable before any worktree is touched.
-        let released = match save_releasing(store, domain, dispatch_running, in_herdr, host) {
-            Ok(released) => released,
-            Err(error) => {
-                model.close_popup();
-                fail_board_save(domain, model, save_recovery, baseline, error.to_string());
-                return Ok(false);
-            }
-        };
-        model.sync_from_domain(domain);
-        // The cleanup card owns the status row: its summary carries what started.
-        model.released_note = report_released(&released, name_agent);
-        match confirmed {
-            Some(CleanupConfirmed { run: Some(run), .. }) => {
-                model.begin_cleanup_run(run);
-                poll_cleanup_runs(store, domain, model, save_recovery, in_herdr, host);
-            }
-            // Worktrees kept on purpose are still kept: the outcome stays until the next action.
-            Some(CleanupConfirmed {
-                message: Some(message),
-                ..
-            }) => model.post_cleanup_summary(message, false),
-            _ => {}
-        }
-        record_notice_dismissals_without_blocking_persist(store, domain);
+        let merges = MergeReport::default();
+        confirm_cleanup_and_save(
+            store,
+            domain,
+            model,
+            save_recovery,
+            baseline,
+            CleanupChoice { clean, merges },
+            in_herdr,
+            host,
+            name_agent,
+        );
         return Ok(false);
     }
 
