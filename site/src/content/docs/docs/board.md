@@ -81,7 +81,7 @@ You can also assign with `!a name` in [quick-add](/docs/capture/#title-tokens), 
 
 ### Dispatch
 
-Starting an assigned task dispatches it: `ctrl+s`, the palette's **set status: started**, or [`tsk status N started`](/docs/cli/#status). tsk creates a branch and Git worktree from the task's [base](#base-branch), opens a Herdr workspace there, and runs the profile's command. It then records the dispatch on the task and sets it to started, in one save. If the launch fails, the task records no dispatch, keeps its status, and the status row says why. `ctrl+u` right after undoes the start only: the status goes back and the status row says `start undone · @claude kept running`; the agent and its worktree stay.
+Starting an assigned task dispatches it: `ctrl+s`, the palette's **set status: started**, or [`tsk status N started`](/docs/cli/#status). tsk creates a branch and Git worktree from the task's [base](#base-branch), opens a Herdr workspace there, and runs the profile's command. It then records the dispatch on the task and sets it to started, in one save. If the launch fails, the task records no dispatch, keeps its status, and the status row says why. `ctrl+u` right after undoes the start only: the status goes back and the status row says `start undone · T12 back to ready · @claude kept running`; the agent and its worktree stay.
 
 What a start does depends on the task:
 
@@ -353,7 +353,7 @@ Set it from the task page's **After** field, with **set after…** in the palett
 
 With tasks marked in order, **chain in order** makes each marked task run after the one marked before it, on top of what it already runs after. One save, one `ctrl+u`.
 
-When the last prerequisite becomes **done** (review does not count), each waiting task in **ready** starts in the same save as the done, the way `ctrl+s` starts it; an assigned task never dispatched then [dispatches](#dispatch) right after that save, which records its agent. What a done releases is judged against the store as saved, so a prerequisite completed elsewhere (another board, the CLI, an agent) counts. While a marked-set dispatch is still landing, a released assigned task stays ready instead (`T203 waits: a dispatch is running; ctrl+s starts it`). The status row says `T203 started · T202 done`, and the started task's paper trail reads `started · after T202`. This happens from the board, the [cleanup card](#complete-and-clean-up), and [`tsk status N done`](/docs/cli/#status). Waiting tasks in open, blocked, or review do not move. A launch that fails never blocks the done: the task goes back to ready and the status row says why (`T203 back to ready: …`). If the launch ran but its record could not be saved, the status row says the agent is running and names its worktree; if the launch failed and the task could not be saved back to ready, it says `T203 is started but no agent launched; couldn't save it back to ready: …`. A task whose earlier agent is gone starts without a relaunch (`@claude gone, not relaunched`). `ctrl+u` on the done reverts the statuses only, `done undone · T203 back to ready · @claude kept running`; a launched agent keeps running.
+When the last prerequisite becomes **done** (review does not count), each waiting task in **ready** starts in the same save as the done, the way `ctrl+s` starts it; an assigned task never dispatched then [dispatches](#dispatch) right after that save, which records its agent. What a done releases is judged against the store as saved, so a prerequisite completed elsewhere (another board, the CLI, an agent) counts. While a marked-set dispatch is still landing, a released assigned task stays ready instead (`T203 waits: a dispatch is running; ctrl+s starts it`). The status row says `T203 started · T202 done`, and the started task's paper trail reads `started · after T202`. This happens from the board, the [cleanup card](#complete-and-clean-up), and [`tsk status N done`](/docs/cli/#status). Waiting tasks in open, blocked, or review do not move. A launch that fails never blocks the done: the task goes back to ready and the status row says why (`T203 back to ready: …`). If the launch ran but its record could not be saved, the status row says the agent is running and names its worktree; if the launch failed and the task could not be saved back to ready, it says `T203 is started but no agent launched; couldn't save it back to ready: …`. A task whose earlier agent is gone starts without a relaunch (`@claude gone, not relaunched`). `ctrl+u` on the done reverts the statuses only, `done undone · T202 back to started · T203 back to ready · @claude kept running`; a launched agent keeps running.
 
 Starting a waiting task yourself asks first: `T203 runs after T202 (started).` under `Start anyway?`, then the option `y  start now, without waiting` and `esc cancel`. `y` (or `Enter`) starts it, `Esc` cancels. With tasks marked, the card lists each waiting one.
 
@@ -414,10 +414,10 @@ Archiving hides work without changing its status.
 
 | Archive | Restore |
 | --- | --- |
-| Task: select it and press `ctrl+f` | Open the done drawer's archived group, select it, then press `ctrl+u` or `ctrl+f` |
+| Task: select it and press `ctrl+f`; `ctrl+u` right after brings it back | Open the done drawer's archived group, select it, then press `ctrl+u` or `ctrl+f` |
 | Project: press `p`, select it, then `ctrl+f` | Switch to the picker's **archived** tab, select it, then `ctrl+u` or `ctrl+f` |
 
-Use `Tab`, `←`, or `→` to switch project-picker tabs. Archiving has no undo entry.
+Use `Tab`, `←`, or `→` to switch project-picker tabs. Archiving or restoring tasks with `ctrl+f` is one [undo](#delete-and-undo) step, for one task or a marked set; archiving a project is not. An archive from `tsk archive` is not undoable on the board, and it changes the task, so an earlier undoable action on that task refuses (for example `T12 changed since it was completed (archived); nothing undone`).
 
 ### View an archived project
 
@@ -433,16 +433,22 @@ tsk asks whether to restore it, with one option line each: `y  unarchive app · 
 
 Press `ctrl+x` twice to delete the marked tasks, or the cursored task when nothing is marked. The confirmation and recovery messages show the task count for a marked set. `ctrl+Delete` is an alternative.
 
-`ctrl+u` undoes the last of these, from the board or the task page:
+`ctrl+u` undoes the last of these, from the board or the task page, and the status row names the tasks it put back:
 
-- a delete;
-- a done: the task goes back to the status it had, such as started or blocked;
-- a block or review card;
-- any other status change: a start that launched nothing, ready, open, a reopen, or an unblock, including the reply box's. Going back to blocked or review reopens the block or review round, with its replies. On a dispatched task the agent keeps running, and the status row says `undone · @claude kept running`;
-- a start that launched an agent: only the status goes back, and the status row says `start undone · @claude kept running`;
-- a step tick or untick, a new step, a removed step, or new step text (from the task page; the title and notes saved with it stay).
+| Undone | Status row |
+| --- | --- |
+| A delete | `delete undone · T12` |
+| A done: the task goes back to the status it had, such as started or blocked | `done undone · T12 back to started` |
+| An archive or restore with `ctrl+f` | `archive undone · T12`, `unarchive undone · T12` |
+| A block or review card | `block undone · T12 back to started` |
+| Any other status change: a start that launched nothing, ready, open, a reopen, or an unblock, including the reply box's. Going back to blocked or review reopens the block or review round, with its replies | `status undone · T12 back to blocked` |
+| A start that launched an agent: only the status goes back | `start undone · T12 back to ready · @claude kept running` |
+| A step tick or untick, a new step, a removed step, or new step text (from the task page; the title and notes saved with it stay) | `steps undone · T12` |
+| An assignee, base, or after change | `assignee undone · T12` |
 
-Undo keeps the last 50 actions. One `ctrl+u` undoes the whole marked deletion, completion, block, or status change, including the [after](#after) links a deletion dropped and the starts a completion made. If another writer has changed any task in that batch since the action, undo refuses without changing any of them and remains available to retry. On an archived cursor with no marks, `ctrl+u` restores that task instead.
+Undo never stops an agent: when a task with a live dispatch leaves started, the row adds `· @claude kept running`. A marked set is one undo step and the row lists its tasks (`done undone · T3, T4, T5`), or counts them past three (`done undone · 5 tasks`); a completion's undo also names the tasks it had started (`· T203 back to ready`). Undo keeps the last 50 actions. With nothing left, `ctrl+u` says `nothing to undo`.
+
+If a task changed since the action (edited, or archived from the CLI), undo refuses without changing anything and names it: `T12 changed since it was completed (archived); nothing undone`, adding the whole set for a marked action (`(T3, T4, T5)`). The refused step stays until the next save drops it; `ctrl+u` after that undoes the action before it and names that task. On an archived cursor, `ctrl+u` restores that task (`T12 unarchived`) unless the last action was an archive, which it undoes instead.
 
 Deleted tasks remain available through [trash commands](/docs/cli/#trash) for a limited time. They do not appear on the board.
 

@@ -2112,12 +2112,14 @@ import { parseCapture } from "./capture.js";
 
   function fileSelected() {
     const tasks = targetTasks();
+    if (!tasks.length) return;
+    // One undo step for the whole set: u right after brings it back.
+    rememberUndo(state, tasks);
     for (const task of tasks) task.archived = !task.archived;
     clearMarks();
     state.pendingDelete = null;
     state.message = "";
     state.peekId = null;
-    // The file verb has no undo entry: ctrl+u never brings it back.
   }
 
   function deleteSelected() {
@@ -2246,7 +2248,10 @@ import { parseCapture } from "./capture.js";
   }
 
   function previewFileSelected() {
-    for (const task of targetTasks(preview)) task.archived = !task.archived;
+    const tasks = targetTasks(preview);
+    if (!tasks.length) return;
+    rememberUndo(preview, tasks);
+    for (const task of tasks) task.archived = !task.archived;
     clearMarks(preview);
     preview.pendingDelete = null;
     preview.message = "";
