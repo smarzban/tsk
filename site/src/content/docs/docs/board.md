@@ -127,7 +127,7 @@ At **110 usable columns** or wider, use `→` / `l` and `←` / `h` to move thro
 | Task | Task details beside a narrow board rail |
 | Full screen | Task details only |
 
-Press `Enter` from the board to open a task full screen. `Esc` returns to the view you left. From task focus, `Esc` returns focus to the board beside it. On Projects Overview, the slider stops at Rail: it shows a live project board beside the index and never opens a full-screen task; `Enter` in that right column opens the task page inside the column.
+Press `Enter` from the board to open a task full screen. `Esc` returns to the view you left. The rail keeps the board's done drawer and archived fold state, so a done task opened from the drawer stays selected beside its page. From task focus, `Esc` returns focus to the board beside it. On Projects Overview, the slider stops at Rail: it shows a live project board beside the index and never opens a full-screen task; `Enter` in that right column opens the task page inside the column.
 
 Click a task on the full-width board to open its details alongside it, keeping board focus. Click inside the task column to focus it. Click a task in the rail to bring back the split board. While editing, arrows move the text cursor instead. On the projects tab, click the right preview to focus its live board, or click an index row from Rail to rebind it and return to Split.
 

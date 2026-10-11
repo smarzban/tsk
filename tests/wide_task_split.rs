@@ -706,7 +706,6 @@ fn rail_wraps_titles_with_indent_four_and_dims_every_cell() {
     }
     let rail_text = rail_rows.join("\n");
     assert!(!rail_text.contains("0s"), "rail drops the meta column");
-    assert!(!rail_text.contains("DONE"), "rail drops the done drawer");
     assert!(rail_text.contains(" IN MOTION ─"));
     assert!(rail_text.contains(" desk ─"));
     assert!(rail_text.contains("desk  ·  tsk"));
@@ -2868,5 +2867,104 @@ fn expanded_quick_add_draft_paints_at_wide_widths_and_esc_returns_to_the_line() 
     assert!(
         text.contains("buy milk"),
         "quick-add line should keep the title\n{text}"
+    );
+}
+
+/// #174 finding 4: the Task view rail keeps the board's drawer and archived fold state, and
+/// a done task opened from the drawer stays selected beside its page.
+#[test]
+fn rail_keeps_the_done_drawer_and_selects_the_open_done_task() {
+    let mut domain = DomainState::new();
+    let scope = || TaskScope::Project {
+        path: REPO.to_string(),
+    };
+    let started = domain
+        .create("Open work", None, scope(), ProvenanceOrigin::Manual, None)
+        .expect("create started");
+    domain
+        .set_status(started, HumanStatus::Started)
+        .expect("start");
+    let done = domain
+        .create("Shipped fix", None, scope(), ProvenanceOrigin::Manual, None)
+        .expect("create done");
+    domain.set_status(done, HumanStatus::Done).expect("finish");
+    let archived = domain
+        .create("Old shelf", None, scope(), ProvenanceOrigin::Manual, None)
+        .expect("create archived");
+    domain
+        .set_status(archived, HumanStatus::Done)
+        .expect("finish archived");
+    domain.archive_task(archived).expect("archive");
+    let mut tasks = domain.tasks().to_vec();
+    for (task, number) in tasks.iter_mut().zip([3, 4, 5]) {
+        task.number = Some(number);
+    }
+    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from(REPO)));
+
+    go(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer);
+    assert!(model.drawer_open());
+    for _ in 0..8 {
+        if model.selected_id() == Some(done) {
+            break;
+        }
+        press(&mut domain, &mut model, KeyCode::Down);
+    }
+    assert_eq!(model.selected_id(), Some(done), "drawer row selected");
+    press(&mut domain, &mut model, KeyCode::Enter);
+    assert_eq!(model.wide_stage(), WideStage::FullTask);
+    press(&mut domain, &mut model, KeyCode::Left);
+    assert_eq!(model.wide_stage(), WideStage::Rail);
+
+    let rail_text = |model: &BoardModel| {
+        let geometry = resolve_responsive(130, 24, WideStage::Rail);
+        let (rows, _) = render(model, 130, 24);
+        let (rule_y, _, _) = footer_rows(24);
+        (0..rule_y)
+            .map(|y| column_text(&rows, geometry.board, y))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let text = rail_text(&model);
+    assert!(text.contains("DONE"), "rail keeps the done drawer:\n{text}");
+    assert!(
+        text.lines()
+            .any(|row| row.starts_with("▸ ✓ T4 Shipped fix")),
+        "the open done task is selected on the rail:\n{text}"
+    );
+    assert!(
+        text.contains("archived · 1"),
+        "archived group heading:\n{text}"
+    );
+    assert!(
+        !text.contains("Old shelf"),
+        "archived group stays folded:\n{text}"
+    );
+
+    // Split and Rail share the fold state: unfold on Split, the rail shows the group open.
+    to_stage(&mut domain, &mut model, WideStage::Split);
+    go(&mut domain, &mut model, BoardIntent::ToggleArchivedGroup);
+    for _ in 0..8 {
+        if model.selected_id() == Some(done) {
+            break;
+        }
+        press(&mut domain, &mut model, KeyCode::Up);
+    }
+    assert_eq!(model.selected_id(), Some(done));
+    to_stage(&mut domain, &mut model, WideStage::Rail);
+    let text = rail_text(&model);
+    assert!(
+        text.contains("Old shelf"),
+        "unfolded archived group:\n{text}"
+    );
+
+    // Closing the drawer on the board drops it from the rail too.
+    to_stage(&mut domain, &mut model, WideStage::Split);
+    go(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer);
+    assert!(!model.drawer_open());
+    to_stage(&mut domain, &mut model, WideStage::Rail);
+    let text = rail_text(&model);
+    assert!(
+        !text.contains("DONE"),
+        "closed drawer stays closed:\n{text}"
     );
 }

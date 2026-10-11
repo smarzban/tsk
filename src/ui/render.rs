@@ -877,9 +877,9 @@ fn paint_project_preview_header(
     );
 }
 
-/// Paint the stage G rail: the board list at rail width, no meta column, no done drawer,
-/// wrapped titles with a four-cell continuation indent, and every cell dimmed. The selected
-/// row paints a selection arrow beside its status glyph, without reverse video. `geo` is a footer-less column
+/// Paint the stage G rail: the board list at rail width (the done drawer and archived fold
+/// as on the board), no meta column, wrapped titles with a four-cell continuation indent,
+/// and every cell dimmed. The selected row paints a selection arrow beside its status glyph, without reverse video. `geo` is a footer-less column
 /// geometry ([`crate::ui::tier::resolve_column`]); the shared footer paints separately.
 pub fn draw_rail_frame(
     frame: &mut Frame<'_>,
@@ -3942,11 +3942,6 @@ fn build_list_rows(
     }
 
     for (section_idx, section) in model.view.sections.iter().enumerate() {
-        // The rail drops the done drawer and its archived group: it is a navigation
-        // strip for open work.
-        if rail && matches!(section.kind, SectionKind::Done | SectionKind::Archived) {
-            continue;
-        }
         // Inbox and archived paint their own selectable headers, dim rows under them.
         if section.kind == SectionKind::Archived {
             out.push(ListRow::Blank);

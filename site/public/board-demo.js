@@ -2587,7 +2587,6 @@ import { parseCapture } from "./capture.js";
           return `<button type="button" class="tsk-group" data-archived-header="1"><span class="dim">${mark}</span> <span class="sec">${selected ? "<strong>archived</strong>" : "archived"}</span><span class="rule" aria-hidden="true"></span><span class="count dim">${row.count}</span></button>`;
         }
         const task = row.task;
-        if (rail && task.status === "done") return "";
         const selected = task.id === state.selectedId;
         const marked = state.markedIds.has(task.id);
         const rowMark = selected
