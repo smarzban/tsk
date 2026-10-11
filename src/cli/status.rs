@@ -404,7 +404,7 @@ struct Closing {
 
 impl Closing {
     fn before(task: &crate::domain::Task, actor: &str) -> Option<Self> {
-        (actor == OWNER && task.block.is_some() && task.dispatch.is_some()).then(|| Self {
+        (actor == OWNER && task.block.is_some() && task.dispatch.is_some()).then_some(Self {
             closed_before: task.past_blocks.len(),
         })
     }
@@ -423,7 +423,9 @@ impl Closing {
         let task = state.tasks().iter().find(|task| target.matches(task))?;
         let closed_now = task.past_blocks.len() == self.closed_before + 1
             && task.past_blocks.last()?.closed_by.as_deref() == Some(OWNER);
-        let message = closed_now.then(|| dispatch::closing_message(task)).flatten()?;
+        let message = closed_now
+            .then(|| dispatch::closing_message(task))
+            .flatten()?;
         if task.status == HumanStatus::Ready && message.entries == 0 {
             return None;
         }

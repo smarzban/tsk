@@ -3196,7 +3196,11 @@ fn numbered_entries(entries: &[&str]) -> Option<String> {
 
 /// The message a send-back delivers: the round's feedback entries, then its failed checks.
 pub fn send_back_text(feedback: &[&str], failed: &[&str]) -> Option<String> {
-    let numbered = feedback.iter().filter(|entry| !entry.trim().is_empty()).count() > 1;
+    let numbered = feedback
+        .iter()
+        .filter(|entry| !entry.trim().is_empty())
+        .count()
+        > 1;
     let feedback = numbered_entries(feedback);
     let failed = (!failed.is_empty()).then(|| format!("Failed checks: {}", failed.join("; ")));
     match (feedback, failed) {

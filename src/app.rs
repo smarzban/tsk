@@ -3477,7 +3477,10 @@ fn deliver_closed_records(
                 .past_blocks
                 .last()
                 .is_some_and(|record| record.closed_by.as_deref() == Some(crate::domain::OWNER));
-        let Some(message) = closed_now.then(|| dispatch::closing_message(task)).flatten() else {
+        let Some(message) = closed_now
+            .then(|| dispatch::closing_message(task))
+            .flatten()
+        else {
             continue;
         };
         if task.status == HumanStatus::Ready && message.entries == 0 {
@@ -4602,13 +4605,7 @@ fn handle_board_intent_with_host(
                             model.set_message(dispatch::no_launch_message(reason));
                         }
                         (Some(_), _) if !save_recovery.is_pending() => {
-                            deliver_reply_after_start(
-                                domain,
-                                model,
-                                target,
-                                &resumed_check,
-                                host,
-                            );
+                            deliver_reply_after_start(domain, model, target, &resumed_check, host);
                         }
                         _ => {}
                     }
@@ -11173,7 +11170,10 @@ mod quick_assign_tests {
                 "[tsk T1 unblocked] 1. sqlite?\n2. postgres".to_string()
             )]
         );
-        assert_eq!(model.message(), Some("started · 2 replies sent to @builder"));
+        assert_eq!(
+            model.message(),
+            Some("started · 2 replies sent to @builder")
+        );
     }
 
     /// `ctrl+b` returns a blocked task to ready and sends its running agent the block's
@@ -12578,7 +12578,9 @@ mod quick_assign_tests {
         temp.store.reload_merge_save(&mut domain).expect("save");
         domain.delete_reply(ids[0], dropped).expect("delete");
         temp.store.reload_merge_save(&mut domain).expect("save");
-        domain.reply(ids[0], "agent aside", "builder").expect("agent");
+        domain
+            .reply(ids[0], "agent aside", "builder")
+            .expect("agent");
         temp.store.reload_merge_save(&mut domain).expect("save");
         model.sync_from_domain(&domain);
         let mut host = fake_host(&temp);
