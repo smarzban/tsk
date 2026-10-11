@@ -15,8 +15,8 @@ use tsk_tui::ui::board::{
 };
 use tsk_tui::ui::capture::CaptureField;
 use tsk_tui::ui::input::{
-    map_capture_key, map_key, map_task_form_key, normal_help_bindings, BoardIntent, CaptureIntent,
-    MarkDirection,
+    map_capture_key, map_capture_key_state, map_key, map_task_form_key, normal_help_bindings,
+    BoardIntent, CaptureIntent, MarkDirection,
 };
 use tsk_tui::ui::mouse::BoardPopup;
 use tsk_tui::ui::queue::SectionKind;
@@ -5618,4 +5618,143 @@ fn shift_enter_on_add_keeps_a_dirty_title() {
     let texts: Vec<&str> = task.steps.iter().map(|step| step.text.as_str()).collect();
     assert_eq!(texts, vec!["alpha", "bravo"]);
     assert!(!model.task_editing());
+}
+
+/// GitHub #178: Windows reports AltGr as Ctrl+Alt, so a German layout's `AltGr+8` arrives as
+/// `[` with both modifiers. Every text field must insert it.
+#[test]
+fn altgr_characters_insert_in_every_text_field() {
+    for character in ['[', ']', '{', '}', '@', '\\', '|', '~', '€'] {
+        let altgr = ctrl_alt(KeyCode::Char(character));
+        let altgr_shift = KeyEvent::new(
+            KeyCode::Char(character),
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        );
+        for key in [altgr, altgr_shift] {
+            for (mode, expected) in [
+                (
+                    BoardInputMode::QuickAdd,
+                    BoardIntent::QuickAddInsert(character),
+                ),
+                (
+                    BoardInputMode::EditTitle,
+                    BoardIntent::EditInsert(character),
+                ),
+                (
+                    BoardInputMode::EditNotes,
+                    BoardIntent::EditInsert(character),
+                ),
+                (
+                    BoardInputMode::EditThread,
+                    BoardIntent::EditInsert(character),
+                ),
+                (BoardInputMode::EditStep, BoardIntent::EditInsert(character)),
+                (
+                    BoardInputMode::Search,
+                    BoardIntent::SearchQueryInsert(character),
+                ),
+                (
+                    BoardInputMode::Palette,
+                    BoardIntent::CommandQueryInsert(character),
+                ),
+                (
+                    BoardInputMode::Help,
+                    BoardIntent::HelpQueryInsert(character),
+                ),
+                (
+                    BoardInputMode::ListPicker,
+                    BoardIntent::ListPickerQueryInsert(character),
+                ),
+            ] {
+                assert_eq!(
+                    map_key(mode, key),
+                    Some(expected),
+                    "{mode:?} must insert {character:?} typed as {:?}",
+                    key.modifiers
+                );
+            }
+            for field in [
+                CaptureField::Title,
+                CaptureField::Notes,
+                CaptureField::Thread,
+            ] {
+                assert_eq!(
+                    map_task_form_key(field, false, key),
+                    Some(BoardIntent::EditInsert(character)),
+                    "task form {field:?} must insert {character:?}"
+                );
+                assert_eq!(
+                    map_capture_key(field, key),
+                    Some(CaptureIntent::Insert(character)),
+                    "capture {field:?} must insert {character:?}"
+                );
+            }
+            assert_eq!(
+                map_capture_key_state(CaptureField::Scope, true, false, key),
+                Some(CaptureIntent::Insert(character)),
+                "the capture path editor must insert {character:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn altgr_insertion_leaves_ctrl_alt_and_super_chords_alone() {
+    let bracket = KeyCode::Char('[');
+    let ctrl_alt_super = KeyEvent::new(
+        bracket,
+        KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+    );
+    for mode in [
+        BoardInputMode::QuickAdd,
+        BoardInputMode::EditTitle,
+        BoardInputMode::EditNotes,
+        BoardInputMode::EditThread,
+        BoardInputMode::EditStep,
+        BoardInputMode::Search,
+        BoardInputMode::Palette,
+        BoardInputMode::Help,
+        BoardInputMode::ListPicker,
+    ] {
+        for key in [ctrl(bracket), alt(bracket), ctrl_alt_super] {
+            assert_eq!(
+                map_key(mode, key),
+                None,
+                "{mode:?} must not insert '[' typed as {:?}",
+                key.modifiers
+            );
+        }
+    }
+    // Scope rows are not text: an AltGr character neither inserts nor cycles them.
+    assert_eq!(map_key(BoardInputMode::EditScope, ctrl_alt(bracket)), None);
+    assert_eq!(
+        map_key(BoardInputMode::EditScope, ctrl_alt(KeyCode::Char(' '))),
+        None
+    );
+    assert_eq!(
+        map_capture_key(CaptureField::Scope, ctrl_alt(bracket)),
+        None
+    );
+    // Views without a text cursor stay inert.
+    for mode in [
+        BoardInputMode::Normal,
+        BoardInputMode::TaskPage,
+        BoardInputMode::CapturePage,
+        BoardInputMode::SelectThread,
+    ] {
+        assert_eq!(map_key(mode, ctrl_alt(bracket)), None, "{mode:?}");
+    }
+    // The chord tables still run first, so bound Ctrl chords keep their meaning.
+    assert_eq!(
+        map_key(BoardInputMode::QuickAdd, ctrl(KeyCode::Char('a'))),
+        Some(BoardIntent::QuickAddMoveLineStart)
+    );
+    assert_eq!(
+        map_key(BoardInputMode::EditTitle, ctrl(KeyCode::Char('e'))),
+        Some(BoardIntent::EditMoveLineEnd)
+    );
+    assert_eq!(
+        map_key(BoardInputMode::EditNotes, ctrl(KeyCode::Char('c'))),
+        Some(BoardIntent::CancelEdit)
+    );
 }
