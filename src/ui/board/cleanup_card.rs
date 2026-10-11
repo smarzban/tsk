@@ -2,14 +2,10 @@
 //! the card inspected. The painter, the keys and the mouse all read the same option list, so
 //! a line on the card is exactly what its key does.
 
-use std::time::{Duration, Instant};
-
 use super::model::{CleanupPrompt, CleanupRow};
+use super::selector::{CardChoice, CardOption, OptionCard, OptionSelector};
 use crate::agents::MergeMethod;
 use crate::dispatch::pr::{self, MergeRefusal, PrLookupError, PrState};
-
-/// An `Enter` this soon after the card opened is the tail of the keypress that opened it.
-pub const CLEANUP_ENTER_GUARD: Duration = Duration::from_millis(300);
 
 /// Past this many tasks an option line counts them instead of naming each one.
 const NAMED_TASKS: usize = 6;
@@ -25,8 +21,8 @@ pub enum CleanupChoice {
     Keep,
 }
 
-impl CleanupChoice {
-    pub fn key(self) -> &'static str {
+impl CardChoice for CleanupChoice {
+    fn key(self) -> &'static str {
         match self {
             Self::Merge => "m",
             Self::Clean => "y",
@@ -34,7 +30,7 @@ impl CleanupChoice {
         }
     }
 
-    pub fn intent(self) -> crate::ui::input::BoardIntent {
+    fn intent(self) -> crate::ui::input::BoardIntent {
         use crate::ui::input::BoardIntent;
         match self {
             Self::Merge => BoardIntent::MergeCleanup,
@@ -46,12 +42,7 @@ impl CleanupChoice {
 
 /// One option line: its key, what it does to the PR or branch and then locally, and whether
 /// it is the card's likely choice (bold).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CleanupOption {
-    pub choice: CleanupChoice,
-    pub text: String,
-    pub bold: bool,
-}
+pub type CleanupOption = CardOption<CleanupChoice>;
 
 /// Where one card row stands, which decides its verdict and which options touch it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -298,7 +289,7 @@ pub fn merge_verb(method: MergeMethod) -> &'static str {
 }
 
 /// `a`, `a and b`, `a, b and c`.
-fn and_list(items: &[String]) -> String {
+pub(super) fn and_list(items: &[String]) -> String {
     match items {
         [] => String::new(),
         [one] => one.clone(),
@@ -307,7 +298,7 @@ fn and_list(items: &[String]) -> String {
 }
 
 /// The tasks a line touches: named, or counted past [`NAMED_TASKS`].
-fn tasks(names: &[String]) -> String {
+pub(super) fn tasks(names: &[String]) -> String {
     if names.len() > NAMED_TASKS {
         format!("{} tasks", names.len())
     } else {
@@ -594,10 +585,30 @@ impl CleanupPrompt {
         });
         options
     }
+}
 
-    /// Whether `choice`'s key acts now. While a lookup still runs the card shows no option,
-    /// yet `y` and `n` work as before it landed.
-    pub fn accepts(&self, choice: CleanupChoice) -> bool {
+impl OptionCard for CleanupPrompt {
+    type Choice = CleanupChoice;
+
+    fn options(&self) -> Vec<CleanupOption> {
+        CleanupPrompt::options(self)
+    }
+
+    fn selector(&self) -> &OptionSelector<CleanupChoice> {
+        &self.selector
+    }
+
+    fn selector_mut(&mut self) -> &mut OptionSelector<CleanupChoice> {
+        &mut self.selector
+    }
+
+    fn scroll_follow(&mut self) -> (&mut usize, &mut bool) {
+        (&mut self.scroll, &mut self.follow)
+    }
+
+    /// While a lookup still runs the card shows no option, yet `y` and `n` work as before it
+    /// landed.
+    fn accepts(&self, choice: CleanupChoice) -> bool {
         if self.merging() || self.settled.is_some() {
             return false;
         }
@@ -610,60 +621,5 @@ impl CleanupPrompt {
             };
         }
         options.iter().any(|option| option.choice == choice)
-    }
-
-    /// The option under the cursor: the chosen one while it is still offered, else the bold
-    /// one, else the first.
-    pub fn selected_index(&self, options: &[CleanupOption]) -> Option<usize> {
-        self.selected
-            .and_then(|choice| options.iter().position(|option| option.choice == choice))
-            .or_else(|| options.iter().position(|option| option.bold))
-            .or(if options.is_empty() { None } else { Some(0) })
-    }
-
-    /// Move the cursor one option up or down, stopping at the ends.
-    pub fn step_selection(&mut self, down: bool) -> Option<usize> {
-        let options = self.options();
-        let index = self.selected_index(&options)?;
-        let next = if down {
-            (index + 1).min(options.len() - 1)
-        } else {
-            index.saturating_sub(1)
-        };
-        self.selected = Some(options[next].choice);
-        Some(next)
-    }
-
-    /// `Enter`: the selected option, unless it lands within [`CLEANUP_ENTER_GUARD`] of the
-    /// card opening.
-    pub fn enter_choice(&self, now: Instant) -> Option<CleanupChoice> {
-        if now.duration_since(self.opened_at) < CLEANUP_ENTER_GUARD {
-            return None;
-        }
-        let options = self.options();
-        self.selected_index(&options)
-            .map(|index| options[index].choice)
-    }
-
-    /// A click on option `index`: the first selects it, a second on the same option within
-    /// `window` runs it.
-    pub fn click_option(
-        &mut self,
-        index: usize,
-        now: Instant,
-        window: Duration,
-    ) -> Option<CleanupChoice> {
-        let choice = self.options().get(index)?.choice;
-        let double = self
-            .option_click
-            .is_some_and(|(at, last)| last == choice && now.duration_since(at) <= window);
-        self.selected = Some(choice);
-        if double {
-            self.option_click = None;
-            Some(choice)
-        } else {
-            self.option_click = Some((now, choice));
-            None
-        }
     }
 }

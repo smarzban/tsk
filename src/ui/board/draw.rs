@@ -22,12 +22,13 @@ use crate::ui::{present_line, terminal_text};
 
 use super::chrome::{notice_framed, row_width, BULK_DELETE_NOTICE_UNDO, DELETE_NOTICE_UNDO};
 use super::commands::CommandSurface;
+use super::launch_card::LaunchPrompt;
 use super::model::{
     project_option_label, project_scope_option_label, BoardForm, BoardInputMode, BoardLocation,
     BoardModel, CleanupPrompt, CleanupRow, CleanupRowState, CleanupRun, DispatchPrompt, PickerTab,
     ProjectScopeOption, ProjectsView, RelaunchPrompt, StartAnywayPrompt,
 };
-use crate::ui::render::{CleanupCardLine, CleanupFooter, CleanupTitle};
+use crate::ui::render::{CleanupCardLine, CleanupTitle};
 
 fn home_dir() -> Option<String> {
     std::env::var("HOME").ok().filter(|home| !home.is_empty())
@@ -161,17 +162,8 @@ pub(crate) fn cleanup_overlay<'a>(prompt: &CleanupPrompt, home: Option<&str>) ->
     }
     let options = prompt.options();
     if !options.is_empty() {
-        let selected = prompt.selected_index(&options);
         lines.push(CleanupCardLine::Blank);
-        for (index, option) in options.iter().enumerate() {
-            lines.push(CleanupCardLine::Option {
-                index,
-                key: option.choice.key(),
-                text: option.text.clone(),
-                bold: option.bold,
-                selected: selected == Some(index),
-            });
-        }
+        lines.extend(prompt.selector.lines(&options));
     }
     if let (None, Some(row), None) = (&prompt.bulk, prompt.rows.first(), &prompt.settled) {
         lines.push(CleanupCardLine::Blank);
@@ -199,7 +191,6 @@ pub(crate) fn cleanup_overlay<'a>(prompt: &CleanupPrompt, home: Option<&str>) ->
     QueueOverlay::CleanupConfirm {
         title: plain_title(title),
         lines,
-        footer: CleanupFooter::Options,
         scroll: prompt.scroll,
         follow: prompt.follow,
     }
@@ -279,7 +270,6 @@ pub(crate) fn cleanup_run_overlay<'a>(
     QueueOverlay::CleanupConfirm {
         title: plain_title(title),
         lines,
-        footer: CleanupFooter::Options,
         scroll: prompt.scroll,
         follow: false,
     }
@@ -342,17 +332,18 @@ fn block_card_overlay<'a>(
     })
 }
 
-/// The bulk dispatch card: one row per task `y` launches (assignee and base), then the skipped
-/// tasks with the single-task refusal. `default_branch` names a repository's remote default.
+/// The bulk start card: one row per task `y` launches (assignee and base), then the start-only
+/// and skipped tasks, then its one option and the way out. `default_branch` names a
+/// repository's remote default.
 pub(crate) fn dispatch_overlay<'a>(
     prompt: &DispatchPrompt,
     default_branch: impl Fn(&Path) -> String,
 ) -> QueueOverlay<'a> {
     if let Some(relaunch) = &prompt.relaunch {
-        return relaunch_overlay(relaunch, prompt.scroll);
+        return relaunch_overlay(prompt, relaunch);
     }
     if let Some(start) = &prompt.start_anyway {
-        return start_anyway_overlay(start, prompt.scroll);
+        return start_anyway_overlay(prompt, start);
     }
     let count = prompt.launch.len();
     let noun = if count == 1 { "task" } else { "tasks" };
@@ -393,6 +384,9 @@ pub(crate) fn dispatch_overlay<'a>(
         });
     }
     if !prompt.start_only.is_empty() {
+        if !lines.is_empty() {
+            lines.push(CleanupCardLine::Blank);
+        }
         lines.push(CleanupCardLine::Text("start only".into()));
         for (identifier, id) in &prompt.start_only {
             let value =
@@ -410,6 +404,9 @@ pub(crate) fn dispatch_overlay<'a>(
         }
     }
     if !prompt.skipped.is_empty() {
+        if !lines.is_empty() {
+            lines.push(CleanupCardLine::Blank);
+        }
         lines.push(CleanupCardLine::Text("not started".into()));
         for (identifier, reason) in &prompt.skipped {
             lines.push(CleanupCardLine::Field {
@@ -418,61 +415,101 @@ pub(crate) fn dispatch_overlay<'a>(
             });
         }
     }
+    start_card(prompt, title, lines, Vec::new())
+}
+
+/// A start card's body, then its options, then `trailer` (fields such as the worktree), then
+/// the dim `esc cancel` line, one blank line between sections.
+fn start_card<'a>(
+    prompt: &DispatchPrompt,
+    title: CleanupTitle,
+    mut lines: Vec<CleanupCardLine>,
+    trailer: Vec<CleanupCardLine>,
+) -> QueueOverlay<'a> {
+    let options = prompt.options();
+    if !options.is_empty() {
+        if !lines.is_empty() {
+            lines.push(CleanupCardLine::Blank);
+        }
+        lines.extend(prompt.selector.lines(&options));
+    }
+    if !trailer.is_empty() {
+        lines.push(CleanupCardLine::Blank);
+        lines.extend(trailer);
+    }
+    lines.push(CleanupCardLine::Blank);
+    lines.push(CleanupCardLine::Esc("esc cancel".into()));
     QueueOverlay::CleanupConfirm {
         title,
         lines,
-        footer: CleanupFooter::Dispatch(count),
         scroll: prompt.scroll,
-        follow: false,
+        follow: prompt.follow,
+    }
+}
+
+/// The launch card: the board opened in an archived project's directory. No title: the one
+/// body line asks the question, then the two options and the way out (`esc` keeps it archived).
+fn launch_overlay<'a>(prompt: &LaunchPrompt) -> QueueOverlay<'a> {
+    let name = prompt.name();
+    let mut lines = vec![
+        CleanupCardLine::Text(format!(
+            "project {name} is archived, would you like to unarchive it?"
+        )),
+        CleanupCardLine::Blank,
+    ];
+    lines.extend(prompt.selector.lines(&prompt.options()));
+    lines.push(CleanupCardLine::Blank);
+    lines.push(CleanupCardLine::Esc("esc keep archived".into()));
+    QueueOverlay::CleanupConfirm {
+        title: CleanupTitle {
+            full: String::new(),
+            short: String::new(),
+            bare: String::new(),
+            question: String::new(),
+        },
+        lines,
+        scroll: prompt.scroll,
+        follow: prompt.follow,
     }
 }
 
 /// The start-anyway card: `T203 runs after T202 (started).` per waiting target.
-fn start_anyway_overlay<'a>(prompt: &StartAnywayPrompt, scroll: usize) -> QueueOverlay<'a> {
+fn start_anyway_overlay<'a>(
+    prompt: &DispatchPrompt,
+    start: &StartAnywayPrompt,
+) -> QueueOverlay<'a> {
     let title = CleanupTitle {
         full: "Start anyway?".into(),
         short: "Start anyway?".into(),
         bare: "Start".into(),
         question: "Start anyway?".into(),
     };
-    let lines = prompt
+    let lines = start
         .waiting
         .iter()
         .map(|line| CleanupCardLine::Text(format!("{line}.")))
         .collect();
-    QueueOverlay::CleanupConfirm {
-        title,
-        lines,
-        footer: CleanupFooter::StartAnyway,
-        scroll,
-        follow: false,
-    }
+    start_card(prompt, title, lines, Vec::new())
 }
 
 /// The relaunch card: one cursor task whose dispatched agent is gone.
-fn relaunch_overlay<'a>(prompt: &RelaunchPrompt, scroll: usize) -> QueueOverlay<'a> {
-    let number = prompt.number;
-    let assignee = &prompt.assignee;
+fn relaunch_overlay<'a>(prompt: &DispatchPrompt, relaunch: &RelaunchPrompt) -> QueueOverlay<'a> {
+    let number = relaunch.number;
+    let assignee = &relaunch.assignee;
     let title = CleanupTitle {
         full: format!("T{number} · relaunch @{assignee}?"),
         short: format!("Relaunch @{assignee}?"),
         bare: format!("T{number}"),
         question: format!("Relaunch @{assignee}?"),
     };
-    let lines = vec![
-        CleanupCardLine::Text(format!("@{assignee} is no longer running.")),
-        CleanupCardLine::Field {
-            label: "worktree".into(),
-            value: prompt.worktree.clone(),
-        },
-    ];
-    QueueOverlay::CleanupConfirm {
-        title,
-        lines,
-        footer: CleanupFooter::Relaunch,
-        scroll,
-        follow: false,
-    }
+    let lines = vec![CleanupCardLine::Text(format!(
+        "@{assignee} is no longer running."
+    ))];
+    let worktree = vec![CleanupCardLine::Field {
+        label: "worktree".into(),
+        value: relaunch.worktree.clone(),
+    }];
+    start_card(prompt, title, lines, worktree)
 }
 
 /// Verb bar for the base board list.
@@ -2059,7 +2096,6 @@ struct OverlayPayloads {
     list_picker_query: Option<String>,
     list_picker_selected: usize,
     scope_tabs: Option<render::PickerTabsPaint>,
-    launch_card_name: Option<String>,
     scope_selected: usize,
 }
 
@@ -2163,13 +2199,6 @@ impl OverlayPayloads {
                 })
                 .unwrap_or(0)
         };
-        let launch_card_name = model.launch_card.as_deref().map(|path| {
-            Path::new(path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or(&path.to_string_lossy())
-                .to_string()
-        });
         let scope_tabs = model
             .picker_tab()
             .map(|tab| render::PickerTabsPaint::Project {
@@ -2185,7 +2214,6 @@ impl OverlayPayloads {
             list_picker_selected,
             scope_selected,
             scope_tabs,
-            launch_card_name,
         }
     }
 
@@ -2296,8 +2324,8 @@ impl OverlayPayloads {
                 model.default_branch_name(project)
             }));
         }
-        if let Some(name) = self.launch_card_name.as_deref() {
-            return Some(QueueOverlay::LaunchCard { name });
+        if let Some(prompt) = model.launch_card.as_ref() {
+            return Some(launch_overlay(prompt));
         }
         if model.input_mode() == BoardInputMode::ListPicker {
             let title = match model.list_picker_kind() {

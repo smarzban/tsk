@@ -337,15 +337,15 @@ pub enum BoardIntent {
     CancelDispatch,
     /// Relaunch card `n`: start the task without relaunching its agent.
     StartWithoutRelaunch,
-    /// Scroll a cleanup card whose rows outgrow the frame.
+    /// Scroll a decision card (cleanup or start) whose rows outgrow the frame.
     CleanupScrollUp,
     CleanupScrollDown,
-    /// Cleanup card `↑`/`↓`: move the option cursor, stopping at the ends.
+    /// Decision card `↑`/`↓`: move the option cursor, stopping at the ends.
     CleanupSelectUp,
     CleanupSelectDown,
-    /// Cleanup card `Enter`: run the option under the cursor.
+    /// Decision card `Enter`: run the option under the cursor.
     CleanupRunSelected,
-    /// A click on a cleanup card's option line (its index): select it, or run it on a double
+    /// A click on a decision card's option line (its index): select it, or run it on a double
     /// click.
     CleanupClickOption(usize),
     /// `ctrl+b` — block with the block card, or unblock a blocked task to ready.
@@ -2352,16 +2352,9 @@ fn map_cleanup_confirm(key: KeyEvent) -> Option<BoardIntent> {
     }
 }
 
-fn map_cleanup_scroll(code: KeyCode) -> Option<BoardIntent> {
-    match code {
-        KeyCode::Up | KeyCode::PageUp => Some(BoardIntent::CleanupScrollUp),
-        KeyCode::Down | KeyCode::PageDown => Some(BoardIntent::CleanupScrollDown),
-        _ => None,
-    }
-}
-
-/// Start card: `y` launches (or relaunches), `n` on the relaunch card only starts, `Esc`
-/// cancels. No `Enter` default.
+/// Start cards (relaunch, start anyway, the bulk start card): `y` launches (or relaunches, or
+/// starts anyway), `n` on the relaunch card only starts, `↑`/`↓` move the option cursor and
+/// `Enter` runs it, page keys scroll, `Esc` cancels. Which keys act is the card's to say.
 fn map_dispatch_confirm(key: KeyEvent) -> Option<BoardIntent> {
     if key
         .modifiers
@@ -2373,7 +2366,12 @@ fn map_dispatch_confirm(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Char('y') => Some(BoardIntent::ConfirmDispatch),
         KeyCode::Char('n') => Some(BoardIntent::StartWithoutRelaunch),
         KeyCode::Esc => Some(BoardIntent::CancelDispatch),
-        code => map_cleanup_scroll(code),
+        KeyCode::Up => Some(BoardIntent::CleanupSelectUp),
+        KeyCode::Down => Some(BoardIntent::CleanupSelectDown),
+        KeyCode::Enter => Some(BoardIntent::CleanupRunSelected),
+        KeyCode::PageUp => Some(BoardIntent::CleanupScrollUp),
+        KeyCode::PageDown => Some(BoardIntent::CleanupScrollDown),
+        _ => None,
     }
 }
 
@@ -2391,6 +2389,11 @@ fn map_launch_card(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Char('?') => Some(BoardIntent::OpenHelp),
         KeyCode::Char('y') => Some(BoardIntent::LaunchUnarchive),
         KeyCode::Char('n') | KeyCode::Esc => Some(BoardIntent::LaunchKeepArchived),
+        KeyCode::Up => Some(BoardIntent::CleanupSelectUp),
+        KeyCode::Down => Some(BoardIntent::CleanupSelectDown),
+        KeyCode::Enter => Some(BoardIntent::CleanupRunSelected),
+        KeyCode::PageUp => Some(BoardIntent::CleanupScrollUp),
+        KeyCode::PageDown => Some(BoardIntent::CleanupScrollDown),
         _ => None,
     }
 }

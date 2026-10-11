@@ -17,7 +17,7 @@ use tsk_tui::domain::{Dispatch, DomainState};
 use tsk_tui::ui::board::{
     apply_intent, board_hit_map, draw_board, BoardModel, BulkCleanup, CleanupChoice, CleanupPr,
     CleanupPrompt, CleanupRow, CleanupRowState, CleanupRun, CleanupRunRow, MergedPr,
-    CLEANUP_ENTER_GUARD, ROW_DOUBLE_CLICK_WINDOW,
+    CARD_ENTER_GUARD, ROW_DOUBLE_CLICK_WINDOW,
 };
 use tsk_tui::ui::input::BoardIntent;
 use tsk_tui::ui::mouse::map_board_mouse;
@@ -755,27 +755,49 @@ fn every_row_of_an_option_line_is_its_target_and_the_esc_line_cancels() {
 fn a_single_click_selects_a_double_click_runs_and_two_lines_run_neither() {
     let mut model = single(open_pr(7, 193));
     let prompt = model.cleanup_prompt_mut().unwrap();
+    let options = prompt.options();
     let now = Instant::now();
-    assert_eq!(prompt.click_option(1, now, ROW_DOUBLE_CLICK_WINDOW), None);
     assert_eq!(
-        prompt.selected,
+        prompt
+            .selector
+            .click(&options, 1, now, ROW_DOUBLE_CLICK_WINDOW),
+        None
+    );
+    assert_eq!(
+        prompt.selector.selected,
         Some(CleanupChoice::Clean),
         "selected, not run"
     );
     assert_eq!(
-        prompt.click_option(1, now + Duration::from_millis(100), ROW_DOUBLE_CLICK_WINDOW),
+        prompt.selector.click(
+            &options,
+            1,
+            now + Duration::from_millis(100),
+            ROW_DOUBLE_CLICK_WINDOW
+        ),
         Some(CleanupChoice::Clean)
     );
     // A double click across two lines: each click only selects.
-    assert_eq!(prompt.click_option(0, now, ROW_DOUBLE_CLICK_WINDOW), None);
     assert_eq!(
-        prompt.click_option(2, now + Duration::from_millis(100), ROW_DOUBLE_CLICK_WINDOW),
+        prompt
+            .selector
+            .click(&options, 0, now, ROW_DOUBLE_CLICK_WINDOW),
         None
     );
-    assert_eq!(prompt.selected, Some(CleanupChoice::Keep));
+    assert_eq!(
+        prompt.selector.click(
+            &options,
+            2,
+            now + Duration::from_millis(100),
+            ROW_DOUBLE_CLICK_WINDOW
+        ),
+        None
+    );
+    assert_eq!(prompt.selector.selected, Some(CleanupChoice::Keep));
     // Too slow is two single clicks.
     assert_eq!(
-        prompt.click_option(
+        prompt.selector.click(
+            &options,
             2,
             now + ROW_DOUBLE_CLICK_WINDOW * 3,
             ROW_DOUBLE_CLICK_WINDOW
@@ -790,7 +812,7 @@ fn arrows_move_the_cursor_and_stop_at_the_ends() {
     let mut model = single(open_pr(7, 193));
     let selected = |model: &BoardModel| {
         let prompt = model.cleanup_prompt().unwrap();
-        prompt.selected_index(&prompt.options())
+        prompt.selector.selected_index(&prompt.options())
     };
     assert_eq!(selected(&model), Some(0), "starts on the bold `m`");
     let mut step = |model: &mut BoardModel, intent| {
@@ -805,11 +827,17 @@ fn arrows_move_the_cursor_and_stop_at_the_ends() {
     assert!(body(&model, 110, 40).contains("▸ n"), "the cursor moved");
     let prompt = model.cleanup_prompt().unwrap();
     assert_eq!(
-        prompt.enter_choice(prompt.opened_at + CLEANUP_ENTER_GUARD),
+        prompt.selector.enter(
+            &prompt.options(),
+            prompt.selector.opened_at + CARD_ENTER_GUARD
+        ),
         Some(CleanupChoice::Keep)
     );
     assert_eq!(
-        prompt.enter_choice(prompt.opened_at + CLEANUP_ENTER_GUARD / 2),
+        prompt.selector.enter(
+            &prompt.options(),
+            prompt.selector.opened_at + CARD_ENTER_GUARD / 2
+        ),
         None,
         "an Enter right after the card opened is ignored"
     );

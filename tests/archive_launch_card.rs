@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
@@ -329,7 +329,8 @@ fn n_esc_or_click_keep_archived_defaults_quick_add_to_desk_with_a_status_line() 
         "esc closes the card"
     );
 
-    // A click on `keep archived` does the same on a fresh card.
+    // A double click on the `keep archived` line does the same on a fresh card; a single
+    // click only selects it.
     let (_store3, mut state3, mut model3, dir3) = setup(true);
     let hits = tsk_tui::ui::board::board_hit_map(
         ratatui::layout::Rect::new(0, 0, STANDARD.0, STANDARD.1),
@@ -338,10 +339,17 @@ fn n_esc_or_click_keep_archived_defaults_quick_add_to_desk_with_a_status_line() 
     let hit = hits
         .regions
         .iter()
-        .find(|hit| matches!(hit.target, QueueHitTarget::LaunchOption(1)))
+        .find(|hit| matches!(hit.target, QueueHitTarget::CleanupOption(1)))
         .expect("the keep-archived option paints a hit region");
     let intent = map_board_mouse(&model3, &hits, left_click(hit.area.x, hit.area.y))
         .expect("the option click maps");
+    assert_eq!(intent, BoardIntent::CleanupClickOption(1));
+    let now = Instant::now();
+    assert_eq!(model3.resolve_card_choice(intent.clone(), now), None);
+    assert_eq!(model3.input_mode(), BoardInputMode::LaunchCard);
+    let intent = model3
+        .resolve_card_choice(intent, now + Duration::from_millis(100))
+        .expect("a double click runs it");
     assert_eq!(intent, BoardIntent::LaunchKeepArchived);
     let _ = apply_intent(&mut state3, &mut model3, intent, None).expect("click keeps");
     assert_eq!(model3.input_mode(), BoardInputMode::Normal);
@@ -416,76 +424,76 @@ fn keep_archived_persists_nothing() {
 }
 
 #[test]
-fn launch_card_is_one_message_line_with_choices_in_the_footer() {
-    let (_store, _state, model, dir) = setup(true);
+fn launch_card_asks_on_one_line_then_lists_its_options_with_the_cursor_on_keep() {
+    let (_store, mut state, mut model, dir) = setup(true);
     assert_eq!(model.input_mode(), BoardInputMode::LaunchCard);
-    let rows = board_rows(&model, STANDARD.0, STANDARD.1);
-    let frame = rows.join("\n");
+    for width in [40u16, 78, 110] {
+        let rows = board_rows(&model, width, STANDARD.1);
+        let frame = rows.join("\n");
+        let flat = frame
+            .replace('│', " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        // The question, wrapped as it needs, and nothing in the top border.
+        assert!(
+            flat.contains("project proj is archived, would you like to unarchive it?"),
+            "the card body asks the question:\n{frame}"
+        );
+        let top = rows
+            .iter()
+            .find(|row| row.contains("┌") && row.contains("[x]"))
+            .expect("card top border");
+        assert!(
+            !top.trim().contains("┌─ "),
+            "no title in the border:\n{top}"
+        );
+        // One line per option, starting with its key; the cursor on the safe `n`.
+        assert!(flat.contains("y unarchive proj"), "the `y` option:\n{frame}");
+        assert!(
+            flat.contains("▸ n keep proj archived"),
+            "the cursor starts on `n`:\n{frame}"
+        );
+        assert!(flat.contains("esc keep archived"), "the way out:\n{frame}");
+        assert!(
+            !frame.contains("y unarchive · n keep archived"),
+            "no footer key list:\n{frame}"
+        );
+    }
 
-    // The body is one message line, the whole question on it.
-    assert!(
-        frame.contains("project proj is archived, would you like to unarchive it?"),
-        "the card body asks the question on one line:\n{frame}"
+    // `↑` moves the cursor to `y` and stops there; `Enter` past the guard runs it.
+    for _ in 0..2 {
+        apply_intent(&mut state, &mut model, BoardIntent::CleanupSelectUp, None).expect("up");
+    }
+    let flat = board_rows(&model, 110, STANDARD.1).join(" ");
+    assert!(flat.contains("▸ y"), "the cursor moved to `y`:\n{flat}");
+    let now = Instant::now();
+    assert_eq!(
+        model.resolve_card_choice(BoardIntent::CleanupRunSelected, now),
+        None,
+        "an Enter right as the card opened is ignored"
     );
-    // No title row: the old title text was the bare `project proj is archived`, painted
-    // into the card's top border. The only place that phrase appears now is the body.
-    let title_rows = rows
-        .iter()
-        .filter(|row| row.contains("project proj is archived"))
-        .count();
-    assert_eq!(title_rows, 1, "no separate title row:\n{frame}");
-    // A titleless card keeps its top border continuous: no `─  ─` gap where a title would sit.
-    let top = rows
-        .iter()
-        .find(|row| row.contains("┌") && row.contains("[x]"))
-        .expect("card top border");
-    let card_border = top.trim();
-    assert!(
-        !card_border.contains("┌─ ") && !card_border.contains("  "),
-        "the top border has no title gap:\n{top}"
-    );
-    // No option rows.
-    assert!(
-        !rows.iter().any(|row| row.contains("\u{25b8} unarchive")),
-        "the card has no option rows:\n{frame}"
-    );
-    assert!(
-        !rows.iter().any(|row| row.contains("keep archived")
-            && !row.contains("unarchive it?")
-            && !row.contains("\u{b7}")),
-        "the second option is not its own row:\n{frame}"
-    );
-    // Footer reads the two choices.
-    assert!(
-        frame.contains("y unarchive \u{b7} n keep archived"),
-        "the footer carries both choices:\n{frame}"
+    assert_eq!(
+        model.resolve_card_choice(
+            BoardIntent::CleanupRunSelected,
+            now + tsk_tui::ui::board::CARD_ENTER_GUARD
+        ),
+        Some(BoardIntent::LaunchUnarchive)
     );
 
-    // Both footer entries are clickable, and they land on the right intents.
+    // The `esc` line is the cancel target: it keeps the project archived.
     let hits = tsk_tui::ui::board::board_hit_map(
         ratatui::layout::Rect::new(0, 0, STANDARD.0, STANDARD.1),
         &model,
     );
-    let footer_row = rows
+    let esc = hits
+        .regions
         .iter()
-        .position(|row| row.contains("y unarchive \u{b7} n keep archived"))
-        .expect("footer row") as u16;
-    for (index, intent) in [
-        (0usize, BoardIntent::LaunchUnarchive),
-        (1usize, BoardIntent::LaunchKeepArchived),
-    ] {
-        let hit = hits
-            .regions
-            .iter()
-            .find(|hit| matches!(hit.target, QueueHitTarget::LaunchOption(i) if i == index))
-            .unwrap_or_else(|| panic!("footer entry {index} is hit-testable"));
-        assert_eq!(
-            hit.area.y, footer_row,
-            "footer entry {index} sits on the footer row"
-        );
-        let mapped = map_board_mouse(&model, &hits, left_click(hit.area.x, hit.area.y))
-            .expect("the footer click maps");
-        assert_eq!(mapped, intent);
-    }
+        .find(|hit| hit.target == QueueHitTarget::ModalClose)
+        .expect("the esc line is hit-testable");
+    assert_eq!(
+        map_board_mouse(&model, &hits, left_click(esc.area.x, esc.area.y)),
+        Some(BoardIntent::LaunchKeepArchived)
+    );
     let _ = std::fs::remove_dir_all(dir);
 }

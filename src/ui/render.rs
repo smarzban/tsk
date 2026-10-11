@@ -589,15 +589,13 @@ pub enum QueueOverlay<'a> {
         scroll: usize,
     },
     /// Launch card: the two-choice archived-project modal.
-    LaunchCard { name: &'a str },
     /// The block card: why, on and needs for the cursor task or a marked set.
     BlockCard(BlockCardPaint),
-    /// Dispatched worktree cleanup confirmation (the cursor task or a marked set), and the bulk
-    /// dispatch card, which shares its layout.
+    /// A decision card: dispatched worktree cleanup (the cursor task or a marked set), and the
+    /// relaunch, start-anyway and bulk start cards, which share its layout and option selector.
     CleanupConfirm {
         title: CleanupTitle,
         lines: Vec<CleanupCardLine>,
-        footer: CleanupFooter,
         /// First visible body row; clamped to what fits.
         scroll: usize,
         /// Scroll the `▸` option into view over `scroll`.
@@ -919,9 +917,7 @@ pub enum QueueHitTarget {
     PickerTab(crate::ui::board::PickerTab),
     /// One painted tab of the Filter / View list picker's tab row.
     ListPickerTab(crate::ui::board::FilterTab),
-    /// One choice row of the launch card (0 = unarchive, 1 = keep archived).
-    LaunchOption(usize),
-    /// One footer choice of the cleanup card, by legend index.
+    /// One option line of a decision card, by its place in the card's option list.
     CleanupOption(usize),
     /// The open help card's full-frame dismiss hit. The card's own chrome and searchable
     /// body shadow it, so only a click on the visible board behind the card closes Help.
@@ -1865,7 +1861,6 @@ fn paint_footer(
             // the board's verb bar stays blank underneath it.
             QueueOverlay::Palette { .. }
             | QueueOverlay::Help { .. }
-            | QueueOverlay::LaunchCard { .. }
             | QueueOverlay::BlockCard(_)
             | QueueOverlay::CleanupConfirm { .. }
             | QueueOverlay::ScopeDropdown { .. } => &[],
@@ -2133,16 +2128,12 @@ fn paint_overlay(
         } => {
             paint_help_overlay(frame, geo, surface, query, lines, *scroll, hits);
         }
-        QueueOverlay::LaunchCard { name } => {
-            paint_launch_card(frame, geo, surface, name, hits);
-        }
         QueueOverlay::BlockCard(card) => {
             paint_block_card(frame, geo, surface, card, hits);
         }
         QueueOverlay::CleanupConfirm {
             title,
             lines,
-            footer,
             scroll,
             follow,
         } => {
@@ -2153,7 +2144,6 @@ fn paint_overlay(
                 CleanupCard {
                     title,
                     lines,
-                    footer: *footer,
                     scroll: *scroll,
                     follow: *follow,
                 },
@@ -4024,40 +4014,6 @@ pub struct CleanupTitle {
     pub question: String,
 }
 
-/// Which choices a confirmation card's footer offers. The cleanup card has no footer: its
-/// options and its `esc` line are body lines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CleanupFooter {
-    /// The cleanup card: no footer.
-    Options,
-    /// The bulk start card launching this many tasks (none: it only starts).
-    Dispatch(usize),
-    /// The relaunch card for one task whose agent is gone.
-    Relaunch,
-    /// The start-anyway card for a start whose targets still wait on other tasks.
-    StartAnyway,
-}
-
-impl CleanupFooter {
-    fn legend(self) -> &'static [VerbEntry<'static>] {
-        match self {
-            Self::Options => &[],
-            Self::Dispatch(_) => SHORT_DISPATCH_FOOTER,
-            Self::Relaunch => RELAUNCH_FOOTER,
-            Self::StartAnyway => START_ANYWAY_FOOTER,
-        }
-    }
-
-    /// The `y` label when it carries a count (`dispatch 3`).
-    fn counted_label(self) -> Option<String> {
-        match self {
-            Self::Dispatch(0) => Some("start".to_string()),
-            Self::Dispatch(count) => Some(format!("dispatch {count}")),
-            _ => None,
-        }
-    }
-}
-
 /// Where a painted cleanup card's option lines sit among its scrollable rows.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CleanupLayout {
@@ -4069,47 +4025,9 @@ pub struct CleanupLayout {
     pub options: Vec<(usize, usize)>,
 }
 
-const RELAUNCH_FOOTER: &[VerbEntry<'static>] = &[
-    VerbEntry {
-        key: "y",
-        label: "relaunch",
-    },
-    VerbEntry {
-        key: "n",
-        label: "just start",
-    },
-    VerbEntry {
-        key: "esc",
-        label: "cancel",
-    },
-];
-
-const START_ANYWAY_FOOTER: &[VerbEntry<'static>] = &[
-    VerbEntry {
-        key: "y",
-        label: "start anyway",
-    },
-    VerbEntry {
-        key: "esc",
-        label: "cancel",
-    },
-];
-
-const SHORT_DISPATCH_FOOTER: &[VerbEntry<'static>] = &[
-    VerbEntry {
-        key: "y",
-        label: "dispatch",
-    },
-    VerbEntry {
-        key: "esc",
-        label: "cancel",
-    },
-];
-
 struct CleanupCard<'a> {
     title: &'a CleanupTitle,
     lines: &'a [CleanupCardLine],
-    footer: CleanupFooter,
     scroll: usize,
     follow: bool,
 }
@@ -4247,14 +4165,6 @@ pub(crate) fn cleanup_card_layout(lines: &[CleanupCardLine], width: usize) -> Ve
     rows
 }
 
-fn legend_width(legend: &[VerbEntry<'_>]) -> usize {
-    2 + legend
-        .iter()
-        .map(|entry| display_width(entry.key) + 1 + display_width(entry.label))
-        .sum::<usize>()
-        + 3 * legend.len().saturating_sub(1)
-}
-
 fn paint_cleanup_card(
     frame: &mut Frame<'_>,
     geo: &TierGeometry,
@@ -4268,22 +4178,8 @@ fn paint_cleanup_card(
     let bounds = Rect::new(0, 0, geo.row_width, geo.height);
     let pad: u16 = if geo.tier == Tier::Compact { 0 } else { 1 };
     let card_w = modal_card_width(geo, bounds, 24);
-    // Room inside the side borders for the legend; the title keeps its rule and `[x]`.
+    // Room inside the side borders; the title keeps its rule and `[x]`.
     let inner = usize::from(card_w.saturating_sub(2));
-    let counted = card.footer.counted_label();
-    let legend: Vec<VerbEntry<'_>> = {
-        let mut entries = card.footer.legend().to_vec();
-        // The counted entry replaces the first (`y`) label.
-        if let (Some(label), Some(first)) = (counted.as_deref(), entries.first_mut()) {
-            first.label = label;
-        }
-        if legend_width(&entries) <= inner {
-            entries
-        } else {
-            card.footer.legend().to_vec()
-        }
-    };
-    let legend = legend.as_slice();
     // Room for the title beside its rule and `[x]`, keeping three cells for a scroll marker.
     let title_budget = inner.saturating_sub(9);
     let fits = |title: &str| display_width(title) + 3 <= title_budget;
@@ -4306,7 +4202,7 @@ fn paint_cleanup_card(
     let capacity = usize::from(
         bounds
             .height
-            .saturating_sub(modal_chrome_rows(geo.tier, !legend.is_empty())),
+            .saturating_sub(modal_chrome_rows(geo.tier, false)),
     );
     // A card taller than the frame drops its section breaks before it scrolls.
     let mut rows = cleanup_card_layout(&lines, wrap_width);
@@ -4368,9 +4264,9 @@ fn paint_cleanup_card(
             title: &title,
             content_rows: u16::try_from(window.len()).unwrap_or(u16::MAX),
             min_content_width: 24,
-            legend,
+            legend: &[],
             dismiss: None,
-            legend_hits: Some(QueueHitTarget::CleanupOption),
+            legend_hits: None,
         },
         hits,
     );
@@ -4407,59 +4303,6 @@ fn paint_cleanup_card(
             );
         }
     }
-}
-
-pub(crate) const LAUNCH_FOOTER: &[VerbEntry<'static>] = &[
-    VerbEntry {
-        key: "y",
-        label: "unarchive",
-    },
-    VerbEntry {
-        key: "n",
-        label: "keep archived",
-    },
-];
-
-/// The launch card: raised before the first keypress when the invocation default
-/// resolved to an archived project. Two explicit choices, no `Enter` default.
-fn paint_launch_card(
-    frame: &mut Frame<'_>,
-    geo: &TierGeometry,
-    surface: Rect,
-    name: &str,
-    hits: &mut QueueHitMap,
-) {
-    if geo.row_width == 0 {
-        return;
-    }
-    let bounds = Rect::new(0, 0, geo.row_width, geo.height);
-    // AC-22 (amended): no title row and no option rows. One body line asks the
-    // question; the two choices live in the footer legend and are clickable there.
-    let content = paint_modal_card(
-        frame,
-        geo,
-        surface,
-        bounds,
-        ModalCardSpec {
-            title: "",
-            content_rows: 1,
-            min_content_width: 0,
-            legend: LAUNCH_FOOTER,
-            dismiss: None,
-            legend_hits: Some(QueueHitTarget::LaunchOption),
-        },
-        hits,
-    );
-    if content.width == 0 || content.height == 0 {
-        return;
-    }
-    let message = format!("project {name} is archived, would you like to unarchive it?");
-    put_line_at(
-        frame,
-        surface,
-        Rect::new(content.x, content.y, content.width, 1),
-        paint_bounded_line(&message, content.width, style_plain()),
-    );
 }
 
 const BLOCK_CARD_FOOTER: &[VerbEntry<'static>] = &[

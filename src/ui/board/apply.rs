@@ -3233,7 +3233,7 @@ fn apply_board_intent(
             }
         }
         BoardIntent::LaunchUnarchive => {
-            let Some(path) = model.launch_card.clone() else {
+            let Some(path) = model.launch_card.as_ref().map(|card| card.path.clone()) else {
                 return Ok(IntentOutcome::None);
             };
             let scope_path = path.to_string_lossy().into_owned();
@@ -3245,7 +3245,7 @@ fn apply_board_intent(
             model.clear_message();
         }
         BoardIntent::LaunchKeepArchived => {
-            let Some(path) = model.launch_card.take() else {
+            let Some(path) = model.launch_card.take().map(|card| card.path) else {
                 return Ok(IntentOutcome::None);
             };
             model.popup = BoardPopup::None;

@@ -953,27 +953,13 @@ pub fn map_board_mouse(
                 _ => None,
             }
         }
-        // The relaunch card: `y relaunch`, `n just start`, `esc cancel`.
-        BoardInputMode::DispatchConfirm
-            if model
-                .dispatch_prompt()
-                .is_some_and(|prompt| prompt.relaunch.is_some()) =>
-        {
-            match hit_at(hits, pos) {
-                Some(QueueHitTarget::ModalClose | QueueHitTarget::CleanupOption(2)) => {
-                    Some(BoardIntent::CancelDispatch)
-                }
-                Some(QueueHitTarget::CleanupOption(0)) => Some(BoardIntent::ConfirmDispatch),
-                Some(QueueHitTarget::CleanupOption(1)) => Some(BoardIntent::StartWithoutRelaunch),
-                _ => None,
-            }
-        }
-        // `[x]` and `esc cancel` cancel, `y dispatch` launches.
+        // A start card: the `esc` line (and `[x]`) cancels; an option line selects its option
+        // and a double click on it runs it.
         BoardInputMode::DispatchConfirm => match hit_at(hits, pos) {
-            Some(QueueHitTarget::ModalClose | QueueHitTarget::CleanupOption(1)) => {
-                Some(BoardIntent::CancelDispatch)
+            Some(QueueHitTarget::ModalClose) => Some(BoardIntent::CancelDispatch),
+            Some(QueueHitTarget::CleanupOption(index)) => {
+                Some(BoardIntent::CleanupClickOption(index))
             }
-            Some(QueueHitTarget::CleanupOption(0)) => Some(BoardIntent::ConfirmDispatch),
             _ => None,
         },
         // `[x]` cancels; the card body and the board behind it are inert.
@@ -983,9 +969,13 @@ pub fn map_board_mouse(
         },
         // The reply box owns the page until it saves or cancels.
         BoardInputMode::EditReply => None,
+        // The launch card: an option line selects and a double click runs it; the `esc` line
+        // keeps the project archived, as `Esc` does.
         BoardInputMode::LaunchCard => match hit_at(hits, pos) {
-            Some(QueueHitTarget::LaunchOption(0)) => Some(BoardIntent::LaunchUnarchive),
-            Some(QueueHitTarget::LaunchOption(1)) => Some(BoardIntent::LaunchKeepArchived),
+            Some(QueueHitTarget::ModalClose) => Some(BoardIntent::LaunchKeepArchived),
+            Some(QueueHitTarget::CleanupOption(index)) => {
+                Some(BoardIntent::CleanupClickOption(index))
+            }
             _ => None,
         },
         BoardInputMode::ListPicker => match hit_at(hits, pos) {

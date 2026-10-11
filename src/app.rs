@@ -3902,6 +3902,8 @@ pub fn open_bulk_dispatch_card(
         start_anyway: None,
         git_checks,
         scroll: 0,
+        follow: true,
+        selector: Default::default(),
     });
     // A host that checked inline has its answer now.
     model.poll_dispatch_checks();
@@ -4245,46 +4247,10 @@ fn handle_board_intent(
     )
 }
 
-/// A cleanup card's `Enter` or option click becomes the option it runs; a choice key the card
+/// A decision card's `Enter` or option click becomes the option it runs; a choice key the card
 /// does not offer does nothing. `None`: nothing to do. Other intents pass through.
 fn resolve_cleanup_choice(model: &mut BoardModel, intent: BoardIntent) -> Option<BoardIntent> {
-    if !matches!(
-        intent,
-        BoardIntent::CleanupRunSelected
-            | BoardIntent::CleanupClickOption(_)
-            | BoardIntent::ConfirmCleanup
-            | BoardIntent::KeepCleanup
-            | BoardIntent::MergeCleanup
-    ) {
-        return Some(intent);
-    }
-    // A confirmed card only reports its run.
-    if model.cleanup_run().is_some() {
-        return None;
-    }
-    if intent == BoardIntent::CleanupRunSelected
-        && model
-            .cleanup_prompt()?
-            .enter_choice(Instant::now())
-            .is_some()
-        && model.reveal_hidden_cleanup_selection()
-    {
-        // The first `Enter` only shows what the second would run.
-        return None;
-    }
-    let prompt = model.cleanup_prompt_mut()?;
-    let choice = match intent {
-        BoardIntent::CleanupRunSelected => prompt.enter_choice(Instant::now())?,
-        BoardIntent::CleanupClickOption(index) => prompt.click_option(
-            index,
-            Instant::now(),
-            crate::ui::board::ROW_DOUBLE_CLICK_WINDOW,
-        )?,
-        BoardIntent::ConfirmCleanup => crate::ui::board::CleanupChoice::Clean,
-        BoardIntent::KeepCleanup => crate::ui::board::CleanupChoice::Keep,
-        _ => crate::ui::board::CleanupChoice::Merge,
-    };
-    prompt.accepts(choice).then(|| choice.intent())
+    model.resolve_card_choice(intent, Instant::now())
 }
 
 /// [`handle_board_intent`] over an explicit git/Herdr seam, so tests drive dispatch and
@@ -6138,7 +6104,10 @@ mod tests {
         };
         let seat = model.input_target_mut();
         seat.begin_cleanup_prompt(crate::ui::board::CleanupPrompt::single(row));
-        seat.cleanup_prompt_mut().expect("card").option_click = Some((
+        seat.cleanup_prompt_mut()
+            .expect("card")
+            .selector
+            .option_click = Some((
             std::time::Instant::now(),
             crate::ui::board::CleanupChoice::Clean,
         ));
@@ -6159,6 +6128,7 @@ mod tests {
                 .right_seat()
                 .and_then(BoardModel::cleanup_prompt)
                 .expect("card stays open")
+                .selector
                 .option_click,
             None,
             "the preview's card must lose its pending double click"
@@ -16387,13 +16357,14 @@ mod quick_assign_tests {
                 format!("{first}  @builder  from default"),
                 "start only".to_string(),
                 "started, no launch".to_string(),
-                "y dispatch 1 · esc cancel".to_string(),
+                format!("▸ y  dispatch {first} · start"),
+                "esc cancel".to_string(),
             ] {
                 assert!(painted.contains(&text), "missing {text:?}:\n{painted}");
             }
             assert!(!painted.contains("checking…"), "{painted}");
             let narrow = frame_text(&model, Rect::new(0, 0, 40, 30));
-            for text in ["@builder", "from default", "start only", "y dispatch 1"] {
+            for text in ["@builder", "from default", "start only", "y  dispatch"] {
                 assert!(narrow.contains(text), "40 columns lost {text:?}:\n{narrow}");
             }
 
@@ -16708,11 +16679,15 @@ mod quick_assign_tests {
                     .regions
                     .iter()
                     .find(|hit| hit.target == QueueHitTarget::CleanupOption(index))
-                    .expect("footer entry is clickable");
+                    .expect("the option line is clickable");
                 map_board_mouse(&model, &hits, left_click(hit.area.x, hit.area.y))
             };
-            assert_eq!(footer(0), Some(BoardIntent::ConfirmDispatch));
-            assert_eq!(footer(1), Some(BoardIntent::CancelDispatch));
+            // The one option line selects (a double click runs it); there is no second.
+            assert_eq!(footer(0), Some(BoardIntent::CleanupClickOption(0)));
+            assert!(!hits
+                .regions
+                .iter()
+                .any(|hit| hit.target == QueueHitTarget::CleanupOption(1)));
             let close = hits
                 .regions
                 .iter()
@@ -16894,7 +16869,7 @@ mod quick_assign_tests {
                 [(number(&domain, ids[0]), "unknown agent builder".to_string())]
             );
             let painted = frame_text(&model, Rect::new(0, 0, 80, 30));
-            for text in ["Start 1 task?", "not started", "y start · esc cancel"] {
+            for text in ["Start 1 task?", "not started", "▸ y  start", "esc cancel"] {
                 assert!(painted.contains(text), "missing {text:?}:\n{painted}");
             }
             handle(
@@ -21974,7 +21949,7 @@ mod merge_cleanup_tests {
     /// Age the open card past its early-Enter guard.
     fn settle_card(board: &mut Board) {
         let prompt = board.model.cleanup_prompt_mut().expect("card");
-        prompt.opened_at -= crate::ui::board::CLEANUP_ENTER_GUARD;
+        prompt.selector.opened_at -= crate::ui::board::CARD_ENTER_GUARD;
     }
 
     #[test]
@@ -22059,7 +22034,7 @@ mod merge_cleanup_tests {
         assert!(host.merges.is_empty());
         assert_eq!(status(&board, 0), HumanStatus::Started);
         assert_eq!(
-            board.model.cleanup_prompt().unwrap().selected,
+            board.model.cleanup_prompt().unwrap().selector.selected,
             Some(crate::ui::board::CleanupChoice::Clean)
         );
         // A press elsewhere disarms the pending double click.

@@ -15,8 +15,8 @@ use crate::scope::{archived_path_contains, paths_equivalent, PathIdentityCache};
 use crate::ui::capture::CaptureField;
 use crate::ui::edit::{seeded_draft, EditBuffer};
 use crate::ui::input::{
-    BOARD_HELP_LINE, COMMAND_SURFACE_HELP_LINE, HELP_SURFACE_HELP_LINE, LAUNCH_CARD_HELP_LINE,
-    SAVE_RECOVERY_HELP_LINE,
+    BoardIntent, BOARD_HELP_LINE, COMMAND_SURFACE_HELP_LINE, HELP_SURFACE_HELP_LINE,
+    LAUNCH_CARD_HELP_LINE, SAVE_RECOVERY_HELP_LINE,
 };
 use crate::ui::mouse::BoardPopup;
 pub use crate::ui::queue::BoardTab;
@@ -31,6 +31,8 @@ use crate::ui::tier::{FocusedSurface, WideStage};
 
 use super::cleanup_card::CleanupChoice;
 use super::commands::CommandSurface;
+use super::dispatch_card::DispatchChoice;
+use super::selector::{CardCursor, OptionCard, OptionSelector};
 
 /// Visible board title. Also the herdr pane title.
 pub const BOARD_TITLE: &str = "Tasks";
@@ -1002,8 +1004,8 @@ pub struct BoardModel {
     pub(super) archived_collapsed: bool,
     /// The ON DECK inbox group starts expanded. Session-only.
     pub(super) inbox_collapsed: bool,
-    /// The archived project the launch card names, while the card is up.
-    pub(super) launch_card: Option<PathBuf>,
+    /// The launch card naming an archived project, while it is up.
+    pub(super) launch_card: Option<super::launch_card::LaunchPrompt>,
     /// The launch card is shown at most once per session, whichever choice was made.
     pub(super) launch_card_shown: bool,
     /// Session quick-add default override (desk after "keep archived"). Session-only.
@@ -1426,6 +1428,10 @@ pub struct DispatchPrompt {
     pub git_checks: Option<crate::dispatch::GitChecks>,
     /// First visible card row; the painter clamps it to the rows that fit.
     pub scroll: usize,
+    /// The painter scrolls the `▸` option into view until a page key scrolls the card by hand.
+    pub follow: bool,
+    /// The `▸` cursor, the early-`Enter` guard and the double click.
+    pub selector: OptionSelector<DispatchChoice>,
 }
 
 impl DispatchPrompt {
@@ -1446,6 +1452,8 @@ impl DispatchPrompt {
             start_anyway: None,
             git_checks: None,
             scroll: 0,
+            follow: true,
+            selector: OptionSelector::default(),
         }
     }
 
@@ -1462,6 +1470,8 @@ impl DispatchPrompt {
             start_anyway: Some(prompt),
             git_checks: None,
             scroll: 0,
+            follow: true,
+            selector: OptionSelector::default(),
         }
     }
 }
@@ -1622,12 +1632,8 @@ pub struct CleanupPrompt {
     pub merge_note: Option<String>,
     /// `[merge] method`, for the `m` line's verb (`squash-merge PR #7`).
     pub method: crate::agents::MergeMethod,
-    /// The option under the `▸` cursor; `None` rests on the card's likely option.
-    pub selected: Option<CleanupChoice>,
-    /// When the card opened: an `Enter` this soon after is the tail of a double tap.
-    pub opened_at: Instant,
-    /// The last single click on an option line, for its double click.
-    pub option_click: Option<(Instant, CleanupChoice)>,
+    /// The `▸` cursor, the early-`Enter` guard and the double click.
+    pub selector: OptionSelector<CleanupChoice>,
     /// `m` went nothing on: one line per task saying why it is unchanged. The card then only
     /// closes.
     pub settled: Option<Vec<(String, String)>>,
@@ -1652,9 +1658,7 @@ impl CleanupPrompt {
             merging: None,
             merge_note: None,
             method: crate::agents::MergeMethod::default(),
-            selected: None,
-            opened_at: Instant::now(),
-            option_click: None,
+            selector: OptionSelector::default(),
             settled: None,
         }
     }
@@ -2159,7 +2163,7 @@ impl BoardModel {
     /// them, so `Esc` returns to the same marked set.
     pub fn begin_cleanup_prompt(&mut self, mut prompt: CleanupPrompt) {
         // The early-Enter guard counts from the card appearing, not from its inspection.
-        prompt.opened_at = Instant::now();
+        prompt.selector.opened_at = Instant::now();
         if prompt.bulk.is_none() {
             self.clear_marks();
         }
@@ -2363,8 +2367,11 @@ impl BoardModel {
     }
 
     /// Open the bulk dispatch card. It keeps the marks, so `Esc` returns to the same set.
-    pub fn begin_dispatch_prompt(&mut self, prompt: DispatchPrompt) {
+    pub fn begin_dispatch_prompt(&mut self, mut prompt: DispatchPrompt) {
+        // The early-Enter guard counts from the card appearing.
+        prompt.selector.opened_at = Instant::now();
         self.cleanup_max_scroll.set(usize::MAX);
+        self.cleanup_layout.take();
         self.close_help();
         self.close_command_surface();
         self.dispatch_prompt = Some(prompt);
@@ -2597,58 +2604,66 @@ impl BoardModel {
         self.right_seat.as_deref_mut()
     }
 
-    /// Scroll the cleanup or bulk dispatch card one row; the painter records how far it may go.
-    /// Cleanup card `↑`/`↓`: move the option cursor (stopping at the ends) and scroll its
+    /// The open decision card's cursor: the cleanup card before its run starts, else a start
+    /// card. A running cleanup's card only reports, so it has none.
+    fn open_card_cursor(&mut self) -> Option<&mut dyn CardCursor> {
+        let running = self.cleanup_running();
+        match (self.cleanup_prompt.as_mut(), self.dispatch_prompt.as_mut()) {
+            (Some(_), _) if running => None,
+            (Some(prompt), _) => Some(prompt),
+            (None, Some(prompt)) => Some(prompt),
+            (None, None) => self
+                .launch_card
+                .as_mut()
+                .map(|prompt| prompt as &mut dyn CardCursor),
+        }
+    }
+
+    /// A decision card's `↑`/`↓`: move the option cursor (stopping at the ends) and scroll its
     /// line into view. A card without options (a run, a check still running) scrolls instead.
     pub fn step_cleanup_selection(&mut self, down: bool) {
-        let running = self.cleanup_running();
-        let index = match self.cleanup_prompt.as_mut() {
-            Some(prompt) if !running => prompt.step_selection(down),
-            _ => None,
-        };
-        let Some(index) = index else {
+        let layout = self.cleanup_layout.borrow().clone();
+        let max_scroll = self.cleanup_max_scroll.get();
+        let Some(card) = self.open_card_cursor() else {
             self.scroll_cleanup(down);
             return;
         };
-        let layout = self.cleanup_layout.borrow();
+        let Some(index) = card.step_option(down) else {
+            self.scroll_cleanup(down);
+            return;
+        };
         let Some(&(start, end)) = layout.options.get(index) else {
             return;
         };
-        let max_scroll = self.cleanup_max_scroll.get();
-        let Some(prompt) = self.cleanup_prompt.as_mut() else {
-            return;
-        };
-        let scroll = if prompt.follow {
-            layout.scroll
-        } else {
-            prompt.scroll
-        }
-        .min(max_scroll);
-        prompt.follow = true;
-        prompt.scroll = if start < scroll {
+        let (scroll, follow) = card.scroll_follow();
+        let shown = if *follow { layout.scroll } else { *scroll }.min(max_scroll);
+        *follow = true;
+        *scroll = if start < shown {
             start
-        } else if layout.capacity > 0 && end > scroll + layout.capacity {
+        } else if layout.capacity > 0 && end > shown + layout.capacity {
             end.saturating_sub(layout.capacity)
         } else {
-            scroll
+            shown
         };
     }
 
+    /// Scroll the cleanup or start card one row; the painter records how far it may go.
     pub fn scroll_cleanup(&mut self, down: bool) {
         let horizon = self.cleanup_max_scroll.get();
         let painted = self.cleanup_layout.borrow().scroll;
         let running = self.cleanup_running();
-        let scroll = match (self.cleanup_prompt.as_mut(), self.dispatch_prompt.as_mut()) {
-            (Some(prompt), _) => {
-                // A page key takes over from the painter's scroll to the `▸` option.
-                if std::mem::take(&mut prompt.follow) && !running {
-                    prompt.scroll = painted;
-                }
-                &mut prompt.scroll
-            }
-            (None, Some(prompt)) => &mut prompt.scroll,
-            (None, None) => return,
+        let (scroll, follow) = match (self.cleanup_prompt.as_mut(), self.dispatch_prompt.as_mut()) {
+            (Some(prompt), _) => (&mut prompt.scroll, &mut prompt.follow),
+            (None, Some(prompt)) => (&mut prompt.scroll, &mut prompt.follow),
+            (None, None) => match self.launch_card.as_mut() {
+                Some(prompt) => (&mut prompt.scroll, &mut prompt.follow),
+                None => return,
+            },
         };
+        // A page key takes over from the painter's scroll to the `▸` option.
+        if std::mem::take(follow) && !running {
+            *scroll = painted;
+        }
         *scroll = if down {
             scroll.saturating_add(1).min(horizon)
         } else {
@@ -2660,21 +2675,19 @@ impl BoardModel {
     /// view instead of running it, so nothing runs unseen. True when it did.
     pub fn reveal_hidden_cleanup_selection(&mut self) -> bool {
         let max_scroll = self.cleanup_max_scroll.get();
-        let layout = self.cleanup_layout.borrow();
-        let Some(prompt) = self.cleanup_prompt.as_mut() else {
+        let layout = self.cleanup_layout.borrow().clone();
+        let Some(card) = self.open_card_cursor() else {
             return false;
         };
-        if prompt.follow || layout.capacity == 0 {
+        let selected = card.selected_option();
+        let (scroll, follow) = card.scroll_follow();
+        if *follow || layout.capacity == 0 {
             return false;
         }
-        let options = prompt.options();
-        let Some(&(start, end)) = prompt
-            .selected_index(&options)
-            .and_then(|index| layout.options.get(index))
-        else {
+        let Some(&(start, end)) = selected.and_then(|index| layout.options.get(index)) else {
             return false;
         };
-        let scroll = prompt.scroll.min(max_scroll);
+        let scroll = (*scroll).min(max_scroll);
         // In view: all of it, or its first rows when it is taller than the frame.
         let shown = start >= scroll
             && (end <= scroll + layout.capacity
@@ -2682,18 +2695,90 @@ impl BoardModel {
         if shown {
             return false;
         }
-        prompt.follow = true;
+        *follow = true;
         true
     }
 
-    /// The frame changed size: scroll the cleanup card's `▸` option back into view, here and
-    /// in the project preview.
+    /// The frame changed size: scroll the open card's `▸` option back into view, here and in
+    /// the project preview.
     pub fn follow_cleanup_selection(&mut self) {
         if let Some(prompt) = self.cleanup_prompt.as_mut() {
             prompt.follow = true;
         }
+        if let Some(prompt) = self.dispatch_prompt.as_mut() {
+            prompt.follow = true;
+        }
+        if let Some(prompt) = self.launch_card.as_mut() {
+            prompt.follow = true;
+        }
         if let Some(seat) = self.right_seat.as_deref_mut() {
             seat.follow_cleanup_selection();
+        }
+    }
+
+    /// The open decision card's `Enter`, option click or choice key, resolved to the intent it
+    /// runs through the shared selector; a key the card does not offer does nothing. `None`:
+    /// nothing runs. Other intents (the launch card's own keys among them) pass through.
+    pub fn resolve_card_choice(
+        &mut self,
+        intent: BoardIntent,
+        now: Instant,
+    ) -> Option<BoardIntent> {
+        let cleanup_key = match intent {
+            BoardIntent::ConfirmCleanup => Some(CleanupChoice::Clean),
+            BoardIntent::KeepCleanup => Some(CleanupChoice::Keep),
+            BoardIntent::MergeCleanup => Some(CleanupChoice::Merge),
+            _ => None,
+        };
+        let dispatch_key = match intent {
+            BoardIntent::ConfirmDispatch => Some(DispatchChoice::Launch),
+            BoardIntent::StartWithoutRelaunch => Some(DispatchChoice::StartOnly),
+            _ => None,
+        };
+        let selector = matches!(
+            intent,
+            BoardIntent::CleanupRunSelected | BoardIntent::CleanupClickOption(_)
+        );
+        if !selector && cleanup_key.is_none() && dispatch_key.is_none() {
+            return Some(intent);
+        }
+        // A confirmed cleanup's card only reports its run.
+        if self.cleanup_prompt.is_some() && self.cleanup_running() {
+            return None;
+        }
+        if intent == BoardIntent::CleanupRunSelected
+            && self.reveal_ready(now)
+            && self.reveal_hidden_cleanup_selection()
+        {
+            // The first `Enter` only shows what the second would run.
+            return None;
+        }
+        // A key reaches only the card it belongs to.
+        match (
+            self.cleanup_prompt.as_mut(),
+            self.dispatch_prompt.as_mut(),
+            self.launch_card.as_mut(),
+        ) {
+            (Some(prompt), _, _) if dispatch_key.is_none() => {
+                prompt.resolve(intent, cleanup_key, now)
+            }
+            (None, Some(prompt), _) if cleanup_key.is_none() => {
+                prompt.resolve(intent, dispatch_key, now)
+            }
+            (None, None, Some(prompt)) if selector => prompt.resolve(intent, None, now),
+            _ => None,
+        }
+    }
+
+    /// Whether the open card's `Enter` would run something now (past the guard, an option).
+    fn reveal_ready(&self, now: Instant) -> bool {
+        match (&self.cleanup_prompt, &self.dispatch_prompt) {
+            (Some(prompt), _) => prompt.selector.enter(&prompt.options(), now).is_some(),
+            (None, Some(prompt)) => prompt.selector.enter(&prompt.options(), now).is_some(),
+            (None, None) => self
+                .launch_card
+                .as_ref()
+                .is_some_and(|prompt| prompt.selector.enter(&prompt.options(), now).is_some()),
         }
     }
 
@@ -2880,7 +2965,7 @@ impl BoardModel {
             return false;
         }
         self.launch_card_shown = true;
-        self.launch_card = Some(path.to_path_buf());
+        self.launch_card = Some(super::launch_card::LaunchPrompt::new(path.to_path_buf()));
         self.popup = BoardPopup::LaunchCard;
         true
     }
@@ -3500,7 +3585,13 @@ impl BoardModel {
         self.last_project_header_click = None;
         self.last_project_row_click = None;
         if let Some(prompt) = self.cleanup_prompt.as_mut() {
-            prompt.option_click = None;
+            prompt.selector.option_click = None;
+        }
+        if let Some(prompt) = self.dispatch_prompt.as_mut() {
+            prompt.selector.option_click = None;
+        }
+        if let Some(prompt) = self.launch_card.as_mut() {
+            prompt.selector.option_click = None;
         }
         // The project preview's card takes clicks through the same boundary.
         if let Some(seat) = self.right_seat.as_deref_mut() {
