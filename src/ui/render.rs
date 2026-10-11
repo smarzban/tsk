@@ -6932,6 +6932,30 @@ mod tests {
     }
 
     #[test]
+    fn the_live_gutter_is_dim_and_the_title_beside_it_is_not() {
+        let geo = tier::resolve(40, 24);
+        let row = TaskRowPaint {
+            glyph: "■",
+            identifier: Some("T12"),
+            title: "A title long enough to wrap onto continuation lines at forty columns",
+            selected: false,
+            marked: false,
+            title_bold: false,
+            dim: false,
+        };
+        let lines = paint_task_row_lines(&row, &geo, 0, true);
+        assert!(lines.len() > 1);
+        for line in &lines[1..] {
+            let line = &line.line;
+            assert!(plain(line).starts_with("    │   "), "{:?}", plain(line));
+            let gutter = line.spans.iter().find(|span| span.content == "│").unwrap();
+            assert!(gutter.style.add_modifier.contains(Modifier::DIM));
+            let title = line.spans.last().unwrap();
+            assert!(!title.style.add_modifier.contains(Modifier::DIM), "{title:?}");
+        }
+    }
+
+    #[test]
     fn task_titles_use_full_width_with_two_cells_at_right_edge() {
         let geo = tier::resolve(80, 24);
         let room = geo.row_width as usize - 8 - 2;
