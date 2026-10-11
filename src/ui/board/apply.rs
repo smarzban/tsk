@@ -1739,7 +1739,10 @@ fn apply_board_intent(
             return Ok(IntentOutcome::None);
         }
         BoardIntent::OpenGroupPicker | BoardIntent::OpenSortPicker => {
-            if model.project_picker.is_some() || model.popup == BoardPopup::SaveRecovery {
+            if model.project_picker.is_some()
+                || model.popup == BoardPopup::SaveRecovery
+                || !model.task_list_owns_input()
+            {
                 return Ok(IntentOutcome::None);
             }
             model.close_command_surface();

@@ -364,6 +364,15 @@ import { parseCapture } from "./capture.js";
     ];
   };
 
+  // Group, sort and fold are session-only and kept per surface (desk · project · thread
+  // View), as the TUI keeps one layout per slot. A fresh board is ungrouped.
+  const freshLayout = () => ({
+    group: "none",
+    sort: "recent",
+    folded: new Set(),
+  });
+  const ROW_LABEL_MIN_COLUMNS = 78;
+
   const state = {
     tasks: fixture ? structuredClone(fixture.tasks) : seed(),
     tab: "desk",
@@ -373,9 +382,18 @@ import { parseCapture } from "./capture.js";
     searchQuery: "",
     searchPinned: false,
     threadFilter: null,
+    // Desk filter: thread null (all) · "" (without) · name; project null · "desk" · name.
+    deskFilter: { thread: null, project: null },
+    deskFilterTab: "threads",
+    layouts: {
+      desk: freshLayout(),
+      project: freshLayout(),
+      thread: freshLayout(),
+    },
+    // Which board the open group / sort picker edits: the outer board or the preview seat.
+    layoutOwner: "outer",
     projectView: null,
     filterI: 0,
-    collapsed: new Set(),
     selectedId: "t1",
     markMode: false,
     markedIds: new Set(),
@@ -430,6 +448,7 @@ import { parseCapture } from "./capture.js";
     message: "",
     searchQuery: "",
     searchPinned: false,
+    layout: freshLayout(),
   };
 
   function projectsOverview() {
@@ -538,6 +557,378 @@ import { parseCapture } from "./capture.js";
   const byCreated = (a, b) =>
     a.createdAt - b.createdAt || String(a.id).localeCompare(String(b.id));
   const taskById = (id) => state.tasks.find((t) => t.id === id);
+
+  // ── Group · sort · fold (session-only, one layout per surface) ──
+  const isDeskLens = () => state.tab === "desk" && !state.focusProject;
+  function layoutSlot(owner = "outer") {
+    if (owner === "preview") return "project";
+    if (state.focusProject) return "project";
+    return isProjectsThreadView() ? "thread" : "desk";
+  }
+  function boardLayout(owner = "outer") {
+    return owner === "preview" ? preview.layout : state.layouts[layoutSlot()];
+  }
+  // A project board never groups by project and the thread View never by thread.
+  function groupChoices(owner = "outer") {
+    const slot = layoutSlot(owner);
+    if (slot === "project") return ["none", "thread"];
+    if (slot === "thread") return ["none", "project"];
+    return ["none", "project", "thread"];
+  }
+  function sortChoices(owner = "outer") {
+    const slot = layoutSlot(owner);
+    if (slot === "project") return ["recent", "thread", "title"];
+    if (slot === "thread") return ["recent", "project", "title"];
+    return ["recent", "project", "thread", "title"];
+  }
+  function layoutIndicator(layout) {
+    const parts = [];
+    if (layout.group !== "none") parts.push(`group: ${layout.group}`);
+    if (layout.sort !== "recent") parts.push(`sort: ${layout.sort}`);
+    return parts.join(" · ");
+  }
+  const byteOrder = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  // Stable sort by the chosen key; desk tasks sort after projects and unthreaded after
+  // threaded. Ties keep the section's own order.
+  const SORT_KEYS = {
+    project: (t) => (t.project ? [0, t.project.toLowerCase()] : [1, ""]),
+    thread: (t) => (t.thread ? [0, t.thread.toLowerCase()] : [1, ""]),
+    title: (t) => [0, t.title.toLowerCase()],
+  };
+  function sortRows(tasks, sort) {
+    const key = SORT_KEYS[sort];
+    if (!key) return tasks;
+    return tasks
+      .map((task, index) => ({ task, index, key: key(task) }))
+      .sort(
+        (a, b) =>
+          a.key[0] - b.key[0] ||
+          byteOrder(a.key[1], b.key[1]) ||
+          a.index - b.index,
+      )
+      .map((item) => item.task);
+  }
+  function groupKey(task, group) {
+    if (group === "project")
+      return task.project
+        ? [`p:${task.project}`, task.project]
+        : ["desk", "desk"];
+    if (task.thread) {
+      const thread = task.thread.toLowerCase();
+      return [`t:${thread}`, `#${thread}`];
+    }
+    return ["none", "no thread"];
+  }
+  // One section's rows, sorted and (when groupable) bucketed hottest group first: the
+  // group whose newest row changed status most recently leads, ties by label.
+  function arrangeSection(tasks, section, layout, { groupable = true } = {}) {
+    const sorted = sortRows(tasks, layout.sort);
+    const group = groupable ? layout.group : "none";
+    if (group === "none") return { groups: null, tasks: sorted };
+    const buckets = [];
+    for (const task of sorted) {
+      const [key, label] = groupKey(task, group);
+      const bucket = buckets.find((item) => item.key === key);
+      if (bucket) bucket.tasks.push(task);
+      else buckets.push({ key, label, tasks: [task] });
+    }
+    const hottest = (bucket) => Math.max(...bucket.tasks.map(statusAt));
+    buckets.sort(
+      (a, b) => hottest(b) - hottest(a) || byteOrder(a.label, b.label),
+    );
+    return {
+      groups: buckets.map((bucket) => ({
+        key: `${section}:${bucket.key}`,
+        label: bucket.label,
+        tasks: bucket.tasks,
+      })),
+      tasks: buckets.flatMap((bucket) => bucket.tasks),
+    };
+  }
+  // Push an arranged section: a folded group paints only its (selectable) sub-header.
+  function pushArranged(rows, arranged, layout, pushTask) {
+    if (!arranged.groups) {
+      arranged.tasks.forEach((task) => pushTask(task));
+      return;
+    }
+    for (const group of arranged.groups) {
+      const collapsed = layout.folded.has(group.key);
+      rows.push({
+        kind: "group",
+        label: group.label,
+        count: group.tasks.length,
+        collapseKey: group.key,
+        collapsed,
+        selectable: collapsed,
+        id: `group:${group.key}`,
+        taskIds: group.tasks.map((task) => task.id),
+      });
+      if (!collapsed) group.tasks.forEach((task) => pushTask(task));
+    }
+  }
+  // Which parts a wide row label carries on this surface: a dimension is dropped where
+  // the surface, its filter or its grouping already says it.
+  function rowLabelDims() {
+    const group = boardLayout().group;
+    if (isDeskLens())
+      return {
+        thread: group !== "thread" && !state.deskFilter.thread,
+        project: group !== "project" && state.deskFilter.project === null,
+      };
+    if (state.focusProject)
+      return {
+        thread: group !== "thread" && !state.threadFilter,
+        project: false,
+      };
+    if (isProjectsThreadView())
+      return { thread: false, project: group !== "project" };
+    return { thread: false, project: false };
+  }
+  function rowLabel(task, dims) {
+    if (!dims) return "";
+    return [
+      dims.thread && task.thread ? `#${task.thread}` : "",
+      dims.project ? projectName(task) : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+  // The label paints only beside the first title line with a 2-cell gap; it never
+  // shortens the title or changes how it wraps.
+  function fittedRowLabel(row, firstLine, room, columns) {
+    if (columns < ROW_LABEL_MIN_COLUMNS || !row.label) return "";
+    return firstLine.length + 2 + row.label.length <= room ? row.label : "";
+  }
+  function rowLabelHtml(label) {
+    return label
+      ? `<span class="tsk-row-label dim" style="flex:none;margin-left:auto;padding-left:2ch;white-space:pre">${esc(label)}</span>`
+      : "";
+  }
+
+  // ── Desk filter: one thread choice and one project choice, combined ──
+  function deskFilterAdmits(task) {
+    const { thread, project } = state.deskFilter;
+    const inProject =
+      project === null ||
+      (project === "desk" ? !task.project : task.project === project);
+    return inProject && (thread === null || (task.thread || "") === thread);
+  }
+  function deskFilterLabel() {
+    const { thread, project } = state.deskFilter;
+    const parts = [];
+    if (project !== null) parts.push(project);
+    if (thread !== null)
+      parts.push(thread === "" ? "without a thread" : `#${thread}`);
+    return parts.length ? parts.join(" ") : "all";
+  }
+  function deskFilterOptions(tab = state.deskFilterTab) {
+    const live = state.tasks.filter((t) => !t.archived && t.status !== "done");
+    const counts = (key) => {
+      const map = new Map();
+      for (const task of live) {
+        const value = key(task);
+        if (value) map.set(value, (map.get(value) || 0) + 1);
+      }
+      return [...map];
+    };
+    if (tab === "threads") {
+      const named = counts((t) => t.thread).sort(
+        (a, b) => b[1] - a[1] || byteOrder(a[0], b[0]),
+      );
+      return [
+        { value: null, label: `All threads  ${live.length}` },
+        ...named.map(([name, n]) => ({ value: name, label: `#${name}  ${n}` })),
+        {
+          value: "",
+          label: `Without a thread  ${live.filter((t) => !t.thread).length}`,
+        },
+      ];
+    }
+    const named = counts((t) => t.project).sort((a, b) =>
+      byteOrder(a[0], b[0]),
+    );
+    return [
+      { value: null, label: `All projects  ${live.length}` },
+      {
+        value: "desk",
+        label: `desk  ${live.filter((t) => !t.project).length}`,
+      },
+      ...named.map(([name, n]) => ({ value: name, label: `${name}  ${n}` })),
+    ];
+  }
+  function deskFilterIndex(tab = state.deskFilterTab) {
+    const current = state.deskFilter[tab === "threads" ? "thread" : "project"];
+    return Math.max(
+      0,
+      deskFilterOptions(tab).findIndex((option) => option.value === current),
+    );
+  }
+  function openDeskFilter(tab = "threads") {
+    if (!isDeskLens() || steps.dirty || steps.editor) return;
+    state.overlay = "desk-filter";
+    state.deskFilterTab = tab;
+    state.filterI = deskFilterIndex(tab);
+  }
+  function chooseDeskFilter(index) {
+    const option = deskFilterOptions()[index];
+    if (!option) return;
+    clearMarks();
+    state.deskFilter[state.deskFilterTab === "threads" ? "thread" : "project"] =
+      option.value;
+    state.overlay = null;
+    state.peekId = null;
+  }
+  function renderDeskFilter() {
+    const tabs = ["threads", "projects"]
+      .map(
+        (tab) =>
+          `<button type="button" class="tsk-view-control ${tab === state.deskFilterTab ? "sel-text" : "dim"}" style="margin:0" data-desk-filter-tab="${tab}">${tab}</button>`,
+      )
+      .join('<span class="dim"> · </span>');
+    return `<div class="tsk-box" role="dialog" aria-label="filter"><div class="tsk-box-top"><span class="tsk-box-title">filter</span><button type="button" class="tsk-box-close" data-close="1">[x]</button></div><div class="tsk-box-body"><div class="tsk-pal-row"> ${tabs}</div><div class="tsk-pal-row dim" aria-hidden="true"> </div>${deskFilterOptions()
+      .map(
+        (option, index) =>
+          `<div class="tsk-pal-row" data-desk-filter-option="${index}"><span class="${index === state.filterI ? "sel-text" : ""}">${index === state.filterI ? "▸" : " "} ${esc(option.label)}</span></div>`,
+      )
+      .join(
+        "",
+      )}</div><div class="tsk-box-foot">←→ tab · enter choose · esc close</div></div>`;
+  }
+
+  // ── Group and sort pickers ──
+  function layoutOwnerForm() {
+    return state.layoutOwner === "preview" ? preview : state;
+  }
+  function openLayoutPicker(kind) {
+    const owner =
+      projectsPreviewFocused() && !preview.page ? "preview" : "outer";
+    if (owner === "outer" && (projectsOverview() || taskFocus())) return;
+    if (steps.dirty || steps.editor || previewHasUnsavedWork()) return;
+    state.layoutOwner = owner;
+    state.overlay = kind;
+    const layout = boardLayout(owner);
+    const choices = kind === "group" ? groupChoices(owner) : sortChoices(owner);
+    state.filterI = Math.max(
+      0,
+      choices.indexOf(kind === "group" ? layout.group : layout.sort),
+    );
+  }
+  function chooseLayout(kind, index) {
+    const owner = state.layoutOwner;
+    const choices = kind === "group" ? groupChoices(owner) : sortChoices(owner);
+    const value = choices[index];
+    if (value === undefined) return;
+    boardLayout(owner)[kind] = value;
+    const form = layoutOwnerForm();
+    clearMarks(form);
+    form.peekId = null;
+    state.overlay = null;
+    state.layoutOwner = "outer";
+  }
+  function renderLayoutPicker(kind) {
+    const owner = state.layoutOwner;
+    const choices = kind === "group" ? groupChoices(owner) : sortChoices(owner);
+    const title = kind === "group" ? "group by" : "sort by";
+    return `<div class="tsk-box" role="dialog" aria-label="${title}"><div class="tsk-box-top"><span class="tsk-box-title">${title}</span><button type="button" class="tsk-box-close" data-close="1">[x]</button></div><div class="tsk-box-body">${choices
+      .map(
+        (choice, index) =>
+          `<div class="tsk-pal-row" data-${kind}-option="${index}"><span class="${index === state.filterI ? "sel-text" : ""}">${index === state.filterI ? "▸" : " "} ${esc(choice)}</span></div>`,
+      )
+      .join(
+        "",
+      )}</div><div class="tsk-box-foot">↑↓ move · enter choose · esc close</div></div>`;
+  }
+
+  // ── Folding ──
+  function foldContext(form) {
+    return form === preview
+      ? {
+          rows: previewRows(),
+          layout: preview.layout,
+          archivedId: "nav:preview-archived",
+          drawer: preview.drawer,
+        }
+      : {
+          rows: buildRows(),
+          layout: boardLayout(),
+          archivedId: "nav:archived",
+          drawer: state.drawer,
+        };
+  }
+  // Enter or click on a sub-header: folding selects the header, unfolding selects the
+  // group's first task. Folding clears multi-select marks.
+  function toggleGroupFold(key, form = state) {
+    const { rows, layout } = foldContext(form);
+    const row = rows.find(
+      (item) => item.kind === "group" && item.collapseKey === key,
+    );
+    if (!row) return;
+    clearMarks(form);
+    form.peekId = null;
+    if (layout.folded.has(key)) {
+      layout.folded.delete(key);
+      form.selectedId = row.taskIds[0] ?? form.selectedId;
+    } else {
+      layout.folded.add(key);
+      form.selectedId = row.id;
+    }
+  }
+  function cursorGroupKey(form = state) {
+    const { rows } = foldContext(form);
+    const id = form.selectedId;
+    const row = rows.find(
+      (item) =>
+        item.kind === "group" && (item.id === id || item.taskIds.includes(id)),
+    );
+    return row?.collapseKey || null;
+  }
+  function foldCursorGroup(form = state) {
+    const key = cursorGroupKey(form);
+    if (key) toggleGroupFold(key, form);
+  }
+  // Fold every group in view (sub-groups, inbox, archived while the drawer is open) when
+  // any is open, else unfold them all.
+  function foldAllGroups(form = state) {
+    const { rows, layout, archivedId, drawer } = foldContext(form);
+    const groups = rows.filter((row) => row.kind === "group");
+    const hasInbox = form === state && rows.some((row) => row.kind === "inbox");
+    const hasArchived = drawer && rows.some((row) => row.kind === "archived");
+    const fold =
+      groups.some((row) => !row.collapsed) ||
+      (hasInbox && state.inboxOpen) ||
+      (hasArchived && form.archivedOpen);
+    clearMarks(form);
+    form.peekId = null;
+    const id = form.selectedId;
+    for (const row of groups) {
+      if (fold) layout.folded.add(row.collapseKey);
+      else layout.folded.delete(row.collapseKey);
+      if (fold && row.taskIds.includes(id)) form.selectedId = row.id;
+    }
+    if (hasInbox) {
+      if (fold && state.inboxOpen && taskById(id)?.status === "open")
+        state.selectedId = "nav:inbox";
+      state.inboxOpen = !fold;
+    }
+    if (hasArchived) {
+      if (fold && form.archivedOpen && taskById(id)?.archived)
+        form.selectedId = archivedId;
+      form.archivedOpen = !fold;
+    }
+  }
+  // Shift+M on a folded sub-header unfolds it, enters multi-select and marks the group.
+  function markFoldedGroup(form = state) {
+    const { rows, layout } = foldContext(form);
+    const row = rows.find(
+      (item) => item.kind === "group" && item.id === form.selectedId,
+    );
+    if (!row) return false;
+    layout.folded.delete(row.collapseKey);
+    form.markMode = true;
+    form.markedIds = new Set(row.taskIds);
+    form.selectedId = row.taskIds[0] ?? form.selectedId;
+    return true;
+  }
 
   function pickerOptions() {
     const set = new Set();
@@ -663,7 +1054,9 @@ import { parseCapture } from "./capture.js";
 
   function previewVisibleTasks() {
     const scoped = previewProjectTasks().filter(previewMatchesThread);
-    const live = scoped.filter((task) => taskMatchesSearch(task, preview.searchQuery));
+    const live = scoped.filter((task) =>
+      taskMatchesSearch(task, preview.searchQuery),
+    );
     const done = preview.drawer
       ? scoped.filter((task) => taskMatchesSearch(task, preview.searchQuery))
       : scoped;
@@ -678,9 +1071,7 @@ import { parseCapture } from "./capture.js";
         .filter((task) => task.status === "blocked")
         .sort(byStatusChange),
       ready: live.filter((task) => task.status === "ready").sort(byCreated),
-      done: done
-        .filter((task) => task.status === "done")
-        .sort(byStatusChange),
+      done: done.filter((task) => task.status === "done").sort(byStatusChange),
     };
   }
 
@@ -689,20 +1080,39 @@ import { parseCapture } from "./capture.js";
     const v = previewVisibleTasks();
     const pushHeader = (label, count) =>
       rows.push({ kind: "section", label, count, selectable: false });
+    const layout = preview.layout;
+    const dims = {
+      thread: layout.group !== "thread" && !preview.threadFilter,
+      project: false,
+    };
     const pushTask = (task, dim = false) =>
-      rows.push({ kind: "task", task, selectable: true, id: task.id, dim });
+      rows.push({
+        kind: "task",
+        task,
+        selectable: true,
+        id: task.id,
+        dim,
+        label: dim ? "" : rowLabel(task, dims),
+      });
+    const arranged = (tasks, section) =>
+      pushArranged(
+        rows,
+        arrangeSection(tasks, section, layout),
+        layout,
+        (task) => pushTask(task),
+      );
     const need = [...v.review, ...v.blocked].sort(byStatusChange);
     if (need.length) {
       pushHeader("NEEDS YOU", need.length);
-      need.forEach((task) => pushTask(task));
+      arranged(need, "need");
     }
     if (v.started.length) {
       pushHeader("IN MOTION", v.started.length);
-      v.started.forEach((task) => pushTask(task));
+      arranged(v.started, "motion");
     }
     if (v.ready.length || !preview.searchQuery.trim())
       pushHeader("ON DECK", v.ready.length);
-    v.ready.forEach((task) => pushTask(task));
+    arranged(v.ready, "deck");
     if (preview.drawer) {
       if (v.done.length) pushHeader("DONE", v.done.length);
       v.done.forEach((task) => pushTask(task));
@@ -939,9 +1349,11 @@ import { parseCapture } from "./capture.js";
   const matchesThread = (t) =>
     state.focusProject
       ? state.threadFilter === null || (t.thread || "") === state.threadFilter
-      : state.tab !== "projects" ||
-        state.projectView === null ||
-        t.thread === state.projectView;
+      : state.tab === "desk"
+        ? deskFilterAdmits(t)
+        : state.tab !== "projects" ||
+          state.projectView === null ||
+          t.thread === state.projectView;
   function visibleTasks() {
     // Hidden (archived) tasks leave every working view. The closed drawer keeps
     // its unfiltered count; opening it brings done tasks into content search.
@@ -1011,26 +1423,50 @@ import { parseCapture } from "./capture.js";
     const pushHeader = (kind, label, count, extra = {}) => {
       rows.push({ kind, label, count, selectable: false, ...extra });
     };
-    const pushTask = (task, indent = 0) => {
-      rows.push({ kind: "task", task, indent, selectable: true, id: task.id });
+    const dims = rowLabelDims();
+    const layout = boardLayout();
+    const pushTask = (task, labelDims = dims) => {
+      rows.push({
+        kind: "task",
+        task,
+        indent: 0,
+        selectable: true,
+        id: task.id,
+        label: rowLabel(task, labelDims),
+      });
     };
+    // Rows in ON DECK · desk and the desk inbox never repeat the project (desk).
+    const deckDims = { ...dims, project: false };
+    const arranged = (tasks, section, options = {}, labelDims = dims) =>
+      pushArranged(
+        rows,
+        arrangeSection(tasks, section, layout, options),
+        layout,
+        (task) => pushTask(task, labelDims),
+      );
 
     if (state.tab === "desk" && !state.focusProject) {
       const v = visibleTasks();
       if (v.need.length) {
         pushHeader("section", "NEEDS YOU", v.need.length);
-        v.need.forEach((t) => pushTask(t));
+        arranged(v.need, "need");
       }
       if (v.started.length)
         pushHeader("section", "IN MOTION", v.started.length);
-      v.started.forEach((t) => pushTask(t));
+      arranged(v.started, "motion");
       if (
         v.desk.length ||
         v.inbox.length ||
         (!v.need.length && !state.searchQuery.trim())
       )
         pushHeader("section", "ON DECK · desk", v.desk.length + v.inbox.length);
-      v.desk.forEach((t) => pushTask(t));
+      // Grouping the desk's ON DECK by project is a no-op: every row is a desk task.
+      arranged(
+        v.desk,
+        "deck",
+        { groupable: layout.group !== "project" },
+        deckDims,
+      );
       if (v.inbox.length) {
         rows.push({
           kind: "inbox",
@@ -1039,7 +1475,9 @@ import { parseCapture } from "./capture.js";
           selectable: true,
           id: "nav:inbox",
         });
-        if (state.inboxOpen) v.inbox.forEach((t) => pushTask(t));
+        // The inbox sorts but never groups.
+        if (state.inboxOpen)
+          sortRows(v.inbox, layout.sort).forEach((t) => pushTask(t, deckDims));
       }
       if (state.drawer) {
         if (v.done.length) pushHeader("section", "DONE", v.done.length);
@@ -1074,14 +1512,14 @@ import { parseCapture } from "./capture.js";
       const need = [...v.review, ...v.blocked].sort(byStatusChange);
       if (need.length) {
         pushHeader("section", "NEEDS YOU", need.length);
-        need.forEach((t) => pushTask(t));
+        arranged(need, "need");
       }
       if (v.started.length)
         pushHeader("section", "IN MOTION", v.started.length);
-      v.started.forEach((t) => pushTask(t));
+      arranged(v.started, "motion");
       if (v.ready.length || v.inbox.length || !state.searchQuery.trim())
         pushHeader("section", "ON DECK", v.ready.length + v.inbox.length);
-      v.ready.forEach((t) => pushTask(t));
+      arranged(v.ready, "deck");
       if (v.inbox.length) {
         rows.push({
           kind: "inbox",
@@ -1090,7 +1528,9 @@ import { parseCapture } from "./capture.js";
           selectable: true,
           id: "nav:inbox",
         });
-        if (state.inboxOpen) v.inbox.forEach((t) => pushTask(t));
+        // The inbox sorts but never groups.
+        if (state.inboxOpen)
+          sortRows(v.inbox, layout.sort).forEach((t) => pushTask(t));
       }
       if (state.drawer) {
         if (v.done.length) pushHeader("section", "DONE", v.done.length);
@@ -1387,6 +1827,26 @@ import { parseCapture } from "./capture.js";
       },
       { id: "reset", label: "reset demo", run: resetDemo },
     ];
+    if (!projectsOverview() || projectsPreviewFocused()) {
+      all.push(
+        {
+          id: "group-by",
+          label: "group by…",
+          run: () => openLayoutPicker("group"),
+        },
+        {
+          id: "sort-by",
+          label: "sort by…",
+          run: () => openLayoutPicker("sort"),
+        },
+        {
+          id: "fold",
+          label: "fold / unfold group",
+          run: () =>
+            foldCursorGroup(projectsPreviewFocused() ? preview : state),
+        },
+      );
+    }
     if (!state.focusProject && state.tab === "projects") {
       all.push({ id: "groups", label: "toggle groups", run: toggleAllGroups });
     }
@@ -1565,28 +2025,23 @@ import { parseCapture } from "./capture.js";
     return true;
   }
 
+  // Shift+F: fold every group in view when any is open, else unfold them all.
   function toggleAllGroups() {
-    clearMarks();
-    if (!state.drawer && (state.focusProject || state.tab !== "projects")) {
-      state.inboxOpen = !state.inboxOpen;
-      return;
-    }
-    if (state.focusProject || state.tab !== "projects") return;
-    const groups = buildRows().filter(
-      (row) => row.kind === "group" && !row.indent,
-    );
-    const collapse = groups.some(
-      (row) => !state.collapsed.has(row.collapseKey),
-    );
-    for (const row of groups) {
-      if (collapse) state.collapsed.add(row.collapseKey);
-      else state.collapsed.delete(row.collapseKey);
-    }
+    foldAllGroups(projectsPreviewFocused() ? preview : state);
   }
 
   function resetDemo() {
     state.tasks = seed();
     state.threadFilter = null;
+    state.deskFilter = { thread: null, project: null };
+    state.deskFilterTab = "threads";
+    state.layouts = {
+      desk: freshLayout(),
+      project: freshLayout(),
+      thread: freshLayout(),
+    };
+    state.layoutOwner = "outer";
+    preview.layout = freshLayout();
     state.projectView = null;
     state.filterI = 0;
     state.tab = "desk";
@@ -1594,7 +2049,6 @@ import { parseCapture } from "./capture.js";
     state.focusProject = null;
     state.searchQuery = "";
     state.searchPinned = false;
-    state.collapsed = new Set();
     state.selectedId = "t1";
     state.markMode = false;
     state.markedIds = new Set();
@@ -2117,7 +2571,12 @@ import { parseCapture } from "./capture.js";
       ["task actions", "o", "inbox", "status open"],
       ["task actions", "x", "delete", "remove"],
       ["task actions", "u", "undo", "restore"],
-      ["task actions", "f", "archive / restore (archived: z drawer)", "file hide restore"],
+      [
+        "task actions",
+        "f",
+        "archive / restore (archived: z drawer)",
+        "file hide restore",
+      ],
       ["create & edit", "+", "quick-add", "capture new task"],
       ["create & edit", "e", "edit title", "rename"],
       [
@@ -2137,7 +2596,26 @@ import { parseCapture } from "./capture.js";
       ["views & find", "3", "projects", "switch view"],
       ["views & find", "p", "project picker", "switch find"],
       ["views & find", "z / D", "done drawer", "completed tasks"],
-      ["views & find", "g", "fold / unfold group", "collapse expand inbox archived"],
+      ["views & find", "g", "group by", "layout group project thread"],
+      [
+        "views & find",
+        "shift+S",
+        "sort by",
+        "layout order recent project thread title",
+      ],
+      [
+        "views & find",
+        "enter",
+        "fold / unfold group (sub-header)",
+        "collapse expand",
+      ],
+      [
+        "views & find",
+        "shift+F",
+        "fold / unfold all groups",
+        "collapse expand inbox archived",
+      ],
+      ["views & find", "t", "filter", "thread project narrow"],
       ["views & find", "/", "search board", "find filter tasks projects"],
       ["views & find", ":", "command palette", "find actions"],
       ["app controls", "?", "help", "shortcuts keys"],
@@ -2433,6 +2911,14 @@ import { parseCapture } from "./capture.js";
           const selected = row.id === preview.selectedId;
           return `<button type="button" class="tsk-group" data-preview-archived="1"><span class="dim">${mark}</span> <span class="sec">${selected ? "<strong>archived</strong>" : "archived"}</span><span class="rule" aria-hidden="true"></span><span class="count dim">${row.count}</span></button>`;
         }
+        if (row.kind === "group") {
+          const mark = row.collapsed ? "▸" : "▾";
+          const label =
+            row.id === preview.selectedId
+              ? `<strong>${esc(row.label)}</strong>`
+              : esc(row.label);
+          return `<button type="button" class="tsk-group tsk-subgroup dim" data-preview-collapse="${esc(row.collapseKey)}"><span>${mark}</span> <span class="sec">${label}</span> · <span class="count">${row.count}</span></button>`;
+        }
         const task = row.task;
         const selected = task.id === preview.selectedId;
         const marked = preview.markedIds.has(task.id);
@@ -2445,10 +2931,15 @@ import { parseCapture } from "./capture.js";
             : "  ";
         const flash = task.id === state.flashId;
         const glyph = GLYPH[task.status] || "○";
-        const titleLines = wrapText(
-          task.title,
-          Math.max(8, width - 2 - 4 - `T${task.number} `.length),
+        const titleRoom = Math.max(
+          8,
+          width - 2 - 4 - `T${task.number} `.length,
         );
+        const titleLines = wrapText(task.title, titleRoom);
+        const rowLabelText =
+          rail && preview.peekId === task.id
+            ? ""
+            : fittedRowLabel(row, titleLines[0], titleRoom, width);
         const title = titleLines
           .map((line) => `<span class="tsk-title-line">${esc(line)}</span>`)
           .join("");
@@ -2477,11 +2968,12 @@ import { parseCapture } from "./capture.js";
                   : [`<div class="tsk-peek dim">    └</div>`]),
               ].join("")
             : "";
-        return `<button type="button" class="tsk-row ${row.dim ? "dim" : ""} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-preview-task="${esc(task.id)}"><span class="tsk-row-main"><span class="tsk-row-prefix">${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> </span><span class="tsk-row-title">${title}</span></span></button>${peek}`;
+        return `<button type="button" class="tsk-row ${row.dim ? "dim" : ""} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-preview-task="${esc(task.id)}"><span class="tsk-row-main"><span class="tsk-row-prefix">${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> </span><span class="tsk-row-title">${title}</span>${rowLabelHtml(rowLabelText)}</span></button>${peek}`;
       })
       .join("");
     const project = esc(preview.project || "project");
-    const filter = `<button type="button" class="tsk-view-control dim" data-preview-filter="1">${esc(previewFilterLabel())} ▾</button>`;
+    const indicatorText = layoutIndicator(preview.layout);
+    const filter = `${indicatorText ? `<button type="button" class="tsk-view-control dim" data-preview-group-control="1">${esc(indicatorText)}</button>` : ""}<button type="button" class="tsk-view-control dim" data-preview-filter="1"${indicatorText ? ' style="margin-left:3ch"' : ""}>${esc(previewFilterLabel())} ▾</button>`;
     const empty = preview.searchQuery.trim()
       ? `no tasks match &quot;${esc(preview.searchQuery.trim())}&quot;`
       : "nothing here";
@@ -2543,10 +3035,6 @@ import { parseCapture } from "./capture.js";
           ? "Overview"
           : `#${state.projectView}`
         : null;
-    const control =
-      filter === null
-        ? ""
-        : `<button class="tsk-view-control dim" data-filter="1">${esc(filter)} ▾</button>`;
     const index =
       state.tab === "projects" &&
       state.projectView === null &&
@@ -2557,6 +3045,38 @@ import { parseCapture } from "./capture.js";
         : index && rail
           ? 32
           : terminalColumns();
+    // Group / sort indicator: a dim control left of the filter chip, only when not default.
+    const indicatorText = index ? "" : layoutIndicator(boardLayout());
+    const indicator = indicatorText
+      ? `<button type="button" class="tsk-view-control dim" data-group-control="1">${esc(indicatorText)}</button>`
+      : "";
+    const chipGap = indicator ? ' style="margin-left:3ch"' : "";
+    // The desk's filter chip; at narrow widths an unset chip on a default layout is not
+    // shown when it does not fit beside the tabs.
+    const headerColumns = rail
+      ? 32
+      : isWideSplit() && state.stage === "split"
+        ? Math.floor(terminalColumns() * 0.4)
+        : terminalColumns();
+    // Measured with the TUI's tab spacing so the chip drops at the same widths.
+    const tabsWidth = TABS.map(([tab, label]) =>
+      tab === "project" ? `${state.selectedProject} ▾` : label,
+    ).join("  ·  ").length;
+    const deskChipLabel = isDeskLens() ? deskFilterLabel() : null;
+    const deskChip =
+      deskChipLabel !== null &&
+      !(
+        deskChipLabel === "all" &&
+        !indicator &&
+        tabsWidth + 3 + `${deskChipLabel} ▾`.length > headerColumns - 2
+      )
+        ? `<button type="button" class="tsk-view-control dim" data-desk-filter="1"${chipGap}>${esc(deskChipLabel)} ▾</button>`
+        : "";
+    const control =
+      indicator +
+      (filter === null
+        ? deskChip
+        : `<button class="tsk-view-control dim" data-filter="1"${chipGap}>${esc(filter)} ▾</button>`);
     const showThreads = index && boardColumns >= 100;
     const available = boardColumns - (showThreads ? 34 : 0);
     const nameWidth = Math.max(24, Math.floor(available * 0.4));
@@ -2589,9 +3109,14 @@ import { parseCapture } from "./capture.js";
           return `<button type="button" class="tsk-project-row ${selected ? "is-selected" : ""}" data-project-row="${esc(row.project)}" data-nav-id="${esc(row.id)}"><span class="tsk-project-name">${selected ? "▸" : " "} <span>${esc(row.label)}</span>${row.project === launchProject() ? `<span class="dim"> · here</span>` : ""}</span>${showThreads ? `<span class="dim tsk-project-threads">${esc(threadCell(threads, threadWidth))}</span>` : ""}<span class="${row.needs ? "is-bold" : "dim"}">${count(row.needs)}</span><span>${count(row.motion)}</span><span class="dim">${count(row.onDeck)}</span><span class="dim">${count(row.done)}</span></button>`;
         }
         if (row.kind === "group") {
+          // A dim, foldable sub-header; selectable (and bold under the cursor) only while
+          // folded. The section header above keeps the total.
           const mark = row.collapsed ? "▸" : "▾";
-          const pad = row.indent ? "  " : "";
-          return `<button type="button" class="tsk-group" data-collapse="${esc(row.collapseKey)}" data-project="${esc(row.project || "")}">${pad}<span class="dim">${mark}</span> <span class="sec">${esc(row.label)}</span> <span class="count">${row.count}</span></button>`;
+          const selected = row.id === state.selectedId;
+          const label = selected
+            ? `<strong>${esc(row.label)}</strong>`
+            : esc(row.label);
+          return `<button type="button" class="tsk-group tsk-subgroup dim" data-collapse="${esc(row.collapseKey)}"><span>${mark}</span> <span class="sec">${label}</span> · <span class="count">${row.count}</span></button>`;
         }
         if (row.kind === "inbox") {
           const mark = state.inboxOpen ? "▾" : "▸";
@@ -2634,13 +3159,16 @@ import { parseCapture } from "./capture.js";
           isWideSplit() && state.stage === "split"
             ? Math.floor(terminalColumns() * 0.4)
             : terminalColumns();
-        const titleLines = wrapText(
-          task.title,
-          columns - 2 - 4 - `T${task.number} `.length,
-        );
+        const titleRoom = columns - 2 - 4 - `T${task.number} `.length;
+        const titleLines = wrapText(task.title, titleRoom);
         const title = titleLines
           .map((line) => `<span class="tsk-title-line">${esc(line)}</span>`)
           .join("");
+        // An open peek states the attribution on its closing line, so the row label hides.
+        const rowLabelText =
+          state.peekId === task.id
+            ? ""
+            : fittedRowLabel(row, titleLines[0], titleRoom, columns);
         const noteLines = wrapText(
           (task.notes || "").trim() || "no notes yet",
           columns - 7,
@@ -2669,7 +3197,7 @@ import { parseCapture } from "./capture.js";
               ].join("")
             : "";
         const dimRow = row.dim ? "dim" : "";
-        return `<button type="button" class="tsk-row ${dimRow} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-task="${task.id}"><span class="tsk-row-main"><span class="tsk-row-prefix">${indent}${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> </span><span class="tsk-row-title">${title}</span></span></button>${peek}`;
+        return `<button type="button" class="tsk-row ${dimRow} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-task="${task.id}"><span class="tsk-row-main"><span class="tsk-row-prefix">${indent}${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> </span><span class="tsk-row-title">${title}</span>${rowLabelHtml(rowLabelText)}</span></button>${peek}`;
       })
       .join("");
 
@@ -2832,6 +3360,9 @@ import { parseCapture } from "./capture.js";
       if (state.overlay === "picker") html += renderPicker();
       if (state.overlay === "filter") html += renderFilter();
       if (state.overlay === "preview-filter") html += renderPreviewFilter();
+      if (state.overlay === "desk-filter") html += renderDeskFilter();
+      if (state.overlay === "group" || state.overlay === "sort")
+        html += renderLayoutPicker(state.overlay);
       const oldScroll = root.querySelector(".tsk-task-surface")?.scrollTop ?? 0;
       const activeSearch = document.activeElement?.id === "tsk-project-search";
       const keepKeys =
@@ -3157,7 +3688,7 @@ import { parseCapture } from "./capture.js";
     }
     if (bare && e.shiftKey && e.key === "M") {
       e.preventDefault();
-      toggleMarkMode(preview);
+      if (!markFoldedGroup(preview)) toggleMarkMode(preview);
       preview.message = "";
       render();
       return true;
@@ -3199,7 +3730,14 @@ import { parseCapture } from "./capture.js";
     }
     if (bare && e.key === "Enter") {
       e.preventDefault();
-      if (previewTask()) openPreviewTaskPage();
+      const row = previewRows().find(
+        (item) => item.selectable && item.id === preview.selectedId,
+      );
+      if (row?.kind === "group") toggleGroupFold(row.collapseKey, preview);
+      else if (row?.kind === "archived") {
+        clearMarks(preview);
+        preview.archivedOpen = !preview.archivedOpen;
+      } else if (previewTask()) openPreviewTaskPage();
       render();
       return true;
     }
@@ -3267,8 +3805,19 @@ import { parseCapture } from "./capture.js";
     }
     if (bare && e.key === "g") {
       e.preventDefault();
-      clearMarks(preview);
-      preview.archivedOpen = !preview.archivedOpen;
+      openLayoutPicker("group");
+      render();
+      return true;
+    }
+    if (bare && e.key === "S") {
+      e.preventDefault();
+      openLayoutPicker("sort");
+      render();
+      return true;
+    }
+    if (bare && e.key === "F") {
+      e.preventDefault();
+      foldAllGroups(preview);
       render();
       return true;
     }
@@ -3325,6 +3874,9 @@ import { parseCapture } from "./capture.js";
         "search",
         "filter",
         "preview-filter",
+        "desk-filter",
+        "group",
+        "sort",
       ].includes(state.overlay) ||
       Boolean(
         state.editField ||
@@ -3668,6 +4220,43 @@ import { parseCapture } from "./capture.js";
       render();
       return;
     }
+    if (state.overlay === "desk-filter") {
+      e.preventDefault();
+      if (e.key === "Escape") state.overlay = null;
+      else if (e.key === "Enter") chooseDeskFilter(state.filterI);
+      else if (["ArrowLeft", "ArrowRight", "h", "l", "Tab"].includes(e.key))
+        openDeskFilter(
+          state.deskFilterTab === "threads" ? "projects" : "threads",
+        );
+      else if (["ArrowDown", "j"].includes(e.key))
+        state.filterI = Math.min(
+          deskFilterOptions().length - 1,
+          state.filterI + 1,
+        );
+      else if (["ArrowUp", "k"].includes(e.key))
+        state.filterI = Math.max(0, state.filterI - 1);
+      render();
+      return;
+    }
+    if (state.overlay === "group" || state.overlay === "sort") {
+      e.preventDefault();
+      const kind = state.overlay;
+      const count = (
+        kind === "group"
+          ? groupChoices(state.layoutOwner)
+          : sortChoices(state.layoutOwner)
+      ).length;
+      if (e.key === "Escape") {
+        state.overlay = null;
+        state.layoutOwner = "outer";
+      } else if (e.key === "Enter") chooseLayout(kind, state.filterI);
+      else if (["ArrowDown", "j"].includes(e.key))
+        state.filterI = Math.min(count - 1, state.filterI + 1);
+      else if (["ArrowUp", "k"].includes(e.key))
+        state.filterI = Math.max(0, state.filterI - 1);
+      render();
+      return;
+    }
     if (state.overlay === "filter") {
       e.preventDefault();
       if (e.key === "Escape") state.overlay = null;
@@ -3676,6 +4265,12 @@ import { parseCapture } from "./capture.js";
         state.filterI = Math.min(filterOptions().length - 1, state.filterI + 1);
       else if (["ArrowUp", "k"].includes(e.key))
         state.filterI = Math.max(0, state.filterI - 1);
+      render();
+      return;
+    }
+    if (!state.overlay && !taskPageActive && e.key === "t" && isDeskLens()) {
+      e.preventDefault();
+      openDeskFilter();
       render();
       return;
     }
@@ -3815,15 +4410,29 @@ import { parseCapture } from "./capture.js";
       render();
       return;
     }
+    // Bare letters stay verbs in the demo, so the group picker is g, the sort picker
+    // Shift+S and fold-all Shift+F; Enter or a click folds one sub-header.
     if (e.key === "g" && !e.altKey && !e.ctrlKey && !e.metaKey) {
       e.preventDefault();
-      toggleAllGroups();
+      openLayoutPicker("group");
+      render();
+      return;
+    }
+    if (e.key === "S" && !alt) {
+      e.preventDefault();
+      openLayoutPicker("sort");
+      render();
+      return;
+    }
+    if (e.key === "F" && !alt) {
+      e.preventDefault();
+      if (!taskPageActive) toggleAllGroups();
       render();
       return;
     }
     if (!taskPageActive && !alt && e.shiftKey && e.key === "M") {
       e.preventDefault();
-      toggleMarkMode();
+      if (!markFoldedGroup()) toggleMarkMode();
       state.message = "";
       render();
       return;
@@ -3874,6 +4483,7 @@ import { parseCapture } from "./capture.js";
       else {
         const row = selectedRow();
         if (row?.kind === "project") openProject(row.project);
+        else if (row?.kind === "group") toggleGroupFold(row.collapseKey);
         else if (row?.kind === "inbox") {
           clearMarks();
           state.inboxOpen = !state.inboxOpen;
@@ -4048,6 +4658,55 @@ import { parseCapture } from "./capture.js";
       render();
       return;
     }
+    const previewGroupControl = e.target.closest(
+      "[data-preview-group-control]",
+    );
+    if (previewGroupControl && projectsPreviewActive()) {
+      if (state.stage === "split") stageRight();
+      openLayoutPicker("group");
+      render();
+      return;
+    }
+    const groupControl = e.target.closest("[data-group-control]");
+    if (groupControl) {
+      openLayoutPicker("group");
+      render();
+      return;
+    }
+    const layoutOption = e.target.closest(
+      "[data-group-option], [data-sort-option]",
+    );
+    if (
+      layoutOption &&
+      (state.overlay === "group" || state.overlay === "sort")
+    ) {
+      chooseLayout(
+        state.overlay,
+        Number(
+          layoutOption.dataset.groupOption ?? layoutOption.dataset.sortOption,
+        ),
+      );
+      render();
+      return;
+    }
+    const deskFilterControl = e.target.closest("[data-desk-filter]");
+    if (deskFilterControl) {
+      openDeskFilter();
+      render();
+      return;
+    }
+    const deskFilterTab = e.target.closest("[data-desk-filter-tab]");
+    if (deskFilterTab && state.overlay === "desk-filter") {
+      openDeskFilter(deskFilterTab.dataset.deskFilterTab);
+      render();
+      return;
+    }
+    const deskFilterOption = e.target.closest("[data-desk-filter-option]");
+    if (deskFilterOption && state.overlay === "desk-filter") {
+      chooseDeskFilter(Number(deskFilterOption.dataset.deskFilterOption));
+      render();
+      return;
+    }
     const filterControl = e.target.closest("[data-filter]");
     if (filterControl) {
       openFilter();
@@ -4100,6 +4759,13 @@ import { parseCapture } from "./capture.js";
         steps.selected = stepTarget.dataset.step;
         steps.marked = null;
       }
+      render();
+      return;
+    }
+    const previewGroupHeader = e.target.closest("[data-preview-collapse]");
+    if (previewGroupHeader && projectsPreviewActive()) {
+      if (state.stage === "split") stageRight();
+      toggleGroupFold(previewGroupHeader.dataset.previewCollapse, preview);
       render();
       return;
     }
@@ -4254,16 +4920,8 @@ import { parseCapture } from "./capture.js";
     }
     const group = e.target.closest("[data-collapse]");
     if (group) {
-      clearMarks();
-      const now = Date.now();
-      const key = group.getAttribute("data-collapse");
-      const project = group.getAttribute("data-project");
-      if (lastClick.id === key && now - lastClick.at < 350 && project) {
-        if (project === "desk") goTab("desk");
-        else openProject(project);
-      } else if (state.collapsed.has(key)) state.collapsed.delete(key);
-      else state.collapsed.add(key);
-      lastClick = { id: key, at: now };
+      if (steps.dirty || steps.editor) return;
+      toggleGroupFold(group.getAttribute("data-collapse"));
       render();
       return;
     }

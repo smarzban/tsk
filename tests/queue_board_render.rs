@@ -6048,3 +6048,31 @@ fn peek_project_label_wraps_all_content_below_notes() {
     assert!(continuation_count >= 2);
     assert_eq!(copied, label);
 }
+
+/// Row labels did not change the peek: on the desk it still names only the project.
+#[test]
+fn desk_peek_keeps_naming_only_the_project_beside_a_labelled_row() {
+    let mut item = task(
+        9920,
+        "Threaded project task",
+        HumanStatus::Started,
+        project("/repos/alpha"),
+        0,
+    );
+    item.thread = Some("ship".into());
+    let mut model = BoardModel::from_tasks(vec![item], None);
+    let collapsed = board_rows(&model, 80, 24);
+    let row = collapsed
+        .iter()
+        .find(|row| row.contains("Threaded project task"))
+        .expect("row");
+    assert!(row.trim_end().ends_with("#ship · alpha"), "{row}");
+    let mut domain = DomainState::new();
+    apply_intent(&mut domain, &mut model, BoardIntent::PeekDetail, None).unwrap();
+    let rows = board_rows(&model, 80, 24);
+    let attribution = rows
+        .iter()
+        .find(|row| row.contains("└─"))
+        .expect("peek attribution");
+    assert_eq!(attribution.trim(), "└─ alpha");
+}

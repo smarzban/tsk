@@ -3915,11 +3915,14 @@ fn build_list_rows(
             // Stale ids may outlive a snapshot refresh. Skip them without inventing a row.
             return;
         };
+        // The peek keeps its own attribution rule: the project on cross-project
+        // surfaces, the thread on a project board.
         let meta = row_meta(
             task,
             model.now,
-            project_attribution || model.show_project_meta,
-            thread_label && model.thread_labels,
+            project_attribution
+                || matches!(model.surface, BoardSurface::Desk | BoardSurface::ThreadView),
+            thread_label && model.thread_labels && model.surface == BoardSurface::Project,
         );
         let selected = model.selection_id == Some(task.id)
             && !matches!(model.overlay, QueueOverlay::ScopeDropdown { .. });

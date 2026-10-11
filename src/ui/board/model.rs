@@ -2964,6 +2964,15 @@ impl BoardModel {
         had_mark_state
     }
 
+    /// Whether the task list owns input under any open palette or Help card: the palette
+    /// offers list-only commands (group, sort, fold) on this, never over a task page.
+    pub(super) fn task_list_under_surfaces(&self) -> bool {
+        let list_mode = self.input_mode == BoardInputMode::Normal
+            || (self.focused_surface() == FocusedSurface::Board
+                && self.input_mode == BoardInputMode::TaskPage);
+        list_mode && self.project_picker.is_none() && !self.projects_overview()
+    }
+
     /// Whether this model's task list owns resolved input, including while a task page is parked.
     pub(super) fn task_list_owns_input(&self) -> bool {
         self.input_mode_local() == BoardInputMode::Normal && !self.projects_overview()

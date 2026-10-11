@@ -108,7 +108,8 @@ impl BoardModel {
             command("undo", BoardIntent::Undo),
             command("done drawer", BoardIntent::ToggleDoneDrawer),
         ]);
-        if !self.projects_overview() {
+        // Layout commands act on the task list, never over an open task page.
+        if self.task_list_under_surfaces() {
             commands.extend_from_slice(&[
                 command("group by…", BoardIntent::OpenGroupPicker),
                 command("sort by…", BoardIntent::OpenSortPicker),

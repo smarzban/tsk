@@ -209,7 +209,7 @@ Press `:` on the board or a task page and type to find an action. Use arrows or 
 | Move step up, move step down | A task-page step is selected |
 | Retry save, cancel save | A save has failed |
 
-Group by…, sort by…, and fold / unfold group are left out on the projects overview, which has no task rows. Search matches letters in order: `ssr` finds `set status: review`.
+Group by…, sort by…, and fold / unfold group act on the task list, so they are left out on the projects overview and over an open task page. Search matches letters in order: `ssr` finds `set status: review`.
 
 ## Help
 

@@ -449,3 +449,28 @@ fn group_fold_and_layout_state_is_per_surface() {
         "the desk kept its own"
     );
 }
+
+#[test]
+fn layout_commands_stay_off_an_open_task_page() {
+    let mut board = board();
+    board.select(board.beta);
+    board.key(press(KeyCode::Enter));
+    assert_eq!(board.model.input_mode(), BoardInputMode::TaskPage);
+    board.apply(BoardIntent::OpenCommandPalette);
+    let labels: Vec<&str> = board
+        .model
+        .visible_commands()
+        .iter()
+        .map(|command| command.label)
+        .collect();
+    for absent in ["group by…", "sort by…", "fold / unfold group"] {
+        assert!(
+            !labels.contains(&absent),
+            "{absent} offered over a page: {labels:?}"
+        );
+    }
+    board.apply(BoardIntent::CloseCommandSurface);
+    board.apply(BoardIntent::OpenGroupPicker);
+    assert_eq!(board.model.input_mode(), BoardInputMode::TaskPage);
+    assert_eq!(board.model.list_picker_kind(), None);
+}
