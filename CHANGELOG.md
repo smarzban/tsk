@@ -12,6 +12,8 @@ the GitHub release notes verbatim.
 ### Fixed
 
 - At 110 columns or wider, the Task view's narrow board rail keeps an open done drawer and the archived group's fold state, like Split does, so a done task opened from the drawer stays selected beside its page instead of vanishing from the rail. Thanks @LukasGold (#174).
+- `ctrl+u` after archiving a task you just completed or deleted names the task by its `T` number and says why nothing was undone (`T12 changed since it was completed (archived); nothing undone`) instead of printing its internal id. Thanks @LukasGold (#173).
+- Saving a task edit with an existing step's text cleared reopens that step with `text required` on its row, like an empty new step, instead of a status-row message beside a blank step. Nothing is saved until the step has text. Thanks @LukasGold (#173).
 - A form editor that receives `Shift+Enter` as `ctrl+j` (a terminal binding that sends a plain line feed, such as Ghostty's `shift+enter=text:\n`) says so on the status row instead of ignoring the key. Thanks @WAWLixiong and @Rag0n.
 - `tsk setup herdr` follows a symlinked Herdr `config.toml` (or `herdr` config directory), as dotfiles managers create, instead of failing with `Too many levels of symbolic links`. It edits the target in place, keeps the link, and backs up beside the target; a dangling or looping link is refused with a clear message.
 - `ctrl+s` on a marked set that includes done tasks says how many it skipped and how to reopen them, instead of skipping them silently. Thanks @LukasGold.

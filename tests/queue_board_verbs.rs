@@ -2339,6 +2339,71 @@ fn u_undoes_with_domain_coverage_and_stale_undo_refused_visibly() {
     );
 }
 
+static UNDO_STATE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// #173 finding 3: archiving a task changes it, so the completion's undo entry is stale. The
+/// refusal names the task the way the board paints it, says what went stale and why, and
+/// never prints a uuid.
+#[test]
+fn undo_after_archiving_a_completed_task_names_the_task_and_the_archive() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    let seq = UNDO_STATE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("tsk-verbs-stale-undo-{nanos}-{seq}"));
+    std::fs::create_dir_all(&dir).expect("state dir");
+    let store = tsk_tui::store::TaskStore::new(dir.join("tsk.json"));
+
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "archive me",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    domain
+        .set_status(id, HumanStatus::Started)
+        .expect("start the task");
+    // The persistence boundary assigns the public number the refusal must name.
+    store.save(&domain).expect("save");
+    let mut domain = store.load().expect("load numbered task");
+    let number = domain.get(id).and_then(|task| task.number).expect("number");
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    assert_eq!(model.selected_id(), Some(id), "the only task is selected");
+
+    apply_intent(&mut domain, &mut model, BoardIntent::Complete, None).expect("ctrl+d");
+    assert_eq!(domain.get(id).expect("task").status, HumanStatus::Done);
+    domain.archive_task(id).expect("ctrl+f archives the task");
+    model.sync_from_domain(&domain);
+
+    let outcome = apply_intent(&mut domain, &mut model, BoardIntent::Undo, None).expect("ctrl+u");
+    assert_eq!(
+        outcome,
+        IntentOutcome::None,
+        "a refused undo persists nothing"
+    );
+    let task = domain.get(id).expect("task");
+    assert!(task.archived, "the refused undo leaves the task archived");
+    assert_eq!(task.status, HumanStatus::Done, "and done");
+
+    let expected = format!("T{number} changed since it was completed (archived); nothing undone");
+    assert_eq!(model.message(), Some(expected.as_str()));
+    let row = board_chrome_row(&model, (80, 24));
+    assert!(
+        row.contains(&expected),
+        "painted on the status row: {row:?}"
+    );
+    assert!(
+        !row.contains(&id.to_string()),
+        "the board never prints a task uuid: {row:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // Task page: Enter opens a view-first full page; `e`/`n`/Tab enter field edits;
 // verbs act on the page's task; Shift+Enter saves; Esc layers back.
@@ -4229,6 +4294,69 @@ fn empty_step_text_refusal_paints_on_line_and_clears_on_close() {
         2,
         "the valid text after a refusal still saves"
     );
+}
+
+/// #173 finding 5: an existing step emptied in a task edit is refused like a new empty step:
+/// on its own row, with its editor open, and nothing saved. Both routes are covered: saving
+/// from inside the step editor, and saving after the emptied draft was parked.
+#[test]
+fn emptied_existing_step_is_refused_on_its_row_and_its_editor_stays_open() {
+    for park_first in [false, true] {
+        let (mut domain, mut model, id) =
+            board_with_steps("Empty rename witness", None, &["alpha step", "bravo step"]);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None)
+            .expect("open the selected step");
+        assert_eq!(model.input_mode(), BoardInputMode::EditStep);
+        for _ in "alpha step".chars() {
+            apply_intent(&mut domain, &mut model, BoardIntent::EditBackspace, None)
+                .expect("delete the step text");
+        }
+        if park_first {
+            let enter = map_key(model.input_mode(), press(KeyCode::Enter)).expect("enter");
+            apply_intent(&mut domain, &mut model, enter, None).expect("park the empty draft");
+            assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+        }
+        // A parked edit session routes keys through the form mapper, as the app does.
+        let save = if park_first {
+            let focus = model.form_focus().expect("task form focus");
+            map_task_form_key(focus, false, shift(KeyCode::Enter))
+        } else {
+            map_key(model.input_mode(), shift(KeyCode::Enter))
+        }
+        .expect("shift+enter");
+        let outcome = apply_intent(&mut domain, &mut model, save, None)
+            .expect("an emptied step is refused, not propagated");
+        assert_eq!(outcome, IntentOutcome::None, "park_first={park_first}");
+        assert_eq!(
+            model.input_mode(),
+            BoardInputMode::EditStep,
+            "the emptied step's editor is open (park_first={park_first})"
+        );
+        assert_eq!(
+            model.message(),
+            None,
+            "the refusal is not a status-row message (park_first={park_first})"
+        );
+        let refused = rendered_board(&model, 80, 24);
+        assert!(
+            refused
+                .lines()
+                .any(|row| row.contains("step…") && row.contains("text required")),
+            "the refusal paints on the step's own row (park_first={park_first}):\n{refused}"
+        );
+        assert_eq!(domain.get(id).expect("task").steps[0].text, "alpha step");
+
+        for ch in "zed".chars() {
+            apply_intent(&mut domain, &mut model, BoardIntent::EditInsert(ch), None)
+                .expect("type into the reopened editor");
+        }
+        let save = map_key(model.input_mode(), shift(KeyCode::Enter)).expect("shift+enter");
+        let outcome = apply_intent(&mut domain, &mut model, save, None).expect("save");
+        assert_eq!(outcome, IntentOutcome::Persist, "park_first={park_first}");
+        let task = domain.get(id).expect("task");
+        assert_eq!(task.steps[0].text, "zed", "park_first={park_first}");
+        assert_eq!(task.steps[1].text, "bravo step");
+    }
 }
 
 /// Add and rename drafts paint in the steps section, never in the shared footer slot.

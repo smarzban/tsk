@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::context::InvocationSnapshot;
 use crate::domain::{
     normalize_thread, thread_refusal_message, DomainError, DomainState, HumanStatus, TaskScope,
-    ThreadError,
+    ThreadError, UndoEntry,
 };
 use crate::scope::paths_equivalent;
 use crate::ui::capture::{CaptureField, TITLE_REQUIRED_MESSAGE};
@@ -107,21 +107,45 @@ fn file_batch(domain: &mut DomainState, targets: &[Uuid]) -> Result<bool, Domain
 
 /// What the row says when an Undo is refused because its target moved on.
 ///
-/// The words are the domain's, taken from [`DomainError::StaleUndo`] rather than restated
-/// here, so this cannot drift from the refusal it presents. Only the *order* is this
-/// layer's: the domain leads with the identifier, which is right for a log line or an error
-/// chain, but the board has one chrome row that clips, and a 36-character uuid in front
-/// spends the whole budget on the part the reader cannot act on. Reading the same words
-/// reason-first means a clipped row loses the uuid instead of the meaning.
-///
-/// If the domain ever stops leading with the identifier, there is nothing to move and its
-/// line is shown exactly as stated.
-fn stale_undo_message(id: Uuid) -> String {
-    let stated = DomainError::StaleUndo(id).to_string();
-    let identifier = format!("task {id}");
-    match stated.strip_prefix(&identifier).map(str::trim_start) {
-        Some(reason) if !reason.is_empty() => format!("{reason} · {identifier}"),
-        _ => stated,
+/// The domain's [`DomainError::StaleUndo`] names the task by uuid, which is right for a log
+/// line but means nothing on the board. The row names the task the way the board paints it,
+/// says which recorded action went stale, adds the visible change that most likely caused
+/// it (an archive is the common one), and states that nothing moved.
+fn stale_undo_message(domain: &DomainState, id: Uuid) -> String {
+    let task = domain.get(id);
+    let subject = task
+        .and_then(crate::domain::Task::board_identifier)
+        .unwrap_or_else(|| "this task".to_string());
+    let action = domain.last_undo().and_then(|entry| {
+        entry
+            .leaf_entries()
+            .into_iter()
+            .find_map(|leaf| match *leaf {
+                UndoEntry::Complete { id: target, .. } if target == id => Some("completed"),
+                UndoEntry::SoftDelete { id: target, .. } if target == id => Some("deleted"),
+                _ => None,
+            })
+    });
+    let cause = task.and_then(|task| {
+        if task.archived {
+            Some("archived")
+        } else if action == Some("completed") && task.soft_deleted {
+            Some("deleted")
+        } else if action == Some("completed") && task.status != HumanStatus::Done {
+            Some("reopened")
+        } else if action == Some("deleted") && !task.soft_deleted {
+            Some("restored")
+        } else {
+            None
+        }
+    });
+    let since = match action {
+        Some(action) => format!("since it was {action}"),
+        None => "since the undoable action".to_string(),
+    };
+    match cause {
+        Some(cause) => format!("{subject} changed {since} ({cause}); nothing undone"),
+        None => format!("{subject} changed {since}; nothing undone"),
     }
 }
 
@@ -2535,7 +2559,7 @@ fn apply_board_intent(
                     // this attempt did not take. The refusal is stated the
                     // way this row can be read when it clips, not the way the domain logs
                     // it; the error itself is unchanged.
-                    model.set_message(stale_undo_message(id));
+                    model.set_message(stale_undo_message(domain, id));
                     return Ok(IntentOutcome::None);
                 }
                 return Err(error);
@@ -2972,11 +2996,18 @@ fn confirm_edit(
         .map(|(step_id, draft)| (*step_id, draft.value().trim().to_string()))
         .collect::<std::collections::BTreeMap<_, _>>();
     let step_removals = form.steps.removals.clone();
-    if step_renames.values().any(String::is_empty) {
-        model.set_message(STEP_TEXT_REQUIRED);
+    let task = domain.get(id).ok_or(DomainError::UnknownId(id))?.clone();
+    // An existing step emptied in this session is refused the way a new empty step is: on
+    // its own row, with its editor open, never by a status-row message beside a blank row.
+    let emptied = task.steps.iter().enumerate().find(|(_, step)| {
+        step_renames
+            .get(&step.id)
+            .is_some_and(|text| text.is_empty())
+    });
+    if let Some((index, step)) = emptied {
+        refuse_empty_step_rename(model, index, step.id);
         return Ok(IntentOutcome::None);
     }
-    let task = domain.get(id).ok_or(DomainError::UnknownId(id))?.clone();
     let selected_step = form
         .steps
         .cursor
@@ -3459,6 +3490,34 @@ fn open_step_editor(model: &mut BoardModel, text: &str, rename: Option<Uuid>) {
         });
         model.input_mode = BoardInputMode::EditStep;
         model.clear_message();
+    }
+}
+
+/// Reopen the emptied existing step at `index` with the inline `text required` refusal.
+///
+/// A typed new-step row that is open when the session save is refused would lose its text if
+/// the emptied step took its place, so it stays open and the status row names the step.
+fn refuse_empty_step_rename(model: &mut BoardModel, index: usize, step_id: Uuid) {
+    let typed_add_open = model.form.as_ref().is_some_and(|form| {
+        form.steps.editor.as_ref().is_some_and(|editor| {
+            editor.rename.is_none() && !editor.buffer.value().trim().is_empty()
+        })
+    });
+    if typed_add_open {
+        model.set_message(format!("step {} {STEP_TEXT_REQUIRED}", index + 1));
+        return;
+    }
+    if let Some(form) = model.form.as_mut() {
+        form.steps.cursor = Some(index);
+        steps_scroll_to_cursor(form, index);
+    }
+    open_step_editor(model, "", Some(step_id));
+    if let Some(editor) = model
+        .form
+        .as_mut()
+        .and_then(|form| form.steps.editor.as_mut())
+    {
+        editor.refusal = Some(STEP_TEXT_REQUIRED.to_string());
     }
 }
 
