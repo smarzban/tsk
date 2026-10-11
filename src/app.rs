@@ -14124,6 +14124,7 @@ mod quick_assign_tests {
             HumanStatus::Blocked
         );
         assert_eq!(host.ran, 0, "undo launches nothing");
+        assert_eq!(model.message(), Some("undone · @builder kept running"));
     }
 
     #[test]

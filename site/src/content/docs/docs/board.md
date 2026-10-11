@@ -438,9 +438,9 @@ Press `ctrl+x` twice to delete the marked tasks, or the cursored task when nothi
 - a delete;
 - a done: the task goes back to the status it had, such as started or blocked;
 - a block or review card;
-- any other status change: a start that launched nothing, ready, open, a reopen, or an unblock, including the reply box's. Going back to blocked or review reopens the block or review round, with its replies;
+- any other status change: a start that launched nothing, ready, open, a reopen, or an unblock, including the reply box's. Going back to blocked or review reopens the block or review round, with its replies. On a dispatched task the agent keeps running, and the status row says `undone · @claude kept running`;
 - a start that launched an agent: only the status goes back, and the status row says `start undone · @claude kept running`;
-- a step tick or untick, a new step, a removed step, or new step text (from the task page).
+- a step tick or untick, a new step, a removed step, or new step text (from the task page; the title and notes saved with it stay).
 
 Undo keeps the last 50 actions. One `ctrl+u` undoes the whole marked deletion, completion, block, or status change, including the [after](#after) links a deletion dropped and the starts a completion made. If another writer has changed any task in that batch since the action, undo refuses without changing any of them and remains available to retry. On an archived cursor with no marks, `ctrl+u` restores that task instead.
 

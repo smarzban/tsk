@@ -3312,6 +3312,12 @@ fn apply_board_intent(
                     .get(*id)
                     .and_then(|task| task.assignee.clone())
                     .map(|assignee| format!("start undone · @{assignee} kept running")),
+                // A plain status change on a dispatched task leaves its agent alone too.
+                Some(crate::domain::UndoEntry::Status { id, .. }) => domain
+                    .get(*id)
+                    .filter(|task| task.dispatch.as_ref().is_some_and(|record| !record.cleaned))
+                    .and_then(|task| task.assignee.clone())
+                    .map(|assignee| format!("undone · @{assignee} kept running")),
                 Some(entry @ crate::domain::UndoEntry::Batch { .. }) => {
                     released_undo_message(domain, entry)
                 }

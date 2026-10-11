@@ -13,7 +13,7 @@ Steps are a flat, ordered checklist. Checking every step does not complete the t
 
 `Enter` saves the step and opens another empty row. `Shift+Enter` saves it and finishes any active task edit. Click elsewhere to discard an empty new-step row.
 
-New steps save independently, including during task editing. Cancelling the task edit does not undo steps already added. Each tick, untick, new step, removal, or new step text is one `ctrl+u` [undo](/docs/board/#delete-and-undo) step.
+New steps save independently, including during task editing. Cancelling the task edit does not undo steps already added. Each tick, untick, new step, removal, or new step text is one `ctrl+u` [undo](/docs/board/#delete-and-undo) step; undoing new text from a task-page save leaves that save's title and notes.
 
 ## Complete
 

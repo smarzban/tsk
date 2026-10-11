@@ -186,7 +186,9 @@ migration or design work they imply. What the behaviour *is* lives in the docs
   While a marked-set dispatch is landing a released assigned task stays ready. Every done path
   (reducer, cleanup card, missing-worktree converge, CLI) saves through `save_releasing_with_host`
   or its CLI twin; completions and held launches (`pending_launches`) stay on `DomainState` until
-  then, so save-recovery Retry decides and launches again. A delete never rewrites a task
+  then, so save-recovery Retry decides and launches again. Undoing a reopen (`UndoEntry::Status`
+  back to done) is the one way back to done that releases nothing: the release belonged to the
+  original done and cannot be undone with it. A delete never rewrites a task
   already soft-deleted: its own delete's undo entry must keep matching.
 - A delete drops its number from every other task's `after` in the same undo entry
   (`UndoEntry::SetAfter` leaves); trash purge drops leftovers as bookkeeping. A number no live task
