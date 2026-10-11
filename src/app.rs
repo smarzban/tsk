@@ -14124,7 +14124,10 @@ mod quick_assign_tests {
             HumanStatus::Blocked
         );
         assert_eq!(host.ran, 0, "undo launches nothing");
-        assert_eq!(model.message(), Some("undone · @builder kept running"));
+        assert_eq!(
+            model.message(),
+            Some("status undone · T1 back to blocked · @builder kept running")
+        );
     }
 
     #[test]
@@ -15622,7 +15625,7 @@ mod quick_assign_tests {
         );
         assert_eq!(
             model.message(),
-            Some("start undone · @builder kept running")
+            Some("start undone · T1 back to ready · @builder kept running")
         );
     }
 
@@ -17939,7 +17942,7 @@ mod quick_assign_tests {
         assert_eq!(status_of(&disk, ids[1]), HumanStatus::Ready);
         assert_eq!(
             model.message(),
-            Some(format!("done undone · T{second} back to ready").as_str())
+            Some(format!("done undone · T{first} back to open · T{second} back to ready").as_str())
         );
     }
 
@@ -17987,7 +17990,12 @@ mod quick_assign_tests {
         assert!(disk.get(ids[1]).expect("task").dispatch.is_some());
         assert_eq!(
             model.message(),
-            Some(format!("done undone · T{second} back to ready · @builder kept running").as_str())
+            Some(
+                format!(
+                    "done undone · T{first} back to open · T{second} back to ready · @builder kept running"
+                )
+                .as_str()
+            )
         );
     }
 

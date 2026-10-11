@@ -6125,7 +6125,7 @@ fn archived_group_is_collapsed_on_a_fresh_model_and_enter_or_click_on_the_header
 }
 
 #[test]
-fn ctrl_f_archives_the_selected_task_keeping_status_and_pushing_no_undo() {
+fn ctrl_f_archives_the_selected_task_keeping_status_and_ctrl_u_brings_it_back() {
     let mut domain = DomainState::new();
     let b = domain
         .create(
@@ -6159,7 +6159,8 @@ fn ctrl_f_archives_the_selected_task_keeping_status_and_pushing_no_undo() {
         "the archived row leaves the working lens"
     );
 
-    // Select the remaining row and undo: nothing about A may change (AC-7).
+    // Undo right after, with the cursor on another row, brings A back (#173): the archive is
+    // the top undo entry, and the row names the task it is about.
     let b_index = model
         .visible_ids()
         .iter()
@@ -6175,16 +6176,17 @@ fn ctrl_f_archives_the_selected_task_keeping_status_and_pushing_no_undo() {
     assert_eq!(model.selected_id(), Some(b));
     apply_intent(&mut domain, &mut model, BoardIntent::Undo, None).expect("undo");
     let task_a = domain.get(a).expect("task a");
-    assert!(
-        task_a.archived,
-        "archive pushes no undo entry, so undo cannot touch A"
-    );
-    assert_eq!(task_a.status, HumanStatus::Review);
+    assert!(!task_a.archived, "ctrl+u right after ctrl+f unarchives A");
+    assert_eq!(task_a.status, HumanStatus::Review, "human status is kept");
+    // Unsaved tasks carry no number yet; the app tests check the T number once saved.
+    assert_eq!(model.message(), Some("archive undone · a task"));
     assert_eq!(
         domain.get(b).expect("task b").status,
         HumanStatus::Open,
-        "the empty-stack undo is a no-op"
+        "the undo is about A only"
     );
+    apply_intent(&mut domain, &mut model, BoardIntent::Undo, None).expect("second undo");
+    assert_eq!(model.message(), Some("nothing to undo"));
 }
 
 #[test]
@@ -7869,4 +7871,470 @@ fn ctrl_u_on_the_page_restores_a_step_s_old_text() {
     board_undo(&mut domain, &mut model);
     assert_eq!(step_view(&domain, id), before);
     assert_eq!(domain.get(id).expect("task").title, "Rename witness");
+}
+
+static UNDO_STATE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// #173 finding 3: archiving a task changes it, so the completion's undo entry is stale. The
+/// refusal names the task the way the board paints it, says what went stale and why, and
+/// never prints a uuid.
+#[test]
+fn undo_after_archiving_a_completed_task_names_the_task_and_the_archive() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    let seq = UNDO_STATE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("tsk-verbs-stale-undo-{nanos}-{seq}"));
+    std::fs::create_dir_all(&dir).expect("state dir");
+    let _guard = TempDirGuard(dir.clone());
+    let store = tsk_tui::store::TaskStore::new(&dir);
+
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "archive me",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    domain
+        .set_status(id, HumanStatus::Started)
+        .expect("start the task");
+    // The persistence boundary assigns the public number the refusal must name.
+    store.save(&domain).expect("save");
+    let mut domain = store.load().expect("load numbered task");
+    let number = domain.get(id).and_then(|task| task.number).expect("number");
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    assert_eq!(model.selected_id(), Some(id), "the only task is selected");
+
+    apply_intent(&mut domain, &mut model, BoardIntent::Complete, None).expect("ctrl+d");
+    assert_eq!(domain.get(id).expect("task").status, HumanStatus::Done);
+    domain.archive_task(id).expect("ctrl+f archives the task");
+    model.sync_from_domain(&domain);
+
+    let outcome = apply_intent(&mut domain, &mut model, BoardIntent::Undo, None).expect("ctrl+u");
+    assert_eq!(
+        outcome,
+        IntentOutcome::None,
+        "a refused undo persists nothing"
+    );
+    let task = domain.get(id).expect("task");
+    assert!(task.archived, "the refused undo leaves the task archived");
+    assert_eq!(task.status, HumanStatus::Done, "and done");
+
+    let expected = format!("T{number} changed since it was completed (archived); nothing undone");
+    assert_eq!(model.message(), Some(expected.as_str()));
+    let row = board_chrome_row(&model, (80, 24));
+    assert!(
+        row.contains(&expected),
+        "painted on the status row: {row:?}"
+    );
+    assert!(
+        !row.contains(&id.to_string()),
+        "the board never prints a task uuid: {row:?}"
+    );
+}
+
+struct TempDirGuard(PathBuf);
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// #173 finding 5: an existing step emptied in a task edit is refused like a new empty step:
+/// on its own row, with its editor open, and nothing saved. Both routes are covered: saving
+/// from inside the step editor, and saving after the emptied draft was parked.
+#[test]
+fn emptied_existing_step_is_refused_on_its_row_and_its_editor_stays_open() {
+    for park_first in [false, true] {
+        let (mut domain, mut model, id) =
+            board_with_steps("Empty rename witness", None, &["alpha step", "bravo step"]);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None)
+            .expect("open the selected step");
+        assert_eq!(model.input_mode(), BoardInputMode::EditStep);
+        for _ in "alpha step".chars() {
+            apply_intent(&mut domain, &mut model, BoardIntent::EditBackspace, None)
+                .expect("delete the step text");
+        }
+        if park_first {
+            let enter = map_key(model.input_mode(), press(KeyCode::Enter)).expect("enter");
+            apply_intent(&mut domain, &mut model, enter, None).expect("park the empty draft");
+            assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+        }
+        // A parked edit session routes keys through the form mapper, as the app does.
+        let save = if park_first {
+            let focus = model.form_focus().expect("task form focus");
+            map_task_form_key(focus, false, shift(KeyCode::Enter))
+        } else {
+            map_key(model.input_mode(), shift(KeyCode::Enter))
+        }
+        .expect("shift+enter");
+        let outcome = apply_intent(&mut domain, &mut model, save, None)
+            .expect("an emptied step is refused, not propagated");
+        assert_eq!(outcome, IntentOutcome::None, "park_first={park_first}");
+        assert_eq!(
+            model.input_mode(),
+            BoardInputMode::EditStep,
+            "the emptied step's editor is open (park_first={park_first})"
+        );
+        assert_eq!(
+            model.message(),
+            None,
+            "the refusal is not a status-row message (park_first={park_first})"
+        );
+        let refused = rendered_board(&model, 80, 24);
+        assert!(
+            refused
+                .lines()
+                .any(|row| row.contains("step…") && row.contains("text required")),
+            "the refusal paints on the step's own row (park_first={park_first}):\n{refused}"
+        );
+        assert_eq!(domain.get(id).expect("task").steps[0].text, "alpha step");
+
+        for ch in "zed".chars() {
+            apply_intent(&mut domain, &mut model, BoardIntent::EditInsert(ch), None)
+                .expect("type into the reopened editor");
+        }
+        let save = map_key(model.input_mode(), shift(KeyCode::Enter)).expect("shift+enter");
+        let outcome = apply_intent(&mut domain, &mut model, save, None).expect("save");
+        assert_eq!(outcome, IntentOutcome::Persist, "park_first={park_first}");
+        let task = domain.get(id).expect("task");
+        assert_eq!(task.steps[0].text, "zed", "park_first={park_first}");
+        assert_eq!(task.steps[1].text, "bravo step");
+    }
+}
+
+/// The one case the emptied step cannot take the editor: a typed new step is open. Its text
+/// survives, nothing is saved, and the status row says why.
+#[test]
+fn emptied_existing_step_refusal_keeps_an_open_typed_new_step() {
+    let (mut domain, mut model, id) = board_with_steps("Typed add witness", None, &["alpha step"]);
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None)
+        .expect("open the selected step");
+    for _ in "alpha step".chars() {
+        apply_intent(&mut domain, &mut model, BoardIntent::EditBackspace, None)
+            .expect("delete the step text");
+    }
+    let enter = map_key(model.input_mode(), press(KeyCode::Enter)).expect("enter");
+    apply_intent(&mut domain, &mut model, enter, None).expect("park the empty draft");
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginAddStep, None)
+        .expect("open the add row");
+    for ch in "new one".chars() {
+        apply_intent(&mut domain, &mut model, BoardIntent::EditInsert(ch), None)
+            .expect("type the new step");
+    }
+    let save = map_key(model.input_mode(), shift(KeyCode::Enter)).expect("shift+enter");
+    let outcome = apply_intent(&mut domain, &mut model, save, None).expect("refused save");
+    assert_eq!(outcome, IntentOutcome::None);
+    assert_eq!(model.input_mode(), BoardInputMode::EditStep);
+    assert_eq!(model.message(), Some("a cleared step needs text"));
+    let frame = rendered_board(&model, 80, 24);
+    assert!(
+        frame.contains("new one"),
+        "the typed add survives:\n{frame}"
+    );
+    let task = domain.get(id).expect("task");
+    assert_eq!(task.steps.len(), 1, "nothing is added");
+    assert_eq!(task.steps[0].text, "alpha step", "nothing is renamed");
+}
+
+/// A saved board of `titles` (numbered T1, T2, … by the store), every task `status`, with
+/// an empty undo stack, and the store it lives in.
+fn numbered_board(
+    titles: &[&str],
+    status: HumanStatus,
+) -> (
+    DomainState,
+    BoardModel,
+    Vec<uuid::Uuid>,
+    TaskStore,
+    TempDirGuard,
+) {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    let seq = UNDO_STATE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("tsk-verbs-undo-note-{nanos}-{seq}"));
+    std::fs::create_dir_all(&dir).expect("state dir");
+    let guard = TempDirGuard(dir.clone());
+    let store = TaskStore::new(&dir);
+    let mut domain = DomainState::new();
+    let ids: Vec<uuid::Uuid> = titles
+        .iter()
+        .map(|title| {
+            let id = domain
+                .create(
+                    *title,
+                    None,
+                    project(THIS_REPO),
+                    ProvenanceOrigin::Manual,
+                    None,
+                )
+                .expect("create");
+            if status != HumanStatus::Open {
+                domain.set_status(id, status).expect("status");
+            }
+            id
+        })
+        .collect();
+    store.save(&domain).expect("save numbers");
+    let domain = store.load().expect("load");
+    let model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    (domain, model, ids, store, guard)
+}
+
+/// Put the cursor on `id` with the arrow keys (a repeated row select reads as a double click,
+/// which opens the page).
+fn select_task(domain: &mut DomainState, model: &mut BoardModel, id: uuid::Uuid) {
+    let target = model
+        .visible_ids()
+        .iter()
+        .position(|&visible| visible == id)
+        .expect("task visible");
+    for _ in 0..model.visible_ids().len() {
+        let at = model
+            .selected_id()
+            .and_then(|selected| model.visible_ids().iter().position(|&v| v == selected));
+        let step = match at {
+            Some(at) if at == target => return,
+            Some(at) if at > target => BoardIntent::SelectPrev,
+            _ => BoardIntent::SelectNext,
+        };
+        apply_intent(domain, model, step, None).expect("move cursor");
+    }
+    assert_eq!(model.selected_id(), Some(id), "cursor reached the task");
+}
+
+/// Mark `ids` with the arrow keys and space.
+fn mark_by_keys(domain: &mut DomainState, model: &mut BoardModel, ids: &[uuid::Uuid]) {
+    if !model.mark_mode_active() {
+        apply_intent(domain, model, BoardIntent::ToggleMarkMode, None).expect("mark mode");
+    }
+    for &id in ids {
+        select_task(domain, model, id);
+        apply_intent(domain, model, BoardIntent::MarkToggle, None).expect("mark");
+    }
+}
+
+fn undo_message(domain: &mut DomainState, model: &mut BoardModel) -> String {
+    apply_intent(domain, model, BoardIntent::Undo, None).expect("ctrl+u");
+    model.message().unwrap_or_default().to_string()
+}
+
+/// `ctrl+f` then `ctrl+u` brings the task back and says which one; a marked set comes back
+/// as one undo step naming every task (#173).
+#[test]
+fn ctrl_u_right_after_ctrl_f_brings_the_task_or_marked_set_back() {
+    let (mut domain, mut model, ids, _store, _guard) =
+        numbered_board(&["one", "two", "three"], HumanStatus::Ready);
+    select_task(&mut domain, &mut model, ids[0]);
+    apply_intent(&mut domain, &mut model, BoardIntent::File, None).expect("ctrl+f");
+    assert!(domain.get(ids[0]).expect("task").archived);
+    assert_eq!(undo_message(&mut domain, &mut model), "archive undone · T1");
+    assert!(!domain.get(ids[0]).expect("task").archived);
+    assert_eq!(domain.get(ids[0]).expect("task").status, HumanStatus::Ready);
+
+    mark_by_keys(&mut domain, &mut model, &[ids[1], ids[2]]);
+    apply_intent(&mut domain, &mut model, BoardIntent::File, None).expect("marked ctrl+f");
+    assert!(ids[1..]
+        .iter()
+        .all(|id| domain.get(*id).expect("task").archived));
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "archive undone · T2, T3"
+    );
+    assert!(ids
+        .iter()
+        .all(|id| !domain.get(*id).expect("task").archived));
+    assert_eq!(undo_message(&mut domain, &mut model), "nothing to undo");
+}
+
+/// Unarchiving with `ctrl+f` in the archived group is undoable too, single and marked.
+#[test]
+fn ctrl_u_after_unarchiving_with_ctrl_f_archives_again() {
+    let (mut domain, mut model, ids, _store, _guard) =
+        numbered_board(&["one", "two"], HumanStatus::Done);
+    for id in &ids {
+        domain.archive_task(*id).expect("archive");
+    }
+    model.sync_from_domain(&domain);
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer, None).expect("drawer");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ToggleArchivedGroup,
+        None,
+    )
+    .expect("archived group");
+    select_task(&mut domain, &mut model, ids[0]);
+    apply_intent(&mut domain, &mut model, BoardIntent::File, None).expect("unarchive");
+    assert!(!domain.get(ids[0]).expect("task").archived);
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "unarchive undone · T1"
+    );
+    assert!(domain.get(ids[0]).expect("task").archived);
+
+    mark_by_keys(&mut domain, &mut model, &ids);
+    apply_intent(&mut domain, &mut model, BoardIntent::File, None).expect("marked unarchive");
+    assert!(ids
+        .iter()
+        .all(|id| !domain.get(*id).expect("task").archived));
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "unarchive undone · T1, T2"
+    );
+    assert!(ids.iter().all(|id| domain.get(*id).expect("task").archived));
+}
+
+/// Archiving in the drawer can leave the cursor on the task just archived: `ctrl+u` then
+/// undoes the archive (one step, no older entry left behind) rather than taking the plain
+/// unarchive route, which would leave the archive's entry to go stale.
+#[test]
+fn ctrl_u_on_the_task_just_archived_undoes_the_archive() {
+    let (mut domain, mut model, ids, _store, _guard) = numbered_board(&["one"], HumanStatus::Done);
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer, None).expect("drawer");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ToggleArchivedGroup,
+        None,
+    )
+    .expect("archived group");
+    select_task(&mut domain, &mut model, ids[0]);
+    apply_intent(&mut domain, &mut model, BoardIntent::File, None).expect("ctrl+f");
+    assert!(domain.get(ids[0]).expect("task").archived);
+    select_task(&mut domain, &mut model, ids[0]);
+    assert_eq!(undo_message(&mut domain, &mut model), "archive undone · T1");
+    assert!(!domain.get(ids[0]).expect("task").archived);
+    assert_eq!(undo_message(&mut domain, &mut model), "nothing to undo");
+}
+
+/// An archived cursor with an older entry on top still restores just that task, and says so.
+#[test]
+fn ctrl_u_on_an_archived_cursor_names_the_task_it_unarchives() {
+    let (mut domain, mut model, ids, _store, _guard) =
+        numbered_board(&["one", "two"], HumanStatus::Done);
+    domain
+        .archive_task(ids[0])
+        .expect("archived outside the board");
+    model.sync_from_domain(&domain);
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer, None).expect("drawer");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ToggleArchivedGroup,
+        None,
+    )
+    .expect("archived group");
+    select_task(&mut domain, &mut model, ids[0]);
+    assert_eq!(undo_message(&mut domain, &mut model), "T1 unarchived");
+    assert!(!domain.get(ids[0]).expect("task").archived);
+}
+
+/// Every undone entry names the task(s) it is about: one task by number with where it went,
+/// a marked set by its numbers, or `N tasks` past three (#173).
+#[test]
+fn undo_messages_name_the_tasks_of_the_entry_undone() {
+    let (mut domain, mut model, ids, _store, _guard) =
+        numbered_board(&["one", "two", "three", "four"], HumanStatus::Started);
+
+    select_task(&mut domain, &mut model, ids[0]);
+    apply_intent(&mut domain, &mut model, BoardIntent::Complete, None).expect("done");
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "done undone · T1 back to started"
+    );
+
+    mark_by_keys(&mut domain, &mut model, &[ids[0], ids[1]]);
+    apply_intent(&mut domain, &mut model, BoardIntent::Complete, None).expect("marked done");
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "done undone · T1, T2"
+    );
+
+    select_task(&mut domain, &mut model, ids[2]);
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::SetStatus(HumanStatus::Ready),
+        None,
+    )
+    .expect("ready");
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "status undone · T3 back to started"
+    );
+
+    mark_by_keys(&mut domain, &mut model, &ids);
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::SetStatus(HumanStatus::Open),
+        None,
+    )
+    .expect("marked open");
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "status undone · 4 tasks"
+    );
+
+    domain.soft_delete(ids[3]).expect("delete");
+    model.sync_from_domain(&domain);
+    assert_eq!(undo_message(&mut domain, &mut model), "delete undone · T4");
+
+    domain
+        .assign(ids[1], Some("builder".into()))
+        .expect("assign");
+    model.sync_from_domain(&domain);
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "assignee undone · T2"
+    );
+
+    domain
+        .with_steps_undo(ids[1], |domain| {
+            domain.add_step(ids[1], "a step").map(|_| ())
+        })
+        .expect("step");
+    model.sync_from_domain(&domain);
+    assert_eq!(undo_message(&mut domain, &mut model), "steps undone · T2");
+    assert_eq!(undo_message(&mut domain, &mut model), "nothing to undo");
+}
+
+/// The refusal names the task that moved on and, for a marked set, every task of the entry
+/// it refused. Once a save prunes that stale entry, `ctrl+u` reaches the older one, and the
+/// row names that older task, never the one the user last touched.
+#[test]
+fn a_refused_undo_names_its_tasks_and_a_pruned_one_never_hides_which_task_comes_back() {
+    let (mut domain, mut model, ids, store, _guard) =
+        numbered_board(&["one", "two", "three"], HumanStatus::Started);
+    select_task(&mut domain, &mut model, ids[0]);
+    apply_intent(&mut domain, &mut model, BoardIntent::Complete, None).expect("done T1");
+    mark_by_keys(&mut domain, &mut model, &[ids[1], ids[2]]);
+    apply_intent(&mut domain, &mut model, BoardIntent::Complete, None).expect("done T2, T3");
+    domain
+        .set_status(ids[2], HumanStatus::Started)
+        .expect("T3 reopened outside undo");
+    model.sync_from_domain(&domain);
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "T3 changed since it was completed (reopened); nothing undone (T2, T3)"
+    );
+    assert_eq!(domain.get(ids[1]).expect("T2").status, HumanStatus::Done);
+
+    store.save(&domain).expect("save prunes the stale entry");
+    let mut domain = store.load().expect("reload");
+    model.sync_from_domain(&domain);
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "done undone · T1 back to started"
+    );
+    assert_eq!(domain.get(ids[1]).expect("T2").status, HumanStatus::Done);
 }

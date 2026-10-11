@@ -40,8 +40,8 @@ type MigrationStep = fn(serde_json::Value) -> Result<serde_json::Value, StoreErr
 /// v5 documents gain the optional v6 task fields, v6 documents gain blocks, v7 documents
 /// gain the start undo entry, v8 documents gain review rounds, v9 documents gain event
 /// authors and details, v10 documents gain `after` links, v11 documents gain the reply
-/// `sent` marker, and v12 documents gain the status a done's undo restores plus the status and
-/// steps undo entries.
+/// `sent` marker, and v12 documents gain the status a done's undo restores plus the status,
+/// steps, and archive undo entries.
 const MIGRATIONS: &[MigrationStep] = &[
     migrate_v1_to_v2,
     migrate_v2_to_v3,
@@ -161,7 +161,7 @@ fn migrate_v11_to_v12(document: serde_json::Value) -> Result<serde_json::Value, 
 }
 
 /// v12 -> v13: a done's undo entry gains the status it restores (`previous`), and the undo
-/// stack gains `status` and `steps` entries. A v12 done entry carries no `previous` and reads
+/// stack gains `status`, `steps`, and `archive` entries. A v12 done entry carries no `previous` and reads
 /// as `open`, where its undo always went.
 fn migrate_v12_to_v13(document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
     Ok(document)

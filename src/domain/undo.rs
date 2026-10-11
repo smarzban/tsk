@@ -1,5 +1,5 @@
-//! Undo stack for soft-delete, complete, status changes, steps, assignment, base, block,
-//! `after`, and a start that dispatched.
+//! Undo stack for soft-delete, complete, status changes, steps, archive, assignment, base,
+//! block, `after`, and a start that dispatched.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -67,6 +67,12 @@ pub enum UndoEntry {
         previous: Vec<Step>,
         expected_revision: Uuid,
     },
+    /// A board archive or unarchive (`ctrl+f`); reversing puts the `previous` flag back.
+    Archive {
+        id: Uuid,
+        previous: bool,
+        expected_revision: Uuid,
+    },
     /// A change to a task's `after` list (set, chain, or a delete that unlinked it); reversing
     /// puts `previous` back.
     SetAfter {
@@ -97,6 +103,7 @@ impl UndoEntry {
                 | UndoEntry::Start { .. }
                 | UndoEntry::Status { .. }
                 | UndoEntry::Steps { .. }
+                | UndoEntry::Archive { .. }
                 | UndoEntry::SetAfter { .. } => leaves.push(entry),
             }
         }
@@ -145,6 +152,11 @@ impl UndoEntry {
                     ..
                 }
                 | UndoEntry::Steps {
+                    id,
+                    expected_revision,
+                    ..
+                }
+                | UndoEntry::Archive {
                     id,
                     expected_revision,
                     ..
@@ -206,6 +218,11 @@ impl UndoEntry {
                 expected_revision,
                 ..
             }
+            | UndoEntry::Archive {
+                id: target,
+                expected_revision,
+                ..
+            }
             | UndoEntry::SetAfter {
                 id: target,
                 expected_revision,
@@ -229,6 +246,7 @@ impl UndoEntry {
                 state.restore_status(id, previous)
             }
             UndoEntry::Steps { id, previous, .. } => state.restore_steps(id, previous),
+            UndoEntry::Archive { id, previous, .. } => state.restore_archived(id, previous),
             UndoEntry::SetAfter { id, previous, .. } => state.restore_after(id, previous),
             UndoEntry::Batch { entries } => {
                 for entry in entries.into_iter().rev() {
@@ -259,6 +277,16 @@ impl DomainState {
         self.pop_undo()
             .expect("undo entry remains present after revision checks")
             .reverse(self)
+    }
+
+    /// Whether the top undo entry would apply now: every task it targets is still at the
+    /// revision it recorded.
+    pub fn top_undo_is_live(&self) -> bool {
+        self.last_undo().is_some_and(|entry| {
+            entry.targets().into_iter().all(|(id, expected_revision)| {
+                self.get(id).map(|task| task.revision) == Some(expected_revision)
+            })
+        })
     }
 }
 

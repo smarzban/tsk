@@ -7,8 +7,8 @@ use uuid::Uuid;
 
 use crate::context::InvocationSnapshot;
 use crate::domain::{
-    normalize_thread, thread_refusal_message, DomainError, DomainState, HumanStatus, TaskScope,
-    ThreadError,
+    normalize_thread, status_word, thread_refusal_message, DomainError, DomainState, HumanStatus,
+    TaskScope, ThreadError, UndoEntry,
 };
 use crate::scope::paths_equivalent;
 use crate::ui::capture::{CaptureField, TITLE_REQUIRED_MESSAGE};
@@ -50,70 +50,156 @@ fn take_verb_targets(model: &mut BoardModel) -> (Vec<Uuid>, bool) {
     (targets, bulk)
 }
 
-fn file_batch(domain: &mut DomainState, targets: &[Uuid]) -> Result<bool, DomainError> {
-    let baseline = domain.clone();
-    let mut changed = false;
-    for &id in targets {
-        let Some(archived) = domain.get(id).map(|task| task.archived) else {
-            *domain = baseline;
-            return Err(DomainError::UnknownId(id));
-        };
-        let result = if archived {
-            domain.unarchive_task(id)
-        } else {
-            domain.archive_task(id)
-        };
-        match result {
-            Ok(task_changed) => changed |= task_changed,
-            Err(error) => {
-                *domain = baseline;
-                return Err(error);
-            }
-        }
-    }
-    Ok(changed)
+/// What one `ctrl+u` reverts, read from the top entry before it is undone: the action word, the
+/// tasks it is about, and, for a done, the tasks it started that go back to ready.
+struct UndoNote {
+    action: &'static str,
+    subjects: Vec<Uuid>,
+    released: Vec<Uuid>,
+    restores_status: bool,
 }
 
-/// Undoing a done that started the tasks it released: `done undone · T203 back to ready ·
-/// @claude kept running`. `None` for any other batch.
-fn released_undo_message(domain: &DomainState, entry: &crate::domain::UndoEntry) -> Option<String> {
-    use crate::domain::UndoEntry;
-    let leaves = entry.leaf_entries();
-    if !leaves
-        .iter()
-        .any(|leaf| matches!(leaf, UndoEntry::Complete { .. }))
-    {
-        return None;
+/// The board's word for the action an undo leaf recorded. `domain` is the state before the
+/// undo, which still shows what the action did (a block card versus a review card).
+fn undo_action_word(domain: &DomainState, leaf: &UndoEntry) -> &'static str {
+    match leaf {
+        UndoEntry::Complete { .. } => "done",
+        UndoEntry::SoftDelete { .. } => "delete",
+        UndoEntry::Archive {
+            previous: false, ..
+        } => "archive",
+        UndoEntry::Archive { previous: true, .. } => "unarchive",
+        UndoEntry::Start { .. } => "start",
+        UndoEntry::Status { .. } => "status",
+        UndoEntry::Block { id, .. } => {
+            if domain
+                .get(*id)
+                .is_some_and(|task| task.status == HumanStatus::Review)
+            {
+                "review"
+            } else {
+                "block"
+            }
+        }
+        UndoEntry::Assign { .. } => "assignee",
+        UndoEntry::SetBase { .. } => "base",
+        UndoEntry::SetAfter { .. } => "after",
+        UndoEntry::Steps { .. } => "steps",
+        UndoEntry::Batch { .. } => "undo",
     }
-    let started: Vec<&crate::domain::Task> = leaves
+}
+
+fn leaf_target(leaf: &UndoEntry) -> Option<Uuid> {
+    leaf.targets().first().map(|(id, _)| *id)
+}
+
+impl UndoNote {
+    fn read(domain: &DomainState, entry: &UndoEntry) -> Option<Self> {
+        let leaves = entry.leaf_entries();
+        let first = *leaves.first()?;
+        let kind = std::mem::discriminant(first);
+        let mut subjects = Vec::new();
+        let mut released = Vec::new();
+        for leaf in &leaves {
+            let Some(id) = leaf_target(leaf) else {
+                continue;
+            };
+            if std::mem::discriminant(*leaf) == kind {
+                if !subjects.contains(&id) {
+                    subjects.push(id);
+                }
+            } else if matches!(first, UndoEntry::Complete { .. })
+                && matches!(leaf, UndoEntry::Start { .. })
+                && !released.contains(&id)
+            {
+                released.push(id);
+            }
+        }
+        Some(Self {
+            action: undo_action_word(domain, first),
+            subjects,
+            released,
+            restores_status: matches!(
+                first,
+                UndoEntry::Complete { .. }
+                    | UndoEntry::Start { .. }
+                    | UndoEntry::Status { .. }
+                    | UndoEntry::Block { .. }
+            ),
+        })
+    }
+
+    /// `done undone · T202 back to started · T203 back to ready · @claude kept running`, read
+    /// from the state after the undo.
+    fn message(&self, domain: &DomainState) -> String {
+        let mut message = format!(
+            "{} undone · {}",
+            self.action,
+            task_names(domain, &self.subjects)
+        );
+        if self.restores_status {
+            if let [id] = self.subjects.as_slice() {
+                if let Some(task) = domain.get(*id) {
+                    message.push_str(&format!(" back to {}", status_word(task.status)));
+                }
+            }
+        }
+        if !self.released.is_empty() {
+            message.push_str(&format!(
+                " · {} back to ready",
+                task_names(domain, &self.released)
+            ));
+        }
+        // Undo never stops an agent: a task whose dispatch is live keeps it running.
+        let mut running: Vec<String> = self
+            .subjects
+            .iter()
+            .chain(&self.released)
+            .filter(|_| self.restores_status)
+            .filter_map(|id| domain.get(*id))
+            .filter(|task| task.status != HumanStatus::Started)
+            .filter(|task| task.dispatch.as_ref().is_some_and(|record| !record.cleaned))
+            .filter_map(|task| task.assignee.clone())
+            .collect();
+        running.sort();
+        running.dedup();
+        for assignee in running {
+            message.push_str(&format!(" · @{assignee} kept running"));
+        }
+        message
+    }
+}
+
+/// `T3`, `T3, T4, T5`, or `5 tasks`: the tasks an undo is about, the way the board names them.
+fn task_names(domain: &DomainState, ids: &[Uuid]) -> String {
+    if ids.len() > 3 {
+        return format!("{} tasks", ids.len());
+    }
+    let mut ids = ids.to_vec();
+    ids.sort_by_key(|id| {
+        domain
+            .get(*id)
+            .and_then(|task| task.number)
+            .unwrap_or(u64::MAX)
+    });
+    let names: Vec<String> = ids
         .iter()
-        .filter_map(|leaf| match leaf {
-            UndoEntry::Start { id, .. } => domain.get(*id),
-            _ => None,
+        .map(|id| {
+            domain
+                .get(*id)
+                .and_then(crate::domain::Task::board_identifier)
+                .unwrap_or_else(|| "a task".to_string())
         })
         .collect();
-    if started.is_empty() {
-        return None;
+    if names.is_empty() {
+        "nothing".to_string()
+    } else {
+        names.join(", ")
     }
-    let numbers = started
-        .iter()
-        .filter_map(|task| task.number)
-        .map(|number| format!("T{number}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut message = format!("done undone · {numbers} back to ready");
-    let mut running: Vec<String> = started
-        .iter()
-        .filter(|task| task.dispatch.as_ref().is_some_and(|record| !record.cleaned))
-        .filter_map(|task| task.assignee.clone())
-        .collect();
-    running.sort();
-    running.dedup();
-    for assignee in running {
-        message.push_str(&format!(" · @{assignee} kept running"));
-    }
-    Some(message)
 }
+
+/// The status row when the undo stack is empty.
+const NOTHING_TO_UNDO: &str = "nothing to undo";
 
 /// The refusal when **chain in order** has fewer than two marked tasks to chain.
 const CHAIN_NEEDS_MARKS: &str = "mark two or more tasks, in order, to chain them";
@@ -129,22 +215,62 @@ fn after_list(numbers: &[u64]) -> String {
 
 /// What the row says when an Undo is refused because its target moved on.
 ///
-/// The words are the domain's, taken from [`DomainError::StaleUndo`] rather than restated
-/// here, so this cannot drift from the refusal it presents. Only the *order* is this
-/// layer's: the domain leads with the identifier, which is right for a log line or an error
-/// chain, but the board has one chrome row that clips, and a 36-character uuid in front
-/// spends the whole budget on the part the reader cannot act on. Reading the same words
-/// reason-first means a clipped row loses the uuid instead of the meaning.
-///
-/// If the domain ever stops leading with the identifier, there is nothing to move and its
-/// line is shown exactly as stated.
-fn stale_undo_message(id: Uuid) -> String {
-    let stated = DomainError::StaleUndo(id).to_string();
-    let identifier = format!("task {id}");
-    match stated.strip_prefix(&identifier).map(str::trim_start) {
-        Some(reason) if !reason.is_empty() => format!("{reason} · {identifier}"),
-        _ => stated,
+/// The domain's [`DomainError::StaleUndo`] names the task by uuid, which is right for a log
+/// line but means nothing on the board. The row names the task the way the board paints it,
+/// says which recorded action went stale, adds the visible change that most likely caused it
+/// (an archive is the common one), and states that nothing moved, naming every task of a
+/// marked set's entry.
+fn stale_undo_message(domain: &DomainState, id: Uuid) -> String {
+    let task = domain.get(id);
+    let subject = task
+        .and_then(crate::domain::Task::board_identifier)
+        .unwrap_or_else(|| "this task".to_string());
+    let entry = domain.last_undo();
+    let leaf = entry.and_then(|entry| {
+        entry
+            .leaf_entries()
+            .into_iter()
+            .find(|leaf| leaf_target(leaf) == Some(id))
+    });
+    let since = match leaf {
+        Some(UndoEntry::Complete { .. }) => "since it was completed",
+        Some(UndoEntry::SoftDelete { .. }) => "since it was deleted",
+        Some(UndoEntry::Archive {
+            previous: false, ..
+        }) => "since it was archived",
+        Some(UndoEntry::Archive { previous: true, .. }) => "since it was unarchived",
+        Some(UndoEntry::Start { .. }) => "since it was started",
+        Some(UndoEntry::Status { .. }) => "since its status change",
+        Some(UndoEntry::Block { .. }) => "since its block or review",
+        Some(UndoEntry::Assign { .. }) => "since it was assigned",
+        Some(UndoEntry::SetBase { .. }) => "since its base change",
+        Some(UndoEntry::SetAfter { .. }) => "since its after change",
+        Some(UndoEntry::Steps { .. }) => "since its step change",
+        Some(UndoEntry::Batch { .. }) | None => "since the undoable action",
+    };
+    let cause = task.and_then(|task| match leaf {
+        Some(UndoEntry::Archive {
+            previous: false, ..
+        }) if !task.archived => Some("unarchived"),
+        Some(UndoEntry::Archive { .. }) => None,
+        _ if task.archived => Some("archived"),
+        Some(UndoEntry::Complete { .. }) if task.soft_deleted => Some("deleted"),
+        Some(UndoEntry::Complete { .. }) if task.status != HumanStatus::Done => Some("reopened"),
+        Some(UndoEntry::SoftDelete { .. }) if !task.soft_deleted => Some("restored"),
+        _ => None,
+    });
+    let mut message = match cause {
+        Some(cause) => format!("{subject} changed {since} ({cause}); nothing undone"),
+        None => format!("{subject} changed {since}; nothing undone"),
+    };
+    let tasks = entry
+        .and_then(|entry| UndoNote::read(domain, entry))
+        .map(|note| note.subjects)
+        .unwrap_or_default();
+    if tasks.len() > 1 {
+        message.push_str(&format!(" ({})", task_names(domain, &tasks)));
     }
+    message
 }
 
 /// A **mutating board action**: an intent this reducer may report as persisting domain
@@ -3254,12 +3380,12 @@ fn apply_board_intent(
                 return Ok(IntentOutcome::Persist);
             }
             model.close_popup();
-            let (targets, _) = take_verb_targets(model);
+            let (targets, bulk) = take_verb_targets(model);
             if targets.is_empty() {
                 model.set_message(NO_SELECTION);
                 return Ok(IntentOutcome::None);
             }
-            if !file_batch(domain, &targets)? {
+            if !domain.file_tasks(&targets, bulk)? {
                 return Ok(IntentOutcome::None);
             }
             // Success has no message: disappearing rows are the feedback.
@@ -3296,51 +3422,45 @@ fn apply_board_intent(
                 return Ok(IntentOutcome::Persist);
             }
             model.close_popup();
-            // ctrl+u on an archived selection is the unarchive route, never an undo:
-            // the stack is not popped (AC-3).
-            if let Some(id) = model.selected_id() {
+            // ctrl+u right after an archive undoes it. Otherwise ctrl+u on an archived
+            // selection is the unarchive route, never an undo: the stack is not popped (AC-3).
+            let archive_on_top = domain.top_undo_is_live()
+                && domain.last_undo().is_some_and(|entry| {
+                    entry
+                        .leaf_entries()
+                        .iter()
+                        .all(|leaf| matches!(leaf, UndoEntry::Archive { .. }))
+                });
+            if let Some(id) = model.selected_id().filter(|_| !archive_on_top) {
                 if domain.get(id).is_some_and(|task| task.archived) {
                     domain.unarchive_task(id)?;
+                    let name = task_names(domain, &[id]);
                     model.sync_from_domain(domain);
+                    model.set_message(format!("{name} unarchived"));
                     return Ok(IntentOutcome::Persist);
                 }
             }
-            // A start that dispatched comes back as a status change only: its agent is not
-            // stopped and its worktree stays.
-            let kept_running = match domain.last_undo() {
-                Some(crate::domain::UndoEntry::Start { id, .. }) => domain
-                    .get(*id)
-                    .and_then(|task| task.assignee.clone())
-                    .map(|assignee| format!("start undone · @{assignee} kept running")),
-                // A plain status change on a dispatched task leaves its agent alone too.
-                Some(crate::domain::UndoEntry::Status { id, .. }) => domain
-                    .get(*id)
-                    .filter(|task| task.dispatch.as_ref().is_some_and(|record| !record.cleaned))
-                    .and_then(|task| task.assignee.clone())
-                    .map(|assignee| format!("undone · @{assignee} kept running")),
-                Some(entry @ crate::domain::UndoEntry::Batch { .. }) => {
-                    released_undo_message(domain, entry)
-                }
-                _ => None,
+            let Some(entry) = domain.last_undo().cloned() else {
+                model.set_message(NOTHING_TO_UNDO);
+                return Ok(IntentOutcome::None);
             };
+            let note = UndoNote::read(domain, &entry);
             if let Err(error) = domain.undo() {
                 if let DomainError::StaleUndo(id) = error {
                     model.sync_from_domain(domain);
                     // Nothing moved, so this reports nothing to persist -- which is what
                     // puts the way back on the row beside the refusal that explains why
-                    // this attempt did not take. The refusal is stated the
-                    // way this row can be read when it clips, not the way the domain logs
-                    // it; the error itself is unchanged.
-                    model.set_message(stale_undo_message(id));
+                    // this attempt did not take.
+                    model.set_message(stale_undo_message(domain, id));
                     return Ok(IntentOutcome::None);
                 }
                 return Err(error);
             }
-            if let Some(message) = kept_running {
-                model.sync_from_domain(domain);
-                model.set_message(message);
-                return Ok(IntentOutcome::Persist);
+            model.sync_from_domain(domain);
+            if let Some(note) = note {
+                model.set_message(note.message(domain));
             }
+            return Ok(IntentOutcome::Persist);
         }
     }
 
@@ -3724,11 +3844,18 @@ fn confirm_edit(
         .map(|(step_id, draft)| (*step_id, draft.value().trim().to_string()))
         .collect::<std::collections::BTreeMap<_, _>>();
     let step_removals = form.steps.removals.clone();
-    if step_renames.values().any(String::is_empty) {
-        model.set_message(STEP_TEXT_REQUIRED);
+    let task = domain.get(id).ok_or(DomainError::UnknownId(id))?.clone();
+    // An existing step emptied in this session is refused the way a new empty step is: on
+    // its own row, with its editor open, never by a status-row message beside a blank row.
+    let emptied = task.steps.iter().enumerate().find(|(_, step)| {
+        step_renames
+            .get(&step.id)
+            .is_some_and(|text| text.is_empty())
+    });
+    if let Some((index, step)) = emptied {
+        refuse_empty_step_rename(model, index, step.id);
         return Ok(IntentOutcome::None);
     }
-    let task = domain.get(id).ok_or(DomainError::UnknownId(id))?.clone();
     let selected_step = form
         .steps
         .cursor
@@ -4256,6 +4383,34 @@ fn open_step_editor(model: &mut BoardModel, text: &str, rename: Option<Uuid>) {
     }
 }
 
+/// Reopen the emptied existing step at `index` with the inline `text required` refusal.
+///
+/// A typed new-step row that is open when the session save is refused would lose its text if
+/// the emptied step took its place, so it stays open and the status row says what is wrong.
+fn refuse_empty_step_rename(model: &mut BoardModel, index: usize, step_id: Uuid) {
+    let typed_add_open = model.form.as_ref().is_some_and(|form| {
+        form.steps.editor.as_ref().is_some_and(|editor| {
+            editor.rename.is_none() && !editor.buffer.value().trim().is_empty()
+        })
+    });
+    if typed_add_open {
+        model.set_message(EMPTIED_STEP_REFUSAL);
+        return;
+    }
+    if let Some(form) = model.form.as_mut() {
+        form.steps.cursor = Some(index);
+        steps_scroll_to_cursor(form, index);
+    }
+    open_step_editor(model, "", Some(step_id));
+    if let Some(editor) = model
+        .form
+        .as_mut()
+        .and_then(|form| form.steps.editor.as_mut())
+    {
+        editor.refusal = Some(STEP_TEXT_REQUIRED.to_string());
+    }
+}
+
 /// Close the inline step editor back to page view, discarding its draft. Any pending editor
 /// save goes with it: a closed row has nothing left for the save boundary to release (the only
 /// path that can be here with one pending is a defensive direct
@@ -4295,6 +4450,9 @@ fn close_step_editor(model: &mut BoardModel) {
 /// What the inline step row paints when its draft is empty after trim: a short dim refusal
 /// on the row itself, never the board status row.
 const STEP_TEXT_REQUIRED: &str = "text required";
+
+/// The status-row form of the same refusal, for when an open new-step row keeps the editor.
+const EMPTIED_STEP_REFUSAL: &str = "a cleared step needs text";
 
 /// Enter saves a new step and opens the next empty row. Shift+Enter saves it and
 /// then the enclosing form (task session or expanded capture).

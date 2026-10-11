@@ -1264,6 +1264,54 @@ impl DomainState {
         self.set_archived(id, false, TaskEventKind::Unarchived)
     }
 
+    /// Archive each of `ids` that is not archived and unarchive each that is, as one undoable
+    /// action: one [`UndoEntry::Archive`] for a single task, an [`UndoEntry::Batch`] for a
+    /// marked set. All or nothing. Returns whether any task changed.
+    pub fn file_tasks(&mut self, ids: &[Uuid], marked: bool) -> Result<bool, DomainError> {
+        let ids = self.prevalidate_batch_ids(ids)?;
+        let baseline = self.clone();
+        let mut entries = Vec::new();
+        for id in ids {
+            let previous = self.task_mut(id)?.archived;
+            let changed = if previous {
+                self.unarchive_task(id)
+            } else {
+                self.archive_task(id)
+            };
+            match changed {
+                Ok(true) => entries.push(UndoEntry::Archive {
+                    id,
+                    previous,
+                    expected_revision: self.task_mut(id)?.revision,
+                }),
+                Ok(false) => {}
+                Err(error) => {
+                    *self = baseline;
+                    return Err(error);
+                }
+            }
+        }
+        if entries.is_empty() {
+            return Ok(false);
+        }
+        self.undo_stack.push(if marked {
+            UndoEntry::Batch { entries }
+        } else {
+            entries.pop().expect("one archive undo")
+        });
+        Ok(true)
+    }
+
+    /// Reverse an archive or unarchive: put the `previous` flag back.
+    pub(crate) fn restore_archived(&mut self, id: Uuid, previous: bool) -> Result<(), DomainError> {
+        let kind = if previous {
+            TaskEventKind::Archived
+        } else {
+            TaskEventKind::Unarchived
+        };
+        self.set_archived(id, previous, kind).map(|_| ())
+    }
+
     fn set_archived(
         &mut self,
         id: Uuid,
@@ -2232,9 +2280,9 @@ impl DomainState {
                             }
                             UndoEntry::SetAfter { .. } => task.last_event_at(TaskEventKind::Edited),
                             // A live entry's target was last changed by the action it records.
-                            UndoEntry::Status { .. } | UndoEntry::Steps { .. } => {
-                                Some(task.updated_at)
-                            }
+                            UndoEntry::Status { .. }
+                            | UndoEntry::Steps { .. }
+                            | UndoEntry::Archive { .. } => Some(task.updated_at),
                             UndoEntry::Batch { .. } => unreachable!("batches are flattened"),
                         }
                     })
