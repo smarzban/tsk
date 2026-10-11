@@ -30,7 +30,7 @@ Canonical terms for this repo. No implementation detail.
 - **thread label**: the thread name painted beside a project-board task row. It is chrome, not a task; selecting a local thread filter hides redundant labels.
 - **unthreaded**: carrying no thread. Unthreaded tasks remain in the project's flat task board.
 - **wide stage**: the session-only slider position of a wide (≥110 column) board: 0 `FullBoard`, A `Split`, G `Rail`, F `FullTask` (`ui::tier::WideStage`). Focus and geometry derive from the stage; it is never persisted and survives resizes.
-- **rail**: the 32-column dim board column of stage G: tabs, section rules, and wrapped task rows, without the meta column or the done drawer.
+- **rail**: the 32-column dim board column of stage G: tabs, section rules, and wrapped task rows, without the meta column. It keeps the board's done drawer and archived fold state.
 - **single-pane view**: a presentation that shows only the focused board or task surface.
 - **focused surface**: the board or task view that currently owns interaction; at wide widths it derives from the wide stage (0/A board-owned, G/F task-owned), below 110 from the single-pane presentation.
 - **working task**: a non-done task with human status open, ready, started, blocked, or review, not soft-deleted and not archived.
