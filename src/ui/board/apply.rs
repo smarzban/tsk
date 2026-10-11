@@ -19,6 +19,7 @@ use crate::ui::queue::{NavTab, ARCHIVED_HEADER_ROW_ID, INBOX_HEADER_ROW_ID};
 use crate::ui::tier::{FocusedSurface, WideStage};
 
 use super::commands::{resolve_board_command, CommandSurface};
+use super::model::{steps_scroll_to_cursor, steps_scroll_to_row};
 use super::model::{
     BoardForm, BoardInputMode, BoardLocation, BoardModel, IntentOutcome, ListPickerValue,
     PickerTab, ProjectPickerState, ProjectScopeOption, ProjectsView, StepEditor, StepEditorSave,
@@ -219,6 +220,7 @@ fn read_only_focus_refuses(intent: &BoardIntent) -> bool {
             | BoardIntent::BeginEditNotes
             | BoardIntent::BeginEditScope
             | BoardIntent::BeginAddStep
+            | BoardIntent::BeginAppendStep
             | BoardIntent::ToggleThreadEditing
             | BoardIntent::FormCycleScope
             // AC-44: Tab, shift+Tab, a field click, and the step cursor are edit
@@ -270,6 +272,7 @@ pub fn apply_intent(
                 | BoardIntent::CancelEdit
                 | BoardIntent::ShiftEnterAsCtrlJ
                 | BoardIntent::BeginAddStep
+                | BoardIntent::BeginAppendStep
         )
     {
         let _ = model.park_rename_step_draft();
@@ -453,6 +456,11 @@ fn apply_board_intent(
         BoardIntent::Quit => return Ok(IntentOutcome::Quit),
         BoardIntent::OpenCapture => {
             model.close_popup();
+            // The palette reaches this from a task page too: never drop a dirty session.
+            if model.form.is_some() && model.has_unsaved_work() {
+                model.set_message(DIRTY_TASK_SWITCH_REFUSAL);
+                return Ok(IntentOutcome::None);
+            }
             model.form = None;
             // A non-All board scope wins for this quick-add draft. All projects retains the
             // invocation default.
@@ -913,13 +921,16 @@ fn apply_board_intent(
             model.set_list_scroll(offset);
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::BeginAddStep => {
+        BoardIntent::BeginAddStep | BoardIntent::BeginAppendStep => {
             model.close_popup();
             // Ctrl+A and the trailing target both open the independent add row from a task
             // page or an expanded capture. Park a rename first, so Ctrl+A never drops an
             // existing staged rename while replacing its cursor with the add row.
             // A selected stored step anchors the row: the new step lands directly below it.
-            let anchor = selected_step(domain, model).map(|(_, step_id)| step_id);
+            // A click on the trailing `+ step` row means the end of the list.
+            let anchor = (intent == BoardIntent::BeginAddStep)
+                .then(|| selected_step(domain, model).map(|(_, step_id)| step_id))
+                .flatten();
             if model.form.is_some() && model.park_rename_step_draft() {
                 open_step_editor(model, "", None);
                 if let Some(editor) = model
@@ -930,6 +941,16 @@ fn apply_board_intent(
                     .filter(|editor| editor.rename.is_none())
                 {
                     editor.insert_after = anchor;
+                }
+                // Keep the new row, painted directly below its anchor, inside the viewport.
+                let anchor_index = anchor.and_then(|anchor| {
+                    let task = domain.get(model.form.as_ref()?.task_id()?)?;
+                    task.steps.iter().position(|step| step.id == anchor)
+                });
+                if let (Some(index), Some(form)) = (anchor_index, model.form.as_mut()) {
+                    let rows_through_anchor =
+                        form.steps.row_counts.borrow().iter().take(index + 1).sum();
+                    steps_scroll_to_row(form, rows_through_anchor, 1);
                 }
             }
             return Ok(IntentOutcome::None);
@@ -1703,6 +1724,15 @@ fn apply_board_intent(
                 return Ok(IntentOutcome::None);
             };
             domain.move_step(task_id, step_id, target)?;
+            // The renderer-recorded heights are source-aligned; reorder them with the step so
+            // the scroll below measures the new layout, not the one painted before the move.
+            {
+                let mut counts = form.steps.row_counts.borrow_mut();
+                if from < counts.len() && target < counts.len() {
+                    let moved = counts.remove(from);
+                    counts.insert(target, moved);
+                }
+            }
             form.steps.cursor = Some(target);
             form.steps.add_selected = false;
             steps_scroll_to_cursor(form, target);
@@ -3355,29 +3385,6 @@ fn selected_step(domain: &DomainState, model: &BoardModel) -> Option<(Uuid, Uuid
     let index = form.steps.cursor?;
     let step_id = domain.get(task_id)?.steps.get(index).map(|step| step.id)?;
     (!form.steps.removals.contains(&step_id)).then_some((task_id, step_id))
-}
-
-/// Keep the selected step in the renderer-recorded shared content viewport.
-fn steps_scroll_to_cursor(form: &mut BoardForm, cursor: usize) {
-    let counts = form.steps.row_counts.borrow();
-    let wrapped_before: usize = if counts.len() >= cursor {
-        counts.iter().take(cursor).copied().sum()
-    } else {
-        cursor
-    };
-    let target = form
-        .steps
-        .content_start
-        .get()
-        .saturating_add(1)
-        .saturating_add(wrapped_before);
-    let rows = form.steps.window_rows.get().max(1);
-    if target < form.notes_scroll {
-        form.notes_scroll = target;
-    } else if target >= form.notes_scroll.saturating_add(rows) {
-        form.notes_scroll = target + 1 - rows;
-    }
-    form.notes_scroll = form.notes_scroll.min(form.notes_max_scroll.get());
 }
 
 /// Outcome of routing the delete verb through the page's step cursor.

@@ -11,7 +11,7 @@ Steps are a flat, ordered checklist. Checking every step does not complete the t
 2. Click **+ step**, or press `ctrl+a`.
 3. Type the step and press `Enter`.
 
-With a step selected, `ctrl+a` opens the new row directly below it; otherwise the step goes at the end. `Enter` saves the step and opens another empty row below the one just added, so a burst of steps keeps its typed order. `Shift+Enter` saves it and finishes any active task edit. Click elsewhere to discard an empty new-step row.
+With a step selected, `ctrl+a` opens the new row directly below it; otherwise the step goes at the end. Clicking **+ step** always adds at the end. `Enter` saves the step and opens another empty row below the one just added, so a burst of steps keeps its typed order. `Shift+Enter` saves it and finishes any active task edit. Click elsewhere to discard an empty new-step row.
 
 New steps save independently, including during task editing. Cancelling the task edit does not undo steps already added.
 

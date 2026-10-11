@@ -2350,6 +2350,104 @@ fn positioned_add_row_paints_below_its_anchor() {
     );
 }
 
+/// #159 review F-1: a move scrolls by the moved layout. A tall first step moved below a
+/// one-row step must leave the selector painted, not scroll toward the old tall offset.
+#[test]
+fn moving_a_tall_step_keeps_its_selector_on_screen() {
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "Tall move",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create task");
+    let tall = (0..40)
+        .map(|word| format!("word{word:02}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    domain
+        .add_step(id, format!("tall {tall}"))
+        .expect("tall step");
+    domain.add_step(id, "short").expect("short step");
+    let mut model = BoardModel::from_domain(&domain, None);
+    for intent in [BoardIntent::OpenTaskPage, BoardIntent::SelectStep(0)] {
+        apply_intent(&mut domain, &mut model, intent, None).expect("select the tall step");
+    }
+    let _ = board_rows(&model, 40, 16);
+    apply_intent(&mut domain, &mut model, BoardIntent::MoveStepDown, None).expect("move down");
+    let shown: Vec<String> = board_rows(&model, 40, 16)
+        .iter()
+        .map(|row| trimmed(row))
+        .collect();
+    assert!(
+        shown.iter().any(|row| row.contains("▸ ▪ tall")),
+        "the moved step's first row and selector stay painted:\n{}",
+        shown.join("\n")
+    );
+}
+
+/// #159 review: `ctrl+a` below a step at the bottom of the viewport, then `Enter`, keeps the
+/// reopened add row (below the step just saved) in view.
+#[test]
+fn positioned_add_rows_scroll_into_view() {
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "Scroll add",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create task");
+    for index in 0..20 {
+        domain
+            .add_step(id, format!("step {index:02}"))
+            .expect("add step");
+    }
+    let mut model = BoardModel::from_domain(&domain, None);
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open");
+    let _ = board_rows(&model, 40, 16);
+    // Walk the cursor down until its step sits on the last painted steps row.
+    apply_intent(&mut domain, &mut model, BoardIntent::SelectStep(0), None).expect("select");
+    let mut shown = Vec::new();
+    for _ in 0..19 {
+        shown = board_rows(&model, 40, 16)
+            .iter()
+            .map(|row| trimmed(row))
+            .collect::<Vec<_>>();
+        let cursor = shown.iter().position(|row| row.starts_with("▸ ▪"));
+        let next = cursor.and_then(|row| shown.get(row + 1));
+        if next.is_some_and(|row| !row.contains("▪ step")) {
+            break;
+        }
+        apply_intent(&mut domain, &mut model, BoardIntent::PageScrollDown, None).expect("down");
+    }
+    let anchor = shown
+        .iter()
+        .find(|row| row.starts_with("▸ ▪"))
+        .cloned()
+        .expect("a selected step");
+    let visible_editor = |model: &BoardModel| {
+        board_rows(model, 40, 16)
+            .iter()
+            .any(|row| row.contains("step…"))
+    };
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginAddStep, None).expect("ctrl+a");
+    assert!(
+        visible_editor(&model),
+        "the add row below {anchor:?} opens in view"
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::EditInsert('x'), None).expect("type");
+    apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).expect("enter");
+    // The app's save boundary syncs the persisted domain back, which releases the row.
+    model.sync_from_domain(&domain);
+    assert!(visible_editor(&model), "the reopened add row stays in view");
+}
+
 /// Steps stack from the top of their section, with step 1 directly under the section
 /// label and each next step directly below the previous, never pinned to the footer.
 #[test]

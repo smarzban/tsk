@@ -153,8 +153,11 @@ pub enum BoardIntent {
     BeginEditNotes,
     /// Open the same bound task form as `e`, focused on Scope (palette Change scope).
     BeginEditScope,
-    /// Open the steps section's one-line editor empty to add an step (page `a`).
+    /// Open the steps section's one-line editor empty to add an step (page `a`). With a
+    /// stored step selected the row opens directly below it.
     BeginAddStep,
+    /// A click on the trailing `+ step` row: open the add row at the end of the list.
+    BeginAppendStep,
     /// Move focus through the shared capture/task form fields.
     FormFocusNext,
     FormFocusPrev,
@@ -1704,6 +1707,7 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::BeginEditNotes
         | BoardIntent::BeginEditScope
         | BoardIntent::BeginAddStep
+        | BoardIntent::BeginAppendStep
         | BoardIntent::Quit
         | BoardIntent::EditInsert(_)
         | BoardIntent::EditInsertText(_)

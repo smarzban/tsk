@@ -811,7 +811,7 @@ pub fn map_board_mouse(
                 Some(QueueHitTarget::Step(index)) if model.task_editing() => {
                     Some(BoardIntent::SelectStep(index))
                 }
-                Some(QueueHitTarget::StepAdd) => Some(BoardIntent::BeginAddStep),
+                Some(QueueHitTarget::StepAdd) => Some(BoardIntent::BeginAppendStep),
                 Some(QueueHitTarget::Verb(index)) => form_verb_intent(model, index),
                 _ => None,
             }
@@ -828,7 +828,7 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::Step(index)) if model.task_editing() => {
                 Some(BoardIntent::SelectStep(index))
             }
-            Some(QueueHitTarget::StepAdd) => Some(BoardIntent::BeginAddStep),
+            Some(QueueHitTarget::StepAdd) => Some(BoardIntent::BeginAppendStep),
             Some(QueueHitTarget::Verb(index)) => form_verb_intent(model, index),
             _ => None,
         },
@@ -849,7 +849,7 @@ pub fn map_board_mouse(
             // Step clicks always select. In view mode this remains read-only; the reducer opens
             // the inline editor only when the task edit session is already active.
             Some(QueueHitTarget::Step(index)) => Some(BoardIntent::SelectStep(index)),
-            Some(QueueHitTarget::StepAdd) => Some(BoardIntent::BeginAddStep),
+            Some(QueueHitTarget::StepAdd) => Some(BoardIntent::BeginAppendStep),
             Some(QueueHitTarget::PageScroll(offset)) => Some(BoardIntent::PageScrollTo(offset)),
             Some(QueueHitTarget::Verb(index)) => verb_intent(model, index),
             _ => None,
@@ -873,7 +873,7 @@ pub fn map_board_mouse(
             }
             Some(QueueHitTarget::FormScope) => Some(BoardIntent::OpenFormScopeDropdown),
             Some(QueueHitTarget::Step(index)) => Some(BoardIntent::SelectStep(index)),
-            Some(QueueHitTarget::StepAdd) => Some(BoardIntent::BeginAddStep),
+            Some(QueueHitTarget::StepAdd) => Some(BoardIntent::BeginAppendStep),
             Some(QueueHitTarget::Verb(index)) => verb_intent(model, index),
             Some(QueueHitTarget::TaskNumber(id)) if model.empty_add_step_editor() => {
                 Some(BoardIntent::CopyTaskNumber(id))

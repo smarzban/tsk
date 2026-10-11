@@ -4067,7 +4067,7 @@ mod tests {
             crate::ui::tier::FocusedSurface::Task
         );
         let intent = intent.expect("same click dispatches after the stage change");
-        assert_eq!(intent, BoardIntent::BeginAddStep);
+        assert_eq!(intent, BoardIntent::BeginAppendStep);
         apply_intent(&mut domain, &mut model, intent, None).expect("apply task control");
         assert_eq!(model.input_mode(), BoardInputMode::EditStep);
         assert_eq!(model.wide_stage(), crate::ui::tier::WideStage::Rail);
@@ -5996,6 +5996,52 @@ mod tests {
         assert_eq!(stored_step_texts(&temp, id), vec!["b", "a"]);
         assert_eq!(model.step_cursor(), Some(1));
         assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+    }
+
+    /// #159 review F-2: `:` reaches the palette's "new task" from a task page. It must refuse
+    /// while the task session holds staged step changes instead of dropping them.
+    #[test]
+    fn palette_new_task_refuses_over_a_dirty_task_session() {
+        let (temp, mut domain, mut model, id) = step_order_fixture("palette-dirty", &["a", "b"]);
+        let mut recovery = SaveRecovery::new();
+        let mut intents = vec![
+            BoardIntent::BeginEditTitle,
+            BoardIntent::CancelEdit,
+            BoardIntent::SelectStep(1),
+            BoardIntent::SoftDelete,
+            BoardIntent::OpenCommandPalette,
+        ];
+        intents.extend("new task".chars().map(BoardIntent::CommandQueryInsert));
+        drive(&temp, &mut domain, &mut model, &mut recovery, intents);
+        assert_eq!(
+            model.selected_command().map(|command| command.label),
+            Some("new task")
+        );
+        drive(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            [BoardIntent::ConfirmCommand],
+        );
+        assert_eq!(
+            model.message(),
+            Some("save or cancel edits before switching tasks")
+        );
+        assert!(model.task_session_dirty(), "the staged removal survives");
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+        drive(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            [BoardIntent::ConfirmEditNext],
+        );
+        assert_eq!(
+            stored_step_texts(&temp, id),
+            vec!["a"],
+            "the removal still saves"
+        );
     }
 
     /// #159: during task editing a move skips a step staged for removal, which the page no

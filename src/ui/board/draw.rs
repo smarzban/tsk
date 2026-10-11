@@ -301,6 +301,7 @@ fn build_task_page_overlay<'a>(
     // reserved width is the scrollbar-safe content width less the step glyph and trailing
     // pad, matching Notes' no-truncation behavior.
     let step_text_width = width.saturating_sub(8);
+    form.steps.text_width.set(step_text_width);
     // Task-edit removals are staged, not durable, but they immediately leave the rendered
     // list. Keep the task's source index only in the session state, then derive this compact
     // visible list so the renderer never receives a row it must hide conditionally.

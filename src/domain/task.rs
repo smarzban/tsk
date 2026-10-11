@@ -726,7 +726,8 @@ impl DomainState {
     ///
     /// The step keeps its id, text, and done flag, so its short id never changes. Returns
     /// whether the order changed; a move onto its own slot records nothing. A move journals
-    /// as a step edit: a dedicated event kind would be a store format change.
+    /// as a plain `Edited`: `StepRenamed` would read as a rename, and a dedicated event kind
+    /// would be a store format change.
     pub fn move_step(
         &mut self,
         task_id: Uuid,
@@ -745,7 +746,7 @@ impl DomainState {
         }
         let step = task.steps.remove(from);
         task.steps.insert(to, step);
-        record_mutation(task, TaskEventKind::StepRenamed);
+        record_mutation(task, TaskEventKind::Edited);
         Ok(true)
     }
 
@@ -1810,8 +1811,8 @@ mod tests {
         assert_ne!(task.revision, revision);
         assert_eq!(
             task.history.last().map(|event| event.kind),
-            Some(TaskEventKind::StepRenamed),
-            "a move journals as a step edit"
+            Some(TaskEventKind::Edited),
+            "a move journals as an edit, never as a rename"
         );
 
         assert_eq!(

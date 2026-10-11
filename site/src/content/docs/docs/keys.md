@@ -69,7 +69,7 @@ These keys apply in **view mode**:
 | Close task | `Esc` |
 | Quit the board | `ctrl+q` |
 
-Click a step to select it. Click **+ step** to add. Field clicks become editable only after task editing starts.
+Click a step to select it. Click **+ step** to add at the end. Field clicks become editable only after task editing starts.
 
 `alt+↑` / `alt+↓` is the one mutating shortcut without `ctrl`: macOS reserves `ctrl+arrows` for Mission Control. It also works during task editing while a step is selected and no field is open. Your terminal must send `alt+↑` as one modified key (xterm's default); a terminal set to prefix Option or Alt with `Esc` delivers `Esc` and then the arrow, which closes the task page.
 

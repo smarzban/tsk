@@ -1780,7 +1780,7 @@ fn stage_a_task_column_click_moves_to_g_then_dispatches_against_the_painted_fram
     assert_eq!(model.wide_stage(), WideStage::Rail);
     assert_eq!(
         click_map(&model, &hits, add.x, add.y),
-        Some(BoardIntent::BeginAddStep),
+        Some(BoardIntent::BeginAppendStep),
         "the painted frame's control dispatches after the stage move"
     );
 }
