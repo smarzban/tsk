@@ -494,6 +494,29 @@ fn literal_v10_fixture_migrates_to_v12_backs_up_and_gains_after() {
     assert_eq!(reloaded.get(waiting).expect("task").after, vec![number]);
 }
 
+#[test]
+fn literal_v11_fixture_migrates_to_v12_and_backs_up() {
+    let dir = temp_state_dir();
+    let _guard = TempDirGuard(dir.clone());
+    let v11 = include_bytes!("fixtures/current_store_v11.json");
+    fs::write(dir.join("tsk.json"), v11).expect("install current v11 fixture");
+    let store = TaskStore::new(&dir);
+
+    let loaded = store.load().expect("load current v11 fixture");
+    assert_eq!(loaded.format_version(), 12);
+    store.save(&loaded).expect("save migrated state");
+    assert_eq!(
+        fs::read(dir.join("tsk.json.v11")).expect("read version backup"),
+        v11.as_slice(),
+        "the v11 document is backed up byte-identically"
+    );
+    assert_eq!(
+        fs::read(dir.join("tsk.json")).expect("read migrated live document"),
+        platform_v12_fixture().as_slice(),
+        "a v11 state must serialize as canonical platform v12"
+    );
+}
+
 /// A v9 event carries kind and time only: it migrates without an author or detail, renders on
 /// the paper trail without who or what, and a change after migration records both.
 #[test]

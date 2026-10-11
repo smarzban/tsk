@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-    block_text, current_actor, Block, BlockDraft, BlockField, BlockKind, BlockPatch, CheckState,
-    CleanupOutcome, EditedField, EventDetail, ProvenanceOrigin, Reply, Resolution, ReviewDraft,
-    ReviewPatch, TaskEvent, TaskEventKind, UndoEntry, UNDO_CAP,
+    block_text, current_actor, Block, BlockDraft, BlockField, BlockKey, BlockKind, BlockPatch,
+    CheckState, CleanupOutcome, EditedField, EventDetail, ProvenanceOrigin, Reply, Resolution,
+    ReviewDraft, ReviewPatch, TaskEvent, TaskEventKind, UndoEntry, UNDO_CAP,
 };
 use crate::scope::paths_equivalent;
 
@@ -1050,12 +1050,14 @@ impl DomainState {
     }
 
     /// Mark your reply `index` on the open record as delivered to its agent on its own
-    /// (`tsk reply --send`), so the record's close does not send it again. Only while it still
-    /// reads `text`: an edit since the send leaves it unsent. Delivery bookkeeping, not a user
+    /// (`tsk reply --send`), so the record's close does not send it again. Only while that
+    /// record is still `record` and the reply still reads `text`: a record closed and reopened
+    /// since the reply was stored, or an edit since the send, leaves it unsent. Delivery bookkeeping, not a user
     /// action: no event, and undo entries follow the new revision. Returns whether it marked.
     pub fn mark_reply_sent(
         &mut self,
         id: Uuid,
+        record: &BlockKey,
         index: usize,
         text: &str,
     ) -> Result<bool, DomainError> {
@@ -1064,6 +1066,7 @@ impl DomainState {
         let Some(reply) = task
             .block
             .as_mut()
+            .filter(|block| block.key() == *record)
             .and_then(|block| block.replies.get_mut(index))
             .filter(|reply| {
                 reply.is_owner() && !reply.deleted && !reply.sent && reply.text == text

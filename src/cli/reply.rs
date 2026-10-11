@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::cli::parser::TaskAddress;
 use crate::dispatch::{self, Delivery, DispatchHost, StartRoute};
-use crate::domain::{actor_from_env, DomainError, DomainState, OWNER};
+use crate::domain::{actor_from_env, BlockKey, DomainError, DomainState, OWNER};
 use crate::store::{default_state_dir, TaskStore};
 
 /// A stored reply.
@@ -17,6 +17,8 @@ pub struct ReplyResult {
     pub by: String,
     /// The reply's index on its record.
     pub index: usize,
+    /// The record (block or review round) the reply was stored on.
+    pub record: BlockKey,
 }
 
 /// A reply failure after parsing and before presenting output.
@@ -118,7 +120,9 @@ pub fn run_send_with_host(
         Err(error) => SendOutcome::Skipped(format!("could not read the board: {error}")),
     };
     if matches!(outcome, SendOutcome::Sent { .. }) {
-        // Best effort: if this fails, the record's close sends the reply once more.
+        // Best effort on purpose: if this fails, the record's close sends the reply once
+        // more, never loses it. Bound to the record the reply was stored on, since the lock
+        // was released in between.
         let _ = store.locked_transition_if_changed(|state: &mut DomainState| {
             let id = state
                 .tasks()
@@ -126,7 +130,7 @@ pub fn run_send_with_host(
                 .find(|task| target.matches(task))
                 .map(|task| task.id);
             let marked = id
-                .map(|id| state.mark_reply_sent(id, result.index, text.trim()))
+                .map(|id| state.mark_reply_sent(id, &result.record, result.index, text.trim()))
                 .transpose()
                 .map_err(|error| error.to_string())?
                 .unwrap_or(false);
@@ -214,6 +218,11 @@ fn apply(
                 title,
                 by: by.to_string(),
                 index,
+                record: state
+                    .get(id)
+                    .and_then(|task| task.block.as_ref())
+                    .map(|block| block.key())
+                    .expect("a stored reply has its record"),
             }),
             true,
         ),
@@ -333,6 +342,9 @@ mod tests {
         state: Option<PathBuf>,
         /// Replies on disk (the task's open block) when each prompt was submitted.
         disk_at_prompt: Vec<Vec<String>>,
+        /// While the prompt is in flight, the owner unblocks the task, the agent blocks it
+        /// again, and the owner replies the same text: a new record, same reply index.
+        reopen_at_prompt: bool,
     }
 
     impl DispatchHost for Host {
@@ -384,6 +396,20 @@ mod tests {
                         .flat_map(|block| block.replies.iter().map(|reply| reply.text.clone()))
                         .collect(),
                 );
+            }
+            if self.reopen_at_prompt {
+                let store = TaskStore::new(self.state.as_ref().expect("state"));
+                let mut state = store.load().expect("load at prompt");
+                let id = state.tasks()[0].id;
+                state.set_status(id, HumanStatus::Ready).expect("unblock");
+                store.reload_merge_save(&mut state).expect("save");
+                let draft =
+                    BlockDraft::from_input(Some("which db now?"), None, &[], Default::default())
+                        .expect("draft");
+                state.block(id, draft, "builder").expect("block again");
+                store.reload_merge_save(&mut state).expect("save");
+                state.reply(id, "use postgres", "you").expect("reply");
+                store.reload_merge_save(&mut state).expect("save");
             }
             self.prompts.push((pane.into(), text.into()));
             self.prompt_error.clone().map_or(Ok(()), Err)
@@ -781,6 +807,32 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    /// The record closes and a new one opens with the same reply at the same index while
+    /// `--send` is out: the mark stays with the record the reply was stored on, so the new
+    /// record's reply is unsent and its close delivers it.
+    #[test]
+    fn a_send_whose_record_closed_meanwhile_leaves_the_next_records_reply_unsent() {
+        let temp = Temp::new("send-reopened");
+        let number = temp.blocked(true);
+        let mut host = Host {
+            reopen_at_prompt: true,
+            ..running(&temp, number)
+        };
+        assert_eq!(
+            send(&temp, number, "you", true, &mut host).line(),
+            "sent to @builder"
+        );
+        let state = TaskStore::new(&temp.0).load().expect("load");
+        let task = &state.tasks()[0];
+        assert!(
+            !task.past_blocks[0].replies[0].sent,
+            "closed before the mark"
+        );
+        let block = task.block.as_ref().expect("the new record");
+        assert!(!block.replies[0].sent);
+        assert_eq!(block.owner_entries(), ["use postgres"]);
     }
 
     /// A `--send` that did not go out leaves the reply unsent: the record's close delivers it.

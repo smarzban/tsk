@@ -710,15 +710,16 @@ mod state_tests {
             .expect("block");
         let first = state.reply(id, "use postgres", OWNER).expect("reply");
         state.reply(id, "add an index", OWNER).expect("reply");
+        let record = state.get(id).unwrap().block.as_ref().unwrap().key();
         let events = state.get(id).unwrap().history.len();
         assert!(!state
-            .mark_reply_sent(id, first, "use mysql")
+            .mark_reply_sent(id, &record, first, "use mysql")
             .expect("stale text"));
         assert!(state
-            .mark_reply_sent(id, first, "use postgres")
+            .mark_reply_sent(id, &record, first, "use postgres")
             .expect("mark"));
         assert!(!state
-            .mark_reply_sent(id, first, "use postgres")
+            .mark_reply_sent(id, &record, first, "use postgres")
             .expect("again"));
         let task = state.get(id).unwrap();
         assert_eq!(task.history.len(), events, "no event");
@@ -735,6 +736,33 @@ mod state_tests {
         state.edit_reply(id, first, "use sqlite").expect("edit");
         let block = state.get(id).unwrap().block.clone().unwrap();
         assert_eq!(block.owner_entries(), ["use sqlite", "add an index"]);
+    }
+
+    /// A mark bound to a record that closed meanwhile never lands on the next record, even
+    /// on the same reply text at the same index: that reply was never sent.
+    #[test]
+    fn a_mark_for_a_closed_record_leaves_the_next_records_reply_unsent() {
+        let mut state = DomainState::new();
+        let id = task(&mut state);
+        state
+            .block(id, draft("which db?"), "claude")
+            .expect("block");
+        let index = state.reply(id, "use postgres", OWNER).expect("reply");
+        let record = state.get(id).unwrap().block.as_ref().unwrap().key();
+        state.set_status(id, HumanStatus::Ready).expect("unblock");
+        state
+            .block(id, draft("which db now?"), "claude")
+            .expect("block again");
+        assert_eq!(
+            state.reply(id, "use postgres", OWNER).expect("reply"),
+            index
+        );
+        assert!(!state
+            .mark_reply_sent(id, &record, index, "use postgres")
+            .expect("closed record"));
+        let block = state.get(id).unwrap().block.as_ref().unwrap();
+        assert!(!block.replies[index].sent);
+        assert_eq!(block.owner_entries(), ["use postgres"]);
     }
 
     #[test]
