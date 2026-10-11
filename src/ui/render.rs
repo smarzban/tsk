@@ -6951,7 +6951,10 @@ mod tests {
             let gutter = line.spans.iter().find(|span| span.content == "│").unwrap();
             assert!(gutter.style.add_modifier.contains(Modifier::DIM));
             let title = line.spans.last().unwrap();
-            assert!(!title.style.add_modifier.contains(Modifier::DIM), "{title:?}");
+            assert!(
+                !title.style.add_modifier.contains(Modifier::DIM),
+                "{title:?}"
+            );
         }
     }
 
