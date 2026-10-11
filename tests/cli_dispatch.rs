@@ -2019,8 +2019,11 @@ fn merge_runs_gh_pr_merge_with_the_configured_method_and_refuses_without_changin
     )
     .expect_err("gh refused the merge");
     assert_eq!(refused.code(), "merge-failed");
+    // gh's message verbatim, without the `X ` glyph gh leads it with.
     assert!(
-        refused.message().contains("base branch policy"),
+        refused.message().contains(
+            "Pull request o/r#7 is not mergeable: the base branch policy prohibits the merge."
+        ) && !refused.message().contains("X Pull request"),
         "{}",
         refused.message()
     );

@@ -901,3 +901,42 @@ fn page_keys_scroll_the_set_and_arrows_keep_the_selected_option_in_view() {
         "a resize scrolls the ▸ option back into view:\n{resized}"
     );
 }
+
+/// The first painted body row inside the card and the column its text starts at.
+fn first_text(model: &BoardModel, width: u16, height: u16) -> (usize, usize) {
+    let lines = rows(model, width, height);
+    let top = lines
+        .iter()
+        .position(|row| row.contains('┌'))
+        .expect("card top border");
+    lines
+        .iter()
+        .enumerate()
+        .skip(top + 1)
+        .find_map(|(y, row)| {
+            let start = row.find('│')? + '│'.len_utf8();
+            let end = row.rfind('│')?;
+            let inner = &row[start..end];
+            let text = inner.len() - inner.trim_start().len();
+            (!inner.trim().is_empty()).then(|| (y - top, row[..start].chars().count() + text))
+        })
+        .expect("a body row")
+}
+
+#[test]
+fn a_failed_merge_card_lays_out_like_every_other_card() {
+    let open = single(open_pr(7, 193));
+    let mut failed = single(open_pr(7, 193));
+    failed.cleanup_prompt_mut().unwrap().settled = Some(vec![(
+        "T7".into(),
+        "merge failed: Pull request o/r#189 is not mergeable".into(),
+    )]);
+    for (width, height) in [(110, 30), (78, 30), (40, 30), (110, 14)] {
+        assert_eq!(
+            first_text(&failed, width, height),
+            first_text(&open, width, height),
+            "{width}x{height}: same inset as the open card"
+        );
+    }
+    assert!(body(&failed, 110, 30).starts_with("Merge failed: Pull request o/r#189"));
+}

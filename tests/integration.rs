@@ -10,6 +10,7 @@ mod archive_launch_card;
 mod board_blocks;
 mod board_cleanup_card;
 mod board_paper_trail;
+mod board_start_cards;
 mod cli_after;
 mod cli_archive;
 mod cli_discovery;

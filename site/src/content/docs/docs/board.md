@@ -138,13 +138,24 @@ Set a base with **set base** in the palette, the task page's `⎇` footer or **B
 
 ### Start a marked set
 
-With tasks marked, `ctrl+s` (or **set status: started** in the palette) starts the set as usual when no task in it would launch; assigned tasks that cannot launch here are named on the status row, such as `started · no launch: not in Herdr (T3, T4)`. When any would, it opens one card first. The card lists each task it will launch with its assignee and base (`from dispatch`, or `from default (main)`), then under **start only** the tasks it only starts (unassigned, already dispatched: relaunching stays one task at a time, an assigned desk task with `started · no launch: desk task has no repository`, and with **set status: started** done or archived tasks, listed as a status correction), then under **not started** each assigned task it cannot launch and why: unknown agent, or not a project in a git repo. Those stay unstarted. Rows show `checking…` while repositories are checked in the background. When nothing can launch, the card is titled `Start N tasks?` and `y` only starts.
+With tasks marked, `ctrl+s` (or **set status: started** in the palette) starts the set as usual when no task in it would launch; assigned tasks that cannot launch here are named on the status row, such as `started · no launch: not in Herdr (T3, T4)`. When any would, it opens one card first. The card lists each task it will launch with its assignee and base (`from dispatch`, or `from default (main)`), then under **start only** the tasks it only starts (unassigned, already dispatched: relaunching stays one task at a time, an assigned desk task with `started · no launch: desk task has no repository`, and with **set status: started** done or archived tasks, listed as a status correction), then under **not started** each assigned task it cannot launch and why: unknown agent, or not a project in a git repo. Those stay unstarted. Rows show `checking…` while repositories are checked in the background. When nothing can launch, the card is titled `Start N tasks?` and `y` only starts. Below the rows, one option line says what `y` does (`▸ y  dispatch T4 · start T7 without launching · T9 not started`), then a dim `esc cancel`.
 
 `y` starts the start-only tasks in one save, then launches every listed task in the background, each exactly as a single dispatch. The board stays usable while the status row counts `dispatching 2/3…`. Each task is saved as its launch lands, a failed launch does not stop the others, and the status row ends with what launched and what failed. A status you change while launches land is kept (`T12 kept done (changed meanwhile)`). If a save fails and you cancel [save recovery](#save-failures), the status row names the workspace each unrecorded agent is running in. `Esc` or `[x]` closes the card and keeps the marks; `y` clears them. Further dispatches and quitting wait until the launches finish. One `ctrl+u` undoes the start-only tasks; launches from a marked set are not undoable. `y` rechecks the start-only tasks first: one finished or archived after the card opened is left alone, and one assigned meanwhile is not started (`not started: T14 assigned since the card opened`), since the card never showed its launch.
 
 ### Relaunch
 
 Starting a dispatched task whose agent is gone (its Herdr workspace was closed, its pane has no agent, or its worktree was cleaned up) opens a card: `T12 · relaunch @claude?`.
+
+```
+@claude is no longer running.
+
+▸ y  relaunch @claude in the same worktree · start T12
+  n  start T12 · don't relaunch @claude
+
+worktree  ~/.herdr/worktrees/app/tsk-t12-fix
+
+                                        esc cancel
+```
 
 | Key | Result |
 | --- | --- |
@@ -153,6 +164,10 @@ Starting a dispatched task whose agent is gone (its Herdr workspace was closed, 
 | `Esc` | Change nothing |
 
 In the palette, **dispatch again** relaunches the cursor task without asking. Both act on the cursor task only. A relaunch keeps the recorded base and names, even if the task's base changed since. If the Herdr workspace was closed, it opens a new one on the kept worktree. After a cleanup it recreates the worktree, reopening the kept branch or recreating a deleted one from its original starting commit.
+
+### Decision cards
+
+The relaunch, start-anyway, and marked-set start cards, the archived-project launch prompt, and the [cleanup card](#complete-and-clean-up) all work the same way. Each option is one line starting with its key and saying what it does, the likely or safe one in bold, with one blank line between sections and a dim way out at the bottom right instead of a footer key list. `↑`/`↓` move the `▸` cursor (stopping at the ends) and `Enter` runs it; the cursor starts on the bold option: `y` on the relaunch card, since starting a dispatched task most likely means its agent, and `n` on the launch prompt, which changes nothing on disk. An `Enter` within a moment of a card opening is ignored, so a double tap of the key that opened it cannot run anything. Letter keys still run their option directly. A click on an option line selects it, a double click runs it, and a click on the way out cancels.
 
 ### Complete and clean up
 
@@ -340,7 +355,7 @@ With tasks marked in order, **chain in order** makes each marked task run after 
 
 When the last prerequisite becomes **done** (review does not count), each waiting task in **ready** starts in the same save as the done, the way `ctrl+s` starts it; an assigned task never dispatched then [dispatches](#dispatch) right after that save, which records its agent. What a done releases is judged against the store as saved, so a prerequisite completed elsewhere (another board, the CLI, an agent) counts. While a marked-set dispatch is still landing, a released assigned task stays ready instead (`T203 waits: a dispatch is running; ctrl+s starts it`). The status row says `T203 started · T202 done`, and the started task's paper trail reads `started · after T202`. This happens from the board, the [cleanup card](#complete-and-clean-up), and [`tsk status N done`](/docs/cli/#status). Waiting tasks in open, blocked, or review do not move. A launch that fails never blocks the done: the task goes back to ready and the status row says why (`T203 back to ready: …`). If the launch ran but its record could not be saved, the status row says the agent is running and names its worktree; if the launch failed and the task could not be saved back to ready, it says `T203 is started but no agent launched; couldn't save it back to ready: …`. A task whose earlier agent is gone starts without a relaunch (`@claude gone, not relaunched`). `ctrl+u` on the done reverts the statuses only, `done undone · T203 back to ready · @claude kept running`; a launched agent keeps running.
 
-Starting a waiting task yourself asks first: `T203 runs after T202 (started). Start anyway?` `y` starts it, `Esc` cancels. With tasks marked, the card lists each waiting one.
+Starting a waiting task yourself asks first: `T203 runs after T202 (started).` under `Start anyway?`, then the option `y  start now, without waiting` and `esc cancel`. `y` (or `Enter`) starts it, `Esc` cancels. With tasks marked, the card lists each waiting one.
 
 Deleting a task drops it from every other task's after list in the same save, and one `ctrl+u` puts the links back. A ready task left waiting on nothing does not start; the status row says `T203 no longer waits (T202 deleted)`. A task purged from trash leaves no links behind.
 
@@ -412,7 +427,7 @@ Archived projects are excluded from task-destination pickers. Restoring a projec
 
 ### Launch inside an archived project
 
-tsk asks whether to restore it. Choose `y` to restore, or `n`/`Esc` to keep it archived. Keeping it archived sends new captures to your desk for that session.
+tsk asks whether to restore it, with one option line each: `y  unarchive app · quick-add goes to it` and `n  keep app archived · quick-add goes to your desk this session`. The `▸` cursor starts on `n`; `↑`/`↓` and `Enter`, the letters, or a double click choose (see [decision cards](#decision-cards)). `Esc` or a click on `esc keep archived` keeps it archived too. Keeping it archived sends new captures to your desk for that session.
 
 ## Delete and undo
 

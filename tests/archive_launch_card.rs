@@ -449,7 +449,10 @@ fn launch_card_asks_on_one_line_then_lists_its_options_with_the_cursor_on_keep()
             "no title in the border:\n{top}"
         );
         // One line per option, starting with its key; the cursor on the safe `n`.
-        assert!(flat.contains("y unarchive proj"), "the `y` option:\n{frame}");
+        assert!(
+            flat.contains("y unarchive proj"),
+            "the `y` option:\n{frame}"
+        );
         assert!(
             flat.contains("▸ n keep proj archived"),
             "the cursor starts on `n`:\n{frame}"
