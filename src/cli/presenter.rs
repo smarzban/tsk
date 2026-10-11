@@ -1330,6 +1330,42 @@ pub fn merged(merged: &crate::cli::clean::Merged) -> String {
     format!("{}\n", terminal_text(&line))
 }
 
+/// `--merge --json` after the merge, when the done save or the cleanup then failed: what
+/// merged, whether the task is done, and the error (`stage` is `done` or `cleanup`).
+pub fn merge_partial_json(
+    merged: &crate::cli::clean::Merged,
+    done: bool,
+    stage: &str,
+    code: &str,
+    stderr: &str,
+) -> String {
+    let message = stderr
+        .trim_end()
+        .split_once(&format!("{code}: "))
+        .map_or(stderr.trim_end(), |(_, message)| message);
+    let value = serde_json::json!({
+        "number": merged.number,
+        "status": if done { Some("done") } else { None },
+        "merge": merge_json(merged),
+        "error": {"stage": stage, "code": code, "message": message},
+    });
+    format!("{value}\n")
+}
+
+fn merge_json(merged: &crate::cli::clean::Merged) -> serde_json::Value {
+    let outcome = &merged.outcome;
+    serde_json::json!({
+        "pr": outcome.pr.number,
+        "url": outcome.pr.url,
+        "method": outcome.method.name(),
+        "remote_branch": match outcome.remote_branch_left {
+            Some(true) => Some("kept"),
+            Some(false) => Some("deleted"),
+            None => None,
+        },
+    })
+}
+
 /// A `--merge` that merged nothing: exit 3 when the store failed, 1 otherwise.
 pub fn merge_rejected(verb: &str, refused: &crate::cli::clean::MergeRefused) -> CliOutput {
     verb_rejected(verb, refused.code(), refused.is_store(), &refused.message())
@@ -1372,17 +1408,7 @@ pub fn cleaned_merged(
                 "warning": result.warning,
             });
             if let Some(merged) = merged {
-                let outcome = &merged.outcome;
-                value["merge"] = serde_json::json!({
-                    "pr": outcome.pr.number,
-                    "url": outcome.pr.url,
-                    "method": outcome.method.name(),
-                    "remote_branch": match outcome.remote_branch_left {
-                        Some(true) => Some("kept"),
-                        Some(false) => Some("deleted"),
-                        None => None,
-                    },
-                });
+                value["merge"] = merge_json(merged);
                 value["status"] = serde_json::json!("done");
             }
             value

@@ -189,12 +189,11 @@ fn run_clean(args: Vec<String>) -> CliOutput {
     };
     share_fetch_window(&input.state_dir);
     if input.merge {
-        // Merge first; the done and the cleanup follow only a merge that succeeded.
-        let merged = match clean::merge(task, input.state_dir.clone()) {
-            Ok(merged) => merged,
-            Err(refused) => return presenter::merge_rejected("clean", &refused),
-        };
-        return finish_done(task, input.state_dir, Some(merged), "clean", input.json);
+        let (state_dir, mut host) = dispatch::system_host(input.state_dir);
+        let in_herdr = crate::dispatch::running_inside_herdr();
+        return merge_done_clean_with_host(
+            task, state_dir, "clean", input.json, in_herdr, &mut host,
+        );
     }
     match clean::run(task, input.state_dir) {
         Ok(result) => presenter::cleaned(result, input.json),
@@ -202,32 +201,55 @@ fn run_clean(args: Vec<String>) -> CliOutput {
     }
 }
 
-/// Set the task done, then clean its dispatch: `status done --clean`, and both `--merge`
-/// forms once their merge succeeded. A cleanup refusal leaves the task done and exits 1.
-fn finish_done(
+/// Both `--merge` forms: merge the task's pull request first, and only once GitHub shows it
+/// merged set the task done, then clean its dispatch. A refusal before the merge changes
+/// nothing. After it, a done-save failure (exit 3) or a cleanup refusal (exit 1) still
+/// reports what merged, in `--json` too: the PR is merged whatever follows.
+pub fn merge_done_clean_with_host(
     task: parser::TaskAddress,
-    state_dir: Option<std::path::PathBuf>,
-    merged: Option<clean::Merged>,
+    state_dir: std::path::PathBuf,
     verb: &str,
     json: bool,
+    in_herdr: bool,
+    host: &mut impl crate::dispatch::DispatchHost,
 ) -> CliOutput {
+    let merged = match clean::merge_with_host(task, Some(state_dir.clone()), in_herdr, host) {
+        Ok(merged) => merged,
+        Err(refused) => return presenter::merge_rejected(verb, &refused),
+    };
     let mut output = CliOutput {
         stdout: String::new(),
         stderr: String::new(),
         code: 0,
     };
-    if let (Some(merged), false) = (&merged, json) {
-        output.stdout.push_str(&presenter::merged(merged));
+    if !json {
+        output.stdout.push_str(&presenter::merged(&merged));
     }
-    let (result, released) = match status::run_done(task, state_dir.clone()) {
+    let done = status::run_done_with_host(
+        task,
+        Some(state_dir.clone()),
+        in_herdr,
+        &crate::domain::actor_from_env(),
+        host,
+    );
+    let (result, released) = match done {
         Ok(done) => done,
         Err(error) => {
+            let code = error.code();
             let refused = presenter::status_rejected(error, task);
-            output.stderr.push_str(&refused.stderr);
+            let refused_stderr = refused
+                .stderr
+                .replacen("tsk status:", &format!("tsk {verb}:"), 1);
+            if json {
+                output.stdout =
+                    presenter::merge_partial_json(&merged, false, "done", code, &refused_stderr);
+            }
+            output.stderr.push_str(&refused_stderr);
             output.code = refused.code;
             return output;
         }
     };
+    status::name_released(&released);
     let lines = if json {
         &mut output.stderr
     } else {
@@ -247,22 +269,22 @@ fn finish_done(
         )));
         output.stderr.push('\n');
     }
-    share_fetch_window(&state_dir);
-    match clean::run(task, state_dir) {
+    share_fetch_window(&Some(state_dir.clone()));
+    match clean::run_with_host(task, Some(state_dir), in_herdr, host) {
         Ok(result) => output
             .stdout
-            .push_str(&presenter::cleaned_merged(result, merged.as_ref(), json).stdout),
-        // `--clean` means clean what is there: no live dispatch is success.
-        Err(CleanupError::NotDispatched | CleanupError::AlreadyCleaned) if !json => {
-            output.stdout.push_str("nothing to clean\n")
-        }
+            .push_str(&presenter::cleaned_merged(result, Some(&merged), json).stdout),
         Err(error) => {
+            let code = error.code();
             let refused = presenter::clean_rejected(error, task);
-            output.stderr.push_str(&refused.stderr.replacen(
-                "tsk clean:",
-                &format!("tsk {verb}:"),
-                1,
-            ));
+            let refused_stderr = refused
+                .stderr
+                .replacen("tsk clean:", &format!("tsk {verb}:"), 1);
+            if json {
+                output.stdout =
+                    presenter::merge_partial_json(&merged, true, "cleanup", code, &refused_stderr);
+            }
+            output.stderr.push_str(&refused_stderr);
             output.code = refused.code;
         }
     }
@@ -307,11 +329,9 @@ fn run_status(args: Vec<String>) -> CliOutput {
     }
     if input.merge {
         share_fetch_window(&input.state_dir);
-        let merged = match clean::merge(task, input.state_dir.clone()) {
-            Ok(merged) => merged,
-            Err(refused) => return presenter::merge_rejected("status", &refused),
-        };
-        return finish_done(task, input.state_dir, Some(merged), "status", false);
+        let (state_dir, mut host) = dispatch::system_host(input.state_dir);
+        let in_herdr = crate::dispatch::running_inside_herdr();
+        return merge_done_clean_with_host(task, state_dir, "status", false, in_herdr, &mut host);
     }
     let state_dir = input.state_dir.clone();
     let outcome = if status == crate::domain::HumanStatus::Done {

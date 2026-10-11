@@ -81,16 +81,6 @@ pub struct Merged {
     pub outcome: dispatch::MergeOutcome,
 }
 
-pub fn merge(target: TaskAddress, state_dir: Option<PathBuf>) -> Result<Merged, MergeRefused> {
-    let (state_dir, mut host) = crate::cli::dispatch::system_host(state_dir);
-    merge_with_host(
-        target,
-        Some(state_dir),
-        dispatch::running_inside_herdr(),
-        &mut host,
-    )
-}
-
 /// Merge the task's open pull request, before anything else: the done and the cleanup follow
 /// only a merge that succeeded. Refuses a dispatch cleanup would refuse (none, cleaned, dirty).
 pub fn merge_with_host(

@@ -113,17 +113,21 @@ pub fn run_done(
         &actor_from_env(),
         &mut host,
     )?;
-    for released in &outcome.1 {
+    name_released(&outcome.1);
+    Ok(outcome)
+}
+
+/// Name each agent a done launched, best effort like naming itself: the dispatch succeeded.
+pub fn name_released(released: &[dispatch::Released]) {
+    for released in released {
         if let dispatch::ReleasedStart::Dispatched(result)
         | dispatch::ReleasedStart::Unrecorded(result, _) = &released.start
         {
             if let Some(naming) = &result.naming {
-                // Best effort, like naming itself: the dispatch already succeeded.
                 let _ = dispatch::spawn_agent_naming_process(naming);
             }
         }
     }
-    Ok(outcome)
 }
 
 /// Set a task done by `actor`. When that releases tasks waiting on it (`ready`, every

@@ -190,6 +190,9 @@ pub enum BranchRetentionReason {
     /// GitHub merged the branch's PR (a squash or rebase), but the local branch tip is not
     /// the PR head it merged: the commits that differ were never merged.
     PrMergedNewerCommits,
+    /// GitHub merged the branch's PR into another branch than the recorded base; the
+    /// cleanup result's `remote` names that branch.
+    PrMergedIntoOtherBase,
 }
 
 impl BranchRetentionReason {
@@ -207,6 +210,7 @@ impl BranchRetentionReason {
             Self::MergeCheckUnfinished => "merge unconfirmed",
             Self::RemoteUnreachable => "offline",
             Self::PrMergedNewerCommits => "newer commits",
+            Self::PrMergedIntoOtherBase => "merged elsewhere",
         }
     }
 
@@ -234,6 +238,11 @@ impl BranchRetentionReason {
             Self::PrMergedNewerCommits => {
                 "PR merged but the branch has newer commits; delete by hand".into()
             }
+            Self::PrMergedIntoOtherBase => format!(
+                "PR merged into {}, not {}; delete by hand",
+                remote.unwrap_or("another branch"),
+                base.unwrap_or("the recorded base")
+            ),
         }
     }
 }
@@ -257,7 +266,8 @@ pub struct CleanupPreview {
 pub struct CleanupResult {
     pub warning: Option<String>,
     pub branch_reason: Option<BranchRetentionReason>,
-    /// The remote a [`BranchRetentionReason::RemoteUnreachable`] names.
+    /// The remote a [`BranchRetentionReason::RemoteUnreachable`] names, or the branch a
+    /// [`BranchRetentionReason::PrMergedIntoOtherBase`] PR merged into.
     pub remote: Option<String>,
     pub number: u64,
     pub title: String,
@@ -1276,6 +1286,14 @@ impl DispatchHost for SystemDispatchHost {
 
     fn begin_pr_probe(&mut self, project: &Path, branch: &str) -> PrProbe {
         let probe = PrProbe::default();
+        if !pr::gh_available(&self.gh) {
+            // Landed before the card paints: without gh it shows no pull-request line at all.
+            probe.complete(pr::PrProbeResult {
+                lookup: Err(PrLookupError::Missing),
+                tip: None,
+            });
+            return probe;
+        }
         let (job, mut host) = (probe.clone(), self.clone());
         let (project, branch) = (project.to_path_buf(), branch.to_string());
         std::thread::spawn(move || job.complete(pr::probe(&mut host, &project, &branch)));
@@ -2174,6 +2192,8 @@ pub fn clean_planned_with_host(
         return Err(CleanupError::DirtyWorktree);
     }
 
+    // The branch a PR merged into when it was not the recorded base.
+    let mut merged_into = None;
     let (worktree, deletion, workspace) = if preview.inspection.worktree_exists {
         let workspace_removed = in_herdr && preview.inspection.workspace_exists;
         let worktree = Path::new(&preview.record.worktree);
@@ -2199,8 +2219,10 @@ pub fn clean_planned_with_host(
             host.delete_merged_branch(&preview.project, &preview.record.branch, base)
                 .map_err(CleanupError::Herdr)?
         } else {
-            pr::pr_merged_deletion(host, &preview.project, &preview.record.branch)
-                .map_err(CleanupError::Herdr)?
+            let (deletion, into) = pr::pr_merged_deletion(host, &preview.project, &preview.record)
+                .map_err(CleanupError::Herdr)?;
+            merged_into = into;
+            deletion
         };
         let workspace = if workspace_removed {
             WorkspaceCleanup::Removed
@@ -2223,15 +2245,15 @@ pub fn clean_planned_with_host(
         BranchDeletion::Removed => (BranchCleanup::Removed, None),
         BranchDeletion::Kept(reason) => (BranchCleanup::Kept, Some(reason)),
     };
-    let remote = (branch_reason == Some(BranchRetentionReason::RemoteUnreachable))
-        .then(|| {
-            preview
-                .inspection
-                .unreachable_remote
-                .clone()
-                .or_else(|| preview.record.base_remote.clone())
-        })
-        .flatten();
+    let remote = match branch_reason {
+        Some(BranchRetentionReason::RemoteUnreachable) => preview
+            .inspection
+            .unreachable_remote
+            .clone()
+            .or_else(|| preview.record.base_remote.clone()),
+        Some(BranchRetentionReason::PrMergedIntoOtherBase) => merged_into,
+        _ => None,
+    };
     Ok(CleanupResult {
         warning: preview.inspection.warning,
         branch_reason,
@@ -3901,6 +3923,8 @@ mod tests {
         /// Every fake `gh pr merge`: branch, method, head.
         merges: Vec<(String, MergeMethod, String)>,
         merge_error: Option<String>,
+        /// `gh pr merge` succeeds but only queues: the PR stays open.
+        merge_queues: bool,
     }
 
     impl DispatchHost for FakeHost {
@@ -4073,10 +4097,15 @@ mod tests {
             head: &str,
         ) -> Result<(), String> {
             self.merges.push((branch.into(), method, head.into()));
-            match self.merge_error.clone() {
-                Some(error) => Err(error),
-                None => Ok(()),
+            if let Some(error) = self.merge_error.clone() {
+                return Err(error);
             }
+            if !self.merge_queues {
+                if let Some(Ok(Some(pr))) = self.pr.as_mut() {
+                    pr.state = pr::PrState::Merged;
+                }
+            }
+            Ok(())
         }
 
         fn remote_branch_exists(&mut self, _: &Path, _: &str, _: &str) -> Result<bool, String> {
@@ -5960,6 +5989,70 @@ mod tests {
             "PR merged but the branch has newer commits; delete by hand"
         );
         assert!(host.deleted_at_tip.is_empty());
+    }
+
+    #[test]
+    fn a_pr_merged_into_another_branch_keeps_the_branch_and_names_that_branch() {
+        let mut elsewhere = pr_lookup(pr::PrState::Merged, "abc");
+        if let Ok(Some(pr)) = elsewhere.as_mut() {
+            pr.base = "dev".into();
+        }
+        let (result, host) = clean_unmerged_with_gh(Some(elsewhere), "abc");
+        assert_eq!(result.branch, BranchCleanup::Kept);
+        assert_eq!(
+            result.branch_reason,
+            Some(BranchRetentionReason::PrMergedIntoOtherBase)
+        );
+        assert!(host.deleted_at_tip.is_empty(), "never deleted");
+        let message = result
+            .branch_reason
+            .unwrap()
+            .message(result.base.as_deref(), result.remote.as_deref());
+        assert!(message.starts_with("PR merged into dev, not "), "{message}");
+    }
+
+    #[test]
+    fn a_merge_gh_accepted_but_github_did_not_merge_yet_is_not_a_merge() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let mut launch = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        run_with_host(&mut state, id, &profiles, false, true, &mut launch).expect("dispatch");
+        let row = merge_row_for(&state, id);
+        let mut host = FakeHost {
+            pr: Some(pr_lookup(pr::PrState::Open, "abc")),
+            tip: Some("abc".into()),
+            merge_queues: true,
+            ..FakeHost::default()
+        };
+        let error = pr::merge_row(&mut host, &row, MergeMethod::Squash).expect_err("queued");
+        assert_eq!(host.merges.len(), 1, "gh pr merge ran and exited 0");
+        assert_eq!(error.code(), "merge-failed");
+        assert_eq!(error.message(), "queued or not merged yet: open");
+        assert_eq!(host.pr_lookups, 2, "GitHub was asked again after the merge");
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn without_gh_the_cards_lookup_lands_at_once_without_spawning() {
+        let mut host = SystemDispatchHost::in_state_dir(std::env::temp_dir())
+            .with_gh("/nonexistent/tsk-test/gh");
+        assert!(!pr::gh_available(Path::new("/nonexistent/tsk-test/gh")));
+        let probe = host.begin_pr_probe(Path::new("/nonexistent/project"), "tsk/t1-x");
+        assert_eq!(
+            probe.take(),
+            Some(pr::PrProbeResult {
+                lookup: Err(PrLookupError::Missing),
+                tip: None,
+            }),
+            "landed before the card paints"
+        );
+        assert_eq!(
+            host.pull_request(Path::new("/nonexistent/project"), "tsk/t1-x"),
+            Err(PrLookupError::Missing)
+        );
     }
 
     #[test]

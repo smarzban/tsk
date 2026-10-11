@@ -21,6 +21,14 @@ const GH_VIEW_TIMEOUT: Duration = Duration::from_secs(20);
 /// merge is reported failed and nothing is cleaned, whatever GitHub did meanwhile.
 const GH_MERGE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Longest one row of a board `m` can take: the lookup, the merge, the lookup confirming it,
+/// and the remote-branch check. A quit waits this long per merging row, then for cleanup.
+pub const MERGE_ROW_BOUND: Duration = Duration::from_secs(
+    2 * GH_VIEW_TIMEOUT.as_secs()
+        + GH_MERGE_TIMEOUT.as_secs()
+        + crate::git_base::NETWORK_TIMEOUT.as_secs(),
+);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrState {
     Open,
@@ -146,23 +154,33 @@ pub fn mergeable<'a>(
     Ok(pr)
 }
 
-/// A branch whose ancestry reads unmerged: delete it only when GitHub says its PR merged and
-/// the PR's head is exactly the branch's tip (a squash or rebase merge leaves no ancestry).
-/// Without an answer from gh, this is today's `not merged`.
+/// A branch whose ancestry reads unmerged: delete it only when GitHub says its PR merged into
+/// the recorded base and the PR's head is exactly the branch's tip (a squash or rebase merge
+/// leaves no ancestry). Without an answer from gh, this is today's `not merged`. A PR merged
+/// into another branch keeps the branch, and the second value names that branch.
 pub fn pr_merged_deletion(
     host: &mut impl DispatchHost,
     project: &Path,
-    branch: &str,
-) -> Result<BranchDeletion, String> {
-    let kept = |reason| Ok(BranchDeletion::Kept(reason));
+    record: &Dispatch,
+) -> Result<(BranchDeletion, Option<String>), String> {
+    let branch = record.branch.as_str();
+    let kept = |reason| Ok((BranchDeletion::Kept(reason), None));
     let Ok(Some(pr)) = host.pull_request(project, branch) else {
         return kept(BranchRetentionReason::NotMerged);
     };
     if pr.state != PrState::Merged {
         return kept(BranchRetentionReason::NotMerged);
     }
+    if record_base_branch(record).as_deref() != Some(pr.base.as_str()) {
+        return Ok((
+            BranchDeletion::Kept(BranchRetentionReason::PrMergedIntoOtherBase),
+            Some(pr.base),
+        ));
+    }
     match host.branch_tip(project, branch) {
-        Ok(Some(tip)) if tip == pr.head_oid => host.delete_branch_at_tip(project, branch, &tip),
+        Ok(Some(tip)) if tip == pr.head_oid => host
+            .delete_branch_at_tip(project, branch, &tip)
+            .map(|deletion| (deletion, None)),
         Ok(Some(_)) => kept(BranchRetentionReason::PrMergedNewerCommits),
         Ok(None) => kept(BranchRetentionReason::BranchUnavailable),
         Err(_) => kept(BranchRetentionReason::NotMerged),
@@ -211,13 +229,19 @@ pub enum MergeError {
     HeadMismatch,
     /// `gh pr merge` refused or failed: its reason, on one line.
     Failed(String),
+    /// `gh pr merge` succeeded, but GitHub does not show the PR merged (a merge queue, or
+    /// auto-merge waiting on checks): its state now. Nothing local changes until it is.
+    NotMergedYet(String),
 }
 
 impl MergeError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Refused(refusal) => refusal.code(),
-            Self::BranchUnavailable | Self::HeadMismatch | Self::Failed(_) => "merge-failed",
+            Self::BranchUnavailable
+            | Self::HeadMismatch
+            | Self::Failed(_)
+            | Self::NotMergedYet(_) => "merge-failed",
         }
     }
 
@@ -229,6 +253,7 @@ impl MergeError {
                 "pull request head is not the local branch tip; push or pull first".into()
             }
             Self::Failed(reason) => reason.clone(),
+            Self::NotMergedYet(state) => format!("queued or not merged yet: {state}"),
         }
     }
 }
@@ -257,6 +282,14 @@ pub fn merge_row(
     }
     host.merge_pull_request(project, &record.branch, method, &tip)
         .map_err(MergeError::Failed)?;
+    // A successful gh is not proof: a merge queue or auto-merge accepts the request and
+    // merges later, or never. Only a PR GitHub shows merged goes on to done and cleanup.
+    let pr = match host.pull_request(project, &record.branch) {
+        Ok(Some(merged)) if merged.state == PrState::Merged => merged,
+        Ok(Some(other)) => return Err(MergeError::NotMergedYet(other.state.name().into())),
+        Ok(None) => return Err(MergeError::NotMergedYet("no pull request".into())),
+        Err(error) => return Err(MergeError::NotMergedYet(error.message())),
+    };
     let remote_branch_left = record.base_remote.as_deref().and_then(|remote| {
         host.remote_branch_exists(project, remote, &record.branch)
             .ok()
@@ -276,11 +309,13 @@ pub struct PrProbeResult {
 }
 
 impl PrProbeResult {
-    /// GitHub merged this exact tip: cleanup deletes the branch though ancestry says unmerged.
-    pub fn merged_at_tip(&self) -> bool {
+    /// GitHub merged this exact tip into `base` (the recorded base, as GitHub names it):
+    /// cleanup deletes the branch though ancestry says unmerged.
+    pub fn merged_at_tip(&self, base: &str) -> bool {
         matches!(
             (&self.lookup, &self.tip),
-            (Ok(Some(pr)), Some(tip)) if pr.state == PrState::Merged && &pr.head_oid == tip
+            (Ok(Some(pr)), Some(tip))
+                if pr.state == PrState::Merged && &pr.head_oid == tip && pr.base == base
         )
     }
 }
@@ -416,7 +451,26 @@ fn not_logged_in(code: Option<i32>, stderr: &str) -> bool {
     code == Some(4) || stderr.contains("gh auth login")
 }
 
+/// Whether `program` can run: a path that exists, or a name on PATH (`gh.exe` on Windows).
+/// Answered without spawning anything, so a card without gh opens exactly as before.
+pub fn gh_available(program: &Path) -> bool {
+    if program.components().count() > 1 {
+        return program.is_file();
+    }
+    let names = if cfg!(windows) && program.extension().is_none() {
+        vec![program.with_extension("exe")]
+    } else {
+        vec![program.to_path_buf()]
+    };
+    std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|dir| names.iter().any(|name| dir.join(name).is_file()))
+    })
+}
+
 pub(super) fn system_pull_request(program: &Path, project: &Path, branch: &str) -> PrLookup {
+    if !gh_available(program) {
+        return Err(PrLookupError::Missing);
+    }
     let output = match gh(
         program,
         project,

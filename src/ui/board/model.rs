@@ -1234,10 +1234,31 @@ impl CleanupRow {
 
     /// GitHub merged this exact branch tip, though ancestry reads unmerged (a squash or rebase).
     pub fn pr_merged_at_tip(&self) -> bool {
-        self.pr
-            .landed
+        let base = self
+            .inspected
             .as_ref()
-            .is_some_and(crate::dispatch::pr::PrProbeResult::merged_at_tip)
+            .and_then(crate::dispatch::pr::record_base_branch);
+        match (&self.pr.landed, base) {
+            (Some(landed), Some(base)) => landed.merged_at_tip(&base),
+            _ => false,
+        }
+    }
+
+    /// Why `m` did not merge this row: its failure, uncommitted changes, or why its PR is no
+    /// candidate.
+    pub fn merge_skip_reason(&self) -> String {
+        if let Some(reason) = &self.pr.merge_failed {
+            return reason.clone();
+        }
+        if self.dirty {
+            return "uncommitted changes".into();
+        }
+        match (&self.pr.landed, &self.inspected) {
+            (Some(landed), Some(record)) => crate::dispatch::pr::mergeable(&landed.lookup, record)
+                .err()
+                .map_or_else(|| "not merged".into(), |refusal| refusal.message()),
+            _ => "pull request not checked yet".into(),
+        }
     }
 
     /// The card's line about the PR: `None` without `gh`, so a card without it reads as before.
@@ -1263,6 +1284,17 @@ impl CleanupRow {
                 Err(MergeRefusal::GhUnavailable(PrLookupError::Missing)) => return None,
                 Err(MergeRefusal::GhUnavailable(error)) => error.message(),
                 Err(MergeRefusal::NoPr) => "no pull request".into(),
+                Err(MergeRefusal::NotOpen(crate::dispatch::pr::PrState::Merged))
+                    if matches!(&landed.lookup, Ok(Some(pr))
+                    if Some(&pr.base) != crate::dispatch::pr::record_base_branch(record).as_ref()) =>
+                {
+                    let into = match &landed.lookup {
+                        Ok(Some(pr)) => pr.base.clone(),
+                        _ => String::new(),
+                    };
+                    let base = crate::dispatch::pr::record_base_branch(record).unwrap_or_default();
+                    format!("{number} merged into {into}, not {base}")
+                }
                 Err(MergeRefusal::NotOpen(state)) => format!("{number} {}", state.name()),
                 Err(MergeRefusal::BaseMismatch { pr_base, base }) => {
                     format!("{number} targets {pr_base}, not {base}")
@@ -1708,7 +1740,10 @@ pub struct CleanupRun {
     /// `m`: each merged task and its PR (`T12`, `PR #7 (squash)`), with any remote branch
     /// the merge left.
     pub merged: Vec<(String, String)>,
-    /// `m`: tasks whose merge failed, with gh's reason. They stayed as they were.
+    /// `m`: merged PRs whose remote branch the merge left in place (tsk never deletes it).
+    pub remote_kept: usize,
+    /// `m`: tasks it did not merge, with why (gh's reason, or why they were no candidate,
+    /// such as `no pull request`). They stayed as they were.
     pub unmerged: Vec<(String, String)>,
 }
 
@@ -1763,7 +1798,14 @@ impl CleanupRun {
         match (self.bulk, self.merged.as_slice()) {
             (_, []) => {}
             (None, [(_, detail)]) => parts.push(format!("merged {detail}")),
-            (_, merged) => parts.push(format!("merged {}", merged.len())),
+            (_, merged) => {
+                parts.push(format!("merged {}", merged.len()));
+                match self.remote_kept {
+                    0 => {}
+                    1 => parts.push("1 remote branch kept".into()),
+                    kept => parts.push(format!("{kept} remote branches kept")),
+                }
+            }
         }
         if !self.unmerged.is_empty() {
             let named = self
@@ -2143,17 +2185,45 @@ impl BoardModel {
         self.cleanup_status = status;
     }
 
-    /// Quit with a cleanup still running: hide its card and wait, visibly and bounded, for
-    /// its git and Herdr steps to land.
+    /// Rows a cleanup card's `m` is still merging, on this board and its project preview.
+    fn merging_rows(&self) -> usize {
+        let own = self
+            .cleanup_prompt
+            .as_ref()
+            .and_then(|prompt| prompt.merging.as_ref())
+            .map_or(0, |(_, ids)| ids.len());
+        own + self
+            .right_seat
+            .as_deref()
+            .map_or(0, BoardModel::merging_rows)
+    }
+
+    /// A cleanup card's `m` is merging here or in the project preview: quit waits for it.
+    pub fn merge_running(&self) -> bool {
+        self.merging_rows() > 0
+    }
+
+    /// Quit with a cleanup still running, or a card's `m` still merging: hide the card and
+    /// wait, visibly and bounded, for its git and Herdr steps to land. A merging card stays
+    /// (its merges land on it), and the bound grows by the gh bound of each merging row, so
+    /// the merge lands, done saves, and its cleanup runs before the board exits.
     pub fn begin_quit_after_cleanup(&mut self) {
         if self.quit_after_cleanup.is_none() {
-            self.quit_after_cleanup = Some(Instant::now() + QUIT_CLEANUP_BOUND);
+            let merges = crate::dispatch::pr::MERGE_ROW_BOUND
+                * u32::try_from(self.merging_rows()).unwrap_or(u32::MAX);
+            self.quit_after_cleanup = Some(Instant::now() + QUIT_CLEANUP_BOUND + merges);
         }
-        if self.popup == BoardPopup::CleanupConfirm {
+        let merging = |board: &BoardModel| {
+            board
+                .cleanup_prompt
+                .as_ref()
+                .is_some_and(CleanupPrompt::merging)
+        };
+        if self.popup == BoardPopup::CleanupConfirm && !merging(self) {
             self.close_popup();
         }
         if let Some(seat) = self.right_seat.as_deref_mut() {
-            if seat.popup == BoardPopup::CleanupConfirm {
+            if seat.popup == BoardPopup::CleanupConfirm && !merging(seat) {
                 seat.close_popup();
                 seat.clear_message();
             }
@@ -2166,10 +2236,12 @@ impl BoardModel {
         self.quit_after_cleanup.is_some()
     }
 
-    /// A quit that waited on cleanup may exit: the run finished, or its bound passed.
+    /// A quit that waited on cleanup may exit: the merges landed and the run finished, or its
+    /// bound passed.
     pub fn quit_after_cleanup_due(&self) -> bool {
-        self.quit_after_cleanup
-            .is_some_and(|deadline| !self.cleanup_running() || Instant::now() >= deadline)
+        self.quit_after_cleanup.is_some_and(|deadline| {
+            (!self.cleanup_running() && !self.merge_running()) || Instant::now() >= deadline
+        })
     }
 
     /// Open the bulk dispatch card. It keeps the marks, so `Esc` returns to the same set.
@@ -6015,6 +6087,7 @@ mod tests {
             start_deadline: Instant::now(),
             started: true,
             merged: Vec::new(),
+            remote_kept: 0,
             unmerged: Vec::new(),
         }
     }
