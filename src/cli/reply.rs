@@ -15,6 +15,8 @@ pub struct ReplyResult {
     pub number: u64,
     pub title: String,
     pub by: String,
+    /// The reply's index on its record.
+    pub index: usize,
 }
 
 /// A reply failure after parsing and before presenting output.
@@ -79,7 +81,9 @@ impl SendOutcome {
 }
 
 /// `tsk reply --send`: store the reply, then deliver that reply (and only it) to the task's
-/// running dispatched agent. The task stays blocked.
+/// running dispatched agent. The task stays blocked. A reply that went out is marked sent, so
+/// the record's unblock or send-back does not deliver it again; one that did not stays unsent
+/// and goes out then.
 pub fn run_send(
     target: TaskAddress,
     text: &str,
@@ -113,6 +117,22 @@ pub fn run_send_with_host(
         },
         Err(error) => SendOutcome::Skipped(format!("could not read the board: {error}")),
     };
+    if matches!(outcome, SendOutcome::Sent { .. }) {
+        // Best effort: if this fails, the record's close sends the reply once more.
+        let _ = store.locked_transition_if_changed(|state: &mut DomainState| {
+            let id = state
+                .tasks()
+                .iter()
+                .find(|task| target.matches(task))
+                .map(|task| task.id);
+            let marked = id
+                .map(|id| state.mark_reply_sent(id, result.index, text.trim()))
+                .transpose()
+                .map_err(|error| error.to_string())?
+                .unwrap_or(false);
+            Ok(((), marked))
+        });
+    }
     Ok((result, outcome))
 }
 
@@ -188,11 +208,12 @@ fn apply(
         return (Err(ReplyError::SoftDeletedTask), false);
     }
     match state.reply(id, text, by) {
-        Ok(_) => (
+        Ok(index) => (
             Ok(ReplyResult {
                 number,
                 title,
                 by: by.to_string(),
+                index,
             }),
             true,
         ),
@@ -689,6 +710,104 @@ mod tests {
                 assert_eq!(line, None);
                 assert_eq!(host.prompts, []);
             }
+        }
+    }
+
+    /// A reply `--send` delivered is marked sent: the start that unblocks delivers only the
+    /// replies that never went out. Feedback sent on a review is not sent back again either.
+    #[test]
+    fn a_sent_reply_is_not_delivered_again_when_the_record_closes() {
+        let temp = Temp::new("sent-then-unblock");
+        let number = temp.blocked(true);
+        let mut host = running(&temp, number);
+        assert_eq!(
+            send(&temp, number, "you", true, &mut host).line(),
+            "sent to @builder"
+        );
+        saved_replies(&temp, number, &["add an index"]);
+        match start(&temp, number, "you", &mut host) {
+            StartOutcome::Delivered(_, line) => {
+                assert_eq!(line, "started · reply sent to @builder")
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            host.prompts,
+            [
+                (
+                    "w0:p1".to_string(),
+                    format!("[tsk T{number} reply] use postgres")
+                ),
+                (
+                    "w0:p1".to_string(),
+                    format!("[tsk T{number} unblocked] add an index")
+                ),
+            ]
+        );
+
+        let temp = Temp::new("sent-then-send-back");
+        let number = temp.blocked(true);
+        let store = TaskStore::new(&temp.0);
+        let mut state = store.load().expect("load");
+        let id = state.tasks()[0].id;
+        state.set_status(id, HumanStatus::Started).expect("start");
+        store.reload_merge_save(&mut state).expect("save");
+        let draft = ReviewDraft::from_input(
+            Some("done"),
+            &["no flicker".to_string()],
+            None,
+            Default::default(),
+        )
+        .expect("draft");
+        state.review(id, draft, "builder").expect("review");
+        store.reload_merge_save(&mut state).expect("save");
+        state
+            .set_check(id, 0, crate::domain::CheckState::Failed)
+            .expect("fail");
+        store.reload_merge_save(&mut state).expect("save");
+        let mut host = running(&temp, number);
+        send_text(&temp, number, "fix the peak", "you", true, &mut host);
+        start(&temp, number, "you", &mut host);
+        assert_eq!(
+            host.prompts,
+            [
+                (
+                    "w0:p1".to_string(),
+                    format!("[tsk T{number} reply] fix the peak")
+                ),
+                (
+                    "w0:p1".to_string(),
+                    format!("[tsk T{number} sent back] Failed checks: no flicker")
+                ),
+            ]
+        );
+    }
+
+    /// A `--send` that did not go out leaves the reply unsent: the record's close delivers it.
+    #[test]
+    fn a_reply_whose_send_failed_goes_out_when_the_record_closes() {
+        for error in [
+            PromptError::AgentBlocked,
+            PromptError::Failed("herdr".into()),
+        ] {
+            let temp = Temp::new("send-failed-then-unblock");
+            let number = temp.blocked(true);
+            let mut host = running(&temp, number);
+            host.prompt_error = Some(error.clone());
+            assert!(matches!(
+                send(&temp, number, "you", true, &mut host),
+                SendOutcome::NotDelivered { .. }
+            ));
+            host.prompt_error = None;
+            start(&temp, number, "you", &mut host);
+            assert_eq!(
+                host.prompts.last(),
+                Some(&(
+                    "w0:p1".to_string(),
+                    format!("[tsk T{number} unblocked] use postgres")
+                )),
+                "{error:?}"
+            );
         }
     }
 }

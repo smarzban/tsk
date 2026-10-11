@@ -11,7 +11,7 @@ the GitHub release notes verbatim.
 
 ### Breaking
 
-- Store format 11: tasks can carry an assignee, a base branch, a dispatch record, blocks with replies, review rounds with checks and feedback, and the tasks they run after; every change records who made it and what it changed; and undo can revert a start that dispatched. Rolling back refuses the file; restore `tsk.json.v5`.
+- Store format 12: tasks can carry an assignee, a base branch, a dispatch record, blocks with replies (each marked once `tsk reply --send` delivered it), review rounds with checks and feedback, and the tasks they run after; every change records who made it and what it changed; and undo can revert a start that dispatched. Rolling back refuses the file; restore `tsk.json.v5`.
 
 ### Added
 
@@ -37,7 +37,7 @@ the GitHub release notes verbatim.
 
 ### Fixed
 
-- Sending a review back delivers every feedback entry of the round to the running agent, including the ones saved earlier with `Shift+Enter`, numbered one per line when there are several; before, only the box's last entry arrived. Unblocking does the same with the block's replies, from the reply box, `ctrl+b`, palette set status, a marked start (the bulk start card included), or `tsk status T12 started`/`ready`; a save that fails sends only once Retry saves it. The status row counts the entries (`started · 2 feedback entries sent to @claude`).
+- Sending a review back delivers every feedback entry of the round to the running agent, including the ones saved earlier with `Shift+Enter`, numbered one per line when there are several; before, only the box's last entry arrived. Unblocking does the same with the block's replies, from the reply box, `ctrl+b`, palette set status, a marked start (the bulk start card included), or `tsk status T12 started`/`ready`; a save that fails sends only once Retry saves it, and a reply `tsk reply --send` already delivered is not sent again. The status row counts the entries (`started · 2 feedback entries sent to @claude`).
 - Cleanup deletes a squash- or rebase-merged branch when `gh` confirms its pull request merged at exactly the branch's tip; before, it was always kept as not merged. Without `gh` nothing changes.
 - A project reached through a symlinked path, such as `/tmp/repo` and `/private/tmp/repo` on macOS, is one project.
 - With tasks marked, `Esc` in the thread or view picker closes the picker and keeps the marks.

@@ -383,7 +383,7 @@ fn base_detail(base: &Option<String>) -> Option<EventDetail> {
 }
 
 /// Document version written by this binary.
-pub const STORE_FORMAT_VERSION: u32 = 11;
+pub const STORE_FORMAT_VERSION: u32 = 12;
 
 fn default_next_notice_number() -> u64 {
     1
@@ -993,6 +993,7 @@ impl DomainState {
             text,
             edited: false,
             deleted: false,
+            sent: false,
         });
         let index = block.replies.len() - 1;
         record_mutation_at(task, TaskEventKind::Replied, at);
@@ -1035,6 +1036,8 @@ impl DomainState {
         }
         reply.text = text;
         reply.edited = true;
+        // The agent has not seen this text: the record's close sends it.
+        reply.sent = false;
         record_mutation(self.task_mut(id)?, TaskEventKind::ReplyEdited);
         Ok(())
     }
@@ -1044,6 +1047,38 @@ impl DomainState {
         self.owner_reply_mut(id, index)?.deleted = true;
         record_mutation(self.task_mut(id)?, TaskEventKind::ReplyDeleted);
         Ok(())
+    }
+
+    /// Mark your reply `index` on the open record as delivered to its agent on its own
+    /// (`tsk reply --send`), so the record's close does not send it again. Only while it still
+    /// reads `text`: an edit since the send leaves it unsent. Delivery bookkeeping, not a user
+    /// action: no event, and undo entries follow the new revision. Returns whether it marked.
+    pub fn mark_reply_sent(
+        &mut self,
+        id: Uuid,
+        index: usize,
+        text: &str,
+    ) -> Result<bool, DomainError> {
+        let task = self.task_mut(id)?;
+        let before = task.revision;
+        let Some(reply) = task
+            .block
+            .as_mut()
+            .and_then(|block| block.replies.get_mut(index))
+            .filter(|reply| {
+                reply.is_owner() && !reply.deleted && !reply.sent && reply.text == text
+            })
+        else {
+            return Ok(false);
+        };
+        reply.sent = true;
+        task.merge_base_revision = Some(task.revision);
+        task.revision = Uuid::new_v4();
+        let after = task.revision;
+        for entry in &mut self.undo_stack {
+            entry.retarget(id, before, after);
+        }
+        Ok(true)
     }
 
     fn owner_reply_mut(&mut self, id: Uuid, index: usize) -> Result<&mut Reply, DomainError> {
