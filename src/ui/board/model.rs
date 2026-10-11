@@ -2149,7 +2149,9 @@ impl BoardModel {
 
     /// Open a cleanup card. The single card is cursor-only and clears marks; a bulk card keeps
     /// them, so `Esc` returns to the same marked set.
-    pub fn begin_cleanup_prompt(&mut self, prompt: CleanupPrompt) {
+    pub fn begin_cleanup_prompt(&mut self, mut prompt: CleanupPrompt) {
+        // The early-Enter guard counts from the card appearing, not from its inspection.
+        prompt.opened_at = Instant::now();
         if prompt.bulk.is_none() {
             self.clear_marks();
         }

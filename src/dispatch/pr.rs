@@ -22,11 +22,13 @@ const GH_VIEW_TIMEOUT: Duration = Duration::from_secs(20);
 const GH_MERGE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Longest one row of a board `m` can take: the lookup, the merge, the lookup confirming it,
-/// and the remote-branch check. A quit waits this long per merging row, then for cleanup.
+/// and the remote-branch checks with their waits. A quit waits this long per merging row,
+/// then for cleanup.
 pub const MERGE_ROW_BOUND: Duration = Duration::from_secs(
     2 * GH_VIEW_TIMEOUT.as_secs()
         + GH_MERGE_TIMEOUT.as_secs()
-        + crate::git_base::NETWORK_TIMEOUT.as_secs(),
+        + (REMOTE_DELETE_WAITS.len() as u64 + 1) * crate::git_base::NETWORK_TIMEOUT.as_secs()
+        + 2,
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
