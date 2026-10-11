@@ -324,6 +324,12 @@ fn run_status(args: Vec<String>) -> CliOutput {
             Ok(status::StartOutcome::Dispatched(result, dispatched)) => {
                 presenter::status_dispatched(result, *dispatched)
             }
+            Ok(status::StartOutcome::Delivered(result, line)) => {
+                let mut output = presenter::status(result);
+                output.stdout.push_str(&crate::ui::terminal_text(&line));
+                output.stdout.push('\n');
+                output
+            }
             Err(error) => presenter::status_rejected(error, task),
         };
     }
@@ -337,6 +343,19 @@ fn run_status(args: Vec<String>) -> CliOutput {
     let outcome = if status == crate::domain::HumanStatus::Done {
         share_fetch_window(&input.state_dir);
         status::run_done(task, input.state_dir)
+    } else if status == crate::domain::HumanStatus::Ready {
+        // Leaving a block for ready sends its replies to the running agent.
+        return match status::run_ready(task, input.state_dir) {
+            Ok((result, line)) => {
+                let mut output = presenter::status(result);
+                if let Some(line) = line {
+                    output.stdout.push_str(&crate::ui::terminal_text(&line));
+                    output.stdout.push('\n');
+                }
+                output
+            }
+            Err(error) => presenter::status_rejected(error, task),
+        };
     } else {
         status::run(task, status, input.block, input.state_dir).map(|result| (result, Vec::new()))
     };

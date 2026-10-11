@@ -3105,31 +3105,105 @@ pub fn deliver_reply(
     }
 }
 
-/// The status-row line for a reply-and-start that delivered (or tried to). `noun` names what
-/// was sent: `reply` for an unblock, `feedback` for a send-back.
-pub fn delivery_message(assignee: &str, noun: &str, delivery: &Delivery) -> String {
+/// The status-row line for a reply-and-start (or an unblock to ready) that delivered, or
+/// tried to. `status` is the task's new status; `noun` names what was sent: `reply` for an
+/// unblock, `feedback` for a send-back, counted when there was more than one
+/// ([`ClosingMessage::noun`]).
+pub fn delivery_message(status: &str, assignee: &str, noun: &str, delivery: &Delivery) -> String {
     match delivery {
-        Delivery::Sent => format!("started · {noun} sent to @{assignee}"),
+        Delivery::Sent => format!("{status} · {noun} sent to @{assignee}"),
         Delivery::AgentWaiting => {
-            format!("started · @{assignee} is waiting on a prompt; {noun} kept on the task")
+            format!("{status} · @{assignee} is waiting on a prompt; {noun} kept on the task")
         }
         Delivery::Unreachable(_) => {
-            format!("started · could not reach @{assignee}; {noun} kept on the task")
+            format!("{status} · could not reach @{assignee}; {noun} kept on the task")
         }
         Delivery::NotInPane => format!(
-            "started · {noun} not sent: @{assignee} is not in its pane; {noun} kept on the task"
+            "{status} · {noun} not sent: @{assignee} is not in its pane; {noun} kept on the task"
         ),
-        Delivery::NotInHerdr => format!("started · {noun} not sent: {NO_LAUNCH_NOT_IN_HERDR}"),
+        Delivery::NotInHerdr => format!("{status} · {noun} not sent: {NO_LAUNCH_NOT_IN_HERDR}"),
     }
 }
 
-/// The message a send-back delivers: this action's feedback, then the round's failed checks.
-pub fn send_back_text(feedback: Option<&str>, failed: &[&str]) -> Option<String> {
-    let feedback = feedback.map(str::trim).filter(|text| !text.is_empty());
+/// What a status change that closed a task's block or review round sends its running agent:
+/// every entry you left on that record, oldest first, so feedback saved earlier in the round
+/// (`Shift+Enter`) goes out with the send-back that closes it. Each record closes once, so
+/// each entry is delivered once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosingMessage {
+    /// `sent back` or `unblocked`.
+    pub label: &'static str,
+    /// `feedback` or `reply`, counted when there is more than one: `2 feedback entries`,
+    /// `3 replies`.
+    pub noun: String,
+    /// The body after `[tsk T<n> <label>]`, if any.
+    pub text: Option<String>,
+    /// How many of your entries `text` carries.
+    pub entries: usize,
+}
+
+/// The message owed for the record `task` last closed: a review round sent back (it went to
+/// started), or a block that went to started or ready. `None` while a record is open, or when
+/// the last one closed some other way. The caller makes sure its own action closed it.
+pub fn closing_message(task: &Task) -> Option<ClosingMessage> {
+    if task.block.is_some() {
+        return None;
+    }
+    let record = task.past_blocks.last()?;
+    let entries = record.owner_entries();
+    let count = entries.len();
+    let counted = |one: &str, many: &str| match count {
+        0 | 1 => one.to_string(),
+        count => format!("{count} {many}"),
+    };
+    if record.is_review() {
+        (record.resolution == Some(crate::domain::Resolution::SentBack)).then(|| ClosingMessage {
+            label: "sent back",
+            noun: counted("feedback", "feedback entries"),
+            text: send_back_text(&entries, &record.failed_checks()),
+            entries: count,
+        })
+    } else {
+        matches!(task.status, HumanStatus::Started | HumanStatus::Ready).then(|| ClosingMessage {
+            label: "unblocked",
+            noun: counted("reply", "replies"),
+            text: numbered_entries(&entries),
+            entries: count,
+        })
+    }
+}
+
+/// One entry as is; several numbered, one per line: `1. …` then `2. …`.
+fn numbered_entries(entries: &[&str]) -> Option<String> {
+    let entries = entries
+        .iter()
+        .map(|entry| entry.trim())
+        .filter(|entry| !entry.is_empty())
+        .collect::<Vec<_>>();
+    match entries.as_slice() {
+        [] => None,
+        [entry] => Some(entry.to_string()),
+        entries => Some(
+            entries
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| format!("{}. {entry}", index + 1))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+    }
+}
+
+/// The message a send-back delivers: the round's feedback entries, then its failed checks.
+pub fn send_back_text(feedback: &[&str], failed: &[&str]) -> Option<String> {
+    let numbered = feedback.iter().filter(|entry| !entry.trim().is_empty()).count() > 1;
+    let feedback = numbered_entries(feedback);
     let failed = (!failed.is_empty()).then(|| format!("Failed checks: {}", failed.join("; ")));
     match (feedback, failed) {
+        // Numbered entries end on their own line; one entry runs on as before.
+        (Some(feedback), Some(failed)) if numbered => Some(format!("{feedback}\n{failed}")),
         (Some(feedback), Some(failed)) => Some(format!("{feedback} {failed}")),
-        (Some(feedback), None) => Some(feedback.to_string()),
+        (Some(feedback), None) => Some(feedback),
         (None, failed) => failed,
     }
 }
@@ -3857,6 +3931,30 @@ mod tests {
     use super::*;
 
     static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// One feedback entry runs on before the failed checks, as it always did; several are
+    /// numbered one per line, oldest first, and blank entries never count.
+    #[test]
+    fn send_back_text_numbers_several_entries() {
+        let failed = ["no flicker", "docs build"];
+        assert_eq!(
+            send_back_text(&["fix it"], &failed).as_deref(),
+            Some("fix it Failed checks: no flicker; docs build")
+        );
+        assert_eq!(
+            send_back_text(&["fix it", "  ", "and the dip"], &failed).as_deref(),
+            Some("1. fix it\n2. and the dip\nFailed checks: no flicker; docs build")
+        );
+        assert_eq!(
+            send_back_text(&["fix it", "and the dip"], &[]).as_deref(),
+            Some("1. fix it\n2. and the dip")
+        );
+        assert_eq!(
+            send_back_text(&[], &failed).as_deref(),
+            Some("Failed checks: no flicker; docs build")
+        );
+        assert_eq!(send_back_text(&[], &[]), None);
+    }
 
     /// A process exit status carrying `code`, built the way each platform encodes it.
     fn exit_code(code: u8) -> std::process::ExitStatus {

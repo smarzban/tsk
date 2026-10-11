@@ -306,6 +306,16 @@ impl Block {
             .collect()
     }
 
+    /// Your live entries on this record, oldest first: the replies (or feedback) a send-back
+    /// or unblock delivers. Deleted entries are skipped; edited ones carry their current text.
+    pub fn owner_entries(&self) -> Vec<&str> {
+        self.replies
+            .iter()
+            .filter(|reply| reply.is_owner() && !reply.deleted)
+            .map(|reply| reply.text.as_str())
+            .collect()
+    }
+
     /// The last reply that was not deleted.
     pub fn last_reply(&self) -> Option<&Reply> {
         self.replies.iter().rev().find(|reply| !reply.deleted)

@@ -243,7 +243,7 @@ Each review is a **round**. Agents set one from [the CLI](/docs/cli/#status) (`-
 | Key | Action |
 | --- | --- |
 | `Shift+Enter` | Save the feedback; the task stays in review |
-| `ctrl+s` | Send back: save the feedback and start the task. A running dispatched agent gets this feedback and the failed checks as one message: `[tsk T12 sent back] <feedback> Failed checks: <check>; <check>` |
+| `ctrl+s` | Send back: save the feedback and start the task. A running dispatched agent gets every feedback entry of the round, oldest first (the ones saved earlier with `Shift+Enter`, then this one), and the failed checks as one message: `[tsk T12 sent back] <feedback> Failed checks: <check>; <check>`. Two or more entries are numbered one per line (`1. …`, `2. …`), with the failed checks on the last line |
 | `ctrl+d` | Approve: save the feedback and mark the task done, through the [cleanup card](#complete-and-clean-up) when its dispatch is live. Nothing is sent |
 | `Esc` | Cancel |
 
@@ -251,19 +251,21 @@ Sending back takes the same route as a reply's `ctrl+s` ([below](#reply-to-a-run
 
 ### Reply to a running agent
 
-When `ctrl+s` in a reply box starts an assigned task whose dispatched agent is still running, tsk sends that agent the reply you just saved, once the start is saved, as one message: `[tsk T12 unblocked] <your reply>`. Earlier replies are never sent again. With an empty box, or `ctrl+s` on the task page with no box open, it only unblocks and sends `[tsk T12 unblocked]` alone. Multi-line replies arrive intact.
+When `ctrl+s` in a reply box starts an assigned task whose dispatched agent is still running, tsk sends that agent every reply you left on the block, oldest first, once the start is saved, as one message: `[tsk T12 unblocked] <your reply>`. That includes replies saved earlier with `Shift+Enter`; two or more are numbered one per line (`1. …`, `2. …`). Deleted replies are skipped, edited ones send their current text, and the agent's own replies are not echoed back. A block or round closes when it is unblocked or sent back, so each reply goes out once. With no reply of yours on the block, or `ctrl+s` on the task page with no box open and nothing saved, it only unblocks and sends `[tsk T12 unblocked]` alone. Multi-line replies arrive intact.
+
+`ctrl+b` on a blocked task (or palette **set status: ready** or **started**) unblocks the same way: once the change is saved, the running agent gets the block's replies, and the status row reads `ready · reply sent to @claude`. Unblocking to ready with no reply of yours sends nothing. [`tsk status T12 started`](/docs/cli/#start) and `tsk status T12 ready` do the same from the CLI.
 
 tsk sends only to the agent it dispatched: the pane's live agent must carry the name dispatch gave it (`t12-claude`), checked when the start is routed and again just before the send. Another agent in that pane, or one Herdr never named (naming can fail, for example when the name is taken), gets nothing. The status row says how it went:
 
 | Status row | Meaning |
 | --- | --- |
-| `started · reply sent to @claude` | Herdr took the message; a busy agent gets it after its current turn |
+| `started · reply sent to @claude` | Herdr took the message; a busy agent gets it after its current turn. With more than one entry it counts them: `started · 3 replies sent to @claude`, `started · 2 feedback entries sent to @claude` |
 | `started · @claude is waiting on a prompt; reply kept on the task` | The agent is on a permission prompt or question, so nothing was sent |
 | `started · could not reach @claude; reply kept on the task` | Herdr failed or could not say whether the agent runs |
 | `started · reply not sent: @claude is not in its pane; reply kept on the task` | The pane holds another agent, or an unnamed one |
 | `started · reply not sent: not in Herdr` | The board runs outside Herdr, so it cannot reach the agent |
 
-The task stays started in every case and nothing relaunches or retries; the reply is on the task either way. `Shift+Enter` (save only) never sends. The other starts are unchanged: a task never dispatched dispatches, and its prompt points the agent at the answers; a gone agent asks before [relaunching](#relaunch); an unassigned task unblocks to ready. If the save fails, nothing is sent until [save recovery](#save-failures) retries it.
+The task stays started in every case and nothing relaunches or retries; the reply is on the task either way. `Shift+Enter` (save only) never sends by itself: what it saved goes out with the unblock or send-back that closes the block or round. The other starts are unchanged: a task never dispatched dispatches, and its prompt points the agent at the answers; a gone agent asks before [relaunching](#relaunch); an unassigned task unblocks to ready. If the save fails, nothing is sent until [save recovery](#save-failures) retries it.
 
 On your desk, **ON DECK** contains only desk tasks. On a project board, it contains that project's ready and open tasks. Ready tasks are the picked queue; open tasks are the untriaged inbox below it. Ready tasks sort by oldest pick first, open tasks by oldest capture first, and notice tasks lead within each group. The **inbox** group starts expanded; press `Enter` on its heading or `g` while the done drawer is closed to fold or unfold it. With the drawer open and archived tasks available, `g` addresses its archived group; otherwise it addresses the inbox. Use the thread and assignee filter to narrow the tasks.
 

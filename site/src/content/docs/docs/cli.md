@@ -212,6 +212,8 @@ Unlike keyboard toggles, this command sets the requested status directly. Repeat
 
 Output: `status T12 <status> <title>`. The output uses `started`, even when the input was `start`.
 
+`ready` on a blocked task whose dispatched agent still runs sends that agent the block's replies, as the board's `ctrl+b` does, and prints a second line such as `ready · reply sent to @claude`. A block with no reply of yours sends nothing. Only your own status changes send, never an agent's (`TSK_AGENT` set).
+
 `done` also starts what it releases: each task that [runs after](/docs/board/#after) this one, is `ready`, and now has every prerequisite done starts in the same save as the done, the way `started` below starts it, decided under the store lock so a prerequisite completed concurrently counts; an assigned task never dispatched then dispatches right after that save. A second line says what happened, such as `T13 started · T12 done`, `T13 dispatched to @claude · T12 done`, or `T13 back to ready: <reason> · T12 done` when a launch fails; the done stands either way. If the agent launched but its record could not be saved, a warning on stderr names its worktree; if the launch failed and the task could not be saved back to ready, the warning says it is started with no agent. The exit code stays 0 either way. Tasks in `open`, `blocked`, or `review` do not move, and `review` is not done.
 
 ### Start
@@ -222,7 +224,7 @@ Output: `status T12 <status> <title>`. The output uses `started`, even when the 
 | --- | --- |
 | Unassigned, already started, done, or archived | Sets the status |
 | Assigned, never dispatched | [Dispatches](#dispatch) it, which sets `started`, and prints a second line, `dispatched T12 to @claude in /path/to/worktree` |
-| Dispatched, agent still running, or Herdr cannot say | Sets the status |
+| Dispatched, agent still running, or Herdr cannot say | Sets the status. From `blocked` or `review` (a send-back), it then sends the running agent the block's replies or the round's feedback and failed checks, as the [board's `ctrl+s`](/docs/board/#reply-to-a-running-agent) does, and prints the board's status line second, such as `started · 2 feedback entries sent to @claude` or `started · reply not sent: not in Herdr` |
 | Dispatched, agent gone | Refuses with `agent-gone` and changes nothing |
 | Assigned, never dispatched, but outside Herdr or a desk task | Sets the status, exits 0, and prints a second line, `no launch: not in Herdr` or `no launch: desk task has no repository` |
 | Run by the task's own dispatched agent (`TSK_AGENT` names the assignee) | Sets the status; never launches another copy |
@@ -230,7 +232,7 @@ Output: `status T12 <status> <title>`. The output uses `started`, even when the 
 
 | Flag | Effect |
 | --- | --- |
-| `--no-dispatch` | Only set the status, never launch |
+| `--no-dispatch` | Only set the status, never launch or send |
 | `--again` | Relaunch a dispatched task whose agent is gone, as `tsk dispatch --again` does |
 | `--force` | Start even though tasks it runs after are not done |
 
@@ -283,7 +285,7 @@ tsk reply T12 -- "-5 degrees is fine"
 
 Adds a reply to the task's open block, or feedback to its open review round, authored as above. Put `--` before text that begins with `-`. A task that is neither blocked nor in review refuses with `not-blocked`; empty text refuses with `empty-reply`, and text over 4 KB with `text-too-long`. Each run adds a reply, so read the task before retrying. The board's owner answers from the [task page](/docs/task-page/#blocked) or a [blocked row](/docs/board/#block-with-a-reason).
 
-`--send` also delivers the reply this run stored, and only it, to the task's running [dispatched](#dispatch) agent, as `[tsk T12 reply] <text>`. The status stays; the board's reply box `ctrl+s` is the way to answer and unblock (or send a review back) in one step. Only your own replies are sent, only inside Herdr, and only to the agent tsk dispatched: the pane's live agent must carry its dispatch name (`t12-claude`).
+`--send` also delivers the reply this run stored, and only it, to the task's running [dispatched](#dispatch) agent, as `[tsk T12 reply] <text>`. The status stays; the board's reply box `ctrl+s` is the way to answer and unblock (or send a review back) in one step. The unblock or send-back later sends every reply on the block or round again, this one included. Only your own replies are sent, only inside Herdr, and only to the agent tsk dispatched: the pane's live agent must carry its dispatch name (`t12-claude`).
 
 Output: `replied T12 as <author> <title>`. With `--send`, a second line says `sent to @claude` or `not sent: <reason>`: the agent is waiting on a prompt, Herdr could not reach it, the agent is not in its pane (another or an unnamed agent holds it), the agent is gone, the task was never dispatched or has no assignee, not in Herdr, or the reply is an agent's. The reply is stored either way, so the exit is 0. Rerunning adds and sends another reply; it never resends an earlier one.
 

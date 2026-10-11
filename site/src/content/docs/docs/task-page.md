@@ -102,8 +102,8 @@ The page opens with nothing selected. `Tab` walks the top line, the options, and
 | --- | --- |
 | Reply with an option, prefilled | `1`…`9`, or `Enter` on the option |
 | Reply | `r` |
-| Save the reply | `Shift+Enter` |
-| Save the reply and unblock: to ready, or for an assigned task to started (a [start](/docs/board/#dispatch) that may dispatch or relaunch, or [sends the reply](/docs/board/#reply-to-a-running-agent) to its running agent). Outside the reply box it unblocks the same way with nothing typed | `ctrl+s` |
+| Save the reply; nothing is sent until the block is unblocked | `Shift+Enter` |
+| Save the reply and unblock: to ready, or for an assigned task to started (a [start](/docs/board/#dispatch) that may dispatch or relaunch, or [sends every reply of the block](/docs/board/#reply-to-a-running-agent) to its running agent). Outside the reply box it unblocks the same way with nothing typed | `ctrl+s` |
 | New line in the reply | `Enter` |
 | Cancel the reply | `Esc` |
 | Edit why, on, and needs (top line selected) | `ctrl+e` |
@@ -141,8 +141,8 @@ The page opens with the first unmarked check selected (with every check marked, 
 | Cycle a check in place: open → passed → failed → open | `Enter` on the check, or click it |
 | Show or fold the passed checks (`▸` / `▾`) | `Enter` on the `N passed` line, or click it |
 | Give feedback | `r` |
-| Save the feedback; stay in review | `Shift+Enter` |
-| Send back: started, and the feedback with the failed checks [goes to the running agent](/docs/board/#review-with-what-was-done). Outside the feedback box it sends back with nothing typed, which needs a failed check | `ctrl+s` |
+| Save the feedback; stay in review. Nothing is sent until the send-back | `Shift+Enter` |
+| Send back: started, and the round's feedback (every entry, the ones saved with `Shift+Enter` included) with the failed checks [goes to the running agent](/docs/board/#review-with-what-was-done). Outside the feedback box it sends back with nothing typed, which needs a failed check | `ctrl+s` |
 | Approve: done (cleanup card when the dispatch is live); nothing is sent | `ctrl+d` |
 | New line in the feedback | `Enter` |
 | Cancel the feedback | `Esc` |

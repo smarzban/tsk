@@ -1101,8 +1101,6 @@ pub struct BoardModel {
     /// A reply-box `ctrl+s` to a running agent whose save failed: the task whose reply goes
     /// to its agent once Retry saves it. Cancel drops it. Session-only.
     pub pending_reply_delivery: Option<Uuid>,
-    /// The reply text a held start or delivery sends once Retry saves it. Session-only.
-    pub pending_reply_text: Option<String>,
     /// `y` on the start-anyway card: the replayed start skips the after check once.
     pub start_anyway: bool,
     /// What a completion's save released (`T203 started · T202 done`), joined onto the cleanup
@@ -1994,7 +1992,6 @@ impl BoardModel {
             dispatch_prompt: None,
             pending_reply_start: None,
             pending_reply_delivery: None,
-            pending_reply_text: None,
             start_anyway: false,
             released_note: None,
             mark_order: Vec::new(),

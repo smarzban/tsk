@@ -211,11 +211,12 @@ mod tests {
 
     use super::{run_send_with_host, SendOutcome};
     use crate::cli::parser::TaskAddress;
+    use crate::cli::status::{StartFlags, StartOutcome};
     use crate::dispatch::{
         CreatedWorktree, Delivery, DispatchHost, PaneAgent, PromptError, RootPaneError,
     };
     use crate::domain::{
-        BlockDraft, Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope,
+        BlockDraft, Dispatch, DomainState, HumanStatus, ProvenanceOrigin, ReviewDraft, TaskScope,
     };
     use crate::store::TaskStore;
 
@@ -538,6 +539,155 @@ mod tests {
             if sends == 1 {
                 assert!(matches!(outcome, SendOutcome::NotDelivered { delivery, .. }
                     if delivery != Delivery::Sent));
+            }
+        }
+    }
+
+    /// Add `replies` of yours (and one deleted) to task `number`'s open record, one save each.
+    fn saved_replies(temp: &Temp, number: u64, replies: &[&str]) {
+        let store = TaskStore::new(&temp.0);
+        let mut state = store.load().expect("load");
+        let id = state
+            .tasks()
+            .iter()
+            .find(|task| task.number == Some(number))
+            .expect("task")
+            .id;
+        for reply in replies {
+            state.reply(id, reply, "you").expect("reply");
+            store.reload_merge_save(&mut state).expect("save");
+        }
+        let dropped = state.reply(id, "scratch that", "you").expect("reply");
+        store.reload_merge_save(&mut state).expect("save");
+        state.delete_reply(id, dropped).expect("delete");
+        store.reload_merge_save(&mut state).expect("save");
+    }
+
+    fn start(temp: &Temp, number: u64, actor: &str, host: &mut Host) -> StartOutcome {
+        crate::cli::status::run_started_with_host(
+            TaskAddress::Number(number),
+            StartFlags::default(),
+            Some(temp.0.clone()),
+            true,
+            actor,
+            host,
+        )
+        .expect("start")
+    }
+
+    /// `tsk status N started` on a blocked task whose agent runs sends it every live reply of
+    /// the block, as the board's reply box `ctrl+s` does, and says so.
+    #[test]
+    fn a_cli_start_sends_every_reply_of_the_block() {
+        let temp = Temp::new("cli-unblock");
+        let number = temp.blocked(true);
+        saved_replies(&temp, number, &["use postgres", "add an index"]);
+        let mut host = running(&temp, number);
+        match start(&temp, number, "you", &mut host) {
+            StartOutcome::Delivered(_, line) => {
+                assert_eq!(line, "started · 2 replies sent to @builder")
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            host.prompts,
+            [(
+                "w0:p1".to_string(),
+                format!("[tsk T{number} unblocked] 1. use postgres\n2. add an index")
+            )]
+        );
+        assert_eq!(temp.status(number), HumanStatus::Started);
+
+        // The block is closed: a repeat start sends nothing again.
+        let outcome = start(&temp, number, "you", &mut host);
+        assert!(matches!(outcome, StartOutcome::Status(_)), "{outcome:?}");
+        assert_eq!(host.prompts.len(), 1);
+    }
+
+    /// `tsk status N started` from review sends the round back with every feedback entry and
+    /// the failed checks. The agent starting its own task sends nothing.
+    #[test]
+    fn a_cli_send_back_delivers_the_rounds_feedback() {
+        for actor in ["you", "builder"] {
+            let temp = Temp::new("cli-send-back");
+            let number = temp.blocked(true);
+            let store = TaskStore::new(&temp.0);
+            let mut state = store.load().expect("load");
+            let id = state.tasks()[0].id;
+            state.set_status(id, HumanStatus::Started).expect("start");
+            store.reload_merge_save(&mut state).expect("save");
+            let draft = ReviewDraft::from_input(
+                Some("done"),
+                &["no flicker".to_string()],
+                None,
+                Default::default(),
+            )
+            .expect("draft");
+            state.review(id, draft, "builder").expect("review");
+            store.reload_merge_save(&mut state).expect("save");
+            state
+                .set_check(id, 0, crate::domain::CheckState::Failed)
+                .expect("fail");
+            store.reload_merge_save(&mut state).expect("save");
+            saved_replies(&temp, number, &["fix the peak", "and the dip"]);
+            let mut host = running(&temp, number);
+            let outcome = start(&temp, number, actor, &mut host);
+            if actor == "builder" {
+                assert!(matches!(outcome, StartOutcome::Status(_)), "{outcome:?}");
+                assert_eq!(host.prompts, []);
+                continue;
+            }
+            match outcome {
+                StartOutcome::Delivered(_, line) => {
+                    assert_eq!(line, "started · 2 feedback entries sent to @builder")
+                }
+                other => panic!("{other:?}"),
+            }
+            assert_eq!(
+                host.prompts,
+                [(
+                    "w0:p1".to_string(),
+                    format!(
+                        "[tsk T{number} sent back] 1. fix the peak\n2. and the dip\n\
+                         Failed checks: no flicker"
+                    )
+                )]
+            );
+        }
+    }
+
+    /// `tsk status N ready` on a blocked task sends the block's replies, as the board's
+    /// `ctrl+b` does; a block with none sends nothing.
+    #[test]
+    fn a_cli_unblock_to_ready_sends_the_blocks_replies() {
+        for replied in [true, false] {
+            let temp = Temp::new("cli-ready");
+            let number = temp.blocked(true);
+            if replied {
+                saved_replies(&temp, number, &["use postgres"]);
+            }
+            let mut host = running(&temp, number);
+            let (_, line) = crate::cli::status::run_ready_with_host(
+                TaskAddress::Number(number),
+                Some(temp.0.clone()),
+                true,
+                "you",
+                &mut host,
+            )
+            .expect("ready");
+            assert_eq!(temp.status(number), HumanStatus::Ready);
+            if replied {
+                assert_eq!(line.as_deref(), Some("ready · reply sent to @builder"));
+                assert_eq!(
+                    host.prompts,
+                    [(
+                        "w0:p1".to_string(),
+                        format!("[tsk T{number} unblocked] use postgres")
+                    )]
+                );
+            } else {
+                assert_eq!(line, None);
+                assert_eq!(host.prompts, []);
             }
         }
     }

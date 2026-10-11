@@ -65,6 +65,17 @@ pub fn run(
     block: BlockFlags,
     state_dir: Option<PathBuf>,
 ) -> Result<StatusResult, StatusError> {
+    run_as(target, status, block, state_dir, &actor_from_env())
+}
+
+/// [`run`] by `actor`.
+fn run_as(
+    target: TaskAddress,
+    status: HumanStatus,
+    block: BlockFlags,
+    state_dir: Option<PathBuf>,
+    actor: &str,
+) -> Result<StatusResult, StatusError> {
     let state_dir = state_dir.unwrap_or_else(default_state_dir);
     // A review handed to another agent names its profile. A malformed config never blocks
     // the status change: the name is then kept as plain text.
@@ -72,7 +83,6 @@ pub fn run(
         .then(|| block.on.as_deref().map(|on| review_on(on, &state_dir)))
         .flatten();
     let store = TaskStore::new(state_dir);
-    let actor = actor_from_env();
     store
         .locked_transition_if_changed(|state: &mut DomainState| {
             let found = state
@@ -93,7 +103,7 @@ pub fn run(
                 status,
                 &block,
                 review_on.clone(),
-                &actor,
+                actor,
             ))
         })
         .map_err(StatusError::Store)?
@@ -210,6 +220,9 @@ pub enum StartOutcome {
     /// The start dispatched (or, with `--again`, relaunched) the task's agent, which set it
     /// started.
     Dispatched(StatusResult, Box<DispatchResult>),
+    /// A plain start that sent a block back or unblocked it, and tried to deliver the record's
+    /// replies to the running agent: the status-row line saying how it went.
+    Delivered(StatusResult, String),
 }
 
 /// How `started` may launch: `--again` relaunches a gone agent, `--no-dispatch` never launches,
@@ -275,11 +288,12 @@ pub fn run_started_with_host(
         }
     }
     let plain = |state_dir| {
-        run(
+        run_as(
             target,
             HumanStatus::Started,
             BlockFlags::default(),
             state_dir,
+            actor,
         )
         .map(StartOutcome::Status)
     };
@@ -302,8 +316,20 @@ pub fn run_started_with_host(
     {
         return plain(state_dir);
     }
+    let closing = Closing::before(task, actor);
     let again = match dispatch::start_route(task, actor, in_herdr, host) {
-        StartRoute::Plain => return plain(state_dir),
+        StartRoute::Plain => {
+            let result = plain(state_dir.clone())?;
+            return Ok(match (result, closing) {
+                (StartOutcome::Status(result), Some(closing)) => {
+                    match closing.deliver(&store, target, in_herdr, host) {
+                        Some(line) => StartOutcome::Delivered(result, line),
+                        None => StartOutcome::Status(result),
+                    }
+                }
+                (result, _) => result,
+            });
+        }
         StartRoute::NoLaunch { reason } => {
             return plain(state_dir).map(|outcome| match outcome {
                 StartOutcome::Status(result) => StartOutcome::NoLaunch(result, reason),
@@ -325,6 +351,98 @@ pub fn run_started_with_host(
         status: HumanStatus::Started,
     };
     Ok(StartOutcome::Dispatched(status, Box::new(result)))
+}
+
+/// `tsk status <task> ready` through the real host: a block left for ready sends its replies
+/// to the running agent, as the board's `ctrl+b` does. Returns the status-row line when a
+/// delivery was tried.
+pub fn run_ready(
+    target: TaskAddress,
+    state_dir: Option<PathBuf>,
+) -> Result<(StatusResult, Option<String>), StatusError> {
+    let (state_dir, mut host) = crate::cli::dispatch::system_host(state_dir);
+    run_ready_with_host(
+        target,
+        Some(state_dir),
+        dispatch::running_inside_herdr(),
+        &actor_from_env(),
+        &mut host,
+    )
+}
+
+pub fn run_ready_with_host(
+    target: TaskAddress,
+    state_dir: Option<PathBuf>,
+    in_herdr: bool,
+    actor: &str,
+    host: &mut impl DispatchHost,
+) -> Result<(StatusResult, Option<String>), StatusError> {
+    let store = TaskStore::new(state_dir.clone().unwrap_or_else(default_state_dir));
+    let closing = store.load().ok().and_then(|state| {
+        state
+            .tasks()
+            .iter()
+            .find(|task| target.matches(task))
+            .and_then(|task| Closing::before(task, actor))
+    });
+    let result = run_as(
+        target,
+        HumanStatus::Ready,
+        BlockFlags::default(),
+        state_dir,
+        actor,
+    )?;
+    let line = closing.and_then(|closing| closing.deliver(&store, target, in_herdr, host));
+    Ok((result, line))
+}
+
+/// A task about to leave its open record by your hand, with a dispatched agent to tell.
+struct Closing {
+    /// How many records the task had closed before this change.
+    closed_before: usize,
+}
+
+impl Closing {
+    fn before(task: &crate::domain::Task, actor: &str) -> Option<Self> {
+        (actor == OWNER && task.block.is_some() && task.dispatch.is_some()).then(|| Self {
+            closed_before: task.past_blocks.len(),
+        })
+    }
+
+    /// After the change is durable: when it closed the record, send the agent what that
+    /// record owes it ([`dispatch::closing_message`]) and return the status-row line. A block
+    /// left for ready sends only when it holds replies.
+    fn deliver(
+        self,
+        store: &TaskStore,
+        target: TaskAddress,
+        in_herdr: bool,
+        host: &mut impl DispatchHost,
+    ) -> Option<String> {
+        let state = store.load().ok()?;
+        let task = state.tasks().iter().find(|task| target.matches(task))?;
+        let closed_now = task.past_blocks.len() == self.closed_before + 1
+            && task.past_blocks.last()?.closed_by.as_deref() == Some(OWNER);
+        let message = closed_now.then(|| dispatch::closing_message(task)).flatten()?;
+        if task.status == HumanStatus::Ready && message.entries == 0 {
+            return None;
+        }
+        let assignee = task.assignee.as_deref()?;
+        let (_, check) = dispatch::start_route_checked(task, OWNER, in_herdr, host);
+        let delivery =
+            dispatch::deliver_reply(task, &check, message.label, message.text.as_deref(), host)?;
+        let status = if task.status == HumanStatus::Ready {
+            "ready"
+        } else {
+            "started"
+        };
+        Some(dispatch::delivery_message(
+            status,
+            assignee,
+            &message.noun,
+            &delivery,
+        ))
+    }
 }
 
 struct Found {
@@ -754,7 +872,15 @@ mod start_tests {
                 ..Host::default()
             };
             let outcome = temp.start(number, PLAIN, "you", &mut host).expect("start");
-            assert!(matches!(outcome, StartOutcome::Status(_)), "{agent:?}");
+            // From review, the plain start sends the round back and says how delivery went.
+            let StartOutcome::Delivered(_, line) = outcome else {
+                panic!("{agent:?}: {outcome:?}");
+            };
+            let expected = match agent {
+                Some(_) => "started · feedback not sent: @builder is not in its pane; feedback kept on the task",
+                None => "started · could not reach @builder; feedback kept on the task",
+            };
+            assert_eq!(line, expected, "{agent:?}");
             assert_eq!(host.ran, 0, "{agent:?}");
         }
     }
@@ -810,7 +936,10 @@ mod start_tests {
             ..Host::default()
         };
         let outcome = temp.start(number, PLAIN, "you", &mut host).expect("start");
-        assert!(matches!(outcome, StartOutcome::Status(_)));
+        assert!(
+            matches!(&outcome, StartOutcome::Delivered(_, line) if line == "started · could not reach @builder; feedback kept on the task"),
+            "{outcome:?}"
+        );
         assert_eq!(host.ran, 0);
 
         let temp = Temp::new("not-in-herdr-dispatched");
@@ -829,7 +958,10 @@ mod start_tests {
             &mut host,
         )
         .expect("start");
-        assert!(matches!(outcome, StartOutcome::Status(_)));
+        assert!(
+            matches!(&outcome, StartOutcome::Delivered(_, line) if line == "started · feedback not sent: not in Herdr"),
+            "{outcome:?}"
+        );
         assert_eq!(host.ran, 0);
         assert_eq!(temp.status(number), HumanStatus::Started);
     }
