@@ -30,7 +30,7 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 | Undo completion/deletion; restore an archived selection | `ctrl+u` |
 | Archive / restore selected task (archived tasks live in the done drawer's archived group) | `ctrl+f` |
 | Open / close done drawer | `d` |
-| Fold the inbox; with the drawer open, its archived group | `g` |
+| Fold or unfold the group: the inbox, or archived in the done drawer | `g` |
 | Desk / selected project / projects | `1` / `2` / `3` |
 | Project picker | `p` |
 | Project thread filter | `t` |

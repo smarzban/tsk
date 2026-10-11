@@ -2126,7 +2126,7 @@ import { parseCapture } from "./capture.js";
       ["views & find", "3", "projects", "switch view"],
       ["views & find", "p", "project picker", "switch find"],
       ["views & find", "z / D", "done drawer", "completed tasks"],
-      ["views & find", "g", "fold inbox; archived when drawer open", "collapse expand"],
+      ["views & find", "g", "fold / unfold group", "collapse expand inbox archived"],
       ["views & find", "/", "search board", "find filter tasks projects"],
       ["views & find", ":", "command palette", "find actions"],
       ["app controls", "?", "help", "shortcuts keys"],

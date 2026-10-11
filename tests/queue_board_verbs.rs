@@ -314,7 +314,7 @@ fn bulk_start_names_skipped_done_marks_on_the_status_row() {
 }
 
 #[test]
-fn help_names_where_archived_tasks_live_and_what_g_folds() {
+fn help_names_where_archived_tasks_live_and_g_folds_a_group() {
     let lines = tsk_tui::ui::input::help_card_lines();
     let row = |chord: &str| {
         lines
@@ -330,8 +330,8 @@ fn help_names_where_archived_tasks_live_and_what_g_folds() {
     );
     let fold = row("g");
     assert!(
-        fold.contains("fold inbox") && fold.contains("archived when drawer open"),
-        "g help must name both fold targets: {fold}"
+        fold.contains("fold / unfold group"),
+        "g help must name its generic fold action: {fold}"
     );
 }
 
