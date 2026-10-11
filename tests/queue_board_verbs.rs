@@ -2353,6 +2353,7 @@ fn undo_after_archiving_a_completed_task_names_the_task_and_the_archive() {
     let seq = UNDO_STATE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("tsk-verbs-stale-undo-{nanos}-{seq}"));
     std::fs::create_dir_all(&dir).expect("state dir");
+    let _guard = TempDirGuard(dir.clone());
     let store = tsk_tui::store::TaskStore::new(dir.join("tsk.json"));
 
     let mut domain = DomainState::new();
@@ -2401,7 +2402,14 @@ fn undo_after_archiving_a_completed_task_names_the_task_and_the_archive() {
         !row.contains(&id.to_string()),
         "the board never prints a task uuid: {row:?}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
+}
+
+struct TempDirGuard(PathBuf);
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4357,6 +4365,40 @@ fn emptied_existing_step_is_refused_on_its_row_and_its_editor_stays_open() {
         assert_eq!(task.steps[0].text, "zed", "park_first={park_first}");
         assert_eq!(task.steps[1].text, "bravo step");
     }
+}
+
+/// The one case the emptied step cannot take the editor: a typed new step is open. Its text
+/// survives, nothing is saved, and the status row says why.
+#[test]
+fn emptied_existing_step_refusal_keeps_an_open_typed_new_step() {
+    let (mut domain, mut model, id) = board_with_steps("Typed add witness", None, &["alpha step"]);
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None)
+        .expect("open the selected step");
+    for _ in "alpha step".chars() {
+        apply_intent(&mut domain, &mut model, BoardIntent::EditBackspace, None)
+            .expect("delete the step text");
+    }
+    let enter = map_key(model.input_mode(), press(KeyCode::Enter)).expect("enter");
+    apply_intent(&mut domain, &mut model, enter, None).expect("park the empty draft");
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginAddStep, None)
+        .expect("open the add row");
+    for ch in "new one".chars() {
+        apply_intent(&mut domain, &mut model, BoardIntent::EditInsert(ch), None)
+            .expect("type the new step");
+    }
+    let save = map_key(model.input_mode(), shift(KeyCode::Enter)).expect("shift+enter");
+    let outcome = apply_intent(&mut domain, &mut model, save, None).expect("refused save");
+    assert_eq!(outcome, IntentOutcome::None);
+    assert_eq!(model.input_mode(), BoardInputMode::EditStep);
+    assert_eq!(model.message(), Some("a cleared step needs text"));
+    let frame = rendered_board(&model, 80, 24);
+    assert!(
+        frame.contains("new one"),
+        "the typed add survives:\n{frame}"
+    );
+    let task = domain.get(id).expect("task");
+    assert_eq!(task.steps.len(), 1, "nothing is added");
+    assert_eq!(task.steps[0].text, "alpha step", "nothing is renamed");
 }
 
 /// Add and rename drafts paint in the steps section, never in the shared footer slot.

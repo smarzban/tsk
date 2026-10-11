@@ -3496,7 +3496,7 @@ fn open_step_editor(model: &mut BoardModel, text: &str, rename: Option<Uuid>) {
 /// Reopen the emptied existing step at `index` with the inline `text required` refusal.
 ///
 /// A typed new-step row that is open when the session save is refused would lose its text if
-/// the emptied step took its place, so it stays open and the status row names the step.
+/// the emptied step took its place, so it stays open and the status row says what is wrong.
 fn refuse_empty_step_rename(model: &mut BoardModel, index: usize, step_id: Uuid) {
     let typed_add_open = model.form.as_ref().is_some_and(|form| {
         form.steps.editor.as_ref().is_some_and(|editor| {
@@ -3504,7 +3504,7 @@ fn refuse_empty_step_rename(model: &mut BoardModel, index: usize, step_id: Uuid)
         })
     });
     if typed_add_open {
-        model.set_message(format!("step {} {STEP_TEXT_REQUIRED}", index + 1));
+        model.set_message(EMPTIED_STEP_REFUSAL);
         return;
     }
     if let Some(form) = model.form.as_mut() {
@@ -3560,6 +3560,9 @@ fn close_step_editor(model: &mut BoardModel) {
 /// What the inline step row paints when its draft is empty after trim: a short dim refusal
 /// on the row itself, never the board status row.
 const STEP_TEXT_REQUIRED: &str = "text required";
+
+/// The status-row form of the same refusal, for when an open new-step row keeps the editor.
+const EMPTIED_STEP_REFUSAL: &str = "a cleared step needs text";
 
 /// Enter saves a new step and opens the next empty row. Shift+Enter saves it and
 /// then the enclosing form (task session or expanded capture).
