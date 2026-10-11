@@ -34,7 +34,7 @@ the GitHub release notes verbatim.
 - The task page footer no longer shows created and updated dates; the paper trail has both.
 - `ctrl+r` and palette **set status: review** open the review card instead of setting review at once; `Enter` on the empty card still sets it immediately, and `ctrl+r` on a task in review still returns it to ready.
 - `tsk reply` also adds feedback to a task in review; `not-blocked` now means the task is neither blocked nor in review.
-- The cleanup card puts each option on its own line saying what it does to the pull request or branch, then locally (`m  squash-merge PR #193 to main · mark done · remove worktree, branch and agent pane`), shows only the options that apply with the likely one in bold, and drops the footer key list. `↑`/`↓` and `Enter` pick an option (a click selects one, a double click runs it), and a marked set's option lines name the tasks each one touches.
+- The cleanup card puts each option on its own line saying what it does to the pull request or branch, then locally (`m  squash-merge PR #193 to main · mark done · remove worktree, branch and agent pane`), shows only the options that apply with the likely one in bold, and drops the footer key list. `↑`/`↓` and `Enter` pick an option (a click selects one, a double click runs it; `Enter` on an option scrolled out of sight only scrolls back to it), and a marked set's option lines name the tasks each one touches.
 - On a marked set, the cleanup card's `m` also marks done and tidies the tasks already merged, and `y` leaves tasks with uncommitted changes exactly as they were instead of marking them done. When `m` merges nothing, the marks stay and the status row says why.
 
 ### Fixed

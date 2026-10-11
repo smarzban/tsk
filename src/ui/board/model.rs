@@ -2656,6 +2656,36 @@ impl BoardModel {
         };
     }
 
+    /// `Enter` on a card whose `▸` option a page key scrolled out of sight: scroll it back into
+    /// view instead of running it, so nothing runs unseen. True when it did.
+    pub fn reveal_hidden_cleanup_selection(&mut self) -> bool {
+        let max_scroll = self.cleanup_max_scroll.get();
+        let layout = self.cleanup_layout.borrow();
+        let Some(prompt) = self.cleanup_prompt.as_mut() else {
+            return false;
+        };
+        if prompt.follow || layout.capacity == 0 {
+            return false;
+        }
+        let options = prompt.options();
+        let Some(&(start, end)) = prompt
+            .selected_index(&options)
+            .and_then(|index| layout.options.get(index))
+        else {
+            return false;
+        };
+        let scroll = prompt.scroll.min(max_scroll);
+        // In view: all of it, or its first rows when it is taller than the frame.
+        let shown = start >= scroll
+            && (end <= scroll + layout.capacity
+                || (start == scroll && end - start > layout.capacity));
+        if shown {
+            return false;
+        }
+        prompt.follow = true;
+        true
+    }
+
     /// The frame changed size: scroll the cleanup card's `▸` option back into view, here and
     /// in the project preview.
     pub fn follow_cleanup_selection(&mut self) {

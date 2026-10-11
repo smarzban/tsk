@@ -4262,6 +4262,16 @@ fn resolve_cleanup_choice(model: &mut BoardModel, intent: BoardIntent) -> Option
     if model.cleanup_run().is_some() {
         return None;
     }
+    if intent == BoardIntent::CleanupRunSelected
+        && model
+            .cleanup_prompt()?
+            .enter_choice(Instant::now())
+            .is_some()
+        && model.reveal_hidden_cleanup_selection()
+    {
+        // The first `Enter` only shows what the second would run.
+        return None;
+    }
     let prompt = model.cleanup_prompt_mut()?;
     let choice = match intent {
         BoardIntent::CleanupRunSelected => prompt.enter_choice(Instant::now())?,
@@ -21995,6 +22005,35 @@ mod merge_cleanup_tests {
             host.deleted_at_tip.is_empty(),
             "and kept the open PR's branch"
         );
+    }
+
+    #[test]
+    fn enter_on_an_option_paged_out_of_sight_shows_it_and_a_second_enter_runs_it() {
+        let titles = (1..=30).map(|n| format!("t{n}")).collect::<Vec<_>>();
+        let titles = titles.iter().map(String::as_str).collect::<Vec<_>>();
+        let mut board = board("enter-hidden", &titles);
+        let mut host = MergeHost::default();
+        for title in &titles {
+            host.open_pr(&format!("tsk/{title}"), "main");
+        }
+        press(&mut board, BoardIntent::Complete, &mut host);
+        settle_card(&mut board);
+        assert!(
+            screen(&board.model).contains("▸ m"),
+            "opens on the ▸ option"
+        );
+        for _ in 0..40 {
+            press(&mut board, BoardIntent::CleanupScrollUp, &mut host);
+        }
+        assert!(!screen(&board.model).contains("▸ m"), "paged out of sight");
+        press(&mut board, BoardIntent::CleanupRunSelected, &mut host);
+        assert!(host.merges.is_empty(), "an unseen option never runs");
+        assert!(
+            screen(&board.model).contains("▸ m"),
+            "Enter scrolled it back into view"
+        );
+        press(&mut board, BoardIntent::CleanupRunSelected, &mut host);
+        assert_eq!(host.merges.len(), 30, "the second Enter runs what it shows");
     }
 
     #[test]
