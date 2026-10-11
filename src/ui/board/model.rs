@@ -1230,9 +1230,11 @@ impl CleanupRow {
         true
     }
 
-    /// `m` would merge this row: clean, not merged yet, with an open PR into the recorded base.
+    /// `m` would merge this row: clean, not merged yet, with an open PR into the recorded base,
+    /// and no other worktree holding the branch (its cleanup would keep it).
     pub fn mergeable(&self) -> bool {
         !self.dirty
+            && !self.checked_out_elsewhere
             && self.pr.merged.is_none()
             && match (&self.pr.landed, &self.inspected) {
                 (Some(landed), Some(record)) => {

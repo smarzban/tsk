@@ -21794,6 +21794,41 @@ mod merge_cleanup_tests {
     }
 
     #[test]
+    fn bulk_m_never_merges_a_branch_checked_out_in_another_worktree() {
+        let mut board = board("bulk-elsewhere", &["one", "two"]);
+        let mut host = MergeHost::default();
+        host.open_pr("tsk/one", "main");
+        host.open_pr("tsk/two", "main");
+        press(&mut board, BoardIntent::Complete, &mut host);
+        let prompt = board.model.cleanup_prompt_mut().unwrap();
+        prompt
+            .rows
+            .iter_mut()
+            .find(|row| row.branch == "tsk/two")
+            .unwrap()
+            .checked_out_elsewhere = true;
+        let merge = prompt
+            .options()
+            .into_iter()
+            .find(|option| option.choice == crate::ui::board::CleanupChoice::Merge)
+            .expect("m for the other PR");
+        assert!(merge.text.contains("unchanged"), "{}", merge.text);
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        let attempted = host
+            .merges
+            .iter()
+            .map(|(branch, _, _)| branch.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            attempted,
+            ["tsk/one"],
+            "the card said the other stays unchanged"
+        );
+        tick(&mut board, &mut host);
+        assert_eq!(on_disk(&board, 1), HumanStatus::Started);
+    }
+
+    #[test]
     fn bulk_m_that_merges_nothing_keeps_the_marks_and_says_why_on_close() {
         let mut board = board("bulk-none", &["one", "nopr"]);
         let mut host = MergeHost::default();
