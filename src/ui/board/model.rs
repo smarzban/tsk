@@ -880,6 +880,10 @@ pub struct BoardModel {
     /// that entry is no longer the live top of the stack (undone, superseded, or stale), so
     /// the footer never advertises an undo that would do something else or refuse.
     pub(super) undo_hint: Option<UndoEntry>,
+    /// [`Self::undo_hint`] as it stood before the last mutating intent. That intent's sync
+    /// may drop the hint against a domain that never reaches disk; a cancelled failed save
+    /// puts it back ([`Self::restore_undo_hint_before_save`]) for the baseline to revalidate.
+    pub(super) undo_hint_before_save: Option<UndoEntry>,
     /// A delete recovery notice a failed save took off the row, held until the failure is
     /// resolved.
     ///
@@ -1001,6 +1005,7 @@ impl BoardModel {
             delete_notice_label: None,
             delete_notice_expires_at: None,
             undo_hint: None,
+            undo_hint_before_save: None,
             suspended_delete_notice: None,
             suspended_delete_notice_count: None,
             suspended_delete_notice_label: None,
@@ -1590,6 +1595,7 @@ impl BoardModel {
         right.delete_notice_label = None;
         right.delete_notice_expires_at = None;
         right.undo_hint = None;
+        right.undo_hint_before_save = None;
         right.suspended_delete_notice = None;
         right.suspended_delete_notice_count = None;
         right.suspended_delete_notice_label = None;
@@ -4043,6 +4049,17 @@ impl BoardModel {
             .is_some_and(|deadline| Instant::now() >= deadline)
         {
             self.clear_delete_notice();
+        }
+    }
+
+    /// Put back the undo hint the failed mutation's sync dropped. Call before syncing the
+    /// restored baseline, which keeps it only if its entry is still the live top there.
+    pub fn restore_undo_hint_before_save(&mut self) {
+        if let Some(right) = self.right_seat.as_deref_mut() {
+            right.restore_undo_hint_before_save();
+        }
+        if let Some(entry) = self.undo_hint_before_save.take() {
+            self.undo_hint = Some(entry);
         }
     }
 

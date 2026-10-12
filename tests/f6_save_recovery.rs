@@ -2249,3 +2249,70 @@ fn input_surface_help_lines_use_the_shared_lowercase_verb_grammar() {
     assert_eq!(SAVE_RECOVERY_HELP_LINE, "↑↓ · r retry · c cancel");
     assert_eq!(SEARCH_HELP_LINE, "/ search · type · enter pin · esc clear");
 }
+
+/// T240: an Undo whose save fails drops the footer's undo hint against a working state that
+/// never reaches disk. Cancel restores the baseline, where the delete is still the live top
+/// of the undo stack, so the footer offers its undo again.
+#[test]
+fn a_cancelled_failed_undo_save_gives_the_footer_its_undo_back() {
+    fn footer_offers_undo(model: &BoardModel) -> bool {
+        board_verb_items(model)
+            .first()
+            .is_some_and(|entry| entry.label == "undo")
+    }
+    let (mut domain, mut model, doomed) = board_with_two_tasks();
+    let mut recovery = SaveRecovery::new();
+    for _ in 0..2 {
+        let baseline = snapshot_of(&domain);
+        apply_board_intent_with_save_recovery(
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardSaveContext {
+                baseline,
+                intent: BoardIntent::SoftDelete,
+                snapshot: None,
+            },
+            |_| Ok(()),
+        )
+        .expect("delete");
+    }
+    assert!(domain.get(doomed).expect("task").soft_deleted);
+    assert!(footer_offers_undo(&model));
+
+    let baseline = snapshot_of(&domain);
+    apply_board_intent_with_save_recovery(
+        &mut domain,
+        &mut model,
+        &mut recovery,
+        BoardSaveContext {
+            baseline,
+            intent: BoardIntent::Undo,
+            snapshot: None,
+        },
+        |_| Err(INJECTED.into()),
+    )
+    .expect("undo reducer");
+    assert!(recovery.is_pending());
+
+    apply_board_intent_with_save_recovery(
+        &mut domain,
+        &mut model,
+        &mut recovery,
+        BoardSaveContext {
+            baseline: DomainState::new(),
+            intent: BoardIntent::CancelSave,
+            snapshot: None,
+        },
+        |_| panic!("cancel must not persist"),
+    )
+    .expect("cancel");
+    assert!(
+        domain.get(doomed).expect("task").soft_deleted,
+        "cancel keeps the durable delete"
+    );
+    assert!(
+        footer_offers_undo(&model),
+        "ctrl+u still undoes the delete, so the footer says so"
+    );
+}

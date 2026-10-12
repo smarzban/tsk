@@ -1816,6 +1816,21 @@ import { parseCapture } from "./capture.js";
     }
   }
 
+  // A delete notice leaves its row after a few seconds, like the board's (T240). The token
+  // keeps an older timer from clearing a newer notice that happens to read the same.
+  const DELETE_NOTICE_MS = 4000;
+  function expireDeleteNotice(owner) {
+    const token = {};
+    owner.deleteNoticeToken = token;
+    const message = owner.message;
+    setTimeout(() => {
+      if (owner.deleteNoticeToken === token && owner.message === message) {
+        owner.message = "";
+        render();
+      }
+    }, DELETE_NOTICE_MS);
+  }
+
   function showCopyNotice(message) {
     state.copyNotice = message;
     setTimeout(() => {
@@ -2454,6 +2469,7 @@ import { parseCapture } from "./capture.js";
     state.message = bulk
       ? `deleted ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"} · u restores`
       : `Deleted T${tasks[0].number} "${tasks[0].title}" · u undo`;
+    expireDeleteNotice(state);
     state.peekId = null;
   }
 
@@ -2605,6 +2621,7 @@ import { parseCapture } from "./capture.js";
     preview.message = bulk
       ? `deleted ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"} · u restores`
       : `Deleted T${tasks[0].number} "${tasks[0].title}" · u undo`;
+    expireDeleteNotice(preview);
     preview.peekId = null;
   }
 

@@ -172,6 +172,10 @@ test("marked task sets complete, delete, and undo as one demo action", async ({
   await expect(page.locator("#tsk-demo")).toContainText(
     'Deleted T12 "Check the release notes" · u undo',
   );
+  // The notice leaves the row after a few seconds; u still restores the task.
+  await expect(page.locator("#tsk-demo")).not.toContainText("Deleted T12", {
+    timeout: 6000,
+  });
   await page.keyboard.press("u");
   await expect(row(page, 12)).toBeVisible();
 });

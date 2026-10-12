@@ -19,7 +19,7 @@ use tsk_tui::ui::input::{
     BoardIntent, CaptureIntent, MarkDirection,
 };
 use tsk_tui::ui::mouse::BoardPopup;
-use tsk_tui::ui::queue::SectionKind;
+use tsk_tui::ui::queue::{NavTab, SectionKind};
 use tsk_tui::ui::tier;
 
 const THIS_REPO: &str = "/repos/app";
@@ -568,6 +568,46 @@ fn delete_notice_clears_on_cursor_move_and_the_footer_keeps_undo() {
         !footer_offers_undo(&model),
         "once the delete is undone the footer stops offering it"
     );
+}
+
+/// T240 review: the undo seat is not only for task rows. A fold header and the Projects
+/// overview are ordinary board navigation, and `ctrl+u` there still undoes the delete.
+#[test]
+fn footer_undo_seat_stays_on_fold_headers_and_the_projects_overview() {
+    let (mut domain, mut model, first) = board_with_task("first", HumanStatus::Open);
+    domain
+        .create(
+            "second",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    model.sync_from_domain(&domain);
+    delete_selected(&mut domain, &mut model);
+
+    apply_intent(&mut domain, &mut model, BoardIntent::SelectPrev, None).expect("to header");
+    assert!(
+        model.selected_header_folded().is_some(),
+        "the cursor rests on the inbox header"
+    );
+    assert!(footer_offers_undo(&model), "{:?}", board_verb_items(&model));
+
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::SelectNavTab(NavTab::Projects),
+        None,
+    )
+    .expect("projects");
+    assert!(footer_offers_undo(&model), "{:?}", board_verb_items(&model));
+    apply_intent(&mut domain, &mut model, BoardIntent::Undo, None).expect("undo");
+    assert!(
+        !domain.get(first).expect("task").soft_deleted,
+        "ctrl+u on the overview undoes the delete it advertised"
+    );
+    assert!(!footer_offers_undo(&model));
 }
 
 /// T240: switching lens is moving on too, and a refused or non-moving key is not.

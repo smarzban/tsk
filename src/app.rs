@@ -1158,6 +1158,9 @@ pub fn apply_board_intent_with_save_recovery(
             BoardIntent::CancelSave => {
                 model.close_command_surface();
                 *domain = recovery.cancel().expect("pending recovery has a baseline");
+                // The failed mutation may have dropped the footer's undo hint; the baseline
+                // decides whether it is live again.
+                model.restore_undo_hint_before_save();
                 model.sync_from_domain(domain);
                 let cancelled_quick_add = model.end_save_recovery(SaveResolution::Cancelled);
                 if !cancelled_quick_add {

@@ -327,6 +327,9 @@ pub fn apply_intent(
         model.delete_notice_expires_at,
     );
     let mutating = board_intent_may_persist(&intent);
+    if mutating {
+        model.undo_hint_before_save = model.undo_hint.clone();
+    }
     let place_before = BoardPlace::of(model);
     let result = apply_board_intent(domain, model, intent, snapshot);
     // A command confirmation carries no lifetime of its own: it recurses with the command it
