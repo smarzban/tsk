@@ -636,9 +636,14 @@ pub struct LayoutPaint {
 }
 
 impl LayoutPaint {
-    /// Ungrouped, in recent order: a fresh board's layout.
-    pub fn is_default(&self) -> bool {
-        self.group == "none" && self.sort == "recent"
+    /// Ungrouped: a fresh board's grouping.
+    pub fn group_is_default(&self) -> bool {
+        self.group == "none"
+    }
+
+    /// Recent order: a fresh board's sort.
+    pub fn sort_is_default(&self) -> bool {
+        self.sort == "recent"
     }
 }
 
@@ -927,8 +932,8 @@ pub fn draw_project_preview_frame(
 
 /// The preview column's one header row: the project name, then the same group, sort and
 /// thread filter controls as a project board's selector row, right-aligned. The name
-/// yields room first (down to a short stub); controls that still do not fit drop from
-/// the left, the filter last.
+/// yields room first (down to a short stub); then controls at their defaults drop, and
+/// only after them non-default ones from the left, the filter last.
 fn paint_project_preview_header(
     frame: &mut Frame<'_>,
     model: &QueueFrameModel<'_>,
@@ -945,7 +950,7 @@ fn paint_project_preview_header(
     let width = geo.row_width as usize;
     let name = format!(" {project_name} ");
     let room = width.saturating_sub(display_width(&name).min(NAME_FLOOR + 2));
-    let controls = fitted_controls(model, room, true);
+    let controls = fitted_controls(model, room);
     let name_room = width
         .saturating_sub(controls_width(&controls))
         .max(NAME_FLOOR.min(width));
@@ -4940,8 +4945,8 @@ fn selector_tabs_width(model: &QueueFrameModel<'_>, width: u16) -> usize {
 
 /// The header's controls, left to right: group, sort, and the destination chip (filter or
 /// View). `compact` spells the layout pair by key (`g:thread ▾ s:recent ▾`). `idle` keeps
-/// controls sitting at their defaults (`group: none`, `sort: recent`, the unfiltered
-/// desk's `all`); without it only the ones that say something remain.
+/// each control sitting at its own default (`group: none`, `sort: recent`, the unfiltered
+/// desk's `all`); without it only the controls that say something remain.
 fn header_controls(
     model: &QueueFrameModel<'_>,
     compact: bool,
@@ -4949,16 +4954,18 @@ fn header_controls(
 ) -> Vec<(QueueHitTarget, String)> {
     let mut controls = Vec::new();
     if let Some(layout) = model.nav.layout.as_ref() {
-        if idle || !layout.is_default() {
-            let (group, sort) = if compact {
-                ("g:", "s:")
-            } else {
-                ("group: ", "sort: ")
-            };
+        let (group, sort) = if compact {
+            ("g:", "s:")
+        } else {
+            ("group: ", "sort: ")
+        };
+        if idle || !layout.group_is_default() {
             controls.push((
                 QueueHitTarget::NavGroup,
                 format!(" {group}{} \u{25be} ", layout.group),
             ));
+        }
+        if idle || !layout.sort_is_default() {
             controls.push((
                 QueueHitTarget::NavSort,
                 format!(" {sort}{} \u{25be} ", layout.sort),
@@ -4976,37 +4983,36 @@ fn header_controls(
     controls
 }
 
-/// The controls in the widest spelling that fits `room` cells: full words, else the
-/// compact pair. The compact spelling is returned even when it overflows; the painter
-/// then drops leading controls rather than the filter.
-fn fitted_controls(
-    model: &QueueFrameModel<'_>,
-    room: usize,
-    idle: bool,
-) -> Vec<(QueueHitTarget, String)> {
-    let full = header_controls(model, false, idle);
-    if controls_width(&full) <= room {
-        return full;
+/// The first of the header's spellings that fits `room` cells, in order: every control in
+/// full words, every control keyed, then only the non-default controls in full words and
+/// keyed. Defaults always drop before anything that says something. When nothing fits,
+/// the keyed non-default set is returned and the painter drops its leading controls, so
+/// the filter goes last.
+fn fitted_controls(model: &QueueFrameModel<'_>, room: usize) -> Vec<(QueueHitTarget, String)> {
+    for (idle, compact) in [(true, false), (true, true), (false, false)] {
+        let controls = header_controls(model, compact, idle);
+        if controls_width(&controls) <= room {
+            return controls;
+        }
     }
-    header_controls(model, true, idle)
+    header_controls(model, true, false)
 }
 
-/// The selector row's right-side controls. Every control rides the tabs row in the widest
-/// spelling that fits beside the tabs. When they do not all fit, idle controls (at their
-/// defaults) drop, so they never cost a row; the rest stay beside the tabs if they fit
-/// there, else take their own row under the tabs. `g`, `s` and `t` always open their
-/// pickers either way.
+/// The selector row's right-side controls: the widest spelling that fits beside the tabs
+/// ([`fitted_controls`]). When even the non-default controls do not fit there, they take
+/// their own row under the tabs, where defaults rejoin them if the row has room; when
+/// every control sits at its default, nothing costs a row. `g`, `s` and `t` always open
+/// their pickers either way.
 fn selector_controls(model: &QueueFrameModel<'_>, width: u16) -> Vec<(QueueHitTarget, String)> {
     let beside = (width as usize).saturating_sub(selector_tabs_width(model, width));
-    let all = fitted_controls(model, beside, true);
-    if controls_width(&all) <= beside {
-        return all;
+    let controls = fitted_controls(model, beside);
+    if controls_width(&controls) <= beside {
+        return controls;
     }
-    let busy = fitted_controls(model, beside, false);
-    if controls_width(&busy) <= beside {
-        return busy;
+    if header_controls(model, true, false).is_empty() {
+        return Vec::new();
     }
-    fitted_controls(model, width as usize, false)
+    fitted_controls(model, width as usize)
 }
 
 fn controls_width(controls: &[(QueueHitTarget, String)]) -> usize {

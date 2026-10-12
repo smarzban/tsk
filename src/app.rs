@@ -3002,6 +3002,119 @@ mod tests {
     }
 
     #[test]
+    fn a_split_click_on_a_preview_header_control_slides_and_opens_the_preview_picker() {
+        let (mut domain, mut model) = projects_overview_fixture();
+        stage_right(&mut domain, &mut model, 1);
+        assert_eq!(model.wide_stage(), crate::ui::tier::WideStage::Split);
+        let area = Rect::new(0, 0, 110, 30);
+        let task_area = model.responsive_geometry(area).task;
+        let hits = board_hit_map(area, &model);
+        let control = hits
+            .regions
+            .iter()
+            .find(|hit| {
+                task_area.contains(hit.area.as_position())
+                    && hit.target == crate::ui::render::QueueHitTarget::NavSort
+            })
+            .expect("the dim Split preview paints its sort control")
+            .area;
+        let click = click_at(control);
+        let (quit, intent) = board_mouse_click_intent_after_focus(
+            area,
+            &mut model,
+            &hits,
+            &mut ReflowRowClick::default(),
+            click,
+            |model, focus| {
+                assert_eq!(focus, BoardIntent::StageRight);
+                apply_intent(&mut domain, model, focus, None)?;
+                Ok::<bool, DomainError>(false)
+            },
+        )
+        .expect("route click");
+        assert!(!quit);
+        assert_eq!(model.wide_stage(), crate::ui::tier::WideStage::Rail);
+        let intent = intent.expect("the same click dispatches after the slide");
+        assert_eq!(intent, BoardIntent::OpenSortPicker);
+        let seat = mouse_intent_target_mut(&mut model, area, click, &hits, &intent);
+        apply_intent(&mut domain, seat, intent, None).expect("open sort picker");
+        assert_eq!(
+            model.right_seat().and_then(BoardModel::list_picker_kind),
+            Some(crate::ui::board::ListPickerKind::SortBy)
+        );
+        assert_eq!(model.list_picker_kind(), None, "the index keeps no picker");
+    }
+
+    #[test]
+    fn a_narrow_preview_header_drops_default_controls_before_a_chosen_group() {
+        let thread = "x".repeat(40);
+        let mut domain = DomainState::new();
+        domain
+            .create(
+                "threaded preview task",
+                None,
+                TaskScope::Project {
+                    path: "/repos/preview".into(),
+                },
+                ProvenanceOrigin::Manual,
+                Some(thread.clone()),
+            )
+            .expect("create");
+        let mut model = BoardModel::from_domain(&domain, None);
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("projects");
+        stage_right(&mut domain, &mut model, 2);
+        let area = Rect::new(0, 0, 110, 30);
+        sync_frame_presentation(area, &model);
+        assert!(model.project_right_seat_focused());
+        let mut pick = |model: &mut BoardModel, open: BoardIntent, label: &str| {
+            apply_intent(&mut domain, model.input_target_mut(), open, None).expect("open");
+            let index = model
+                .right_seat()
+                .expect("preview seat")
+                .visible_list_picker_options()
+                .iter()
+                .position(|(_, option)| option.label.starts_with(label))
+                .unwrap_or_else(|| panic!("picker offers {label}"));
+            apply_intent(
+                &mut domain,
+                model.input_target_mut(),
+                BoardIntent::SelectListOption(index),
+                None,
+            )
+            .expect("pick");
+        };
+        pick(&mut model, BoardIntent::OpenGroupPicker, "thread");
+        pick(
+            &mut model,
+            BoardIntent::OpenThreadFilterPicker,
+            &format!("#{thread}"),
+        );
+        let hits = board_hit_map(area, &model);
+        let task_area = model.responsive_geometry(area).task;
+        let painted: Vec<_> = hits
+            .regions
+            .iter()
+            .filter(|hit| task_area.contains(hit.area.as_position()))
+            .map(|hit| hit.target)
+            .collect();
+        use crate::ui::render::QueueHitTarget::{NavChip, NavGroup, NavSort};
+        assert!(
+            painted.contains(&NavGroup) && painted.contains(&NavChip),
+            "the chosen group and the filter stay: {painted:?}"
+        );
+        assert!(
+            !painted.contains(&NavSort),
+            "the default sort drops first: {painted:?}"
+        );
+    }
+
+    #[test]
     fn projects_preview_keyboard_uses_right_seat_for_task_actions() {
         let (mut domain, mut model, id) = projects_preview_fixture();
         let area = Rect::new(0, 0, 110, 30);

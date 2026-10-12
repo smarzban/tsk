@@ -2,7 +2,7 @@
 │                                        │
 │ desk  ·  tsk ▾  ·  projects            │
 │                                        │
-│      group: project ▾   sort: thread ▾ │
+│       g:project ▾   s:thread ▾   all ▾ │
 │                                       ▌│
 │ NEEDS YOU ─────────────────────────2  ▌│
 │                                       ▌│

@@ -886,3 +886,47 @@ fn narrow_headers_shorten_the_controls_and_drop_only_idle_ones() {
         rows.join("\n")
     );
 }
+
+#[test]
+fn defaults_drop_before_a_chosen_group_when_a_long_filter_crowds_the_header() {
+    let mut board = board();
+    add(
+        &mut board.domain,
+        "candidate work",
+        project(ALPHA),
+        Some("release-candidate-x"),
+        HumanStatus::Started,
+    );
+    board.model.sync_from_domain(&board.domain);
+    board.pick(BoardIntent::OpenGroupPicker, "project");
+    board.apply(BoardIntent::OpenThreadFilterPicker);
+    let index = board
+        .picker_labels()
+        .iter()
+        .position(|label| label.starts_with("#release-candidate-x"))
+        .expect("the thread is offered");
+    board.apply(BoardIntent::SelectListOption(index));
+    assert_eq!(board.model.desk_filter().label(), "#release-candidate-x");
+
+    // 45 columns: the controls take their own row; the default sort drops and the
+    // chosen group keeps its full words beside the filter.
+    let rows = board.rows(45, 24);
+    let controls = &rows[3];
+    assert!(
+        controls.contains("group: project ▾") && controls.contains("#release-candidate-x ▾"),
+        "{}",
+        rows.join("\n")
+    );
+    assert!(!controls.contains("sort"), "{controls}");
+
+    // 40 columns: the chosen group shortens to its key rather than vanishing while the
+    // default sort stays.
+    let rows = board.rows(40, 10);
+    let controls = &rows[3];
+    assert!(
+        controls.contains("g:project ▾") && controls.contains("#release-candidate-x ▾"),
+        "{}",
+        rows.join("\n")
+    );
+    assert!(!controls.contains("s:"), "{controls}");
+}

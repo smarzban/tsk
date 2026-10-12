@@ -582,46 +582,51 @@ import { parseCapture } from "./capture.js";
     return ["recent", "project", "thread", "title"];
   }
   // The header's group and sort controls: full words, or keyed (`g:thread`) when narrow.
-  function layoutControls(layout, compact) {
-    return compact
-      ? [`g:${layout.group} ▾`, `s:${layout.sort} ▾`]
-      : [`group: ${layout.group} ▾`, `sort: ${layout.sort} ▾`];
+  // The header's group and sort controls: full words, or keyed (`g:thread`) when narrow.
+  // `idle` keeps a control sitting at its own default.
+  function layoutControls(layout, compact, idle = true) {
+    const controls = [];
+    if (idle || layout.group !== "none")
+      controls.push({
+        kind: "group",
+        label: `${compact ? "g:" : "group: "}${layout.group} ▾`,
+      });
+    if (idle || layout.sort !== "recent")
+      controls.push({
+        kind: "sort",
+        label: `${compact ? "s:" : "sort: "}${layout.sort} ▾`,
+      });
+    return controls;
   }
-  const layoutIsDefault = (layout) =>
-    layout.group === "none" && layout.sort === "recent";
   // Cells a run of controls takes with the TUI's one-cell padding and gaps.
   const controlsWidth = (labels) =>
     labels.reduce((sum, label) => sum + label.length + 2, 0) +
     Math.max(0, labels.length - 1);
-  // Mirror the TUI: every control fits beside the tabs (full, else keyed); otherwise
-  // idle ones (default layout, the desk's unfiltered `all`) drop and the rest stay.
+  // Mirror the TUI: every control in full words, then keyed, then only the non-default
+  // ones; a default always drops before a control that says something.
   function fittedLayout(layout, chip, chipIdle, room) {
-    for (const idle of [true, false]) {
-      const showLayout = idle || !layoutIsDefault(layout);
+    const tiers = [
+      [true, false],
+      [true, true],
+      [false, false],
+      [false, true],
+    ];
+    for (const [index, [idle, compact]] of tiers.entries()) {
+      const controls = layoutControls(layout, compact, idle);
       const showChip = chip !== null && (idle || !chipIdle);
-      for (const compact of [false, true]) {
-        const labels = [
-          ...(showLayout ? layoutControls(layout, compact) : []),
-          ...(showChip ? [`${chip} ▾`] : []),
-        ];
-        if (controlsWidth(labels) <= room)
-          return {
-            layout: showLayout ? layoutControls(layout, compact) : [],
-            chip: showChip,
-          };
-      }
+      const labels = [
+        ...controls.map((control) => control.label),
+        ...(showChip ? [`${chip} ▾`] : []),
+      ];
+      if (controlsWidth(labels) <= room || index === tiers.length - 1)
+        return { layout: controls, chip: showChip };
     }
-    const showLayout = !layoutIsDefault(layout);
-    return {
-      layout: showLayout ? layoutControls(layout, true) : [],
-      chip: chip !== null && !chipIdle,
-    };
   }
-  function layoutButtons(labels, prefix = "") {
-    return labels
+  function layoutButtons(controls, prefix = "") {
+    return controls
       .map(
-        (label, index) =>
-          `<button type="button" class="tsk-view-control dim" data-${prefix}${index ? "sort" : "group"}-control="1"${index ? ' style="margin-left:1ch"' : ""}>${esc(label)}</button>`,
+        (control, index) =>
+          `<button type="button" class="tsk-view-control dim" data-${prefix}${control.kind}-control="1"${index ? ' style="margin-left:1ch"' : ""}>${esc(control.label)}</button>`,
       )
       .join("");
   }
