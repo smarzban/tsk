@@ -146,6 +146,9 @@ tsk list
 tsk list T12
 tsk list --all --json
 tsk list -p atlas --thread auth
+tsk list --all --thread release --json
+tsk list --all --no-thread
+tsk list --all --group project --sort title
 tsk list --done --all
 tsk list --open --all
 tsk list --ready --all
@@ -154,7 +157,7 @@ tsk list --deleted --all
 ```
 
 ```text
-tsk list [<task>] [-p <project> | --desk | --all] [--thread <name>] [--open | --ready | --done | --deleted | --archived] [--json] [--state-dir <dir>]
+tsk list [<task>] [-p <project> | --desk | --all] [--thread <name> | --no-thread] [--open | --ready | --done | --deleted | --archived] [--group <by>] [--sort <by>] [--json] [--state-dir <dir>]
 ```
 
 | Filter | Result |
@@ -165,17 +168,25 @@ tsk list [<task>] [-p <project> | --desk | --all] [--thread <name>] [--open | --
 | `--done` | Completed tasks |
 | `--archived` | Individually archived tasks and tasks in archived projects, across statuses |
 | `--deleted` | Live soft-deleted tasks and `trash.jsonl` entries, deduped by task with the live copy winning, newest deletion first. Trash is retained for 30 days, see [storage](/docs/storage/#deleted-tasks). |
-| `--thread` | Filter within the selected scope |
+| `--thread` | Filter within the selected scope; with `--all`, a thread across every project and the desk |
+| `--no-thread` | Only tasks without a thread, within the selected scope (the board filter's **without a thread**). Works with every view |
 
-Scope flags are mutually exclusive. So are `--open`, `--ready`, `--done`, `--deleted`, and `--archived`.
+| Arrange | Result |
+| --- | --- |
+| `--group none\|project\|thread` | The board's `g`: sub-groups under each status, ordered hottest first (the group whose newest row changed status most recently leads, ties by name) |
+| `--sort recent\|project\|thread\|title` | The board's `s`: row order inside each group, or inside each status while ungrouped. `recent` is the default order; desk tasks sort after projects and unthreaded tasks after threads; ties keep recent order |
 
-A direct task address searches the main store, including done, archived, and recently deleted tasks. It cannot be combined with scope, thread, or status filters. A missing task exits 2. A task already moved to `trash.jsonl` is not addressable; find it with `tsk list --deleted` (optionally `-p`), or restore it with `tsk trash restore`.
+`--group` and `--sort` apply to live tasks only: like the board's done drawer and archived group, `--done`, `--archived`, and `--deleted` refuse them. Like the board, neither arranges by a dimension every row shares: `project` needs `--all` (a project board or the desk is one project), and `thread` refuses with `--thread` or `--no-thread`. A refusal exits 2.
 
-Human output groups by status in `STARTED`, `READY`, `OPEN`, `BLOCKED`, `REVIEW` order. Within a status, rows follow the board's section order: `ready` oldest pick first, `open` oldest capture first, and `started`, `blocked`, `review` and `done` most recent status change first. JSON is that flat board order. With `--all`, human output groups each status by scope: the groups are ordered by their first row, and the rows inside each group keep the board order, so interleaved scopes print in a different order from JSON; filtered rows include the task number and thread, and `--all` adds scope labels using a unique concise trailing path or desk. List output and errors wrap to the attached terminal width with hanging indentation. Task rows, scope labels, notes, steps, archived marks, and threads use the same wrapping behavior, supported from 50 columns. Redirected output keeps stored logical lines. Command help is reference text and instead always wraps at 80 columns.
+Scope flags are mutually exclusive. So are `--open`, `--ready`, `--done`, `--deleted`, and `--archived`, and `--thread` with `--no-thread`. A single-value flag (`-p`/`--project`, `--thread`, `--group`, `--sort`, `--state-dir`) given twice exits 2 instead of keeping the last value.
+
+A direct task address searches the main store, including done, archived, and recently deleted tasks. It cannot be combined with scope, thread, or status filters, `--group`, or `--sort`. A missing task exits 2. A task already moved to `trash.jsonl` is not addressable; find it with `tsk list --deleted` (optionally `-p`), or restore it with `tsk trash restore`.
+
+Human output groups by status in `STARTED`, `READY`, `OPEN`, `BLOCKED`, `REVIEW` order. Within a status, rows follow the board's section order: `ready` oldest pick first, `open` oldest capture first, and `started`, `blocked`, `review` and `done` most recent status change first. JSON is that flat board order. With `--all`, human output groups each status by scope: the groups are ordered by their first row, and the rows inside each group keep the board order, so interleaved scopes print in a different order from JSON. With `--group`, sub-headings under each status name the group as the board paints it (a project basename, `desk`, `#thread`, or `no thread`) and replace the scope groups; rows leave out the grouped dimension, and `--all --group thread` rows end with their scope label; filtered rows include the task number and thread, and `--all` adds scope labels using a unique concise trailing path or desk. List output and errors wrap to the attached terminal width with hanging indentation. Task rows, scope labels, notes, steps, archived marks, and threads use the same wrapping behavior, supported from 50 columns. Redirected output keeps stored logical lines. Command help is reference text and instead always wraps at 80 columns.
 
 Single-task output removes the thread from the title row and presents notes, steps, then `#thread` as separate blocks. A blank line separates adjacent blocks that exist. Human step rows show state and text without machine-oriented short IDs.
 
-JSON returns an array with `id`, `number`, `title`, `status`, `project`, and `thread`. Direct lookup returns the complete task, including `notes` (`null` when absent) and `steps` (an empty array when absent). Its fields are ordered `id`, `number`, `project`, `status`, `title`, `notes`, `steps`, `thread`; each JSON step retains its `short_id` for step commands. Archived listings include an `archived` mark: `archived` or `project archived`.
+JSON returns an array with `id`, `number`, `title`, `status`, `project`, and `thread`. Direct lookup returns the complete task, including `notes` (`null` when absent) and `steps` (an empty array when absent). Its fields are ordered `id`, `number`, `project`, `status`, `title`, `notes`, `steps`, `thread`; each JSON step retains its `short_id` for step commands. Archived listings include an `archived` mark: `archived` or `project archived`. With `--group`, JSON stays one flat array in the listed order and each row gains `group`, the painted group label.
 
 ## status
 

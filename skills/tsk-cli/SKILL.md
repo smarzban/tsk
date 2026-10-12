@@ -29,6 +29,9 @@ and stop. Never run an installer, package manager, or source build unless they a
 | on deck, what's next | `ready` | `tsk list --ready --json` |
 | inbox, untriaged | `open` | `tsk list --open --json` |
 | other projects, everything live | the five live statuses | `tsk list --all --json`, `--desk`, `-p <project>` |
+| a thread across repos | | `tsk list --all --thread X --json` (desk tasks included) |
+| a project's thread | | `tsk list -p X --thread Y --json`; `--no-thread` for unthreaded tasks |
+| group by project or thread | | `tsk list --all --group project --json` (or `thread`): rows gain `group`, `--sort` orders inside |
 | done, archived, deleted | | `tsk list --done --json`, `--archived`, `--deleted` (each may combine with a scope flag) |
 | one task, in full | | `tsk list T12 --json` (notes, steps with `short_id`, thread) |
 
@@ -75,7 +78,8 @@ New tasks start `open` in the inbox; `ready` means the user picked it.
 ## Workflows
 
 **What's on the board.** `tsk list --json` (this repo's project, or the desk outside Git). Group by
-`status` in board language, lead with what needs the user, then in motion, then on deck.
+`status` in board language, lead with what needs the user, then in motion, then on deck. Rows
+within a status are already in the board's order; keep it.
 
 **Start work on a task.** `tsk list T12 --json` for notes and steps. `tsk status T12 start`.
 Tick steps as you go: `tsk steps T12 toggle <short_id>`.

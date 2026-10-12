@@ -2739,3 +2739,449 @@ fn list_all_groups_interleaved_scopes_by_first_row_and_keeps_board_order_inside(
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Two repos plus the desk, threads spread across them. Status changes are spaced so
+/// the board's hottest-first group order is deterministic; later rows are hotter.
+/// Returns (state dir, alpha repo, beta repo).
+fn seed_threads_across_scopes(label: &str) -> (PathBuf, PathBuf, PathBuf) {
+    let dir = temp_state_dir(label);
+    let alpha = project_repo(&format!("{label}-alpha"));
+    let beta = project_repo(&format!("{label}-beta"));
+    let scope = |repo: &Path| TaskScope::Project {
+        path: repo.to_string_lossy().into_owned(),
+    };
+    let mut state = DomainState::new();
+    for (title, scope, status, thread) in [
+        (
+            "alpha api",
+            scope(&alpha),
+            HumanStatus::Started,
+            Some("api"),
+        ),
+        ("beta loose", scope(&beta), HumanStatus::Started, None),
+        (
+            "alpha release",
+            scope(&alpha),
+            HumanStatus::Started,
+            Some("release"),
+        ),
+        (
+            "desk release",
+            TaskScope::Global,
+            HumanStatus::Started,
+            Some("release"),
+        ),
+        ("desk loose", TaskScope::Global, HumanStatus::Started, None),
+        (
+            "beta release",
+            scope(&beta),
+            HumanStatus::Ready,
+            Some("release"),
+        ),
+    ] {
+        create_task_with_thread(&mut state, title, scope, status, thread);
+        std::thread::sleep(std::time::Duration::from_millis(3));
+    }
+    TaskStore::new(&dir).save(&state).expect("seed store");
+    (dir, alpha, beta)
+}
+
+fn list_args(dir: &Path, rest: &[&str]) -> Vec<String> {
+    let mut args: Vec<String> = vec!["tsk".into(), "list".into()];
+    args.extend(rest.iter().map(|arg| arg.to_string()));
+    args.extend(["--state-dir".into(), state_dir_arg(dir)]);
+    args
+}
+
+fn json_rows(output: &tsk_tui::cli::CliOutput) -> Vec<serde_json::Value> {
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    serde_json::from_str(&output.stdout).expect("JSON rows")
+}
+
+fn titles(rows: &[serde_json::Value]) -> Vec<String> {
+    rows.iter()
+        .map(|row| row["title"].as_str().expect("title").to_owned())
+        .collect()
+}
+
+fn groups(rows: &[serde_json::Value]) -> Vec<String> {
+    rows.iter()
+        .map(|row| row["group"].as_str().expect("group").to_owned())
+        .collect()
+}
+
+#[test]
+fn list_repeated_scope_or_thread_flag_is_usage() {
+    let _env = env_lock();
+    let (dir, _alpha, _beta) = seed_threads_across_scopes("repeated");
+    let state = state_dir_arg(&dir);
+
+    for repeated in [
+        vec!["-p", "alpha", "-p", "beta"],
+        vec!["--project=alpha", "--project", "beta"],
+        vec!["--thread", "api", "--thread=release"],
+        vec!["--state-dir", state.as_str()],
+        vec!["--all", "--group", "thread", "--group", "none"],
+        vec!["--sort=title", "--sort", "recent"],
+    ] {
+        let output = list(&list_args(&dir, &repeated));
+        assert_eq!(output.code, 2, "{repeated:?}: {}", output.stdout);
+        assert!(output.stdout.is_empty(), "{repeated:?}");
+        assert!(
+            output.stderr.contains("given more than once"),
+            "{repeated:?}: {}",
+            output.stderr
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn list_no_thread_filters_within_scope() {
+    let _env = env_lock();
+    let (dir, alpha, beta) = seed_threads_across_scopes("no-thread");
+    let alpha_path = alpha.to_string_lossy().into_owned();
+    let beta_path = beta.to_string_lossy().into_owned();
+
+    let all = json_rows(&list(&list_args(&dir, &["--all", "--no-thread", "--json"])));
+    assert_eq!(titles(&all), vec!["desk loose", "beta loose"]);
+    assert!(all.iter().all(|row| row["thread"].is_null()));
+    let desk = json_rows(&list(&list_args(
+        &dir,
+        &["--desk", "--no-thread", "--json"],
+    )));
+    assert_eq!(titles(&desk), vec!["desk loose"]);
+    let project = json_rows(&list(&list_args(
+        &dir,
+        &["-p", &beta_path, "--no-thread", "--json"],
+    )));
+    assert_eq!(titles(&project), vec!["beta loose"]);
+    let alpha_only = json_rows(&list(&list_args(
+        &dir,
+        &["-p", &alpha_path, "--no-thread", "--json"],
+    )));
+    assert!(alpha_only.is_empty(), "alpha has no unthreaded task");
+
+    // Every view: done, archived, deleted.
+    let mut state = TaskStore::new(&dir).load().expect("load");
+    let id_of = |state: &DomainState, title: &str| {
+        state
+            .tasks()
+            .iter()
+            .find(|task| task.title == title)
+            .expect("seeded task")
+            .id
+    };
+    let (loose, release) = (id_of(&state, "desk loose"), id_of(&state, "desk release"));
+    state.set_status(loose, HumanStatus::Done).expect("done");
+    state.set_status(release, HumanStatus::Done).expect("done");
+    TaskStore::new(&dir).save(&state).expect("save");
+    let done = json_rows(&list(&list_args(
+        &dir,
+        &["--desk", "--done", "--no-thread", "--json"],
+    )));
+    assert_eq!(titles(&done), vec!["desk loose"]);
+
+    state.archive_task(loose).expect("archive");
+    state.archive_task(release).expect("archive");
+    TaskStore::new(&dir).save(&state).expect("save");
+    let archived = json_rows(&list(&list_args(
+        &dir,
+        &["--all", "--archived", "--no-thread", "--json"],
+    )));
+    assert_eq!(titles(&archived), vec!["desk loose"]);
+
+    let beta_loose = id_of(&state, "beta loose");
+    let alpha_api = id_of(&state, "alpha api");
+    state.soft_delete(beta_loose).expect("delete");
+    state.soft_delete(alpha_api).expect("delete");
+    TaskStore::new(&dir).save(&state).expect("save");
+    let deleted = json_rows(&list(&list_args(
+        &dir,
+        &["--all", "--deleted", "--no-thread", "--json"],
+    )));
+    assert_eq!(titles(&deleted), vec!["beta loose"]);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn list_no_thread_conflicts_with_thread() {
+    let _env = env_lock();
+    let dir = temp_state_dir("no-thread-conflict");
+
+    for args in [
+        vec!["--no-thread", "--thread", "api"],
+        vec!["--thread=api", "--no-thread"],
+    ] {
+        let output = list(&list_args(&dir, &args));
+        assert_eq!(output.code, 2, "{args:?}");
+        assert!(output.stdout.is_empty());
+        assert!(
+            output
+                .stderr
+                .contains("--no-thread cannot be used with --thread"),
+            "{}",
+            output.stderr
+        );
+    }
+    let task = list(&list_args(&dir, &["T1", "--no-thread"]));
+    assert_eq!(task.code, 2);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn list_group_thread_orders_groups_hottest_first_under_each_status() {
+    let _env = env_lock();
+    let (dir, _alpha, _beta) = seed_threads_across_scopes("group-thread");
+
+    let rows = json_rows(&list(&list_args(
+        &dir,
+        &["--all", "--group", "thread", "--json"],
+    )));
+    // STARTED: `no thread` holds the hottest row (desk loose), then #release, then #api.
+    assert_eq!(
+        titles(&rows),
+        vec![
+            "desk loose",
+            "beta loose",
+            "desk release",
+            "alpha release",
+            "alpha api",
+            "beta release",
+        ]
+    );
+    assert_eq!(
+        groups(&rows),
+        vec![
+            "no thread",
+            "no thread",
+            "#release",
+            "#release",
+            "#api",
+            "#release"
+        ]
+    );
+
+    let human = list(&list_args(&dir, &["--all", "--group=thread"]));
+    assert_eq!(human.code, 0, "{}", human.stderr);
+    assert!(
+        human
+            .stdout
+            .starts_with("STARTED\n  no thread\n    - 5 desk loose · desk\n"),
+        "{}",
+        human.stdout
+    );
+    assert!(
+        human
+            .stdout
+            .contains("\nREADY\n  #release\n    - 6 beta release · "),
+        "{}",
+        human.stdout
+    );
+    assert!(
+        !human.stdout.contains(" #release ·"),
+        "rows drop the grouped thread"
+    );
+
+    // Ungrouped JSON keeps no `group` key.
+    let plain = json_rows(&list(&list_args(&dir, &["--all", "--json"])));
+    assert!(plain.iter().all(|row| row.get("group").is_none()));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn list_group_project_needs_all_and_orders_hottest_first() {
+    let _env = env_lock();
+    let (dir, alpha, beta) = seed_threads_across_scopes("group-project");
+
+    let rows = json_rows(&list(&list_args(
+        &dir,
+        &["--all", "--group", "project", "--sort", "title", "--json"],
+    )));
+    // STARTED: desk holds the hottest row, then alpha, then beta; title order inside.
+    assert_eq!(
+        titles(&rows),
+        vec![
+            "desk loose",
+            "desk release",
+            "alpha api",
+            "alpha release",
+            "beta loose",
+            "beta release",
+        ]
+    );
+    let basename = |repo: &Path| {
+        repo.file_name()
+            .expect("name")
+            .to_string_lossy()
+            .into_owned()
+    };
+    let (a, b) = (basename(&alpha), basename(&beta));
+    assert_eq!(groups(&rows), vec!["desk", "desk", &a, &a, &b, &b]);
+
+    let human = list(&list_args(&dir, &["--all", "--group", "project"]));
+    assert_eq!(human.code, 0, "{}", human.stderr);
+    assert!(
+        human
+            .stdout
+            .starts_with("STARTED\n  desk\n    - 5 desk loose\n    - 4 desk release #release\n"),
+        "{}",
+        human.stdout
+    );
+
+    // A single scope has one project, like the project board's `g` choices.
+    let alpha_path = alpha.to_string_lossy().into_owned();
+    for args in [
+        vec!["--group", "project"],
+        vec!["--desk", "--group", "project"],
+        vec!["-p", alpha_path.as_str(), "--group", "project"],
+        vec!["-p", alpha_path.as_str(), "--sort", "project"],
+    ] {
+        let output = list(&list_args(&dir, &args));
+        assert_eq!(output.code, 2, "{args:?}");
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.contains("need --all"), "{}", output.stderr);
+    }
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn list_group_and_sort_combine_with_scope_and_thread() {
+    let _env = env_lock();
+    let (dir, alpha, _beta) = seed_threads_across_scopes("group-combos");
+    let alpha_path = alpha.to_string_lossy().into_owned();
+
+    // -p + --group thread: one project's rows grouped by thread.
+    let project = json_rows(&list(&list_args(
+        &dir,
+        &["-p", &alpha_path, "--group", "thread", "--json"],
+    )));
+    assert_eq!(titles(&project), vec!["alpha release", "alpha api"]);
+    assert_eq!(groups(&project), vec!["#release", "#api"]);
+
+    // --desk + --sort title.
+    let desk = json_rows(&list(&list_args(
+        &dir,
+        &["--desk", "--sort", "title", "--json"],
+    )));
+    assert_eq!(titles(&desk), vec!["desk loose", "desk release"]);
+
+    // --all + --thread + --group project: the cross-project thread view.
+    let thread = json_rows(&list(&list_args(
+        &dir,
+        &[
+            "--all", "--thread", "release", "--group", "project", "--json",
+        ],
+    )));
+    assert_eq!(
+        titles(&thread),
+        vec!["desk release", "alpha release", "beta release"]
+    );
+    assert_eq!(groups(&thread)[0], "desk");
+
+    // --all + --sort thread (ungrouped): unthreaded last, ties keep recent order.
+    let sorted = json_rows(&list(&list_args(
+        &dir,
+        &["--all", "--sort", "thread", "--json"],
+    )));
+    assert_eq!(
+        titles(&sorted),
+        vec![
+            "alpha api",
+            "desk release",
+            "alpha release",
+            "desk loose",
+            "beta loose",
+            "beta release",
+        ]
+    );
+
+    // A dimension the filter fixes, and the drawer views, refuse like the board.
+    for args in [
+        vec!["--thread", "api", "--group", "thread"],
+        vec!["--no-thread", "--sort", "thread"],
+        vec!["--done", "--group", "thread"],
+        vec!["--archived", "--sort", "title"],
+        vec!["--deleted", "--all", "--group", "project"],
+        vec!["--group", "status"],
+        vec!["--sort", "newest"],
+        vec!["T1", "--group", "thread"],
+    ] {
+        let output = list(&list_args(&dir, &args));
+        assert_eq!(output.code, 2, "{args:?}: {}", output.stdout);
+        assert!(output.stdout.is_empty(), "{args:?}");
+    }
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn list_all_thread_includes_desk_tasks() {
+    let _env = env_lock();
+    let (dir, _alpha, _beta) = seed_threads_across_scopes("all-thread-desk");
+
+    let rows = json_rows(&list(&list_args(
+        &dir,
+        &["--all", "--thread", "release", "--json"],
+    )));
+    assert_eq!(
+        titles(&rows),
+        vec!["desk release", "alpha release", "beta release"]
+    );
+    assert!(rows[0]["project"].is_null(), "the desk task is included");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn list_desk_thread_filters_desk_only() {
+    let _env = env_lock();
+    let (dir, _alpha, _beta) = seed_threads_across_scopes("desk-thread");
+
+    let rows = json_rows(&list(&list_args(
+        &dir,
+        &["--desk", "--thread", "release", "--json"],
+    )));
+    assert_eq!(titles(&rows), vec!["desk release"]);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn list_thread_combines_with_done_and_archived() {
+    let _env = env_lock();
+    let (dir, _alpha, _beta) = seed_threads_across_scopes("thread-views");
+    let mut state = TaskStore::new(&dir).load().expect("load");
+    let ids: Vec<(String, uuid::Uuid)> = state
+        .tasks()
+        .iter()
+        .map(|task| (task.title.clone(), task.id))
+        .collect();
+    let id = |title: &str| ids.iter().find(|(t, _)| t == title).expect("seeded").1;
+    for title in ["alpha release", "alpha api", "desk release"] {
+        state
+            .set_status(id(title), HumanStatus::Done)
+            .expect("done");
+    }
+    state.archive_task(id("desk release")).expect("archive");
+    state.archive_task(id("desk loose")).expect("archive");
+    TaskStore::new(&dir).save(&state).expect("save");
+
+    let done = json_rows(&list(&list_args(
+        &dir,
+        &["--all", "--done", "--thread", "release", "--json"],
+    )));
+    assert_eq!(titles(&done), vec!["alpha release"]);
+    let archived = json_rows(&list(&list_args(
+        &dir,
+        &["--all", "--archived", "--thread", "release", "--json"],
+    )));
+    assert_eq!(titles(&archived), vec!["desk release"]);
+
+    let _ = std::fs::remove_dir_all(dir);
+}

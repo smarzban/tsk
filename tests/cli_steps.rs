@@ -749,3 +749,20 @@ fn steps_move_resolves_ambiguous_anchor_as_a_refusal() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn steps_add_last_explicit() {
+    let dir = temp_state_dir("add-last");
+    let (task, _) = seed_three_steps(&dir);
+
+    let last = run_steps(&dir, task, &["add", "tail", "--last"]);
+    assert_eq!(last.code, 0, "add --last: {}", last.stderr);
+    let leading = run_steps(&dir, task, &["--last", "add", "after tail"]);
+    assert_eq!(leading.code, 0, "--last before add: {}", leading.stderr);
+    assert_eq!(
+        stored_texts(&dir),
+        vec!["a", "b", "c", "tail", "after tail"]
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -12,6 +12,7 @@ use crate::cli::status::{StatusError, StatusResult};
 use crate::cli::steps::{StepLine, StepsError, StepsResult};
 use crate::cli::trash::{TrashCliError, TrashRestoreResult};
 use crate::domain::HumanStatus;
+use crate::ui::queue::GroupBy;
 use crate::ui::terminal_text;
 
 fn human_reason(reason: &str) -> String {
@@ -180,15 +181,16 @@ pub fn add_help() -> CliOutput {
 
 pub fn list_help(_terminal_width: Option<usize>) -> CliOutput {
     help(HelpDoc {
-        usage: vec!["tsk list [<task>] [-p <project> | --desk | --all] [--thread <name>] [--open | --ready | --done | --deleted | --archived] [--json] [--state-dir <dir>]".into()],
+        usage: vec!["tsk list [<task>] [-p <project> | --desk | --all] [--thread <name> | --no-thread] [--open | --ready | --done | --deleted | --archived] [--group <by>] [--sort <by>] [--json] [--state-dir <dir>]".into()],
         purpose: "Inspect tasks in the selected scope, or one task anywhere in the live store.".into(),
         groups: vec![
             group("Scope", &[("-p, --project <project>", "select a project"), ("--desk", "select your desk"), ("--all", "select every scope")]),
-            group("Filters", &[("<task>", "a task number or UUID, not combined with filters"), ("--thread <name>", "filter within the selected scope"), ("--open, --ready", "show inbox or picked on-deck tasks"), ("--done, --archived", "show done or archived tasks"), ("--deleted", "show soft-deleted and trashed tasks")]),
-            group("Output", &[("--json", "print machine-readable task rows")]),
+            group("Filters", &[("<task>", "a task number or UUID, not combined with filters"), ("--thread <name>", "filter within the selected scope"), ("--no-thread", "show only tasks without a thread"), ("--open, --ready", "show inbox or picked on-deck tasks"), ("--done, --archived", "show done or archived tasks"), ("--deleted", "show soft-deleted and trashed tasks")]),
+            group("Arrange", &[("--group <by>", "group live tasks under each status: none, project (with --all), or thread"), ("--sort <by>", "order rows: recent, project (with --all), thread, or title")]),
+            group("Output", &[("--json", "print machine-readable task rows, flat, in listed order")]),
             group("Values", &[("--state-dir <dir>", "use another board store"), ("--project=<scope>", "use equals syntax for a dash-leading project or state-dir value")]),
         ],
-        examples: vec!["tsk list".into(), "tsk list T12".into(), "tsk list --all --json".into(), "tsk list --archived --all".into()],
+        examples: vec!["tsk list".into(), "tsk list T12".into(), "tsk list --all --json".into(), "tsk list --archived --all".into(), "tsk list --all --thread release --json".into(), "tsk list --all --group project --sort title".into()],
         refusals: Vec::new(),
         exit: exit_line("tasks listed", None, true),
     })
@@ -340,7 +342,15 @@ fn list_human(result: &ListResult, terminal_width: Option<usize>) -> String {
             output.push('\n');
         }
         append_wrapped(&mut output, "", "", heading, output_width);
-        if result.include_scope {
+        if result.group != GroupBy::None {
+            append_arranged_groups(
+                &mut output,
+                rows,
+                result.group,
+                labels.as_ref(),
+                output_width,
+            );
+        } else if result.include_scope {
             append_scope_groups(
                 &mut output,
                 rows,
@@ -368,6 +378,41 @@ fn list_human(result: &ListResult, terminal_width: Option<usize>) -> String {
         }
     }
     output
+}
+
+/// `--group` sub-headings under one status: consecutive rows sharing a group label.
+/// Rows drop the grouped dimension; across scopes a thread group names each row's scope.
+fn append_arranged_groups(
+    output: &mut String,
+    rows: Vec<&ListRow>,
+    group: GroupBy,
+    labels: Option<&BTreeMap<Option<String>, String>>,
+    output_width: usize,
+) {
+    let mut start = 0;
+    while start < rows.len() {
+        let label = rows[start].group.as_deref().unwrap_or_default();
+        let end = rows[start..]
+            .iter()
+            .position(|row| row.group.as_deref().unwrap_or_default() != label)
+            .map_or(rows.len(), |offset| start + offset);
+        append_wrapped(output, "  ", "  ", &terminal_text(label), output_width);
+        let scope_labels = labels.filter(|_| group == GroupBy::Thread);
+        for row in &rows[start..end] {
+            let suffix = scope_labels.map(|labels| {
+                terminal_text(labels.get(&row.project).expect("label for displayed scope"))
+            });
+            append_row(
+                output,
+                row,
+                "    ",
+                output_width,
+                group != GroupBy::Thread,
+                suffix.as_deref(),
+            );
+        }
+        start = end;
+    }
 }
 
 fn append_scope_groups(
@@ -406,27 +451,42 @@ fn append_rows(
     include_thread: bool,
 ) {
     for row in rows {
-        let mut content = terminal_text(&row.title);
-        if include_thread {
-            if let Some(thread) = row.thread.as_deref() {
-                content.push_str(" #");
-                content.push_str(&terminal_text(thread));
-            }
-        }
-        if let Some(mark) = row.archived {
-            content.push_str(" · ");
-            content.push_str(mark);
-        }
-        let first_prefix = format!("{indent}- {} ", row.number);
-        let continuation_prefix = " ".repeat(first_prefix.len());
-        append_wrapped(
-            output,
-            &first_prefix,
-            &continuation_prefix,
-            &content,
-            output_width,
-        );
+        append_row(output, row, indent, output_width, include_thread, None);
     }
+}
+
+fn append_row(
+    output: &mut String,
+    row: &ListRow,
+    indent: &str,
+    output_width: usize,
+    include_thread: bool,
+    scope: Option<&str>,
+) {
+    let mut content = terminal_text(&row.title);
+    if include_thread {
+        if let Some(thread) = row.thread.as_deref() {
+            content.push_str(" #");
+            content.push_str(&terminal_text(thread));
+        }
+    }
+    if let Some(scope) = scope {
+        content.push_str(" · ");
+        content.push_str(scope);
+    }
+    if let Some(mark) = row.archived {
+        content.push_str(" · ");
+        content.push_str(mark);
+    }
+    let first_prefix = format!("{indent}- {} ", row.number);
+    let continuation_prefix = " ".repeat(first_prefix.len());
+    append_wrapped(
+        output,
+        &first_prefix,
+        &continuation_prefix,
+        &content,
+        output_width,
+    );
 }
 
 /// Direct detail is an ordered set of present blocks. Blank rows separate only
@@ -1252,7 +1312,7 @@ pub fn archive_rejected(error: ArchiveCliError, verb: &str) -> CliOutput {
 
 pub fn list_usage(reason: &str, terminal_width: Option<usize>) -> CliOutput {
     let stderr = format!(
-        "tsk list: {}\nusage: tsk list [<task>] [-p <project> | --desk | --all] [--thread <name>] [--open | --ready | --done | --deleted | --archived] [--json] [--state-dir <dir>]\n",
+        "tsk list: {}\nusage: tsk list [<task>] [-p <project> | --desk | --all] [--thread <name> | --no-thread] [--open | --ready | --done | --deleted | --archived] [--group <by>] [--sort <by>] [--json] [--state-dir <dir>]\n",
         human_reason(reason)
     );
     CliOutput {

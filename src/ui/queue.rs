@@ -76,7 +76,7 @@ pub enum ThreadFilter {
 
 impl ThreadFilter {
     /// Whether `task` passes this filter.
-    fn admits(&self, task: &Task) -> bool {
+    pub(crate) fn admits(&self, task: &Task) -> bool {
         match self {
             ThreadFilter::All => true,
             ThreadFilter::Named(name) => task
@@ -1168,33 +1168,7 @@ pub fn arrange_view(
             section.task_ids = rows.iter().map(|task| task.id).collect();
             continue;
         }
-        let mut buckets: Vec<(String, String, Vec<&Task>)> = Vec::new();
-        for task in rows {
-            let (key, label) = group_key(task, group);
-            // One project, one group: path spellings of the same repository (a trailing
-            // slash, `/tmp` vs `/private/tmp`, a symlink) share a bucket, keyed by the
-            // smallest spelling so the fold id survives re-sorting.
-            let same = |other: &str| match (key.strip_prefix("p:"), other.strip_prefix("p:")) {
-                (Some(a), Some(b)) => identities.equivalent(a, b),
-                _ => other == key,
-            };
-            match buckets.iter_mut().find(|bucket| same(&bucket.0)) {
-                Some(bucket) => {
-                    if key < bucket.0 {
-                        bucket.0 = key;
-                        bucket.1 = label;
-                    }
-                    bucket.2.push(task);
-                }
-                None => buckets.push((key, label, vec![task])),
-            }
-        }
-        let hottest = |rows: &[&Task]| rows.iter().map(|task| task.status_changed_at()).max();
-        buckets.sort_by(|a, b| {
-            hottest(&b.2)
-                .cmp(&hottest(&a.2))
-                .then_with(|| a.1.cmp(&b.1))
-        });
+        let buckets = bucket_rows(rows, group, &identities);
         section.groups = buckets
             .into_iter()
             .map(|(key, label, rows)| QueueGroup {
@@ -1213,6 +1187,62 @@ pub fn arrange_view(
             .flat_map(|group| group.task_ids.iter().copied())
             .collect();
     }
+}
+
+/// Split already-sorted rows into one-level groups, hottest first: the group whose newest
+/// row changed status most recently leads, ties by label. Rows keep their order inside a
+/// group. Returns `(key, label, rows)`; the board and `tsk list --group` share it.
+fn bucket_rows<'a>(
+    rows: Vec<&'a Task>,
+    group: GroupBy,
+    identities: &PathIdentityCache,
+) -> Vec<(String, String, Vec<&'a Task>)> {
+    let mut buckets: Vec<(String, String, Vec<&Task>)> = Vec::new();
+    for task in rows {
+        let (key, label) = group_key(task, group);
+        // One project, one group: path spellings of the same repository (a trailing
+        // slash, `/tmp` vs `/private/tmp`, a symlink) share a bucket, keyed by the
+        // smallest spelling so the fold id survives re-sorting.
+        let same = |other: &str| match (key.strip_prefix("p:"), other.strip_prefix("p:")) {
+            (Some(a), Some(b)) => identities.equivalent(a, b),
+            _ => other == key,
+        };
+        match buckets.iter_mut().find(|bucket| same(&bucket.0)) {
+            Some(bucket) => {
+                if key < bucket.0 {
+                    bucket.0 = key;
+                    bucket.1 = label;
+                }
+                bucket.2.push(task);
+            }
+            None => buckets.push((key, label, vec![task])),
+        }
+    }
+    let hottest = |rows: &[&Task]| rows.iter().map(|task| task.status_changed_at()).max();
+    buckets.sort_by(|a, b| {
+        hottest(&b.2)
+            .cmp(&hottest(&a.2))
+            .then_with(|| a.1.cmp(&b.1))
+    });
+    buckets
+}
+
+/// Sort and group one status's rows the way the board arranges a section, for surfaces
+/// outside the board (`tsk list --group/--sort`). Rows arrive in [`cmp_within_status`]
+/// order; ungrouped output is one unlabeled group.
+pub fn arrange_rows(
+    mut rows: Vec<&Task>,
+    group: GroupBy,
+    sort: SortBy,
+) -> Vec<(Option<String>, Vec<&Task>)> {
+    sort_rows(&mut rows, sort);
+    if group == GroupBy::None {
+        return vec![(None, rows)];
+    }
+    bucket_rows(rows, group, &PathIdentityCache::default())
+        .into_iter()
+        .map(|(_, label, rows)| (Some(label), rows))
+        .collect()
 }
 
 /// A task's group identity and painted label for one grouping dimension.
