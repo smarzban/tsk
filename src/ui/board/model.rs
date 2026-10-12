@@ -2804,10 +2804,22 @@ impl BoardModel {
     }
 
     /// Where a row hidden by a fold hands the selection: its sub-group's header, else the
-    /// inbox or archived header of its section.
+    /// inbox or archived header of its section. An inbox sub-group under a collapsed inbox
+    /// lands on the inbox header, the one row of it still painted.
     pub(super) fn fold_landing(&self, id: Uuid) -> Option<Uuid> {
         if let Some(group) = self.group_at(id) {
-            return Some(group.header_id);
+            let in_inbox = self.queue_view().sections.iter().any(|section| {
+                section.kind == SectionKind::Inbox
+                    && section
+                        .groups
+                        .iter()
+                        .any(|g| g.header_id == group.header_id)
+            });
+            return Some(if in_inbox && self.inbox_collapsed {
+                queue::INBOX_HEADER_ROW_ID
+            } else {
+                group.header_id
+            });
         }
         let kind = self
             .queue_view()

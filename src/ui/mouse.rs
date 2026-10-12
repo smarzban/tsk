@@ -938,7 +938,8 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::ArchivedHeader) => Some(BoardIntent::ToggleArchivedGroup),
             Some(QueueHitTarget::InboxHeader) => Some(BoardIntent::ToggleInboxGroup),
             Some(QueueHitTarget::GroupHeader(id)) => Some(BoardIntent::ToggleGroupFold(id)),
-            Some(QueueHitTarget::NavLayout) => Some(BoardIntent::OpenGroupPicker),
+            Some(QueueHitTarget::NavGroup) => Some(BoardIntent::OpenGroupPicker),
+            Some(QueueHitTarget::NavSort) => Some(BoardIntent::OpenSortPicker),
             Some(QueueHitTarget::TaskNumber(id))
                 if model.mark_mode_active() && mouse.modifiers.is_empty() =>
             {

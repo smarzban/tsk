@@ -1,6 +1,6 @@
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                                                                              │
-│ desk  ·  tsk ▾  ·  projects            group: thread · sort: project   all ▾ │
+│ desk  ·  tsk ▾  ·  projects        group: thread ▾   sort: project ▾   all ▾ │
 │                                                                              │
 │ NEEDS YOU ─────────────────────────────────────────────────────────────────2 │
 │                                                                              │

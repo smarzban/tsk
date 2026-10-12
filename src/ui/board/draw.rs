@@ -792,11 +792,10 @@ fn nav_paint(model: &BoardModel) -> NavPaint {
         slot2_label,
         slot2_project: model.selected_project().is_some() || model.focus_is_archived(),
         chip,
-        layout: if model.projects_overview() {
-            None
-        } else {
-            model.layout().label()
-        },
+        layout: (!model.projects_overview()).then(|| render::LayoutPaint {
+            group: model.layout().group.word(),
+            sort: model.layout().sort.word(),
+        }),
     }
 }
 

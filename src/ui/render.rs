@@ -623,8 +623,23 @@ pub struct NavPaint {
     pub slot2_project: bool,
     /// Right-side control of the active destination.
     pub chip: Option<NavChipPaint>,
-    /// The `group: … · sort: …` indicator, beside the chip; `None` at the default layout.
-    pub layout: Option<String>,
+    /// The group and sort controls, beside the chip; `None` on the projects index, which
+    /// lists projects, not tasks.
+    pub layout: Option<LayoutPaint>,
+}
+
+/// The current group and sort words the header's two layout controls paint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayoutPaint {
+    pub group: &'static str,
+    pub sort: &'static str,
+}
+
+impl LayoutPaint {
+    /// Ungrouped, in recent order: a fresh board's layout.
+    pub fn is_default(&self) -> bool {
+        self.group == "none" && self.sort == "recent"
+    }
 }
 
 /// The right-side destination control: the project board's thread filter, or the
@@ -633,8 +648,8 @@ pub struct NavPaint {
 pub struct NavChipPaint {
     pub label: String,
     pub kind: NavChipKind,
-    /// An idle control that is dropped instead of taking its own row when it does not
-    /// fit beside the tabs (the unfiltered desk's `all ▾`).
+    /// An idle control (the unfiltered desk's `all ▾`): dropped rather than given its own
+    /// row when the header's controls do not fit beside the tabs.
     pub optional: bool,
 }
 
@@ -693,8 +708,10 @@ pub enum QueueHitTarget {
     InboxHeader,
     /// A group sub-header inside a status section (its chrome row id): toggles the group.
     GroupHeader(Uuid),
-    /// The selector row's `group: … · sort: …` indicator: opens the group picker.
-    NavLayout,
+    /// The header's `group: …` control: opens the group picker.
+    NavGroup,
+    /// The header's `sort: …` control: opens the sort picker.
+    NavSort,
     /// One painted row of the open palette, indexed exactly as
     /// `BoardModel::visible_commands()` orders them, so a click resolves straight to that
     /// command's own intent ( residual: mapped through the model's command list, never
@@ -908,25 +925,46 @@ pub fn draw_project_preview_frame(
     )
 }
 
+/// The preview column's one header row: the project name, then the same group, sort and
+/// thread filter controls as a project board's selector row, right-aligned. The name
+/// yields room first (down to a short stub); controls that still do not fit drop from
+/// the left, the filter last.
 fn paint_project_preview_header(
     frame: &mut Frame<'_>,
+    model: &QueueFrameModel<'_>,
     geo: &TierGeometry,
     surface: Rect,
     project_name: &str,
     bold: bool,
+    hits: &mut QueueHitMap,
 ) {
+    const NAME_FLOOR: usize = 8;
     let Some(row) = geo.selector_row else {
         return;
     };
-    let text = format!(" {project_name}");
+    let width = geo.row_width as usize;
+    let name = format!(" {project_name} ");
+    let room = width.saturating_sub(display_width(&name).min(NAME_FLOOR + 2));
+    let controls = fitted_controls(model, room, true);
+    let name_room = width
+        .saturating_sub(controls_width(&controls))
+        .max(NAME_FLOOR.min(width));
+    let shown = present_line(&name, name_room);
     let style = if bold { style_bold() } else { style_dim() };
+    let left_width = display_width(&shown);
+    let mut spans = vec![Span::styled(shown, style)];
+    let mut regions = Vec::new();
+    push_selector_controls(&mut spans, &mut regions, controls, left_width, width);
     put_line(
         frame,
         surface,
         row,
         geo.row_width,
-        paint_bounded_line(&text, geo.row_width, style),
+        bound_line(Line::from(spans), width),
     );
+    for (target, x, w) in regions {
+        hits.push(target, Rect::new(x, row, w, 1));
+    }
 }
 
 /// Paint the stage G rail: the board list at rail width (the done drawer and archived fold
@@ -1386,7 +1424,7 @@ fn draw_queue_frame_impl(
     }
 
     if let Some((project_name, bold)) = project_header {
-        paint_project_preview_header(frame, geo, surface, project_name, bold);
+        paint_project_preview_header(frame, model, geo, surface, project_name, bold, &mut hits);
     }
 
     paint_overlay(frame, &model.overlay, geo, surface, &mut hits);
@@ -4008,6 +4046,48 @@ fn build_list_rows(
             *anchor_last_idx = Some(out.len() - 1);
         }
     };
+    // A grouped section's (or the inbox's) sub-headers, each followed by its rows unless
+    // folded.
+    let push_groups = |section: &QueueSection,
+                       out: &mut Vec<ListRow>,
+                       selected_idx: &mut Option<usize>,
+                       anchor_last_idx: &mut Option<usize>,
+                       thread_label: bool,
+                       project_label: bool| {
+        for group in &section.groups {
+            let folded = model.folded_groups.contains(&group.header_id);
+            let header_selected = model.selection_id == Some(group.header_id);
+            out.push(ListRow::GroupHeader {
+                id: group.header_id,
+                line: paint_group_header(
+                    &group.label,
+                    group.task_ids.len(),
+                    geo.row_width,
+                    header_selected,
+                    folded,
+                    true,
+                ),
+            });
+            if header_selected {
+                *selected_idx = Some(out.len() - 1);
+            }
+            if folded {
+                continue;
+            }
+            for id in group.task_ids.iter().copied() {
+                push_task(
+                    id,
+                    out,
+                    selected_idx,
+                    anchor_last_idx,
+                    false,
+                    thread_label,
+                    false,
+                    project_label,
+                );
+            }
+        }
+    };
 
     // The projects index paints navigation rows, not task sections. It is the one
     // surface whose rows are neither tasks nor chrome.
@@ -4110,10 +4190,24 @@ fn build_list_rows(
             if model.inbox_collapsed {
                 continue;
             }
-            let thread_label = model.thread_labels;
+            let grouped = !section.groups.is_empty();
+            let thread_label =
+                model.thread_labels && !(grouped && model.view.group == GroupBy::Thread);
             // Every desk inbox row is a desk task; its section already says so.
-            let inbox_project_label =
-                model.show_project_meta && model.surface != BoardSurface::Desk;
+            let inbox_project_label = model.show_project_meta
+                && model.surface != BoardSurface::Desk
+                && !(grouped && model.view.group == GroupBy::Project);
+            if grouped {
+                push_groups(
+                    section,
+                    &mut out,
+                    &mut selected_idx,
+                    &mut anchor_last_idx,
+                    thread_label,
+                    inbox_project_label,
+                );
+                continue;
+            }
             for id in section.task_ids.iter().copied() {
                 push_task(
                     id,
@@ -4145,47 +4239,22 @@ fn build_list_rows(
         // Row labels omit whatever the surface, its filter, or its grouping already says
         // (the frame model's two dimension flags).
         // A section that actually groups drops its grouped dimension; ungrouped sections
-        // (inbox, done drawer) keep it.
+        // (the done drawer) keep it.
         let grouped = !section.groups.is_empty();
         let thread_label = model.thread_labels && !(grouped && model.view.group == GroupBy::Thread);
         // `ON DECK · desk` already names its rows' scope.
         let section_project_label = model.show_project_meta
             && !(grouped && model.view.group == GroupBy::Project)
             && !(model.surface == BoardSurface::Desk && section.kind == SectionKind::OnDeck);
-        if !section.groups.is_empty() {
-            for group in &section.groups {
-                let folded = model.folded_groups.contains(&group.header_id);
-                let header_selected = model.selection_id == Some(group.header_id);
-                out.push(ListRow::GroupHeader {
-                    id: group.header_id,
-                    line: paint_group_header(
-                        &group.label,
-                        group.task_ids.len(),
-                        geo.row_width,
-                        header_selected,
-                        folded,
-                        true,
-                    ),
-                });
-                if header_selected {
-                    selected_idx = Some(out.len() - 1);
-                }
-                if folded {
-                    continue;
-                }
-                for id in group.task_ids.iter().copied() {
-                    push_task(
-                        id,
-                        &mut out,
-                        &mut selected_idx,
-                        &mut anchor_last_idx,
-                        false,
-                        thread_label,
-                        false,
-                        section_project_label,
-                    );
-                }
-            }
+        if grouped {
+            push_groups(
+                section,
+                &mut out,
+                &mut selected_idx,
+                &mut anchor_last_idx,
+                thread_label,
+                section_project_label,
+            );
             continue;
         }
         for id in section.task_ids.iter().copied() {
@@ -4869,26 +4938,75 @@ fn selector_tabs_width(model: &QueueFrameModel<'_>, width: u16) -> usize {
         + 6
 }
 
-/// The selector row's right-side controls, left to right: the layout indicator
-/// (`group: … · sort: …`, only when not the default) and the destination chip. An
-/// optional idle chip that does not fit beside the tabs is dropped, never wrapped.
-fn selector_controls(model: &QueueFrameModel<'_>, width: u16) -> Vec<(QueueHitTarget, String)> {
+/// The header's controls, left to right: group, sort, and the destination chip (filter or
+/// View). `compact` spells the layout pair by key (`g:thread ▾ s:recent ▾`). `idle` keeps
+/// controls sitting at their defaults (`group: none`, `sort: recent`, the unfiltered
+/// desk's `all`); without it only the ones that say something remain.
+fn header_controls(
+    model: &QueueFrameModel<'_>,
+    compact: bool,
+    idle: bool,
+) -> Vec<(QueueHitTarget, String)> {
     let mut controls = Vec::new();
-    if let Some(layout) = model.nav.layout.as_deref() {
-        controls.push((QueueHitTarget::NavLayout, format!(" {layout} ")));
+    if let Some(layout) = model.nav.layout.as_ref() {
+        if idle || !layout.is_default() {
+            let (group, sort) = if compact {
+                ("g:", "s:")
+            } else {
+                ("group: ", "sort: ")
+            };
+            controls.push((
+                QueueHitTarget::NavGroup,
+                format!(" {group}{} \u{25be} ", layout.group),
+            ));
+            controls.push((
+                QueueHitTarget::NavSort,
+                format!(" {sort}{} \u{25be} ", layout.sort),
+            ));
+        }
     }
     if let Some(chip) = model.nav.chip.as_ref() {
-        controls.push((
-            QueueHitTarget::NavChip,
-            format!(" {} \u{25be} ", chip.label),
-        ));
-    }
-    let droppable =
-        model.nav.layout.is_none() && model.nav.chip.as_ref().is_some_and(|chip| chip.optional);
-    if droppable && selector_tabs_width(model, width) + controls_width(&controls) > width as usize {
-        controls.clear();
+        if idle || !chip.optional {
+            controls.push((
+                QueueHitTarget::NavChip,
+                format!(" {} \u{25be} ", chip.label),
+            ));
+        }
     }
     controls
+}
+
+/// The controls in the widest spelling that fits `room` cells: full words, else the
+/// compact pair. The compact spelling is returned even when it overflows; the painter
+/// then drops leading controls rather than the filter.
+fn fitted_controls(
+    model: &QueueFrameModel<'_>,
+    room: usize,
+    idle: bool,
+) -> Vec<(QueueHitTarget, String)> {
+    let full = header_controls(model, false, idle);
+    if controls_width(&full) <= room {
+        return full;
+    }
+    header_controls(model, true, idle)
+}
+
+/// The selector row's right-side controls. Every control rides the tabs row in the widest
+/// spelling that fits beside the tabs. When they do not all fit, idle controls (at their
+/// defaults) drop, so they never cost a row; the rest stay beside the tabs if they fit
+/// there, else take their own row under the tabs. `g`, `s` and `t` always open their
+/// pickers either way.
+fn selector_controls(model: &QueueFrameModel<'_>, width: u16) -> Vec<(QueueHitTarget, String)> {
+    let beside = (width as usize).saturating_sub(selector_tabs_width(model, width));
+    let all = fitted_controls(model, beside, true);
+    if controls_width(&all) <= beside {
+        return all;
+    }
+    let busy = fitted_controls(model, beside, false);
+    if controls_width(&busy) <= beside {
+        return busy;
+    }
+    fitted_controls(model, width as usize, false)
 }
 
 fn controls_width(controls: &[(QueueHitTarget, String)]) -> usize {

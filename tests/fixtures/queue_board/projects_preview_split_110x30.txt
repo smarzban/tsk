@@ -1,6 +1,6 @@
 ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │                                            │                                                                 │
-│ desk  ·  tsk ▾  ·  projects     Overview ▾ │  tsk                                                            │
+│ desk  ·  tsk ▾  ·  projects     Overview ▾ │  tsk                     group: none ▾   sort: recent ▾   all ▾ │
 │                                            │                                                                 │
 │   PROJECT            NEED MOTION DECK DONE │  IN MOTION ───────────────────────────────────────────────────1 │
 │                                            │                                                                 │

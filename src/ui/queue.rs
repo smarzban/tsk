@@ -496,23 +496,31 @@ pub fn visible_row_ids(
             }
             SectionKind::Inbox => {
                 out.push(INBOX_HEADER_ROW_ID);
-                if !inbox_collapsed {
+                if inbox_collapsed {
+                    continue;
+                }
+                if section.groups.is_empty() {
                     out.extend(section.task_ids.iter().copied());
+                } else {
+                    push_group_rows(&mut out, section, folded);
                 }
             }
-            _ if !section.groups.is_empty() => {
-                for group in &section.groups {
-                    if folded.contains(&group.header_id) {
-                        out.push(group.header_id);
-                    } else {
-                        out.extend(group.task_ids.iter().copied());
-                    }
-                }
-            }
+            _ if !section.groups.is_empty() => push_group_rows(&mut out, section, folded),
             _ => out.extend(section.task_ids.iter().copied()),
         }
     }
     out
+}
+
+/// A grouped section's selectable rows: a folded group's header, an open group's tasks.
+fn push_group_rows(out: &mut Vec<Uuid>, section: &QueueSection, folded: &BTreeSet<Uuid>) {
+    for group in &section.groups {
+        if folded.contains(&group.header_id) {
+            out.push(group.header_id);
+        } else {
+            out.extend(group.task_ids.iter().copied());
+        }
+    }
 }
 
 fn query_desk(
@@ -1082,10 +1090,10 @@ fn section_from(kind: SectionKind, project_label: Option<String>, tasks: &[&Task
     }
 }
 
-/// Group and sort the live status sections in place. NEEDS YOU, IN MOTION and ON DECK
-/// group; the inbox sorts but never groups (it is already a fold group); the done drawer
-/// and archived group keep their own order. Project grouping is a no-op on the desk's
-/// ON DECK, which only ever holds desk tasks. Groups paint hottest first: the group whose
+/// Group and sort the live status sections in place. NEEDS YOU, IN MOTION, ON DECK and
+/// the inbox group (inbox sub-groups nest under its own fold); the done drawer and
+/// archived group keep their own order. Project grouping is a no-op on the desk's ON DECK
+/// and inbox, which only ever hold desk tasks. Groups paint hottest first: the group whose
 /// newest row changed status most recently leads, ties by label. Sorting is stable over
 /// each section's own order, so ties keep recent order; notice rows keep leading.
 pub fn arrange_view(
@@ -1104,9 +1112,12 @@ pub fn arrange_view(
     for section in &mut view.sections {
         let groupable = matches!(
             section.kind,
-            SectionKind::NeedsYou | SectionKind::InMotion | SectionKind::OnDeck
+            SectionKind::NeedsYou
+                | SectionKind::InMotion
+                | SectionKind::OnDeck
+                | SectionKind::Inbox
         );
-        if !(groupable || section.kind == SectionKind::Inbox) || section.task_ids.is_empty() {
+        if !groupable || section.task_ids.is_empty() {
             continue;
         }
         let mut rows: Vec<&Task> = section
@@ -1115,8 +1126,10 @@ pub fn arrange_view(
             .filter_map(|id| by_id.get(id).copied())
             .collect();
         sort_rows(&mut rows, sort);
-        let desk_deck = section.kind == SectionKind::OnDeck && matches!(lens, BoardLens::Desk);
-        let group = if !groupable || (desk_deck && group == GroupBy::Project) {
+        // The desk's ON DECK and inbox hold desk tasks only: one project, nothing to group.
+        let desk_deck = matches!(section.kind, SectionKind::OnDeck | SectionKind::Inbox)
+            && matches!(lens, BoardLens::Desk);
+        let group = if desk_deck && group == GroupBy::Project {
             GroupBy::None
         } else {
             group
@@ -2586,7 +2599,7 @@ mod tests {
     }
 
     #[test]
-    fn the_inbox_sorts_but_never_groups_and_desk_on_deck_ignores_project_grouping() {
+    fn desk_on_deck_and_inbox_ignore_project_grouping() {
         let mut ready_b = task(1, HumanStatus::Ready, TaskScope::Global, false, 10);
         ready_b.title = "b ready".into();
         let mut ready_a = task(2, HumanStatus::Ready, TaskScope::Global, false, 20);
@@ -2611,8 +2624,54 @@ mod tests {
         );
         assert_eq!(deck.task_ids, vec![Uuid::from_u128(2), Uuid::from_u128(1)]);
         let inbox = section(&view, SectionKind::Inbox);
-        assert!(inbox.groups.is_empty());
+        assert!(
+            inbox.groups.is_empty(),
+            "every desk inbox row is a desk task"
+        );
         assert_eq!(inbox.task_ids, vec![Uuid::from_u128(4), Uuid::from_u128(3)]);
+    }
+
+    #[test]
+    fn the_inbox_groups_like_on_deck() {
+        let tasks = vec![
+            task_with_thread(
+                1,
+                HumanStatus::Open,
+                TaskScope::Global,
+                false,
+                10,
+                Some("ship"),
+            ),
+            task_with_thread(2, HumanStatus::Open, TaskScope::Global, false, 20, None),
+            task_with_thread(
+                3,
+                HumanStatus::Open,
+                TaskScope::Global,
+                false,
+                30,
+                Some("ship"),
+            ),
+        ];
+        let mut view = desk_view(&tasks, &DeskFilter::default());
+        arrange_view(
+            &mut view,
+            &tasks,
+            BoardLens::Desk,
+            GroupBy::Thread,
+            SortBy::Recent,
+        );
+        let inbox = section(&view, SectionKind::Inbox);
+        assert_eq!(labels(inbox), vec!["#ship", "no thread"]);
+        let mut ship = inbox.groups[0].task_ids.clone();
+        ship.sort();
+        assert_eq!(ship, vec![Uuid::from_u128(1), Uuid::from_u128(3)]);
+        let folded = BTreeSet::from([inbox.groups[0].header_id]);
+        let visible = visible_row_ids(&view, false, false, &folded);
+        assert!(visible.contains(&inbox.groups[0].header_id));
+        assert!(!visible.contains(&Uuid::from_u128(1)));
+        assert!(visible.contains(&Uuid::from_u128(2)));
+        let collapsed = visible_row_ids(&view, false, true, &folded);
+        assert!(!collapsed.contains(&inbox.groups[0].header_id));
     }
 
     #[test]

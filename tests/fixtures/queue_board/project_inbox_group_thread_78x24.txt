@@ -1,0 +1,26 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                                                                              │
+│ desk  ·  tsk ▾  ·  projects         group: thread ▾   sort: recent ▾   all ▾ │
+│                                                                              │
+│ IN MOTION ─────────────────────────────────────────────────────────────────1 │
+│                                                                              │
+│ ▾ #release · 1                                                               │
+│▸ ● T1 Smoke-test worktree dispatch                                           │
+│                                                                              │
+│ ON DECK ───────────────────────────────────────────────────────────────────5 │
+│                                                                              │
+│ ▾ #release · 1                                                               │
+│  ○ T3 Prototype the queue-style board UI                                     │
+│ ▾ no thread · 1                                                              │
+│  ○ T4 Cut rust-toolchain pin into CI docs                                    │
+│                                                                              │
+│ ▾ inbox · 3                                                                  │
+│ ▾ #release · 2                                                               │
+│  ◌ Sketch the inbox grouping                                                 │
+│  ◌ Note the release checklist gaps                                           │
+│ ▾ no thread · 1                                                              │
+│  ◌ Triage the capture backlog                                                │
+│──────────────────────────────────────────────────────────────────────────────│
+│ tsk                                                                          │
+│ enter open · ctrl+d done · ctrl+n next · ctrl+o inbox · ctrl+b block · ? help│
+└──────────────────────────────────────────────────────────────────────────────┘

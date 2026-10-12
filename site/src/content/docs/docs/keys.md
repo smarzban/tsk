@@ -32,7 +32,7 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 | Open / close done drawer | `d` |
 | Group by none / project / thread | `g` |
 | Sort by recent / project / thread / title | `s` |
-| Fold or unfold the cursor's group: a sub-group, the inbox, or archived in the done drawer | `f` |
+| Fold or unfold the cursor's group: a sub-group (inbox sub-groups included), the inbox, or archived in the done drawer | `f` |
 | Fold or unfold every group in view | `Shift+F` |
 | Desk / selected project / projects | `1` / `2` / `3` |
 | Project picker | `p` |

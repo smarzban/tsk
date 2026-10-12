@@ -581,11 +581,49 @@ import { parseCapture } from "./capture.js";
     if (slot === "thread") return ["recent", "project", "title"];
     return ["recent", "project", "thread", "title"];
   }
-  function layoutIndicator(layout) {
-    const parts = [];
-    if (layout.group !== "none") parts.push(`group: ${layout.group}`);
-    if (layout.sort !== "recent") parts.push(`sort: ${layout.sort}`);
-    return parts.join(" · ");
+  // The header's group and sort controls: full words, or keyed (`g:thread`) when narrow.
+  function layoutControls(layout, compact) {
+    return compact
+      ? [`g:${layout.group} ▾`, `s:${layout.sort} ▾`]
+      : [`group: ${layout.group} ▾`, `sort: ${layout.sort} ▾`];
+  }
+  const layoutIsDefault = (layout) =>
+    layout.group === "none" && layout.sort === "recent";
+  // Cells a run of controls takes with the TUI's one-cell padding and gaps.
+  const controlsWidth = (labels) =>
+    labels.reduce((sum, label) => sum + label.length + 2, 0) +
+    Math.max(0, labels.length - 1);
+  // Mirror the TUI: every control fits beside the tabs (full, else keyed); otherwise
+  // idle ones (default layout, the desk's unfiltered `all`) drop and the rest stay.
+  function fittedLayout(layout, chip, chipIdle, room) {
+    for (const idle of [true, false]) {
+      const showLayout = idle || !layoutIsDefault(layout);
+      const showChip = chip !== null && (idle || !chipIdle);
+      for (const compact of [false, true]) {
+        const labels = [
+          ...(showLayout ? layoutControls(layout, compact) : []),
+          ...(showChip ? [`${chip} ▾`] : []),
+        ];
+        if (controlsWidth(labels) <= room)
+          return {
+            layout: showLayout ? layoutControls(layout, compact) : [],
+            chip: showChip,
+          };
+      }
+    }
+    const showLayout = !layoutIsDefault(layout);
+    return {
+      layout: showLayout ? layoutControls(layout, true) : [],
+      chip: chip !== null && !chipIdle,
+    };
+  }
+  function layoutButtons(labels, prefix = "") {
+    return labels
+      .map(
+        (label, index) =>
+          `<button type="button" class="tsk-view-control dim" data-${prefix}${index ? "sort" : "group"}-control="1"${index ? ' style="margin-left:1ch"' : ""}>${esc(label)}</button>`,
+      )
+      .join("");
   }
   const byteOrder = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
   // Stable sort by the chosen key; desk tasks sort after projects and unthreaded after
@@ -912,6 +950,10 @@ import { parseCapture } from "./capture.js";
       else layout.folded.delete(row.collapseKey);
       if (fold && row.taskIds.includes(id)) form.selectedId = row.id;
     }
+    // Inbox sub-groups hidden under a folded inbox unfold with everything else.
+    if (!fold)
+      for (const key of [...layout.folded])
+        if (key.startsWith("inbox:")) layout.folded.delete(key);
     if (hasInbox) {
       if (fold && state.inboxOpen && taskById(id)?.status === "open")
         state.selectedId = "nav:inbox";
@@ -1480,9 +1522,14 @@ import { parseCapture } from "./capture.js";
           selectable: true,
           id: "nav:inbox",
         });
-        // The inbox sorts but never groups.
+        // The inbox groups under its own fold; by project it stays flat (desk tasks only).
         if (state.inboxOpen)
-          sortRows(v.inbox, layout.sort).forEach((t) => pushTask(t, deckDims));
+          arranged(
+            v.inbox,
+            "inbox",
+            { groupable: layout.group !== "project" },
+            deckDims,
+          );
       }
       if (state.drawer) {
         if (v.done.length) pushHeader("section", "DONE", v.done.length);
@@ -1534,9 +1581,8 @@ import { parseCapture } from "./capture.js";
           selectable: true,
           id: "nav:inbox",
         });
-        // The inbox sorts but never groups.
-        if (state.inboxOpen)
-          sortRows(v.inbox, layout.sort).forEach((t) => pushTask(t));
+        // The inbox groups under its own fold, like ON DECK.
+        if (state.inboxOpen) arranged(v.inbox, "inbox");
       }
       if (state.drawer) {
         if (v.done.length) pushHeader("section", "DONE", v.done.length);
@@ -2981,8 +3027,15 @@ import { parseCapture } from "./capture.js";
       })
       .join("");
     const project = esc(preview.project || "project");
-    const indicatorText = layoutIndicator(preview.layout);
-    const filter = `${indicatorText ? `<button type="button" class="tsk-view-control dim" data-preview-group-control="1">${esc(indicatorText)}</button>` : ""}<button type="button" class="tsk-view-control dim" data-preview-filter="1"${indicatorText ? ' style="margin-left:3ch"' : ""}>${esc(previewFilterLabel())} ▾</button>`;
+    // The preview header carries the same controls as a project board's tab row.
+    const previewColumns = Math.floor(terminalColumns() * 0.6);
+    const previewFit = fittedLayout(
+      preview.layout,
+      previewFilterLabel(),
+      false,
+      previewColumns - Math.min(project.length, 8) - 2,
+    );
+    const filter = `${layoutButtons(previewFit.layout, "preview-")}<button type="button" class="tsk-view-control dim" data-preview-filter="1" style="margin-left:1ch">${esc(previewFilterLabel())} ▾</button>`;
     const empty = preview.searchQuery.trim()
       ? `no tasks match &quot;${esc(preview.searchQuery.trim())}&quot;`
       : "nothing here";
@@ -3054,14 +3107,8 @@ import { parseCapture } from "./capture.js";
         : index && rail
           ? 32
           : terminalColumns();
-    // Group / sort indicator: a dim control left of the filter chip, only when not default.
-    const indicatorText = index ? "" : layoutIndicator(boardLayout());
-    const indicator = indicatorText
-      ? `<button type="button" class="tsk-view-control dim" data-group-control="1">${esc(indicatorText)}</button>`
-      : "";
-    const chipGap = indicator ? ' style="margin-left:3ch"' : "";
-    // The desk's filter chip; at narrow widths an unset chip on a default layout is not
-    // shown when it does not fit beside the tabs.
+    // The desk's filter chip and the group / sort controls left of it; the projects index
+    // lists projects, so it has no layout controls.
     const headerColumns = rail
       ? 32
       : isWideSplit() && state.stage === "split"
@@ -3072,13 +3119,19 @@ import { parseCapture } from "./capture.js";
       tab === "project" ? `${state.selectedProject} ▾` : label,
     ).join("  ·  ").length;
     const deskChipLabel = isDeskLens() ? deskFilterLabel() : null;
+    const chipLabel = filter === null ? deskChipLabel : filter;
+    const fit = index
+      ? { layout: [], chip: chipLabel !== null }
+      : fittedLayout(
+          boardLayout(),
+          chipLabel,
+          filter === null && deskChipLabel === "all",
+          headerColumns - 6 - tabsWidth,
+        );
+    const indicator = layoutButtons(fit.layout);
+    const chipGap = indicator ? ' style="margin-left:1ch"' : "";
     const deskChip =
-      deskChipLabel !== null &&
-      !(
-        deskChipLabel === "all" &&
-        !indicator &&
-        tabsWidth + 3 + `${deskChipLabel} ▾`.length > headerColumns - 2
-      )
+      deskChipLabel !== null && fit.chip
         ? `<button type="button" class="tsk-view-control dim" data-desk-filter="1"${chipGap}>${esc(deskChipLabel)} ▾</button>`
         : "";
     const control =
@@ -4676,9 +4729,22 @@ import { parseCapture } from "./capture.js";
       render();
       return;
     }
+    const previewSortControl = e.target.closest("[data-preview-sort-control]");
+    if (previewSortControl && projectsPreviewActive()) {
+      if (state.stage === "split") stageRight();
+      openLayoutPicker("sort");
+      render();
+      return;
+    }
     const groupControl = e.target.closest("[data-group-control]");
     if (groupControl) {
       openLayoutPicker("group");
+      render();
+      return;
+    }
+    const sortControl = e.target.closest("[data-sort-control]");
+    if (sortControl) {
+      openLayoutPicker("sort");
       render();
       return;
     }

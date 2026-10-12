@@ -564,18 +564,126 @@ fn ungrouped_sections_keep_the_grouped_dimension_on_their_labels() {
     board.pick(BoardIntent::OpenGroupPicker, "thread");
     board.apply(BoardIntent::ToggleDoneDrawer);
     let rows = board.rows(80, 40);
-    for title in ["alpha inbox item", "alpha done item"] {
-        let row = rows.iter().find(|row| row.contains(title)).expect(title);
-        assert!(row.trim_end().ends_with("#ship"), "{title}: {row}");
-    }
-    let grouped = rows
+    let done = rows
         .iter()
-        .find(|row| row.contains("alpha one"))
-        .expect("grouped row");
-    assert!(
-        !grouped.contains("#ship"),
-        "a grouped row drops it: {grouped}"
+        .find(|row| row.contains("alpha done item"))
+        .expect("drawer row");
+    assert!(done.trim_end().ends_with("#ship"), "{done}");
+    for title in ["alpha one", "alpha inbox item"] {
+        let grouped = rows.iter().find(|row| row.contains(title)).expect(title);
+        assert!(
+            !grouped.contains("#ship"),
+            "a grouped row drops it: {grouped}"
+        );
+    }
+}
+
+/// An open project task under a thread, on the alpha board grouped by thread.
+fn grouped_inbox() -> (Board, Uuid, Uuid, Uuid) {
+    let mut board = board();
+    let ship_one = add(
+        &mut board.domain,
+        "inbox ship one",
+        project(ALPHA),
+        Some("ship"),
+        HumanStatus::Open,
     );
+    let ship_two = add(
+        &mut board.domain,
+        "inbox ship two",
+        project(ALPHA),
+        Some("ship"),
+        HumanStatus::Open,
+    );
+    let loose = add(
+        &mut board.domain,
+        "inbox loose",
+        project(ALPHA),
+        None,
+        HumanStatus::Open,
+    );
+    board.model.sync_from_domain(&board.domain);
+    board.model.set_selected_project(Some(PathBuf::from(ALPHA)));
+    board.pick(BoardIntent::OpenGroupPicker, "thread");
+    (board, ship_one, ship_two, loose)
+}
+
+fn inbox_groups(board: &Board) -> Vec<(String, Vec<Uuid>, Uuid)> {
+    board
+        .model
+        .queue_view()
+        .sections
+        .into_iter()
+        .find(|section| section.kind == SectionKind::Inbox)
+        .expect("inbox")
+        .groups
+        .into_iter()
+        .map(|group| (group.label, group.task_ids, group.header_id))
+        .collect()
+}
+
+#[test]
+fn the_inbox_groups_under_its_own_fold_and_paints_sub_headers() {
+    let (board, ship_one, ship_two, loose) = grouped_inbox();
+    let groups = inbox_groups(&board);
+    let labels: Vec<&str> = groups.iter().map(|group| group.0.as_str()).collect();
+    assert_eq!(labels, ["no thread", "#ship"], "hottest first");
+    assert_eq!(groups[0].1, [loose]);
+    let mut ship = groups[1].1.clone();
+    ship.sort();
+    let mut expected = vec![ship_one, ship_two];
+    expected.sort();
+    assert_eq!(ship, expected);
+
+    let rows = board.rows(80, 40);
+    let inbox = rows
+        .iter()
+        .position(|row| row.contains("inbox ·"))
+        .expect("inbox header");
+    let ship_header = rows
+        .iter()
+        .rposition(|row| row.contains("#ship ·"))
+        .expect("an inbox sub-header");
+    assert!(ship_header > inbox, "{}", rows.join("\n"));
+}
+
+#[test]
+fn f_shift_f_and_shift_m_work_on_inbox_sub_headers() {
+    let (mut board, ship_one, ship_two, loose) = grouped_inbox();
+    let ship_header = inbox_groups(&board)[1].2;
+
+    // f inside an inbox sub-group folds that sub-group, not the whole inbox.
+    board.select(ship_one);
+    board.key(press(KeyCode::Char('f')));
+    let visible = board.model.visible_ids();
+    assert!(visible.contains(&ship_header));
+    assert!(!visible.contains(&ship_one) && !visible.contains(&ship_two));
+    assert!(visible.contains(&loose), "the inbox itself stays open");
+
+    // Shift+M on the folded inbox sub-header marks the whole group.
+    board.key(KeyEvent::new(KeyCode::Char('M'), KeyModifiers::SHIFT));
+    let mut marked: Vec<Uuid> = board.model.marked_ids().iter().copied().collect();
+    marked.sort();
+    let mut expected = vec![ship_one, ship_two];
+    expected.sort();
+    assert_eq!(marked, expected);
+    board.apply(BoardIntent::ToggleMarkMode);
+
+    // Shift+F folds every sub-group and the inbox; a hidden row lands on the inbox header.
+    board.select(loose);
+    board.key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT));
+    let visible = board.model.visible_ids();
+    assert!(visible.contains(&tsk_tui::ui::queue::INBOX_HEADER_ROW_ID));
+    assert!(!visible.contains(&ship_header), "under the folded inbox");
+    let index = board.model.selected_index().expect("selection");
+    assert_eq!(visible[index], tsk_tui::ui::queue::INBOX_HEADER_ROW_ID);
+
+    // Shift+F again unfolds everything, inbox sub-groups included.
+    board.key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT));
+    let visible = board.model.visible_ids();
+    assert!([ship_one, ship_two, loose]
+        .iter()
+        .all(|id| visible.contains(id)));
 }
 
 #[test]
@@ -625,7 +733,7 @@ fn project_groups_merge_spellings_of_the_same_repository() {
 fn clicking_the_layout_control_and_the_desk_filter_tabs() {
     let mut board = board();
     board.pick(BoardIntent::OpenGroupPicker, "project");
-    board.click(QueueHitTarget::NavLayout);
+    board.click(QueueHitTarget::NavGroup);
     assert_eq!(
         board.model.list_picker_kind(),
         Some(ListPickerKind::GroupBy)
@@ -712,4 +820,69 @@ fn merged_tasks_never_move_the_tab_or_pin_a_hidden_row_under_groups() {
     let id = board.model.visible_ids()[index];
     assert_ne!(id, board.desk, "the hidden row is not pinned");
     assert_eq!(board.model.nav_tab(), NavTab::Desk);
+}
+
+#[test]
+fn every_task_list_header_shows_group_and_sort_controls_that_open_their_pickers() {
+    let mut board = board();
+    // The desk, a project board, and the cross-project thread View.
+    for surface in ["desk", "project", "thread view"] {
+        match surface {
+            "project" => board.model.set_selected_project(Some(PathBuf::from(ALPHA))),
+            "thread view" => {
+                board.apply(BoardIntent::SelectNavTab(NavTab::Projects));
+                board.pick(BoardIntent::OpenProjectsViewPicker, "#ship");
+            }
+            _ => {}
+        }
+        let rows = board.rows(110, 24);
+        let header = rows.iter().take(4).cloned().collect::<Vec<_>>().join("\n");
+        assert!(
+            header.contains("group: none ▾") && header.contains("sort: recent ▾"),
+            "{surface}:\n{header}"
+        );
+        board.click(QueueHitTarget::NavGroup);
+        assert_eq!(
+            board.model.list_picker_kind(),
+            Some(ListPickerKind::GroupBy),
+            "{surface}"
+        );
+        board.apply(BoardIntent::CancelListPicker);
+        board.click(QueueHitTarget::NavSort);
+        assert_eq!(
+            board.model.list_picker_kind(),
+            Some(ListPickerKind::SortBy),
+            "{surface}"
+        );
+        board.apply(BoardIntent::CancelListPicker);
+    }
+}
+
+#[test]
+fn narrow_headers_shorten_the_controls_and_drop_only_idle_ones() {
+    let mut board = board();
+    // 76 columns: the pair shortens to its keys beside the tabs.
+    let rows = board.rows(76, 24);
+    assert!(
+        rows[1].contains("g:none ▾") && rows[1].contains("s:recent ▾"),
+        "{}",
+        rows.join("\n")
+    );
+
+    // 40 columns: idle controls never cost a row; the project board keeps its filter
+    // beside the tabs exactly as before.
+    board.model.set_selected_project(Some(PathBuf::from(ALPHA)));
+    let rows = board.rows(40, 10);
+    let all = rows.join("\n");
+    assert!(!all.contains("g:") && !all.contains("group:"), "{all}");
+    assert!(rows[1].contains("all ▾"), "{all}");
+
+    // A layout that says something takes its own row under the tabs.
+    board.pick(BoardIntent::OpenGroupPicker, "thread");
+    let rows = board.rows(40, 10);
+    assert!(
+        rows[3].contains("g:thread ▾") || rows[3].contains("group: thread ▾"),
+        "{}",
+        rows.join("\n")
+    );
 }

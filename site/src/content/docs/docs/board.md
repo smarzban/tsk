@@ -70,7 +70,7 @@ Assign threads when [capturing](/docs/capture/#title-tokens) or [editing a task]
 
 ## Group and sort
 
-On 78 columns or wider, every task row ends with a dim `#thread · project` label (`desk` for a desk task). A label leaves out what the view already says: a project board never names its own project, a thread filter drops the thread and a project filter the project, grouping drops its dimension inside the sections that actually group (the inbox and done drawer keep it), and rows under **ON DECK · desk** never repeat `desk`. Archived rows carry the same label as done rows. A label that does not fit beside the title's first line is dropped; it never shortens the title. Below 78 columns labels are hidden; grouping and sorting still apply.
+On 78 columns or wider, every task row ends with a dim `#thread · project` label (`desk` for a desk task). A label leaves out what the view already says: a project board never names its own project, a thread filter drops the thread and a project filter the project, grouping drops its dimension inside the sections that actually group (the done drawer keeps it), and rows under **ON DECK · desk** never repeat `desk`. Archived rows carry the same label as done rows. A label that does not fit beside the title's first line is dropped; it never shortens the title. Below 78 columns labels are hidden; grouping and sorting still apply.
 
 | Key | Action |
 | --- | --- |
@@ -79,11 +79,11 @@ On 78 columns or wider, every task row ends with a dim `#thread · project` labe
 | `f` | Fold or unfold the group the cursor is in: its sub-group, the inbox, or the archived group |
 | `Shift+F` | Fold every group in view, or unfold them all when all are folded |
 
-Grouping adds dim sub-headers such as `▾ herdr-tsk · 3`, `▾ #release · 2`, `▾ no thread · 1`, or `▾ desk · 1` inside **NEEDS YOU**, **IN MOTION**, and **ON DECK**. The section header keeps its total; each sub-header counts its own rows. Groups are ordered hottest first: the group whose newest row changed status most recently leads. The inbox, the done drawer, and the archived group never group, and grouping the desk by project leaves **ON DECK · desk** alone because it only holds desk tasks.
+Grouping adds dim sub-headers such as `▾ herdr-tsk · 3`, `▾ #release · 2`, `▾ no thread · 1`, or `▾ desk · 1` inside **NEEDS YOU**, **IN MOTION**, **ON DECK**, and the **inbox**, whose sub-groups sit under its own fold. The section header keeps its total; each sub-header counts its own rows. Groups are ordered hottest first: the group whose newest row changed status most recently leads. The done drawer and the archived group never group, and grouping the desk by project leaves **ON DECK · desk** and its inbox alone because they only hold desk tasks.
 
 Sorting reorders rows inside each group, or inside each section while ungrouped (the inbox included). **recent** is each section's normal order; the others sort by project name (desk last), thread name (unthreaded last), or title, and ties keep the normal order. `N` notices still lead.
 
-The tab row shows the active layout, for example `group: project · sort: thread`, beside the filter control; click it to change the grouping. A fresh board starts ungrouped and sorted by recent. The desk, project boards, and the cross-project thread view (which groups by project) each keep their own choice for the session, and the wide Projects preview keeps its own.
+Every task list's header shows `group: none ▾` and `sort: recent ▾` beside its filter (`all ▾`, a project, or a thread); click one to open its picker. The desk and project boards paint them on the tab row, the cross-project thread view beside its View control, and the wide Projects preview on its own header row beside the project name. When they do not fit, the pair shortens to `g:none ▾ s:recent ▾`. On narrow frames where even that does not fit beside the tabs, controls still at their defaults (ungrouped, recent, and the desk's unfiltered `all`) are left out rather than costing a row, and the rest move to their own row under the tabs; `g`, `s`, and `t` work either way. The Projects overview lists projects, not tasks, so it shows only its View control. A fresh board starts ungrouped and sorted by recent. The desk, project boards, and the cross-project thread view (which groups by project) each keep their own choice for the session, and the wide Projects preview keeps its own.
 
 A folded group shows only its sub-header (`▸`), which the cursor can then rest on; open sub-headers are skipped by the arrows. `Enter` or a click on a sub-header folds or unfolds it. `Shift+M` on a folded sub-header unfolds it and marks every task in that group as one set; inside multi-select it adds the group to the marked set. Folding, or changing the grouping, sorting, or filter, clears multi-select marks.
 
@@ -97,7 +97,7 @@ A folded group shows only its sub-header (`▸`), which the cursor can then rest
 | ↳ **inbox** | `open` |
 | Done drawer | `done` |
 
-On your desk, **ON DECK** contains only desk tasks. On a project board, it contains that project's ready and open tasks. Ready tasks are the picked queue; open tasks are the untriaged inbox below it. Ready tasks sort by oldest pick first, open tasks by oldest capture first, and notice tasks lead within each group. The **inbox** group starts expanded; press `Enter` on its heading, or `f` with the cursor inside it, to fold or unfold it. Use the filter to narrow the tasks, and [group and sort](#group-and-sort) to arrange them.
+On your desk, **ON DECK** contains only desk tasks. On a project board, it contains that project's ready and open tasks. Ready tasks are the picked queue; open tasks are the untriaged inbox below it. Ready tasks sort by oldest pick first, open tasks by oldest capture first, and notice tasks lead within each group. The **inbox** group starts expanded; press `Enter` on its heading to fold or unfold it, or `f` with the cursor inside it (when the inbox is grouped, `f` folds the cursor's sub-group instead). Use the filter to narrow the tasks, and [group and sort](#group-and-sort) to arrange them.
 
 Sections hold their order while you work: NEEDS YOU, IN MOTION, DONE, and the drawer's ARCHIVED group keep the most recent status change on top, while ON DECK lists ready and inbox backlogs oldest first. (`N` tasks lead each group until you clear them.) Editing a task or ticking a step never moves it; setting a status moves it to the top of its new section.
 
@@ -127,7 +127,7 @@ Your first board open seeds four desk tasks with `N` ids (not `T`). They teach t
 | Action | Result |
 | --- | --- |
 | Click a tab or selector | Change view or open its choices |
-| Click the `group: …` control | Open group by |
+| Click the `group: …` or `sort: …` control | Open group by or sort by |
 | Click a group sub-header | Fold or unfold that group |
 | Click a task outside multi-select | Peek in narrow panes; open or update details beside the board in wide panes |
 | Click a task or its `T`/`N` number in multi-select | Move the cursor there and toggle its mark |

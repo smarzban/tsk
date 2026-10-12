@@ -15,8 +15,8 @@ use tsk_tui::domain::{
 use tsk_tui::ui::input::map_key;
 use tsk_tui::ui::queue::{self, BoardLens, NavTab, QueueView, ThreadFilter};
 use tsk_tui::ui::render::{
-    assert_buffer_mono, assert_no_color_sgr, draw_queue_frame, BottomInputSlot, NavChipPaint,
-    NavPaint, PaletteCommandRow, QueueFrameModel, QueueOverlay, VerbEntry,
+    assert_buffer_mono, assert_no_color_sgr, draw_queue_frame, BottomInputSlot, LayoutPaint,
+    NavChipPaint, NavPaint, PaletteCommandRow, QueueFrameModel, QueueOverlay, VerbEntry,
 };
 use tsk_tui::ui::tier::{self, Tier, TierGeometry};
 use tsk_tui::ui::{
@@ -376,9 +376,13 @@ fn fixture_model_on_tab<'a>(
             chip: Some(NavChipPaint {
                 label: "all".to_string(),
                 kind: tsk_tui::ui::render::NavChipKind::ThreadFilter,
-                optional: false,
+                // The unfiltered desk's chip is idle; a project board's is not.
+                optional: active == NavTab::Desk,
             }),
-            layout: None,
+            layout: Some(LayoutPaint {
+                group: "none",
+                sort: "recent",
+            }),
         },
         surface: tsk_tui::ui::render::BoardSurface::Desk,
         thread_labels: false,
@@ -3320,6 +3324,36 @@ fn grouping_scenes() -> Vec<GoldenScene> {
     .expect("fold");
     let project_folded_78 = board_rows(&project_board, 78, 24);
 
+    // A project board grouped by thread whose inbox groups too, under its own fold.
+    let mut inbox_tasks = tasks.clone();
+    let template = inbox_tasks
+        .iter()
+        .find(|task| task.id.as_u128() == 10)
+        .expect("a /repos/tsk task")
+        .clone();
+    for (id, title, thread) in [
+        (50, "Sketch the inbox grouping", Some("release")),
+        (51, "Triage the capture backlog", None),
+        (52, "Note the release checklist gaps", Some("release")),
+    ] {
+        let mut task = template.clone();
+        task.id = Uuid::from_u128(id);
+        task.number = None;
+        task.title = title.to_string();
+        task.thread = thread.map(str::to_string);
+        task.status = HumanStatus::Open;
+        inbox_tasks.push(task);
+    }
+    let mut inbox_board = BoardModel::from_tasks(inbox_tasks, Some(PathBuf::from("/repos/tsk")));
+    inbox_board.set_selected_project(Some(PathBuf::from("/repos/tsk")));
+    pick(
+        &mut domain,
+        &mut inbox_board,
+        BoardIntent::OpenGroupPicker,
+        1,
+    );
+    let project_inbox_78 = board_rows(&inbox_board, 78, 24);
+
     // The desk filter on its projects tab, and the group picker.
     let mut filter = BoardModel::from_tasks(tasks.clone(), Some(PathBuf::from("/repos/tsk")));
     apply_intent(
@@ -3371,6 +3405,11 @@ fn grouping_scenes() -> Vec<GoldenScene> {
         GoldenScene {
             name: "project_group_thread_folded_78x24",
             rows: project_folded_78,
+            width: 78,
+        },
+        GoldenScene {
+            name: "project_inbox_group_thread_78x24",
+            rows: project_inbox_78,
             width: 78,
         },
         GoldenScene {

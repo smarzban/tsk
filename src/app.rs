@@ -2956,6 +2956,52 @@ mod tests {
     }
 
     #[test]
+    fn projects_preview_header_paints_group_sort_and_filter_controls_that_click_through() {
+        let (mut domain, mut model, _id) = projects_preview_fixture();
+        let area = Rect::new(0, 0, 110, 30);
+        sync_frame_presentation(area, &model);
+        assert!(model.project_right_seat_focused());
+        let task_column = model.responsive_geometry(area).task;
+        for (target, kind) in [
+            (
+                crate::ui::render::QueueHitTarget::NavGroup,
+                crate::ui::board::ListPickerKind::GroupBy,
+            ),
+            (
+                crate::ui::render::QueueHitTarget::NavSort,
+                crate::ui::board::ListPickerKind::SortBy,
+            ),
+            (
+                crate::ui::render::QueueHitTarget::NavChip,
+                crate::ui::board::ListPickerKind::ThreadFilter,
+            ),
+        ] {
+            let hits = board_hit_map(area, &model);
+            let hit = hits
+                .regions
+                .iter()
+                .find(|hit| hit.target == target && task_column.contains(hit.area.into()))
+                .unwrap_or_else(|| panic!("the preview header paints {target:?}"))
+                .area;
+            let click = left_click(hit.x + 1, hit.y);
+            let intent =
+                map_responsive_board_mouse(&model, &hits, area, click).expect("control click");
+            let seat = mouse_intent_target_mut(&mut model, area, click, &hits, &intent);
+            apply_intent(&mut domain, seat, intent, None).expect("open picker");
+            let right = model.right_seat().expect("preview seat");
+            assert_eq!(right.list_picker_kind(), Some(kind), "{target:?}");
+            assert_eq!(model.list_picker_kind(), None, "the index keeps no picker");
+            apply_intent(
+                &mut domain,
+                model.input_target_mut(),
+                BoardIntent::CancelListPicker,
+                None,
+            )
+            .expect("close picker");
+        }
+    }
+
+    #[test]
     fn projects_preview_keyboard_uses_right_seat_for_task_actions() {
         let (mut domain, mut model, id) = projects_preview_fixture();
         let area = Rect::new(0, 0, 110, 30);
