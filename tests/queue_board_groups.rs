@@ -1515,3 +1515,53 @@ fn enter_on_the_desk_sub_header_on_the_desk_keeps_search_and_marks() {
     assert_eq!(board.model.search_query(), "o", "the pinned search stays");
     assert_eq!(board.model.marked_ids().len(), 1, "the marks stay");
 }
+
+#[test]
+fn a_project_boards_assignee_filter_drops_the_peeks_assignee() {
+    let mut board = assigned_board();
+    board.model.set_selected_project(Some(PathBuf::from(ALPHA)));
+    assert!(board.model.assignee_label_shown(), "unfiltered, it shows");
+    board.select(board.alpha_one);
+    board.apply(BoardIntent::PeekDetail);
+    assert!(peek_footer(&board, "alpha one").contains("@claude"));
+
+    board.apply(BoardIntent::OpenThreadFilterPicker);
+    board.apply(BoardIntent::SelectListPickerTab(FilterTab::Assignees));
+    let claude = board
+        .picker_labels()
+        .iter()
+        .position(|label| label == "@claude")
+        .expect("@claude");
+    board.apply(BoardIntent::SelectListOption(claude));
+    assert_eq!(board.model.board_filter().label(), "@claude");
+    assert!(!board.model.assignee_label_shown(), "the filter says it");
+    board.select(board.alpha_one);
+    board.apply(BoardIntent::PeekDetail);
+    let footer = peek_footer(&board, "alpha one");
+    assert!(!footer.contains("@claude"), "{footer}");
+    assert!(footer.contains("#ship"), "{footer}");
+}
+
+#[test]
+fn an_at_name_view_drops_the_peeks_assignee() {
+    let mut board = assigned_board();
+    board.pick(BoardIntent::OpenGroupPicker, "assignee");
+    let claude = board
+        .motion_groups()
+        .into_iter()
+        .find(|group| group.0 == "@claude")
+        .expect("@claude")
+        .2;
+    board.select_row(claude);
+    board.key(press(KeyCode::Enter));
+    assert_eq!(
+        board.model.projects_view(),
+        &ProjectsView::Assignee("claude".into())
+    );
+    assert!(!board.model.assignee_label_shown(), "the view says it");
+    board.select(board.alpha_one);
+    board.apply(BoardIntent::PeekDetail);
+    let footer = peek_footer(&board, "alpha one");
+    assert!(!footer.contains("@claude"), "{footer}");
+    assert!(footer.contains("#ship"), "{footer}");
+}

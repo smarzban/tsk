@@ -6668,8 +6668,9 @@ impl BoardModel {
         }
     }
 
-    /// Start the desk and project boards from `config.toml`'s `[board]` group and sort.
-    /// Called once at open; the session's own changes are never written back.
+    /// Start the desk and project boards from `config.toml`'s `[board]` group and sort, and
+    /// seed the cursor on the arranged rows. Called once at open (and for a fresh preview
+    /// seat); the session's own changes are never written back.
     pub fn set_layout_defaults(&mut self, defaults: crate::agents::BoardDefaults) {
         self.layout_defaults = defaults;
         self.desk_layout = BoardLayout {
@@ -6685,6 +6686,9 @@ impl BoardModel {
         if let Some(right) = self.right_seat.as_mut() {
             right.set_layout_defaults(defaults);
         }
+        // The open seeded the cursor on the ungrouped order; re-seed it on the arranged
+        // rows so a configured group or sort opens at the top.
+        self.seed_selection();
     }
 
     pub fn set_agent_profiles(&mut self, profiles: &crate::agents::AgentProfiles) {

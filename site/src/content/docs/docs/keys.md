@@ -34,13 +34,13 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 | Reply to the blocked cursor row, or give feedback on a review row, inline under it | `r` |
 | Archive / restore selected task (undoable; archived tasks live in the done drawer's archived group) | `ctrl+f` |
 | Open / close done drawer | `d` |
-| Group by none / project / thread | `g` |
-| Sort by recent / project / thread / title | `s` |
+| Group by none / project / thread / assignee | `g` |
+| Sort by recent / project / thread / title / assignee | `s` |
 | Fold or unfold the cursor's group: a sub-group (inbox sub-groups included), the inbox, or archived in the done drawer | `f` |
 | Fold or unfold every group in view | `Shift+F` |
 | Desk / selected project / projects | `1` / `2` / `3` |
 | Project picker | `p` |
-| Filter: thread and project on the desk; thread and assignee (`threads · @assignees`) on a project board | `t` |
+| Filter: thread, project, and assignee (`threads · projects · @assignees`) on the desk; thread and assignee (`threads · @assignees`) on a project board | `t` |
 | Switch a filter or view picker's tab (the desk filter's three wrap; `←` and `Shift+Tab` go back) | `Tab`, `←` / `→` |
 | Cross-project view selector (threads · @assignees) | `v` on Projects |
 | Search current board rows | `/` |

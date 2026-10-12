@@ -20,7 +20,7 @@ use tsk_tui::guides::CATALOG;
 use tsk_tui::store::TaskStore;
 use tsk_tui::ui::board::{apply_intent, IntentOutcome};
 use tsk_tui::ui::input::BoardIntent;
-use tsk_tui::ui::queue::NavTab;
+use tsk_tui::ui::queue::{GroupBy, NavTab, SortBy};
 use tsk_tui::update::suppress_background_fetch;
 
 static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -460,4 +460,92 @@ fn board_and_capture_from_an_aliased_launch_repo_use_the_stored_project() {
     let snapshot = load_snapshot(&state);
     seed_quick_capture(&mut state, &mut model, &snapshot);
     assert_eq!(model.form_scope(), Some(&stored));
+}
+
+/// A state dir holding `config` and two started desk tasks: `zeta work` changed status
+/// last, so it leads the ungrouped recent order; `alpha work` leads a title sort.
+fn board_config_state(label: &str, config: &str) -> (StateDirEnv, ContextEnv, [uuid::Uuid; 2]) {
+    let env = StateDirEnv::set(label);
+    fs::create_dir_all(&env.dir).expect("state dir");
+    fs::write(env.dir.join("config.toml"), config).expect("config.toml");
+    let outside = env.dir.parent().unwrap().join("outside");
+    fs::create_dir_all(&outside).expect("outside directory");
+    let context = ContextEnv::set(&outside);
+    let mut seeded = DomainState::new();
+    let mut ids = Vec::new();
+    for title in ["alpha work", "zeta work"] {
+        let id = seeded
+            .create(
+                title,
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("task");
+        seeded.set_status(id, HumanStatus::Started).expect("start");
+        std::thread::sleep(Duration::from_millis(5));
+        ids.push(id);
+    }
+    TaskStore::new(&env.dir).save(&seeded).expect("save");
+    (env, context, [ids[0], ids[1]])
+}
+
+#[test]
+fn board_config_seeds_the_layouts_and_opens_with_the_cursor_on_the_arranged_top_row() {
+    let _lock = env_lock();
+    suppress_background_fetch();
+    let (_env, _context, [alpha, zeta]) = board_config_state(
+        "board-config",
+        "[board]\ngroup = \"assignee\"\nsort = \"title\"\nproject_group = \"thread\"\n",
+    );
+    let (_store, _state, model) = load_board_for_quick_capture().expect("open");
+    assert_eq!(model.nav_tab(), NavTab::Desk);
+    assert_eq!(model.layout().group, GroupBy::Assignee);
+    assert_eq!(model.layout().sort, SortBy::Title);
+    assert_eq!(model.message(), None);
+    let _ = zeta;
+    assert_eq!(
+        model.selected_id(),
+        Some(alpha),
+        "the cursor opens on the sorted group's first row, not the recent order's"
+    );
+}
+
+#[test]
+fn a_bad_board_config_opens_at_the_default_layout_and_says_why_on_the_status_row() {
+    let _lock = env_lock();
+    suppress_background_fetch();
+    let (_env, _context, _) =
+        board_config_state("board-config-bad", "[board]\ngroup = \"status\"\n");
+    let (_store, _state, model) = load_board_for_quick_capture().expect("open");
+    assert_eq!(model.layout().group, GroupBy::None);
+    let message = model.message().expect("status row message");
+    assert!(
+        message.starts_with("config.toml: [board] group \"status\""),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_profile_error_keeps_the_status_row_over_a_board_error() {
+    let _lock = env_lock();
+    suppress_background_fetch();
+    let (env, _context, _) = board_config_state(
+        "board-config-profile",
+        "[agent.x]\nprompt = 1\n\n[board]\ngroup = \"status\"\n",
+    );
+    let (_store, _state, model) = load_board_for_quick_capture().expect("open");
+    let message = model.message().expect("status row message");
+    assert!(message.contains("agent \"x\""), "{message}");
+    assert!(!message.contains("[board]"), "{message}");
+
+    // A broken profile never blocks a valid [board].
+    fs::write(
+        env.dir.join("config.toml"),
+        "[agent.x]\nprompt = 1\n\n[board]\ngroup = \"assignee\"\n",
+    )
+    .expect("config.toml");
+    let (_store, _state, model) = load_board_for_quick_capture().expect("open");
+    assert_eq!(model.layout().group, GroupBy::Assignee);
 }
