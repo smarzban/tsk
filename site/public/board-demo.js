@@ -3039,7 +3039,7 @@ import { parseCapture } from "./capture.js";
     const empty = preview.searchQuery.trim()
       ? `no tasks match &quot;${esc(preview.searchQuery.trim())}&quot;`
       : "nothing here";
-    return `<div class="tsk-project-preview tsk-surface ${rail ? "is-live" : "is-preview"}" aria-label="${project} project preview"><div class="tsk-project-preview-header ${rail ? "is-bold" : "dim"}"><span class="sec">${project}</span>${rail ? filter : ""}</div><div class="tsk-task-rule" aria-hidden="true"></div><div class="tsk-list">${body || `<div class="dim">  ${empty}</div>`}</div></div>`;
+    return `<div class="tsk-project-preview tsk-surface ${rail ? "is-live" : "is-preview"}" aria-label="${project} project preview"><div class="tsk-project-preview-header ${rail ? "is-bold" : "dim"}"><span class="sec">${project}</span>${filter}</div><div class="tsk-task-rule" aria-hidden="true"></div><div class="tsk-list">${body || `<div class="dim">  ${empty}</div>`}</div></div>`;
   }
 
   function stageHint() {
