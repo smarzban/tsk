@@ -1542,7 +1542,7 @@ fn board_mouse_click_intent_after_focus<E>(
         // rather than a repaint whose rows no longer line up with the press.
         resolve_board_surface(area, model);
         let mapped = map_responsive_board_mouse(model, painted_hits, area, click);
-        model.cancel_other_double_clicks(mapped.as_ref());
+        disarm_double_clicks(model, area, click, painted_hits, mapped.as_ref());
         let intent = mapped
             .and_then(|intent| board_intent_for_presentation(area, model, intent))
             .and_then(|intent| {
@@ -1654,6 +1654,23 @@ fn mouse_intent_target(
     }
 }
 
+/// Disarm pending double-clicks on both seats for one left press, keeping only the arm the
+/// press itself continues on the seat its intent lands on.
+fn disarm_double_clicks(
+    model: &mut BoardModel,
+    area: Rect,
+    mouse: crossterm::event::MouseEvent,
+    painted_hits: &crate::ui::render::QueueHitMap,
+    intent: Option<&BoardIntent>,
+) {
+    let on_right_seat = model.project_right_seat_focused()
+        && intent.is_some_and(|intent| {
+            mouse_intent_target(model, area, mouse, painted_hits, intent)
+                == BoardIntentTarget::Focused
+        });
+    model.disarm_double_clicks(intent, on_right_seat);
+}
+
 fn mouse_intent_target_mut<'a>(
     model: &'a mut BoardModel,
     area: Rect,
@@ -1706,7 +1723,7 @@ fn board_mouse_intent(
         // Any other left press disarms a pending index-row or header double-click: inert
         // cells and other controls (tabs, chips, search) alike. The target's own second
         // press keeps its arm, or the double-click could never land.
-        model.cancel_other_double_clicks(intent.as_ref());
+        disarm_double_clicks(model, area, mouse, &hits, intent.as_ref());
     }
     let intent = intent?;
     let intent = board_intent_for_presentation(area, model, intent)?;
@@ -4419,6 +4436,125 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// The painted cell of `target` on the current frame, as a left press.
+    fn press_on(
+        area: Rect,
+        model: &BoardModel,
+        target: crate::ui::render::QueueHitTarget,
+    ) -> MouseEvent {
+        let cell = board_hit_map(area, model)
+            .regions
+            .iter()
+            .find(|hit| hit.target == target)
+            .unwrap_or_else(|| panic!("{target:?} is painted"))
+            .area;
+        left_click(cell.x + 2, cell.y)
+    }
+
+    /// Group `model`'s input seat by thread and return its `#ship` and `no thread` headers.
+    fn thread_headers(model: &BoardModel) -> (uuid::Uuid, uuid::Uuid) {
+        let groups: Vec<_> = model
+            .queue_view()
+            .sections
+            .into_iter()
+            .flat_map(|section| section.groups)
+            .collect();
+        let find = |label: &str| {
+            groups
+                .iter()
+                .find(|group| group.label == label)
+                .expect("sub-header")
+                .header_id
+        };
+        (find("#ship"), find("no thread"))
+    }
+
+    #[test]
+    fn a_press_elsewhere_another_header_or_the_window_disarms_a_header_double_click() {
+        use crate::ui::render::QueueHitTarget;
+        let area = Rect::new(0, 0, 80, 30);
+        for interruption in ["row", "header", "expiry"] {
+            let (mut domain, mut model, row) = grouped_header_fixture(TaskScope::Global);
+            apply_intent(
+                &mut domain,
+                &mut model,
+                BoardIntent::SelectNavTab(NavTab::Desk),
+                None,
+            )
+            .expect("desk");
+            select_ship_header(&mut domain, &mut model);
+            let (ship, loose) = thread_headers(&model);
+            let mut reflow = ReflowRowClick::default();
+            let on_ship = press_on(area, &model, QueueHitTarget::GroupHeader(ship));
+            dispatch_preview_test_click(&mut domain, &mut model, &mut reflow, area, on_ship);
+            match interruption {
+                "row" => {
+                    let press = press_on(area, &model, QueueHitTarget::Task(row));
+                    dispatch_preview_test_click(&mut domain, &mut model, &mut reflow, area, press);
+                }
+                "header" => {
+                    let press = press_on(area, &model, QueueHitTarget::GroupHeader(loose));
+                    dispatch_preview_test_click(&mut domain, &mut model, &mut reflow, area, press);
+                }
+                _ => model.expire_header_double_clicks(),
+            }
+            let on_ship = press_on(area, &model, QueueHitTarget::GroupHeader(ship));
+            dispatch_preview_test_click(&mut domain, &mut model, &mut reflow, area, on_ship);
+            assert_eq!(
+                (model.nav_tab(), model.projects_view()),
+                (NavTab::Desk, &crate::ui::board::ProjectsView::Overview),
+                "a {interruption} interruption leaves two single clicks"
+            );
+            assert!(model.group_header_selected());
+        }
+    }
+
+    #[test]
+    fn a_press_elsewhere_in_the_rail_preview_disarms_its_header_double_click() {
+        use crate::ui::render::QueueHitTarget;
+        let area = Rect::new(0, 0, 120, 30);
+        for interruption in ["row", "header", "expiry"] {
+            let (mut domain, mut model, row) = grouped_header_fixture(TaskScope::Project {
+                path: "/repos/preview".into(),
+            });
+            apply_intent(
+                &mut domain,
+                &mut model,
+                BoardIntent::SelectNavTab(NavTab::Projects),
+                None,
+            )
+            .expect("projects");
+            stage_right(&mut domain, &mut model, 2);
+            select_ship_header(&mut domain, model.input_target_mut());
+            assert_eq!(model.wide_stage(), crate::ui::tier::WideStage::Rail);
+            assert!(model.project_right_seat_focused());
+            let (ship, loose) = thread_headers(model.right_seat().expect("preview"));
+            let mut reflow = ReflowRowClick::default();
+            let on_ship = press_on(area, &model, QueueHitTarget::GroupHeader(ship));
+            dispatch_preview_test_click(&mut domain, &mut model, &mut reflow, area, on_ship);
+            match interruption {
+                "row" => {
+                    let press = press_on(area, &model, QueueHitTarget::Task(row));
+                    dispatch_preview_test_click(&mut domain, &mut model, &mut reflow, area, press);
+                }
+                "header" => {
+                    let press = press_on(area, &model, QueueHitTarget::GroupHeader(loose));
+                    dispatch_preview_test_click(&mut domain, &mut model, &mut reflow, area, press);
+                }
+                _ => model.expire_header_double_clicks(),
+            }
+            let on_ship = press_on(area, &model, QueueHitTarget::GroupHeader(ship));
+            dispatch_preview_test_click(&mut domain, &mut model, &mut reflow, area, on_ship);
+            assert_eq!(
+                model.projects_view(),
+                &crate::ui::board::ProjectsView::Overview,
+                "a {interruption} interruption in the preview leaves two single clicks"
+            );
+            let right = model.right_seat().expect("the preview stays open");
+            assert!(right.group_header_selected());
         }
     }
 

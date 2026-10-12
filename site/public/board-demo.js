@@ -4800,6 +4800,13 @@ import { parseCapture } from "./capture.js";
       state.pendingDelete = null;
       preview.pendingDelete = null;
     }
+    // Any click off a fold header disarms a pending header double-click.
+    if (
+      !e.target.closest(
+        "[data-collapse], [data-preview-collapse], [data-inbox-header], [data-archived-header], [data-preview-archived]",
+      )
+    )
+      lastGroupClick = { key: null, at: 0 };
     const previous = lastClick.reflow;
     cancelReflowClick();
     // Reflow must not turn the second click into a newly exposed task control.

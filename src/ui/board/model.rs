@@ -1805,6 +1805,39 @@ impl BoardModel {
         }
     }
 
+    /// Test hook: age every armed header double-click on both seats past the window.
+    #[cfg(test)]
+    pub(crate) fn expire_header_double_clicks(&mut self) {
+        let window = super::apply::ROW_DOUBLE_CLICK_WINDOW * 2;
+        let age = |arm: &mut Option<(Instant, Uuid)>| {
+            if let Some((at, id)) = *arm {
+                *arm = Some((at.checked_sub(window).unwrap_or(at), id));
+            }
+        };
+        age(&mut self.last_group_header_click);
+        if let Some(seat) = self.right_seat.as_deref_mut() {
+            age(&mut seat.last_group_header_click);
+        }
+    }
+
+    /// A left press: disarm every pending double-click on both seats except the one
+    /// `intent` continues on the seat it lands on (`on_right_seat`).
+    pub(crate) fn disarm_double_clicks(
+        &mut self,
+        intent: Option<&BoardIntent>,
+        on_right_seat: bool,
+    ) {
+        let (outer, right) = if on_right_seat {
+            (None, intent)
+        } else {
+            (intent, None)
+        };
+        self.cancel_other_double_clicks(outer);
+        if let Some(seat) = self.right_seat.as_deref_mut() {
+            seat.cancel_other_double_clicks(right);
+        }
+    }
+
     /// Record a left-button press cell and drop any finished selection's highlight.
     ///
     /// The press cell is what a following drag grows the selection from; a plain

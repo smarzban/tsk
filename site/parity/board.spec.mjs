@@ -706,18 +706,31 @@ test("a click selects a header and a double-click opens or folds it", async ({
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
+  // Separate gestures wait out the 350 ms double-click window.
+  const settle = () => page.waitForTimeout(400);
   const loose = page.locator('[data-collapse$=":none"]').first();
   await loose.click();
   await expect(loose).toContainText("▾");
+  await settle();
   await loose.dblclick();
   await expect(loose).toContainText("▸");
+  await settle();
   await loose.dblclick();
   await expect(loose).toContainText("▾");
+  await settle();
+  // A click elsewhere between two header clicks leaves two single clicks.
+  await loose.click();
+  await page.locator("#board-demo [data-task]").first().click();
+  await loose.click();
+  await expect(loose).toContainText("▾");
+  await settle();
   const inbox = page.locator("[data-inbox-header]");
   await inbox.click();
   await expect(inbox).toContainText("▾");
+  await settle();
   await inbox.dblclick();
   await expect(inbox).toContainText("▸");
+  await settle();
   await page.locator('[data-collapse$=":t:release"]').first().dblclick();
   await expect(page.locator("#board-demo")).toContainText("#release");
   await expect(row(page, 14)).toBeVisible();
