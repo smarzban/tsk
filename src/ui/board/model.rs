@@ -9,7 +9,7 @@ use ratatui::layout::Position;
 use uuid::Uuid;
 
 use crate::context::InvocationSnapshot;
-use crate::domain::{DomainState, HumanStatus, Task, TaskScope};
+use crate::domain::{DomainState, HumanStatus, Task, TaskScope, UndoEntry};
 use crate::scope::{archived_path_contains, paths_equivalent};
 use crate::ui::capture::CaptureField;
 use crate::ui::edit::{seeded_draft, EditBuffer};
@@ -32,6 +32,8 @@ use super::commands::CommandSurface;
 
 /// Visible board title. Also the herdr pane title.
 pub const BOARD_TITLE: &str = "Tasks";
+/// How long a delete recovery notice stays on the status row when nothing else takes it down.
+pub(super) const DELETE_NOTICE_TTL: std::time::Duration = std::time::Duration::from_secs(4);
 
 pub(super) const DIRTY_TASK_SWITCH_REFUSAL: &str = "save or cancel edits before switching tasks";
 
@@ -867,6 +869,17 @@ pub struct BoardModel {
     pub(super) delete_notice: Option<String>,
     /// Number of tasks represented by a bulk delete notice. `None` keeps the single-title form.
     pub(super) delete_notice_count: Option<usize>,
+    /// The deleted task's `T` number, painted before its title. `None` for a notice task
+    /// (`N…`), which keeps the title alone, and for a bulk notice.
+    pub(super) delete_notice_label: Option<String>,
+    /// When the delete recovery notice leaves the status row on its own. A clean outcome
+    /// clears after a few seconds; the footer's undo seat ([`Self::undo_hint`]) outlives it.
+    pub(super) delete_notice_expires_at: Option<Instant>,
+    /// The undo entry a delete pushed, held so the footer can keep offering `ctrl+u undo`
+    /// after the status-row notice clears. [`Self::sync_from_domain`] drops it the moment
+    /// that entry is no longer the live top of the stack (undone, superseded, or stale), so
+    /// the footer never advertises an undo that would do something else or refuse.
+    pub(super) undo_hint: Option<UndoEntry>,
     /// A delete recovery notice a failed save took off the row, held until the failure is
     /// resolved.
     ///
@@ -875,6 +888,7 @@ pub struct BoardModel {
     /// See [`BoardModel::begin_save_recovery`] and [`BoardModel::end_save_recovery`].
     pub(super) suspended_delete_notice: Option<String>,
     pub(super) suspended_delete_notice_count: Option<usize>,
+    pub(super) suspended_delete_notice_label: Option<String>,
     /// First ctrl+x arms this exact target set; a second press on the same set deletes it.
     pub(super) pending_delete: Option<BTreeSet<Uuid>>,
     /// Whether the armed delete originated from a non-empty marked set.
@@ -984,8 +998,12 @@ impl BoardModel {
             update_notice: None,
             delete_notice: None,
             delete_notice_count: None,
+            delete_notice_label: None,
+            delete_notice_expires_at: None,
+            undo_hint: None,
             suspended_delete_notice: None,
             suspended_delete_notice_count: None,
+            suspended_delete_notice_label: None,
             pending_delete: None,
             pending_delete_bulk: false,
             popup: BoardPopup::None,
@@ -1048,6 +1066,8 @@ impl BoardModel {
         if let Some(notice) = self.delete_notice.take() {
             self.suspended_delete_notice = Some(notice);
             self.suspended_delete_notice_count = self.delete_notice_count.take();
+            self.suspended_delete_notice_label = self.delete_notice_label.take();
+            self.delete_notice_expires_at = None;
         }
         self.set_message(format!("save failed: {error} · Retry or Cancel"));
     }
@@ -1072,18 +1092,29 @@ impl BoardModel {
         if self.popup == BoardPopup::SaveRecovery {
             self.popup = BoardPopup::None;
         }
-        let armed = (self.delete_notice.take(), self.delete_notice_count.take());
+        let armed = (
+            self.delete_notice.take(),
+            self.delete_notice_count.take(),
+            self.delete_notice_label.take(),
+        );
         let suspended = (
             self.suspended_delete_notice.take(),
             self.suspended_delete_notice_count.take(),
+            self.suspended_delete_notice_label.take(),
         );
         let restored = match resolution {
             SaveResolution::Retried if suspended.0.is_some() => suspended,
             SaveResolution::Retried => armed,
-            SaveResolution::Cancelled => (None, None),
+            SaveResolution::Cancelled => (None, None, None),
         };
+        // A restored notice gets a fresh few seconds: the deletion only just became durable.
+        self.delete_notice_expires_at = restored
+            .0
+            .as_ref()
+            .map(|_| Instant::now() + DELETE_NOTICE_TTL);
         self.delete_notice = restored.0;
         self.delete_notice_count = restored.1;
+        self.delete_notice_label = restored.2;
         let cancelled_quick_add = resolution == SaveResolution::Cancelled
             && self.quick_add_save.take().is_some()
             && self.quick_add.is_some();
@@ -1234,6 +1265,13 @@ impl BoardModel {
         let previous_id_set: HashSet<Uuid> = self.tasks.iter().map(|task| task.id).collect();
         self.tasks = state.tasks().to_vec();
         self.archived_projects = state.archived_projects();
+        if self
+            .undo_hint
+            .as_ref()
+            .is_some_and(|entry| !state.undo_entry_is_live_top(entry))
+        {
+            self.undo_hint = None;
+        }
         if let Some(previous_path) = previous_project_path.as_deref() {
             let projects = self.queue_view().projects;
             if let Some(index) = projects
@@ -1549,8 +1587,12 @@ impl BoardModel {
         right.message_restore = None;
         right.delete_notice = None;
         right.delete_notice_count = None;
+        right.delete_notice_label = None;
+        right.delete_notice_expires_at = None;
+        right.undo_hint = None;
         right.suspended_delete_notice = None;
         right.suspended_delete_notice_count = None;
+        right.suspended_delete_notice_label = None;
         right.pending_delete = None;
         right.pending_delete_bulk = false;
         right.clear_marks();
@@ -3968,16 +4010,45 @@ impl BoardModel {
         self.delete_notice.as_deref()
     }
 
-    /// Arm the notice for a task that has just been soft-deleted.
-    pub(super) fn arm_delete_notice(&mut self, title: &str) {
+    /// The deleted task's `T` number the visible notice paints before its title, if any.
+    pub(super) fn delete_notice_label(&self) -> Option<&str> {
+        self.delete_notice_label.as_deref()
+    }
+
+    /// Arm the notice for a task that has just been soft-deleted. `label` is its `T` number;
+    /// a notice task (`N…`) passes `None` and keeps the title alone.
+    pub(super) fn arm_delete_notice(&mut self, label: Option<&str>, title: &str) {
         self.delete_notice = Some(terminal_text(title));
         self.delete_notice_count = None;
+        self.delete_notice_label = label.map(terminal_text);
+        self.delete_notice_expires_at = Some(Instant::now() + DELETE_NOTICE_TTL);
     }
 
     /// Arm the counted notice for a bulk delete transaction.
     pub(super) fn arm_bulk_delete_notice(&mut self, count: usize) {
         self.delete_notice = Some(format!("{count} tasks"));
         self.delete_notice_count = Some(count);
+        self.delete_notice_label = None;
+        self.delete_notice_expires_at = Some(Instant::now() + DELETE_NOTICE_TTL);
+    }
+
+    /// Take a delete recovery notice down once its few seconds have passed. The footer's
+    /// undo seat is untouched: it follows the undo entry, not the notice.
+    pub fn expire_delete_notice(&mut self) {
+        if let Some(right) = self.right_seat.as_deref_mut() {
+            right.expire_delete_notice();
+        }
+        if self
+            .delete_notice_expires_at
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.clear_delete_notice();
+        }
+    }
+
+    /// True while the footer should keep offering `ctrl+u undo` for the last delete.
+    pub(super) fn undo_hint_live(&self) -> bool {
+        self.undo_hint.is_some()
     }
 
     pub(super) fn visible_delete_notice_count(&self) -> Option<usize> {
@@ -3992,6 +4063,8 @@ impl BoardModel {
     pub(super) fn clear_delete_notice(&mut self) {
         self.delete_notice = None;
         self.delete_notice_count = None;
+        self.delete_notice_label = None;
+        self.delete_notice_expires_at = None;
     }
 
     /// The notice as far as the chrome row is concerned: armed, and not hidden under a modal
@@ -4334,6 +4407,29 @@ mod tests {
         model.expire_ephemeral_message();
         assert!(model.message().is_none());
         assert!(model.message_expires_at.is_none());
+    }
+
+    #[test]
+    fn delete_notice_clears_after_its_deadline_but_the_undo_hint_stays() {
+        let mut domain = DomainState::new();
+        let id = create(&mut domain, "doomed", TaskScope::Global);
+        let mut model = BoardModel::from_domain(&domain, None);
+        domain.soft_delete(id).expect("delete");
+        model.arm_delete_notice(Some("T1"), "doomed");
+        model.undo_hint = domain.last_undo().cloned();
+        model.sync_from_domain(&domain);
+
+        model.expire_delete_notice();
+        assert_eq!(model.delete_notice(), Some("doomed"), "not yet due");
+
+        model.delete_notice_expires_at = Some(Instant::now() - std::time::Duration::from_secs(1));
+        model.expire_delete_notice();
+        assert!(model.delete_notice().is_none());
+        assert!(model.delete_notice_label().is_none());
+        assert!(
+            model.undo_hint_live(),
+            "the footer keeps offering undo while the delete's entry is live"
+        );
     }
 
     #[test]

@@ -24,6 +24,7 @@ the GitHub release notes verbatim.
 
 ### Fixed
 
+- The `Deleted … · ctrl+u undo` line no longer stays on the status row after you move on: it clears on the next cursor move or view change, or after a few seconds, while the footer keeps offering `ctrl+u undo` as long as that undo still applies. The line now names the task by its number, such as `Deleted T12 "title"`.
 - At 110 columns or wider, the Task view's narrow board rail keeps an open done drawer and the archived group's fold state, like Split does, so a done task opened from the drawer stays selected beside its page instead of vanishing from the rail. Thanks @LukasGold (#174).
 - A form editor that receives `Shift+Enter` as `ctrl+j` (a terminal binding that sends a plain line feed, such as Ghostty's `shift+enter=text:\n`) says so on the status row instead of ignoring the key. Thanks @WAWLixiong and @Rag0n.
 - `tsk setup herdr` follows a symlinked Herdr `config.toml` (or `herdr` config directory), as dotfiles managers create, instead of failing with `Too many levels of symbolic links`. It edits the target in place, keeps the link, and backs up beside the target; a dangling or looping link is refused with a clear message.

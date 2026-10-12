@@ -17,7 +17,11 @@ impl BoardModel {
         if let Some(notice) = bulk_notice.as_deref() {
             parts.push(ChromeRowPart::Message(notice));
         } else if let Some(title) = self.visible_delete_notice() {
-            parts.push(ChromeRowPart::Notice { title, undo: false });
+            parts.push(ChromeRowPart::Notice {
+                label: self.delete_notice_label(),
+                title,
+                undo: false,
+            });
         }
         if let Some(message) = self.message.as_deref().filter(|msg| !msg.is_empty()) {
             parts.push(ChromeRowPart::Message(message));
@@ -123,33 +127,42 @@ pub(super) fn row_width(text: &str) -> usize {
     ratatui::text::Line::from(text).width()
 }
 
-/// The delete recovery notice around a title: `Deleted "title" · ctrl+u undo`.
-pub(super) fn notice_framed(title: &str, undo: bool) -> String {
+/// The delete recovery notice around a title: `Deleted T12 "title" · ctrl+u undo`. A task
+/// without a `T` number (a notice task) passes no label and keeps the title alone.
+pub(super) fn notice_framed(label: Option<&str>, title: &str, undo: bool) -> String {
+    let subject = match label {
+        Some(label) => format!("{label} \"{title}\""),
+        None => format!("\"{title}\""),
+    };
     if undo {
-        format!("Deleted \"{title}\" · {DELETE_NOTICE_UNDO}")
+        format!("Deleted {subject} · {DELETE_NOTICE_UNDO}")
     } else {
-        format!("Deleted \"{title}\"")
+        format!("Deleted {subject}")
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 enum ChromeRowPart<'a> {
-    Notice { title: &'a str, undo: bool },
+    Notice {
+        label: Option<&'a str>,
+        title: &'a str,
+        undo: bool,
+    },
     Message(&'a str),
 }
 
 impl ChromeRowPart<'_> {
     fn want(&self) -> usize {
         match self {
-            Self::Notice { title, undo } => row_width(&notice_framed(title, *undo)),
+            Self::Notice { label, title, undo } => row_width(&notice_framed(*label, title, *undo)),
             Self::Message(message) => row_width(message),
         }
     }
 
     fn floor(&self) -> usize {
         match self {
-            Self::Notice { undo, .. } => {
-                (row_width(&notice_framed("", *undo)) + NOTICE_TITLE_FLOOR).min(self.want())
+            Self::Notice { label, undo, .. } => {
+                (row_width(&notice_framed(*label, "", *undo)) + NOTICE_TITLE_FLOOR).min(self.want())
             }
             Self::Message(message) => MESSAGE_FLOOR.min(row_width(message)),
         }
@@ -157,9 +170,13 @@ impl ChromeRowPart<'_> {
 
     fn render(&self, budget: usize) -> String {
         match self {
-            Self::Notice { title, undo } => {
-                let frame = row_width(&notice_framed("", *undo));
-                notice_framed(&present_line(title, budget.saturating_sub(frame)), *undo)
+            Self::Notice { label, title, undo } => {
+                let frame = row_width(&notice_framed(*label, "", *undo));
+                notice_framed(
+                    *label,
+                    &present_line(title, budget.saturating_sub(frame)),
+                    *undo,
+                )
             }
             Self::Message(message) => present_line(message, budget),
         }

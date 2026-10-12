@@ -2453,7 +2453,7 @@ import { parseCapture } from "./capture.js";
     clearMarks();
     state.message = bulk
       ? `deleted ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"} · u restores`
-      : `Deleted "${tasks[0].title}" · u undo`;
+      : `Deleted T${tasks[0].number} "${tasks[0].title}" · u undo`;
     state.peekId = null;
   }
 
@@ -2604,7 +2604,7 @@ import { parseCapture } from "./capture.js";
     clearMarks(preview);
     preview.message = bulk
       ? `deleted ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"} · u restores`
-      : `Deleted "${tasks[0].title}" · u undo`;
+      : `Deleted T${tasks[0].number} "${tasks[0].title}" · u undo`;
     preview.peekId = null;
   }
 

@@ -68,6 +68,16 @@ impl UndoEntry {
 }
 
 impl DomainState {
+    /// True when `entry` is the top of the undo stack and every task it targets is still at
+    /// the revision it recorded, so `undo` would reverse exactly that entry.
+    pub(crate) fn undo_entry_is_live_top(&self, entry: &UndoEntry) -> bool {
+        self.last_undo() == Some(entry)
+            && entry
+                .targets()
+                .into_iter()
+                .all(|(id, revision)| self.get(id).is_some_and(|task| task.revision == revision))
+    }
+
     /// Apply the inverse of the last undo entry when its target revision still matches.
     ///
     /// Empty stack is a documented no-op. Stale entries are retained so a refused Undo never

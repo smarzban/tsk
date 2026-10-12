@@ -511,6 +511,142 @@ fn bulk_delete_confirms_count_once_and_one_undo_restores_the_set() {
         .all(|id| !domain.get(id).expect("task").soft_deleted));
 }
 
+fn delete_selected(domain: &mut DomainState, model: &mut BoardModel) {
+    apply_intent(domain, model, BoardIntent::SoftDelete, None).expect("arm delete");
+    assert_eq!(
+        apply_intent(domain, model, BoardIntent::SoftDelete, None).expect("delete"),
+        IntentOutcome::Persist
+    );
+}
+
+fn footer_offers_undo(model: &BoardModel) -> bool {
+    board_verb_items(model)
+        .first()
+        .is_some_and(|entry| entry.key == "u" && entry.label == "undo")
+}
+
+/// T240: the delete notice reported the delete; once the cursor moves the user has moved
+/// on, so the row lets it go. `ctrl+u` still undoes that delete, so the footer keeps saying so.
+#[test]
+fn delete_notice_clears_on_cursor_move_and_the_footer_keeps_undo() {
+    let (mut domain, mut model, first) = board_with_task("first", HumanStatus::Open);
+    for title in ["second", "third"] {
+        domain
+            .create(
+                title,
+                None,
+                project(THIS_REPO),
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create");
+    }
+    model.sync_from_domain(&domain);
+    assert_eq!(model.selected_id(), Some(first));
+    delete_selected(&mut domain, &mut model);
+    assert_eq!(model.delete_notice(), Some("first"));
+    assert!(footer_offers_undo(&model));
+
+    apply_intent(&mut domain, &mut model, BoardIntent::SelectNext, None).expect("move");
+    assert_eq!(
+        model.delete_notice(),
+        None,
+        "moving on takes the notice down"
+    );
+    assert!(
+        !rendered_board(&model, 80, 24).contains("Deleted"),
+        "nothing of the notice is left on the row"
+    );
+    assert!(
+        footer_offers_undo(&model),
+        "the footer keeps offering the undo that is still live"
+    );
+
+    apply_intent(&mut domain, &mut model, BoardIntent::Undo, None).expect("undo");
+    assert!(!domain.get(first).expect("task").soft_deleted);
+    assert!(
+        !footer_offers_undo(&model),
+        "once the delete is undone the footer stops offering it"
+    );
+}
+
+/// T240: switching lens is moving on too, and a refused or non-moving key is not.
+#[test]
+fn delete_notice_clears_on_lens_change_but_survives_a_key_that_moves_nothing() {
+    let (mut domain, mut model, _) = board_with_task("only", HumanStatus::Open);
+    delete_selected(&mut domain, &mut model);
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenHelp, None).expect("help");
+    apply_intent(&mut domain, &mut model, BoardIntent::CloseHelp, None).expect("close help");
+    assert_eq!(model.delete_notice(), Some("only"), "help moves nothing");
+
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer, None).expect("drawer");
+    assert_eq!(
+        model.delete_notice(),
+        None,
+        "opening the drawer changes the lens"
+    );
+    assert!(footer_offers_undo(&model));
+}
+
+/// T240: a later mutation supersedes the delete on the undo stack, so the footer stops
+/// offering an undo that would now reverse something else.
+#[test]
+fn footer_undo_seat_follows_the_delete_entry_not_the_notice() {
+    let (mut domain, mut model, _) = board_with_task("gone", HumanStatus::Open);
+    let other = domain
+        .create(
+            "other",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    model.sync_from_domain(&domain);
+    delete_selected(&mut domain, &mut model);
+    assert_eq!(model.selected_id(), Some(other));
+    assert!(footer_offers_undo(&model));
+
+    apply_intent(&mut domain, &mut model, BoardIntent::Complete, None).expect("done");
+    assert!(
+        !footer_offers_undo(&model),
+        "the delete is no longer what ctrl+u undoes"
+    );
+}
+
+/// T240: the notice names a numbered task by its T number; a notice task keeps its title.
+#[test]
+fn delete_notice_names_the_t_number_and_a_notice_task_keeps_its_title() {
+    let (domain, _, _) = board_with_task("numbered", HumanStatus::Open);
+    // Numbers are assigned on save; give the task the one a saved board would show.
+    let mut document = serde_json::to_value(&domain).expect("serialize");
+    document["tasks"][0]["number"] = serde_json::json!(12);
+    let mut domain: DomainState = serde_json::from_value(document).expect("numbered state");
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    delete_selected(&mut domain, &mut model);
+    let row = rendered_board(&model, 80, 24);
+    assert!(
+        row.contains("Deleted T12 \"numbered\" · ctrl+u undo"),
+        "{row}"
+    );
+
+    let mut domain = DomainState::new();
+    domain
+        .create_notice(
+            "welcome",
+            "Welcome",
+            None,
+            HumanStatus::Ready,
+            TaskScope::Global,
+            Vec::new(),
+        )
+        .expect("notice");
+    let mut model = BoardModel::from_domain(&domain, None);
+    delete_selected(&mut domain, &mut model);
+    let row = rendered_board(&model, 80, 24);
+    assert!(row.contains("Deleted \"Welcome\" · ctrl+u undo"), "{row}");
+}
+
 #[test]
 fn cursor_only_open_and_edit_ignore_marks_and_lens_boundaries_clear_marks() {
     let (mut domain, mut model, first) = board_with_task("first", HumanStatus::Open);

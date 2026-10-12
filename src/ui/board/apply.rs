@@ -179,6 +179,14 @@ pub fn board_intent_may_persist(intent: &BoardIntent) -> bool {
 ///   persist: a refused Undo or Done keeps the way back it never spent. That is one rule at one
 ///   place rather than a per-arm exception, and it reads off the same outcome the caller
 ///   persists on.
+/// - **the cursor or the lens moves** (a different selected row or project, another
+///   destination or View, the done drawer opening or closing) — the notice is cleared: it
+///   reported the delete, and the user has moved on. The message is left alone. Applied by
+///   [`apply_intent`] from the state before and after a non-mutating intent, so a mouse
+///   click and a key move are the same event. The footer's undo seat
+///   ([`BoardModel::undo_hint`]) is not the notice and stays while its entry is live.
+/// - **a few seconds pass** — the notice is cleared ([`BoardModel::expire_delete_notice`],
+///   on the idle tick), so a delete with nothing after it does not hold the row forever.
 /// - **any other action** — both are left exactly as they are.
 ///
 /// Two events outside this reducer touch the notice. A failed save
@@ -313,10 +321,13 @@ pub fn apply_intent(
         return Ok(IntentOutcome::None);
     }
     let notice_before = (
-        model.delete_notice().map(str::to_string),
+        model.delete_notice.clone(),
         model.delete_notice_count,
+        model.delete_notice_label.clone(),
+        model.delete_notice_expires_at,
     );
     let mutating = board_intent_may_persist(&intent);
+    let place_before = BoardPlace::of(model);
     let result = apply_board_intent(domain, model, intent, snapshot);
     // A command confirmation carries no lifetime of its own: it recurses with the command it
     // resolved to, and that intent is classified on the way through, so it is the recursion
@@ -324,8 +335,36 @@ pub fn apply_intent(
     if mutating && !matches!(result, Ok(IntentOutcome::Persist)) {
         model.delete_notice = notice_before.0;
         model.delete_notice_count = notice_before.1;
+        model.delete_notice_label = notice_before.2;
+        model.delete_notice_expires_at = notice_before.3;
+    }
+    if !mutating && BoardPlace::of(model) != place_before {
+        model.clear_delete_notice();
     }
     result
+}
+
+/// Where the user is looking: the cursor and the lens it moves in. A change between two
+/// intents is "moving on" for the chrome-row lifetime rule ([`apply_chrome_row_lifetime`]).
+#[derive(PartialEq)]
+struct BoardPlace {
+    selection: Option<Uuid>,
+    location: BoardLocation,
+    view: ProjectsView,
+    project_row: usize,
+    drawer_open: bool,
+}
+
+impl BoardPlace {
+    fn of(model: &BoardModel) -> Self {
+        Self {
+            selection: model.selection_id,
+            location: model.board_location.clone(),
+            view: model.projects_view.clone(),
+            project_row: model.projects_selected,
+            drawer_open: model.drawer_open,
+        }
+    }
 }
 
 fn apply_board_intent(
@@ -2545,20 +2584,27 @@ fn apply_board_intent(
                     model.clear_marks();
                     // Read the title before the delete, and only arm the notice once the delete
                     // itself succeeded: a refused delete has nothing to recover from.
-                    let title = targets
-                        .first()
-                        .and_then(|id| domain.get(*id))
-                        .map(|task| task.title.clone());
+                    // A numbered task is named by its `T` number too; a notice task (`N…`)
+                    // keeps its title alone.
+                    let named = targets.first().and_then(|id| domain.get(*id)).map(|task| {
+                        let label = task
+                            .notice
+                            .is_none()
+                            .then(|| task.board_identifier())
+                            .flatten();
+                        (label, task.title.clone())
+                    });
                     if bulk {
                         domain.soft_delete_batch(&targets)?;
                         model.arm_bulk_delete_notice(targets.len());
                     } else {
                         let id = targets[0];
                         domain.soft_delete(id)?;
-                        if let Some(title) = title {
-                            model.arm_delete_notice(&title);
+                        if let Some((label, title)) = named {
+                            model.arm_delete_notice(label.as_deref(), &title);
                         }
                     }
+                    model.undo_hint = domain.last_undo().cloned();
                     // Deleting from the page deletes the page's own task: the surface closes and
                     // the undo route back to it lives on the board row, same as the notice says.
                     // A task-owned stage (G or F) hands the slider back to the board the same

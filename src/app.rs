@@ -209,6 +209,7 @@ pub fn board_idle_tick(
     active_animations: bool,
 ) -> io::Result<FramePoll> {
     model.expire_ephemeral_message();
+    model.expire_delete_notice();
     let poll = board_frame(model, paint, wait, active_animations)?;
     if poll == FramePoll::Idle {
         revalidate_board_from_store(store, domain, model, watch, save_recovery);

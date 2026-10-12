@@ -196,6 +196,8 @@ tsk asks whether to restore it. Choose `y` to restore, or `n`/`Esc` to keep it a
 
 Press `ctrl+x` twice to delete the marked tasks, or the cursored task when nothing is marked. The confirmation and recovery messages show the task count for a marked set. `ctrl+Delete` is an alternative.
 
+After a delete the status row says what went, such as `Deleted T12 "title" · ctrl+u undo` (a starter or release notice keeps just its title), or `deleted 3 tasks · ctrl+u restores` for a marked set. That line clears when you move the cursor or change view, or after a few seconds. The footer keeps leading with `ctrl+u undo` for as long as `ctrl+u` would still undo that delete; it drops once you undo it, take another undoable action, or another writer changes a deleted task.
+
 One `ctrl+u` undoes the whole marked deletion or completion. If another writer has changed any task in that batch since the action, undo refuses without changing any of them and remains available to retry. On an archived cursor with no marks, `ctrl+u` restores that task instead.
 
 Deleted tasks remain available through [trash commands](/docs/cli/#trash) for a limited time. They do not appear on the board.
