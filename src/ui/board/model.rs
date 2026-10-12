@@ -2212,6 +2212,16 @@ impl BoardModel {
         self.group_at(header_id).map(|group| group.target)
     }
 
+    /// Whether `target` would change the board: `no thread` opens nothing, and the desk's
+    /// own `desk` sub-header is already open on the desk.
+    pub fn group_target_opens(&self, target: &queue::GroupTarget) -> bool {
+        match target {
+            queue::GroupTarget::None => false,
+            queue::GroupTarget::Desk => self.nav_tab() != NavTab::Desk,
+            _ => true,
+        }
+    }
+
     /// Open one thread's cross-project view, as picking it in the projects tab does.
     pub(super) fn open_thread_view(&mut self, name: String) {
         let previous_visible = self.visible_ids();

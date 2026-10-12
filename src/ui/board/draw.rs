@@ -131,7 +131,7 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
         let opens = model
             .selection_id
             .and_then(|id| model.group_header_target(id))
-            .is_some_and(|target| target != crate::ui::queue::GroupTarget::None);
+            .is_some_and(|target| model.group_target_opens(&target));
         let mut items = Vec::with_capacity(4);
         if opens {
             items.push(OPEN);

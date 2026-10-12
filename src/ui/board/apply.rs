@@ -2953,10 +2953,8 @@ fn open_group_target(
     model: &mut BoardModel,
     target: GroupTarget,
 ) -> Result<IntentOutcome, DomainError> {
-    // `no thread` opens nothing, and the desk's own `desk` sub-header is already open: both
-    // leave the search, marks, and fold untouched.
-    let already_here = target == GroupTarget::Desk && model.nav_tab() == NavTab::Desk;
-    if target == GroupTarget::None || already_here {
+    // Nothing to open leaves the search, marks, and fold untouched.
+    if !model.group_target_opens(&target) {
         return Ok(IntentOutcome::None);
     }
     if model.preview_seat {

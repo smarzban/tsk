@@ -1130,17 +1130,27 @@ fn a_sub_header_verb_bar_offers_open_and_its_fold_arrow() {
 fn enter_on_the_desk_sub_header_on_the_desk_keeps_search_and_marks() {
     let mut board = board();
     board.pick(BoardIntent::OpenGroupPicker, "project");
-    board.apply(BoardIntent::FocusSearch);
-    for character in "o".chars() {
-        board.apply(BoardIntent::SearchQueryInsert(character));
-    }
-    board.apply(BoardIntent::PinSearch);
     let desk_header = board
         .motion_groups()
         .into_iter()
         .find(|group| group.0 == "desk")
         .expect("desk group")
         .2;
+    board.select_row(desk_header);
+    let bar: Vec<(&str, &str)> = tsk_tui::ui::board::board_verb_items(&board.model)
+        .iter()
+        .map(|entry| (entry.key, entry.label))
+        .collect();
+    assert_eq!(
+        bar,
+        [("←", "fold"), ("+", "add"), ("?", "help")],
+        "the bar never offers an Enter that does nothing"
+    );
+    board.apply(BoardIntent::FocusSearch);
+    for character in "o".chars() {
+        board.apply(BoardIntent::SearchQueryInsert(character));
+    }
+    board.apply(BoardIntent::PinSearch);
     board.select(board.desk);
     board.apply(BoardIntent::ToggleMarkMode);
     board.apply(BoardIntent::MarkToggle);
