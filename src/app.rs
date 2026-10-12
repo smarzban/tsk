@@ -115,9 +115,24 @@ fn load_board_inner(
     let state = store.load()?;
     let snapshot = load_snapshot(&state);
     let mut model = BoardModel::from_domain_for_snapshot(&state, &snapshot);
-    match crate::agents::AgentProfiles::load(&state_dir) {
-        Ok(profiles) => model.set_agent_profiles(&profiles),
-        Err(error) => model.set_message(error.to_string()),
+    let profiles_error = match crate::agents::AgentProfiles::load(&state_dir) {
+        Ok(profiles) => {
+            model.set_agent_profiles(&profiles);
+            None
+        }
+        Err(error) => Some(error.to_string()),
+    };
+    // A bad `[board]` opens the board at the built-in layout; a profile error, which
+    // blocks assigning, keeps the status row.
+    let board_error = match crate::agents::BoardDefaults::load(&state_dir) {
+        Ok(defaults) => {
+            model.set_layout_defaults(defaults);
+            None
+        }
+        Err(error) => Some(error.to_string()),
+    };
+    if let Some(message) = profiles_error.or(board_error) {
+        model.set_message(message);
     }
     if full_board_open {
         model.offer_launch_card(&state, &snapshot);
@@ -5849,6 +5864,39 @@ mod tests {
         let close = route_board_intent(&model, BoardIntent::CloseLayer);
         assert_eq!(close.target, BoardIntentTarget::Focused);
         assert!(!close.return_to_index);
+    }
+
+    #[test]
+    fn projects_preview_starts_from_the_configured_project_layout() {
+        let mut domain = DomainState::new();
+        domain
+            .create(
+                "preview task",
+                None,
+                TaskScope::Project {
+                    path: "/repos/preview".into(),
+                },
+                ProvenanceOrigin::Manual,
+                Some("ship".into()),
+            )
+            .expect("create preview task");
+        let mut model = BoardModel::from_domain(&domain, None);
+        model.set_layout_defaults(crate::agents::BoardDefaults {
+            project_group: crate::ui::queue::GroupBy::Assignee,
+            project_sort: crate::ui::queue::SortBy::Title,
+            ..Default::default()
+        });
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("open projects overview");
+        stage_right(&mut domain, &mut model, 2);
+        let right = model.right_seat().expect("preview seat");
+        assert_eq!(right.layout().group, crate::ui::queue::GroupBy::Assignee);
+        assert_eq!(right.layout().sort, crate::ui::queue::SortBy::Title);
     }
 
     #[test]

@@ -18,7 +18,7 @@ Herdr's plugin-specific state/config directories do not override these locations
 
 ## Configuration
 
-Settings are read from `config.toml` in the state directory, beside `tsk.json`. The first full board open creates a starter file when it is missing: it explains profiles and placeholders, quotes the default prompt, and holds commented examples (Claude Code, Codex, Pi, Grok, and any other terminal agent) that define no profiles until you uncomment one. Quick capture, CLI commands, and setup do not create it, and tsk never replaces an existing file, even an empty one. Top-level keys and tables tsk does not recognize are ignored, so a file written for a newer tsk still loads; inside an `[agent.<name>]` table an unknown key is an error.
+Settings are read from `config.toml` in the state directory, beside `tsk.json`. The first full board open creates a starter file when it is missing: it explains profiles and placeholders, quotes the default prompt, and holds commented examples (Claude Code, Codex, Pi, Grok, and any other terminal agent) that define no profiles until you uncomment one. Quick capture, CLI commands, and setup do not create it, and tsk never replaces an existing file, even an empty one. Top-level keys and tables tsk does not recognize are ignored, so a file written for a newer tsk still loads; inside an `[agent.<name>]`, `[merge]`, or `[board]` table an unknown key is an error.
 
 ### Agent profiles
 
@@ -63,6 +63,20 @@ method = "squash"   # "merge" (the default), "squash", or "rebase"
 Without the table, tsk merges with a merge commit. An unknown `method` or key is a configuration error that refuses only the merge (the card says why; the CLI refuses with `merge-config`); it never blocks the board or other commands. The starter file holds this block commented out.
 
 The command and prompt templates support `{number}`, `{title}`, `{notes}`, `{steps}`, `{worktree}`, `{branch}`, and `{base}`. `{branch}` is the dispatched task branch; `{base}` is the short base branch name, for example `dispatch` for `origin/dispatch`, so a prompt can say "open the PR into {base}". tsk replaces only these placeholders. It quotes every argument and renders one command line as `$SHELL -lc '…'`; it never chains commands. On Windows it launches the same argv and `env` through PowerShell instead ([preview](/docs/board/#dispatch-on-windows-preview)). Write Windows paths as TOML literal strings so backslashes stay as typed, for example `command = ['C:\Users\you\.local\bin\claude.exe']`. Profiles are read-only in tsk, edit the file to change them.
+
+### Board defaults
+
+The `[board]` table sets the group and sort a fresh board starts from ([group and sort](/docs/board/#group-and-sort)). `group` and `sort` set the desk; `project_group` and `project_sort` set every project board, including the wide Projects preview.
+
+```toml
+[board]
+group = "assignee"        # none, project, thread, or assignee
+sort = "recent"           # recent, project, thread, title, or assignee
+project_group = "thread"  # none, thread, or assignee
+project_sort = "title"    # recent, thread, title, or assignee
+```
+
+A missing key keeps its default (`none`, `recent`). `g` and `s` still change the layout for the session; nothing is written back. An unknown key or value is a configuration error: the board opens at the default layout and shows the error on its status row (a profile error, if any, shows instead). Profiles and `[merge]` are read separately, so one broken table never blocks the others. The starter file holds this block commented out.
 
 ## Backups
 

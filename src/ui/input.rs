@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::domain::HumanStatus;
 
-use super::board::{BoardInputMode, FilterTab, PickerTab};
+use super::board::{BoardInputMode, PickerTab};
 use super::capture::{CaptureField, CaptureScopeChoice};
 use super::tier::{ResponsivePresentation, WideStage};
 
@@ -268,8 +268,9 @@ pub enum BoardIntent {
     /// Move the open list picker's selection.
     ListPickerNext,
     ListPickerPrev,
-    /// List picker `Tab` / `shift+Tab`: flip the Filter / View picker's
-    /// `threads · @assignees` tabs; a picker without tabs moves its selection instead.
+    /// List picker `Tab` / `shift+Tab`: step through a tabbed picker's tabs (the desk
+    /// filter's three, the Filter / View picker's `threads · @assignees`); a picker without
+    /// tabs moves its selection instead.
     ListPickerTabNext,
     ListPickerTabPrev,
     /// Mouse route onto the Filter / View picker's painted tab row.
@@ -485,9 +486,9 @@ pub enum BoardIntent {
     /// double-click on a sub-header, handed out because only the outer board can switch
     /// views. (Enter itself arrives as `OpenTaskPage`.)
     OpenGroupTarget(crate::ui::queue::GroupTarget),
-    /// Desk filter picker `←` / `→` (or a tab click): switch between its threads and
-    /// projects tabs; `None` flips to the other tab.
-    SwitchListPickerTab(Option<FilterTab>),
+    /// Tabbed list picker `←` / `→`: step to the previous (`false`) or next (`true`) tab.
+    /// The desk filter cycles `threads · projects · @assignees`; two-tab pickers flip.
+    SwitchListPickerTab(bool),
 }
 
 /// Bottom chrome: compact key legend for primary board actions.
@@ -2566,7 +2567,8 @@ fn map_list_picker(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Enter => Some(BoardIntent::ConfirmListPicker),
         KeyCode::Down => Some(BoardIntent::ListPickerNext),
         KeyCode::Up => Some(BoardIntent::ListPickerPrev),
-        KeyCode::Left | KeyCode::Right => Some(BoardIntent::SwitchListPickerTab(None)),
+        KeyCode::Left => Some(BoardIntent::SwitchListPickerTab(false)),
+        KeyCode::Right => Some(BoardIntent::SwitchListPickerTab(true)),
         KeyCode::Backspace => Some(BoardIntent::ListPickerQueryBackspace),
         KeyCode::Tab => Some(BoardIntent::ListPickerTabNext),
         KeyCode::BackTab => Some(BoardIntent::ListPickerTabPrev),

@@ -840,6 +840,9 @@ pub struct QueueFrameModel<'a> {
     pub thread_labels: bool,
     /// Paint the project in row labels (the surface, filter, or grouping does not already say it).
     pub show_project_meta: bool,
+    /// Name the assignee on the peek's closing line (the filter or `@name` View does not
+    /// already say it). Grouping by assignee drops it per section.
+    pub assignee_labels: bool,
     /// The projects index rows (Projects surface, Overview view). When `projects_index`
     /// is set the list paints these instead of task sections.
     pub projects: &'a [ProjectRow],
@@ -972,12 +975,14 @@ pub enum PickerTabsPaint {
         archived_active: bool,
         archived_count: usize,
     },
-    /// A tabbed list picker: `threads` first, then `second` (the project Filter / View
-    /// picker's `@assignees`, or the desk filter's `projects`).
+    /// A two-tab list picker: `threads` first, then `second` (the project Filter / View
+    /// picker's `@assignees`).
     Filter {
         second: crate::ui::board::FilterTab,
         second_active: bool,
     },
+    /// The desk filter's three tabs, `threads · projects · @assignees`.
+    DeskFilter { active: crate::ui::board::FilterTab },
 }
 
 /// Logical control under a painted rectangle (rebuilt every frame).
@@ -4814,21 +4819,19 @@ fn paint_scope_dropdown(
                     .map(|option| display_width(option) + 2)
                     .max()
                     .unwrap_or(0)
-                    // The Filter tab row (` threads · @assignees `) is never clipped.
-                    .max(if matches!(tabs, Some(PickerTabsPaint::Filter { .. })) {
-                        22
-                    } else {
-                        0
+                    // A Filter tab row (` threads · @assignees `, or the desk's
+                    // ` threads · projects · @assignees `) is never clipped.
+                    .max(match tabs {
+                        Some(PickerTabsPaint::Filter { .. }) => 22,
+                        Some(PickerTabsPaint::DeskFilter { .. }) => 33,
+                        _ => 0,
                     })
                     .min(u16::MAX as usize) as u16
             } else {
                 0
             },
             legend: match tabs {
-                Some(PickerTabsPaint::Filter {
-                    second: crate::ui::board::FilterTab::Projects,
-                    ..
-                }) => FILTER_FOOTER,
+                Some(PickerTabsPaint::DeskFilter { .. }) => FILTER_FOOTER,
                 Some(PickerTabsPaint::Filter { .. }) if legend_fits(geo, FILTER_PICKER_FOOTER) => {
                     FILTER_PICKER_FOOTER
                 }
@@ -4851,56 +4854,75 @@ fn paint_scope_dropdown(
     if content.width == 0 || content.height == 0 {
         return;
     }
-    // The picker's tab row (`projects · archived (n)` or `threads · @assignees`), active
-    // bold, inactive dim.
+    // The picker's tab row (`projects · archived (n)`, `threads · @assignees`, or the desk
+    // filter's `threads · projects · @assignees`), active bold, inactive dim.
     if let Some(tabs) = tabs {
         let y = content.y;
-        let (left, right, right_active, left_hit, right_hit) = match tabs {
+        use crate::ui::board::FilterTab;
+        let filter_tab = |tab: FilterTab, active: bool| {
+            let label = match tab {
+                FilterTab::Threads => " threads ",
+                FilterTab::Projects => " projects ",
+                FilterTab::Assignees => " @assignees ",
+            };
+            (
+                label.to_string(),
+                active,
+                QueueHitTarget::ListPickerTab(tab),
+            )
+        };
+        let cells: Vec<(String, bool, QueueHitTarget)> = match tabs {
             PickerTabsPaint::Project {
                 archived_active,
                 archived_count,
-            } => (
-                " projects ".to_string(),
-                format!(" archived ({archived_count}) "),
-                archived_active,
-                QueueHitTarget::PickerTab(crate::ui::board::PickerTab::Main),
-                QueueHitTarget::PickerTab(crate::ui::board::PickerTab::Archived),
-            ),
+            } => vec![
+                (
+                    " projects ".to_string(),
+                    !archived_active,
+                    QueueHitTarget::PickerTab(crate::ui::board::PickerTab::Main),
+                ),
+                (
+                    format!(" archived ({archived_count}) "),
+                    archived_active,
+                    QueueHitTarget::PickerTab(crate::ui::board::PickerTab::Archived),
+                ),
+            ],
             PickerTabsPaint::Filter {
                 second,
                 second_active,
-            } => (
-                " threads ".to_string(),
-                match second {
-                    crate::ui::board::FilterTab::Projects => " projects ".to_string(),
-                    _ => " @assignees ".to_string(),
-                },
-                second_active,
-                QueueHitTarget::ListPickerTab(crate::ui::board::FilterTab::Threads),
-                QueueHitTarget::ListPickerTab(second),
-            ),
+            } => vec![
+                filter_tab(FilterTab::Threads, !second_active),
+                filter_tab(second, second_active),
+            ],
+            PickerTabsPaint::DeskFilter { active } => [
+                FilterTab::Threads,
+                FilterTab::Projects,
+                FilterTab::Assignees,
+            ]
+            .into_iter()
+            .map(|tab| filter_tab(tab, tab == active))
+            .collect(),
         };
-        let left_w = display_width(&left) as u16;
-        let right_w = display_width(&right) as u16;
-        let (left_style, right_style) = if right_active {
-            (style_dim(), style_bold())
-        } else {
-            (style_bold(), style_dim())
-        };
+        let mut spans = Vec::new();
+        let mut x = content.x;
+        for (index, (label, active, hit)) in cells.into_iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::styled("·".to_string(), style_dim()));
+                x = x.saturating_add(1);
+            }
+            let width = display_width(&label) as u16;
+            hits.push(hit, Rect::new(x, y, width, 1));
+            x = x.saturating_add(width);
+            spans.push(Span::styled(
+                label,
+                if active { style_bold() } else { style_dim() },
+            ));
+        }
         put_line_at(
             frame,
             surface,
             Rect::new(content.x, y, content.width, 1),
-            Line::from(vec![
-                Span::styled(left, left_style),
-                Span::styled("·".to_string(), style_dim()),
-                Span::styled(right, right_style),
-            ]),
-        );
-        hits.push(left_hit, Rect::new(content.x, y, left_w, 1));
-        hits.push(
-            right_hit,
-            Rect::new(content.x.saturating_add(left_w + 1), y, right_w, 1),
+            Line::from(spans),
         );
     }
     // AC-37: a dim rule row sits directly under the picker's tabs row, like the
@@ -5462,17 +5484,24 @@ fn build_list_rows_inner(
                      anchor_last_idx: &mut Option<usize>,
                      thread_label: bool,
                      dim: bool,
-                     project_label: bool| {
+                     project_label: bool,
+                     in_group: bool| {
         let Some(task) = model.tasks.iter().find(|task| task.id == id) else {
             // Stale ids may outlive a snapshot refresh. Skip them without inventing a row.
             return;
         };
         // The row's `#thread · project` label, painted after the title or, when the row
         // is peeked, on the peek's closing line instead, so it never paints twice. That
-        // closing line also names the assignee and base, whatever the lens.
+        // closing line also names the assignee (unless the filter, the `@name` View, or an
+        // assignee sub-header already says it) and the base.
         let meta = row_label(task, model.thread_labels && thread_label, project_label);
+        let assignee_label =
+            model.assignee_labels && !(in_group && model.view.group == GroupBy::Assignee);
         let peek_meta = fit_row_meta(
-            task.assignee.as_deref().map(|name| format!("@{name}")),
+            task.assignee
+                .as_deref()
+                .filter(|_| assignee_label)
+                .map(|name| format!("@{name}")),
             task.base.as_deref().map(|name| format!("⎇ {name}")),
             None,
             Some(meta.clone()),
@@ -5618,6 +5647,7 @@ fn build_list_rows_inner(
                     thread_label,
                     false,
                     project_label,
+                    true,
                 );
             }
         }
@@ -5699,6 +5729,7 @@ fn build_list_rows_inner(
                     true,
                     true,
                     model.show_project_meta,
+                    false,
                 );
             }
             continue;
@@ -5750,6 +5781,7 @@ fn build_list_rows_inner(
                     thread_label,
                     false,
                     inbox_project_label,
+                    false,
                 );
             }
             continue;
@@ -5798,6 +5830,7 @@ fn build_list_rows_inner(
                 thread_label,
                 false,
                 section_project_label,
+                false,
             );
         }
     }
@@ -7156,6 +7189,7 @@ mod tests {
             surface: BoardSurface::Projects,
             thread_labels: false,
             show_project_meta: false,
+            assignee_labels: true,
             projects: &[],
             projects_index: false,
             projects_cursor: 0,
@@ -7222,6 +7256,7 @@ mod tests {
             surface: BoardSurface::Desk,
             thread_labels: false,
             show_project_meta: false,
+            assignee_labels: true,
             projects: &[],
             projects_index: false,
             projects_cursor: 0,
@@ -7353,6 +7388,7 @@ mod tests {
             surface: BoardSurface::Projects,
             thread_labels: false,
             show_project_meta: false,
+            assignee_labels: true,
             projects: &projects,
             projects_index: true,
             projects_cursor: 0,

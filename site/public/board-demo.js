@@ -397,13 +397,15 @@ import { parseCapture } from "./capture.js";
     // The Filter / View picker's open tab: "threads" or "assignees".
     filterTab: "threads",
     // null Overview, a thread name, or "@name" for an assignee view.
-    // Desk filter: thread null (all) · "" (without) · name; project null · "desk" · name.
-    deskFilter: { thread: null, project: null },
+    // Desk filter: thread null (all) · "" (without) · name; project null · "desk" · name;
+    // assignee null (all) · "" (unassigned) · name.
+    deskFilter: { thread: null, project: null, assignee: null },
     deskFilterTab: "threads",
     layouts: {
       desk: freshLayout(),
       project: freshLayout(),
       thread: freshLayout(),
+      assignee: freshLayout(),
     },
     // Which board the open group / sort picker edits: the outer board or the preview seat.
     layoutOwner: "outer",
@@ -653,23 +655,23 @@ import { parseCapture } from "./capture.js";
   function layoutSlot(owner = "outer") {
     if (owner === "preview") return "project";
     if (state.focusProject) return "project";
-    return isProjectsThreadView() ? "thread" : "desk";
+    if (!isProjectsThreadView()) return "desk";
+    return state.projectView.startsWith("@") ? "assignee" : "thread";
   }
   function boardLayout(owner = "outer") {
     return owner === "preview" ? preview.layout : state.layouts[layoutSlot()];
   }
-  // A project board never groups by project and the thread View never by thread.
+  // A project board never groups by project, the thread View never by thread, and an
+  // `@name` View never by assignee: every row shares it. The slot names its dimension.
   function groupChoices(owner = "outer") {
     const slot = layoutSlot(owner);
-    if (slot === "project") return ["none", "thread"];
-    if (slot === "thread") return ["none", "project"];
-    return ["none", "project", "thread"];
+    return ["none", "project", "thread", "assignee"].filter((g) => g !== slot);
   }
   function sortChoices(owner = "outer") {
     const slot = layoutSlot(owner);
-    if (slot === "project") return ["recent", "thread", "title"];
-    if (slot === "thread") return ["recent", "project", "title"];
-    return ["recent", "project", "thread", "title"];
+    return ["recent", "project", "thread", "title", "assignee"].filter(
+      (sort) => sort !== slot,
+    );
   }
   // The header's group and sort controls: full words, or keyed (`g:thread`) when narrow.
   // The header's group and sort controls: full words, or keyed (`g:thread`) when narrow.
@@ -721,12 +723,13 @@ import { parseCapture } from "./capture.js";
       .join("");
   }
   const byteOrder = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
-  // Stable sort by the chosen key; desk tasks sort after projects and unthreaded after
-  // threaded. Ties keep the section's own order.
+  // Stable sort by the chosen key; desk tasks sort after projects, unthreaded after
+  // threaded, and unassigned after assigned. Ties keep the section's own order.
   const SORT_KEYS = {
     project: (t) => (t.project ? [0, t.project.toLowerCase()] : [1, ""]),
     thread: (t) => (t.thread ? [0, t.thread.toLowerCase()] : [1, ""]),
     title: (t) => [0, t.title.toLowerCase()],
+    assignee: (t) => (t.assignee ? [0, t.assignee.toLowerCase()] : [1, ""]),
   };
   function sortRows(tasks, sort) {
     const key = SORT_KEYS[sort];
@@ -746,6 +749,11 @@ import { parseCapture } from "./capture.js";
       return task.project
         ? [`p:${task.project}`, task.project]
         : ["desk", "desk"];
+    if (group === "assignee") {
+      if (!task.assignee) return ["unassigned", "unassigned"];
+      const name = task.assignee.toLowerCase();
+      return [`a:${name}`, `@${name}`];
+    }
     if (task.thread) {
       const thread = task.thread.toLowerCase();
       return [`t:${thread}`, `#${thread}`];
@@ -753,9 +761,12 @@ import { parseCapture } from "./capture.js";
     return ["none", "no thread"];
   }
   // What Enter or a double-click on a sub-header opens: its project's board, the desk, or
-  // its thread's cross-project view. `no thread` opens nothing.
+  // its thread's or assignee's cross-project view. `no thread` and `unassigned` open
+  // nothing.
   function groupTarget(task, group) {
     if (group === "project") return { project: task.project || "desk" };
+    if (group === "assignee")
+      return task.assignee ? { thread: `@${task.assignee}` } : null;
     return task.thread ? { thread: task.thread } : null;
   }
   // One section's rows, sorted and (when groupable) bucketed hottest group first: the
@@ -822,21 +833,34 @@ import { parseCapture } from "./capture.js";
   // Dimensions the surface or its filter leaves to the row label. Grouping drops its
   // dimension only in sections that actually group (see omitGrouped).
   function rowLabelDims() {
+    // `assignee` is the peek footer's `@name`, never a row label: dropped where an
+    // assignee filter or the `@name` View already says it.
     if (isDeskLens())
       return {
         thread: !state.deskFilter.thread,
         project: state.deskFilter.project === null,
+        assignee: !state.deskFilter.assignee,
       };
     if (state.focusProject)
-      return { thread: !state.threadFilter, project: false };
-    if (isProjectsThreadView()) return { thread: false, project: true };
-    return { thread: false, project: false };
+      return {
+        thread: !state.threadFilter,
+        project: false,
+        assignee: !state.assigneeFilter,
+      };
+    if (isProjectsThreadView())
+      return {
+        thread: false,
+        project: true,
+        assignee: !state.projectView.startsWith("@"),
+      };
+    return { thread: false, project: false, assignee: true };
   }
   function omitGrouped(dims, layout, grouped) {
     if (!grouped) return dims;
     return {
       thread: dims.thread && layout.group !== "thread",
       project: dims.project && layout.group !== "project",
+      assignee: dims.assignee && layout.group !== "assignee",
     };
   }
   function rowLabel(task, dims) {
@@ -879,20 +903,29 @@ import { parseCapture } from "./capture.js";
     );
   }
 
-  // ── Desk filter: one thread choice and one project choice, combined ──
+  // ── Desk filter: one thread, one project, and one assignee choice, combined ──
+  const DESK_FILTER_TABS = ["threads", "projects", "assignees"];
+  const deskFilterKey = (tab) =>
+    ({ threads: "thread", projects: "project", assignees: "assignee" })[tab];
   function deskFilterAdmits(task) {
-    const { thread, project } = state.deskFilter;
+    const { thread, project, assignee } = state.deskFilter;
     const inProject =
       project === null ||
       (project === "desk" ? !task.project : task.project === project);
-    return inProject && (thread === null || (task.thread || "") === thread);
+    return (
+      inProject &&
+      (thread === null || (task.thread || "") === thread) &&
+      matchesAssignee(task, assignee)
+    );
   }
   function deskFilterLabel() {
-    const { thread, project } = state.deskFilter;
+    const { thread, project, assignee } = state.deskFilter;
     const parts = [];
     if (project !== null) parts.push(project);
     if (thread !== null)
       parts.push(thread === "" ? "without a thread" : `#${thread}`);
+    if (assignee !== null)
+      parts.push(assignee === "" ? "unassigned" : `@${assignee}`);
     return parts.length ? parts.join(" ") : "all";
   }
   function deskFilterOptions(tab = state.deskFilterTab) {
@@ -905,6 +938,13 @@ import { parseCapture } from "./capture.js";
       }
       return [...map];
     };
+    if (tab === "assignees") {
+      const [, ...named] = assigneeOptions(live, true);
+      return [
+        { value: null, label: `All assignees  ${live.length}` },
+        ...named,
+      ];
+    }
     if (tab === "threads") {
       const named = counts((t) => t.thread).sort(
         (a, b) => b[1] - a[1] || byteOrder(a[0], b[0]),
@@ -931,7 +971,7 @@ import { parseCapture } from "./capture.js";
     ];
   }
   function deskFilterIndex(tab = state.deskFilterTab) {
-    const current = state.deskFilter[tab === "threads" ? "thread" : "project"];
+    const current = state.deskFilter[deskFilterKey(tab)];
     return Math.max(
       0,
       deskFilterOptions(tab).findIndex((option) => option.value === current),
@@ -947,18 +987,15 @@ import { parseCapture } from "./capture.js";
     const option = deskFilterOptions()[index];
     if (!option) return;
     clearMarks();
-    state.deskFilter[state.deskFilterTab === "threads" ? "thread" : "project"] =
-      option.value;
+    state.deskFilter[deskFilterKey(state.deskFilterTab)] = option.value;
     state.overlay = null;
     state.peekId = null;
   }
   function renderDeskFilter() {
-    const tabs = ["threads", "projects"]
-      .map(
-        (tab) =>
-          `<button type="button" class="tsk-view-control ${tab === state.deskFilterTab ? "sel-text" : "dim"}" style="margin:0" data-desk-filter-tab="${tab}">${tab}</button>`,
-      )
-      .join('<span class="dim"> · </span>');
+    const tabs = DESK_FILTER_TABS.map(
+      (tab) =>
+        `<button type="button" class="tsk-view-control ${tab === state.deskFilterTab ? "sel-text" : "dim"}" style="margin:0" data-desk-filter-tab="${tab}">${tab === "assignees" ? "@assignees" : tab}</button>`,
+    ).join('<span class="dim"> · </span>');
     return `<div class="tsk-box" role="dialog" aria-label="filter"><div class="tsk-box-top"><span class="tsk-box-title">filter</span><button type="button" class="tsk-box-close" data-close="1">[x]</button></div><div class="tsk-box-body"><div class="tsk-pal-row"> ${tabs}</div><div class="tsk-pal-row dim" aria-hidden="true"> </div>${deskFilterOptions()
       .map(
         (option, index) =>
@@ -1302,7 +1339,11 @@ import { parseCapture } from "./capture.js";
     const pushHeader = (label, count) =>
       rows.push({ kind: "section", label, count, selectable: false });
     const layout = preview.layout;
-    const dims = { thread: !preview.threadFilter, project: false };
+    const dims = {
+      thread: !preview.threadFilter,
+      project: false,
+      assignee: !preview.assigneeFilter,
+    };
     const pushTask = (task, dim = false, grouped = false) =>
       rows.push({
         kind: "task",
@@ -1311,6 +1352,7 @@ import { parseCapture } from "./capture.js";
         id: task.id,
         dim,
         label: rowLabel(task, omitGrouped(dims, layout, grouped)),
+        assignee: omitGrouped(dims, layout, grouped).assignee,
       });
     const arranged = (tasks, section) =>
       pushArranged(
@@ -1744,6 +1786,7 @@ import { parseCapture } from "./capture.js";
         selectable: true,
         id: task.id,
         label: rowLabel(task, labelDims),
+        assignee: labelDims.assignee,
       });
     };
     // Rows in ON DECK · desk and the desk inbox never repeat the project (desk).
@@ -1818,6 +1861,7 @@ import { parseCapture } from "./capture.js";
                 id: t.id,
                 dim: true,
                 label: rowLabel(t, dims),
+                assignee: dims.assignee,
               }),
             );
         }
@@ -1871,6 +1915,7 @@ import { parseCapture } from "./capture.js";
                 id: t.id,
                 dim: true,
                 label: rowLabel(t, dims),
+                assignee: dims.assignee,
               }),
             );
         }
@@ -1935,6 +1980,7 @@ import { parseCapture } from "./capture.js";
                 id: t.id,
                 dim: true,
                 label: rowLabel(t, dims),
+                assignee: dims.assignee,
               }),
             );
         }
@@ -1967,6 +2013,7 @@ import { parseCapture } from "./capture.js";
               id: t.id,
               dim: true,
               label: rowLabel(t, dims),
+              assignee: dims.assignee,
             }),
           );
       }
@@ -2216,15 +2263,19 @@ import { parseCapture } from "./capture.js";
 
   // The open peek under a row, `columns` wide: a block's lines, or up to five note lines,
   // then the metadata footer. Shared by the board and the project preview.
-  function peekHtml(task, columns, rowLabelText) {
+  function peekHtml(task, columns, rowLabelText, showAssignee = true) {
     const blockLines = blockPeekLines(task).flatMap((line) =>
       wrapText(line, columns - 7),
     );
     const noteLines = blockLines.length
       ? []
       : wrapText((task.notes || "").trim() || "no notes yet", columns - 7);
-    // The footer: `@assignee`, then the row's own `#thread · project` label.
-    const label = [task.assignee ? `@${task.assignee}` : "", rowLabelText || ""]
+    // The footer: `@assignee` (unless the filter, `@name` View, or an assignee sub-header
+    // already says it), then the row's own `#thread · project` label.
+    const label = [
+      task.assignee && showAssignee ? `@${task.assignee}` : "",
+      rowLabelText || "",
+    ]
       .filter(Boolean)
       .join(" · ");
     return [
@@ -2434,12 +2485,13 @@ import { parseCapture } from "./capture.js";
     state.threadFilter = null;
     state.assigneeFilter = null;
     state.filterTab = "threads";
-    state.deskFilter = { thread: null, project: null };
+    state.deskFilter = { thread: null, project: null, assignee: null };
     state.deskFilterTab = "threads";
     state.layouts = {
       desk: freshLayout(),
       project: freshLayout(),
       thread: freshLayout(),
+      assignee: freshLayout(),
     };
     state.layoutOwner = "outer";
     preview.layout = freshLayout();
@@ -3368,11 +3420,16 @@ import { parseCapture } from "./capture.js";
         // An open peek states the label on its closing line, so the row leaves it out.
         const rowLabelText = peekOpen ? "" : row.label;
         const title = titleLinesHtml(titleLines, rowLabelText, titleRoom);
-        const peek = peekOpen ? peekHtml(task, width, row.label) : "";
+        const peek = peekOpen
+          ? peekHtml(task, width, row.label, row.assignee)
+          : "";
         const live = peekOpen ? "" : liveHtml(task, width);
         const gutter = liveGutter(
           live || peekOpen,
-          [...titleLines, ...labelOverflow(titleLines, rowLabelText, titleRoom)],
+          [
+            ...titleLines,
+            ...labelOverflow(titleLines, rowLabelText, titleRoom),
+          ],
           4 + `T${task.number} `.length,
         );
         return `<button type="button" class="tsk-row ${row.dim ? "dim" : ""} ${live ? "has-live" : ""} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-preview-task="${esc(task.id)}"><span class="tsk-row-main"><span class="tsk-row-prefix">${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> ${gutter}</span><span class="tsk-row-title">${title}</span></span>${live}</button>${peek}`;
@@ -3578,13 +3635,18 @@ import { parseCapture } from "./capture.js";
         const rowLabelText = peeked ? "" : row.label;
         const title = titleLinesHtml(titleLines, rowLabelText, titleRoom);
         const peekOpen = peeked;
-        const peek = peekOpen ? peekHtml(task, columns, row.label) : "";
+        const peek = peekOpen
+          ? peekHtml(task, columns, row.label, row.assignee)
+          : "";
         const dimRow = row.dim ? "dim" : "";
         // The peek replaces the live line.
         const live = peekOpen ? "" : liveHtml(task, columns);
         const gutter = liveGutter(
           live || peekOpen,
-          [...titleLines, ...labelOverflow(titleLines, rowLabelText, titleRoom)],
+          [
+            ...titleLines,
+            ...labelOverflow(titleLines, rowLabelText, titleRoom),
+          ],
           indent.length + 4 + `T${task.number} `.length,
         );
         return `<button type="button" class="tsk-row ${dimRow} ${live ? "has-live" : ""} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-task="${task.id}"><span class="tsk-row-main"><span class="tsk-row-prefix">${indent}${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> ${gutter}</span><span class="tsk-row-title">${title}</span></span>${live}</button>${peek}`;
@@ -4667,7 +4729,8 @@ import { parseCapture } from "./capture.js";
     if (state.overlay === "preview-filter") {
       e.preventDefault();
       if (e.key === "Escape") state.overlay = null;
-      else if (["Tab", "ArrowLeft", "ArrowRight"].includes(e.key)) switchFilterTab();
+      else if (["Tab", "ArrowLeft", "ArrowRight"].includes(e.key))
+        switchFilterTab();
       else if (e.key === "Enter") choosePreviewFilter(state.filterI);
       else if (["ArrowDown", "j"].includes(e.key))
         state.filterI = Math.min(
@@ -4683,11 +4746,14 @@ import { parseCapture } from "./capture.js";
       e.preventDefault();
       if (e.key === "Escape") state.overlay = null;
       else if (e.key === "Enter") chooseDeskFilter(state.filterI);
-      else if (["ArrowLeft", "ArrowRight", "h", "l", "Tab"].includes(e.key))
-        openDeskFilter(
-          state.deskFilterTab === "threads" ? "projects" : "threads",
-        );
-      else if (["ArrowDown", "j"].includes(e.key))
+      else if (["ArrowLeft", "ArrowRight", "h", "l", "Tab"].includes(e.key)) {
+        // The three tabs wrap: ←, h and shift+tab step back.
+        const back =
+          ["ArrowLeft", "h"].includes(e.key) || (e.key === "Tab" && e.shiftKey);
+        const at = DESK_FILTER_TABS.indexOf(state.deskFilterTab);
+        const step = back ? DESK_FILTER_TABS.length - 1 : 1;
+        openDeskFilter(DESK_FILTER_TABS[(at + step) % DESK_FILTER_TABS.length]);
+      } else if (["ArrowDown", "j"].includes(e.key))
         state.filterI = Math.min(
           deskFilterOptions().length - 1,
           state.filterI + 1,
@@ -4719,7 +4785,8 @@ import { parseCapture } from "./capture.js";
     if (state.overlay === "filter") {
       e.preventDefault();
       if (e.key === "Escape") state.overlay = null;
-      else if (["Tab", "ArrowLeft", "ArrowRight"].includes(e.key)) switchFilterTab();
+      else if (["Tab", "ArrowLeft", "ArrowRight"].includes(e.key))
+        switchFilterTab();
       else if (e.key === "Enter") chooseFilter(state.filterI);
       else if (["ArrowDown", "j"].includes(e.key))
         state.filterI = Math.min(filterOptions().length - 1, state.filterI + 1);

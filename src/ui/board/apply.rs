@@ -2206,13 +2206,13 @@ fn apply_board_intent(
             return Ok(IntentOutcome::None);
         }
         BoardIntent::ListPickerTabNext | BoardIntent::ListPickerTabPrev => {
-            if !model.switch_list_picker_tab(None) {
+            if !model.switch_list_picker_tab(None, intent == BoardIntent::ListPickerTabNext) {
                 model.move_list_picker(intent == BoardIntent::ListPickerTabNext);
             }
             return Ok(IntentOutcome::None);
         }
         BoardIntent::SelectListPickerTab(tab) => {
-            model.switch_list_picker_tab(Some(tab));
+            model.switch_list_picker_tab(Some(tab), true);
             return Ok(IntentOutcome::None);
         }
         BoardIntent::ListPickerQueryInsert(character) => {
@@ -2638,8 +2638,8 @@ fn apply_board_intent(
             }
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::SwitchListPickerTab(tab) => {
-            model.switch_list_picker_tab(tab);
+        BoardIntent::SwitchListPickerTab(forward) => {
+            model.switch_list_picker_tab(None, forward);
             return Ok(IntentOutcome::None);
         }
         // The app-level save-recovery boundary handles these while unresolved.
@@ -3950,7 +3950,7 @@ fn open_task_page_on(domain: &DomainState, model: &mut BoardModel, id: Uuid) {
 }
 
 /// Enter or a double-click on a group sub-header: open its project's board, the desk, or
-/// its thread's cross-project view. A preview seat cannot leave the projects tab itself, so
+/// its thread's or assignee's cross-project view. A preview seat cannot leave the projects tab itself, so
 /// it hands the request to the outer board.
 fn open_group_target(
     model: &mut BoardModel,
@@ -3978,6 +3978,7 @@ fn open_group_target(
         }
         GroupTarget::Desk => model.set_board_scope(ProjectScopeOption::Home),
         GroupTarget::Thread(name) => model.open_thread_view(name),
+        GroupTarget::Assignee(name) => model.open_assignee_view(name),
         GroupTarget::None => {}
     }
     model.clear_message();

@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{DocumentMut, TableLike};
 
 use crate::domain::{normalize_thread, thread_refusal_message};
+use crate::ui::queue::{GroupBy, SortBy};
 
 const CONFIG_FILE: &str = "config.toml";
 pub const CONFIG_TEMP_PREFIX: &str = ".config.toml.tmp.";
@@ -128,6 +129,21 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 # cleans up. `method` is "merge" (the default), "squash", or "rebase".
 # [merge]
 # method = "squash"
+
+# --- How the board opens ----------------------------------------------------
+
+# The group and sort a fresh board starts from (`g` and `s` change them for
+# the session only). `group` and `sort` set the desk; `project_group` and
+# `project_sort` set every project board.
+#   group          "none", "project", "thread", or "assignee"
+#   sort           "recent", "project", "thread", "title", or "assignee"
+#   project_group  "none", "thread", or "assignee"
+#   project_sort   "recent", "thread", "title", or "assignee"
+# [board]
+# group = "project"
+# sort = "recent"
+# project_group = "thread"
+# project_sort = "title"
 "##;
 
 /// Seed the commented profile examples on a full board open.
@@ -465,6 +481,105 @@ impl MergeMethod {
             ))),
             Some(None) => Err(invalid("method must be a string".into())),
         }
+    }
+}
+
+/// The board's starting group and sort: `[board]` in `config.toml`. A fresh board opens with
+/// these; changes made in the session are never written back.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BoardDefaults {
+    /// The desk (`group`, `sort`).
+    pub group: GroupBy,
+    pub sort: SortBy,
+    /// Every project board (`project_group`, `project_sort`).
+    pub project_group: GroupBy,
+    pub project_sort: SortBy,
+}
+
+impl BoardDefaults {
+    /// Read `[board]` from `<state_dir>/config.toml`. A missing file, table, or key is the
+    /// default (ungrouped, recent); only the `[board]` table is validated, so a broken
+    /// profile never blocks it.
+    pub fn load(state_dir: impl AsRef<Path>) -> Result<Self, AgentLoadError> {
+        let path = state_dir.as_ref().join(CONFIG_FILE);
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(source) => return Err(AgentLoadError::Io { path, source }),
+        };
+        Self::parse(&content)
+    }
+
+    fn parse(content: &str) -> Result<Self, AgentLoadError> {
+        let document: DocumentMut =
+            content
+                .parse()
+                .map_err(|source| AgentLoadError::MalformedToml {
+                    source: Box::new(source),
+                })?;
+        let invalid = |message: String| AgentLoadError::InvalidDocument {
+            message: format!("[board] {message}"),
+        };
+        let mut defaults = Self::default();
+        let Some(board) = document.get("board") else {
+            return Ok(defaults);
+        };
+        let table = board
+            .as_table_like()
+            .ok_or_else(|| invalid("must be a table".into()))?;
+        // A project board never groups or sorts by project: every row shares it.
+        let desk_groups = GroupBy::ALL.to_vec();
+        let project_groups: Vec<GroupBy> = GroupBy::ALL
+            .into_iter()
+            .filter(|group| *group != GroupBy::Project)
+            .collect();
+        let desk_sorts = SortBy::ALL.to_vec();
+        let project_sorts: Vec<SortBy> = SortBy::ALL
+            .into_iter()
+            .filter(|sort| *sort != SortBy::Project)
+            .collect();
+        for (key, item) in table.iter() {
+            if !matches!(key, "group" | "sort" | "project_group" | "project_sort") {
+                return Err(invalid(format!("unknown key {key:?}")));
+            }
+            let words = |choices: &[&str]| -> String {
+                match choices {
+                    [] => String::new(),
+                    [only] => (*only).to_string(),
+                    [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
+                }
+            };
+            let value = item
+                .as_str()
+                .ok_or_else(|| invalid(format!("{key} must be a string")))?;
+            let pick_group = |choices: &[GroupBy]| {
+                choices
+                    .iter()
+                    .copied()
+                    .find(|group| group.word() == value)
+                    .ok_or_else(|| {
+                        let names: Vec<&str> = choices.iter().map(|group| group.word()).collect();
+                        invalid(format!("{key} {value:?} is not {}", words(&names)))
+                    })
+            };
+            let pick_sort = |choices: &[SortBy]| {
+                choices
+                    .iter()
+                    .copied()
+                    .find(|sort| sort.word() == value)
+                    .ok_or_else(|| {
+                        let names: Vec<&str> = choices.iter().map(|sort| sort.word()).collect();
+                        invalid(format!("{key} {value:?} is not {}", words(&names)))
+                    })
+            };
+            match key {
+                "group" => defaults.group = pick_group(&desk_groups)?,
+                "sort" => defaults.sort = pick_sort(&desk_sorts)?,
+                "project_group" => defaults.project_group = pick_group(&project_groups)?,
+                _ => defaults.project_sort = pick_sort(&project_sorts)?,
+            }
+        }
+        Ok(defaults)
     }
 }
 
@@ -832,6 +947,113 @@ command = ["pi"]
             );
             assert!(error.to_string().contains(needle), "{error}");
         }
+    }
+
+    #[test]
+    fn board_defaults_read_each_key_and_default_to_ungrouped_recent() {
+        let dir = TempDir::new("board-defaults");
+        assert_eq!(
+            BoardDefaults::load(dir.path()).unwrap(),
+            BoardDefaults::default()
+        );
+        dir.write("[agent.x]\ncommand = [\"x\"]\n");
+        assert_eq!(
+            BoardDefaults::load(dir.path()).unwrap(),
+            BoardDefaults::default()
+        );
+        dir.write(
+            "[board]\ngroup = \"assignee\"\nsort = \"title\"\n\
+             project_group = \"thread\"\nproject_sort = \"assignee\"\n",
+        );
+        assert_eq!(
+            BoardDefaults::load(dir.path()).unwrap(),
+            BoardDefaults {
+                group: GroupBy::Assignee,
+                sort: SortBy::Title,
+                project_group: GroupBy::Thread,
+                project_sort: SortBy::Assignee,
+            }
+        );
+        for group in GroupBy::ALL {
+            dir.write(&format!("[board]\ngroup = \"{}\"\n", group.word()));
+            assert_eq!(BoardDefaults::load(dir.path()).unwrap().group, group);
+        }
+        for sort in SortBy::ALL {
+            dir.write(&format!("[board]\nsort = \"{}\"\n", sort.word()));
+            assert_eq!(BoardDefaults::load(dir.path()).unwrap().sort, sort);
+        }
+        // A broken profile never blocks the board defaults, and the reverse.
+        dir.write("[board]\ngroup = \"thread\"\n[agent.x]\nprompt = 1\n");
+        assert_eq!(
+            BoardDefaults::load(dir.path()).unwrap().group,
+            GroupBy::Thread
+        );
+        dir.write("[board]\ngroup = \"status\"\n[agent.x]\ncommand = [\"x\"]\n");
+        assert_eq!(AgentProfiles::load(dir.path()).unwrap().names().count(), 1);
+    }
+
+    #[test]
+    fn an_unknown_board_key_or_value_is_a_clear_config_error() {
+        let dir = TempDir::new("board-defaults-bad");
+        for (content, needle) in [
+            (
+                "[board]\ngroup = \"status\"\n",
+                "group \"status\" is not none, project, thread, or assignee",
+            ),
+            (
+                "[board]\nsort = \"age\"\n",
+                "sort \"age\" is not recent, project, thread, title, or assignee",
+            ),
+            (
+                "[board]\nproject_group = \"project\"\n",
+                "project_group \"project\" is not none, thread, or assignee",
+            ),
+            (
+                "[board]\nproject_sort = \"project\"\n",
+                "project_sort \"project\" is not recent, thread, title, or assignee",
+            ),
+            ("[board]\ngroup = 1\n", "group must be a string"),
+            ("[board]\nwide = true\n", "unknown key \"wide\""),
+            ("board = \"project\"\n", "[board] must be a table"),
+        ] {
+            dir.write(content);
+            let error = BoardDefaults::load(dir.path()).expect_err(content);
+            assert!(
+                error.to_string().starts_with("config.toml: [board]"),
+                "{error}"
+            );
+            assert!(error.to_string().contains(needle), "{error}");
+        }
+    }
+
+    #[test]
+    fn starter_board_example_parses_once_uncommented() {
+        assert_eq!(
+            BoardDefaults::parse(STARTER_CONFIG).expect("starter parses"),
+            BoardDefaults::default()
+        );
+        let mut in_block = false;
+        let uncommented = STARTER_CONFIG
+            .lines()
+            .map(|line| {
+                in_block = line == "# [board]" || (in_block && !line.is_empty());
+                if in_block {
+                    line.strip_prefix("# ").unwrap_or(line)
+                } else {
+                    line
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            BoardDefaults::parse(&uncommented).expect("uncommented example parses"),
+            BoardDefaults {
+                group: GroupBy::Project,
+                sort: SortBy::Recent,
+                project_group: GroupBy::Thread,
+                project_sort: SortBy::Title,
+            }
+        );
     }
 
     #[test]

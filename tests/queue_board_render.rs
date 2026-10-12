@@ -404,6 +404,7 @@ fn fixture_model_on_tab<'a>(
         surface: tsk_tui::ui::render::BoardSurface::Desk,
         thread_labels: false,
         show_project_meta: true,
+        assignee_labels: true,
         projects: &[],
         projects_index: false,
         projects_cursor: 0,
@@ -3719,6 +3720,20 @@ fn threaded_fixture_tasks() -> Vec<Task> {
     tasks
 }
 
+/// [`threaded_fixture_tasks`] with assignees: two agents across projects, the desk's
+/// backlog note and one ready task left unassigned.
+fn assigned_fixture_tasks() -> Vec<Task> {
+    let mut tasks = threaded_fixture_tasks();
+    for task in &mut tasks {
+        task.assignee = match task.id.as_u128() {
+            1 | 10 | 20 => Some("claude".to_string()),
+            2 | 21 => Some("pi".to_string()),
+            _ => None,
+        };
+    }
+    tasks
+}
+
 /// Drive one list picker the way a user does: open it, then click option `index`.
 fn pick(domain: &mut DomainState, model: &mut BoardModel, open: BoardIntent, index: usize) {
     apply_intent(domain, model, open, None).expect("open picker");
@@ -3826,7 +3841,7 @@ fn grouping_scenes() -> Vec<GoldenScene> {
     apply_intent(
         &mut domain,
         &mut filter,
-        BoardIntent::SwitchListPickerTab(None),
+        BoardIntent::SwitchListPickerTab(true),
         None,
     )
     .expect("projects tab");
@@ -3844,7 +3859,104 @@ fn grouping_scenes() -> Vec<GoldenScene> {
     .expect("open group picker");
     let group_picker_78 = board_rows(&group_picker, 78, 24);
 
+    // Group and sort by assignee (T238): the desk, a project board, and the desk filter's
+    // `@assignees` tab, reached with ← from threads (the tabs wrap).
+    let assigned = assigned_fixture_tasks();
+    let mut desk_assignee = clocked(BoardModel::from_tasks(
+        assigned.clone(),
+        Some(PathBuf::from("/repos/tsk")),
+    ));
+    pick(
+        &mut domain,
+        &mut desk_assignee,
+        BoardIntent::OpenGroupPicker,
+        3,
+    );
+    pick(
+        &mut domain,
+        &mut desk_assignee,
+        BoardIntent::OpenSortPicker,
+        3,
+    );
+    let desk_assignee_110 = board_rows(&desk_assignee, 110, 30);
+    let desk_assignee_78 = board_rows(&desk_assignee, 78, 24);
+    let desk_assignee_40 = board_rows(&desk_assignee, 40, 24);
+    let mut project_assignee = clocked(BoardModel::from_tasks(
+        assigned.clone(),
+        Some(PathBuf::from("/repos/tsk")),
+    ));
+    project_assignee.set_selected_project(Some(PathBuf::from("/repos/herdr")));
+    pick(
+        &mut domain,
+        &mut project_assignee,
+        BoardIntent::OpenGroupPicker,
+        2,
+    );
+    let project_assignee_110 = board_rows(&project_assignee, 110, 30);
+    let project_assignee_78 = board_rows(&project_assignee, 78, 24);
+    let project_assignee_40 = board_rows(&project_assignee, 40, 24);
+    let mut assignee_filter = clocked(BoardModel::from_tasks(
+        assigned,
+        Some(PathBuf::from("/repos/tsk")),
+    ));
+    apply_intent(
+        &mut domain,
+        &mut assignee_filter,
+        BoardIntent::OpenThreadFilterPicker,
+        None,
+    )
+    .expect("open desk filter");
+    apply_intent(
+        &mut domain,
+        &mut assignee_filter,
+        BoardIntent::SwitchListPickerTab(false),
+        None,
+    )
+    .expect("assignees tab");
+    let assignee_filter_78 = board_rows(&assignee_filter, 78, 24);
+    let assignee_filter_40 = board_rows(&assignee_filter, 40, 24);
+
     vec![
+        GoldenScene {
+            name: "desk_group_assignee_sort_title_110x30",
+            rows: desk_assignee_110,
+            width: 110,
+        },
+        GoldenScene {
+            name: "desk_group_assignee_sort_title_78x24",
+            rows: desk_assignee_78,
+            width: 78,
+        },
+        GoldenScene {
+            name: "desk_group_assignee_sort_title_40x24",
+            rows: desk_assignee_40,
+            width: 40,
+        },
+        GoldenScene {
+            name: "project_group_assignee_110x30",
+            rows: project_assignee_110,
+            width: 110,
+        },
+        GoldenScene {
+            name: "project_group_assignee_78x24",
+            rows: project_assignee_78,
+            width: 78,
+        },
+        GoldenScene {
+            name: "project_group_assignee_40x24",
+            rows: project_assignee_40,
+            width: 40,
+        },
+        GoldenScene {
+            name: "desk_filter_picker_assignees_78x24",
+            rows: assignee_filter_78,
+            width: 78,
+        },
+        GoldenScene {
+            name: "desk_filter_picker_assignees_40x24",
+            rows: assignee_filter_40,
+            width: 40,
+        },
         GoldenScene {
             name: "desk_group_project_sort_thread_110x30",
             rows: desk_project_110,

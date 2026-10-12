@@ -223,8 +223,8 @@ test("attribution is peek-only in demo and static anatomy", async () => {
   assert.doesNotMatch(demo, /<span class="meta">/);
   assert.match(
     demo,
-    /\[task\.assignee \? `@\$\{task\.assignee\}` : "", rowLabelText \|\| ""\]/,
-    "peek metadata must be @assignee, then the row's #thread · project label",
+    /task\.assignee && showAssignee \? `@\$\{task\.assignee\}` : "",\s*rowLabelText \|\| "",/,
+    "peek metadata must be @assignee (unless the view already says it), then the row's #thread · project label",
   );
   assert.match(styles, /\.tsk-attribution\s*\{[^}]*white-space: pre-wrap;[^}]*overflow-wrap: anywhere;/);
   assert.match(styles, /\.tsk-row-main\s*\{[^}]*padding-right: 2ch;/);

@@ -199,19 +199,23 @@ impl ProjectFilter {
     }
 }
 
-/// The desk's session filter: one project choice and one thread choice, combined.
+/// The desk's session filter: one project, one thread, and one assignee choice, combined.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DeskFilter {
     pub project: ProjectFilter,
     pub thread: ThreadFilter,
+    pub assignee: AssigneeFilter,
 }
 
 impl DeskFilter {
     pub fn is_all(&self) -> bool {
-        self.project == ProjectFilter::All && self.thread == ThreadFilter::All
+        self.project == ProjectFilter::All
+            && self.thread == ThreadFilter::All
+            && self.assignee == AssigneeFilter::All
     }
 
-    /// The desk filter control's label: `all`, or the active choices, e.g. `tsk #release`.
+    /// The desk filter control's label: `all`, or the active choices, e.g.
+    /// `tsk #release @claude`.
     pub fn label(&self) -> String {
         let mut parts = Vec::new();
         if let Some(project) = self.project.label() {
@@ -219,6 +223,9 @@ impl DeskFilter {
         }
         if self.thread != ThreadFilter::All {
             parts.push(self.thread.label());
+        }
+        if self.assignee != AssigneeFilter::All {
+            parts.push(self.assignee.label());
         }
         if parts.is_empty() {
             "all".to_string()
@@ -236,7 +243,7 @@ impl DeskFilter {
             }
             (ProjectFilter::Named(_), TaskScope::Global) => false,
         };
-        project && self.thread.admits(task)
+        project && self.thread.admits(task) && self.assignee.admits(task)
     }
 }
 
@@ -247,15 +254,29 @@ pub enum GroupBy {
     None,
     Project,
     Thread,
+    Assignee,
 }
 
 impl GroupBy {
+    pub const ALL: [GroupBy; 4] = [
+        GroupBy::None,
+        GroupBy::Project,
+        GroupBy::Thread,
+        GroupBy::Assignee,
+    ];
+
     pub fn word(self) -> &'static str {
         match self {
             GroupBy::None => "none",
             GroupBy::Project => "project",
             GroupBy::Thread => "thread",
+            GroupBy::Assignee => "assignee",
         }
+    }
+
+    /// The choice a [`Self::word`] names, as `config.toml` spells it.
+    pub fn from_word(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|group| group.word() == word)
     }
 }
 
@@ -268,23 +289,39 @@ pub enum SortBy {
     Project,
     Thread,
     Title,
+    Assignee,
 }
 
 impl SortBy {
+    pub const ALL: [SortBy; 5] = [
+        SortBy::Recent,
+        SortBy::Project,
+        SortBy::Thread,
+        SortBy::Title,
+        SortBy::Assignee,
+    ];
+
     pub fn word(self) -> &'static str {
         match self {
             SortBy::Recent => "recent",
             SortBy::Project => "project",
             SortBy::Thread => "thread",
             SortBy::Title => "title",
+            SortBy::Assignee => "assignee",
         }
+    }
+
+    /// The choice a [`Self::word`] names, as `config.toml` spells it.
+    pub fn from_word(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|sort| sort.word() == word)
     }
 }
 
 /// One sub-group of a status section: a dim, foldable sub-header over its rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueueGroup {
-    /// Painted name: a project basename, `desk`, `#thread`, or `no thread`.
+    /// Painted name: a project basename, `desk`, `#thread`, `no thread`, `@assignee`, or
+    /// `unassigned`.
     pub label: String,
     /// Chrome row id of the sub-header. Always selectable; its rows follow unless folded.
     pub header_id: Uuid,
@@ -293,13 +330,14 @@ pub struct QueueGroup {
     pub target: GroupTarget,
 }
 
-/// The board a group sub-header opens: its project's board, the desk, or its thread's
-/// cross-project view. `no thread` opens nothing.
+/// The board a group sub-header opens: its project's board, the desk, or its thread's or
+/// assignee's cross-project view. `no thread` and `unassigned` open nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GroupTarget {
     Project(String),
     Desk,
     Thread(String),
+    Assignee(String),
     None,
 }
 
@@ -311,7 +349,12 @@ impl GroupTarget {
             }
             (GroupBy::Project, TaskScope::Global, _) => GroupTarget::Desk,
             (GroupBy::Thread, _, Some(thread)) => GroupTarget::Thread(thread.to_string()),
-            _ => GroupTarget::None,
+            (GroupBy::Assignee, _, _) => {
+                task.assignee.as_deref().map_or(GroupTarget::None, |name| {
+                    GroupTarget::Assignee(name.to_string())
+                })
+            }
+            (GroupBy::Thread, _, None) | (GroupBy::None, _, _) => GroupTarget::None,
         }
     }
 }
@@ -1371,14 +1414,22 @@ fn group_key(task: &Task, group: GroupBy) -> (String, String) {
             let thread = thread.to_ascii_lowercase();
             (format!("t:{thread}"), format!("#{thread}"))
         }
+        (GroupBy::Assignee, _, _) => match task.assignee.as_deref() {
+            Some(name) => {
+                let name = name.to_ascii_lowercase();
+                (format!("a:{name}"), format!("@{name}"))
+            }
+            None => ("unassigned".to_string(), "unassigned".to_string()),
+        },
         (GroupBy::Thread, _, None) | (GroupBy::None, _, _) => {
             ("none".to_string(), "no thread".to_string())
         }
     }
 }
 
-/// Stable in-place sort by the chosen key. Desk tasks sort after projects and
-/// unthreaded tasks after threads; notice rows lead regardless.
+/// Stable in-place sort by the chosen key. Desk tasks sort after projects, unthreaded
+/// tasks after threads, and unassigned tasks after assigned ones; notice rows lead
+/// regardless.
 fn sort_rows(rows: &mut [&Task], sort: SortBy) {
     let key = |task: &Task| -> (bool, String) {
         match sort {
@@ -1392,6 +1443,10 @@ fn sort_rows(rows: &mut [&Task], sort: SortBy) {
                 None => (true, String::new()),
             },
             SortBy::Title => (false, task.title.to_lowercase()),
+            SortBy::Assignee => match task.assignee.as_deref() {
+                Some(assignee) => (false, assignee.to_lowercase()),
+                None => (true, String::new()),
+            },
         }
     };
     if sort == SortBy::Recent {
@@ -3095,6 +3150,7 @@ mod tests {
         let filter = DeskFilter {
             project: ProjectFilter::Named("/r/a".into()),
             thread: ThreadFilter::Named("ship".into()),
+            assignee: AssigneeFilter::All,
         };
         assert_eq!(filter.label(), "a #ship");
         let view = desk_view(&tasks, &filter);
@@ -3106,6 +3162,7 @@ mod tests {
         let desk_only = DeskFilter {
             project: ProjectFilter::Desk,
             thread: ThreadFilter::All,
+            assignee: AssigneeFilter::All,
         };
         assert_eq!(
             all_listed_ids(&desk_view(&tasks, &desk_only)),

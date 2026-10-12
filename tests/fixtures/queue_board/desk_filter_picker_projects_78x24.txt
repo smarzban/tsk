@@ -7,7 +7,7 @@
 │  ■ T5 Wire dispatch cleanup receipts  #dispatch · herdr                      │
 │    └─ @┌─ Filter ────────────────────────────────────────────── [x]─┐        │
 │  ▲ T6 D│                                                            │        │
-│    └─ n│  threads · projects                                        │        │
+│    └─ n│  threads · projects · @assignees                           │        │
 │        │ ────────────────────────────────────────────────────────── │        │
 │ IN MOTI│ ▸ All projects  7  ✓                                       │──────2 │
 │        │   desk  1                                                  │        │

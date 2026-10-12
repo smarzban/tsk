@@ -2373,18 +2373,17 @@ impl OverlayPayloads {
                     .list_picker_selected
                     .min(self.list_picker_options.len().saturating_sub(1)),
                 tabs: model.list_picker_tab().map(|tab| {
-                    // The desk filter pairs threads with projects; the project board's
-                    // Filter and the overview's View pair threads with assignees.
-                    let second = if model.list_picker_kind()
+                    // The desk filter has threads, projects, and assignees; the project
+                    // board's Filter and the overview's View pair threads with assignees.
+                    if model.list_picker_kind()
                         == Some(crate::ui::board::ListPickerKind::DeskFilter)
                     {
-                        crate::ui::board::FilterTab::Projects
+                        render::PickerTabsPaint::DeskFilter { active: tab }
                     } else {
-                        crate::ui::board::FilterTab::Assignees
-                    };
-                    render::PickerTabsPaint::Filter {
-                        second,
-                        second_active: tab == second,
+                        render::PickerTabsPaint::Filter {
+                            second: crate::ui::board::FilterTab::Assignees,
+                            second_active: tab == crate::ui::board::FilterTab::Assignees,
+                        }
                     }
                 }),
                 title: Some(title),
@@ -2602,6 +2601,7 @@ fn draw_board_hits(frame: &mut Frame, model: &BoardModel) -> render::QueueHitMap
         surface,
         thread_labels: model.row_label_dimensions().0,
         show_project_meta: model.row_label_dimensions().1,
+        assignee_labels: model.assignee_label_shown(),
         projects: &queue_view.projects,
         projects_index: surface == BoardSurface::Projects
             && matches!(model.projects_view(), ProjectsView::Overview),
@@ -2786,6 +2786,7 @@ fn draw_wide_board(
         surface,
         thread_labels: model.row_label_dimensions().0,
         show_project_meta: model.row_label_dimensions().1,
+        assignee_labels: model.assignee_label_shown(),
         projects: &queue_view.projects,
         projects_index: surface == BoardSurface::Projects
             && matches!(model.projects_view(), ProjectsView::Overview),
@@ -3042,6 +3043,7 @@ fn draw_projects_wide_board(
         surface: BoardSurface::Projects,
         thread_labels: false,
         show_project_meta: false,
+        assignee_labels: true,
         projects: &outer_view.projects,
         projects_index: true,
         projects_cursor: model.projects_cursor(),
@@ -3082,6 +3084,7 @@ fn draw_projects_wide_board(
             surface: BoardSurface::Project,
             thread_labels: right.row_label_dimensions().0,
             show_project_meta: right.row_label_dimensions().1,
+            assignee_labels: right.assignee_label_shown(),
             projects: &[],
             projects_index: false,
             projects_cursor: 0,

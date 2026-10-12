@@ -242,23 +242,323 @@ fn g_and_s_open_pickers_whose_choices_follow_the_surface() {
         board.model.list_picker_kind(),
         Some(ListPickerKind::GroupBy)
     );
-    assert_eq!(board.picker_labels(), ["none", "project", "thread"]);
+    assert_eq!(
+        board.picker_labels(),
+        ["none", "project", "thread", "assignee"]
+    );
     board.apply(BoardIntent::CancelListPicker);
     board.key(press(KeyCode::Char('s')));
     assert_eq!(board.model.list_picker_kind(), Some(ListPickerKind::SortBy));
     assert_eq!(
         board.picker_labels(),
-        ["recent", "project", "thread", "title"]
+        ["recent", "project", "thread", "title", "assignee"]
     );
     board.apply(BoardIntent::CancelListPicker);
 
     // A project board never offers its own dimension.
     board.model.set_selected_project(Some(PathBuf::from(ALPHA)));
     board.key(press(KeyCode::Char('g')));
-    assert_eq!(board.picker_labels(), ["none", "thread"]);
+    assert_eq!(board.picker_labels(), ["none", "thread", "assignee"]);
     board.apply(BoardIntent::CancelListPicker);
     board.key(press(KeyCode::Char('s')));
-    assert_eq!(board.picker_labels(), ["recent", "thread", "title"]);
+    assert_eq!(
+        board.picker_labels(),
+        ["recent", "thread", "title", "assignee"]
+    );
+    board.apply(BoardIntent::CancelListPicker);
+
+    // Neither does an `@name` View: every row shares the assignee.
+    board.apply(BoardIntent::SelectNavTab(NavTab::Projects));
+    board.pick(BoardIntent::OpenProjectsViewPicker, "Overview");
+    board.model.set_agent_profiles(&profiles(&["claude"]));
+    board.apply(BoardIntent::OpenProjectsViewPicker);
+    board.apply(BoardIntent::SwitchListPickerTab(true));
+    let claude = board
+        .picker_labels()
+        .iter()
+        .position(|label| label == "@claude")
+        .expect("@claude");
+    board.apply(BoardIntent::SelectListOption(claude));
+    board.key(press(KeyCode::Char('g')));
+    assert_eq!(board.picker_labels(), ["none", "project", "thread"]);
+    board.apply(BoardIntent::CancelListPicker);
+    board.key(press(KeyCode::Char('s')));
+    assert_eq!(
+        board.picker_labels(),
+        ["recent", "project", "thread", "title"]
+    );
+}
+
+/// Agent profiles named `names`, as `config.toml` would define them.
+fn profiles(names: &[&str]) -> tsk_tui::agents::AgentProfiles {
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-groups-profiles-{}-{}",
+        std::process::id(),
+        PROFILE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).expect("profile dir");
+    let content: String = names
+        .iter()
+        .map(|name| format!("[agent.{name}]\ncommand = [\"{name}\"]\n"))
+        .collect();
+    std::fs::write(dir.join("config.toml"), content).expect("config");
+    let loaded = tsk_tui::agents::AgentProfiles::load(&dir).expect("profiles");
+    let _ = std::fs::remove_dir_all(&dir);
+    loaded
+}
+
+static PROFILE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// [`board`] with assignees: alpha one and the desk chore on claude, beta on pi; alpha two
+/// and the blocked task unassigned.
+fn assigned_board() -> Board {
+    let mut board = board();
+    for (id, name) in [
+        (board.alpha_one, "claude"),
+        (board.desk, "claude"),
+        (board.beta, "pi"),
+    ] {
+        board
+            .domain
+            .assign(id, Some(name.to_string()))
+            .expect("assign");
+    }
+    board.model.sync_from_domain(&board.domain);
+    board
+}
+
+#[test]
+fn grouping_by_assignee_paints_at_name_and_unassigned_sub_groups() {
+    let mut board = assigned_board();
+    board.pick(BoardIntent::OpenGroupPicker, "assignee");
+    let groups = board.motion_groups();
+    let labels: Vec<&str> = groups.iter().map(|group| group.0.as_str()).collect();
+    assert_eq!(
+        labels,
+        ["unassigned", "@claude", "@pi"],
+        "newest change leads"
+    );
+    assert_eq!(groups[1].1, [board.desk, board.alpha_one]);
+    assert_eq!(
+        board.model.layout().label().as_deref(),
+        Some("group: assignee")
+    );
+    let rows = board.rows(80, 30);
+    for header in ["▾ @claude · 2", "▾ @pi · 1", "▾ unassigned · 1"] {
+        assert!(
+            rows.iter().any(|row| row.contains(header)),
+            "{header}\n{}",
+            rows.join("\n")
+        );
+    }
+    // Rows never carry `@assignee`; the sub-header says it.
+    let alpha = rows
+        .iter()
+        .find(|row| row.contains("alpha one"))
+        .expect("alpha one row");
+    assert!(!alpha.contains('@'), "{alpha}");
+
+    // A project board groups by assignee too.
+    board.model.set_selected_project(Some(PathBuf::from(ALPHA)));
+    board.pick(BoardIntent::OpenGroupPicker, "assignee");
+    let labels: Vec<String> = board
+        .motion_groups()
+        .into_iter()
+        .map(|group| group.0)
+        .collect();
+    assert_eq!(labels, ["unassigned", "@claude"]);
+}
+
+#[test]
+fn sorting_by_assignee_puts_unassigned_rows_last() {
+    let mut board = assigned_board();
+    board.pick(BoardIntent::OpenSortPicker, "assignee");
+    assert_eq!(board.model.layout().sort, SortBy::Assignee);
+    let motion: Vec<Uuid> = board
+        .model
+        .queue_view()
+        .sections
+        .into_iter()
+        .find(|section| section.kind == SectionKind::InMotion)
+        .expect("in motion")
+        .task_ids;
+    // claude (newest first, as recent order breaks ties), then pi, then unassigned.
+    assert_eq!(
+        motion,
+        [board.desk, board.alpha_one, board.beta, board.alpha_two]
+    );
+}
+
+#[test]
+fn enter_on_an_assignee_sub_header_opens_its_view_and_unassigned_opens_nothing() {
+    let mut board = assigned_board();
+    board.pick(BoardIntent::OpenGroupPicker, "assignee");
+    let groups = board.motion_groups();
+    let header = |label: &str| {
+        groups
+            .iter()
+            .find(|group| group.0 == label)
+            .unwrap_or_else(|| panic!("{label}"))
+            .2
+    };
+    board.select_row(header("unassigned"));
+    board.key(press(KeyCode::Enter));
+    assert_eq!(
+        board.model.nav_tab(),
+        NavTab::Desk,
+        "unassigned opens nothing"
+    );
+
+    board.select_row(header("@claude"));
+    board.key(press(KeyCode::Enter));
+    assert_eq!(board.model.nav_tab(), NavTab::Projects);
+    assert_eq!(
+        board.model.projects_view(),
+        &ProjectsView::Assignee("claude".into())
+    );
+    let visible = board.visible_tasks();
+    assert!(visible.contains(&board.alpha_one) && visible.contains(&board.desk));
+    assert!(!visible.contains(&board.beta));
+}
+
+#[test]
+fn the_desk_filter_has_an_assignees_tab_and_its_tabs_wrap_both_ways() {
+    let mut board = assigned_board();
+    board
+        .model
+        .set_agent_profiles(&profiles(&["pi", "claude", "sol"]));
+    board.key(press(KeyCode::Char('t')));
+    assert_eq!(board.model.list_picker_tab(), Some(FilterTab::Threads));
+    board.key(press(KeyCode::Left));
+    assert_eq!(
+        board.model.list_picker_tab(),
+        Some(FilterTab::Assignees),
+        "← from threads wraps to the last tab"
+    );
+    // Every profile (one without tasks counts zero), then unassigned.
+    assert_eq!(
+        board.picker_labels(),
+        ["All assignees", "@claude", "@pi", "@sol", "unassigned"]
+    );
+    board.key(press(KeyCode::Right));
+    assert_eq!(board.model.list_picker_tab(), Some(FilterTab::Threads));
+    board.key(press(KeyCode::Right));
+    assert_eq!(board.model.list_picker_tab(), Some(FilterTab::Projects));
+    board.key(press(KeyCode::Tab));
+    assert_eq!(board.model.list_picker_tab(), Some(FilterTab::Assignees));
+    board.key(press(KeyCode::BackTab));
+    assert_eq!(board.model.list_picker_tab(), Some(FilterTab::Projects));
+    board.apply(BoardIntent::CancelListPicker);
+
+    board.apply(BoardIntent::OpenThreadFilterPicker);
+    board.apply(BoardIntent::SelectListPickerTab(FilterTab::Assignees));
+    let claude = board
+        .picker_labels()
+        .iter()
+        .position(|label| label == "@claude")
+        .expect("@claude");
+    board.apply(BoardIntent::SelectListOption(claude));
+    assert_eq!(board.model.desk_filter().label(), "@claude");
+    assert_eq!(board.visible_tasks(), [board.desk, board.alpha_one]);
+
+    // It combines with the project choice, and reopens on the active choice.
+    board.apply(BoardIntent::OpenThreadFilterPicker);
+    board.apply(BoardIntent::SelectListPickerTab(FilterTab::Projects));
+    let alpha = board
+        .picker_labels()
+        .iter()
+        .position(|label| label == "alpha")
+        .expect("alpha");
+    board.apply(BoardIntent::SelectListOption(alpha));
+    assert_eq!(board.model.desk_filter().label(), "alpha @claude");
+    assert_eq!(board.visible_tasks(), [board.alpha_one]);
+    board.apply(BoardIntent::OpenThreadFilterPicker);
+    board.apply(BoardIntent::SelectListPickerTab(FilterTab::Assignees));
+    assert_eq!(board.model.list_picker_active(), Some(claude));
+
+    let unassigned = board
+        .picker_labels()
+        .iter()
+        .position(|label| label == "unassigned")
+        .expect("unassigned");
+    board.apply(BoardIntent::SelectListOption(unassigned));
+    assert_eq!(board.model.desk_filter().label(), "alpha unassigned");
+    assert_eq!(board.visible_tasks(), [board.alpha_two]);
+}
+
+/// The peek's closing line (the row after the `└─` live line, or the `└─` line itself).
+fn peek_footer(board: &Board, title: &str) -> String {
+    let rows = board.rows(80, 40);
+    let at = rows
+        .iter()
+        .position(|row| row.contains(title))
+        .unwrap_or_else(|| panic!("{title}\n{}", rows.join("\n")));
+    rows[at..]
+        .iter()
+        .find(|row| row.contains("└─"))
+        .cloned()
+        .unwrap_or_else(|| panic!("peek footer\n{}", rows.join("\n")))
+}
+
+#[test]
+fn the_peek_names_the_assignee_unless_grouping_or_the_filter_already_does() {
+    let mut board = assigned_board();
+    board.select(board.alpha_one);
+    board.apply(BoardIntent::PeekDetail);
+    assert!(
+        peek_footer(&board, "alpha one").contains("@claude"),
+        "ungrouped, the peek names it"
+    );
+    assert!(board.model.assignee_label_shown());
+
+    board.pick(BoardIntent::OpenGroupPicker, "assignee");
+    board.select(board.alpha_one);
+    board.apply(BoardIntent::PeekDetail);
+    let footer = peek_footer(&board, "alpha one");
+    assert!(
+        !footer.contains("@claude"),
+        "the sub-header says it: {footer}"
+    );
+    assert!(footer.contains("#ship"), "{footer}");
+
+    board.pick(BoardIntent::OpenGroupPicker, "none");
+    board.pick(BoardIntent::OpenThreadFilterPicker, "All threads");
+    board.apply(BoardIntent::OpenThreadFilterPicker);
+    board.apply(BoardIntent::SelectListPickerTab(FilterTab::Assignees));
+    let claude = board
+        .picker_labels()
+        .iter()
+        .position(|label| label == "@claude")
+        .expect("@claude");
+    board.apply(BoardIntent::SelectListOption(claude));
+    assert!(!board.model.assignee_label_shown(), "the filter says it");
+    board.select(board.alpha_one);
+    board.apply(BoardIntent::PeekDetail);
+    assert!(!peek_footer(&board, "alpha one").contains("@claude"));
+}
+
+#[test]
+fn config_board_defaults_seed_the_desk_project_boards_and_the_preview_seat() {
+    let mut board = assigned_board();
+    board
+        .model
+        .set_layout_defaults(tsk_tui::agents::BoardDefaults {
+            group: GroupBy::Assignee,
+            sort: SortBy::Title,
+            project_group: GroupBy::Thread,
+            project_sort: SortBy::Assignee,
+        });
+    assert_eq!(board.model.layout().group, GroupBy::Assignee);
+    assert_eq!(board.model.layout().sort, SortBy::Title);
+    assert_eq!(
+        board.model.layout().label().as_deref(),
+        Some("group: assignee · sort: title")
+    );
+    // The session's own changes stay in the session.
+    board.pick(BoardIntent::OpenGroupPicker, "none");
+    board.model.set_selected_project(Some(PathBuf::from(ALPHA)));
+    assert_eq!(board.model.layout().group, GroupBy::Thread);
+    assert_eq!(board.model.layout().sort, SortBy::Assignee);
 }
 
 #[test]
@@ -790,6 +1090,11 @@ fn clicking_the_layout_control_and_the_desk_filter_tabs() {
     board.click(QueueHitTarget::ListPickerOption(1));
     assert_eq!(board.model.desk_filter().label(), "beta #ship");
     assert_eq!(board.visible_tasks(), [board.beta]);
+    // The third tab's painted cell clicks through too.
+    board.click(QueueHitTarget::NavChip);
+    board.click(QueueHitTarget::ListPickerTab(FilterTab::Assignees));
+    assert_eq!(board.model.list_picker_tab(), Some(FilterTab::Assignees));
+    board.apply(BoardIntent::CancelListPicker);
 
     // The header paints the active filter like a project board's control.
     let rows = board.rows(80, 24);

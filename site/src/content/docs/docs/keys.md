@@ -16,7 +16,7 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 | Mark current task, then move in multi-select | `Shift+↑` / `Shift+↓` |
 | Mark / unmark cursored task in multi-select | `Space` |
 | Open task full screen | `Enter` |
-| Open a group sub-header's board: its project, the desk, or its thread's view | `Enter` on the sub-header |
+| Open a group sub-header's board: its project, the desk, or its thread's or assignee's view | `Enter` on the sub-header |
 | Fold / unfold the header under the cursor: a sub-group, the inbox, or archived | `←` / `→` or `h` / `l` |
 | Peek / close peek below 110 columns | `→` / `←` or `l` / `h` |
 | Move through wide views | `→` / `←` or `l` / `h` |
@@ -41,7 +41,7 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 | Desk / selected project / projects | `1` / `2` / `3` |
 | Project picker | `p` |
 | Filter: thread and project on the desk; thread and assignee (`threads · @assignees`) on a project board | `t` |
-| Switch a filter or view picker's tab | `Tab`, `←` / `→` |
+| Switch a filter or view picker's tab (the desk filter's three wrap; `←` and `Shift+Tab` go back) | `Tab`, `←` / `→` |
 | Cross-project view selector (threads · @assignees) | `v` on Projects |
 | Search current board rows | `/` |
 | Command palette | `:` |
@@ -56,7 +56,7 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 
 Bare `g`, `s`, and `f` are navigation beside their Ctrl verbs, like `d` beside `ctrl+d`: `g` groups while `ctrl+g` dispatches again, `s` sorts while `ctrl+s` starts, and `f` folds while `ctrl+f` archives.
 
-On a fold header (a group sub-header, the inbox, or archived in the done drawer), `←` / `h` folds it when it is open and `→` / `l` unfolds it when it is folded; the cursor stays on the header. When there is nothing to fold or unfold, the key keeps its usual meaning (the peek, or the wide stage slider), so a header never blocks the slider. `Enter` on a group sub-header opens its project's board, the desk, or its thread's cross-project view; `no thread` opens nothing, and `Enter` on the inbox or archived header does nothing. A click on any header only selects it; a double-click opens a sub-header's board, or folds and unfolds a header that opens nothing (`no thread`, `desk` on the desk, the inbox, archived).
+On a fold header (a group sub-header, the inbox, or archived in the done drawer), `←` / `h` folds it when it is open and `→` / `l` unfolds it when it is folded; the cursor stays on the header. When there is nothing to fold or unfold, the key keeps its usual meaning (the peek, or the wide stage slider), so a header never blocks the slider. `Enter` on a group sub-header opens its project's board, the desk, or its thread's or assignee's cross-project view; `no thread` and `unassigned` open nothing, and `Enter` on the inbox or archived header does nothing. A click on any header only selects it; a double-click opens a sub-header's board, or folds and unfolds a header that opens nothing (`no thread`, `unassigned`, `desk` on the desk, the inbox, archived).
 
 `Shift+M` enters or leaves multi-select while the board owns input. On a group sub-header it unfolds the group and marks all its tasks, adding them to the set when multi-select is already on. While it is active, `Space`, shifted arrows, and a plain task click change marks instead of opening a task. Removing the last mark leaves the mode active. `Shift+M` again from the board, `Esc`, a task action, or a lens change leaves it and clears the set. Text entry keeps `Shift+M` as a capital `M`; `Esc` leaves multi-select before cancelling that surface, except in a filter, view, assignee, or base picker, where it closes the picker first.
 
@@ -171,7 +171,7 @@ In Herdr quick capture, `Shift+Enter` saves and closes the popup. `Esc` closes a
 | Project picker | Arrows or `j`/`k` select; `Tab` or `←`/`→` switch tabs; `Enter` opens; `?` opens Help; `Esc` or `q` closes |
 | Project archive | `ctrl+f` archives; on archived tab, `ctrl+f` or `ctrl+u` restores |
 | Archived project view | `ctrl+u` restores; `Esc`, `p`, or `1`–`3` leaves |
-| Filter/view selector | `Tab` switches `threads · @assignees`; type or paste to filter the current tab; arrows select; `Enter` chooses; `Esc` closes |
+| Filter/view selector | `Tab` switches `threads · @assignees` (the desk filter: `threads · projects · @assignees`, `Shift+Tab` back); type or paste to filter the current tab; arrows select; `Enter` chooses; `Esc` closes |
 | Assignee picker | Type to filter; arrows or `Tab` select; `Enter` applies; `Esc` closes with no change |
 | Base picker | Open from palette **set base**, task footer `⎇`, or edit **Base** field; type to filter; arrows or `Tab` select; `Enter` applies; `Esc` closes with no change. No dedicated key |
 | Task picker (after) | Open from palette **set after…** or edit **After** field; type to filter by number or title; arrows or `Tab` select; `Space` ticks several; `Enter` applies the ticked tasks (or the highlighted one), **none** clears; `Esc` closes with no change. No dedicated key |

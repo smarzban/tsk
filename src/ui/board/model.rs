@@ -77,6 +77,18 @@ pub(super) enum LayoutSlot {
     AssigneeView,
 }
 
+impl LayoutSlot {
+    /// The group / sort word every row of this surface shares, so it is never offered.
+    fn shared_dimension(self) -> Option<&'static str> {
+        match self {
+            LayoutSlot::Desk => None,
+            LayoutSlot::Project => Some(GroupBy::Project.word()),
+            LayoutSlot::ThreadView => Some(GroupBy::Thread.word()),
+            LayoutSlot::AssigneeView => Some(GroupBy::Assignee.word()),
+        }
+    }
+}
+
 fn nearest_surviving_task(
     previous: Uuid,
     previous_visible: &[Uuid],
@@ -1078,6 +1090,8 @@ pub struct BoardModel {
     pub(super) project_layout: BoardLayout,
     pub(super) thread_view_layout: BoardLayout,
     pub(super) assignee_view_layout: BoardLayout,
+    /// `[board]` from `config.toml`, kept so a fresh preview seat starts from it too.
+    pub(super) layout_defaults: crate::agents::BoardDefaults,
     /// The projects index's View: the project overview, or one cross-project thread.
     pub(super) projects_view: ProjectsView,
     /// The active lens's content-search query. Session-only.
@@ -2141,6 +2155,7 @@ impl BoardModel {
             project_layout: BoardLayout::default(),
             thread_view_layout: BoardLayout::default(),
             assignee_view_layout: BoardLayout::default(),
+            layout_defaults: crate::agents::BoardDefaults::default(),
             projects_view: ProjectsView::Overview,
             search_query: String::new(),
             search_pinned: false,
@@ -3410,6 +3425,7 @@ impl BoardModel {
         let mut right = BoardModel::from_tasks(self.tasks.clone(), self.this_repo.clone());
         right.archived_projects = self.archived_projects.clone();
         right.agent_names = self.agent_names.clone();
+        right.set_layout_defaults(self.layout_defaults);
         right.board_location = BoardLocation::Project(path.clone());
         right.selected_project = Some(path);
         right.preview_seat = true;
@@ -4100,30 +4116,24 @@ impl BoardModel {
         }
     }
 
-    /// Group choices this surface offers: a project board never groups by project and the
-    /// thread View never by thread (every row shares that value).
+    /// Group choices this surface offers: a project board never groups by project, the
+    /// thread View never by thread, and an `@name` View never by assignee (every row shares
+    /// that value).
     pub fn group_choices(&self) -> Vec<GroupBy> {
-        match self.layout_slot() {
-            LayoutSlot::Desk | LayoutSlot::AssigneeView => {
-                vec![GroupBy::None, GroupBy::Project, GroupBy::Thread]
-            }
-            LayoutSlot::Project => vec![GroupBy::None, GroupBy::Thread],
-            LayoutSlot::ThreadView => vec![GroupBy::None, GroupBy::Project],
-        }
+        let shared = self.layout_slot().shared_dimension();
+        GroupBy::ALL
+            .into_iter()
+            .filter(|group| Some(group.word()) != shared)
+            .collect()
     }
 
     /// Sort choices this surface offers, with the same dimension rule as [`Self::group_choices`].
     pub fn sort_choices(&self) -> Vec<SortBy> {
-        match self.layout_slot() {
-            LayoutSlot::Desk | LayoutSlot::AssigneeView => vec![
-                SortBy::Recent,
-                SortBy::Project,
-                SortBy::Thread,
-                SortBy::Title,
-            ],
-            LayoutSlot::Project => vec![SortBy::Recent, SortBy::Thread, SortBy::Title],
-            LayoutSlot::ThreadView => vec![SortBy::Recent, SortBy::Project, SortBy::Title],
-        }
+        let shared = self.layout_slot().shared_dimension();
+        SortBy::ALL
+            .into_iter()
+            .filter(|sort| Some(sort.word()) != shared)
+            .collect()
     }
 
     /// Whether wide rows label their thread / project: a dimension is omitted where the
@@ -4141,6 +4151,19 @@ impl BoardModel {
             BoardLens::ThreadView(_) => (false, true),
             BoardLens::AssigneeView(_) => (true, true),
             BoardLens::Projects => (false, false),
+        }
+    }
+
+    /// Whether the peek's closing line names the assignee: not where an assignee filter or
+    /// the `@name` View already says it.
+    pub fn assignee_label_shown(&self) -> bool {
+        match self.effective_lens() {
+            BoardLens::Desk => !matches!(self.desk_filter.assignee, AssigneeFilter::Named(_)),
+            BoardLens::Project(_) | BoardLens::ArchivedProject(_) => {
+                !matches!(self.filter.assignee, AssigneeFilter::Named(_))
+            }
+            BoardLens::AssigneeView(_) => false,
+            BoardLens::ThreadView(_) | BoardLens::Projects => true,
         }
     }
 
@@ -4198,7 +4221,8 @@ impl BoardModel {
         self.group_at(header_id).map(|group| group.target)
     }
 
-    /// Whether `target` would change the board: `no thread` opens nothing, and the desk's
+    /// Whether `target` would change the board: `no thread` and `unassigned` open nothing,
+    /// and the desk's
     /// own `desk` sub-header is already open on the desk.
     pub fn group_target_opens(&self, target: &queue::GroupTarget) -> bool {
         match target {
@@ -4210,10 +4234,19 @@ impl BoardModel {
 
     /// Open one thread's cross-project view, as picking it in the projects tab does.
     pub(super) fn open_thread_view(&mut self, name: String) {
+        self.open_projects_view(ProjectsView::Thread(name));
+    }
+
+    /// Open one assignee's cross-project `@name` view, as picking it in the projects tab does.
+    pub(super) fn open_assignee_view(&mut self, name: String) {
+        self.open_projects_view(ProjectsView::Assignee(name));
+    }
+
+    fn open_projects_view(&mut self, view: ProjectsView) {
         let previous_visible = self.visible_ids();
         let previous = self.selection_id;
         self.switch_location(BoardLocation::Projects);
-        self.projects_view = ProjectsView::Thread(name);
+        self.projects_view = view;
         self.search_query.clear();
         self.search_pinned = false;
         self.projects_selected = 0;
@@ -4569,15 +4602,12 @@ impl BoardModel {
         if !matches!(self.board_location, BoardLocation::Desk) {
             return;
         }
-        // The desk filter pairs threads with projects; it has no assignees tab.
-        let tab = match tab {
-            FilterTab::Assignees => FilterTab::Threads,
-            tab => tab,
-        };
         let mut threads: BTreeMap<String, usize> = BTreeMap::new();
         let mut unthreaded = 0usize;
         let mut projects: BTreeMap<String, usize> = BTreeMap::new();
         let mut desk = 0usize;
+        let mut assignees: BTreeMap<String, usize> = BTreeMap::new();
+        let mut unassigned = 0usize;
         let mut open = 0usize;
         for task in &self.tasks {
             if task.soft_deleted
@@ -4603,9 +4633,33 @@ impl BoardModel {
                 }
                 TaskScope::Global => desk += 1,
             }
+            match task.assignee.as_deref() {
+                Some(name) => *assignees.entry(name.to_ascii_lowercase()).or_default() += 1,
+                None => unassigned += 1,
+            }
         }
         let options = match tab {
-            FilterTab::Threads | FilterTab::Assignees => {
+            FilterTab::Assignees => {
+                let mut options = vec![ListPickerOption {
+                    label: "All assignees".to_string(),
+                    count: Some(open),
+                    value: ListPickerValue::AssigneeFilterAll,
+                }];
+                options.extend(self.assignee_view_names(&mut assignees).into_iter().map(
+                    |(name, count)| ListPickerOption {
+                        label: format!("@{name}"),
+                        count: Some(count),
+                        value: ListPickerValue::AssigneeFilterNamed(name),
+                    },
+                ));
+                options.push(ListPickerOption {
+                    label: "unassigned".to_string(),
+                    count: Some(unassigned),
+                    value: ListPickerValue::AssigneeFilterUnassigned,
+                });
+                options
+            }
+            FilterTab::Threads => {
                 let mut options = vec![ListPickerOption {
                     label: "All threads".to_string(),
                     count: Some(open),
@@ -4666,6 +4720,13 @@ impl BoardModel {
                 ListPickerValue::DeskProject(path) => {
                     matches!(&filter.project, ProjectFilter::Named(active) if paths_equivalent(active, path))
                 }
+                ListPickerValue::AssigneeFilterAll => filter.assignee == AssigneeFilter::All,
+                ListPickerValue::AssigneeFilterNamed(name) => {
+                    filter.assignee == AssigneeFilter::Named(name.clone())
+                }
+                ListPickerValue::AssigneeFilterUnassigned => {
+                    filter.assignee == AssigneeFilter::Unassigned
+                }
                 _ => false,
             })
             .unwrap_or(0);
@@ -4684,17 +4745,24 @@ impl BoardModel {
         });
     }
 
-    /// Flip the desk filter picker between its threads and projects tabs.
-    pub(super) fn switch_desk_filter_tab(&mut self, tab: Option<FilterTab>) {
+    /// Show one of the desk filter picker's `threads · projects · @assignees` tabs, or step
+    /// to the next (`forward`) or previous one when `tab` is `None`, wrapping.
+    pub(super) fn switch_desk_filter_tab(&mut self, tab: Option<FilterTab>, forward: bool) {
         let Some(picker) = self.list_picker.as_ref() else {
             return;
         };
         if picker.kind != ListPickerKind::DeskFilter {
             return;
         }
-        let next = tab.unwrap_or(match picker.tab {
-            FilterTab::Projects => FilterTab::Threads,
-            _ => FilterTab::Projects,
+        const ORDER: [FilterTab; 3] = [
+            FilterTab::Threads,
+            FilterTab::Projects,
+            FilterTab::Assignees,
+        ];
+        let next = tab.unwrap_or_else(|| {
+            let at = ORDER.iter().position(|tab| *tab == picker.tab).unwrap_or(0);
+            let step = if forward { 1 } else { ORDER.len() - 1 };
+            ORDER[(at + step) % ORDER.len()]
         });
         self.open_desk_filter_picker(next);
     }
@@ -4782,15 +4850,21 @@ impl BoardModel {
         self.list_picker.as_ref().and_then(|picker| picker.active)
     }
 
-    /// Show `target` (or the other tab when `None`) in a tabbed picker. The query clears and
-    /// the cursor lands on that tab's active choice. Returns false for an untabbed picker.
-    pub(super) fn switch_list_picker_tab(&mut self, target: Option<FilterTab>) -> bool {
+    /// Show `target` in a tabbed picker, or step to the next (`forward`) or previous tab when
+    /// `None`: the desk filter cycles three tabs, the others flip between two. The query
+    /// clears and the cursor lands on that tab's active choice. Returns false for an
+    /// untabbed picker.
+    pub(super) fn switch_list_picker_tab(
+        &mut self,
+        target: Option<FilterTab>,
+        forward: bool,
+    ) -> bool {
         if self
             .list_picker
             .as_ref()
             .is_some_and(|picker| picker.kind == ListPickerKind::DeskFilter)
         {
-            self.switch_desk_filter_tab(target);
+            self.switch_desk_filter_tab(target, forward);
             return true;
         }
         let Some(picker) = self.list_picker.as_mut() else {
@@ -5501,6 +5575,18 @@ impl BoardModel {
             }
             (ListPickerKind::DeskFilter, ListPickerValue::DeskProject(path)) => {
                 self.desk_filter.project = ProjectFilter::Named(path.clone());
+                true
+            }
+            (ListPickerKind::DeskFilter, ListPickerValue::AssigneeFilterAll) => {
+                self.desk_filter.assignee = AssigneeFilter::All;
+                true
+            }
+            (ListPickerKind::DeskFilter, ListPickerValue::AssigneeFilterNamed(name)) => {
+                self.desk_filter.assignee = AssigneeFilter::Named(name.clone());
+                true
+            }
+            (ListPickerKind::DeskFilter, ListPickerValue::AssigneeFilterUnassigned) => {
+                self.desk_filter.assignee = AssigneeFilter::Unassigned;
                 true
             }
             (ListPickerKind::GroupBy, ListPickerValue::Group(group)) => {
@@ -6579,6 +6665,25 @@ impl BoardModel {
     pub(super) fn cycle_form_assignee(&mut self, forward: bool) {
         if let Some(form) = self.form.as_mut() {
             form.cycle_assignee(forward);
+        }
+    }
+
+    /// Start the desk and project boards from `config.toml`'s `[board]` group and sort.
+    /// Called once at open; the session's own changes are never written back.
+    pub fn set_layout_defaults(&mut self, defaults: crate::agents::BoardDefaults) {
+        self.layout_defaults = defaults;
+        self.desk_layout = BoardLayout {
+            group: defaults.group,
+            sort: defaults.sort,
+            folded: BTreeSet::new(),
+        };
+        self.project_layout = BoardLayout {
+            group: defaults.project_group,
+            sort: defaults.project_sort,
+            folded: BTreeSet::new(),
+        };
+        if let Some(right) = self.right_seat.as_mut() {
+            right.set_layout_defaults(defaults);
         }
     }
 
@@ -7916,7 +8021,7 @@ mod tests {
         assert_eq!(model.list_picker_active(), Some(0), "all is marked");
 
         model.list_picker_query_insert('n');
-        assert!(model.switch_list_picker_tab(None));
+        assert!(model.switch_list_picker_tab(None, true));
         assert_eq!(model.list_picker_tab(), Some(FilterTab::Assignees));
         assert_eq!(model.list_picker_query(), Some(""), "the query is per tab");
         assert_eq!(
@@ -7935,7 +8040,7 @@ mod tests {
         model.list_picker_query_insert_text("un");
         assert_eq!(labels(&model), vec!["unassigned"]);
 
-        assert!(model.switch_list_picker_tab(None));
+        assert!(model.switch_list_picker_tab(None, true));
         assert_eq!(model.list_picker_tab(), Some(FilterTab::Threads));
         assert_eq!(labels(&model), vec!["all", "#nav", "Without a thread"]);
     }
@@ -7974,7 +8079,7 @@ mod tests {
             Some(ListPickerValue::ThreadNamed("release".to_string()))
         );
         model.open_thread_filter_picker();
-        model.switch_list_picker_tab(Some(FilterTab::Assignees));
+        model.switch_list_picker_tab(Some(FilterTab::Assignees), true);
         model.move_list_picker(true); // @claude
         assert_eq!(
             model.confirm_list_picker(),
@@ -7987,7 +8092,7 @@ mod tests {
         model.open_thread_filter_picker();
         assert_eq!(model.list_picker_active(), Some(1));
         assert_eq!(model.list_picker_selected(), 1);
-        model.switch_list_picker_tab(None);
+        model.switch_list_picker_tab(None, true);
         assert_eq!(model.list_picker_active(), Some(1));
 
         // `all` on the assignees tab clears only the assignee choice.
@@ -8005,7 +8110,7 @@ mod tests {
 
         // And `all` on the threads tab clears only the thread choice.
         model.open_thread_filter_picker();
-        model.switch_list_picker_tab(Some(FilterTab::Assignees));
+        model.switch_list_picker_tab(Some(FilterTab::Assignees), true);
         model.move_list_picker(true);
         model.confirm_list_picker();
         model.open_thread_filter_picker();
@@ -8038,7 +8143,7 @@ mod tests {
         };
 
         model.open_thread_filter_picker();
-        model.switch_list_picker_tab(None);
+        model.switch_list_picker_tab(None, true);
         assert_eq!(labels(&model), vec!["all", "@retired", "unassigned"]);
         model.move_list_picker(false); // unassigned
         assert_eq!(
@@ -8049,7 +8154,7 @@ mod tests {
         assert_eq!(model.board_filter().label(), "unassigned");
 
         model.open_thread_filter_picker();
-        model.switch_list_picker_tab(None);
+        model.switch_list_picker_tab(None, true);
         // The cursor reopens on the active `unassigned`; one up is @retired.
         model.move_list_picker(false);
         assert_eq!(
@@ -8090,7 +8195,7 @@ mod tests {
         model.open_projects_view_picker();
         assert_eq!(model.list_picker_tab(), Some(FilterTab::Threads));
         assert_eq!(labels(&model), vec!["Overview"]);
-        model.switch_list_picker_tab(None);
+        model.switch_list_picker_tab(None, true);
         assert_eq!(
             labels(&model),
             vec!["@claude", "@pi"],
@@ -8137,7 +8242,7 @@ mod tests {
         model.open_projects_view_picker();
         assert_eq!(model.list_picker_tab(), Some(FilterTab::Assignees));
         assert_eq!(model.list_picker_active(), Some(0));
-        model.switch_list_picker_tab(None);
+        model.switch_list_picker_tab(None, true);
         assert_eq!(
             model.confirm_list_picker(),
             Some(ListPickerValue::ProjectsOverview)
