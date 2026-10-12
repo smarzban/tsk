@@ -4506,7 +4506,7 @@ mod tests {
         assert_eq!(
             right.layout().folded,
             folded_before,
-            "the double-click left the fold as it was"
+            "a refused open never falls back to folding"
         );
     }
 
