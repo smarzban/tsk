@@ -23020,6 +23020,11 @@ mod merge_cleanup_tests {
             "{}",
             merge.text
         );
+        assert!(
+            !merge.text.contains("(not merged)"),
+            "nothing says it is unmerged: {}",
+            merge.text
+        );
         press(&mut board, BoardIntent::MergeCleanup, &mut host);
         let attempted = host
             .merges
@@ -23070,6 +23075,46 @@ mod merge_cleanup_tests {
         for index in 0..2 {
             assert_eq!(on_disk(&board, index), HumanStatus::Started);
         }
+    }
+
+    #[test]
+    fn bulk_m_whose_only_merge_fails_still_tidies_the_rest() {
+        // No merge lands and no row was already merged: the rest still go on.
+        let mut board = board("bulk-fail-only", &["one", "nopr", "plain"]);
+        let mut host = MergeHost::default();
+        host.open_pr("tsk/one", "main");
+        host.refuse
+            .insert("tsk/one".into(), "merge conflicts".into());
+        press(&mut board, BoardIntent::Complete, &mut host);
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        tick(&mut board, &mut host);
+        tick(&mut board, &mut host);
+        assert!(
+            board
+                .model
+                .cleanup_prompt()
+                .is_none_or(|prompt| prompt.settled.is_none()),
+            "something went on: the card did not settle"
+        );
+        assert_eq!(
+            [0, 1, 2].map(|index| on_disk(&board, index)),
+            [HumanStatus::Started, HumanStatus::Done, HumanStatus::Done],
+            "the refused merge stays, the rest go ahead"
+        );
+        assert_eq!(host.removed, ["w-nopr"]);
+        assert!(
+            host.deleted_at_tip.is_empty(),
+            "the unmerged branch is kept"
+        );
+        assert!(matches!(
+            board.domain.last_undo(),
+            Some(crate::domain::UndoEntry::Batch { entries }) if entries.len() == 2
+        ));
+        assert!(
+            screen(&board.model).contains("merge failed: merge conflicts · unchanged"),
+            "{}",
+            screen(&board.model)
+        );
     }
 
     #[test]
