@@ -12,7 +12,7 @@ use crate::cli::status::{StatusError, StatusResult};
 use crate::cli::steps::{StepLine, StepsError, StepsResult};
 use crate::cli::trash::{TrashCliError, TrashRestoreResult};
 use crate::domain::HumanStatus;
-use crate::ui::queue::GroupBy;
+use crate::ui::queue::{GroupBy, SortBy};
 use crate::ui::terminal_text;
 
 fn human_reason(reason: &str) -> String {
@@ -350,6 +350,15 @@ fn list_human(result: &ListResult, terminal_width: Option<usize>) -> String {
                 labels.as_ref(),
                 output_width,
             );
+        } else if result.include_scope && result.sort != SortBy::Recent {
+            // Sorted like the board's ungrouped section: one run per status, each row
+            // naming its scope, so scope groups cannot undo the order.
+            let labels = labels.as_ref().expect("scope labels");
+            for row in rows {
+                let scope =
+                    terminal_text(labels.get(&row.project).expect("label for displayed scope"));
+                append_row(&mut output, row, " ", output_width, true, Some(&scope));
+            }
         } else if result.include_scope {
             append_scope_groups(
                 &mut output,

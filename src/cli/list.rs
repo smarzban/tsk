@@ -28,10 +28,11 @@ pub struct ListInput {
     pub thread: Option<String>,
     /// Unthreaded tasks only: the board filter's `without a thread`.
     pub no_thread: bool,
-    /// The board's `g` grouping, applied under each status heading.
-    pub group: GroupBy,
+    /// The board's `g` grouping, applied under each status heading. `None` when the
+    /// flag was not given, so an explicit default still meets the view refusals.
+    pub group: Option<GroupBy>,
     /// The board's `s` row order inside each group or status heading.
-    pub sort: SortBy,
+    pub sort: Option<SortBy>,
     /// One task addressed by UUID or human number: single-task listing with full detail.
     pub task: Option<TaskAddress>,
     pub state_dir: Option<PathBuf>,
@@ -88,6 +89,8 @@ pub struct ListResult {
     pub(crate) include_scope: bool,
     /// The grouping the rows carry labels for; rows drop that dimension.
     pub(crate) group: GroupBy,
+    /// A non-recent sort orders rows across scopes, so `--all` drops its scope groups.
+    pub(crate) sort: SortBy,
     /// Notes and step lines for one directly addressed task; absent for filtered listings.
     pub(crate) direct: Option<DirectTaskDetails>,
 }
@@ -110,8 +113,8 @@ pub fn parse(args: &[String]) -> Result<ListInput, String> {
         ready: false,
         thread: None,
         no_thread: false,
-        group: GroupBy::None,
-        sort: SortBy::Recent,
+        group: None,
+        sort: None,
         task: None,
         state_dir: None,
         help: false,
@@ -166,22 +169,22 @@ pub fn parse(args: &[String]) -> Result<ListInput, String> {
             }
             flag if flag.starts_with("--group=") => {
                 once("--group")?;
-                input.group = parse_group(&flag["--group=".len()..])?;
+                input.group = Some(parse_group(&flag["--group=".len()..])?);
                 index += 1;
             }
             "--group" => {
                 once("--group")?;
-                input.group = parse_group(&value(flag)?)?;
+                input.group = Some(parse_group(&value(flag)?)?);
                 index += 2;
             }
             flag if flag.starts_with("--sort=") => {
                 once("--sort")?;
-                input.sort = parse_sort(&flag["--sort=".len()..])?;
+                input.sort = Some(parse_sort(&flag["--sort=".len()..])?);
                 index += 1;
             }
             "--sort" => {
                 once("--sort")?;
-                input.sort = parse_sort(&value(flag)?)?;
+                input.sort = Some(parse_sort(&value(flag)?)?);
                 index += 2;
             }
             "--desk" => {
@@ -278,15 +281,14 @@ pub fn parse(args: &[String]) -> Result<ListInput, String> {
             "--open and --ready cannot be used with --done, --deleted, or --archived".into(),
         );
     }
-    if input.task.is_some() && (input.group != GroupBy::None || input.sort != SortBy::Recent) {
+    let arranged = input.group.is_some() || input.sort.is_some();
+    if input.task.is_some() && arranged {
         return Err("task operand cannot be used with --group or --sort".into());
     }
     if input.thread.is_some() && input.no_thread {
         return Err("--no-thread cannot be used with --thread".into());
     }
-    if (input.group != GroupBy::None || input.sort != SortBy::Recent)
-        && (input.done || input.deleted || input.archived)
-    {
+    if arranged && (input.done || input.deleted || input.archived) {
         // The board never groups or sorts the done drawer or the archived group.
         return Err(
             "--group and --sort cannot be used with --done, --deleted, or --archived".into(),
@@ -295,7 +297,7 @@ pub fn parse(args: &[String]) -> Result<ListInput, String> {
     // Like the board, never arrange by a dimension every row already shares. Without
     // --all the listing is one scope (a project or the desk), so it has one project.
     if (input.thread.is_some() || input.no_thread)
-        && (input.group == GroupBy::Thread || input.sort == SortBy::Thread)
+        && (input.group == Some(GroupBy::Thread) || input.sort == Some(SortBy::Thread))
     {
         let flag = if input.no_thread {
             "--no-thread"
@@ -306,7 +308,8 @@ pub fn parse(args: &[String]) -> Result<ListInput, String> {
             "--group thread and --sort thread cannot be used with {flag}"
         ));
     }
-    if !input.all && (input.group == GroupBy::Project || input.sort == SortBy::Project) {
+    if !input.all && (input.group == Some(GroupBy::Project) || input.sort == Some(SortBy::Project))
+    {
         return Err("--group project and --sort project need --all".into());
     }
     Ok(input)
@@ -360,6 +363,7 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
             view,
             include_scope: false,
             group: GroupBy::None,
+            sort: SortBy::Recent,
             direct: Some(DirectTaskDetails {
                 notes: task.notes.clone(),
                 steps: crate::cli::steps::step_lines(&task.steps),
@@ -431,9 +435,13 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
             .then_with(|| crate::ui::queue::cmp_within_status(a, b))
     });
     // Then the board's `g`/`s` inside each status, with the board's own functions.
+    let (group, sort) = (
+        input.group.unwrap_or_default(),
+        input.sort.unwrap_or_default(),
+    );
     let mut arranged: Vec<(Option<String>, &crate::domain::Task)> = Vec::new();
     for status in tasks.chunk_by(|a, b| a.status == b.status) {
-        for (label, rows) in arrange_rows(status.to_vec(), input.group, input.sort) {
+        for (label, rows) in arrange_rows(status.to_vec(), group, sort) {
             arranged.extend(rows.into_iter().map(|task| (label.clone(), task)));
         }
     }
@@ -457,7 +465,8 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
         rows,
         view,
         include_scope: input.all,
-        group: input.group,
+        group,
+        sort,
         direct: None,
     })
 }
@@ -507,6 +516,7 @@ fn deleted_rows(
         view: ListView::Deleted,
         include_scope,
         group: GroupBy::None,
+        sort: SortBy::Recent,
         direct: None,
     })
 }

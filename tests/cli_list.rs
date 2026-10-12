@@ -3064,12 +3064,56 @@ fn list_group_and_sort_combine_with_scope_and_thread() {
     assert_eq!(titles(&project), vec!["alpha release", "alpha api"]);
     assert_eq!(groups(&project), vec!["#release", "#api"]);
 
-    // --desk + --sort title.
-    let desk = json_rows(&list(&list_args(
+    // -p + --sort title: recent order is alpha release, alpha api.
+    let by_title = json_rows(&list(&list_args(
         &dir,
-        &["--desk", "--sort", "title", "--json"],
+        &["-p", &alpha_path, "--sort", "title", "--json"],
     )));
-    assert_eq!(titles(&desk), vec!["desk loose", "desk release"]);
+    assert_eq!(titles(&by_title), vec!["alpha api", "alpha release"]);
+
+    // --all + --sort project: alpha, beta, then the desk last; ties keep recent order.
+    let by_project = json_rows(&list(&list_args(
+        &dir,
+        &["--all", "--sort", "project", "--json"],
+    )));
+    assert_eq!(
+        titles(&by_project),
+        vec![
+            "alpha release",
+            "alpha api",
+            "beta loose",
+            "desk loose",
+            "desk release",
+            "beta release",
+        ]
+    );
+    assert!(by_project.iter().all(|row| row.get("group").is_none()));
+
+    // Human --all --sort without --group keeps the sort inside each status: no scope
+    // sub-headings regroup it, and each row names its scope.
+    let human = list(&list_args(&dir, &["--all", "--sort", "title"]));
+    assert_eq!(human.code, 0, "{}", human.stderr);
+    let started: Vec<&str> = human
+        .stdout
+        .lines()
+        .skip(1)
+        .take_while(|line| !line.is_empty())
+        .collect();
+    assert_eq!(started.len(), 5, "{}", human.stdout);
+    for (line, title) in started.iter().zip([
+        "alpha api",
+        "alpha release",
+        "beta loose",
+        "desk loose",
+        "desk release",
+    ]) {
+        assert!(
+            line.starts_with(" - "),
+            "flat rows, no scope sub-heading: {line}"
+        );
+        assert!(line.contains(title), "{line} should be {title}");
+    }
+    assert!(started[3].ends_with(" · desk"), "{}", started[3]);
 
     // --all + --thread + --group project: the cross-project thread view.
     let thread = json_rows(&list(&list_args(
@@ -3107,6 +3151,11 @@ fn list_group_and_sort_combine_with_scope_and_thread() {
         vec!["--no-thread", "--sort", "thread"],
         vec!["--done", "--group", "thread"],
         vec!["--archived", "--sort", "title"],
+        vec!["--done", "--sort", "recent"],
+        vec!["--archived", "--group", "none"],
+        vec!["--deleted", "--sort=recent"],
+        vec!["T1", "--sort", "recent"],
+        vec!["T1", "--group=none"],
         vec!["--deleted", "--all", "--group", "project"],
         vec!["--group", "status"],
         vec!["--sort", "newest"],
