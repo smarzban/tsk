@@ -1728,29 +1728,38 @@ fn apply_board_intent(
             }
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::ToggleGroupFold(header_id) => {
-            let Some(group) = model.group_at(header_id) else {
+        BoardIntent::ClickHeader(header_id) => {
+            // One click only selects the header. A double-click opens what it names; a
+            // header that opens nothing (inbox, archived, `no thread`, the desk on the desk)
+            // folds or unfolds instead.
+            let target = model.group_header_target(header_id);
+            if crate::ui::queue::is_group_header_id(header_id) && target.is_none() {
                 return Ok(IntentOutcome::None);
-            };
+            }
             let now = Instant::now();
             let is_double = model.last_group_header_click.is_some_and(|(at, last)| {
                 last == header_id && now.duration_since(at) <= ROW_DOUBLE_CLICK_WINDOW
             });
-            model.clear_marks();
             let previous_visible = model.visible_ids();
-            if is_double {
-                // The first click folded or unfolded the group; put it back, then open the
-                // group's board, so a double-click leaves the fold as it found it.
-                model.last_group_header_click = None;
-                model.toggle_group_folded(header_id);
-                model.select_row(header_id);
-                model.reanchor_selection(Some(header_id), &previous_visible);
-                return open_group_target(model, group.target);
+            model.select_row(header_id);
+            model.reanchor_selection(Some(header_id), &previous_visible);
+            if !is_double {
+                model.last_group_header_click = Some((now, header_id));
+                return Ok(IntentOutcome::None);
             }
-            model.last_group_header_click = Some((now, header_id));
-            let target = model.toggle_group(&group);
-            model.select_row(target);
-            model.reanchor_selection(Some(target), &previous_visible);
+            model.last_group_header_click = None;
+            if let Some(target) = target.filter(|target| model.group_target_opens(target)) {
+                return open_group_target(model, target);
+            }
+            let Some(folded) = model.selected_header_folded() else {
+                return Ok(IntentOutcome::None);
+            };
+            let previous_visible = model.visible_ids();
+            if model.set_selected_header_folded(!folded) {
+                model.clear_marks();
+                model.reanchor_selection(Some(header_id), &previous_visible);
+                model.clear_message();
+            }
             return Ok(IntentOutcome::None);
         }
         BoardIntent::FoldHeader | BoardIntent::UnfoldHeader => {
@@ -2225,8 +2234,8 @@ fn apply_board_intent(
             return Ok(IntentOutcome::None);
         }
         BoardIntent::ToggleArchivedGroup => {
-            // A click on the header: flip that one group. The drawer is already
-            // open, because the header only paints inside it.
+            // Flip that one group and select its header. The drawer is already open,
+            // because the header only paints inside it.
             model.clear_marks();
             let previous_visible = model.visible_ids();
             model.toggle_archived_collapsed();

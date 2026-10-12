@@ -362,7 +362,7 @@ fn shift_f_folds_every_sub_group_then_unfolds_them_all() {
 }
 
 #[test]
-fn a_click_on_a_sub_header_folds_that_group() {
+fn a_click_on_a_sub_header_only_selects_it() {
     let mut board = board();
     board.pick(BoardIntent::OpenGroupPicker, "project");
     let (_, rows, header) = board.motion_groups()[1].clone();
@@ -379,11 +379,12 @@ fn a_click_on_a_sub_header_folds_that_group() {
         left_click(region.area.x + 2, region.area.y),
     )
     .expect("click maps");
-    assert_eq!(intent, BoardIntent::ToggleGroupFold(header));
+    assert_eq!(intent, BoardIntent::ClickHeader(header));
     board.apply(intent);
-    assert!(rows
-        .iter()
-        .all(|id| !board.model.visible_ids().contains(id)));
+    assert!(
+        rows.iter().all(|id| board.model.visible_ids().contains(id)),
+        "a single click never folds"
+    );
     assert!(board.model.group_header_selected());
 }
 
@@ -1067,14 +1068,14 @@ fn arrows_fold_and_unfold_sub_headers_and_the_inbox_in_place() {
 }
 
 #[test]
-fn a_double_click_on_a_sub_header_opens_its_board_and_leaves_the_fold_alone() {
+fn a_double_click_on_a_sub_header_opens_its_board_and_never_folds() {
     let mut board = board();
     board.pick(BoardIntent::OpenGroupPicker, "project");
     let alpha_header = board.motion_groups()[0].2;
     board.click(QueueHitTarget::GroupHeader(alpha_header));
     assert!(
-        board.model.layout().folded.contains(&alpha_header),
-        "a single click folds"
+        !board.model.layout().folded.contains(&alpha_header),
+        "a single click only selects"
     );
     board.click(QueueHitTarget::GroupHeader(alpha_header));
     assert_eq!(board.model.nav_tab(), NavTab::ProjectBoard);
@@ -1085,8 +1086,60 @@ fn a_double_click_on_a_sub_header_opens_its_board_and_leaves_the_fold_alone() {
     board.apply(BoardIntent::SelectNavTab(NavTab::Desk));
     assert!(
         !board.model.layout().folded.contains(&alpha_header),
-        "the double-click put the fold back before leaving"
+        "the double-click opened without folding"
     );
+}
+
+#[test]
+fn a_double_click_folds_a_header_that_opens_nothing() {
+    let mut board = board();
+    board.pick(BoardIntent::OpenGroupPicker, "thread");
+    let loose = board
+        .motion_groups()
+        .into_iter()
+        .find(|group| group.0 == "no thread")
+        .expect("no thread group");
+    let (_, rows, header) = loose;
+    let hidden = |board: &Board| {
+        rows.iter()
+            .all(|id| !board.model.visible_ids().contains(id))
+    };
+    board.click(QueueHitTarget::GroupHeader(header));
+    assert!(!hidden(&board), "a single click only selects");
+    board.click(QueueHitTarget::GroupHeader(header));
+    assert!(hidden(&board), "a double-click on `no thread` folds it");
+    assert_eq!(board.model.nav_tab(), NavTab::Desk, "and opens nothing");
+    assert!(board.model.group_header_selected());
+    board.click(QueueHitTarget::GroupHeader(header));
+    board.click(QueueHitTarget::GroupHeader(header));
+    assert!(!hidden(&board), "a second double-click unfolds it");
+
+    // The desk's own sub-header opens nothing on the desk, so it folds too.
+    board.pick(BoardIntent::OpenGroupPicker, "project");
+    let desk_header = board
+        .motion_groups()
+        .into_iter()
+        .find(|group| group.0 == "desk")
+        .expect("desk group")
+        .2;
+    board.click(QueueHitTarget::GroupHeader(desk_header));
+    board.click(QueueHitTarget::GroupHeader(desk_header));
+    assert!(board.model.layout().folded.contains(&desk_header));
+    assert_eq!(board.model.nav_tab(), NavTab::Desk);
+}
+
+#[test]
+fn a_click_selects_the_inbox_heading_and_a_double_click_folds_it() {
+    let (mut board, ship_one, _, _) = grouped_inbox();
+    board.click(QueueHitTarget::InboxHeader);
+    assert!(board.model.inbox_header_selected());
+    assert!(board.model.visible_ids().contains(&ship_one), "no fold");
+    board.click(QueueHitTarget::InboxHeader);
+    assert!(!board.model.visible_ids().contains(&ship_one), "folded");
+    assert!(board.model.inbox_header_selected());
+    board.click(QueueHitTarget::InboxHeader);
+    board.click(QueueHitTarget::InboxHeader);
+    assert!(board.model.visible_ids().contains(&ship_one), "unfolded");
 }
 
 #[test]

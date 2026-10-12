@@ -1204,7 +1204,7 @@ pub fn apply_board_intent_with_save_recovery(
             | BoardIntent::FoldAllGroups
             | BoardIntent::FoldHeader
             | BoardIntent::UnfoldHeader
-            | BoardIntent::ToggleGroupFold(_) => return apply_intent(domain, model, intent, None),
+            | BoardIntent::ClickHeader(_) => return apply_intent(domain, model, intent, None),
             _ => {
                 model.begin_save_recovery(recovery.error().unwrap_or("save failed"));
                 return Ok(IntentOutcome::None);
@@ -1489,7 +1489,7 @@ impl ReflowRowClick {
             && pos == Position::new(mouse.column, mouse.row)
             && frame == area
             && model.input_mode() == BoardInputMode::Normal;
-        let continues = if crate::ui::queue::is_group_header_id(id) {
+        let continues = if crate::ui::queue::is_fold_header_id(id) {
             model.wide_stage() == crate::ui::tier::WideStage::Rail
                 && model.project_right_seat_focused()
                 && model
@@ -1518,8 +1518,8 @@ fn board_mouse_click_intent_after_focus<E>(
     // Consume the second release before preview controls or reflowed rows can see it.
     if let Some(id) = reflow_click.target(model, area, click) {
         reflow_click.clear();
-        if crate::ui::queue::is_group_header_id(id) {
-            return Ok((false, Some(BoardIntent::ToggleGroupFold(id))));
+        if crate::ui::queue::is_fold_header_id(id) {
+            return Ok((false, Some(BoardIntent::ClickHeader(id))));
         }
         let intent = (model.selected_id() == Some(id))
             .then(|| {
@@ -1541,8 +1541,9 @@ fn board_mouse_click_intent_after_focus<E>(
         // click still names the control the user saw: dispatch it against the painted frame
         // rather than a repaint whose rows no longer line up with the press.
         resolve_board_surface(area, model);
-        model.cancel_project_header_double_click();
-        let intent = map_responsive_board_mouse(model, painted_hits, area, click)
+        let mapped = map_responsive_board_mouse(model, painted_hits, area, click);
+        model.cancel_other_double_clicks(mapped.as_ref());
+        let intent = mapped
             .and_then(|intent| board_intent_for_presentation(area, model, intent))
             .and_then(|intent| {
                 resolve_board_command(
@@ -1550,7 +1551,7 @@ fn board_mouse_click_intent_after_focus<E>(
                     intent,
                 )
             });
-        if let Some(BoardIntent::ToggleGroupFold(id)) = intent {
+        if let Some(BoardIntent::ClickHeader(id)) = intent {
             reflow_click.0 = Some((Position::new(click.column, click.row), area, id));
         }
         return Ok((false, intent));
@@ -1701,13 +1702,11 @@ fn board_mouse_intent(
         crate::ui::render::QueueHitMap::default()
     };
     let intent = map_responsive_board_mouse(model, &hits, area, mouse);
-    if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
-        && !matches!(intent, Some(BoardIntent::SelectProjectRow(_)))
-    {
-        // Any left press that is not an index-row click disarms a pending index-row
-        // double-click: inert cells and other controls (tabs, chips, search) alike.
-        // The header double-click shares the same disarm.
-        model.cancel_project_header_double_click();
+    if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+        // Any other left press disarms a pending index-row or header double-click: inert
+        // cells and other controls (tabs, chips, search) alike. The target's own second
+        // press keeps its arm, or the double-click could never land.
+        model.cancel_other_double_clicks(intent.as_ref());
     }
     let intent = intent?;
     let intent = board_intent_for_presentation(area, model, intent)?;
@@ -4369,6 +4368,61 @@ mod tests {
     }
 
     #[test]
+    fn a_real_double_click_on_a_sub_header_opens_or_folds_it_at_every_width() {
+        for width in [80, 120] {
+            for label in ["#ship", "no thread"] {
+                let area = Rect::new(0, 0, width, 30);
+                let (mut domain, mut model, _) = grouped_header_fixture(TaskScope::Global);
+                apply_intent(
+                    &mut domain,
+                    &mut model,
+                    BoardIntent::SelectNavTab(NavTab::Desk),
+                    None,
+                )
+                .expect("desk");
+                select_ship_header(&mut domain, &mut model);
+                let header = model
+                    .queue_view()
+                    .sections
+                    .into_iter()
+                    .flat_map(|section| section.groups)
+                    .find(|group| group.label == label)
+                    .expect("sub-header")
+                    .header_id;
+                let cell = board_hit_map(area, &model)
+                    .regions
+                    .iter()
+                    .find(|hit| {
+                        hit.target == crate::ui::render::QueueHitTarget::GroupHeader(header)
+                    })
+                    .expect("the board paints the sub-header")
+                    .area;
+                let click = left_click(cell.x + 2, cell.y);
+                let mut reflow = ReflowRowClick::default();
+                dispatch_preview_test_click(&mut domain, &mut model, &mut reflow, area, click);
+                assert!(
+                    !model.layout().folded.contains(&header),
+                    "one click at {width} columns only selects {label}"
+                );
+                dispatch_preview_test_click(&mut domain, &mut model, &mut reflow, area, click);
+                if label == "#ship" {
+                    assert_eq!(
+                        model.projects_view(),
+                        &crate::ui::board::ProjectsView::Thread("ship".into()),
+                        "a double-click at {width} columns opens the thread"
+                    );
+                } else {
+                    assert_eq!(model.nav_tab(), NavTab::Desk);
+                    assert!(
+                        model.layout().folded.contains(&header),
+                        "a double-click at {width} columns folds `no thread`"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_split_preview_sub_header_double_click_survives_the_slide_and_opens_its_view() {
         let area = Rect::new(0, 0, 120, 30);
         let (mut domain, mut model, header, click) = split_preview_ship_header(area);
@@ -4382,11 +4436,10 @@ mod tests {
             .expect("the Rail preview paints the sub-header")
             .area;
         assert_ne!(moved.y, click.row, "the slide moved the sub-header");
+        let right = model.right_seat().expect("the preview stays open");
         assert!(
-            model
-                .right_seat()
-                .is_some_and(|right| right.layout().folded.contains(&header)),
-            "the first click slid to Rail and folded the sub-header"
+            !right.layout().folded.contains(&header) && right.group_header_selected(),
+            "the first click slid to Rail and only selected the sub-header"
         );
         dispatch_preview_test_click(&mut domain, &mut model, &mut reflow, area, click);
         assert_eq!(
@@ -4434,7 +4487,7 @@ mod tests {
                     area,
                     target: BoardIntentTarget::Focused,
                 },
-                BoardIntent::ToggleGroupFold(header),
+                BoardIntent::ClickHeader(header),
                 &mut recovery,
                 false,
             )

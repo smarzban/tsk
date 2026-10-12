@@ -12,7 +12,7 @@ the GitHub release notes verbatim.
 ### Added
 
 - Board rows show their thread and project at every width: a dim `#thread · project` label (`desk` for a desk task) follows the title, wrapping to the title's indent when it does not fit and leaving out whatever the view already says. A peeked row's closing line shows the same label. Thanks @LukasGold (#175).
-- Group and sort the board. `g` groups the live sections, the inbox included, by project or thread (a project board groups by thread), `s` sorts by recent, project, thread, or title, `f` folds or unfolds the group under the cursor, and `Shift+F` folds or unfolds every group; every sub-header is a cursor stop that `←` / `h` folds and `→` / `l` unfolds (the inbox and archived headings too), a click on one folds it, `Enter` or a double-click opens its project's board, the desk, or its thread's cross-project view, and `Shift+M` on a sub-header marks the whole group. Every task list's header (the desk, project boards, the thread view, and the Projects preview) shows clickable `group: …` and `sort: …` controls beside its filter. Also **group by…**, **sort by…**, and **fold / unfold group** in the `:` palette. Choices last for the board session. Thanks @LukasGold and @GalShnapp (#175, #158).
+- Group and sort the board. `g` groups the live sections, the inbox included, by project or thread (a project board groups by thread), `s` sorts by recent, project, thread, or title, `f` folds or unfolds the group under the cursor, and `Shift+F` folds or unfolds every group; every sub-header is a cursor stop that `←` / `h` folds and `→` / `l` unfolds (the inbox and archived headings too), a click on one selects it, `Enter` or a double-click opens its project's board, the desk, or its thread's cross-project view (a double-click on a header that opens nothing, the inbox and archived included, folds or unfolds it instead), and `Shift+M` on a sub-header marks the whole group. Every task list's header (the desk, project boards, the thread view, and the Projects preview) shows clickable `group: …` and `sort: …` controls beside its filter. Also **group by…**, **sort by…**, and **fold / unfold group** in the `:` palette. Choices last for the board session. Thanks @LukasGold and @GalShnapp (#175, #158).
 - The desk has a filter too: `t` (or the new `all ▾` control) opens it with a threads tab and a projects tab whose choices combine, so a thread that spans repositories reads as one initiative. Thanks @GalShnapp (#158).
 
 - Reorder steps. On the task page, `alt+↑` / `alt+↓` moves the selected step (also **move step up** / **move step down** in the `:` palette, which now opens on the task page too), and `ctrl+a` with a step selected adds the new step directly below it. From the CLI, `tsk steps T12 move <short-id> --before|--after <short-id>` or `--first`/`--last`, and `tsk steps T12 add "…"` with the same place flags. A moved step keeps its short ID and checked state. Thanks @LukasGold (#159).
@@ -20,7 +20,7 @@ the GitHub release notes verbatim.
 ### Changed
 
 - Bare `g` now opens **group by** instead of folding the inbox or archived group; fold with `f` (the cursor's group) or `Shift+F` (every group). Help calls `t` **filter**.
-- `Enter` on the inbox or archived heading no longer folds it; use `←` / `→` (or `h` / `l`), `f`, or a click.
+- `Enter` on the inbox or archived heading no longer folds it, and a single click on it now only selects it; use `←` / `→` (or `h` / `l`), `f`, or a double-click.
 
 ### Fixed
 

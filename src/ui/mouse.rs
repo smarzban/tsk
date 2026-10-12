@@ -937,9 +937,13 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::Search) => Some(BoardIntent::FocusSearch),
             Some(QueueHitTarget::ProjectRow(index)) => Some(BoardIntent::SelectProjectRow(index)),
             Some(QueueHitTarget::Drawer) => Some(BoardIntent::ToggleDoneDrawer),
-            Some(QueueHitTarget::ArchivedHeader) => Some(BoardIntent::ToggleArchivedGroup),
-            Some(QueueHitTarget::InboxHeader) => Some(BoardIntent::ToggleInboxGroup),
-            Some(QueueHitTarget::GroupHeader(id)) => Some(BoardIntent::ToggleGroupFold(id)),
+            Some(QueueHitTarget::ArchivedHeader) => Some(BoardIntent::ClickHeader(
+                crate::ui::queue::ARCHIVED_HEADER_ROW_ID,
+            )),
+            Some(QueueHitTarget::InboxHeader) => Some(BoardIntent::ClickHeader(
+                crate::ui::queue::INBOX_HEADER_ROW_ID,
+            )),
+            Some(QueueHitTarget::GroupHeader(id)) => Some(BoardIntent::ClickHeader(id)),
             Some(QueueHitTarget::NavGroup) => Some(BoardIntent::OpenGroupPicker),
             Some(QueueHitTarget::NavSort) => Some(BoardIntent::OpenSortPicker),
             Some(QueueHitTarget::TaskNumber(id))

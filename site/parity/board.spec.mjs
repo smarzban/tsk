@@ -681,6 +681,9 @@ test("sub-headers fold with arrows and Enter opens their board", async ({
   const release = page.locator('[data-collapse$=":t:release"]').first();
   await expect(release).toContainText("▾");
   await release.click();
+  await expect(release).toContainText("▾");
+  await expect(release.locator("strong")).toHaveCount(1);
+  await page.keyboard.press("h");
   await expect(release).toContainText("▸");
   await page.keyboard.press("l");
   await expect(release).toContainText("▾");
@@ -690,6 +693,32 @@ test("sub-headers fold with arrows and Enter opens their board", async ({
   await expect(release).toContainText("▸");
   await page.keyboard.press("l");
   await page.keyboard.press("Enter");
+  await expect(page.locator("#board-demo")).toContainText("#release");
+  await expect(row(page, 14)).toBeVisible();
+  await expect(row(page, 16)).toHaveCount(0);
+});
+
+test("a click selects a header and a double-click opens or folds it", async ({
+  page,
+}) => {
+  await open(page, 78);
+  await page.keyboard.press("g");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  const loose = page.locator('[data-collapse$=":none"]').first();
+  await loose.click();
+  await expect(loose).toContainText("▾");
+  await loose.dblclick();
+  await expect(loose).toContainText("▸");
+  await loose.dblclick();
+  await expect(loose).toContainText("▾");
+  const inbox = page.locator("[data-inbox-header]");
+  await inbox.click();
+  await expect(inbox).toContainText("▾");
+  await inbox.dblclick();
+  await expect(inbox).toContainText("▸");
+  await page.locator('[data-collapse$=":t:release"]').first().dblclick();
   await expect(page.locator("#board-demo")).toContainText("#release");
   await expect(row(page, 14)).toBeVisible();
   await expect(row(page, 16)).toHaveCount(0);

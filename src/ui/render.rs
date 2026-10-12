@@ -732,11 +732,14 @@ pub enum QueueHitTarget {
     ///
     /// [`BoardIntent::ToggleDoneDrawer`]: crate::ui::input::BoardIntent::ToggleDoneDrawer
     Drawer,
-    /// The done drawer's archived group header: selects the row and toggles the group.
+    /// The done drawer's archived group header: a click selects it, a double-click folds or
+    /// unfolds the group.
     ArchivedHeader,
-    /// The ON DECK inbox group header: selects the row and toggles the group.
+    /// The ON DECK inbox group header: a click selects it, a double-click folds or unfolds
+    /// the group.
     InboxHeader,
-    /// A group sub-header inside a status section (its chrome row id): toggles the group.
+    /// A group sub-header inside a status section (its chrome row id): a click selects it,
+    /// a double-click opens its board, or folds it when it opens nothing.
     GroupHeader(Uuid),
     /// The header's `group: …` control: opens the group picker.
     NavGroup,
@@ -3727,8 +3730,8 @@ enum ListRow {
     InboxHeader {
         line: Line<'static>,
     },
-    /// A group sub-header inside a status section (always selectable; hits map to the
-    /// group's fold toggle, a double-click to its board).
+    /// A group sub-header inside a status section (always selectable; a click selects it, a
+    /// double-click opens its board or folds it).
     GroupHeader {
         id: Uuid,
         line: Line<'static>,

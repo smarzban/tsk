@@ -27,7 +27,7 @@ for (const scope of ["project", "projects"]) {
       .click();
     await page.locator("#board-demo").focus();
     await page.keyboard.press("z");
-    await page.locator("[data-archived-header]").click();
+    await page.locator("[data-archived-header]").dblclick();
     await expect(
       page
         .locator("[data-task]")

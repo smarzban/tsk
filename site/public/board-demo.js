@@ -932,8 +932,8 @@ import { parseCapture } from "./capture.js";
           drawer: state.drawer,
         };
   }
-  // A click or `f` on a sub-header: folding selects the header, unfolding selects the
-  // group's first task. Folding clears multi-select marks.
+  // `f` on a sub-header: folding selects the header, unfolding selects the group's first
+  // task. Folding clears multi-select marks.
   function toggleGroupFold(key, form = state) {
     const { rows, layout } = foldContext(form);
     const row = rows.find(
@@ -1019,10 +1019,16 @@ import { parseCapture } from "./capture.js";
     else form.archivedOpen = !fold;
     return true;
   }
+  // Whether a sub-header's target would change the board: `no thread` opens nothing, and
+  // the desk's own `desk` sub-header is already open on the desk.
+  function groupTargetOpens(target) {
+    if (!target) return false;
+    return !(target.project === "desk" && state.tab === "desk");
+  }
   // Enter or a double-click on a sub-header opens what it names: its project's board, the
   // desk, or its thread's cross-project view. `no thread` opens nothing.
   function openGroupTarget(target) {
-    if (!target) return;
+    if (!groupTargetOpens(target)) return;
     if (target.project) {
       openProject(target.project);
       return;
@@ -4551,7 +4557,7 @@ import { parseCapture } from "./capture.js";
       return;
     }
     // Bare letters stay verbs in the demo, so the group picker is g, the sort picker
-    // Shift+S and fold-all Shift+F; ←/→ or a click folds one sub-header, and Enter or a
+    // Shift+S and fold-all Shift+F; ←/→ folds one header, a click selects it, and Enter or a
     // double-click opens its board.
     if (e.key === "g" && !e.altKey && !e.ctrlKey && !e.metaKey) {
       e.preventDefault();
@@ -4732,23 +4738,33 @@ import { parseCapture } from "./capture.js";
 
   let lastClick = { id: null, at: 0 };
   let lastGroupClick = { key: null, at: 0 };
-  // A click on a sub-header folds or unfolds it; a second click inside the double-click
-  // window puts the fold back and opens the sub-header's board instead.
-  function groupHeaderClick(key, form = state) {
+  // A click on any fold header (a sub-header, the inbox, or archived) only selects it. A
+  // second click inside the double-click window opens what a sub-header names, or folds or
+  // unfolds a header that opens nothing (`no thread`, `desk` on the desk, inbox, archived).
+  function headerClick(match, form = state) {
+    const row = foldContext(form).rows.find(match);
+    if (!row) return;
     const now = Date.now();
-    const double = lastGroupClick.key === key && now - lastGroupClick.at < 350;
-    toggleGroupFold(key, form);
+    const double =
+      lastGroupClick.key === row.id && now - lastGroupClick.at < 350;
+    form.selectedId = row.id;
+    form.peekId = null;
     if (!double) {
-      lastGroupClick = { key, at: now };
+      lastGroupClick = { key: row.id, at: now };
       return;
     }
     lastGroupClick = { key: null, at: 0 };
-    const row = foldContext(form).rows.find(
-      (item) => item.kind === "group" && item.collapseKey === key,
-    );
-    form.selectedId = row?.id ?? form.selectedId;
-    openGroupTarget(row?.target);
+    if (row.kind === "group" && groupTargetOpens(row.target)) {
+      openGroupTarget(row.target);
+      return;
+    }
+    foldHeader(row, !headerFolded(row, form), form);
   }
+  const groupHeaderClick = (key, form = state) =>
+    headerClick(
+      (item) => item.kind === "group" && item.collapseKey === key,
+      form,
+    );
   const cancelReflowClick = () => {
     delete lastClick.reflow;
   };
@@ -4949,8 +4965,8 @@ import { parseCapture } from "./capture.js";
     }
     const previewArchivedHeader = e.target.closest("[data-preview-archived]");
     if (previewArchivedHeader && projectsPreviewActive()) {
-      clearMarks(preview);
-      preview.archivedOpen = !preview.archivedOpen;
+      if (state.stage === "split") stageRight();
+      headerClick((item) => item.kind === "archived", preview);
       ensurePreviewSelection();
       render();
       return;
@@ -5045,15 +5061,13 @@ import { parseCapture } from "./capture.js";
     }
     const inboxHeader = e.target.closest("[data-inbox-header]");
     if (inboxHeader) {
-      clearMarks();
-      state.inboxOpen = !state.inboxOpen;
+      headerClick((item) => item.kind === "inbox");
       render();
       return;
     }
     const archivedHeader = e.target.closest("[data-archived-header]");
     if (archivedHeader) {
-      clearMarks();
-      state.archivedOpen = !state.archivedOpen;
+      headerClick((item) => item.kind === "archived");
       render();
       return;
     }

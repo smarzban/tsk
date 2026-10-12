@@ -358,10 +358,12 @@ pub enum BoardIntent {
     LaunchKeepArchived,
     /// Mouse route onto the picker's painted tab row.
     SelectPickerTab(PickerTab),
-    /// Expand/collapse the done drawer's archived group (a click on its header, which the
-    /// intent also selects). Session-only.
+    /// Expand/collapse the done drawer's archived group and select its header. No key or
+    /// click produces it (the mouse double-clicks through [`BoardIntent::ClickHeader`]);
+    /// tests use it to open the group in one step. Session-only.
     ToggleArchivedGroup,
-    /// Expand/collapse the ON DECK inbox group (a click on its header).
+    /// Expand/collapse the ON DECK inbox group and select its header. Like
+    /// [`BoardIntent::ToggleArchivedGroup`], a test fixture shortcut.
     ToggleInboxGroup,
     /// `?` — open the help card. Surface wiring lands in.
     OpenHelp,
@@ -375,9 +377,10 @@ pub enum BoardIntent {
     FoldGroup,
     /// `F` — fold every group in view, or unfold them all when all are folded.
     FoldAllGroups,
-    /// A click on a group sub-header: flip that one sub-group. A second click inside the
-    /// double-click window opens the group's board instead.
-    ToggleGroupFold(uuid::Uuid),
+    /// A click on a fold header (a group sub-header, the inbox, or archived) selects it. A
+    /// second click inside the double-click window opens what the header names, or folds or
+    /// unfolds it when it opens nothing.
+    ClickHeader(uuid::Uuid),
     /// `←` / `h` on an unfolded fold header (a sub-group, the inbox, or archived): fold it.
     FoldHeader,
     /// `→` / `l` on a folded fold header: unfold it.
@@ -1877,7 +1880,7 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::OpenSortPicker
         | BoardIntent::FoldGroup
         | BoardIntent::FoldAllGroups
-        | BoardIntent::ToggleGroupFold(_)
+        | BoardIntent::ClickHeader(_)
         | BoardIntent::FoldHeader
         | BoardIntent::UnfoldHeader
         | BoardIntent::OpenGroupTarget(_)

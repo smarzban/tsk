@@ -244,6 +244,12 @@ pub fn is_group_header_id(id: Uuid) -> bool {
     id.as_u128() >> 64 == GROUP_HEADER_ID_PREFIX >> 64
 }
 
+/// Whether `id` is any fold header's chrome row id: a group sub-header, the inbox, or the
+/// archived group.
+pub fn is_fold_header_id(id: Uuid) -> bool {
+    matches!(id, ARCHIVED_HEADER_ROW_ID | INBOX_HEADER_ROW_ID) || is_group_header_id(id)
+}
+
 /// Deterministic sub-header id for one group key inside one section kind, so fold state
 /// survives repaints and snapshot merges while the group exists.
 fn group_header_id(kind: SectionKind, key: &str) -> Uuid {

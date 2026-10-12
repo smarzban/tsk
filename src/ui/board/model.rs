@@ -36,10 +36,7 @@ pub const BOARD_TITLE: &str = "Tasks";
 pub(super) const DIRTY_TASK_SWITCH_REFUSAL: &str = "save or cancel edits before switching tasks";
 
 fn is_header_row(id: Uuid) -> bool {
-    matches!(
-        id,
-        queue::ARCHIVED_HEADER_ROW_ID | queue::INBOX_HEADER_ROW_ID
-    ) || queue::is_group_header_id(id)
+    queue::is_fold_header_id(id)
 }
 
 /// One surface's session group, sort, and folded sub-groups. Never persisted.
@@ -1798,6 +1795,16 @@ impl BoardModel {
         self.last_project_row_click = None;
     }
 
+    /// Disarm every pending double-click except the one `intent` itself continues: a
+    /// press on an index row or a group header is that target's own second click.
+    pub(crate) fn cancel_other_double_clicks(&mut self, intent: Option<&BoardIntent>) {
+        match intent {
+            Some(BoardIntent::SelectProjectRow(_)) => self.last_group_header_click = None,
+            Some(BoardIntent::ClickHeader(_)) => self.last_project_row_click = None,
+            _ => self.cancel_project_header_double_click(),
+        }
+    }
+
     /// Record a left-button press cell and drop any finished selection's highlight.
     ///
     /// The press cell is what a following drag grows the selection from; a plain
@@ -3129,7 +3136,7 @@ impl BoardModel {
         })
     }
 
-    /// Whether a sub-header click armed a double-click that a second click may finish.
+    /// Whether a header click armed a double-click that a second click may finish.
     pub(crate) fn pending_group_header_double_click(&self, id: Uuid) -> bool {
         self.last_group_header_click.is_some_and(|(at, last)| {
             last == id && at.elapsed() <= super::apply::ROW_DOUBLE_CLICK_WINDOW
