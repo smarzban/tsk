@@ -469,7 +469,7 @@ Press `ctrl+x` twice to delete the marked tasks, or the cursored task when nothi
 | A block or review card | `block undone · T12 back to started` |
 | Any other status change: a start that launched nothing, ready, open, a reopen, or an unblock, including the reply box's. Going back to blocked or review reopens the block or review round, with its replies | `status undone · T12 back to blocked` |
 | A start that launched an agent: only the status goes back | `start undone · T12 back to ready · @claude kept running` |
-| A step tick or untick, a new step, a removed step, or new step text (from the task page; the title and notes saved with it stay) | `steps undone · T12` |
+| A step tick or untick, a new step, a removed step, a step move, or new step text (from the task page; the title and notes saved with it stay) | `steps undone · T12` |
 | An assignee, base, or after change | `assignee undone · T12` |
 
 Undo never stops an agent: when the undo takes a task with a live dispatch out of started, the row adds `· @claude kept running`. A marked set is one undo step and the row lists its tasks (`done undone · T3, T4, T5`), or counts them past three (`done undone · 5 tasks`); a completion's undo also names the tasks it had started (`· T203 back to ready`). Undo keeps the last 50 actions. With nothing left, `ctrl+u` says `nothing to undo`.
