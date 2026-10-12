@@ -2708,7 +2708,8 @@ fn apply_board_intent(
             let Some(target) = target else {
                 return Ok(IntentOutcome::None);
             };
-            domain.move_step(task_id, step_id, target)?;
+            // One undo step per move, like every other step change (T241).
+            domain.with_steps_undo(task_id, |domain| domain.move_step(task_id, step_id, target))?;
             // The renderer-recorded heights are source-aligned; reorder them with the step so
             // the scroll below measures the new layout, not the one painted before the move.
             {

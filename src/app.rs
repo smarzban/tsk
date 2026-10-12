@@ -9818,6 +9818,54 @@ mod tests {
         assert_eq!(model.step_cursor(), Some(1));
     }
 
+    /// T241: alt+↑/↓ is a ctrl+u step like every other step change: undo puts the last move
+    /// back, names the task, and the moved step keeps its id and done flag.
+    #[test]
+    fn undo_reverses_the_last_step_move() {
+        let (temp, mut domain, mut model, id) = step_order_fixture("move-undo", &["a", "b", "c"]);
+        let a = domain.get(id).expect("task").steps[0].id;
+        domain.toggle_step(id, a).expect("check a");
+        temp.store.save(&domain).expect("save check");
+        let mut recovery = SaveRecovery::new();
+        drive(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            [
+                BoardIntent::SelectStep(0),
+                BoardIntent::MoveStepDown,
+                BoardIntent::MoveStepDown,
+            ],
+        );
+        assert_eq!(stored_step_texts(&temp, id), vec!["b", "c", "a"]);
+        let number = temp
+            .store
+            .load()
+            .expect("reload")
+            .get(id)
+            .expect("task")
+            .number
+            .expect("numbered");
+
+        drive(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            [BoardIntent::Undo],
+        );
+        assert_eq!(stored_step_texts(&temp, id), vec!["b", "a", "c"]);
+        assert_eq!(
+            model.message(),
+            Some(format!("steps undone · T{number}").as_str())
+        );
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+        let stored = temp.store.load().expect("reload");
+        let restored = &stored.get(id).expect("task").steps[1];
+        assert_eq!((restored.id, restored.done), (a, true));
+    }
+
     /// #159: `:` opens the palette over the task page, which offers the step moves only
     /// while a step is selected; running one moves and saves exactly like alt+↓.
     #[test]
