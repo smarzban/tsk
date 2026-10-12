@@ -8,7 +8,7 @@
 │                                       ▌│
 │ ▾ herdr · 2                           ▌│
 │▸ ■ T5 Wire dispatch cleanup           ▌│
-│       receipts                        ▌│
+│       receipts  #dispatch             ▌│
 │  ▲ T6 Docs refresh pass after F9      ▌│
 │       ships                           ▌│
 │                                       ▌│
@@ -16,10 +16,10 @@
 │                                       ▌│
 │ ▾ tsk · 1                             ▌│
 │  ● T1 Smoke-test worktree dispatch    ▌│
-│ ▾ herdr · 1                           ▌│
-│  ● T2 Edit target binding pin         ▌│
-│                                       ▌│
-│ ON DECK · desk ────────────────────1   │
+│       #release                        ▌│
+│ ▾ herdr · 1                            │
+│  ● T2 Edit target binding pin          │
+│       #dispatch                        │
 │────────────────────────────────────────│
 │ desk                                   │
 │ enter open · ctrl+d done · ctrl+b unbl…│

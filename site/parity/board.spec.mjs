@@ -273,7 +273,7 @@ for (const width of [40, 78, 109])
     await open(page, width);
     await page.keyboard.press("ArrowRight");
     await expect(page.locator(".tsk-attribution")).toHaveText(
-      "    └─ tsk-parity",
+      "    └─ #release · tsk-parity",
     );
     await capture(page, info, "project-peek");
     await page.keyboard.press("Escape");
@@ -660,4 +660,37 @@ test("landing column readout excludes board padding", async ({ page }) => {
   });
   await page.addScriptTag({ url: "/public/landing.js" });
   await expect(page.locator("[data-cols] b")).toHaveText("78");
+});
+
+for (const width of [40, 78])
+  test(`row labels flow after the title at ${width}`, async ({ page }) => {
+    await open(page, width);
+    await expect(row(page, 16).locator(".tsk-row-label")).toHaveText(
+      width === 40 ? "#triage" : "  #triage",
+    );
+  });
+
+test("sub-headers fold with arrows and Enter opens their board", async ({
+  page,
+}) => {
+  await open(page, 78);
+  await page.keyboard.press("g");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  const release = page.locator('[data-collapse$=":t:release"]').first();
+  await expect(release).toContainText("▾");
+  await release.click();
+  await expect(release).toContainText("▸");
+  await page.keyboard.press("l");
+  await expect(release).toContainText("▾");
+  await page.keyboard.press("h");
+  await expect(release).toContainText("▸");
+  await page.keyboard.press("h");
+  await expect(release).toContainText("▸");
+  await page.keyboard.press("l");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#board-demo")).toContainText("#release");
+  await expect(row(page, 14)).toBeVisible();
+  await expect(row(page, 16)).toHaveCount(0);
 });

@@ -581,15 +581,15 @@ fn cursor_only_open_and_edit_ignore_marks_and_lens_boundaries_clear_marks() {
     apply_intent(&mut domain, &mut model, BoardIntent::SelectPrev, None)
         .expect("return to inbox header");
     assert!(model.inbox_header_selected());
-    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None)
-        .expect("fold inbox with Enter");
+    apply_intent(&mut domain, &mut model, BoardIntent::FoldHeader, None)
+        .expect("fold inbox with ←");
     assert_eq!(
         model.marked_count(),
         0,
-        "Enter on a group header clears hidden marks"
+        "folding a group header clears hidden marks"
     );
-    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None)
-        .expect("reopen inbox with Enter");
+    apply_intent(&mut domain, &mut model, BoardIntent::UnfoldHeader, None)
+        .expect("reopen inbox with →");
     mark_tasks(&mut domain, &mut model, &[first]);
     apply_intent(
         &mut domain,
@@ -4438,7 +4438,7 @@ fn t_token_capture_threads_while_item_text_stays_literal() {
 }
 
 #[test]
-fn archived_group_is_collapsed_on_a_fresh_model_and_enter_or_click_on_the_header_toggles_it() {
+fn archived_group_is_collapsed_on_a_fresh_model_and_a_click_or_arrows_on_the_header_fold_it() {
     let mut domain = DomainState::new();
     let live = domain
         .create(
@@ -4493,12 +4493,19 @@ fn archived_group_is_collapsed_on_a_fresh_model_and_enter_or_click_on_the_header
         "the header row itself is never reported as a selected task"
     );
 
-    // Enter with the header selected collapses again.
+    // Enter on the header does nothing: folding is ← / → (and the click).
     apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("enter");
     assert!(
-        !model.visible_ids().contains(&archived),
-        "enter on the selected header must collapse the group"
+        model.visible_ids().contains(&archived),
+        "enter on the archived header never folds it"
     );
+    assert!(model.archived_header_selected());
+    apply_intent(&mut domain, &mut model, BoardIntent::FoldHeader, None).expect("←");
+    assert!(
+        !model.visible_ids().contains(&archived),
+        "← on the unfolded header collapses the group"
+    );
+    assert!(model.archived_header_selected(), "the cursor stays on it");
 
     // A fresh model is collapsed again (session-only state, not persisted).
     let fresh = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));

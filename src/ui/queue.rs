@@ -206,9 +206,34 @@ impl SortBy {
 pub struct QueueGroup {
     /// Painted name: a project basename, `desk`, `#thread`, or `no thread`.
     pub label: String,
-    /// Chrome row id of the sub-header. Selectable only while the group is folded.
+    /// Chrome row id of the sub-header. Always selectable; its rows follow unless folded.
     pub header_id: Uuid,
     pub task_ids: Vec<Uuid>,
+    /// Where Enter or a double-click on the sub-header goes.
+    pub target: GroupTarget,
+}
+
+/// The board a group sub-header opens: its project's board, the desk, or its thread's
+/// cross-project view. `no thread` opens nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupTarget {
+    Project(String),
+    Desk,
+    Thread(String),
+    None,
+}
+
+impl GroupTarget {
+    fn of(task: &Task, group: GroupBy) -> Self {
+        match (group, &task.scope, task.thread.as_deref()) {
+            (GroupBy::Project, TaskScope::Project { path }, _) => {
+                GroupTarget::Project(path.clone())
+            }
+            (GroupBy::Project, TaskScope::Global, _) => GroupTarget::Desk,
+            (GroupBy::Thread, _, Some(thread)) => GroupTarget::Thread(thread.to_string()),
+            _ => GroupTarget::None,
+        }
+    }
 }
 
 /// High 64 bits shared by every group sub-header row id (chrome, never a task).
@@ -515,9 +540,8 @@ pub fn visible_row_ids(
 /// A grouped section's selectable rows: a folded group's header, an open group's tasks.
 fn push_group_rows(out: &mut Vec<Uuid>, section: &QueueSection, folded: &BTreeSet<Uuid>) {
     for group in &section.groups {
-        if folded.contains(&group.header_id) {
-            out.push(group.header_id);
-        } else {
+        out.push(group.header_id);
+        if !folded.contains(&group.header_id) {
             out.extend(group.task_ids.iter().copied());
         }
     }
@@ -1170,6 +1194,10 @@ pub fn arrange_view(
             .map(|(key, label, rows)| QueueGroup {
                 label,
                 header_id: group_header_id(section.kind, &key),
+                target: rows
+                    .first()
+                    .map(|task| GroupTarget::of(task, group))
+                    .unwrap_or(GroupTarget::None),
                 task_ids: rows.iter().map(|task| task.id).collect(),
             })
             .collect();
@@ -2710,7 +2738,7 @@ mod tests {
     }
 
     #[test]
-    fn folded_groups_contribute_only_their_selectable_header() {
+    fn sub_headers_are_always_selectable_and_folding_hides_their_rows() {
         let tasks = vec![
             task(1, HumanStatus::Started, project("/r/a"), false, 10),
             task(2, HumanStatus::Started, project("/r/b"), false, 20),
@@ -2726,13 +2754,18 @@ mod tests {
         let groups = section(&view, SectionKind::InMotion).groups.clone();
         assert_eq!(
             visible_row_ids(&view, true, false, &BTreeSet::new()),
-            vec![Uuid::from_u128(2), Uuid::from_u128(1)],
-            "unfolded sub-headers are skipped"
+            vec![
+                groups[0].header_id,
+                Uuid::from_u128(2),
+                groups[1].header_id,
+                Uuid::from_u128(1)
+            ],
+            "an unfolded sub-header is a stop of its own, so ← can fold it"
         );
         let folded: BTreeSet<Uuid> = [groups[0].header_id].into();
         assert_eq!(
             visible_row_ids(&view, true, false, &folded),
-            vec![groups[0].header_id, Uuid::from_u128(1)]
+            vec![groups[0].header_id, groups[1].header_id, Uuid::from_u128(1)]
         );
     }
 

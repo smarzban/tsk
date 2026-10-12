@@ -10,6 +10,7 @@ use ratatui::Terminal;
 use tsk_tui::domain::{DomainState, HumanStatus, ProvenanceOrigin, TaskScope};
 use tsk_tui::ui::board::{
     apply_intent, board_hit_map, draw_board, BoardInputMode, BoardModel, FilterTab, ListPickerKind,
+    ProjectsView,
 };
 use tsk_tui::ui::input::{map_key, BoardIntent};
 use tsk_tui::ui::mouse::{left_click, map_board_mouse};
@@ -191,6 +192,34 @@ impl Board {
         self.apply(intent);
     }
 
+    /// Move the cursor onto any visible row, a header included, with the arrows.
+    fn select_row(&mut self, id: Uuid) {
+        assert!(self.model.visible_ids().contains(&id), "row visible");
+        let at = |model: &BoardModel| model.selected_index().map(|i| model.visible_ids()[i]);
+        for _ in 0..self.model.visible_ids().len() {
+            if at(&self.model) == Some(id) {
+                return;
+            }
+            self.apply(BoardIntent::SelectNext);
+        }
+        for _ in 0..self.model.visible_ids().len() {
+            if at(&self.model) == Some(id) {
+                return;
+            }
+            self.apply(BoardIntent::SelectPrev);
+        }
+        assert_eq!(at(&self.model), Some(id));
+    }
+
+    /// The visible task rows, sub-headers left out.
+    fn visible_tasks(&self) -> Vec<Uuid> {
+        self.model
+            .visible_ids()
+            .into_iter()
+            .filter(|id| !is_group_header_id(*id))
+            .collect()
+    }
+
     fn motion_groups(&self) -> Vec<(String, Vec<Uuid>, Uuid)> {
         self.model
             .queue_view()
@@ -266,14 +295,16 @@ fn grouping_adds_hottest_first_sub_groups_and_the_header_shows_the_layout() {
 }
 
 #[test]
-fn f_folds_the_cursor_group_and_arrows_only_land_on_folded_headers() {
+fn f_folds_the_cursor_group_and_the_arrows_stop_on_every_sub_header() {
     let mut board = board();
     board.pick(BoardIntent::OpenGroupPicker, "project");
     let (_, alpha_rows, alpha_header) = board.motion_groups()[0].clone();
-    assert!(
-        !board.model.visible_ids().contains(&alpha_header),
-        "an unfolded sub-header is skipped by the arrows"
-    );
+    let visible = board.model.visible_ids();
+    let at = visible
+        .iter()
+        .position(|id| *id == alpha_header)
+        .expect("an unfolded sub-header is a stop for the arrows");
+    assert_eq!(visible[at + 1], alpha_rows[0], "its rows follow it");
 
     board.select(board.alpha_one);
     board.key(press(KeyCode::Char('f')));
@@ -294,10 +325,10 @@ fn f_folds_the_cursor_group_and_arrows_only_land_on_folded_headers() {
         .iter()
         .all(|task| task.status != HumanStatus::Done));
 
-    // Enter on the folded header unfolds it and lands on its first row.
-    board.key(press(KeyCode::Enter));
+    // f again unfolds it and lands on its first row; the header stays a stop.
+    board.key(press(KeyCode::Char('f')));
     assert_eq!(board.model.selected_id(), Some(alpha_rows[0]));
-    assert!(!board.model.visible_ids().contains(&alpha_header));
+    assert!(board.model.visible_ids().contains(&alpha_header));
 
     // Outside any group, f has nothing to fold.
     board.pick(BoardIntent::OpenGroupPicker, "none");
@@ -324,12 +355,10 @@ fn shift_f_folds_every_sub_group_then_unfolds_them_all() {
         "the cursor follows its row into that row's own header"
     );
     board.key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT));
-    assert!(board.model.visible_ids().contains(&board.beta));
-    assert!(board
-        .model
-        .visible_ids()
-        .iter()
-        .all(|id| !is_group_header_id(*id)));
+    let visible = board.visible_tasks();
+    for id in [board.alpha_one, board.alpha_two, board.beta, board.desk] {
+        assert!(visible.contains(&id), "every row is back");
+    }
 }
 
 #[test]
@@ -463,7 +492,7 @@ fn t_on_the_desk_opens_a_tabbed_filter_whose_choices_combine() {
     for character in "two".chars() {
         board.apply(BoardIntent::SearchQueryInsert(character));
     }
-    assert_eq!(board.model.visible_ids(), [board.alpha_two]);
+    assert_eq!(board.visible_tasks(), [board.alpha_two]);
     let _ = board.desk;
 }
 
@@ -763,7 +792,7 @@ fn clicking_the_layout_control_and_the_desk_filter_tabs() {
     assert_eq!(board.model.list_picker_tab(), Some(FilterTab::Threads));
     board.click(QueueHitTarget::ListPickerOption(1));
     assert_eq!(board.model.desk_filter().label(), "beta #ship");
-    assert_eq!(board.model.visible_ids(), [board.beta]);
+    assert_eq!(board.visible_tasks(), [board.beta]);
 
     // The header paints the active filter like a project board's control.
     let rows = board.rows(80, 24);
@@ -929,4 +958,133 @@ fn defaults_drop_before_a_chosen_group_when_a_long_filter_crowds_the_header() {
         rows.join("\n")
     );
     assert!(!controls.contains("s:"), "{controls}");
+}
+
+#[test]
+fn enter_on_a_project_sub_header_opens_that_projects_board() {
+    let mut board = board();
+    board.pick(BoardIntent::OpenGroupPicker, "project");
+    let (label, _, alpha_header) = board.motion_groups()[0].clone();
+    assert_eq!(label, "alpha");
+    board.select_row(alpha_header);
+    board.key(press(KeyCode::Enter));
+    assert_eq!(board.model.nav_tab(), NavTab::ProjectBoard);
+    assert_eq!(
+        board.model.active_project(),
+        Some(std::path::Path::new(ALPHA))
+    );
+    assert_eq!(board.model.input_mode(), BoardInputMode::Normal);
+
+    // The desk's own sub-header opens the desk: here, it stays put.
+    board.apply(BoardIntent::SelectNavTab(NavTab::Desk));
+    let desk_header = board.motion_groups()[1].2;
+    board.select_row(desk_header);
+    board.key(press(KeyCode::Enter));
+    assert_eq!(board.model.nav_tab(), NavTab::Desk);
+    assert!(
+        !board.model.layout().folded.contains(&desk_header),
+        "Enter never folds a sub-header"
+    );
+}
+
+#[test]
+fn enter_on_a_thread_sub_header_opens_its_thread_view_and_no_thread_opens_nothing() {
+    let mut board = board();
+    board.pick(BoardIntent::OpenGroupPicker, "thread");
+    let groups = board.motion_groups();
+    let ship = groups
+        .iter()
+        .find(|group| group.0 == "#ship")
+        .expect("#ship")
+        .2;
+    let loose = groups
+        .iter()
+        .find(|group| group.0 == "no thread")
+        .expect("no thread")
+        .2;
+    board.select_row(loose);
+    board.key(press(KeyCode::Enter));
+    assert_eq!(
+        board.model.nav_tab(),
+        NavTab::Desk,
+        "no thread opens nothing"
+    );
+    assert!(!board.model.layout().folded.contains(&loose));
+
+    board.select_row(ship);
+    board.key(press(KeyCode::Enter));
+    assert_eq!(board.model.nav_tab(), NavTab::Projects);
+    assert_eq!(
+        board.model.projects_view(),
+        &ProjectsView::Thread("ship".into())
+    );
+    let visible = board.visible_tasks();
+    assert!(visible.contains(&board.alpha_one) && visible.contains(&board.beta));
+}
+
+#[test]
+fn enter_on_the_inbox_header_does_nothing() {
+    let (mut board, ship_one, _, _) = grouped_inbox();
+    board.select_row(tsk_tui::ui::queue::INBOX_HEADER_ROW_ID);
+    board.key(press(KeyCode::Enter));
+    assert!(board.model.inbox_header_selected());
+    assert!(board.model.visible_ids().contains(&ship_one), "no fold");
+    assert_eq!(board.model.input_mode(), BoardInputMode::Normal);
+}
+
+#[test]
+fn arrows_fold_and_unfold_sub_headers_and_the_inbox_in_place() {
+    let (mut board, ship_one, _, _) = grouped_inbox();
+    let ship = inbox_groups(&board)
+        .into_iter()
+        .find(|group| group.0 == "#ship")
+        .expect("#ship")
+        .2;
+    board.select_row(ship);
+    board.apply(BoardIntent::FoldHeader);
+    assert!(!board.model.visible_ids().contains(&ship_one));
+    assert!(
+        board.model.group_header_selected(),
+        "← leaves the cursor on it"
+    );
+    board.apply(BoardIntent::UnfoldHeader);
+    assert!(board.model.visible_ids().contains(&ship_one));
+    assert!(
+        board.model.group_header_selected(),
+        "→ leaves the cursor on it"
+    );
+
+    board.select_row(tsk_tui::ui::queue::INBOX_HEADER_ROW_ID);
+    board.apply(BoardIntent::FoldHeader);
+    assert!(!board.model.visible_ids().contains(&ship));
+    board.apply(BoardIntent::FoldHeader);
+    assert!(
+        board.model.inbox_header_selected(),
+        "a second ← changes nothing"
+    );
+    board.apply(BoardIntent::UnfoldHeader);
+    assert!(board.model.visible_ids().contains(&ship));
+}
+
+#[test]
+fn a_double_click_on_a_sub_header_opens_its_board_and_leaves_the_fold_alone() {
+    let mut board = board();
+    board.pick(BoardIntent::OpenGroupPicker, "project");
+    let alpha_header = board.motion_groups()[0].2;
+    board.click(QueueHitTarget::GroupHeader(alpha_header));
+    assert!(
+        board.model.layout().folded.contains(&alpha_header),
+        "a single click folds"
+    );
+    board.click(QueueHitTarget::GroupHeader(alpha_header));
+    assert_eq!(board.model.nav_tab(), NavTab::ProjectBoard);
+    assert_eq!(
+        board.model.active_project(),
+        Some(std::path::Path::new(ALPHA))
+    );
+    board.apply(BoardIntent::SelectNavTab(NavTab::Desk));
+    assert!(
+        !board.model.layout().folded.contains(&alpha_header),
+        "the double-click put the fold back before leaving"
+    );
 }

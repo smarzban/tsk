@@ -4,7 +4,7 @@
 │                                                                                │
 │ IN MOTION ───────────────────────────────────────────────────────────────────1 │
 │                                                                                │
-│▸ ● T1 Smoke-test worktree dispatch                                        tsk  │
+│▸ ● T1 Smoke-test worktree dispatch  tsk                                        │
 │                                                                                │
 │                                                                                │
 │                                                                                │

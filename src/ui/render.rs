@@ -131,13 +131,10 @@ pub fn paint_task_row_lines(
     paint_labelled_task_row_lines(row, geo, leading_indent, None)
 }
 
-/// Narrowest board row that labels tasks with their `#thread · project`.
-pub const ROW_LABEL_MIN_WIDTH: u16 = 78;
-
-/// [`paint_task_row_lines`] with an optional dim label at the first line's right edge.
-/// The title wraps exactly as it would unlabelled; the label paints only when it fits
-/// beside the first title line with a two-cell gap, and otherwise drops. It never
-/// shortens or truncates the title.
+/// [`paint_task_row_lines`] with an optional dim `#thread · project` label, painted at
+/// every width and never truncated. It flows two cells after the title's last word on
+/// the title's last line, or starts the next line at the title's indent when it does not
+/// fit there, wrapping like the title.
 pub fn paint_labelled_task_row_lines(
     row: &TaskRowPaint<'_>,
     geo: &TierGeometry,
@@ -152,6 +149,10 @@ pub fn paint_labelled_task_row_lines(
     let identifier_gap = usize::from(identifier_width > 0);
     let title_x = prefix_cells.saturating_add(identifier_width + identifier_gap);
     let room = title_budget.saturating_sub(title_x).max(1);
+    let label = label
+        .map(|label| present_line(label, usize::MAX))
+        .filter(|label| !label.is_empty());
+    let label_w = label.as_deref().map(display_width).unwrap_or(0);
     let head_content_x = u16::try_from(prefix_cells).unwrap_or(u16::MAX);
     let head_content_width = u16::try_from(identifier_width + identifier_gap + room)
         .unwrap_or(u16::MAX)
@@ -169,7 +170,7 @@ pub fn paint_labelled_task_row_lines(
         .map(|wrapped| wrapped.text)
         .collect();
 
-    let mut lines = Vec::with_capacity(segments.len());
+    let mut lines = Vec::with_capacity(segments.len() + 1);
     let head = TaskRowPaint {
         title: &segments[0],
         ..*row
@@ -177,7 +178,7 @@ pub fn paint_labelled_task_row_lines(
     let mut title_geo = *geo;
     title_geo.row_width = row_w as u16;
     lines.push(TaskRowLine {
-        line: paint_task_row_with_indent(&head, &title_geo, leading_indent, label),
+        line: paint_task_row_with_indent(&head, &title_geo, leading_indent, None),
         content_x: head_content_x,
         content_width: head_content_width,
         identifier,
@@ -204,6 +205,42 @@ pub fn paint_labelled_task_row_lines(
             identifier: None,
         });
     }
+    let Some(label) = label else {
+        return lines;
+    };
+    let last_w = segments.last().map(|text| display_width(text)).unwrap_or(0);
+    let parts: Vec<String> = if label_w + 2 + last_w <= room {
+        if let Some(last) = lines.last_mut() {
+            let mut spans = last.line.spans.clone();
+            // Drop the head line's right-edge leader so the label sits right
+            // after the title instead of overflowing the row.
+            while spans
+                .last()
+                .is_some_and(|span| span.content.trim().is_empty())
+            {
+                spans.pop();
+            }
+            spans.push(Span::styled(format!("  {label}"), style_dim()));
+            last.line = bound_line(Line::from(spans), row_w);
+        }
+        Vec::new()
+    } else {
+        crate::ui::edit::wrap_text(&label, room)
+            .into_iter()
+            .map(|part| part.text)
+            .collect()
+    };
+    for part in parts {
+        lines.push(TaskRowLine {
+            line: bound_line(
+                Line::from(Span::styled(format!("{indent}{part}"), style_dim())),
+                row_w,
+            ),
+            content_x: title_content_x,
+            content_width: title_content_width,
+            identifier: None,
+        });
+    }
     lines
 }
 
@@ -211,18 +248,6 @@ pub fn paint_labelled_task_row_lines(
 #[cfg(test)]
 fn paint_task_row(row: &TaskRowPaint<'_>, geo: &TierGeometry) -> Line<'static> {
     paint_task_row_lines(row, geo, 0).remove(0).line
-}
-
-// Unit-test adapter for the labelled first line.
-#[cfg(test)]
-fn paint_labelled_task_row(
-    row: &TaskRowPaint<'_>,
-    geo: &TierGeometry,
-    label: &str,
-) -> Line<'static> {
-    paint_labelled_task_row_lines(row, geo, 0, Some(label))
-        .remove(0)
-        .line
 }
 
 /// Paint a task row with extra leading cells reserved for a containing visual group.
@@ -3950,7 +3975,6 @@ fn build_list_rows(
                      out: &mut Vec<ListRow>,
                      selected_idx: &mut Option<usize>,
                      anchor_last_idx: &mut Option<usize>,
-                     project_attribution: bool,
                      thread_label: bool,
                      dim: bool,
                      project_label: bool| {
@@ -3958,26 +3982,16 @@ fn build_list_rows(
             // Stale ids may outlive a snapshot refresh. Skip them without inventing a row.
             return;
         };
-        // The peek keeps its own attribution rule: the project on cross-project
-        // surfaces, the thread on a project board.
-        let meta = row_meta(
-            task,
-            model.now,
-            project_attribution
-                || matches!(model.surface, BoardSurface::Desk | BoardSurface::ThreadView),
-            thread_label && model.thread_labels && model.surface == BoardSurface::Project,
-        );
+        // The row's `#thread · project` label, painted after the title or, when the row
+        // is peeked, on the peek's closing line instead, so it never paints twice.
+        let meta = row_label(task, model.thread_labels && thread_label, project_label);
         let selected = model.selection_id == Some(task.id)
             && !matches!(model.overlay, QueueOverlay::ScopeDropdown { .. });
         let marked = model.marked_ids.contains(&task.id);
         // A long title wraps onto continuation lines indented under its own first
         // row; every painted line carries the task's hit target and selection.
         let identifier = task.board_identifier();
-        // Wide rows carry the same attribution as a dim right-edge label; an open peek
-        // states it on its closing line instead, so it never paints twice.
-        let label = (geo.row_width >= ROW_LABEL_MIN_WIDTH && detail_target != Some(task.id))
-            .then(|| row_label(task, model.thread_labels && thread_label, project_label))
-            .filter(|label| !label.is_empty());
+        let label = (detail_target != Some(task.id) && !meta.is_empty()).then_some(meta.as_str());
         let lines = if rail {
             paint_rail_row_lines(
                 task,
@@ -4001,7 +4015,7 @@ fn build_list_rows(
                 },
                 geo,
                 0,
-                label.as_deref(),
+                label,
             )
         };
         if selected {
@@ -4085,7 +4099,6 @@ fn build_list_rows(
                     out,
                     selected_idx,
                     anchor_last_idx,
-                    false,
                     thread_label,
                     false,
                     project_label,
@@ -4167,7 +4180,6 @@ fn build_list_rows(
                     &mut out,
                     &mut selected_idx,
                     &mut anchor_last_idx,
-                    false,
                     true,
                     true,
                     model.show_project_meta,
@@ -4219,7 +4231,6 @@ fn build_list_rows(
                     &mut out,
                     &mut selected_idx,
                     &mut anchor_last_idx,
-                    false,
                     thread_label,
                     false,
                     inbox_project_label,
@@ -4268,7 +4279,6 @@ fn build_list_rows(
                 &mut out,
                 &mut selected_idx,
                 &mut anchor_last_idx,
-                false,
                 thread_label,
                 false,
                 section_project_label,
@@ -5220,28 +5230,6 @@ fn row_label(task: &Task, thread: bool, project: bool) -> String {
     fit_row_meta(thread, project)
 }
 
-fn row_meta(
-    task: &Task,
-    _now: SystemTime,
-    project_attribution: bool,
-    thread_label: bool,
-) -> String {
-    let project = if project_attribution {
-        match &task.scope {
-            TaskScope::Project { path } => Some(short_project(path).to_string()),
-            TaskScope::Global => Some("desk".to_string()),
-        }
-    } else {
-        None
-    };
-    let thread = if thread_label {
-        task.thread.as_deref().map(|name| format!("#{name}"))
-    } else {
-        None
-    };
-    fit_row_meta(project, thread)
-}
-
 /// Keep the genuine project/thread attribution intact. Relative ages belong to task-page
 /// information, not task rows, so metadata has no fixed age reserve or artificial cap.
 fn fit_row_meta(project: Option<String>, thread: Option<String>) -> String {
@@ -5381,39 +5369,79 @@ mod tests {
     }
 
     #[test]
-    fn a_row_label_paints_dim_at_the_right_edge_and_drops_rather_than_truncating_the_title() {
-        let geo = tier::resolve(80, 24);
-        let row = |title| TaskRowPaint {
-            glyph: "○",
-            identifier: Some("T3"),
-            title,
-            selected: false,
-            marked: false,
-            title_bold: false,
-            dim: false,
+    fn a_row_label_flows_dim_after_the_title_at_every_width_and_never_truncates() {
+        fn row(title: &str, selected: bool) -> TaskRowPaint<'_> {
+            TaskRowPaint {
+                glyph: "○",
+                identifier: Some("T3"),
+                title,
+                selected,
+                marked: false,
+                title_bold: false,
+                dim: false,
+            }
+        }
+        let texts = |lines: &[TaskRowLine]| -> Vec<String> {
+            lines
+                .iter()
+                .map(|line| plain(&line.line).trim_end().to_string())
+                .collect()
         };
-        let short = paint_labelled_task_row(&row("Short title"), &geo, "#release · tsk");
-        let text = plain(&short);
-        assert!(text.trim_end().ends_with("#release · tsk"), "{text:?}");
-        let label = short.spans.last().expect("label span");
-        assert_eq!(label.content.as_ref(), "#release · tsk");
-        assert_eq!(label.style, style_dim());
-        assert_eq!(display_width(&text), 78, "the row keeps its width");
+        for width in [40, 60, 80, 120] {
+            let geo = tier::resolve(width, 24);
+            // A short title carries the label two cells after its last word, dim.
+            let short = paint_labelled_task_row_lines(
+                &row("Short title", true),
+                &geo,
+                0,
+                Some("#release · tsk"),
+            );
+            assert_eq!(
+                texts(&short),
+                vec!["▸ ○ T3 Short title  #release · tsk"],
+                "width {width}"
+            );
+            let label = short[0].line.spans.last().expect("label span");
+            assert_eq!(label.content.as_ref(), "  #release · tsk");
+            assert_eq!(label.style, style_dim());
 
-        // A first title line that leaves no room for gap + label keeps every title cell.
-        let long_title = "word ".repeat(15);
-        let unlabelled = paint_task_row(&row(&long_title), &geo);
-        let labelled = paint_labelled_task_row(&row(&long_title), &geo, "#release · tsk");
-        assert_eq!(plain(&labelled), plain(&unlabelled), "the label drops");
-        let full = paint_labelled_task_row_lines(&row(&long_title), &geo, 0, Some("#x"));
-        let wrapped = paint_task_row_lines(&row(&long_title), &geo, 0);
+            // A wrapped title keeps every cell, and the label is still painted in full.
+            let long_title = "word ".repeat(20);
+            let wrapped = paint_task_row_lines(&row(&long_title, true), &geo, 0);
+            let labelled = paint_labelled_task_row_lines(
+                &row(&long_title, true),
+                &geo,
+                0,
+                Some("#release · herdr-file-viewer"),
+            );
+            let all = texts(&labelled).join("\n");
+            assert!(!all.contains('…'), "width {width}: {all}");
+            assert!(
+                all.replace('\n', " ").contains("#release ·"),
+                "width {width}: {all}"
+            );
+            for (index, line) in texts(&wrapped).iter().enumerate() {
+                assert!(
+                    texts(&labelled)[index].starts_with(line.as_str()),
+                    "width {width}: a label never changes how the title wraps"
+                );
+            }
+        }
+        // A label that does not fit after the title's last line starts the next line at
+        // the title's indent.
+        let geo = tier::resolve(40, 24);
+        let lines = paint_labelled_task_row_lines(
+            &row("A title that fills the row now", false),
+            &geo,
+            0,
+            Some("#release · atlas"),
+        );
         assert_eq!(
-            full.iter()
-                .map(|line| plain(&line.line))
-                .collect::<Vec<_>>()
-                .len(),
-            wrapped.len(),
-            "a label never changes how the title wraps"
+            texts(&lines),
+            vec![
+                "  ○ T3 A title that fills the row now",
+                "       #release · atlas"
+            ]
         );
     }
 

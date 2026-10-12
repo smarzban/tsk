@@ -5450,7 +5450,7 @@ fn project_and_cross_project_thread_views_omit_count_summaries() {
 }
 
 #[test]
-fn wide_rows_label_project_and_thread_and_narrow_rows_drop_them() {
+fn rows_label_project_and_thread_inline_at_every_width() {
     let mut item = task(
         991,
         "Scope row",
@@ -5462,17 +5462,15 @@ fn wide_rows_label_project_and_thread_and_narrow_rows_drop_them() {
     );
     item.thread = Some("ship".into());
     for width in [40, 77, 78, 80, 162] {
-        let wide = width >= 78;
         let mut model = BoardModel::from_tasks(vec![item.clone()], None);
         let desk = board_rows(&model, width, 20);
         let row = desk
             .iter()
             .find(|row| row.contains("Scope row"))
             .expect("desk task row");
-        assert_eq!(
-            row.contains("#ship · alpha"),
-            wide,
-            "desk rows label thread and project only from 78 columns ({width}): {row}"
+        assert!(
+            row.trim_end().ends_with("Scope row  #ship · alpha"),
+            "desk rows label thread and project after the title ({width}): {row}"
         );
         assert!(
             !desk.iter().any(|row| row.contains("└─ alpha")),
@@ -5484,10 +5482,9 @@ fn wide_rows_label_project_and_thread_and_narrow_rows_drop_them() {
             .iter()
             .find(|row| row.contains("Scope row"))
             .expect("project task row");
-        assert_eq!(
-            row.contains("#ship"),
-            wide,
-            "project rows label their thread only from 78 columns ({width}): {row}"
+        assert!(
+            row.trim_end().ends_with("Scope row  #ship"),
+            "project rows label their thread after the title ({width}): {row}"
         );
         assert!(
             !row.contains("alpha"),
@@ -6090,7 +6087,7 @@ fn peek_project_label_wraps_all_content_below_notes() {
 
 /// Row labels did not change the peek: on the desk it still names only the project.
 #[test]
-fn desk_peek_keeps_naming_only_the_project_beside_a_labelled_row() {
+fn desk_peek_names_the_full_label_the_row_carried() {
     let mut item = task(
         9920,
         "Threaded project task",
@@ -6113,5 +6110,14 @@ fn desk_peek_keeps_naming_only_the_project_beside_a_labelled_row() {
         .iter()
         .find(|row| row.contains("└─"))
         .expect("peek attribution");
-    assert_eq!(attribution.trim(), "└─ alpha");
+    assert_eq!(
+        attribution.trim(),
+        "└─ #ship · alpha",
+        "the thread never vanishes when the row is peeked"
+    );
+    let peeked = rows
+        .iter()
+        .find(|row| row.contains("Threaded project task"))
+        .expect("row");
+    assert!(!peeked.contains("#ship"), "the label paints once: {peeked}");
 }

@@ -70,7 +70,7 @@ Assign threads when [capturing](/docs/capture/#title-tokens) or [editing a task]
 
 ## Group and sort
 
-On 78 columns or wider, every task row ends with a dim `#thread · project` label (`desk` for a desk task). A label leaves out what the view already says: a project board never names its own project, a thread filter drops the thread and a project filter the project, grouping drops its dimension inside the sections that actually group (the done drawer keeps it), and rows under **ON DECK · desk** never repeat `desk`. Archived rows carry the same label as done rows. A label that does not fit beside the title's first line is dropped; it never shortens the title. Below 78 columns labels are hidden; grouping and sorting still apply.
+Every task row carries a dim `#thread · project` label (`desk` for a desk task), at every width. It follows the title two spaces after its last word; when it does not fit on the title's last line, it starts the next line at the title's indent and wraps like the title. Neither the title nor the label is ever truncated. A label leaves out what the view already says: a project board never names its own project, a thread filter drops the thread and a project filter the project, grouping drops its dimension inside the sections that actually group (the done drawer keeps it), and rows under **ON DECK · desk** never repeat `desk`. Archived rows carry the same label as done rows.
 
 | Key | Action |
 | --- | --- |
@@ -85,7 +85,7 @@ Sorting reorders rows inside each group, or inside each section while ungrouped 
 
 Every task list's header shows `group: none ▾` and `sort: recent ▾` beside its filter (`all ▾`, a project, or a thread); click one to open its picker. The desk and project boards paint them on the tab row, the cross-project thread view beside its View control, and the wide Projects preview on its own header row beside the project name. When they do not fit, the pair shortens to `g:none ▾ s:recent ▾`. On narrow frames where even that does not fit beside the tabs, each control still at its default (`group: none`, `sort: recent`, the desk's unfiltered `all`) drops first, so a default never costs a row or pushes out a choice you made. If what you changed still does not fit, it moves to its own row under the tabs (the defaults rejoin it there when that row has room); `g`, `s`, and `t` work either way. The Projects preview has one header row, so there its name shortens first, then defaults drop, then changed controls from the left, the filter last. The Projects overview lists projects, not tasks, so it shows only its View control. A fresh board starts ungrouped and sorted by recent. The desk, project boards, and the cross-project thread view (which groups by project) each keep their own choice for the session, and the wide Projects preview keeps its own.
 
-A folded group shows only its sub-header (`▸`), which the cursor can then rest on; open sub-headers are skipped by the arrows. `Enter` or a click on a sub-header folds or unfolds it. `Shift+M` on a folded sub-header unfolds it and marks every task in that group as one set; inside multi-select it adds the group to the marked set. Folding, or changing the grouping, sorting, or filter, clears multi-select marks.
+Every sub-header is a cursor stop, open (`▾`) or folded (`▸`); a folded group shows only its sub-header. With the cursor on a sub-header, `←` or `h` folds it and `→` or `l` unfolds it, leaving the cursor on the header; when there is nothing to fold or unfold, the key keeps its usual meaning (the peek, or the wide stage slider). The inbox and archived headings fold the same way. `Enter` on a sub-header opens what it names: a project sub-header opens that project's board, `desk` opens the desk, and a `#thread` sub-header opens that thread's cross-project view, as choosing it with `v` does. `no thread` opens nothing. A click on a sub-header folds or unfolds it; a double-click opens it like `Enter` and leaves the fold as it was. `Shift+M` on a sub-header unfolds it and marks every task in that group as one set; inside multi-select it adds the group to the marked set. Folding, or changing the grouping, sorting, or filter, clears multi-select marks.
 
 ## Status
 
@@ -97,7 +97,7 @@ A folded group shows only its sub-header (`▸`), which the cursor can then rest
 | ↳ **inbox** | `open` |
 | Done drawer | `done` |
 
-On your desk, **ON DECK** contains only desk tasks. On a project board, it contains that project's ready and open tasks. Ready tasks are the picked queue; open tasks are the untriaged inbox below it. Ready tasks sort by oldest pick first, open tasks by oldest capture first, and notice tasks lead within each group. The **inbox** group starts expanded; press `Enter` on its heading to fold or unfold it, or `f` with the cursor inside it (when the inbox is grouped, `f` folds the cursor's sub-group instead). Use the filter to narrow the tasks, and [group and sort](#group-and-sort) to arrange them.
+On your desk, **ON DECK** contains only desk tasks. On a project board, it contains that project's ready and open tasks. Ready tasks are the picked queue; open tasks are the untriaged inbox below it. Ready tasks sort by oldest pick first, open tasks by oldest capture first, and notice tasks lead within each group. The **inbox** group starts expanded; press `←` or `h` on its heading to fold it and `→` or `l` to unfold it, or `f` with the cursor inside it (when the inbox is grouped, `f` folds the cursor's sub-group instead). Use the filter to narrow the tasks, and [group and sort](#group-and-sort) to arrange them.
 
 Sections hold their order while you work: NEEDS YOU, IN MOTION, DONE, and the drawer's ARCHIVED group keep the most recent status change on top, while ON DECK lists ready and inbox backlogs oldest first. (`N` tasks lead each group until you clear them.) Editing a task or ticking a step never moves it; setting a status moves it to the top of its new section.
 
@@ -129,6 +129,7 @@ Your first board open seeds four desk tasks with `N` ids (not `T`). They teach t
 | Click a tab or selector | Change view or open its choices |
 | Click the `group: …` or `sort: …` control | Open group by or sort by |
 | Click a group sub-header | Fold or unfold that group |
+| Double-click a group sub-header | Open its project's board, the desk, or its thread's view |
 | Click a task outside multi-select | Peek in narrow panes; open or update details beside the board in wide panes |
 | Click a task or its `T`/`N` number in multi-select | Move the cursor there and toggle its mark |
 | Click the same task again in a narrow pane | Close its peek |
@@ -138,7 +139,7 @@ Your first board open seeds four desk tasks with `N` ids (not `T`). They teach t
 | Wheel or drag a scrollbar | Scroll |
 | Drag across text | Select and copy on release |
 
-Open peeks show notes and the task's project or thread; a peeked row moves its label into the peek. Below 110 columns, `→` or `l` opens a peek and `←` or `h` closes it. Peeks show up to five wrapped note lines; the [task page](/docs/task-page/) shows the rest.
+Open peeks show notes and close on the row's full `#thread · project` label (`└─ #release · tsk`); a peeked row moves its label into the peek, so it never paints twice. Below 110 columns, `→` or `l` opens a peek and `←` or `h` closes it. Peeks show up to five wrapped note lines; the [task page](/docs/task-page/) shows the rest.
 
 ## Wide stage slider
 
@@ -167,7 +168,7 @@ Narrowing the pane shows one surface; widening it restores the selected view. Ea
 
 Press `d` to open or close the done drawer. Select a done task and press `ctrl+n` to return it to ready, or `ctrl+o` to send it to the inbox.
 
-The drawer's **archived** group starts closed. Click its heading or press `Enter` on it to expand. `f` with the cursor inside it folds it again; `Shift+F` folds or unfolds it with every other group.
+The drawer's **archived** group starts closed. Click its heading or press `→` or `l` on it to expand, and `←` or `h` to close it. `f` with the cursor inside it folds it again; `Shift+F` folds or unfolds it with every other group.
 
 ## Archive
 

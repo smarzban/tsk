@@ -15,7 +15,7 @@ use crate::ui::capture::{CaptureField, TITLE_REQUIRED_MESSAGE};
 use crate::ui::edit::{flatten_line_breaks, EditBuffer};
 use crate::ui::input::{BoardIntent, MarkDirection};
 use crate::ui::mouse::BoardPopup;
-use crate::ui::queue::{NavTab, ARCHIVED_HEADER_ROW_ID, INBOX_HEADER_ROW_ID};
+use crate::ui::queue::{GroupTarget, NavTab, ARCHIVED_HEADER_ROW_ID, INBOX_HEADER_ROW_ID};
 use crate::ui::tier::{FocusedSurface, WideStage};
 
 use super::commands::{resolve_board_command, CommandSurface};
@@ -1732,12 +1732,42 @@ fn apply_board_intent(
             let Some(group) = model.group_at(header_id) else {
                 return Ok(IntentOutcome::None);
             };
+            let now = Instant::now();
+            let is_double = model.last_group_header_click.is_some_and(|(at, last)| {
+                last == header_id && now.duration_since(at) <= ROW_DOUBLE_CLICK_WINDOW
+            });
             model.clear_marks();
             let previous_visible = model.visible_ids();
+            if is_double {
+                // The first click folded or unfolded the group; put it back, then open the
+                // group's board, so a double-click leaves the fold as it found it.
+                model.last_group_header_click = None;
+                model.toggle_group_folded(header_id);
+                model.select_row(header_id);
+                model.reanchor_selection(Some(header_id), &previous_visible);
+                return open_group_target(model, group.target);
+            }
+            model.last_group_header_click = Some((now, header_id));
             let target = model.toggle_group(&group);
             model.select_row(target);
             model.reanchor_selection(Some(target), &previous_visible);
             return Ok(IntentOutcome::None);
+        }
+        BoardIntent::FoldHeader | BoardIntent::UnfoldHeader => {
+            if !model.task_list_owns_input() {
+                return Ok(IntentOutcome::None);
+            }
+            let previous_visible = model.visible_ids();
+            let header = model.selection_id;
+            if model.set_selected_header_folded(intent == BoardIntent::FoldHeader) {
+                model.clear_marks();
+                model.reanchor_selection(header, &previous_visible);
+                model.clear_message();
+            }
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::OpenGroupTarget(target) => {
+            return open_group_target(model, target);
         }
         BoardIntent::OpenGroupPicker | BoardIntent::OpenSortPicker => {
             if model.project_picker.is_some()
@@ -1932,29 +1962,16 @@ fn apply_board_intent(
                 }
                 return Ok(IntentOutcome::None);
             }
-            // Enter on a group header toggles that group instead of opening a page:
-            // the header is chrome, never a task.
-            if model.archived_header_selected() {
-                model.clear_marks();
-                let previous_visible = model.visible_ids();
-                model.toggle_archived_collapsed();
-                model.reanchor_selection(Some(ARCHIVED_HEADER_ROW_ID), &previous_visible);
+            // Headers are chrome, never a task. Enter on a group sub-header opens the
+            // group's board; on the inbox or archived header it does nothing (←/→ fold).
+            if model.archived_header_selected() || model.inbox_header_selected() {
                 return Ok(IntentOutcome::None);
             }
-            if model.inbox_header_selected() {
-                model.clear_marks();
-                let previous_visible = model.visible_ids();
-                model.toggle_inbox_collapsed();
-                model.reanchor_selection(Some(INBOX_HEADER_ROW_ID), &previous_visible);
-                return Ok(IntentOutcome::None);
-            }
-            if let Some(header_id) = model.selection_id.filter(|_| model.group_header_selected()) {
-                return apply_board_intent(
-                    domain,
-                    model,
-                    BoardIntent::ToggleGroupFold(header_id),
-                    snapshot,
-                );
+            if let Some(target) = model
+                .selection_id
+                .and_then(|id| model.group_header_target(id))
+            {
+                return open_group_target(model, target);
             }
             // A capture's staged rows have no domain task identity. Their page owns Enter, so
             // it must never fall through to the board selection hidden behind the draft.
@@ -2927,6 +2944,40 @@ fn open_task_page_on(domain: &DomainState, model: &mut BoardModel, id: Uuid) {
     model.form = Some(form);
     model.input_mode = BoardInputMode::TaskPage;
     model.clear_message();
+}
+
+/// Enter or a double-click on a group sub-header: open its project's board, the desk, or
+/// its thread's cross-project view. A preview seat cannot leave the projects tab itself, so
+/// it hands the request to the outer board.
+fn open_group_target(
+    model: &mut BoardModel,
+    target: GroupTarget,
+) -> Result<IntentOutcome, DomainError> {
+    if target == GroupTarget::None {
+        return Ok(IntentOutcome::None);
+    }
+    if model.preview_seat {
+        model.outer_request = Some(BoardIntent::OpenGroupTarget(target));
+        return Ok(IntentOutcome::None);
+    }
+    if model
+        .right_seat()
+        .is_some_and(|right| right.has_unsaved_work())
+    {
+        model.set_message(DIRTY_TASK_SWITCH_REFUSAL);
+        return Ok(IntentOutcome::None);
+    }
+    model.clear_marks();
+    match target {
+        GroupTarget::Project(path) => {
+            model.set_board_scope(ProjectScopeOption::Project(PathBuf::from(path)))
+        }
+        GroupTarget::Desk => model.set_board_scope(ProjectScopeOption::Home),
+        GroupTarget::Thread(name) => model.open_thread_view(name),
+        GroupTarget::None => {}
+    }
+    model.clear_message();
+    Ok(IntentOutcome::None)
 }
 
 /// The row double-click window: a second click on the same row within it opens the page.

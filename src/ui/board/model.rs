@@ -14,8 +14,8 @@ use crate::scope::{archived_path_contains, paths_equivalent};
 use crate::ui::capture::CaptureField;
 use crate::ui::edit::{seeded_draft, EditBuffer};
 use crate::ui::input::{
-    BOARD_HELP_LINE, COMMAND_SURFACE_HELP_LINE, HELP_SURFACE_HELP_LINE, LAUNCH_CARD_HELP_LINE,
-    SAVE_RECOVERY_HELP_LINE,
+    BoardIntent, BOARD_HELP_LINE, COMMAND_SURFACE_HELP_LINE, HELP_SURFACE_HELP_LINE,
+    LAUNCH_CARD_HELP_LINE, SAVE_RECOVERY_HELP_LINE,
 };
 use crate::ui::mouse::BoardPopup;
 pub use crate::ui::queue::BoardTab;
@@ -823,10 +823,12 @@ pub struct BoardModel {
     /// The last task-row click (time + id), kept only to detect a double-click that opens
     /// the task page. Presentation-only, never persisted.
     pub(super) last_row_click: Option<(Instant, Uuid)>,
-    /// The last all-projects group-header click (time + project path), kept only to detect
-    /// a double-click that narrows the board to that project. Presentation-only, never
-    /// persisted.
-    pub(super) last_project_header_click: Option<(Instant, PathBuf)>,
+    /// The last group sub-header click (time + header id), kept only to detect a
+    /// double-click that opens the group's board. Presentation-only, never persisted.
+    pub(super) last_group_header_click: Option<(Instant, Uuid)>,
+    /// A preview seat's request for the outer board (a sub-header opening a thread view
+    /// that only the outer board can show). Drained by the dispatcher after each intent.
+    pub(super) outer_request: Option<BoardIntent>,
     /// The last projects-index row click (time + row path), kept only to detect a
     /// double-click that opens the project in slot 2. Presentation-only, never persisted.
     pub(super) last_project_row_click: Option<(Instant, PathBuf)>,
@@ -966,7 +968,8 @@ impl BoardModel {
             mark_mode: false,
             marked_ids: BTreeSet::new(),
             last_row_click: None,
-            last_project_header_click: None,
+            last_group_header_click: None,
+            outer_request: None,
             last_project_row_click: None,
             help_query: String::new(),
             help_scroll: 0,
@@ -1558,7 +1561,7 @@ impl BoardModel {
         right.mouse_press_scroll = None;
         right.text_selection = None;
         right.last_row_click = None;
-        right.last_project_header_click = None;
+        right.last_group_header_click = None;
         right.last_project_row_click = None;
     }
 
@@ -1791,7 +1794,7 @@ impl BoardModel {
     /// Cancel an armed project-header or index-row double-click when another pointer
     /// target intervenes. Mouse-boundary state only, never persisted.
     pub(crate) fn cancel_project_header_double_click(&mut self) {
-        self.last_project_header_click = None;
+        self.last_group_header_click = None;
         self.last_project_row_click = None;
     }
 
@@ -2164,9 +2167,71 @@ impl BoardModel {
             .find(|group| group.header_id == id || group.task_ids.contains(&id))
     }
 
-    /// Whether the selection rests on a (folded) group sub-header.
+    /// Whether the selection rests on a group sub-header.
     pub fn group_header_selected(&self) -> bool {
         self.selection_id.is_some_and(queue::is_group_header_id)
+    }
+
+    /// The fold state of the header the selection rests on (a group sub-header, the inbox,
+    /// or the archived group): `Some(folded)`, or `None` off a fold header.
+    pub fn selected_header_folded(&self) -> Option<bool> {
+        let id = self.selection_id?;
+        if id == queue::INBOX_HEADER_ROW_ID {
+            return Some(self.inbox_collapsed);
+        }
+        if id == queue::ARCHIVED_HEADER_ROW_ID {
+            return Some(self.archived_collapsed);
+        }
+        queue::is_group_header_id(id).then(|| self.layout().folded.contains(&id))
+    }
+
+    /// `←` / `→` on a fold header: fold or unfold it, leaving the selection on it. Returns
+    /// whether anything changed.
+    pub(super) fn set_selected_header_folded(&mut self, fold: bool) -> bool {
+        if self.selected_header_folded() != Some(!fold) {
+            return false;
+        }
+        let Some(id) = self.selection_id else {
+            return false;
+        };
+        if id == queue::INBOX_HEADER_ROW_ID {
+            self.inbox_collapsed = fold;
+        } else if id == queue::ARCHIVED_HEADER_ROW_ID {
+            self.archived_collapsed = fold;
+        } else {
+            self.toggle_group_folded(id);
+        }
+        true
+    }
+
+    /// Where a group sub-header opens, or `None` for any other row.
+    pub fn group_header_target(&self, header_id: Uuid) -> Option<queue::GroupTarget> {
+        if !queue::is_group_header_id(header_id) {
+            return None;
+        }
+        self.group_at(header_id).map(|group| group.target)
+    }
+
+    /// Open one thread's cross-project view, as picking it in the projects tab does.
+    pub(super) fn open_thread_view(&mut self, name: String) {
+        let previous_visible = self.visible_ids();
+        let previous = self.selection_id;
+        self.switch_location(BoardLocation::Projects);
+        self.projects_view = ProjectsView::Thread(name);
+        self.search_query.clear();
+        self.search_pinned = false;
+        self.projects_selected = 0;
+        self.wide_stage = WideStage::FullBoard;
+        self.stage_origin = None;
+        self.drop_project_preview();
+        self.reanchor_selection(previous, &previous_visible);
+    }
+
+    /// Take the preview seat's pending request for this (outer) board.
+    pub(crate) fn take_outer_request(&mut self) -> Option<BoardIntent> {
+        self.right_seat
+            .as_mut()
+            .and_then(|right| right.outer_request.take())
     }
 
     /// Fold or unfold one sub-group. Session-only.
@@ -2987,7 +3052,7 @@ impl BoardModel {
     }
 
     /// Whether this model's task list owns resolved input, including while a task page is parked.
-    pub(super) fn task_list_owns_input(&self) -> bool {
+    pub(crate) fn task_list_owns_input(&self) -> bool {
         self.input_mode_local() == BoardInputMode::Normal && !self.projects_overview()
     }
 
@@ -4264,7 +4329,10 @@ mod tests {
         assert!(model.toggle_all_folds());
         assert!(model.desk_layout.folded.is_empty());
         assert!(!model.archived_collapsed);
-        assert!(!model.visible_ids().contains(&header));
+        assert!(
+            model.visible_ids().contains(&header),
+            "an unfolded sub-header stays selectable"
+        );
     }
 
     #[test]

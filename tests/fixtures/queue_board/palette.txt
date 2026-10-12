@@ -4,13 +4,13 @@
 │                                                                                │
 │ NEEDS YOU ───────────────────────────────────────────────────────────────────2 │
 │                                                                                │
-│  ■ T5 Wi┌─ command ───────────────────────────────────────────── [x]─┐  herdr  │
-│  ▲ T6 Do│                                                            │  herdr  │
+│  ■ T5 Wi┌─ command ───────────────────────────────────────────── [x]─┐         │
+│  ▲ T6 Do│                                                            │         │
 │         │   set status: ready                                        │         │
 │ IN MOTIO│   set status: open                                         │───────2 │
 │         │   set status: started                                      │         │
-│▸ ● T1 Sm│ ▸ set status: blocked                                      │    tsk  │
-│  ● T2 Ed│   set status: review                                       │  herdr  │
+│▸ ● T1 Sm│ ▸ set status: blocked                                      │         │
+│  ● T2 Ed│   set status: review                                       │         │
 │         │                                                            │         │
 │ ON DECK ├────────────────────────────────────────────────────────────┤───────1 │
 │         │ ↑↓ move · enter run · esc close                            │         │

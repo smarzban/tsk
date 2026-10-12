@@ -23,7 +23,7 @@ fn key(
     let intent = match route_responsive_key(
         model.input_mode(),
         model.wide_stage(),
-        tsk_tui::ui::tier::resolve_responsive(width, 24, model.wide_stage()).presentation,
+        tsk_tui::ui::tier::resolve_responsive(width, HEIGHT, model.wide_stage()).presentation,
         event,
     ) {
         ResponsiveKeyRoute::Intent(intent) => Some(intent),
@@ -34,15 +34,19 @@ fn key(
         apply_intent(state, model, intent, None).unwrap();
     }
 }
+/// Frame height for every reference. The browser demo paints the whole list without a
+/// scrollbar, so the app frame must be tall enough that its list never scrolls either.
+const HEIGHT: u16 = 40;
+
 fn capture(model: &BoardModel, width: u16, _name: &str) -> String {
-    let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(width, HEIGHT)).unwrap();
     terminal
         .draw(|f| {
             draw_board(f, model);
         })
         .unwrap();
     let buffer = terminal.backend().buffer();
-    let text = (0..24)
+    let text = (0..HEIGHT)
         .map(|y| {
             (0..width)
                 .map(|x| buffer[(x, y)].symbol())
@@ -144,7 +148,7 @@ fn fixture_flow(export: bool) {
         );
         let peek = capture(&model, width, "project-peek-or-split");
         if width < 110 {
-            assert!(peek.contains("└─ tsk-parity"));
+            assert!(peek.contains("└─ #release · tsk-parity"), "{peek}");
         }
         key(
             &mut state,

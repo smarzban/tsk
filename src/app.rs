@@ -958,12 +958,43 @@ fn board_keyboard_intent_for_area(
     mode: BoardInputMode,
     key: crossterm::event::KeyEvent,
 ) -> Option<BoardIntent> {
+    if let Some(intent) = header_fold_key_intent(model, mode, key) {
+        return Some(intent);
+    }
     let presentation = model.responsive_geometry(area).presentation;
     match route_responsive_key(mode, model.input_stage(), presentation, key) {
         ResponsiveKeyRoute::Intent(intent) => Some(intent),
         ResponsiveKeyRoute::Inert => None,
         ResponsiveKeyRoute::Surface => board_keyboard_intent(model, mode, key),
     }
+}
+
+/// `→` / `l` on a folded fold header unfolds it and `←` / `h` on an unfolded one folds it,
+/// ahead of the wide slider and the peek. With nothing to fold or unfold the key keeps its
+/// usual meaning, so a header never blocks the slider.
+fn header_fold_key_intent(
+    model: &BoardModel,
+    mode: BoardInputMode,
+    key: crossterm::event::KeyEvent,
+) -> Option<BoardIntent> {
+    use crossterm::event::KeyEventKind;
+    if mode != BoardInputMode::Normal
+        || !model.task_list_owns_input()
+        || !key.modifiers.is_empty()
+        || !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+    {
+        return None;
+    }
+    let fold = match key.code {
+        KeyCode::Left | KeyCode::Char('h') => true,
+        KeyCode::Right | KeyCode::Char('l') => false,
+        _ => return None,
+    };
+    (model.selected_header_folded() == Some(!fold)).then_some(if fold {
+        BoardIntent::FoldHeader
+    } else {
+        BoardIntent::UnfoldHeader
+    })
 }
 
 fn board_keyboard_intent(
@@ -1171,6 +1202,8 @@ pub fn apply_board_intent_with_save_recovery(
             | BoardIntent::ToggleInboxGroup
             | BoardIntent::FoldGroup
             | BoardIntent::FoldAllGroups
+            | BoardIntent::FoldHeader
+            | BoardIntent::UnfoldHeader
             | BoardIntent::ToggleGroupFold(_) => return apply_intent(domain, model, intent, None),
             _ => {
                 model.begin_save_recovery(recovery.error().unwrap_or("save failed"));
@@ -1845,7 +1878,7 @@ fn dispatch_board_intent(
     } else {
         route.target
     };
-    let quit = handle_board_intent(
+    let mut quit = handle_board_intent(
         store,
         domain,
         board_intent_target_mut(model, target),
@@ -1853,6 +1886,10 @@ fn dispatch_board_intent(
         save_recovery,
         quick_capture,
     )?;
+    // A preview seat's sub-header asked for a board only the outer board can show.
+    if let Some(request) = model.take_outer_request().filter(|_| !quit) {
+        quit = handle_board_intent(store, domain, model, request, save_recovery, quick_capture)?;
+    }
     auto_open_projects_preview(route.area, model, &intent_for_preview);
     sync_focused_project_preview(model, domain, save_recovery);
     Ok(quit)
@@ -3887,6 +3924,192 @@ mod tests {
         )
         .expect("open projects view picker");
         assert_refused(&mut domain, &mut model, BoardIntent::ConfirmListPicker);
+    }
+
+    fn grouped_header_fixture(scope: TaskScope) -> (DomainState, BoardModel, uuid::Uuid) {
+        let mut domain = DomainState::new();
+        let mut row = None;
+        for (title, thread) in [("shipping task", Some("ship")), ("loose task", None)] {
+            let id = domain
+                .create(
+                    title,
+                    None,
+                    scope.clone(),
+                    ProvenanceOrigin::Manual,
+                    thread.map(str::to_string),
+                )
+                .expect("create grouped task");
+            domain
+                .set_status(id, HumanStatus::Started)
+                .expect("start grouped task");
+            row.get_or_insert(id);
+        }
+        let model = BoardModel::from_domain(&domain, None);
+        (domain, model, row.expect("row"))
+    }
+
+    /// Group `model` by thread and put its cursor on the `#ship` sub-header.
+    fn select_ship_header(domain: &mut DomainState, model: &mut BoardModel) -> uuid::Uuid {
+        apply_intent(domain, model, BoardIntent::OpenGroupPicker, None).expect("g");
+        let thread = model
+            .visible_list_picker_options()
+            .iter()
+            .position(|(_, option)| option.label == "thread")
+            .expect("thread grouping");
+        apply_intent(domain, model, BoardIntent::SelectListOption(thread), None).expect("pick");
+        let header = model
+            .queue_view()
+            .sections
+            .into_iter()
+            .flat_map(|section| section.groups)
+            .find(|group| group.label == "#ship")
+            .expect("#ship group")
+            .header_id;
+        let index = model
+            .visible_ids()
+            .iter()
+            .position(|id| *id == header)
+            .expect("an unfolded sub-header is selectable");
+        apply_intent(domain, model, BoardIntent::SelectIndex(index), None).expect("select");
+        assert!(model.group_header_selected());
+        header
+    }
+
+    #[test]
+    fn arrows_fold_a_header_in_place_and_otherwise_keep_their_slider_and_peek_meaning() {
+        let (mut domain, mut model, row) = grouped_header_fixture(TaskScope::Global);
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Desk),
+            None,
+        )
+        .expect("desk");
+        let header = select_ship_header(&mut domain, &mut model);
+        let wide = Rect::new(0, 0, 110, 24);
+        let single = Rect::new(0, 0, 109, 24);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let route = |model: &mut BoardModel, area, code| {
+            let mode = resolve_board_surface(area, model);
+            board_keyboard_intent_for_area(model, area, mode, key(code))
+        };
+
+        // Unfolded: ← / h fold at every width; → / l have nothing to do and keep their
+        // usual meaning (the slider wide, the peek narrow).
+        for area in [wide, single] {
+            assert_eq!(
+                route(&mut model, area, KeyCode::Left),
+                Some(BoardIntent::FoldHeader)
+            );
+            assert_eq!(
+                route(&mut model, area, KeyCode::Char('h')),
+                Some(BoardIntent::FoldHeader)
+            );
+        }
+        assert_eq!(
+            route(&mut model, wide, KeyCode::Right),
+            Some(BoardIntent::StageRight)
+        );
+        assert_eq!(
+            route(&mut model, single, KeyCode::Char('l')),
+            Some(BoardIntent::PeekDetail)
+        );
+
+        apply_intent(&mut domain, &mut model, BoardIntent::FoldHeader, None).expect("fold");
+        assert!(!model.visible_ids().contains(&row), "← folded the group");
+        assert_eq!(
+            model
+                .selected_index()
+                .map(|index| model.visible_ids()[index]),
+            Some(header),
+            "the cursor stays on the header"
+        );
+
+        // Folded: → / l unfold; ← / h fall through (inert at the slider's left end, the
+        // peek close narrow).
+        for area in [wide, single] {
+            assert_eq!(
+                route(&mut model, area, KeyCode::Right),
+                Some(BoardIntent::UnfoldHeader)
+            );
+            assert_eq!(
+                route(&mut model, area, KeyCode::Char('l')),
+                Some(BoardIntent::UnfoldHeader)
+            );
+        }
+        assert_eq!(route(&mut model, wide, KeyCode::Left), None);
+        assert_eq!(
+            route(&mut model, single, KeyCode::Char('h')),
+            Some(BoardIntent::CollapseDetail)
+        );
+        apply_intent(&mut domain, &mut model, BoardIntent::UnfoldHeader, None).expect("unfold");
+        assert!(model.visible_ids().contains(&row), "→ unfolded the group");
+
+        // Off a header the arrows never fold.
+        let index = model
+            .visible_ids()
+            .iter()
+            .position(|id| *id == row)
+            .expect("row");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectIndex(index),
+            None,
+        )
+        .expect("select row");
+        assert_eq!(
+            route(&mut model, single, KeyCode::Left),
+            Some(BoardIntent::CollapseDetail)
+        );
+    }
+
+    #[test]
+    fn enter_on_a_preview_thread_sub_header_opens_the_thread_view_on_the_outer_board() {
+        let area = Rect::new(0, 0, 110, 30);
+        let temp = TempStore::new("preview-thread-header");
+        let (mut domain, mut model, _) = grouped_header_fixture(TaskScope::Project {
+            path: "/repos/preview".into(),
+        });
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("projects");
+        stage_right(&mut domain, &mut model, 2);
+        temp.store.save(&domain).expect("persist");
+        sync_frame_presentation(area, &model);
+        assert!(model.project_right_seat_focused());
+        select_ship_header(&mut domain, model.input_target_mut());
+
+        let intent = preview_key_intent(
+            &mut model,
+            area,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        let RoutedBoardIntent { intent, target, .. } = route_board_intent(&model, intent);
+        assert_eq!(target, BoardIntentTarget::Focused);
+        let mut recovery = SaveRecovery::new();
+        let quit = dispatch_board_intent(
+            &temp.store,
+            &mut domain,
+            &mut model,
+            BoardDispatchRoute { area, target },
+            intent,
+            &mut recovery,
+            false,
+        )
+        .expect("dispatch Enter");
+        assert!(!quit);
+        assert_eq!(model.nav_tab(), NavTab::Projects);
+        assert_eq!(
+            model.projects_view(),
+            &crate::ui::board::ProjectsView::Thread("ship".into()),
+            "the preview's request reached the outer board"
+        );
+        assert!(model.right_seat().is_none(), "the preview closed");
     }
 
     #[test]

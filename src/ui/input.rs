@@ -375,15 +375,23 @@ pub enum BoardIntent {
     FoldGroup,
     /// `F` — fold every group in view, or unfold them all when all are folded.
     FoldAllGroups,
-    /// Enter or a click on a group sub-header: flip that one sub-group.
+    /// A click on a group sub-header: flip that one sub-group. A second click inside the
+    /// double-click window opens the group's board instead.
     ToggleGroupFold(uuid::Uuid),
+    /// `←` / `h` on an unfolded fold header (a sub-group, the inbox, or archived): fold it.
+    FoldHeader,
+    /// `→` / `l` on a folded fold header: unfold it.
+    UnfoldHeader,
+    /// Enter on a group sub-header: open its project's board, the desk, or its thread's
+    /// cross-project view.
+    OpenGroupTarget(crate::ui::queue::GroupTarget),
     /// Desk filter picker `←` / `→` (or a tab click): switch between its threads and
     /// projects tabs; `None` flips to the other tab.
     SwitchListPickerTab(Option<FilterTab>),
 }
 
 /// Bottom chrome: compact key legend for primary board actions.
-pub const BOARD_HELP_LINE: &str = "↑↓/jk  ·  shift+M multi-select  ·  shift+↑↓/space mark  ·  ctrl+s start  ·  ctrl+n next  ·  enter open  ·  h/l close/peek  ·  ctrl+d done  ·  ctrl+o inbox  ·  ctrl+b block  ·  ctrl+r review  ·  + add  ·  ctrl+e title  ·  ctrl+x del  ·  ctrl+u undo  ·  ctrl+f archive  ·  d drawer  ·  g group  ·  s sort  ·  f fold  ·  p projects  ·  / search  ·  : palette  ·  ? help  ·  ctrl+q quit";
+pub const BOARD_HELP_LINE: &str = "↑↓/jk  ·  shift+M multi-select  ·  shift+↑↓/space mark  ·  ctrl+s start  ·  ctrl+n next  ·  enter open  ·  h/l close/peek/fold  ·  ctrl+d done  ·  ctrl+o inbox  ·  ctrl+b block  ·  ctrl+r review  ·  + add  ·  ctrl+e title  ·  ctrl+x del  ·  ctrl+u undo  ·  ctrl+f archive  ·  d drawer  ·  g group  ·  s sort  ·  f fold  ·  p projects  ·  / search  ·  : palette  ·  ? help  ·  ctrl+q quit";
 /// Compact legend shown while the action sheet or command palette is open.
 pub const COMMAND_SURFACE_HELP_LINE: &str = "↑↓ select · type to filter · enter run · esc close";
 /// Compact legend shown while the help card is open.
@@ -479,28 +487,28 @@ const NORMAL_KEYMAP: &[NormalKeyEntry] = &[
         code: KeyCode::Right,
         intent: BoardIntent::PeekDetail,
         help_chord: "←/h · →/l",
-        help_label: "close / peek",
+        help_label: "close / peek · fold / unfold a header",
         modifier: NormalModifier::Bare,
     },
     NormalKeyEntry {
         code: KeyCode::Char('l'),
         intent: BoardIntent::PeekDetail,
         help_chord: "←/h · →/l",
-        help_label: "close / peek",
+        help_label: "close / peek · fold / unfold a header",
         modifier: NormalModifier::Bare,
     },
     NormalKeyEntry {
         code: KeyCode::Left,
         intent: BoardIntent::CollapseDetail,
         help_chord: "←/h · →/l",
-        help_label: "close / peek",
+        help_label: "close / peek · fold / unfold a header",
         modifier: NormalModifier::Bare,
     },
     NormalKeyEntry {
         code: KeyCode::Char('h'),
         intent: BoardIntent::CollapseDetail,
         help_chord: "←/h · →/l",
-        help_label: "close / peek",
+        help_label: "close / peek · fold / unfold a header",
         modifier: NormalModifier::Bare,
     },
     NormalKeyEntry {
@@ -1869,6 +1877,9 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::FoldGroup
         | BoardIntent::FoldAllGroups
         | BoardIntent::ToggleGroupFold(_)
+        | BoardIntent::FoldHeader
+        | BoardIntent::UnfoldHeader
+        | BoardIntent::OpenGroupTarget(_)
         | BoardIntent::SwitchListPickerTab(_) => None,
     }
 }

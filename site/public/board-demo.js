@@ -371,7 +371,6 @@ import { parseCapture } from "./capture.js";
     sort: "recent",
     folded: new Set(),
   });
-  const ROW_LABEL_MIN_COLUMNS = 78;
 
   const state = {
     tasks: fixture ? structuredClone(fixture.tasks) : seed(),
@@ -662,6 +661,12 @@ import { parseCapture } from "./capture.js";
     }
     return ["none", "no thread"];
   }
+  // What Enter or a double-click on a sub-header opens: its project's board, the desk, or
+  // its thread's cross-project view. `no thread` opens nothing.
+  function groupTarget(task, group) {
+    if (group === "project") return { project: task.project || "desk" };
+    return task.thread ? { thread: task.thread } : null;
+  }
   // One section's rows, sorted and (when groupable) bucketed hottest group first: the
   // group whose newest row changed status most recently leads, ties by label.
   function arrangeSection(tasks, section, layout, { groupable = true } = {}) {
@@ -673,7 +678,13 @@ import { parseCapture } from "./capture.js";
       const [key, label] = groupKey(task, group);
       const bucket = buckets.find((item) => item.key === key);
       if (bucket) bucket.tasks.push(task);
-      else buckets.push({ key, label, tasks: [task] });
+      else
+        buckets.push({
+          key,
+          label,
+          target: groupTarget(task, group),
+          tasks: [task],
+        });
     }
     const hottest = (bucket) => Math.max(...bucket.tasks.map(statusAt));
     buckets.sort(
@@ -683,12 +694,14 @@ import { parseCapture } from "./capture.js";
       groups: buckets.map((bucket) => ({
         key: `${section}:${bucket.key}`,
         label: bucket.label,
+        target: bucket.target,
         tasks: bucket.tasks,
       })),
       tasks: buckets.flatMap((bucket) => bucket.tasks),
     };
   }
-  // Push an arranged section: a folded group paints only its (selectable) sub-header.
+  // Push an arranged section: every sub-header is a cursor stop; a folded group paints
+  // only its sub-header.
   function pushArranged(rows, arranged, layout, pushTask) {
     if (!arranged.groups) {
       arranged.tasks.forEach((task) =>
@@ -704,7 +717,8 @@ import { parseCapture } from "./capture.js";
         count: group.tasks.length,
         collapseKey: group.key,
         collapsed,
-        selectable: collapsed,
+        selectable: true,
+        target: group.target,
         id: `group:${group.key}`,
         taskIds: group.tasks.map((task) => task.id),
       });
@@ -743,16 +757,29 @@ import { parseCapture } from "./capture.js";
       .filter(Boolean)
       .join(" · ");
   }
-  // The label paints only beside the first title line with a 2-cell gap; it never
-  // shortens the title or changes how it wraps.
-  function fittedRowLabel(row, firstLine, room, columns) {
-    if (columns < ROW_LABEL_MIN_COLUMNS || !row.label) return "";
-    return firstLine.length + 2 + row.label.length <= room ? row.label : "";
-  }
-  function rowLabelHtml(label) {
-    return label
-      ? `<span class="tsk-row-label dim" style="flex:none;margin-left:auto;padding-left:2ch;white-space:pre">${esc(label)}</span>`
-      : "";
+  // Title lines plus the dim row label, at every width: it follows the title two cells
+  // after its last word, or starts the next line at the title's indent and wraps like the
+  // title when it does not fit there. Nothing is truncated.
+  function titleLinesHtml(titleLines, label, room) {
+    const lines = titleLines.map(
+      (line) => `<span class="tsk-title-line">${esc(line)}</span>`,
+    );
+    if (!label) return lines.join("");
+    const last = titleLines[titleLines.length - 1] || "";
+    if (last.length + 2 + label.length <= room) {
+      lines[lines.length - 1] =
+        `<span class="tsk-title-line">${esc(last)}<span class="tsk-row-label dim">  ${esc(label)}</span></span>`;
+      return lines.join("");
+    }
+    return (
+      lines.join("") +
+      wrapText(label, room)
+        .map(
+          (line) =>
+            `<span class="tsk-row-label dim" style="display:block;white-space:pre">${esc(line)}</span>`,
+        )
+        .join("")
+    );
   }
 
   // ── Desk filter: one thread choice and one project choice, combined ──
@@ -905,7 +932,7 @@ import { parseCapture } from "./capture.js";
           drawer: state.drawer,
         };
   }
-  // Enter or click on a sub-header: folding selects the header, unfolding selects the
+  // A click or `f` on a sub-header: folding selects the header, unfolding selects the
   // group's first task. Folding clears multi-select marks.
   function toggleGroupFold(key, form = state) {
     const { rows, layout } = foldContext(form);
@@ -970,7 +997,42 @@ import { parseCapture } from "./capture.js";
       form.archivedOpen = !fold;
     }
   }
-  // Shift+M on a folded sub-header unfolds it, enters multi-select and marks the group.
+  // ← / → on a fold header (a sub-group, the inbox, or archived): whether it is folded,
+  // or null off a header.
+  function headerFolded(row, form = state) {
+    if (row?.kind === "group") return row.collapsed;
+    if (row?.kind === "inbox") return !state.inboxOpen;
+    if (row?.kind === "archived") return !form.archivedOpen;
+    return null;
+  }
+  // Fold (←) or unfold (→) the header under the cursor, leaving the cursor on it. Returns
+  // false when there is nothing to do, so the key keeps its usual meaning.
+  function foldHeader(row, fold, form = state) {
+    if (headerFolded(row, form) !== !fold) return false;
+    clearMarks(form);
+    form.peekId = null;
+    if (row.kind === "group") {
+      const { layout } = foldContext(form);
+      if (fold) layout.folded.add(row.collapseKey);
+      else layout.folded.delete(row.collapseKey);
+    } else if (row.kind === "inbox") state.inboxOpen = !fold;
+    else form.archivedOpen = !fold;
+    return true;
+  }
+  // Enter or a double-click on a sub-header opens what it names: its project's board, the
+  // desk, or its thread's cross-project view. `no thread` opens nothing.
+  function openGroupTarget(target) {
+    if (!target) return;
+    if (target.project) {
+      openProject(target.project);
+      return;
+    }
+    if (steps.dirty || steps.editor || previewHasUnsavedWork()) return;
+    goTab("projects");
+    state.projectView = target.thread;
+    state.selectedId = null;
+  }
+  // Shift+M on a sub-header unfolds it, enters multi-select and marks the group.
   function markFoldedGroup(form = state) {
     const { rows, layout } = foldContext(form);
     const row = rows.find(
@@ -1746,13 +1808,6 @@ import { parseCapture } from "./capture.js";
         ids,
       );
     }
-  }
-
-  function metaFor(task) {
-    const bits = [];
-    if (!state.focusProject && task.project) bits.push(projectName(task));
-    if (state.focusProject && task.thread) bits.push(`#${task.thread}`);
-    return bits.join(" · ");
   }
 
   function showCopyNotice(message) {
@@ -2996,13 +3051,12 @@ import { parseCapture } from "./capture.js";
           width - 2 - 4 - `T${task.number} `.length,
         );
         const titleLines = wrapText(task.title, titleRoom);
-        const rowLabelText =
-          rail && preview.peekId === task.id
-            ? ""
-            : fittedRowLabel(row, titleLines[0], titleRoom, width);
-        const title = titleLines
-          .map((line) => `<span class="tsk-title-line">${esc(line)}</span>`)
-          .join("");
+        // An open peek states the label on its closing line, so the row leaves it out.
+        const title = titleLinesHtml(
+          titleLines,
+          rail && preview.peekId === task.id ? "" : row.label,
+          titleRoom,
+        );
         const noteLines = wrapText(
           (task.notes || "").trim() || "no notes yet",
           Math.max(8, width - 7),
@@ -3021,14 +3075,15 @@ import { parseCapture } from "./capture.js";
                       `<div class="tsk-peek dim">    │ … ${noteLines.length - 5} more lines</div>`,
                     ]
                   : []),
-                ...(task.thread
-                  ? [
-                      `<div class="tsk-attribution dim">    └─ #${esc(task.thread)}</div>`,
-                    ]
+                ...(row.label
+                  ? wrapText(row.label, Math.max(8, width - 9)).map(
+                      (line, i) =>
+                        `<div class="tsk-attribution dim">${i ? "       " : "    └─ "}${esc(line)}</div>`,
+                    )
                   : [`<div class="tsk-peek dim">    └</div>`]),
               ].join("")
             : "";
-        return `<button type="button" class="tsk-row ${row.dim ? "dim" : ""} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-preview-task="${esc(task.id)}"><span class="tsk-row-main"><span class="tsk-row-prefix">${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> </span><span class="tsk-row-title">${title}</span>${rowLabelHtml(rowLabelText)}</span></button>${peek}`;
+        return `<button type="button" class="tsk-row ${row.dim ? "dim" : ""} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-preview-task="${esc(task.id)}"><span class="tsk-row-main"><span class="tsk-row-prefix">${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> </span><span class="tsk-row-title">${title}</span></span></button>${peek}`;
       })
       .join("");
     const project = esc(preview.project || "project");
@@ -3228,43 +3283,41 @@ import { parseCapture } from "./capture.js";
             : terminalColumns();
         const titleRoom = columns - 2 - 4 - `T${task.number} `.length;
         const titleLines = wrapText(task.title, titleRoom);
-        const title = titleLines
-          .map((line) => `<span class="tsk-title-line">${esc(line)}</span>`)
-          .join("");
-        // An open peek states the attribution on its closing line, so the row label hides.
-        const rowLabelText =
-          state.peekId === task.id
-            ? ""
-            : fittedRowLabel(row, titleLines[0], titleRoom, columns);
+        // An open peek states the label on its closing line, so the row leaves it out.
+        const peeked = state.peekId === task.id && !isWideSplit();
+        const title = titleLinesHtml(
+          titleLines,
+          peeked ? "" : row.label,
+          titleRoom,
+        );
         const noteLines = wrapText(
           (task.notes || "").trim() || "no notes yet",
           columns - 7,
         );
-        const label = metaFor(task);
-        const peek =
-          state.peekId === task.id && !isWideSplit()
-            ? [
-                ...noteLines
-                  .slice(0, 5)
-                  .map(
-                    (line) =>
-                      `<div class="tsk-peek dim">    │ ${esc(line)}</div>`,
-                  ),
-                ...(noteLines.length > 5
-                  ? [
-                      `<div class="tsk-peek dim">    │ … ${noteLines.length - 5} more lines</div>`,
-                    ]
-                  : []),
-                ...(label
-                  ? wrapText(label, columns - 9).map(
-                      (line, i) =>
-                        `<div class="tsk-attribution dim">${i ? "       " : "    └─ "}${esc(line)}</div>`,
-                    )
-                  : [`<div class="tsk-peek dim">    └</div>`]),
-              ].join("")
-            : "";
+        const label = row.label;
+        const peek = peeked
+          ? [
+              ...noteLines
+                .slice(0, 5)
+                .map(
+                  (line) =>
+                    `<div class="tsk-peek dim">    │ ${esc(line)}</div>`,
+                ),
+              ...(noteLines.length > 5
+                ? [
+                    `<div class="tsk-peek dim">    │ … ${noteLines.length - 5} more lines</div>`,
+                  ]
+                : []),
+              ...(label
+                ? wrapText(label, columns - 9).map(
+                    (line, i) =>
+                      `<div class="tsk-attribution dim">${i ? "       " : "    └─ "}${esc(line)}</div>`,
+                  )
+                : [`<div class="tsk-peek dim">    └</div>`]),
+            ].join("")
+          : "";
         const dimRow = row.dim ? "dim" : "";
-        return `<button type="button" class="tsk-row ${dimRow} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-task="${task.id}"><span class="tsk-row-main"><span class="tsk-row-prefix">${indent}${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> </span><span class="tsk-row-title">${title}</span>${rowLabelHtml(rowLabelText)}</span></button>${peek}`;
+        return `<button type="button" class="tsk-row ${dimRow} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-task="${task.id}"><span class="tsk-row-main"><span class="tsk-row-prefix">${indent}${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> </span><span class="tsk-row-title">${title}</span></span></button>${peek}`;
       })
       .join("");
 
@@ -3776,6 +3829,21 @@ import { parseCapture } from "./capture.js";
       render();
       return true;
     }
+    if (
+      bare &&
+      ["ArrowRight", "l", "ArrowLeft", "h"].includes(e.key) &&
+      foldHeader(
+        previewRows().find(
+          (item) => item.selectable && item.id === preview.selectedId,
+        ),
+        ["ArrowLeft", "h"].includes(e.key),
+        preview,
+      )
+    ) {
+      e.preventDefault();
+      render();
+      return true;
+    }
     if (bare && ["ArrowRight", "l"].includes(e.key)) {
       e.preventDefault();
       preview.peekId = preview.selectedId;
@@ -3800,10 +3868,9 @@ import { parseCapture } from "./capture.js";
       const row = previewRows().find(
         (item) => item.selectable && item.id === preview.selectedId,
       );
-      if (row?.kind === "group") toggleGroupFold(row.collapseKey, preview);
+      if (row?.kind === "group") openGroupTarget(row.target);
       else if (row?.kind === "archived") {
-        clearMarks(preview);
-        preview.archivedOpen = !preview.archivedOpen;
+        // Headers fold with ← / →; Enter on the archived heading does nothing.
       } else if (previewTask()) openPreviewTaskPage();
       render();
       return true;
@@ -4520,6 +4587,16 @@ import { parseCapture } from "./capture.js";
       render();
       return;
     }
+    if (
+      !alt &&
+      !taskPageActive &&
+      ["ArrowRight", "l", "ArrowLeft", "h"].includes(e.key) &&
+      foldHeader(selectedRow(), ["ArrowLeft", "h"].includes(e.key))
+    ) {
+      e.preventDefault();
+      render();
+      return;
+    }
     if (!alt && ["ArrowRight", "l"].includes(e.key)) {
       e.preventDefault();
       if (wide) {
@@ -4550,13 +4627,9 @@ import { parseCapture } from "./capture.js";
       else {
         const row = selectedRow();
         if (row?.kind === "project") openProject(row.project);
-        else if (row?.kind === "group") toggleGroupFold(row.collapseKey);
-        else if (row?.kind === "inbox") {
-          clearMarks();
-          state.inboxOpen = !state.inboxOpen;
-        } else if (row?.kind === "archived") {
-          clearMarks();
-          state.archivedOpen = !state.archivedOpen;
+        else if (row?.kind === "group") openGroupTarget(row.target);
+        else if (row?.kind === "inbox" || row?.kind === "archived") {
+          // Headers fold with ← / →; Enter on the inbox or archived heading does nothing.
         } else openFullPage();
       }
       render();
@@ -4651,6 +4724,24 @@ import { parseCapture } from "./capture.js";
   }
 
   let lastClick = { id: null, at: 0 };
+  let lastGroupClick = { key: null, at: 0 };
+  // A click on a sub-header folds or unfolds it; a second click inside the double-click
+  // window puts the fold back and opens the sub-header's board instead.
+  function groupHeaderClick(key, form = state) {
+    const now = Date.now();
+    const double = lastGroupClick.key === key && now - lastGroupClick.at < 350;
+    toggleGroupFold(key, form);
+    if (!double) {
+      lastGroupClick = { key, at: now };
+      return;
+    }
+    lastGroupClick = { key: null, at: 0 };
+    const row = foldContext(form).rows.find(
+      (item) => item.kind === "group" && item.collapseKey === key,
+    );
+    form.selectedId = row?.id ?? form.selectedId;
+    openGroupTarget(row?.target);
+  }
   const cancelReflowClick = () => {
     delete lastClick.reflow;
   };
@@ -4845,7 +4936,7 @@ import { parseCapture } from "./capture.js";
     const previewGroupHeader = e.target.closest("[data-preview-collapse]");
     if (previewGroupHeader && projectsPreviewActive()) {
       if (state.stage === "split") stageRight();
-      toggleGroupFold(previewGroupHeader.dataset.previewCollapse, preview);
+      groupHeaderClick(previewGroupHeader.dataset.previewCollapse, preview);
       render();
       return;
     }
@@ -5001,7 +5092,7 @@ import { parseCapture } from "./capture.js";
     const group = e.target.closest("[data-collapse]");
     if (group) {
       if (steps.dirty || steps.editor) return;
-      toggleGroupFold(group.getAttribute("data-collapse"));
+      groupHeaderClick(group.getAttribute("data-collapse"));
       render();
       return;
     }
