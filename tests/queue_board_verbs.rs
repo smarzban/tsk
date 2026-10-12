@@ -4732,12 +4732,22 @@ fn help_card_lists_ctrl_f_and_the_verb_bar_keeps_archive_out_of_its_seats() {
     .expect("expand");
 
     let verbs = board_verb_items(&model);
-    assert!(
+    assert_eq!(
         verbs
             .iter()
-            .any(|entry| entry.key == "enter" && entry.label == "collapse"),
-        "header selected: verb bar shows `enter collapse`: {verbs:?}"
+            .map(|entry| (entry.key, entry.label))
+            .collect::<Vec<_>>(),
+        vec![("←", "fold"), ("+", "add"), ("?", "help")],
+        "an open archived header offers ← fold, never Enter"
     );
+    apply_intent(&mut domain, &mut model, BoardIntent::FoldHeader, None).expect("fold");
+    let verbs = board_verb_items(&model);
+    assert_eq!(
+        (verbs[0].key, verbs[0].label),
+        ("→", "unfold"),
+        "a folded header offers → unfold: {verbs:?}"
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::UnfoldHeader, None).expect("unfold");
 
     let idx = model
         .visible_ids()

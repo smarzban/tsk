@@ -6121,3 +6121,38 @@ fn desk_peek_names_the_full_label_the_row_carried() {
         .expect("row");
     assert!(!peeked.contains("#ship"), "the label paints once: {peeked}");
 }
+
+#[test]
+fn task_page_rail_rows_carry_their_labels() {
+    let mut item = task(
+        9930,
+        "Threaded project task",
+        HumanStatus::Started,
+        project("/repos/alpha"),
+        0,
+    );
+    item.thread = Some("ship".into());
+    let mut model = BoardModel::from_tasks(vec![item], None);
+    let mut domain = DomainState::new();
+    for _ in 0..2 {
+        apply_intent(&mut domain, &mut model, BoardIntent::StageRight, None).unwrap();
+    }
+    assert_eq!(model.wide_stage(), tsk_tui::ui::tier::WideStage::Rail);
+    let rail = tsk_tui::ui::tier::resolve_responsive(130, 30, model.wide_stage());
+    let rows = board_rows(&model, 130, 30);
+    let column: Vec<String> = rows
+        .iter()
+        .map(|row| {
+            row.chars()
+                .skip(rail.board.x as usize)
+                .take(rail.board.width as usize)
+                .collect::<String>()
+        })
+        .collect();
+    let text = column.join("\n");
+    assert!(text.contains("Threaded"), "{text}");
+    assert!(
+        column.iter().any(|row| row.contains("#ship · alpha")),
+        "the rail row keeps its label: {text}"
+    );
+}

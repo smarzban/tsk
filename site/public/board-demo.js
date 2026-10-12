@@ -2720,9 +2720,15 @@ import { parseCapture } from "./capture.js";
       ],
       [
         "views & find",
+        "← / →",
+        "fold / unfold a header (sub-group, inbox, archived)",
+        "collapse expand group",
+      ],
+      [
+        "views & find",
         "enter",
-        "fold / unfold group (sub-header)",
-        "collapse expand",
+        "open a sub-header's project, desk, or thread",
+        "group board view",
       ],
       [
         "views & find",
@@ -4545,7 +4551,8 @@ import { parseCapture } from "./capture.js";
       return;
     }
     // Bare letters stay verbs in the demo, so the group picker is g, the sort picker
-    // Shift+S and fold-all Shift+F; Enter or a click folds one sub-header.
+    // Shift+S and fold-all Shift+F; ←/→ or a click folds one sub-header, and Enter or a
+    // double-click opens its board.
     if (e.key === "g" && !e.altKey && !e.ctrlKey && !e.metaKey) {
       e.preventDefault();
       openLayoutPicker("group");

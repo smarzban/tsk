@@ -3727,8 +3727,8 @@ enum ListRow {
     InboxHeader {
         line: Line<'static>,
     },
-    /// A group sub-header inside a status section (selectable while folded; hits map to
-    /// the group's fold toggle).
+    /// A group sub-header inside a status section (always selectable; hits map to the
+    /// group's fold toggle, a double-click to its board).
     GroupHeader {
         id: Uuid,
         line: Line<'static>,
@@ -4000,6 +4000,7 @@ fn build_list_rows(
                 marked,
                 geo.row_width,
                 0,
+                label,
             )
         } else {
             paint_labelled_task_row_lines(
@@ -4553,6 +4554,7 @@ fn paint_rail_row_lines(
     marked: bool,
     row_width: u16,
     leading_indent: usize,
+    label: Option<&str>,
 ) -> Vec<TaskRowLine> {
     let row_w = row_width as usize;
     let marker = match (selected, marked) {
@@ -4573,11 +4575,11 @@ fn paint_rail_row_lines(
         .saturating_sub(1)
         .saturating_sub(continuation_indent)
         .max(1);
-    let segments: Vec<String> =
-        crate::ui::edit::wrap_text(&task.title, room.min(continuation_room))
-            .into_iter()
-            .map(|wrapped| wrapped.text)
-            .collect();
+    let wrap_room = room.min(continuation_room);
+    let segments: Vec<String> = crate::ui::edit::wrap_text(&task.title, wrap_room)
+        .into_iter()
+        .map(|wrapped| wrapped.text)
+        .collect();
     let mut lines = Vec::with_capacity(segments.len());
     let mut spans = vec![Span::styled(prefix, style_dim())];
     if let Some(identifier) = identifier {
@@ -4606,6 +4608,37 @@ fn paint_rail_row_lines(
             line: bound_line(
                 Line::from(Span::styled(
                     format!("{}{segment}", " ".repeat(continuation_indent)),
+                    style_dim(),
+                )),
+                row_w,
+            ),
+            content_x: u16::try_from(continuation_indent).unwrap_or(u16::MAX),
+            content_width: u16::try_from(cells).unwrap_or(u16::MAX).max(1),
+            identifier: None,
+        });
+    }
+    // The row label flows after the title exactly as on a full-width row.
+    let Some(label) = label
+        .map(|label| present_line(label, usize::MAX))
+        .filter(|label| !label.is_empty())
+    else {
+        return lines;
+    };
+    let last_w = segments.last().map(|text| display_width(text)).unwrap_or(0);
+    if last_w + 2 + display_width(&label) <= wrap_room {
+        if let Some(last) = lines.last_mut() {
+            let mut spans = last.line.spans.clone();
+            spans.push(Span::styled(format!("  {label}"), style_dim()));
+            last.line = bound_line(Line::from(spans), row_w);
+        }
+        return lines;
+    }
+    for part in crate::ui::edit::wrap_text(&label, wrap_room) {
+        let cells = display_width(&part.text);
+        lines.push(TaskRowLine {
+            line: bound_line(
+                Line::from(Span::styled(
+                    format!("{}{}", " ".repeat(continuation_indent), part.text),
                     style_dim(),
                 )),
                 row_w,
@@ -5442,6 +5475,28 @@ mod tests {
                 "  ○ T3 A title that fills the row now",
                 "       #release · atlas"
             ]
+        );
+
+        // A label longer than the title room wraps like a title, every cell kept, each
+        // line at the title's indent and inside the row.
+        // 38 cells: one line at the row width, two at the title room.
+        let label = "#release-candidate-x · herdr-viewer-ab";
+        let lines = paint_labelled_task_row_lines(&row("Short title", false), &geo, 0, Some(label));
+        let painted = texts(&lines);
+        assert_eq!(painted[0], "  ○ T3 Short title");
+        let tail: Vec<&str> = painted[1..].iter().map(|line| line.as_str()).collect();
+        assert!(tail.len() > 1, "the label itself wraps: {painted:?}");
+        for line in &tail {
+            assert!(line.starts_with("       ") && !line[7..].starts_with(' '));
+            assert!(display_width(line) <= 38, "inside the row: {line:?}");
+        }
+        assert_eq!(
+            tail.iter()
+                .map(|line| line.trim())
+                .collect::<Vec<_>>()
+                .join(" "),
+            label,
+            "the whole label survives"
         );
     }
 

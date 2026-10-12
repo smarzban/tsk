@@ -125,34 +125,30 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
         ];
     }
 
-    // Header rows hold the selection: their own verbs only.
-    if model.archived_header_selected() {
-        return vec![
+    // Header rows hold the selection: their own verbs only. Every fold header folds with
+    // ← and unfolds with →; a group sub-header that names a board also opens it.
+    if let Some(folded) = model.selected_header_folded() {
+        let opens = model
+            .selection_id
+            .and_then(|id| model.group_header_target(id))
+            .is_some_and(|target| target != crate::ui::queue::GroupTarget::None);
+        let mut items = Vec::with_capacity(4);
+        if opens {
+            items.push(OPEN);
+        }
+        items.push(if folded {
             VerbEntry {
-                key: "enter",
-                label: if model.archived_collapsed {
-                    "expand"
-                } else {
-                    "collapse"
-                },
-            },
-            ADD,
-            HELP,
-        ];
-    }
-    if model.inbox_header_selected() {
-        return vec![
+                key: "→",
+                label: "unfold",
+            }
+        } else {
             VerbEntry {
-                key: "enter",
-                label: if model.inbox_collapsed {
-                    "expand"
-                } else {
-                    "collapse"
-                },
-            },
-            ADD,
-            HELP,
-        ];
+                key: "←",
+                label: "fold",
+            }
+        });
+        items.extend([ADD, HELP]);
+        return items;
     }
 
     // While a delete notice is on the status row, the bar leads with its undo and keeps

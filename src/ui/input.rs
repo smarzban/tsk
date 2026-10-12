@@ -358,10 +358,10 @@ pub enum BoardIntent {
     LaunchKeepArchived,
     /// Mouse route onto the picker's painted tab row.
     SelectPickerTab(PickerTab),
-    /// Expand/collapse the done drawer's archived group (Enter or click on its header,
-    /// which the intent also selects). Session-only. Reducer lands in.
+    /// Expand/collapse the done drawer's archived group (a click on its header, which the
+    /// intent also selects). Session-only.
     ToggleArchivedGroup,
-    /// Expand/collapse the ON DECK inbox group (Enter or click on its header).
+    /// Expand/collapse the ON DECK inbox group (a click on its header).
     ToggleInboxGroup,
     /// `?` — open the help card. Surface wiring lands in.
     OpenHelp,
@@ -382,8 +382,9 @@ pub enum BoardIntent {
     FoldHeader,
     /// `→` / `l` on a folded fold header: unfold it.
     UnfoldHeader,
-    /// Enter on a group sub-header: open its project's board, the desk, or its thread's
-    /// cross-project view.
+    /// Open a group sub-header's board on the outer board: a preview seat's Enter or
+    /// double-click on a sub-header, handed out because only the outer board can switch
+    /// views. (Enter itself arrives as `OpenTaskPage`.)
     OpenGroupTarget(crate::ui::queue::GroupTarget),
     /// Desk filter picker `←` / `→` (or a tab click): switch between its threads and
     /// projects tabs; `None` flips to the other tab.

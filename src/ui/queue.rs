@@ -499,9 +499,9 @@ pub fn visible_task_ids(
     visible_row_ids(view, archived_collapsed, inbox_collapsed, &BTreeSet::new())
 }
 
-/// Selectable row ids: [`visible_task_ids`] plus folded sub-groups. A folded group
-/// contributes only its sub-header (so it can be unfolded); an unfolded group's
-/// sub-header is skipped and its rows are selectable.
+/// Selectable row ids: [`visible_task_ids`] plus every group sub-header. Each sub-header
+/// is a stop of its own (so ←/→ can fold it and Enter can open it); a folded group
+/// contributes only its sub-header.
 pub fn visible_row_ids(
     view: &QueueView,
     archived_collapsed: bool,
@@ -512,7 +512,7 @@ pub fn visible_row_ids(
     for section in &view.sections {
         match section.kind {
             SectionKind::Archived => {
-                // The archived header is always selectable so Enter can toggle it;
+                // The archived header is always selectable so ←/→ can fold it;
                 // its rows paint only when the group is expanded.
                 out.push(ARCHIVED_HEADER_ROW_ID);
                 if !archived_collapsed {
@@ -537,7 +537,7 @@ pub fn visible_row_ids(
     out
 }
 
-/// A grouped section's selectable rows: a folded group's header, an open group's tasks.
+/// A grouped section's selectable rows: each group's header, then its tasks unless folded.
 fn push_group_rows(out: &mut Vec<Uuid>, section: &QueueSection, folded: &BTreeSet<Uuid>) {
     for group in &section.groups {
         out.push(group.header_id);
@@ -2380,8 +2380,8 @@ mod tests {
             "painted DONE drawer rows must stay in the selectable set"
         );
 
-        // With an archived task present, the header row is always selectable so Enter
-        // can toggle the group; the collapsed group paints only its header.
+        // With an archived task present, the header row is always selectable so ←/→
+        // can fold the group; the collapsed group paints only its header.
         let mut tasks = tasks.clone();
         let mut archived =
             task_with_thread(3, HumanStatus::Ready, project("/repos/a"), false, 50, None);

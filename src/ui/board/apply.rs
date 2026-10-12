@@ -2225,7 +2225,7 @@ fn apply_board_intent(
             return Ok(IntentOutcome::None);
         }
         BoardIntent::ToggleArchivedGroup => {
-            // Enter or a click on the header: flip that one group. The drawer is already
+            // A click on the header: flip that one group. The drawer is already
             // open, because the header only paints inside it.
             model.clear_marks();
             let previous_visible = model.visible_ids();
@@ -2953,7 +2953,10 @@ fn open_group_target(
     model: &mut BoardModel,
     target: GroupTarget,
 ) -> Result<IntentOutcome, DomainError> {
-    if target == GroupTarget::None {
+    // `no thread` opens nothing, and the desk's own `desk` sub-header is already open: both
+    // leave the search, marks, and fold untouched.
+    let already_here = target == GroupTarget::Desk && model.nav_tab() == NavTab::Desk;
+    if target == GroupTarget::None || already_here {
         return Ok(IntentOutcome::None);
     }
     if model.preview_seat {

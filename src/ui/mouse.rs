@@ -326,6 +326,8 @@ fn verb_intent(model: &BoardModel, index: usize) -> Option<BoardIntent> {
         "?" => Some(BoardIntent::OpenHelp),
         "/" => Some(BoardIntent::FocusSearch),
         "+" => Some(BoardIntent::OpenCapture),
+        "←" => Some(BoardIntent::FoldHeader),
+        "→" => Some(BoardIntent::UnfoldHeader),
         _ => None,
     }
 }

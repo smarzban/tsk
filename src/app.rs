@@ -1447,6 +1447,8 @@ fn press_survives_off_focus(
 
 /// Keep a row gesture attached to its original cell and task across a column reflow.
 /// The reducer's existing clock authorizes continuation only after successful selection.
+/// A Projects-preview group sub-header rides the same gesture: its first click slides the
+/// preview from Split to Rail, which moves the header out from under the pointer.
 #[derive(Default)]
 struct ReflowRowClick(Option<(Position, Rect, uuid::Uuid)>);
 
@@ -1483,13 +1485,21 @@ impl ReflowRowClick {
     ) -> Option<uuid::Uuid> {
         use crossterm::event::{MouseButton, MouseEventKind};
         let (pos, frame, id) = self.0?;
-        (mouse.kind == MouseEventKind::Down(MouseButton::Left)
+        let same_press = mouse.kind == MouseEventKind::Down(MouseButton::Left)
             && pos == Position::new(mouse.column, mouse.row)
             && frame == area
-            && model.wide_stage() == crate::ui::tier::WideStage::Split
-            && model.input_mode() == BoardInputMode::Normal
-            && model.pending_row_double_click(id))
-        .then_some(id)
+            && model.input_mode() == BoardInputMode::Normal;
+        let continues = if crate::ui::queue::is_group_header_id(id) {
+            model.wide_stage() == crate::ui::tier::WideStage::Rail
+                && model.project_right_seat_focused()
+                && model
+                    .right_seat()
+                    .is_some_and(|right| right.pending_group_header_double_click(id))
+        } else {
+            model.wide_stage() == crate::ui::tier::WideStage::Split
+                && model.pending_row_double_click(id)
+        };
+        (same_press && continues).then_some(id)
     }
 }
 
@@ -1508,6 +1518,9 @@ fn board_mouse_click_intent_after_focus<E>(
     // Consume the second release before preview controls or reflowed rows can see it.
     if let Some(id) = reflow_click.target(model, area, click) {
         reflow_click.clear();
+        if crate::ui::queue::is_group_header_id(id) {
+            return Ok((false, Some(BoardIntent::ToggleGroupFold(id))));
+        }
         let intent = (model.selected_id() == Some(id))
             .then(|| {
                 model
@@ -1537,6 +1550,9 @@ fn board_mouse_click_intent_after_focus<E>(
                     intent,
                 )
             });
+        if let Some(BoardIntent::ToggleGroupFold(id)) = intent {
+            reflow_click.0 = Some((Position::new(click.column, click.row), area, id));
+        }
         return Ok((false, intent));
     }
     let intent = board_mouse_intent(area, model, click);
@@ -3929,7 +3945,15 @@ mod tests {
     fn grouped_header_fixture(scope: TaskScope) -> (DomainState, BoardModel, uuid::Uuid) {
         let mut domain = DomainState::new();
         let mut row = None;
-        for (title, thread) in [("shipping task", Some("ship")), ("loose task", None)] {
+        // The loose task leads (hottest group first) and its title wraps in the narrow
+        // Split preview but not in Rail, so the slide moves the `#ship` sub-header.
+        for (title, thread) in [
+            ("shipping task", Some("ship")),
+            (
+                "loose task whose title runs long enough to wrap only in the split preview",
+                None,
+            ),
+        ] {
             let id = domain
                 .create(
                     title,
@@ -4276,6 +4300,161 @@ mod tests {
         if let Some(intent) = intent {
             apply_intent(domain, model, intent, None).expect("dispatch click");
         }
+    }
+
+    /// [`dispatch_reflow_test_click`], but the released click goes to the seat the app
+    /// would target, and a preview seat's outer request then reaches the outer board.
+    fn dispatch_preview_test_click(
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        reflow_click: &mut ReflowRowClick,
+        area: Rect,
+        click: MouseEvent,
+    ) {
+        reflow_click.observe(&Event::Mouse(click));
+        let hits = board_hit_map(area, model);
+        reflow_click.observe(&Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            ..click
+        }));
+        let (quit, intent) = board_mouse_click_intent_after_focus(
+            area,
+            model,
+            &hits,
+            reflow_click,
+            click,
+            |model, focus| {
+                apply_intent(domain, model, focus, None)?;
+                Ok::<bool, DomainError>(false)
+            },
+        )
+        .expect("route click through production focus handoff");
+        assert!(!quit);
+        if let Some(intent) = intent {
+            let target = mouse_intent_target(model, area, click, &hits, &intent);
+            apply_intent(domain, board_intent_target_mut(model, target), intent, None)
+                .expect("dispatch click");
+        }
+        if let Some(request) = model.take_outer_request() {
+            apply_intent(domain, model, request, None).expect("outer request");
+        }
+    }
+
+    /// A Projects preview at Split whose board is grouped by thread, and the `#ship`
+    /// sub-header's painted cell.
+    fn split_preview_ship_header(area: Rect) -> (DomainState, BoardModel, uuid::Uuid, MouseEvent) {
+        let (mut domain, mut model, _) = grouped_header_fixture(TaskScope::Project {
+            path: "/repos/preview".into(),
+        });
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("projects");
+        stage_right(&mut domain, &mut model, 2);
+        let header = select_ship_header(&mut domain, model.input_target_mut());
+        apply_intent(&mut domain, &mut model, BoardIntent::StageLeft, None).expect("to Split");
+        assert_eq!(model.wide_stage(), crate::ui::tier::WideStage::Split);
+        assert!(model.right_seat().is_some(), "the preview stays at Split");
+        let hits = board_hit_map(area, &model);
+        let cell = hits
+            .regions
+            .iter()
+            .find(|hit| hit.target == crate::ui::render::QueueHitTarget::GroupHeader(header))
+            .expect("the preview paints the sub-header")
+            .area;
+        (domain, model, header, left_click(cell.x + 2, cell.y))
+    }
+
+    #[test]
+    fn a_split_preview_sub_header_double_click_survives_the_slide_and_opens_its_view() {
+        let area = Rect::new(0, 0, 120, 30);
+        let (mut domain, mut model, header, click) = split_preview_ship_header(area);
+        let mut reflow = ReflowRowClick::default();
+        dispatch_preview_test_click(&mut domain, &mut model, &mut reflow, area, click);
+        assert_eq!(model.wide_stage(), crate::ui::tier::WideStage::Rail);
+        let moved = board_hit_map(area, &model)
+            .regions
+            .iter()
+            .find(|hit| hit.target == crate::ui::render::QueueHitTarget::GroupHeader(header))
+            .expect("the Rail preview paints the sub-header")
+            .area;
+        assert_ne!(moved.y, click.row, "the slide moved the sub-header");
+        assert!(
+            model
+                .right_seat()
+                .is_some_and(|right| right.layout().folded.contains(&header)),
+            "the first click slid to Rail and folded the sub-header"
+        );
+        dispatch_preview_test_click(&mut domain, &mut model, &mut reflow, area, click);
+        assert_eq!(
+            model.projects_view(),
+            &crate::ui::board::ProjectsView::Thread("ship".into()),
+            "the second click still names the sub-header the user saw"
+        );
+        assert!(model.right_seat().is_none());
+    }
+
+    #[test]
+    fn a_dirty_preview_refuses_a_sub_header_open_and_keeps_its_draft_and_fold() {
+        let area = Rect::new(0, 0, 120, 30);
+        let (mut domain, mut model, header, _) = split_preview_ship_header(area);
+        stage_right(&mut domain, &mut model, 1);
+        apply_intent(
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::OpenCapture,
+            None,
+        )
+        .expect("open preview quick add");
+        apply_intent(
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::QuickAddInsertText("keep this draft".into()),
+            None,
+        )
+        .expect("type preview draft");
+        let folded_before = model
+            .right_seat()
+            .map(|right| right.layout().folded.clone())
+            .expect("preview");
+
+        // A double-click: the second click asks the outer board, which refuses.
+        let temp = TempStore::new("dirty-preview-sub-header");
+        temp.store.save(&domain).expect("persist");
+        let mut recovery = SaveRecovery::new();
+        for _ in 0..2 {
+            dispatch_board_intent(
+                &temp.store,
+                &mut domain,
+                &mut model,
+                BoardDispatchRoute {
+                    area,
+                    target: BoardIntentTarget::Focused,
+                },
+                BoardIntent::ToggleGroupFold(header),
+                &mut recovery,
+                false,
+            )
+            .expect("dispatch sub-header click");
+        }
+        assert_eq!(
+            model.message(),
+            Some("save or cancel edits before switching tasks")
+        );
+        assert_eq!(
+            model.projects_view(),
+            &crate::ui::board::ProjectsView::Overview
+        );
+        let right = model.right_seat().expect("the preview stays open");
+        assert_eq!(right.quick_add_title_value(), "keep this draft");
+        assert_eq!(
+            right.layout().folded,
+            folded_before,
+            "the double-click left the fold as it was"
+        );
     }
 
     #[test]

@@ -1088,3 +1088,66 @@ fn a_double_click_on_a_sub_header_opens_its_board_and_leaves_the_fold_alone() {
         "the double-click put the fold back before leaving"
     );
 }
+
+#[test]
+fn a_sub_header_verb_bar_offers_open_and_its_fold_arrow() {
+    let mut board = board();
+    board.pick(BoardIntent::OpenGroupPicker, "thread");
+    let groups = board.motion_groups();
+    let ship = groups.iter().find(|g| g.0 == "#ship").expect("#ship").2;
+    let loose = groups
+        .iter()
+        .find(|g| g.0 == "no thread")
+        .expect("no thread")
+        .2;
+    let verbs = |board: &Board| {
+        tsk_tui::ui::board::board_verb_items(&board.model)
+            .iter()
+            .map(|entry| (entry.key, entry.label))
+            .collect::<Vec<_>>()
+    };
+    board.select_row(ship);
+    assert_eq!(
+        verbs(&board),
+        [
+            ("enter", "open"),
+            ("←", "fold"),
+            ("+", "add"),
+            ("?", "help")
+        ]
+    );
+    // The bar's arrow seat folds on a click, like the key.
+    let index = 1;
+    board.click(QueueHitTarget::Verb(index));
+    assert!(board.model.layout().folded.contains(&ship));
+    assert_eq!(verbs(&board)[1], ("→", "unfold"));
+    // `no thread` opens nothing, so its bar has no Enter.
+    board.select_row(loose);
+    assert_eq!(verbs(&board)[0], ("←", "fold"));
+}
+
+#[test]
+fn enter_on_the_desk_sub_header_on_the_desk_keeps_search_and_marks() {
+    let mut board = board();
+    board.pick(BoardIntent::OpenGroupPicker, "project");
+    board.apply(BoardIntent::FocusSearch);
+    for character in "o".chars() {
+        board.apply(BoardIntent::SearchQueryInsert(character));
+    }
+    board.apply(BoardIntent::PinSearch);
+    let desk_header = board
+        .motion_groups()
+        .into_iter()
+        .find(|group| group.0 == "desk")
+        .expect("desk group")
+        .2;
+    board.select(board.desk);
+    board.apply(BoardIntent::ToggleMarkMode);
+    board.apply(BoardIntent::MarkToggle);
+    assert_eq!(board.model.marked_ids().len(), 1);
+    board.select_row(desk_header);
+    board.key(press(KeyCode::Enter));
+    assert_eq!(board.model.nav_tab(), NavTab::Desk);
+    assert_eq!(board.model.search_query(), "o", "the pinned search stays");
+    assert_eq!(board.model.marked_ids().len(), 1, "the marks stay");
+}
