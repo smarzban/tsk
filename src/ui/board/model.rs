@@ -1485,8 +1485,8 @@ pub struct BulkCleanup {
     /// its worktree is still gone.
     pub missing: Vec<(Uuid, String, crate::domain::Dispatch)>,
     /// Dispatched targets whose worktree could not be inspected, with the reason: kept, still
-    /// marked done.
-    pub refused: Vec<(String, String)>,
+    /// marked done by `y` and `n`; `m` leaves them unchanged.
+    pub refused: Vec<(Uuid, String, String)>,
 }
 
 /// Session-only start confirmation: the bulk card over a marked set where a start would

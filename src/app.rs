@@ -2365,7 +2365,7 @@ pub fn offer_bulk_cleanup_prompt_with_host(
                     begin_cleanup_pr_probe(task_project(domain, id), &preview.record, host);
                 rows.push(cleanup_row(id, preview, merge_check, pr_probe));
             }
-            Err(error) => bulk.refused.push((identifier, error.reason())),
+            Err(error) => bulk.refused.push((id, identifier, error.reason())),
         }
     }
     if rows.is_empty() && bulk.refused.is_empty() {
@@ -2542,7 +2542,12 @@ pub fn confirm_cleanup_with_host(
     let refused = prompt
         .bulk
         .as_ref()
-        .map(|bulk| bulk.refused.clone())
+        .map(|bulk| {
+            bulk.refused
+                .iter()
+                .map(|(_, identifier, reason)| (identifier.clone(), reason.clone()))
+                .collect()
+        })
         .unwrap_or_default();
     let run = CleanupRun {
         job: dispatch::CleanupJob::new(plan.len()),
@@ -2683,8 +2688,9 @@ fn begin_cleanup_merges(
 }
 
 /// Land a cleanup card's `m` once every merge answered, on this board and its project preview.
-/// Merged rows go on exactly as `y` (done in one save, one undo entry, then cleanup); a row
-/// whose merge failed stays as it was, its card line saying why. Nothing merged: the card
+/// Merged rows, and on a marked set every other task but uncommitted work or one that could
+/// not be inspected, go on exactly as `y` (done in one save, one undo entry, then cleanup); a
+/// row whose merge failed stays as it was, its card line saying why. Nothing went on: the card
 /// stays open with each reason.
 fn land_cleanup_merges_with_host(
     store: &TaskStore,
@@ -2771,54 +2777,47 @@ fn land_cleanup_merges_on(
             }
         }
     }
-    // Rows already merged go on with the ones `m` just merged: done and fully tidied. The
-    // rest stay exactly as they were, and the card names each and why.
-    let go_on = prompt
-        .rows
-        .iter()
-        .filter(|row| {
-            merged.contains(&row.task_id)
-                || (!ids.contains(&row.task_id)
-                    && matches!(row.verdict(), crate::ui::board::RowVerdict::Merged { .. }))
-        })
-        .map(|row| row.task_id)
-        .collect::<Vec<_>>();
-    for row in prompt
-        .rows
-        .iter()
-        .filter(|row| !go_on.contains(&row.task_id) && !ids.contains(&row.task_id))
-    {
-        report
-            .unmerged
-            .push((format!("T{}", row.number), row.unchanged_reason()));
-    }
-    if let Some(bulk) = prompt.bulk.as_ref() {
-        for (_, identifier, _) in &bulk.missing {
-            report
-                .unmerged
-                .push((identifier.clone(), "worktree already gone".into()));
-        }
-        for (identifier, reason) in &bulk.refused {
-            report
-                .unmerged
-                .push((identifier.clone(), format!("can't inspect: {reason}")));
-        }
-        for identifier in &bulk.plain {
-            report
-                .unmerged
-                .push((identifier.clone(), "no dispatch".into()));
+    // Everything else on the card goes on with the ones `m` just merged, exactly as `y`: done,
+    // and tidied as far as is safe (a branch nothing confirms merged is kept). Targets without
+    // a row go on too (no dispatch: done; worktree already gone: converged). Only uncommitted
+    // work, a failed merge and a task that could not be inspected stay exactly as they were,
+    // and the card names each and why.
+    let mut dropped = Vec::new();
+    for row in &prompt.rows {
+        let failed = !merged.contains(&row.task_id)
+            && (ids.contains(&row.task_id) || row.pr.merge_failed.is_some());
+        if row.dirty || failed {
+            dropped.push(row.task_id);
+            if !ids.contains(&row.task_id) {
+                report
+                    .unmerged
+                    .push((format!("T{}", row.number), row.unchanged_reason()));
+            }
         }
     }
-    if go_on.is_empty() {
+    let going = match prompt.bulk.as_ref() {
+        Some(bulk) => {
+            for (id, identifier, reason) in &bulk.refused {
+                dropped.push(*id);
+                report
+                    .unmerged
+                    .push((identifier.clone(), format!("can't inspect: {reason}")));
+            }
+            bulk.targets.iter().any(|id| !dropped.contains(id))
+        }
+        None => prompt
+            .rows
+            .iter()
+            .any(|row| !dropped.contains(&row.task_id)),
+    };
+    if !going {
         // Nothing went on: the card says why for each task, and only closes.
         prompt.settled = Some(report.unmerged);
         return;
     }
-    prompt.rows.retain(|row| go_on.contains(&row.task_id));
+    prompt.rows.retain(|row| !dropped.contains(&row.task_id));
     if let Some(bulk) = prompt.bulk.as_mut() {
-        bulk.targets.retain(|id| go_on.contains(id));
-        bulk.plain.clear();
-        bulk.missing.clear();
+        bulk.targets.retain(|id| !dropped.contains(id));
         bulk.refused.clear();
     }
     let baseline = domain.clone();
@@ -22321,6 +22320,10 @@ mod merge_cleanup_tests {
         prs: HashMap<String, PullRequest>,
         refuse: HashMap<String, String>,
         dirty: HashSet<String>,
+        /// Branches whose worktree is already gone.
+        gone: HashSet<String>,
+        /// Branches whose worktree cannot be inspected.
+        uninspectable: HashSet<String>,
         merges: Vec<(String, MergeMethod, String)>,
         deleted_at_tip: Vec<String>,
         removed: Vec<String>,
@@ -22372,9 +22375,12 @@ mod merge_cleanup_tests {
             record: &Dispatch,
             _: bool,
         ) -> Result<CleanupInspection, String> {
+            if self.uninspectable.contains(&record.branch) {
+                return Err("git status failed".into());
+            }
             Ok(CleanupInspection {
                 unreachable_remote: None,
-                worktree_exists: true,
+                worktree_exists: !self.gone.contains(&record.branch),
                 dirty: self.dirty.contains(&record.branch),
                 dirty_files: Vec::new(),
                 checked_out_elsewhere: false,
@@ -22959,7 +22965,13 @@ mod merge_cleanup_tests {
             .into_iter()
             .find(|option| option.choice == crate::ui::board::CleanupChoice::Merge)
             .expect("m for the other PR");
-        assert!(merge.text.contains("unchanged"), "{}", merge.text);
+        assert!(
+            merge
+                .text
+                .contains("mark T2 done, remove its worktree and agent pane, keep its branch"),
+            "{}",
+            merge.text
+        );
         press(&mut board, BoardIntent::MergeCleanup, &mut host);
         let attempted = host
             .merges
@@ -22969,17 +22981,25 @@ mod merge_cleanup_tests {
         assert_eq!(
             attempted,
             ["tsk/one"],
-            "the card said the other stays unchanged"
+            "the card said the other's branch is kept"
         );
         tick(&mut board, &mut host);
-        assert_eq!(on_disk(&board, 1), HumanStatus::Started);
+        tick(&mut board, &mut host);
+        assert_eq!(on_disk(&board, 1), HumanStatus::Done, "tidied as y would");
+        assert_eq!(host.removed.len(), 2);
+        assert!(
+            !host.deleted_at_tip.contains(&tip("tsk/two")),
+            "{:?}",
+            host.deleted_at_tip
+        );
     }
 
     #[test]
     fn bulk_m_that_merges_nothing_keeps_the_marks_and_says_why_on_close() {
-        let mut board = board("bulk-none", &["one", "nopr"]);
+        let mut board = board("bulk-none", &["one", "dirty"]);
         let mut host = MergeHost::default();
         host.open_pr("tsk/one", "main");
+        host.dirty.insert("tsk/dirty".into());
         host.refuse
             .insert("tsk/one".into(), "merge conflicts".into());
         press(&mut board, BoardIntent::Complete, &mut host);
@@ -22996,7 +23016,7 @@ mod merge_cleanup_tests {
         assert!(
             message.starts_with("nothing merged · marks kept")
                 && message.contains("merge failed: merge conflicts")
-                && message.contains("not merged"),
+                && message.contains("uncommitted changes"),
             "{message}"
         );
         for index in 0..2 {
@@ -23005,7 +23025,7 @@ mod merge_cleanup_tests {
     }
 
     #[test]
-    fn bulk_m_merges_past_a_failure_completes_the_merged_as_one_batch_and_names_the_rest() {
+    fn bulk_m_merges_past_a_failure_completes_the_rest_as_one_batch_and_names_the_failure() {
         let mut board = board("bulk", &["one", "two", "nopr", "plain"]);
         let mut host = MergeHost {
             remote_left: true,
@@ -23062,24 +23082,16 @@ mod merge_cleanup_tests {
             HumanStatus::Started,
             "the refused one stays"
         );
-        assert_eq!(on_disk(&board, 2), HumanStatus::Started, "no PR, untouched");
-        assert_eq!(
-            on_disk(&board, 3),
-            HumanStatus::Started,
-            "no dispatch, untouched"
-        );
+        assert_eq!(on_disk(&board, 2), HumanStatus::Done, "no PR: tidied as y");
+        assert_eq!(on_disk(&board, 3), HumanStatus::Done, "no dispatch: done");
         assert!(matches!(
             board.domain.last_undo(),
-            Some(crate::domain::UndoEntry::Batch { entries }) if entries.len() == 1
+            Some(crate::domain::UndoEntry::Batch { entries }) if entries.len() == 3
         ));
         tick(&mut board, &mut host);
-        assert_eq!(host.removed.len(), 1);
+        assert_eq!(host.removed.len(), 2);
         let painted = screen(&board.model);
-        for line in [
-            "merge failed: merge conflicts · unchanged",
-            "unchanged · not merged",
-            "unchanged · no dispatch",
-        ] {
+        for line in ["merge failed: merge conflicts · unchanged", "T4  done"] {
             assert!(
                 painted.contains(line),
                 "the finished card says {line}: {painted}"
@@ -23088,7 +23100,7 @@ mod merge_cleanup_tests {
         press(&mut board, BoardIntent::CancelCleanup, &mut host);
         assert_eq!(
             board.model.message(),
-            Some("merged 1 · done 1 · cleaned 1 · 1 remote branch kept · unchanged 3")
+            Some("merged 1 · done 3 · cleaned 2 · branch kept T3 (not merged) · 1 remote branch kept · unchanged 1")
         );
     }
 
@@ -23254,7 +23266,7 @@ mod merge_cleanup_tests {
     }
 
     #[test]
-    fn bulk_m_merges_open_prs_tidies_merged_rows_and_leaves_the_rest_unchanged() {
+    fn bulk_m_merges_open_prs_tidies_the_rest_and_leaves_uncommitted_work_unchanged() {
         let mut host = MergeHost {
             remote_gone_after: Some(0),
             ..MergeHost::default()
@@ -23277,25 +23289,30 @@ mod merge_cleanup_tests {
             [
                 HumanStatus::Done,
                 HumanStatus::Done,
-                HumanStatus::Started,
+                HumanStatus::Done,
                 HumanStatus::Started,
             ],
-            "m never marks an unmerged task done"
+            "m never touches uncommitted work"
         );
         let mut removed = host.removed.clone();
         removed.sort();
-        assert_eq!(removed, ["w-merged", "w-open"], "both merged rows tidied");
         assert_eq!(
-            host.deleted_at_tip.len(),
-            2,
-            "both branches deleted at their tips"
+            removed,
+            ["w-merged", "w-nopr", "w-open"],
+            "all three tidied"
+        );
+        let mut deleted = host.deleted_at_tip.clone();
+        deleted.sort();
+        assert_eq!(
+            deleted,
+            [tip("tsk/merged"), tip("tsk/open")],
+            "both merged branches deleted at their tips, the unmerged one kept"
         );
         let painted = screen(&board.model);
         for line in [
             "T1  merged PR #7 (squash) · done · cleaned · remote",
             "branch deleted by GitHub",
             "done · cleaned",
-            "unchanged · not merged",
             "unchanged · uncommitted changes",
         ] {
             assert!(painted.contains(line), "{line}:\n{painted}");
@@ -23303,12 +23320,101 @@ mod merge_cleanup_tests {
         press(&mut board, BoardIntent::CancelCleanup, &mut host);
         assert_eq!(
             board.model.message(),
-            Some("merged 1 · done 2 · cleaned 2 · unchanged 2")
+            Some("merged 1 · done 3 · cleaned 3 · branch kept T3 (not merged) · unchanged 1")
         );
         assert!(matches!(
             board.domain.last_undo(),
-            Some(crate::domain::UndoEntry::Batch { entries }) if entries.len() == 2
+            Some(crate::domain::UndoEntry::Batch { entries }) if entries.len() == 3
         ));
+    }
+
+    #[test]
+    fn bulk_m_acts_on_every_kind_of_task_in_the_mix() {
+        // `four_kinds`, then a closed PR, no dispatch, a worktree already gone, and one that
+        // cannot be inspected.
+        let mut host = MergeHost::default();
+        drop(four_kinds("bulk-mix-hosts", &mut host));
+        let mut board = board(
+            "bulk-mix",
+            &[
+                "open", "merged", "nopr", "dirty", "closed", "plain", "gone", "broken",
+            ],
+        );
+        host.prs.insert(
+            "tsk/closed".into(),
+            PullRequest {
+                number: 9,
+                url: String::new(),
+                state: PrState::Closed,
+                head_oid: tip("tsk/closed"),
+                base: "main".into(),
+            },
+        );
+        host.gone.insert("tsk/gone".into());
+        host.uninspectable.insert("tsk/broken".into());
+        press(&mut board, BoardIntent::Complete, &mut host);
+        let prompt = board.model.cleanup_prompt().unwrap();
+        // The card lists rows in board order, which tasks created in the same instant may
+        // break either way.
+        let unmerged = prompt
+            .rows
+            .iter()
+            .filter(|row| [3, 5].contains(&row.number))
+            .map(|row| format!("T{}", row.number))
+            .collect::<Vec<_>>()
+            .join(" and ");
+        let merge = prompt
+            .options()
+            .into_iter()
+            .find(|option| option.choice == crate::ui::board::CleanupChoice::Merge)
+            .expect("m");
+        assert_eq!(
+            merge.text,
+            format!(
+                "squash-merge PR #7 (T1) · mark T1 and T2 done, remove their worktrees, \
+                 branches and agent panes · mark {unmerged} done, remove their worktrees and \
+                 agent panes, keep their branches (not merged) · mark T6 and T7 done · T4 and \
+                 T8 unchanged"
+            )
+        );
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        tick(&mut board, &mut host);
+        tick(&mut board, &mut host);
+        assert_eq!(
+            [0, 1, 2, 3, 4, 5, 6, 7].map(|index| on_disk(&board, index)),
+            [
+                HumanStatus::Done,
+                HumanStatus::Done,
+                HumanStatus::Done,
+                HumanStatus::Started,
+                HumanStatus::Done,
+                HumanStatus::Done,
+                HumanStatus::Done,
+                HumanStatus::Started,
+            ],
+            "only uncommitted work and the uninspectable task stay"
+        );
+        let mut removed = host.removed.clone();
+        removed.sort();
+        assert_eq!(removed, ["w-closed", "w-merged", "w-nopr", "w-open"]);
+        let mut deleted = host.deleted_at_tip.clone();
+        deleted.sort();
+        assert_eq!(deleted, [tip("tsk/merged"), tip("tsk/open")]);
+        let gone = board.domain.get(board.ids[6]).unwrap().dispatch.clone();
+        assert!(gone.is_some_and(|record| record.cleaned), "gone converged");
+        assert!(matches!(
+            board.domain.last_undo(),
+            Some(crate::domain::UndoEntry::Batch { entries }) if entries.len() == 6
+        ));
+        let painted = screen(&board.model);
+        for line in [
+            "T6  done",
+            "T7  done · worktree already gone",
+            "unchanged · uncommitted changes",
+            "unchanged · can't inspect",
+        ] {
+            assert!(painted.contains(line), "{line}:\n{painted}");
+        }
     }
 
     #[test]
@@ -23331,7 +23437,10 @@ mod merge_cleanup_tests {
             HumanStatus::Done,
             "merged: tidied anyway"
         );
-        assert_eq!(host.removed, ["w-merged"]);
+        assert_eq!(on_disk(&board, 2), HumanStatus::Done, "not merged: tidied");
+        let mut removed = host.removed.clone();
+        removed.sort();
+        assert_eq!(removed, ["w-merged", "w-nopr"]);
         let painted = screen(&board.model);
         assert!(
             painted.contains("merge failed: merge conflicts · unchanged"),

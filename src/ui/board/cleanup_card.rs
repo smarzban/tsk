@@ -333,6 +333,19 @@ fn remove_list(branch: bool, pane: bool) -> String {
     format!("remove {}", and_list(&items))
 }
 
+/// `its worktree, branch and agent pane`, or `their worktrees and agent panes`.
+fn owned(one: bool, branch: bool, pane: bool) -> String {
+    let noun = |single: &str, plural: &str| if one { single } else { plural }.to_string();
+    let mut items = vec![noun("worktree", "worktrees")];
+    if branch {
+        items.push(noun("branch", "branches"));
+    }
+    if pane {
+        items.push(noun("agent pane", "agent panes"));
+    }
+    format!("{} {}", if one { "its" } else { "their" }, and_list(&items))
+}
+
 /// The marked set's rows sorted by what the options do to them.
 #[derive(Default)]
 struct Buckets {
@@ -341,10 +354,17 @@ struct Buckets {
     other: Vec<String>,
     dirty: Vec<String>,
     /// Targets without a row (no dispatch, worktree gone, can't inspect): `y` and `n` mark
-    /// them done, `m` leaves them.
+    /// them done.
     extra: Vec<String>,
+    /// Targets that could not be inspected: `m` leaves them unchanged.
+    refused: Vec<String>,
+    /// `other` holds only branches known not to be merged.
+    other_not_merged: bool,
     /// A tidied row still has its agent pane.
     pane: bool,
+    /// The same, among the open and merged rows, and among the others.
+    merged_pane: bool,
+    other_pane: bool,
     checking: bool,
 }
 
@@ -444,21 +464,33 @@ impl CleanupPrompt {
     }
 
     fn buckets(&self) -> Buckets {
-        let mut buckets = Buckets::default();
+        let mut buckets = Buckets {
+            other_not_merged: true,
+            ..Buckets::default()
+        };
         for row in &self.rows {
             let name = format!("T{}", row.number);
             let verdict = row.verdict();
-            if !matches!(verdict, RowVerdict::Uncommitted) && row.workspace_exists {
-                buckets.pane = true;
-            }
+            let pane = !matches!(verdict, RowVerdict::Uncommitted) && row.workspace_exists;
+            buckets.pane |= pane;
             match verdict {
                 RowVerdict::Uncommitted => buckets.dirty.push(name),
                 RowVerdict::CheckingPr | RowVerdict::CheckingMerge => buckets.checking = true,
-                RowVerdict::OpenPr { pr } => buckets.open.push((name, pr)),
-                RowVerdict::Merged { .. } => buckets.merged.push(name),
+                RowVerdict::OpenPr { pr } => {
+                    buckets.merged_pane |= pane;
+                    buckets.open.push((name, pr));
+                }
+                RowVerdict::Merged { .. } => {
+                    buckets.merged_pane |= pane;
+                    buckets.merged.push(name);
+                }
                 RowVerdict::MergedKept(_)
                 | RowVerdict::Unconfirmed(_)
-                | RowVerdict::NotMerged(_) => buckets.other.push(name),
+                | RowVerdict::NotMerged(_) => {
+                    buckets.other_pane |= pane;
+                    buckets.other_not_merged &= matches!(verdict, RowVerdict::NotMerged(_));
+                    buckets.other.push(name);
+                }
             }
         }
         if let Some(bulk) = &self.bulk {
@@ -467,8 +499,9 @@ impl CleanupPrompt {
                 .extra
                 .extend(bulk.missing.iter().map(|(_, name, _)| name.clone()));
             buckets
-                .extra
-                .extend(bulk.refused.iter().map(|(name, _)| name.clone()));
+                .refused
+                .extend(bulk.refused.iter().map(|(_, name, _)| name.clone()));
+            buckets.extra.extend(buckets.refused.iter().cloned());
         }
         buckets
     }
@@ -503,20 +536,41 @@ impl CleanupPrompt {
                         .collect::<Vec<_>>(),
                 )
             };
+            // One group per kind of task, each saying all `m` does to it.
             let done = [open_names.clone(), b.merged.clone()].concat();
-            let one = done.len() == 1;
-            let mut items = vec![if one { "worktree" } else { "worktrees" }.to_string()];
-            items.push(if one { "branch" } else { "branches" }.into());
-            if b.pane {
-                items.push(if one { "agent pane" } else { "agent panes" }.into());
-            }
-            let owner = if one { "its" } else { "their" };
             let mut parts = vec![
                 format!("{} {prs}", merge_verb(self.method)),
-                done_phrase(&done),
-                format!("remove {owner} {}", and_list(&items)),
+                format!(
+                    "{}, remove {}",
+                    done_phrase(&done),
+                    owned(done.len() == 1, true, b.merged_pane)
+                ),
             ];
-            let unchanged = [b.other.clone(), b.dirty.clone(), b.extra.clone()].concat();
+            if !b.other.is_empty() {
+                let one = b.other.len() == 1;
+                parts.push(format!(
+                    "{}, remove {}, keep {} {}{}",
+                    done_phrase(&b.other),
+                    owned(one, false, b.other_pane),
+                    if one { "its" } else { "their" },
+                    if one { "branch" } else { "branches" },
+                    if b.other_not_merged {
+                        " (not merged)"
+                    } else {
+                        ""
+                    }
+                ));
+            }
+            let plain = b
+                .extra
+                .iter()
+                .filter(|name| !b.refused.contains(name))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !plain.is_empty() {
+                parts.push(done_phrase(&plain));
+            }
+            let unchanged = [b.dirty.clone(), b.refused.clone()].concat();
             if !unchanged.is_empty() {
                 parts.push(format!("{} unchanged", tasks(&unchanged)));
             }

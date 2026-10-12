@@ -79,7 +79,7 @@ fn bulk_total(prompt: &CleanupPrompt, bulk: &super::BulkCleanup) -> usize {
 
 /// The card's rows that need no cleanup: no dispatch, worktree gone, can't inspect.
 fn bulk_extra_lines(bulk: &super::BulkCleanup, lines: &mut Vec<CleanupCardLine>) {
-    for (identifier, reason) in &bulk.refused {
+    for (_, identifier, reason) in &bulk.refused {
         lines.push(CleanupCardLine::Field {
             label: identifier.clone(),
             value: format!("can't inspect: {reason}"),

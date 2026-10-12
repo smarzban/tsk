@@ -630,7 +630,7 @@ fn the_marked_set_card_shows_where_each_task_stands_and_names_who_each_option_to
             "T8 PR #190 merged into main ✓",
             "T9 not merged · no pull request",
             "T10 3 uncommitted files · src/ui/input.rs, src/app.rs, …",
-            "▸ m squash-merge PR #193 (T7) · mark T7 and T8 done · remove their worktrees, branches and agent panes · T9 and T10 unchanged",
+            "▸ m squash-merge PR #193 (T7) · mark T7 and T8 done, remove their worktrees, branches and agent panes · mark T9 done, remove its worktree and agent pane, keep its branch (not merged) · T10 unchanged",
             "y don't merge · mark T7, T8 and T9 done · remove their worktrees and agent panes · delete T8's branch · keep T7's and T9's branches · T10 unchanged",
             "n mark all 4 done · keep everything",
             "esc cancel",
