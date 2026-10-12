@@ -19,8 +19,8 @@ use tsk_tui::app::{apply_board_intent_with_save_recovery, BoardSaveContext};
 use tsk_tui::domain::{DomainError, DomainState, HumanStatus, ProvenanceOrigin, TaskScope};
 use tsk_tui::save_recovery::SaveRecovery;
 use tsk_tui::ui::board::{
-    apply_intent, board_hit_map, draw_board, resolve_board_command, BoardInputMode, BoardModel,
-    CommandSurface, IntentOutcome,
+    apply_intent, board_hit_map, board_verb_items, draw_board, resolve_board_command,
+    BoardInputMode, BoardModel, CommandSurface, IntentOutcome,
 };
 use tsk_tui::ui::capture::draw_capture;
 use tsk_tui::ui::input::{map_key, BoardIntent};
@@ -1145,6 +1145,11 @@ fn a_failed_delete_save_reports_exactly_what_a_failed_complete_save_reports() {
                 Some("Delete me"),
                 "a durable deletion gets its way back"
             );
+            assert_eq!(
+                board_verb_items(&model).first().map(|entry| entry.label),
+                Some("undo"),
+                "the footer offers the undo the retried save made real"
+            );
         } else {
             let cancelled = apply_board_intent_with_save_recovery(
                 &mut domain,
@@ -1170,6 +1175,11 @@ fn a_failed_delete_save_reports_exactly_what_a_failed_complete_save_reports() {
                 model.delete_notice(),
                 None,
                 "the deletion never happened, so nothing offers to undo it"
+            );
+            assert_ne!(
+                board_verb_items(&model).first().map(|entry| entry.label),
+                Some("undo"),
+                "nor does the footer"
             );
         }
     }
