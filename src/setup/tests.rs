@@ -279,6 +279,38 @@ fn a_registration_whose_root_is_gone_is_reported_before_relinking() {
     .unwrap();
     assert!(quiet.is_empty(), "{:?}", String::from_utf8_lossy(&quiet));
 }
+
+#[test]
+fn a_gone_registration_path_with_terminal_controls_is_escaped() {
+    let temp = Temp::new();
+    let config = temp.0.join("config.toml");
+    let gone = temp.0.join("leaked\u{1b}]0;x");
+    let registered = RefCell::new(Some(gone));
+    let mut host = |args: &[&str], _: &Path| -> io::Result<String> {
+        if args == ["--version"] {
+            return Ok("herdr 0.9.0\n".into());
+        }
+        if args.starts_with(&["plugin", "link"]) {
+            *registered.borrow_mut() = Some(args[2].into());
+        }
+        Ok(serde_json::json!({"result":{"plugins":registered.borrow().iter().map(|p|serde_json::json!({"plugin_id":"herdr-tsk","plugin_root":p})).collect::<Vec<_>>()}}).to_string())
+    };
+    let mut notices = Vec::new();
+    run_at(
+        &config,
+        "0.5.0",
+        &mut io::Cursor::new(""),
+        &mut notices,
+        false,
+        &mut host,
+    )
+    .unwrap();
+    let notices = String::from_utf8(notices).unwrap();
+    assert!(!notices.contains('\u{1b}'), "{notices:?}");
+    assert!(notices.contains("\\u{001b}]0;x"), "{notices}");
+    assert!(notices.contains("re-registering"));
+}
+
 #[test]
 fn unsuccessful_upgrade_keeps_previous_registration_and_assets() {
     let temp = Temp::new();

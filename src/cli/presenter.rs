@@ -1516,7 +1516,12 @@ pub fn setup_agent_batch(result: crate::setup_agent::BatchResult, json: bool) ->
     // One summary row per agent on stdout, for the interactive and scripted paths alike.
     let mut stdout = String::new();
     for (id, outcome) in &result.applied {
-        stdout.push_str(&format!("    {id:<8} {}\n", outcome.path().display()));
+        // Skill roots follow HOME and agent-directory overrides, so a control
+        // character in the path must not reach the terminal.
+        stdout.push_str(&format!(
+            "    {id:<8} {}\n",
+            terminal_text(&outcome.path().display().to_string())
+        ));
     }
     for id in &result.skipped_current {
         stdout.push_str(&format!("    {id:<8} current\n"));
@@ -1839,5 +1844,26 @@ mod tests {
             output.stdout,
             "    pi       /home/box/.pi/agent/skills/tsk-cli/SKILL.md\n    cursor   current\n    grok     blocked (symlink)\n"
         );
+    }
+
+    #[test]
+    fn setup_agent_batch_escapes_control_characters_in_skill_paths() {
+        let result = crate::setup_agent::BatchResult {
+            applied: vec![(
+                "cursor".into(),
+                crate::setup_agent::InstallOutcome::Written(PathBuf::from(
+                    "/home/box/.cursor/skills/tsk-cli\u{1b}]0;x\u{7}/SKILL.md",
+                )),
+            )],
+            skipped_current: Vec::new(),
+            blocked: Vec::new(),
+            declined: false,
+            none_detected: false,
+        };
+        let output = setup_agent_batch(result, false);
+        assert!(!output.stdout.contains('\u{1b}'), "{:?}", output.stdout);
+        assert!(!output.stdout.contains('\u{7}'), "{:?}", output.stdout);
+        assert!(output.stdout.contains("\\u{001b}]0;x\\u{0007}"));
+        assert!(output.stdout.contains("cursor"));
     }
 }

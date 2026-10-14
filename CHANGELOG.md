@@ -25,6 +25,7 @@ the GitHub release notes verbatim.
 
 ### Fixed
 
+- `tsk setup` no longer prints raw terminal control characters from a skill directory or a previous Herdr plugin root. Those characters are shown as visible escapes, the same way other setup paths already are.
 - The `Deleted … · ctrl+u undo` line no longer stays on the status row after you move on: it clears on the next cursor move or view change, or after a few seconds, while the footer keeps offering `ctrl+u undo` as long as that undo still applies. The line now names the task by its number, such as `Deleted T12 "title"`.
 - `tsk list` refuses a repeated `-p`/`--project`, `--thread`, or `--state-dir` (exit 2) instead of silently keeping the last one, so `-p alpha -p beta` no longer lists only beta.
 - At 110 columns or wider, the Task view's narrow board rail keeps an open done drawer and the archived group's fold state, like Split does, so a done task opened from the drawer stays selected beside its page instead of vanishing from the rail. Thanks @LukasGold (#174).

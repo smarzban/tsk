@@ -837,7 +837,7 @@ fn run_at(
         writeln!(
             writer,
             "previous registration at {} is gone, re-registering",
-            gone.display()
+            crate::ui::terminal_text(&gone.display().to_string())
         )?;
     }
     unchanged()?;
