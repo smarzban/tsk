@@ -11,7 +11,7 @@ Press `+` or click **+ add**. Type a title, then press `Enter`. On the website d
 | --- | --- |
 | `Enter` | Save and close |
 | `Shift+Enter` | Save and add another |
-| `Tab` | Open details |
+| `Tab` | Add notes and details |
 | `Esc` | Cancel |
 
 The board stays visible. A saved task flashes and becomes selected in the inbox. Invalid input stays open with an explanation.
@@ -22,6 +22,7 @@ Clicking a task while the quick-add line is open discards the draft and selects 
 
 Press `Tab` from quick-add to add notes, steps, a thread, or a scope. The draft uses the full pane and opens in Notes. Its forward field ring is Title → Notes → steps → **+ step** → Thread → Scope → Title; `Shift+Tab` reverses it. In a project preview, its title stays in the right-column header while Notes is active.
 
+- `Enter` in Notes starts a new line; the footer says `enter new line`.
 - `Shift+Enter` saves.
 - `Esc` returns to the quick-add line.
 - `Tab` from the line restores your draft details.

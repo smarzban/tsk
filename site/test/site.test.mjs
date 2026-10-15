@@ -144,7 +144,7 @@ test("demo matches the quick-add, peek, and group-toggle contracts", async () =>
   assert.match(demo, /if \(e\.key === "Enter" && !e\.ctrlKey && !e\.altKey && !e\.metaKey\)/);
   assert.match(demo, /saveDraft\(e\.shiftKey\)/);
   assert.match(demo, /id: "save", label: "enter save"/);
-  assert.match(demo, /id: "details", label: "tab details"/);
+  assert.match(demo, /id: "details", label: "tab notes"/);
   assert.match(demo, /id: "close", label: "esc close"/);
   // Closing the page by click must drop any open title/notes draft, or the next task
   // opens in edit mode carrying it; the verbs hide while an editor owns the footer.

@@ -1913,3 +1913,70 @@ fn alt_arrows_on_the_task_page_move_the_selected_step() {
         "the board list has no step to move"
     );
 }
+
+/// GitHub #204: in a multi-line Notes draft the macOS word keys move and delete by word, and
+/// a word deletion stops at a line break before removing it on the next press.
+#[test]
+fn notes_macos_word_keys_move_and_delete_words_and_stop_at_line_breaks() {
+    let mut domain = DomainState::new();
+    domain
+        .create(
+            "Notes Task",
+            Some("orig notes".into()),
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginEditNotes, None).expect("notes");
+    assert_eq!(model.input_mode(), BoardInputMode::EditNotes);
+
+    let mut press = |model: &mut BoardModel, key: KeyEvent| {
+        let intent = map_key(model.input_mode(), key).expect("mapped key");
+        apply_intent(&mut domain, model, intent, None).expect("apply key");
+    };
+    let alt = |code| KeyEvent::new(code, KeyModifiers::ALT);
+    let plain = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+    press(&mut model, plain(KeyCode::Enter));
+    for character in "alpha beta".chars() {
+        press(&mut model, plain(KeyCode::Char(character)));
+    }
+    assert_eq!(model.edit_buffer(), "orig notes\nalpha beta");
+
+    // Option+← (and its Esc-b spelling) jumps to the word start; typing lands there.
+    press(&mut model, alt(KeyCode::Left));
+    press(&mut model, plain(KeyCode::Char('X')));
+    assert_eq!(model.edit_buffer(), "orig notes\nalpha Xbeta");
+    press(&mut model, alt(KeyCode::Char('b')));
+    press(&mut model, plain(KeyCode::Char('Y')));
+    assert_eq!(model.edit_buffer(), "orig notes\nalpha YXbeta");
+
+    // Option+→ / Esc-f, then Option+Backspace takes the word before the cursor.
+    press(&mut model, alt(KeyCode::Right));
+    press(&mut model, alt(KeyCode::Char('f')));
+    press(&mut model, alt(KeyCode::Char('f')));
+    press(&mut model, alt(KeyCode::Backspace));
+    assert_eq!(model.edit_buffer(), "orig notes\nalpha ");
+
+    // ctrl+w takes the rest of the line, stops at the break, then removes the break alone.
+    press(
+        &mut model,
+        KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+    );
+    assert_eq!(model.edit_buffer(), "orig notes\n");
+    press(&mut model, alt(KeyCode::Backspace));
+    assert_eq!(model.edit_buffer(), "orig notes");
+
+    // Option+Delete and alt+d delete the word after the cursor.
+    press(&mut model, plain(KeyCode::Home));
+    press(&mut model, alt(KeyCode::Delete));
+    assert_eq!(model.edit_buffer(), " notes");
+    press(&mut model, alt(KeyCode::Char('d')));
+    assert_eq!(model.edit_buffer(), "");
+
+    // A lone Esc still cancels: Meta sequences never hold it back.
+    press(&mut model, plain(KeyCode::Esc));
+    assert_ne!(model.input_mode(), BoardInputMode::EditNotes);
+}

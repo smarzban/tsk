@@ -5974,6 +5974,199 @@ fn altgr_characters_insert_in_every_text_field() {
     }
 }
 
+/// GitHub #204: the macOS word keys reach every cursor text field. Option+arrow arrives as
+/// `alt+←/→` or as the Meta sequences `Esc b` / `Esc f` (crossterm reports Alt+b / Alt+f);
+/// Option+Backspace as `alt+Backspace`; Option+Delete as `alt+Delete` or `alt+d`.
+#[test]
+fn macos_word_keys_move_and_delete_in_every_text_field() {
+    use BoardIntent as I;
+    let cases = [
+        (
+            alt(KeyCode::Left),
+            I::EditMoveWordLeft,
+            I::QuickAddMoveWordLeft,
+        ),
+        (
+            alt(KeyCode::Char('b')),
+            I::EditMoveWordLeft,
+            I::QuickAddMoveWordLeft,
+        ),
+        (
+            ctrl(KeyCode::Left),
+            I::EditMoveWordLeft,
+            I::QuickAddMoveWordLeft,
+        ),
+        (
+            alt(KeyCode::Right),
+            I::EditMoveWordRight,
+            I::QuickAddMoveWordRight,
+        ),
+        (
+            alt(KeyCode::Char('f')),
+            I::EditMoveWordRight,
+            I::QuickAddMoveWordRight,
+        ),
+        (
+            ctrl(KeyCode::Right),
+            I::EditMoveWordRight,
+            I::QuickAddMoveWordRight,
+        ),
+        (
+            alt(KeyCode::Backspace),
+            I::EditDeleteWordLeft,
+            I::QuickAddDeleteWordLeft,
+        ),
+        (
+            ctrl(KeyCode::Char('w')),
+            I::EditDeleteWordLeft,
+            I::QuickAddDeleteWordLeft,
+        ),
+        (
+            alt(KeyCode::Delete),
+            I::EditDeleteWordRight,
+            I::QuickAddDeleteWordRight,
+        ),
+        (
+            alt(KeyCode::Char('d')),
+            I::EditDeleteWordRight,
+            I::QuickAddDeleteWordRight,
+        ),
+    ];
+    for (key, edit, quick_add) in cases {
+        for mode in [
+            BoardInputMode::EditTitle,
+            BoardInputMode::EditNotes,
+            BoardInputMode::EditThread,
+            BoardInputMode::EditStep,
+        ] {
+            assert_eq!(map_key(mode, key), Some(edit.clone()), "{mode:?} {key:?}");
+        }
+        for field in [
+            CaptureField::Title,
+            CaptureField::Notes,
+            CaptureField::Thread,
+        ] {
+            assert_eq!(
+                map_task_form_key(field, false, key),
+                Some(edit.clone()),
+                "task form {field:?} {key:?}"
+            );
+        }
+        assert_eq!(
+            map_key(BoardInputMode::QuickAdd, key),
+            Some(quick_add),
+            "quick-add {key:?}"
+        );
+    }
+    // The one-line queries have no cursor; deleting their last word is the chord that applies.
+    for key in [alt(KeyCode::Backspace), ctrl(KeyCode::Char('w'))] {
+        for (mode, expected) in [
+            (BoardInputMode::Search, I::SearchQueryDeleteWord),
+            (BoardInputMode::Palette, I::CommandQueryDeleteWord),
+            (BoardInputMode::Help, I::HelpQueryDeleteWord),
+            (BoardInputMode::ListPicker, I::ListPickerQueryDeleteWord),
+        ] {
+            assert_eq!(map_key(mode, key), Some(expected), "{mode:?} {key:?}");
+        }
+    }
+}
+
+/// The cursorless queries drop their last word on `ctrl+w` / `alt+Backspace`.
+#[test]
+fn search_and_palette_queries_drop_their_last_word() {
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    let mut run = |model: &mut BoardModel, key: KeyEvent| {
+        let intent = map_key(model.input_mode(), key).expect("mapped key");
+        apply_intent(&mut domain, model, intent, None).expect("apply key");
+    };
+
+    run(&mut model, press(KeyCode::Char('/')));
+    assert_eq!(model.input_mode(), BoardInputMode::Search);
+    for character in "fix parser ".chars() {
+        run(&mut model, press(KeyCode::Char(character)));
+    }
+    run(&mut model, ctrl(KeyCode::Char('w')));
+    assert_eq!(model.search_query(), "fix ");
+    run(&mut model, alt(KeyCode::Backspace));
+    assert_eq!(model.search_query(), "");
+    run(&mut model, press(KeyCode::Esc));
+
+    run(&mut model, press(KeyCode::Char('?')));
+    assert_eq!(model.input_mode(), BoardInputMode::Help);
+    for character in "word left".chars() {
+        run(&mut model, press(KeyCode::Char(character)));
+    }
+    run(&mut model, alt(KeyCode::Backspace));
+    assert_eq!(model.help_query(), "word ");
+}
+
+/// The word keys must not take a key that already means something: AltGr letters still type
+/// (Windows sends them as Ctrl+Alt), a lone Esc still cancels, `alt+↑/↓` still moves a step,
+/// and the scope row stays a chooser.
+#[test]
+fn macos_word_keys_leave_altgr_esc_and_step_moves_alone() {
+    for character in ['b', 'd', 'f', 'w'] {
+        let altgr = ctrl_alt(KeyCode::Char(character));
+        for mode in [
+            BoardInputMode::EditTitle,
+            BoardInputMode::EditNotes,
+            BoardInputMode::EditThread,
+            BoardInputMode::EditStep,
+        ] {
+            assert_eq!(
+                map_key(mode, altgr),
+                Some(BoardIntent::EditInsert(character)),
+                "{mode:?} AltGr+{character}"
+            );
+        }
+        assert_eq!(
+            map_key(BoardInputMode::QuickAdd, altgr),
+            Some(BoardIntent::QuickAddInsert(character))
+        );
+        assert_eq!(
+            map_key(BoardInputMode::Search, altgr),
+            Some(BoardIntent::SearchQueryInsert(character))
+        );
+        assert_eq!(
+            map_key(BoardInputMode::Palette, altgr),
+            Some(BoardIntent::CommandQueryInsert(character))
+        );
+    }
+    for mode in [
+        BoardInputMode::EditTitle,
+        BoardInputMode::EditNotes,
+        BoardInputMode::EditThread,
+    ] {
+        assert_eq!(
+            map_key(mode, press(KeyCode::Esc)),
+            Some(BoardIntent::CancelEdit)
+        );
+        assert_eq!(map_key(mode, alt(KeyCode::Up)), None, "{mode:?} alt+up");
+        assert_eq!(map_key(mode, alt(KeyCode::Down)), None, "{mode:?} alt+down");
+    }
+    assert_eq!(
+        map_key(BoardInputMode::QuickAdd, press(KeyCode::Esc)),
+        Some(BoardIntent::CancelQuickAdd)
+    );
+    assert_eq!(
+        map_key(BoardInputMode::TaskPage, alt(KeyCode::Up)),
+        Some(BoardIntent::MoveStepUp)
+    );
+    for key in [
+        alt(KeyCode::Left),
+        alt(KeyCode::Char('b')),
+        alt(KeyCode::Backspace),
+        ctrl(KeyCode::Char('w')),
+    ] {
+        assert_eq!(
+            map_key(BoardInputMode::EditScope, key),
+            None,
+            "scope {key:?}"
+        );
+    }
+}
+
 #[test]
 fn altgr_insertion_leaves_ctrl_alt_and_super_chords_alone() {
     let bracket = KeyCode::Char('[');

@@ -100,9 +100,13 @@ Click a step to select it. Click **+ step** to add at the end. Field clicks beco
 | Cycle Scope | `Space` or `←` / `→` |
 | Open / close selected Thread editor | `Enter` |
 | Line start / end | `Home` / `End` |
-| Word left / right | `ctrl+←` / `ctrl+→` |
+| Word left / right | `ctrl+←` / `ctrl+→`, or `alt+←` / `alt+→` (Option on macOS; also `Esc b` / `Esc f`) |
 | Delete backward / forward | `Backspace` / `Delete` |
+| Delete word backward | `alt+Backspace` or `ctrl+w` |
+| Delete word forward | `alt+Delete` or `alt+d` |
 | Move through wrapped notes | `↑` / `↓` |
+
+Every text field takes the word keys: Title, Notes, steps, Thread, and the quick-add line and draft. A word is a run of non-space characters; deleting a word also takes the spaces between it and the cursor. In Notes a word delete stops at a line break, and the next press removes the break. Search, the palette, Help, and pickers have no cursor, so `alt+Backspace` and `ctrl+w` drop the query's last word there. On Windows, AltGr letters still type as characters. While Notes is focused the footer shows `enter new line`.
 
 `ctrl+e` moves to line end in text editors. `ctrl+a` moves to line start in quick-add; on the task page it adds a step instead. Paste preserves line breaks in Notes and converts them to spaces in single-line fields.
 
@@ -118,7 +122,7 @@ Some terminals are set to send a plain line feed for `Shift+Enter` (Ghostty's `k
 | --- | --- |
 | Save and close | `Enter` |
 | Save and keep adding | `Shift+Enter` |
-| Expand details | `Tab` |
+| Add notes and details | `Tab` (the footer shows `tab notes`) |
 | Cancel line / return from details | `Esc` |
 
 In Herdr quick capture, `Shift+Enter` saves and closes the popup. `Esc` closes an active step editor or scope picker first; otherwise it discards the popup. During save recovery, it cancels the pending save. [Capture guide](/docs/capture/).

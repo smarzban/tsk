@@ -350,6 +350,8 @@ fn form_verb_intent(model: &BoardModel, index: usize) -> Option<BoardIntent> {
         "enter" if focus == CaptureField::Scope => Some(BoardIntent::OpenFormScopeDropdown),
         // The Title bar paints `enter next`: the click must do what the key does.
         "enter" if focus == CaptureField::Title => Some(BoardIntent::FormFocusNext),
+        // The Notes bar paints `enter new line`: a click opens a line, it never saves.
+        "enter" if focus == CaptureField::Notes => Some(BoardIntent::EditInsertLineBreak),
         "enter" => Some(BoardIntent::ConfirmEdit),
         "esc" if dropdown_open => Some(BoardIntent::CancelFormScopeDropdown),
         "esc" => Some(BoardIntent::CancelEdit),

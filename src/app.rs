@@ -1183,12 +1183,14 @@ pub fn apply_board_intent_with_save_recovery(
             | BoardIntent::CommandQueryInsert(_)
             | BoardIntent::CommandQueryInsertText(_)
             | BoardIntent::CommandQueryBackspace
+            | BoardIntent::CommandQueryDeleteWord
             | BoardIntent::CloseCommandSurface
             | BoardIntent::OpenHelp
             | BoardIntent::CloseHelp
             | BoardIntent::HelpQueryInsert(_)
             | BoardIntent::HelpQueryInsertText(_)
             | BoardIntent::HelpQueryBackspace
+            | BoardIntent::HelpQueryDeleteWord
             | BoardIntent::HelpScrollUp
             | BoardIntent::HelpScrollDown
             | BoardIntent::CloseLayer

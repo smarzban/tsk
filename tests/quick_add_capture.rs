@@ -1143,7 +1143,7 @@ fn capture_bar_renders_spaced_three_row_block_and_stays_bounded_without_color_sg
         "visible task",
         "title…   !p = desk · !p name = project · !t name = thread",
         "add to invocation",
-        "enter save · tab details · esc close",
+        "enter save · tab notes · esc close",
     ] {
         assert!(standard.contains(text), "missing {text:?}: {standard}");
     }
@@ -1517,4 +1517,32 @@ fn wrapped_draft_refusal_paints_on_the_verb_row_and_a_click_there_keeps_the_draf
         BoardInputMode::QuickAdd,
         "the draft survives"
     );
+}
+
+/// GitHub #204: the quick-add line takes the macOS word keys like every text field.
+#[test]
+fn quick_add_line_deletes_and_moves_by_word() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use tsk_tui::ui::input::map_key;
+
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from("/repos/invocation")));
+    let snap = snapshot();
+    open(&mut domain, &mut model, &snap);
+    type_title(&mut domain, &mut model, "ship the fix");
+
+    let alt = |code| KeyEvent::new(code, KeyModifiers::ALT);
+    for key in [
+        alt(KeyCode::Left),
+        alt(KeyCode::Backspace),
+        alt(KeyCode::Char('d')),
+    ] {
+        let intent = map_key(model.input_mode(), key).expect("mapped");
+        apply(&mut domain, &mut model, intent, None);
+    }
+    assert_eq!(model.quick_add_title_value(), "ship ");
+    let ctrl_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
+    let intent = map_key(model.input_mode(), ctrl_w).expect("mapped");
+    apply(&mut domain, &mut model, intent, None);
+    assert_eq!(model.quick_add_title_value(), "");
 }

@@ -12,7 +12,7 @@ use crate::domain::{
 };
 use crate::scope::paths_equivalent;
 use crate::ui::capture::{CaptureField, TITLE_REQUIRED_MESSAGE};
-use crate::ui::edit::{flatten_line_breaks, EditBuffer};
+use crate::ui::edit::{delete_last_word, flatten_line_breaks, EditBuffer};
 use crate::ui::input::{BoardIntent, MarkDirection};
 use crate::ui::mouse::BoardPopup;
 use crate::ui::queue::{GroupTarget, NavTab, ARCHIVED_HEADER_ROW_ID, INBOX_HEADER_ROW_ID};
@@ -275,6 +275,8 @@ pub fn apply_intent(
                 | BoardIntent::EditMoveLineEnd
                 | BoardIntent::EditMoveWordLeft
                 | BoardIntent::EditMoveWordRight
+                | BoardIntent::EditDeleteWordLeft
+                | BoardIntent::EditDeleteWordRight
                 | BoardIntent::ConfirmEdit
                 | BoardIntent::ConfirmEditNext
                 | BoardIntent::CancelEdit
@@ -434,6 +436,7 @@ fn apply_board_intent(
             | BoardIntent::CommandQueryInsert(_)
             | BoardIntent::CommandQueryInsertText(_)
             | BoardIntent::CommandQueryBackspace
+            | BoardIntent::CommandQueryDeleteWord
             | BoardIntent::ConfirmCommand
             | BoardIntent::SelectCommand(_)
             | BoardIntent::CloseLayer
@@ -473,9 +476,13 @@ fn apply_board_intent(
             }
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::CommandQueryBackspace => {
+        BoardIntent::CommandQueryBackspace | BoardIntent::CommandQueryDeleteWord => {
             if model.surface == CommandSurface::Palette {
-                model.command_query.pop();
+                if intent == BoardIntent::CommandQueryDeleteWord {
+                    delete_last_word(&mut model.command_query);
+                } else {
+                    model.command_query.pop();
+                }
                 model.command_selected = 0;
             }
             return Ok(IntentOutcome::None);
@@ -547,6 +554,19 @@ fn apply_board_intent(
             model.invalidate_quick_add_stash();
             if let Some(quick_add) = model.quick_add.as_mut() {
                 quick_add.title.backspace();
+                refresh_quick_add_scope(model, domain);
+                model.clear_message();
+            }
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::QuickAddDeleteWordLeft | BoardIntent::QuickAddDeleteWordRight => {
+            model.invalidate_quick_add_stash();
+            if let Some(quick_add) = model.quick_add.as_mut() {
+                if intent == BoardIntent::QuickAddDeleteWordLeft {
+                    quick_add.title.delete_word_left();
+                } else {
+                    quick_add.title.delete_word_right();
+                }
                 refresh_quick_add_scope(model, domain);
                 model.clear_message();
             }
@@ -1159,6 +1179,14 @@ fn apply_board_intent(
             edit_draft(model, EditBuffer::move_word_right);
             return Ok(IntentOutcome::None);
         }
+        BoardIntent::EditDeleteWordLeft => {
+            edit_draft(model, EditBuffer::delete_word_left);
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::EditDeleteWordRight => {
+            edit_draft(model, EditBuffer::delete_word_right);
+            return Ok(IntentOutcome::None);
+        }
         BoardIntent::ShiftEnterAsCtrlJ => {
             model.set_ephemeral_message(SHIFT_ENTER_AS_CTRL_J_HINT, Duration::from_secs(5));
             return Ok(IntentOutcome::None);
@@ -1517,6 +1545,10 @@ fn apply_board_intent(
             model.list_picker_query_backspace();
             return Ok(IntentOutcome::None);
         }
+        BoardIntent::ListPickerQueryDeleteWord => {
+            model.list_picker_query_delete_word();
+            return Ok(IntentOutcome::None);
+        }
         BoardIntent::SelectListOption(index) => {
             // Mouse-only jump onto a visible picker row, same discipline as
             // `SelectCommand`/`SelectProjectOption`: name the row directly.
@@ -1637,7 +1669,7 @@ fn apply_board_intent(
             }
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::SearchQueryBackspace => {
+        BoardIntent::SearchQueryBackspace | BoardIntent::SearchQueryDeleteWord => {
             if model.projects_preview_active()
                 && model
                     .right_seat()
@@ -1648,7 +1680,11 @@ fn apply_board_intent(
             }
             let previous_visible = model.visible_ids();
             let previous = model.selection_id;
-            model.search_query.pop();
+            if intent == BoardIntent::SearchQueryDeleteWord {
+                delete_last_word(&mut model.search_query);
+            } else {
+                model.search_query.pop();
+            }
             model.search_pinned = false;
             model.clear_message();
             if model.projects_overview() {
@@ -2326,9 +2362,13 @@ fn apply_board_intent(
             }
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::HelpQueryBackspace => {
+        BoardIntent::HelpQueryBackspace | BoardIntent::HelpQueryDeleteWord => {
             if model.input_mode == BoardInputMode::Help {
-                model.help_query.pop();
+                if intent == BoardIntent::HelpQueryDeleteWord {
+                    delete_last_word(&mut model.help_query);
+                } else {
+                    model.help_query.pop();
+                }
                 model.help_scroll = 0;
                 model.help_max_scroll.set(usize::MAX);
             }

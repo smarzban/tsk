@@ -2811,6 +2811,13 @@ impl BoardModel {
         }
     }
 
+    pub(super) fn list_picker_query_delete_word(&mut self) {
+        if let Some(picker) = self.list_picker.as_mut() {
+            crate::ui::edit::delete_last_word(&mut picker.query);
+            picker.selected = 0;
+        }
+    }
+
     pub(super) fn list_picker_query_insert_text(&mut self, text: &str) {
         if let Some(picker) = self.list_picker.as_mut() {
             picker.query.push_str(text);

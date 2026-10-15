@@ -554,6 +554,37 @@ fn task_form_mouse_fields_dropdown_and_verbs_match_keyboard_while_scrolled() {
         "task-form Cancel verb must match Esc"
     );
 
+    // The Notes bar ends `enter new line` (#204): a click opens a line like the key does and
+    // never saves.
+    {
+        let mut notes_domain = domain.clone();
+        let mut notes_model = model.clone();
+        apply_intent(
+            &mut notes_domain,
+            &mut notes_model,
+            BoardIntent::FormFocusNext,
+            None,
+        )
+        .expect("focus notes");
+        assert_eq!(notes_model.form_focus(), Some(CaptureField::Notes));
+        let notes_hits = board_hit_map(STANDARD, &notes_model);
+        let hit = notes_hits
+            .regions
+            .iter()
+            .find(|hit| hit.target == QueueHitTarget::Verb(3))
+            .expect("notes `enter new line` verb");
+        let intent = click(hit, &notes_model, &notes_hits);
+        assert_eq!(intent, Some(BoardIntent::EditInsertLineBreak));
+        assert_eq!(
+            intent,
+            map_board_form_key(
+                CaptureField::Notes,
+                false,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            ),
+        );
+    }
+
     // This form was opened with `BeginEditTitle`, so edit mode is ALREADY open: a field click
     // must move focus. The
     // separate view-state rule -- that a click must not ENTER edit mode -- is exercised in

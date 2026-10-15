@@ -1666,7 +1666,7 @@ pub(crate) const QUICK_ADD_VERBS: &[VerbEntry<'static>] = &[
     },
     VerbEntry {
         key: "tab",
-        label: "details",
+        label: "notes",
     },
     VerbEntry {
         key: "esc",
@@ -1690,6 +1690,8 @@ const FORM_TITLE_VERBS: &[VerbEntry<'static>] = &[
         label: "cancel",
     },
 ];
+/// Notes names its plain Enter too: it opens a line rather than saving (#204). It goes last so
+/// a narrow pane clips the hint before the save and cancel routes.
 const FORM_NOTES_VERBS: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "shift+enter",
@@ -1702,6 +1704,10 @@ const FORM_NOTES_VERBS: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "esc",
         label: "cancel",
+    },
+    VerbEntry {
+        key: "enter",
+        label: "new line",
     },
 ];
 const FORM_THREAD_VERBS: &[VerbEntry<'static>] = &[
@@ -1785,6 +1791,10 @@ const EDIT_NOTES_VERBS: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "esc",
         label: "cancel",
+    },
+    VerbEntry {
+        key: "enter",
+        label: "new line",
     },
 ];
 
