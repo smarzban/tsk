@@ -13,7 +13,7 @@ use tsk_tui::ui::board::{
     SHIFT_ENTER_AS_CTRL_J_HINT,
 };
 use tsk_tui::ui::capture::CaptureField;
-use tsk_tui::ui::input::{map_board_form_key, map_key, BoardIntent};
+use tsk_tui::ui::input::{map_board_form_key, map_key, map_task_form_key, BoardIntent};
 use tsk_tui::ui::render::QueueHitTarget;
 
 const THIS_REPO: &str = "/repos/app";
@@ -2000,7 +2000,7 @@ fn ctrl_a_in_a_text_field_moves_to_line_start_and_never_adds_a_step() {
     let plain = |code| KeyEvent::new(code, KeyModifiers::NONE);
     fn press(domain: &mut DomainState, model: &mut BoardModel, key: KeyEvent) {
         let intent =
-            map_board_form_key(model.form_focus().expect("form"), false, key).expect("mapped key");
+            map_task_form_key(model.form_focus().expect("form"), false, key).expect("mapped key");
         apply_intent(domain, model, intent, None).expect("apply key");
     }
 
@@ -2043,4 +2043,75 @@ fn ctrl_a_in_a_text_field_moves_to_line_start_and_never_adds_a_step() {
     assert_eq!(task.notes.as_deref(), Some("one\nXtwo"));
     let steps: Vec<&str> = task.steps.iter().map(|step| step.text.as_str()).collect();
     assert_eq!(steps, vec!["Zab"]);
+}
+
+/// Cmd+Backspace arrives as ctrl+u on macOS terminals (Ghostty, iTerm2 Natural Text Editing):
+/// in Notes it clears to line start and, at a line start, joins the line above; ctrl+k clears
+/// to line end and, at a line end, joins the line below. Routed through the task-edit map.
+#[test]
+fn ctrl_u_and_ctrl_k_delete_to_the_line_edge_and_join_lines_in_notes() {
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "Line title",
+            Some("one\ntwo three".into()),
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    fn press(domain: &mut DomainState, model: &mut BoardModel, key: KeyEvent) {
+        let intent =
+            map_task_form_key(model.form_focus().expect("form"), false, key).expect("mapped key");
+        apply_intent(domain, model, intent, None).expect("apply key");
+    }
+    let ctrl = |character| KeyEvent::new(KeyCode::Char(character), KeyModifiers::CONTROL);
+    let plain = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginEditNotes, None).expect("notes");
+    // Cursor at the end of "two three": ctrl+u clears the line, then joins it to "one".
+    press(&mut domain, &mut model, ctrl('u'));
+    assert_eq!(model.edit_buffer(), "one\n");
+    press(&mut domain, &mut model, plain(KeyCode::Char('x')));
+    press(&mut domain, &mut model, plain(KeyCode::Home));
+    press(&mut domain, &mut model, ctrl('u'));
+    assert_eq!(
+        model.edit_buffer(),
+        "onex",
+        "ctrl+u at a line start joins the line above"
+    );
+
+    // ctrl+k: from the middle of a line to its end, then at the end it joins the next line.
+    press(&mut domain, &mut model, plain(KeyCode::End));
+    press(&mut domain, &mut model, plain(KeyCode::Enter));
+    press(&mut domain, &mut model, plain(KeyCode::Char('z')));
+    assert_eq!(model.edit_buffer(), "onex\nz");
+    for _ in 0..5 {
+        press(&mut domain, &mut model, plain(KeyCode::Left));
+    }
+    press(&mut domain, &mut model, ctrl('k'));
+    assert_eq!(model.edit_buffer(), "o\nz");
+    press(&mut domain, &mut model, ctrl('k'));
+    assert_eq!(
+        model.edit_buffer(),
+        "oz",
+        "ctrl+k at a line end joins the next line"
+    );
+    assert_eq!(model.input_mode(), BoardInputMode::EditNotes);
+
+    // Title is one line: ctrl+u takes everything before the cursor, ctrl+k everything after.
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None).expect("title");
+    press(&mut domain, &mut model, plain(KeyCode::Home));
+    for _ in 0..4 {
+        press(&mut domain, &mut model, plain(KeyCode::Right));
+    }
+    press(&mut domain, &mut model, ctrl('k'));
+    press(&mut domain, &mut model, plain(KeyCode::Char('!')));
+    press(&mut domain, &mut model, ctrl('u'));
+    press(&mut domain, &mut model, plain(KeyCode::Char('L')));
+    apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).expect("save");
+    let task = domain.get(id).expect("task");
+    assert_eq!(task.title, "L");
+    assert_eq!(task.notes.as_deref(), Some("oz"));
 }

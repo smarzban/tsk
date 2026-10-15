@@ -104,11 +104,12 @@ Click a step to select it. Click **+ step** to add at the end. Field clicks beco
 | Delete backward / forward | `Backspace` / `Delete` |
 | Delete word backward | `alt+Backspace` or `ctrl+w` |
 | Delete word forward | `alt+Delete` or `alt+d` |
+| Delete to line start / end | `ctrl+u` / `ctrl+k` (macOS terminals send `Cmd+Backspace` as `ctrl+u`) |
 | Move through wrapped notes | `↑` / `↓` |
 
 Every text field takes the word keys: Title, Notes, steps, Thread, and the quick-add line and draft. A word is a run of non-space characters; deleting a word also takes the spaces between it and the cursor. In Notes a word delete stops at a line break, and the next press removes the break. Search, the palette, Help, and pickers have no cursor, so `alt+Backspace` and `ctrl+w` drop the query's last word there. On Windows, AltGr letters still type as characters. On macOS the Option keys reach tsk only when the terminal sends Option as Meta: Terminal.app's **Use Option as Meta key**, or iTerm2's Option key set to **Esc+**. If Option+B types `∫` instead, use `ctrl+←` / `ctrl+→` and `ctrl+w`. While Notes is focused the footer shows `enter new line`.
 
-`ctrl+a` and `ctrl+e` move to line start and end in every text field: Title, Notes, Thread, a step editor, and quick-add. `ctrl+a` adds a step only where no text cursor is open: task page view, a selected step or **+ step**, the Scope row, or a selected Thread. Paste preserves line breaks in Notes and converts them to spaces in single-line fields.
+`ctrl+a` and `ctrl+e` move to line start and end in every text field: Title, Notes, Thread, a step editor, and quick-add. `ctrl+a` adds a step only where no text cursor is open: task page view, a selected step or **+ step**, the Scope row, or a selected Thread. `ctrl+u` deletes from the cursor to the line start and `ctrl+k` to the line end; in Notes, `ctrl+u` at the start of a line joins it to the line above and `ctrl+k` at the end of a line joins the next one. In a one-line field they take everything before or after the cursor. Outside text fields `ctrl+u` is still undo; search, the palette, Help, and pickers leave both keys alone. Paste preserves line breaks in Notes and converts them to spaces in single-line fields.
 
 Editing keys take precedence over view-mode status shortcuts. In the step editor, `ctrl+d` and `ctrl+o` still address the task; `ctrl+x` removes the step being edited, staged until the task edit is saved; `Enter` in a new step saves it and opens the next row. Notes are reached with `ctrl+e`, then `Tab`. `Alt+Enter` does not save the task edit.
 

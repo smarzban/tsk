@@ -6081,6 +6081,82 @@ fn macos_word_keys_move_and_delete_in_every_text_field() {
     }
 }
 
+/// `ctrl+u` / `ctrl+k` delete to line start / end in every cursor text field (macOS
+/// terminals send Cmd+Backspace as ctrl+u), while outside text fields ctrl+u stays undo and
+/// the cursorless query surfaces leave both alone. AltGr+u / AltGr+k still type.
+#[test]
+fn ctrl_u_and_ctrl_k_delete_lines_in_text_fields_and_ctrl_u_stays_undo_outside() {
+    use BoardIntent as I;
+    for (letter, edit, quick_add) in [
+        ('u', I::EditDeleteToLineStart, I::QuickAddDeleteToLineStart),
+        ('k', I::EditDeleteToLineEnd, I::QuickAddDeleteToLineEnd),
+    ] {
+        let key = ctrl(KeyCode::Char(letter));
+        for mode in [
+            BoardInputMode::EditTitle,
+            BoardInputMode::EditNotes,
+            BoardInputMode::EditThread,
+            BoardInputMode::EditStep,
+        ] {
+            assert_eq!(
+                map_key(mode, key),
+                Some(edit.clone()),
+                "{mode:?} ctrl+{letter}"
+            );
+        }
+        for field in [
+            CaptureField::Title,
+            CaptureField::Notes,
+            CaptureField::Thread,
+        ] {
+            assert_eq!(
+                map_task_form_key(field, false, key),
+                Some(edit.clone()),
+                "task form {field:?} ctrl+{letter}"
+            );
+        }
+        assert_eq!(map_key(BoardInputMode::QuickAdd, key), Some(quick_add));
+        for mode in [
+            BoardInputMode::Search,
+            BoardInputMode::Palette,
+            BoardInputMode::Help,
+            BoardInputMode::ListPicker,
+        ] {
+            assert_eq!(
+                map_key(mode, key),
+                None,
+                "{mode:?} leaves ctrl+{letter} alone"
+            );
+        }
+        let altgr = ctrl_alt(KeyCode::Char(letter));
+        assert_eq!(
+            map_key(BoardInputMode::EditNotes, altgr),
+            Some(I::EditInsert(letter))
+        );
+        assert_eq!(
+            map_key(BoardInputMode::QuickAdd, altgr),
+            Some(I::QuickAddInsert(letter))
+        );
+    }
+    let undo = ctrl(KeyCode::Char('u'));
+    for mode in [
+        BoardInputMode::Normal,
+        BoardInputMode::TaskPage,
+        BoardInputMode::ProjectPicker,
+    ] {
+        assert_eq!(
+            map_key(mode, undo),
+            Some(I::Undo),
+            "{mode:?} ctrl+u is undo"
+        );
+    }
+    assert_eq!(
+        map_task_form_key(CaptureField::Scope, false, undo),
+        None,
+        "the cursorless Scope row has no line to delete"
+    );
+}
+
 /// Every cursorless query (search, palette, Help, list picker) drops its last word on
 /// `ctrl+w` / `alt+Backspace`, and the surface stays open while it does.
 #[test]

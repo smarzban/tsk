@@ -202,6 +202,9 @@ pub enum BoardIntent {
     /// Remove the word before / after the cursor, never across a line break.
     EditDeleteWordLeft,
     EditDeleteWordRight,
+    /// Remove to the start / end of the cursor's line, or the break there (joining lines).
+    EditDeleteToLineStart,
+    EditDeleteToLineEnd,
     ConfirmEdit,
     /// Shift+Enter in the inline step editor: save and continue. Add mode reopens the
     /// empty next row, while rename mode downgrades to a plain save-and-close (decided by
@@ -225,6 +228,8 @@ pub enum BoardIntent {
     QuickAddMoveWordRight,
     QuickAddDeleteWordLeft,
     QuickAddDeleteWordRight,
+    QuickAddDeleteToLineStart,
+    QuickAddDeleteToLineEnd,
     QuickAddSave,
     QuickAddSaveNext,
     ExpandQuickAdd,
@@ -915,7 +920,7 @@ fn help_bindings() -> Vec<HelpBinding> {
         help_binding(
             HelpGroup::CreateEdit,
             "ctrl+a",
-            "add step below selected (task view)",
+            "add step below selected (task page)",
             "create insert checklist",
         ),
         help_binding(
@@ -1145,6 +1150,12 @@ fn help_bindings() -> Vec<HelpBinding> {
             "alt+backspace / ctrl+w",
             "delete word left (text, search)",
             "erase editing quick-add option palette filter",
+        ),
+        help_binding(
+            HelpGroup::SurfaceControls,
+            "ctrl+u / ctrl+k",
+            "delete to line start / end (text)",
+            "erase editing quick-add cmd backspace kill",
         ),
         help_binding(
             HelpGroup::SurfaceControls,
@@ -1555,6 +1566,30 @@ fn word_chord(key: &KeyEvent) -> Option<WordChord> {
     }
 }
 
+/// Line deletes in a text field: `ctrl+u` to line start (what macOS terminals such as Ghostty
+/// send for Cmd+Backspace) and `ctrl+k` to line end. Ctrl alone, so AltGr (Ctrl+Alt) letters
+/// keep typing. Outside text fields `ctrl+u` stays undo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineDelete {
+    ToStart,
+    ToEnd,
+}
+
+fn line_delete(key: &KeyEvent) -> Option<LineDelete> {
+    if !key.modifiers.contains(KeyModifiers::CONTROL)
+        || key
+            .modifiers
+            .intersects(KeyModifiers::ALT | KeyModifiers::SUPER)
+    {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char('u') => Some(LineDelete::ToStart),
+        KeyCode::Char('k') => Some(LineDelete::ToEnd),
+        _ => None,
+    }
+}
+
 /// A one-line search query has no cursor: only deleting its last word applies.
 fn query_deletes_word(key: &KeyEvent) -> bool {
     word_chord(key) == Some(WordChord::DeleteLeft)
@@ -1577,6 +1612,12 @@ pub fn map_quick_add_key(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Char('a') if ctrl => return Some(BoardIntent::QuickAddMoveLineStart),
         KeyCode::Char('e') if ctrl => return Some(BoardIntent::QuickAddMoveLineEnd),
         _ => {}
+    }
+    if let Some(delete) = line_delete(&key) {
+        return Some(match delete {
+            LineDelete::ToStart => BoardIntent::QuickAddDeleteToLineStart,
+            LineDelete::ToEnd => BoardIntent::QuickAddDeleteToLineEnd,
+        });
     }
     if let Some(chord) = word_chord(&key) {
         return Some(match chord {
@@ -1706,6 +1747,12 @@ fn map_form_edit_key(
     }
 
     if focused != CaptureField::Scope {
+        if let Some(delete) = line_delete(&key) {
+            return Some(match delete {
+                LineDelete::ToStart => BoardIntent::EditDeleteToLineStart,
+                LineDelete::ToEnd => BoardIntent::EditDeleteToLineEnd,
+            });
+        }
         if let Some(chord) = word_chord(&key) {
             return Some(match chord {
                 WordChord::Left => BoardIntent::EditMoveWordLeft,
@@ -1857,6 +1904,8 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::EditMoveWordRight
         | BoardIntent::EditDeleteWordLeft
         | BoardIntent::EditDeleteWordRight
+        | BoardIntent::EditDeleteToLineStart
+        | BoardIntent::EditDeleteToLineEnd
         | BoardIntent::ConfirmEdit
         | BoardIntent::ConfirmEditNext
         | BoardIntent::CancelEdit
@@ -1873,6 +1922,8 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::QuickAddMoveWordRight
         | BoardIntent::QuickAddDeleteWordLeft
         | BoardIntent::QuickAddDeleteWordRight
+        | BoardIntent::QuickAddDeleteToLineStart
+        | BoardIntent::QuickAddDeleteToLineEnd
         | BoardIntent::QuickAddSave
         | BoardIntent::QuickAddSaveNext
         | BoardIntent::ExpandQuickAdd

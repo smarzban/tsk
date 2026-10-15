@@ -5510,8 +5510,12 @@ mod tests {
             BoardIntent::EditMoveWordRight,
             BoardIntent::EditDeleteWordLeft,
             BoardIntent::EditDeleteWordRight,
+            BoardIntent::EditDeleteToLineStart,
+            BoardIntent::EditDeleteToLineEnd,
             BoardIntent::QuickAddDeleteWordLeft,
             BoardIntent::QuickAddDeleteWordRight,
+            BoardIntent::QuickAddDeleteToLineStart,
+            BoardIntent::QuickAddDeleteToLineEnd,
             BoardIntent::CancelEdit,
         ] {
             assert!(

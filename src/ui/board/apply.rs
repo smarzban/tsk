@@ -277,6 +277,8 @@ pub fn apply_intent(
                 | BoardIntent::EditMoveWordRight
                 | BoardIntent::EditDeleteWordLeft
                 | BoardIntent::EditDeleteWordRight
+                | BoardIntent::EditDeleteToLineStart
+                | BoardIntent::EditDeleteToLineEnd
                 | BoardIntent::ConfirmEdit
                 | BoardIntent::ConfirmEditNext
                 | BoardIntent::CancelEdit
@@ -559,13 +561,19 @@ fn apply_board_intent(
             }
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::QuickAddDeleteWordLeft | BoardIntent::QuickAddDeleteWordRight => {
+        BoardIntent::QuickAddDeleteWordLeft
+        | BoardIntent::QuickAddDeleteWordRight
+        | BoardIntent::QuickAddDeleteToLineStart
+        | BoardIntent::QuickAddDeleteToLineEnd => {
             model.invalidate_quick_add_stash();
             if let Some(quick_add) = model.quick_add.as_mut() {
-                if intent == BoardIntent::QuickAddDeleteWordLeft {
-                    quick_add.title.delete_word_left();
-                } else {
-                    quick_add.title.delete_word_right();
+                match intent {
+                    BoardIntent::QuickAddDeleteWordLeft => quick_add.title.delete_word_left(),
+                    BoardIntent::QuickAddDeleteWordRight => quick_add.title.delete_word_right(),
+                    BoardIntent::QuickAddDeleteToLineStart => {
+                        quick_add.title.delete_to_line_start()
+                    }
+                    _ => quick_add.title.delete_to_line_end(),
                 }
                 refresh_quick_add_scope(model, domain);
                 model.clear_message();
@@ -1185,6 +1193,14 @@ fn apply_board_intent(
         }
         BoardIntent::EditDeleteWordRight => {
             edit_draft(model, EditBuffer::delete_word_right);
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::EditDeleteToLineStart => {
+            edit_draft(model, EditBuffer::delete_to_line_start);
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::EditDeleteToLineEnd => {
+            edit_draft(model, EditBuffer::delete_to_line_end);
             return Ok(IntentOutcome::None);
         }
         BoardIntent::ShiftEnterAsCtrlJ => {
