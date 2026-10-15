@@ -915,7 +915,7 @@ fn help_bindings() -> Vec<HelpBinding> {
         help_binding(
             HelpGroup::CreateEdit,
             "ctrl+a",
-            "add step below selected (task page)",
+            "add step below selected (task view)",
             "create insert checklist",
         ),
         help_binding(
@@ -1382,7 +1382,6 @@ pub fn map_key(mode: BoardInputMode, key: KeyEvent) -> Option<BoardIntent> {
                     .intersects(KeyModifiers::ALT | KeyModifiers::SUPER)
             {
                 match key.code {
-                    KeyCode::Char('a') => Some(BoardIntent::BeginAddStep),
                     KeyCode::Char('d') => Some(BoardIntent::Complete),
                     KeyCode::Char('o') => Some(BoardIntent::Reopen),
                     KeyCode::Char('x') | KeyCode::Delete => Some(BoardIntent::SoftDelete),
@@ -1464,12 +1463,15 @@ fn map_selected_thread_key(key: KeyEvent) -> Option<BoardIntent> {
     if key.code == KeyCode::Enter && key.modifiers.is_empty() {
         return Some(BoardIntent::ToggleThreadEditing);
     }
+    // No text cursor is open on a selected Thread, so ctrl+a still adds a step here.
+    if key.code == KeyCode::Char('a') && key.modifiers == KeyModifiers::CONTROL {
+        return Some(BoardIntent::BeginAddStep);
+    }
     // A selected footer is navigation, not an invisible editor. Retain only session controls
     // from the shared field map, so printable input cannot mutate a draft without a cursor.
     match map_form_edit_key(CaptureField::Thread, FormEditNavigation::Form, true, key) {
         intent @ Some(
-            BoardIntent::BeginAddStep
-            | BoardIntent::ConfirmEdit
+            BoardIntent::ConfirmEdit
             | BoardIntent::CancelEdit
             | BoardIntent::FormFocusNext
             | BoardIntent::FormFocusPrev,
@@ -1689,7 +1691,11 @@ fn map_form_edit_key(
         KeyCode::Char('j') if ctrl && !alt && !super_key => {
             return Some(BoardIntent::ShiftEnterAsCtrlJ)
         }
-        KeyCode::Char('a') if ctrl && task_steps => return Some(BoardIntent::BeginAddStep),
+        // A text cursor owns ctrl+a as line start: macOS terminals send Cmd+← as ctrl+a, the
+        // partner of ctrl+e (Cmd+→). Only the cursorless Scope row keeps it as add-step.
+        KeyCode::Char('a') if ctrl && task_steps && focused == CaptureField::Scope => {
+            return Some(BoardIntent::BeginAddStep)
+        }
         KeyCode::Char('a') if ctrl && focused != CaptureField::Scope => {
             return Some(BoardIntent::EditMoveLineStart)
         }

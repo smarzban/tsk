@@ -92,14 +92,14 @@ Click a step to select it. Click **+ step** to add at the end. Field clicks beco
 | Cancel field | `Esc` or `ctrl+c` |
 | Move from Title to Notes | `Enter` in Title |
 | New line | `Enter` in Notes |
-| Add another step | `ctrl+a` on the task page |
+| Add another step | `ctrl+a` with no text field open, or `Enter` in a new step |
 | Save new step and open next empty row | `Enter` in new step |
 | Retain existing-step rename in session | `Enter` in existing step |
 | Stage selected-step removal | `ctrl+x` in task edit |
 | Open Scope picker / confirm selection | `Enter` |
 | Cycle Scope | `Space` or `←` / `→` |
 | Open / close selected Thread editor | `Enter` |
-| Line start / end | `Home` / `End` |
+| Line start / end | `Home` / `End`, or `ctrl+a` / `ctrl+e` (what macOS terminals send for `Cmd+←` / `Cmd+→`) |
 | Word left / right | `ctrl+←` / `ctrl+→`, or `alt+←` / `alt+→` (Option on macOS; also `Esc b` / `Esc f`) |
 | Delete backward / forward | `Backspace` / `Delete` |
 | Delete word backward | `alt+Backspace` or `ctrl+w` |
@@ -108,9 +108,9 @@ Click a step to select it. Click **+ step** to add at the end. Field clicks beco
 
 Every text field takes the word keys: Title, Notes, steps, Thread, and the quick-add line and draft. A word is a run of non-space characters; deleting a word also takes the spaces between it and the cursor. In Notes a word delete stops at a line break, and the next press removes the break. Search, the palette, Help, and pickers have no cursor, so `alt+Backspace` and `ctrl+w` drop the query's last word there. On Windows, AltGr letters still type as characters. On macOS the Option keys reach tsk only when the terminal sends Option as Meta: Terminal.app's **Use Option as Meta key**, or iTerm2's Option key set to **Esc+**. If Option+B types `∫` instead, use `ctrl+←` / `ctrl+→` and `ctrl+w`. While Notes is focused the footer shows `enter new line`.
 
-`ctrl+e` moves to line end in text editors. `ctrl+a` moves to line start in quick-add; on the task page it adds a step instead. Paste preserves line breaks in Notes and converts them to spaces in single-line fields.
+`ctrl+a` and `ctrl+e` move to line start and end in every text field: Title, Notes, Thread, a step editor, and quick-add. `ctrl+a` adds a step only where no text cursor is open: task page view, a selected step or **+ step**, the Scope row, or a selected Thread. Paste preserves line breaks in Notes and converts them to spaces in single-line fields.
 
-Editing keys take precedence over view-mode status shortcuts. In the step editor, `ctrl+d` and `ctrl+o` still address the task; `ctrl+x` removes the step being edited, staged until the task edit is saved; `ctrl+a` adds another step. Notes are reached with `ctrl+e`, then `Tab`. `Alt+Enter` does not save the task edit.
+Editing keys take precedence over view-mode status shortcuts. In the step editor, `ctrl+d` and `ctrl+o` still address the task; `ctrl+x` removes the step being edited, staged until the task edit is saved; `Enter` in a new step saves it and opens the next row. Notes are reached with `ctrl+e`, then `Tab`. `Alt+Enter` does not save the task edit.
 
 ### If Shift+Enter does not save
 

@@ -3613,10 +3613,11 @@ fn task_edit_delete_stages_until_save_and_esc_restores() {
     );
 }
 
-/// Ctrl+A reaches the independent step editor from task view and every task-edit focus,
-/// including Scope, Thread, and an already-open inline rename.
+/// Ctrl+A adds a step wherever no text cursor is open: task view, the cursorless Scope row,
+/// and a selected (not yet editing) Thread. Inside a text field it is line start instead,
+/// because macOS terminals send Cmd+← as ctrl+a (the partner of ctrl+e, Cmd+→).
 #[test]
-fn ctrl_a_opens_step_add_from_task_view_and_every_task_edit_state() {
+fn ctrl_a_adds_a_step_without_a_text_cursor_and_moves_to_line_start_with_one() {
     let (mut domain, mut model, id) = board_with_steps("Ctrl+A routes", None, &["first", "second"]);
     apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("leave task edit");
 
@@ -3644,30 +3645,40 @@ fn ctrl_a_opens_step_add_from_task_view_and_every_task_edit_state() {
     for field in [
         CaptureField::Title,
         CaptureField::Notes,
-        CaptureField::Scope,
         CaptureField::Thread,
     ] {
-        apply_intent(
-            &mut domain,
-            &mut model,
-            BoardIntent::FocusFormField(field),
-            None,
-        )
-        .expect("focus task-edit field");
-        let add = map_task_form_key(field, false, ctrl(KeyCode::Char('a')))
-            .expect("Ctrl+A maps from each task-edit field");
-        assert_eq!(add, BoardIntent::BeginAddStep);
-        apply_intent(&mut domain, &mut model, add, None).expect("open add");
-        assert_eq!(model.input_mode(), BoardInputMode::EditStep);
-        apply_intent(&mut domain, &mut model, BoardIntent::CancelEdit, None).expect("close add");
+        assert_eq!(
+            map_task_form_key(field, false, ctrl(KeyCode::Char('a'))),
+            Some(BoardIntent::EditMoveLineStart),
+            "{field:?} has a text cursor: ctrl+a is line start"
+        );
     }
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::FocusFormField(CaptureField::Scope),
+        None,
+    )
+    .expect("focus scope");
+    let add = map_task_form_key(CaptureField::Scope, false, ctrl(KeyCode::Char('a')))
+        .expect("Ctrl+A maps from the cursorless Scope row");
+    assert_eq!(add, BoardIntent::BeginAddStep);
+    apply_intent(&mut domain, &mut model, add, None).expect("open add");
+    assert_eq!(model.input_mode(), BoardInputMode::EditStep);
+    apply_intent(&mut domain, &mut model, BoardIntent::CancelEdit, None).expect("close add");
+    assert_eq!(
+        map_key(BoardInputMode::SelectThread, ctrl(KeyCode::Char('a'))),
+        Some(BoardIntent::BeginAddStep),
+        "a selected Thread has no cursor yet"
+    );
 
+    // An open step editor (rename or add) has a cursor too.
     apply_intent(&mut domain, &mut model, BoardIntent::SelectStep(0), None).expect("rename first");
     assert_eq!(model.input_mode(), BoardInputMode::EditStep);
-    let add = map_key(BoardInputMode::EditStep, ctrl(KeyCode::Char('a'))).expect("inline Ctrl+A");
-    assert_eq!(add, BoardIntent::BeginAddStep);
-    apply_intent(&mut domain, &mut model, add, None).expect("replace rename with add");
-    assert_eq!(model.input_mode(), BoardInputMode::EditStep);
+    assert_eq!(
+        map_key(BoardInputMode::EditStep, ctrl(KeyCode::Char('a'))),
+        Some(BoardIntent::EditMoveLineStart)
+    );
     assert_eq!(domain.get(id).expect("task").steps.len(), 3);
 }
 
@@ -3686,8 +3697,7 @@ fn inline_step_arrow_keys_navigate_or_scroll_without_trapping_the_editor() {
     assert_eq!(model.input_mode(), BoardInputMode::EditStep);
     assert!(rendered_board(&model, 80, 24).contains("▸ ▪ second"));
 
-    let add = map_key(BoardInputMode::EditStep, ctrl(KeyCode::Char('a'))).expect("add maps");
-    apply_intent(&mut domain, &mut model, add, None).expect("open add");
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginAddStep, None).expect("open add");
     apply_intent(
         &mut domain,
         &mut model,

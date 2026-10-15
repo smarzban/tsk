@@ -1980,3 +1980,67 @@ fn notes_macos_word_keys_move_and_delete_words_and_stop_at_line_breaks() {
     press(&mut model, plain(KeyCode::Esc));
     assert_ne!(model.input_mode(), BoardInputMode::EditNotes);
 }
+
+/// Cmd+← arrives as ctrl+a on macOS terminals: inside Notes, Title, and a new step it moves to
+/// line start instead of opening a step, while Enter in a new step still opens the next row.
+#[test]
+fn ctrl_a_in_a_text_field_moves_to_line_start_and_never_adds_a_step() {
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "Title here",
+            Some("one\ntwo".into()),
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    let ctrl_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    let plain = |code| KeyEvent::new(code, KeyModifiers::NONE);
+    fn press(domain: &mut DomainState, model: &mut BoardModel, key: KeyEvent) {
+        let intent =
+            map_board_form_key(model.form_focus().expect("form"), false, key).expect("mapped key");
+        apply_intent(domain, model, intent, None).expect("apply key");
+    }
+
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginEditNotes, None).expect("notes");
+    press(&mut domain, &mut model, ctrl_a);
+    press(&mut domain, &mut model, plain(KeyCode::Char('X')));
+    assert_eq!(model.edit_buffer(), "one\nXtwo");
+    assert_eq!(model.input_mode(), BoardInputMode::EditNotes);
+
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None).expect("title");
+    assert_eq!(model.form_focus(), Some(CaptureField::Title));
+    press(&mut domain, &mut model, ctrl_a);
+    press(&mut domain, &mut model, plain(KeyCode::Char('Y')));
+    assert_eq!(model.input_mode(), BoardInputMode::EditTitle);
+
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginAddStep, None).expect("add step");
+    assert_eq!(model.input_mode(), BoardInputMode::EditStep);
+    for character in "ab".chars() {
+        let intent = map_key(BoardInputMode::EditStep, plain(KeyCode::Char(character))).unwrap();
+        apply_intent(&mut domain, &mut model, intent, None).expect("type");
+    }
+    let intent = map_key(BoardInputMode::EditStep, ctrl_a).expect("ctrl+a in step");
+    assert_eq!(intent, BoardIntent::EditMoveLineStart);
+    apply_intent(&mut domain, &mut model, intent, None).expect("line start");
+    apply_intent(&mut domain, &mut model, BoardIntent::EditInsert('Z'), None).expect("type");
+    // Enter saves this step and opens the next empty row.
+    let enter = map_key(BoardInputMode::EditStep, plain(KeyCode::Enter)).expect("enter");
+    apply_intent(&mut domain, &mut model, enter, None).expect("save step");
+    assert_eq!(
+        model.input_mode(),
+        BoardInputMode::EditStep,
+        "next row is open"
+    );
+    // Esc closes the empty row; Shift+Enter on the task page saves the session.
+    let esc = map_key(BoardInputMode::EditStep, plain(KeyCode::Esc)).expect("esc");
+    apply_intent(&mut domain, &mut model, esc, None).expect("close empty row");
+    apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).expect("save task");
+    let task = domain.get(id).expect("task");
+    assert_eq!(task.title, "YTitle here");
+    assert_eq!(task.notes.as_deref(), Some("one\nXtwo"));
+    let steps: Vec<&str> = task.steps.iter().map(|step| step.text.as_str()).collect();
+    assert_eq!(steps, vec!["Zab"]);
+}

@@ -22,6 +22,7 @@ the GitHub release notes verbatim.
 
 ### Changed
 
+- In a text field `ctrl+a` now moves to line start, like `ctrl+e` moves to line end, so `Cmd+←` on macOS (which terminals send as `ctrl+a`) no longer opens a new step while you type. It still adds a step on the task page when no field is open (#204).
 - Bare `g` now opens **group by** instead of folding the inbox or archived group; fold with `f` (the cursor's group) or `Shift+F` (every group). Help calls `t` **filter**.
 - `Enter` on the inbox or archived heading no longer folds it, and a single click on it now only selects it; use `←` / `→` (or `h` / `l`), `f`, or a double-click.
 
