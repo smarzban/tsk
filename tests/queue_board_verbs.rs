@@ -6071,34 +6071,79 @@ fn macos_word_keys_move_and_delete_in_every_text_field() {
     }
 }
 
-/// The cursorless queries drop their last word on `ctrl+w` / `alt+Backspace`.
+/// Every cursorless query (search, palette, Help, list picker) drops its last word on
+/// `ctrl+w` / `alt+Backspace`, and the surface stays open while it does.
 #[test]
-fn search_and_palette_queries_drop_their_last_word() {
+fn query_surfaces_drop_their_last_word() {
     let mut domain = DomainState::new();
+    domain
+        .create(
+            "Threaded",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
     let mut run = |model: &mut BoardModel, key: KeyEvent| {
         let intent = map_key(model.input_mode(), key).expect("mapped key");
         apply_intent(&mut domain, model, intent, None).expect("apply key");
     };
+    let type_text =
+        |run: &mut dyn FnMut(&mut BoardModel, KeyEvent), model: &mut BoardModel, text: &str| {
+            for character in text.chars() {
+                run(model, press(KeyCode::Char(character)));
+            }
+        };
 
     run(&mut model, press(KeyCode::Char('/')));
     assert_eq!(model.input_mode(), BoardInputMode::Search);
-    for character in "fix parser ".chars() {
-        run(&mut model, press(KeyCode::Char(character)));
-    }
+    type_text(&mut run, &mut model, "fix parser ");
     run(&mut model, ctrl(KeyCode::Char('w')));
     assert_eq!(model.search_query(), "fix ");
     run(&mut model, alt(KeyCode::Backspace));
     assert_eq!(model.search_query(), "");
     run(&mut model, press(KeyCode::Esc));
 
+    run(&mut model, press(KeyCode::Char(':')));
+    assert_eq!(model.input_mode(), BoardInputMode::Palette);
+    type_text(&mut run, &mut model, "new task");
+    run(&mut model, ctrl(KeyCode::Char('w')));
+    assert_eq!(
+        model.input_mode(),
+        BoardInputMode::Palette,
+        "palette stays open"
+    );
+    assert_eq!(model.command_query(), "new ");
+    run(&mut model, alt(KeyCode::Backspace));
+    assert_eq!(model.command_query(), "");
+    run(&mut model, press(KeyCode::Esc));
+
     run(&mut model, press(KeyCode::Char('?')));
     assert_eq!(model.input_mode(), BoardInputMode::Help);
-    for character in "word left".chars() {
-        run(&mut model, press(KeyCode::Char(character)));
-    }
+    type_text(&mut run, &mut model, "word left");
     run(&mut model, alt(KeyCode::Backspace));
     assert_eq!(model.help_query(), "word ");
+    run(&mut model, press(KeyCode::Esc));
+    run(&mut model, press(KeyCode::Esc));
+
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenThreadFilterPicker,
+        None,
+    )
+    .expect("open thread filter");
+    assert_eq!(model.input_mode(), BoardInputMode::ListPicker);
+    let mut run = |model: &mut BoardModel, key: KeyEvent| {
+        let intent = map_key(model.input_mode(), key).expect("mapped key");
+        apply_intent(&mut domain, model, intent, None).expect("apply key");
+    };
+    type_text(&mut run, &mut model, "ship it");
+    run(&mut model, ctrl(KeyCode::Char('w')));
+    assert_eq!(model.input_mode(), BoardInputMode::ListPicker);
+    assert_eq!(model.list_picker_query(), Some("ship "));
 }
 
 /// The word keys must not take a key that already means something: AltGr letters still type
