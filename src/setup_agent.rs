@@ -562,7 +562,7 @@ pub fn run_interactive_batch(
             writer,
             "  {:<8} {}  ({detail})",
             status.id,
-            status.skills_root.display()
+            crate::ui::terminal_text(&status.skills_root.display().to_string())
         );
         match status.state {
             SkillState::Missing | SkillState::Outdated => needs_work.push(status.id.clone()),
@@ -641,7 +641,7 @@ pub fn list_text() -> String {
             for component in suffix.split('/').chain(["tsk-cli", "SKILL.md"]) {
                 path.push(component);
             }
-            path.display().to_string()
+            crate::ui::terminal_text(&path.display().to_string())
         }
         None => {
             #[cfg(windows)]
@@ -988,12 +988,14 @@ fn normalize_absolute_path(path: &Path) -> PathBuf {
 
 fn omp_skill_display_path() -> String {
     match omp_agent_dir() {
-        Ok(path) => path
-            .join("skills")
-            .join(SKILL_FOLDER)
-            .join(SKILL_FILE)
-            .display()
-            .to_string(),
+        Ok(path) => crate::ui::terminal_text(
+            &path
+                .join("skills")
+                .join(SKILL_FOLDER)
+                .join(SKILL_FILE)
+                .display()
+                .to_string(),
+        ),
         Err(Error::Home) => "$HOME/.omp/agent/skills/tsk-cli/SKILL.md".to_owned(),
         Err(error) => format!("<{}>", error),
     }
@@ -1262,6 +1264,56 @@ mod tests {
         assert!(!root.join("home/.cursor/skills/tsk-cli/SKILL.md").exists());
         let transcript = String::from_utf8_lossy(&writer);
         assert!(transcript.contains("tsk setup"), "{transcript}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    // Unix only: Win32 rejects control characters such as ESC in directory names.
+    #[cfg(unix)]
+    #[test]
+    fn setup_listing_escapes_control_characters_in_home_derived_paths() {
+        let _lock = env_lock();
+        let _omp_env = OmpEnvGuard::cleared();
+        let root =
+            std::env::temp_dir().join(format!("tsk-setup-agent-escape-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let home = root.join("home\u{1b}]0;x");
+        fs::create_dir_all(home.join(".cursor")).expect("cursor");
+        fs::create_dir_all(root.join("empty-bin")).expect("bin");
+        let previous_home = std::env::var_os("HOME");
+        let previous_userprofile = std::env::var_os("USERPROFILE");
+        let previous_path = std::env::var_os("PATH");
+        std::env::set_var("HOME", &home);
+        std::env::set_var("USERPROFILE", &home);
+        std::env::set_var("PATH", root.join("empty-bin"));
+        let listed = list_text();
+        let mut reader = Cursor::new(b"n\n".to_vec());
+        let mut writer = Vec::new();
+        let result = run_interactive_batch(&mut reader, &mut writer, true);
+        match previous_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        match previous_userprofile {
+            Some(value) => std::env::set_var("USERPROFILE", value),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+        match previous_path {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
+        let result = result.expect("batch");
+        assert!(result.declined);
+        let transcript = String::from_utf8(writer).expect("utf-8");
+        for output in [&listed, &transcript] {
+            assert!(
+                !output.contains('\u{1b}'),
+                "raw ESC in setup output: {output:?}"
+            );
+            assert!(
+                output.contains("\\u{001b}]0;x"),
+                "escaped home missing: {output}"
+            );
+        }
         let _ = fs::remove_dir_all(root);
     }
 }
