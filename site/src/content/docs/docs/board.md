@@ -371,9 +371,9 @@ Agents can set any status with [the CLI](/docs/cli/#status). Task status does no
 
 A task can run **after** other tasks: it waits while any of them is not done. Task numbers are board-wide, so a prerequisite can be in any project or on the desk. A waiting ready or open row's live line reads `after T202 (started)`, gone once every prerequisite is done; nothing moves sections. Its peek lists each prerequisite with its status, `after T202 · started`, and a prerequisite's peek lists what waits on it, `before T203, T204`. The [task page](/docs/task-page/#after) footer shows the same.
 
-Set it from the task page's **After** field, with **set after…** in the palette (the cursor task, or every marked task), with `!w T202` in [quick-add](/docs/capture/#title-tokens), or with [`tsk edit --after`](/docs/cli/#edit). The task picker lists the tasks that are not done, the task's own project first and then the others with their project. Type to filter by number or title, `Space` ticks several, `Enter` applies the ticked tasks (or the highlighted one when nothing is ticked), and **none** clears the list. A task cannot run after itself, and a choice that would close a loop is refused, for example `T202 already runs after T205`.
+Set it from the task page's **After** field, with **set after (wait for)…** in the palette (the cursor task, or every marked task), with `!w T202` in [quick-add](/docs/capture/#title-tokens), or with [`tsk edit --after`](/docs/cli/#edit). The task picker lists the tasks that are not done, the task's own project first and then the others with their project. Type to filter by number or title, `Space` ticks several, `Enter` applies the ticked tasks (or the highlighted one when nothing is ticked), and **none** clears the list. A task cannot run after itself, and a choice that would close a loop is refused, for example `T202 already runs after T205`.
 
-With tasks marked in order, **chain in order** makes each marked task run after the one marked before it, on top of what it already runs after. One save, one `ctrl+u`.
+With tasks marked in order, **chain marked tasks in order** makes each marked task run after the one marked before it, on top of what it already runs after. One save, one `ctrl+u`.
 
 When the last prerequisite becomes **done** (review does not count), each waiting task in **ready** starts in the same save as the done, the way `ctrl+s` starts it; an assigned task never dispatched then [dispatches](#dispatch) right after that save, which records its agent. What a done releases is judged against the store as saved, so a prerequisite completed elsewhere (another board, the CLI, an agent) counts. While a marked-set dispatch is still landing, a released assigned task stays ready instead (`T203 waits: a dispatch is running; ctrl+s starts it`). The status row says `T203 started · T202 done`, and the started task's paper trail reads `started · after T202`. This happens from the board, the [cleanup card](#complete-and-clean-up), and [`tsk status N done`](/docs/cli/#status). Waiting tasks in open, blocked, or review do not move. A launch that fails never blocks the done: the task goes back to ready and the status row says why (`T203 back to ready: …`). If the launch ran but its record could not be saved, the status row says the agent is running and names its worktree; if the launch failed and the task could not be saved back to ready, it says `T203 is started but no agent launched; couldn't save it back to ready: …`. A task whose earlier agent is gone starts without a relaunch (`@claude gone, not relaunched`). `ctrl+u` on the done reverts the statuses only, `done undone · T202 back to started · T203 back to ready · @claude kept running`; a launched agent keeps running.
 
@@ -459,7 +459,7 @@ tsk asks whether to restore it, with one option line each: `y  unarchive app · 
 
 Press `ctrl+x` twice to delete the marked tasks, or the cursored task when nothing is marked. The confirmation and recovery messages show the task count for a marked set. `ctrl+Delete` is an alternative.
 
-After a delete the status row says what went, such as `Deleted T12 "title" · ctrl+u undo` (a starter or release notice keeps just its title), or `deleted 3 tasks · ctrl+u restores` for a marked set. That line clears when you move the cursor or change view, or after a few seconds. The footer keeps leading with `ctrl+u undo` for as long as `ctrl+u` would still undo that delete; it drops once you undo it, take another undoable action, or another writer changes a deleted task.
+After a delete the status row says what went, such as `Deleted T12 "title" · ctrl+u undo` (a starter or release notice keeps just its title), or `deleted 3 tasks · ctrl+u undo` for a marked set. That line clears when you move the cursor or change view, or after a few seconds. The footer keeps leading with `ctrl+u undo` for as long as `ctrl+u` would still undo that delete; it drops once you undo it, take another undoable action, or another writer changes a deleted task.
 
 `ctrl+u` undoes the last of these, from the board or the task page, and the status row names the tasks it put back:
 
@@ -486,15 +486,15 @@ Press `:` on the board or a task page and type to find an action. Use arrows or 
 
 | Available actions | When |
 | --- | --- |
-| New task, undo, done drawer, group by…, sort by…, fold / unfold group, help, quit | Always |
-| Set open/ready/started/blocked/review, edit notes, change scope, delete | A task is selected |
-| Set assignee, set base, set after… | A task is selected |
+| Add task, undo, show / hide done drawer, group by…, sort by…, fold / unfold group, show all keys, quit | Always |
+| Set open/ready/started/blocked/review, edit notes, move to project / desk, delete task | A task is selected |
+| Set assignee, set base, set after (wait for)… | A task is selected |
 | Dispatch again | A task with a dispatch record is selected |
-| Chain in order | Two or more tasks are marked |
+| Chain marked tasks in order | Two or more tasks are marked |
 | Move step up, move step down | A task-page step is selected |
 | Retry save, cancel save | A save has failed |
 
-**Set assignee** opens the same picker as `@`; **set base** opens the branch picker; **set after…** opens the [task picker](#after). Each applies to the marked set when marks are present, with one save and one undo. **Chain in order** makes each marked task run after the one marked before it. **Set status: started** takes the same route as `ctrl+s`, including on blocked and review tasks: an assigned task dispatches, and with marks the [start card](#start-a-marked-set) opens. **Dispatch again** ignores and clears marks, then relaunches only the cursor.
+**Set assignee** opens the same picker as `@`; **set base** opens the branch picker; **set after (wait for)…** opens the [task picker](#after). Each applies to the marked set when marks are present, with one save and one undo. **Chain marked tasks in order** makes each marked task run after the one marked before it. **Set status: started** takes the same route as `ctrl+s`, including on blocked and review tasks: an assigned task dispatches, and with marks the [start card](#start-a-marked-set) opens. **Dispatch again** ignores and clears marks, then relaunches only the cursor.
 
 Group by…, sort by…, and fold / unfold group act on the task list, so they are left out on the projects overview and over an open task page. Search matches letters in order: `ssr` finds `set status: review`.
 

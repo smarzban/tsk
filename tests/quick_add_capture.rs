@@ -1246,7 +1246,7 @@ fn capture_bar_renders_spaced_three_row_block_and_stays_bounded_without_color_sg
         "visible task",
         "title…   !p project · !t thread · !a assignee",
         "add to invocation",
-        "enter save · tab details · esc close",
+        "enter add · tab expand · esc close",
     ] {
         assert!(standard.contains(text), "missing {text:?}: {standard}");
     }
@@ -1259,7 +1259,7 @@ fn capture_bar_renders_spaced_three_row_block_and_stays_bounded_without_color_sg
     assert!(standard_rows[21].contains("title…"), "input row");
     assert!(standard_rows[22].trim().is_empty(), "blank row below input");
     assert!(
-        standard_rows[23].contains("enter save"),
+        standard_rows[23].contains("enter add"),
         "keys live on the verb row: {}",
         standard_rows[23]
     );
@@ -1273,7 +1273,7 @@ fn capture_bar_renders_spaced_three_row_block_and_stays_bounded_without_color_sg
 
     let compact_rows = render_rows(&model, 40, 10);
     let compact = compact_rows.concat();
-    for text in ["visible task", "title…", "save"] {
+    for text in ["visible task", "title…", "enter add"] {
         assert!(compact.contains(text), "missing {text:?}: {compact}");
     }
     assert!(compact_rows.iter().all(|row| row.chars().count() == 40));

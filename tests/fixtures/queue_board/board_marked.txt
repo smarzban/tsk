@@ -21,6 +21,6 @@
 │  ○ T7 Global backlog note                                                      │
 │                                                                                │
 │────────────────────────────────────────────────────────────────────────────────│
-│ multi-select · 2 selected · esc clears                                         │
+│ multi-select · 2 selected · esc clear                                          │
 │ enter open · ctrl+d done · ctrl+n next · ctrl+o inbox · ctrl+b block · ? help  │
 └────────────────────────────────────────────────────────────────────────────────┘

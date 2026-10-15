@@ -59,7 +59,9 @@ async function paintedRow(locator) {
     const prefix = prefixEl.textContent.split("\n");
     // Title lines, then any row-label lines that wrapped below them.
     const titles = [
-      ...el.querySelectorAll(".tsk-title-line, .tsk-row-title > .tsk-row-label"),
+      ...el.querySelectorAll(
+        ".tsk-title-line, .tsk-row-title > .tsk-row-label",
+      ),
     ];
     const lines = titles.map((line, i) =>
       `${prefix[i] ?? " ".repeat(prefix[0].length)}${line.textContent}`.trimEnd(),
@@ -113,18 +115,18 @@ test("multi-select gates task marking and ctrl click stays ordinary", async ({
   await page.keyboard.press("Space");
   await row(page, 12).dispatchEvent("click", { ctrlKey: true });
   await expect(page.locator("#tsk-demo")).not.toContainText(
-    "selected · esc clears",
+    "selected · esc clear",
   );
 
   await page.keyboard.press("Shift+M");
   await expect(page.locator("#tsk-demo")).toContainText("multi-select");
   await row(page, 12).click();
   await expect(page.locator("#tsk-demo")).toContainText(
-    "1 selected · esc clears",
+    "1 selected · esc clear",
   );
   await page.keyboard.press("Shift+M");
   await expect(page.locator("#tsk-demo")).not.toContainText(
-    "selected · esc clears",
+    "selected · esc clear",
   );
 });
 
@@ -153,7 +155,7 @@ test("marked task sets complete, delete, and undo as one demo action", async ({
   await page.keyboard.press("Shift+ArrowDown");
   await page.keyboard.press("Space");
   await expect(page.locator("#tsk-demo")).toContainText(
-    "2 selected · esc clears",
+    "2 selected · esc clear",
   );
   await expect(row(page, 12).locator(".tsk-row-prefix")).toContainText("▪");
   await expect(row(page, 13).locator(".tsk-row-prefix")).toContainText("▪");
@@ -185,7 +187,7 @@ test("marked task sets complete, delete, and undo as one demo action", async ({
   await page.keyboard.press("Shift+M");
   await row(page, 12).click();
   await expect(page.locator("#tsk-demo")).toContainText(
-    "1 selected · esc clears",
+    "1 selected · esc clear",
   );
   await page.keyboard.press("Escape");
   await page.keyboard.press("x");
@@ -224,7 +226,7 @@ test("task-page demo actions ignore board marks and use the open task", async ({
   await expect(row(page, 12)).toHaveCount(0);
   await expect(row(page, 13)).toBeVisible();
   await expect(page.locator("#tsk-demo")).not.toContainText(
-    "selected · esc clears",
+    "selected · esc clear",
   );
 });
 

@@ -6,7 +6,7 @@
 │                                       ▌│
 │  ■ T5 Wire dispatch cleanup           ▌│
 │    │  receipts  #dispatch · herdr     ▌│
-│  ┌─ Filter ──────────────────── [x]─┐ ▌│
+│  ┌─ filter ──────────────────── [x]─┐ ▌│
 │  │ threads · projects · @assignees  │ ▌│
 │  │──────────────────────────────────│ ▌│
 │  │▸ All assignees  7  ✓             │ ▌│
@@ -14,7 +14,7 @@
 │ I│  @pi  2                          │ ▌│
 │  │  unassigned  2                   │ ▌│
 │  ├──────────────────────────────────┤ ▌│
-│  │ ←→ tab · enter choose · esc close│ ▌│
+│  │ tab switch · esc close           │ ▌│
 │  └──────────────────────────────────┘ ▌│
 │       #dispatch · herdr               ▌│
 │                                       ▌│

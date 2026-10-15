@@ -20,7 +20,7 @@ use crate::ui::render::{
 use crate::ui::tier;
 use crate::ui::{present_line, terminal_text};
 
-use super::chrome::{notice_framed, row_width, BULK_DELETE_NOTICE_UNDO, DELETE_NOTICE_UNDO};
+use super::chrome::{notice_framed, row_width, DELETE_NOTICE_UNDO};
 use super::commands::CommandSurface;
 use super::launch_card::LaunchPrompt;
 use super::model::{
@@ -563,11 +563,11 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
         return vec![
             VerbEntry {
                 key: "enter",
-                label: "step",
+                label: "save step",
             },
             VerbEntry {
                 key: "shift+enter",
-                label: "save",
+                label: "save all",
             },
             VerbEntry {
                 key: "esc",
@@ -605,7 +605,7 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
             },
             VerbEntry {
                 key: "ctrl+s",
-                label: "save + unblock",
+                label: "save and unblock",
             },
             VerbEntry {
                 key: "esc",
@@ -794,7 +794,7 @@ fn task_page_verb_items(model: &BoardModel, task: &crate::domain::Task) -> Vec<V
             },
             VerbEntry {
                 key: "a",
-                label: "step",
+                label: "add step",
             },
             VerbEntry {
                 key: "esc",
@@ -1869,20 +1869,20 @@ fn section_action_keys(
     }
     let mut keys: Vec<String> = Vec::new();
     if review {
-        keys.push("tab next".to_string());
+        keys.push("tab next field".to_string());
     }
     let cursor = if !own {
         None
     } else if form.steps.cursor.is_some() {
-        Some("enter toggle step")
+        Some("enter check / uncheck")
     } else if form.steps.add_selected {
         Some("enter add step")
     } else {
         match selected {
             Some(BlockTarget::Heading) => Some("ctrl+e edit"),
             Some(BlockTarget::Option(_)) => Some("enter choose"),
-            Some(BlockTarget::Check(_)) => Some("enter mark"),
-            Some(BlockTarget::PassedFold) if form.block.passed_open => Some("enter fold passed"),
+            Some(BlockTarget::Check(_)) => Some("enter cycle check"),
+            Some(BlockTarget::PassedFold) if form.block.passed_open => Some("enter hide passed"),
             Some(BlockTarget::PassedFold) => Some("enter show passed"),
             Some(BlockTarget::Reply(index))
                 if block
@@ -1918,7 +1918,7 @@ fn section_action_keys(
         keys.push("ctrl+s send back".to_string());
         keys.push("ctrl+d approve".to_string());
     } else if block_wait(task, &model.tasks) == Some(BlockWait::You) {
-        keys.push("ctrl+s reply + unblock".to_string());
+        keys.push("ctrl+s reply and unblock".to_string());
     } else {
         keys.push("ctrl+b unblock".to_string());
     }
@@ -2374,12 +2374,12 @@ impl OverlayPayloads {
         }
         if model.input_mode() == BoardInputMode::ListPicker {
             let title = match model.list_picker_kind() {
-                Some(crate::ui::board::ListPickerKind::ProjectsView) => "projects View",
+                Some(crate::ui::board::ListPickerKind::ProjectsView) => "view",
                 Some(crate::ui::board::ListPickerKind::Assignee) => "assignee",
                 Some(crate::ui::board::ListPickerKind::Base) => "base",
                 Some(crate::ui::board::ListPickerKind::GroupBy) => "group by",
                 Some(crate::ui::board::ListPickerKind::SortBy) => "sort by",
-                _ => "Filter",
+                _ => "filter",
             };
             return Some(QueueOverlay::ScopeDropdown {
                 options: &self.list_picker_options,
@@ -2443,7 +2443,7 @@ fn status_row_content(model: &BoardModel) -> (Option<String>, Option<usize>, Opt
     let bulk_count = model.visible_delete_notice_count();
     let notice = model.visible_delete_notice().map(|title| match bulk_count {
         Some(count) => format!(
-            "deleted {count} {} · {BULK_DELETE_NOTICE_UNDO}",
+            "deleted {count} {} · {DELETE_NOTICE_UNDO}",
             if count == 1 { "task" } else { "tasks" }
         ),
         None => notice_framed(model.delete_notice_label(), title, true),
@@ -2461,18 +2461,16 @@ fn status_row_content(model: &BoardModel) -> (Option<String>, Option<usize>, Opt
             Some(format!("multi-select · {} selected", model.marked_count()))
         }
         (None, None) if model.mark_mode_active() && model.marked_count() > 0 => Some(format!(
-            "multi-select · {} selected · esc clears",
+            "multi-select · {} selected · esc clear",
             model.marked_count()
         )),
         (None, None) if model.mark_mode_active() => {
-            Some("multi-select · space/click marks · esc exits".to_string())
+            Some("multi-select · space/click mark · esc exit".to_string())
         }
         _ => None,
     };
     // Compute the clickable control from the exact notice text, never by searching user text.
-    let undo_control = bulk_count
-        .map(|_| BULK_DELETE_NOTICE_UNDO)
-        .or_else(|| notice.as_ref().map(|_| DELETE_NOTICE_UNDO));
+    let undo_control = notice.as_ref().map(|_| DELETE_NOTICE_UNDO);
     let status_undo_offset = notice
         .as_deref()
         .zip(undo_control)
@@ -2487,10 +2485,10 @@ fn editing_field(model: &BoardModel) -> Option<&'static str> {
         BoardInputMode::EditTitle => Some("title"),
         BoardInputMode::EditNotes => Some("notes"),
         BoardInputMode::SelectThread | BoardInputMode::EditThread => Some("thread"),
-        BoardInputMode::EditScope => Some("scope"),
+        BoardInputMode::EditScope => Some("project"),
         BoardInputMode::EditAssignee => Some("assignee"),
         BoardInputMode::FormDropdown => match model.form_focus() {
-            Some(CaptureField::Scope) => Some("scope"),
+            Some(CaptureField::Scope) => Some("project"),
             Some(CaptureField::Assignee) => Some("assignee"),
             _ => None,
         },

@@ -54,7 +54,7 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 
 `Esc` leaves multi-select and clears its marks first, then closes the current layer. In a filter, view, assignee, or base picker, `Esc` closes the picker first and keeps the marks. At the full-board root on any tab, with multi-select inactive, it quits without confirmation rather than switching back to the desk. In either wide split, `Esc` closes the right column after any editor or overlay is dismissed. A further `Esc` at the full-board root quits. A project preview with unsaved work refuses to close. If narrowing the terminal hides the right column, the visible board/index is already at the root: `Esc` quits without an extra collapse, unless a parked draft blocks quitting.
 
-Bare `g`, `s`, and `f` are navigation beside their Ctrl verbs, like `d` beside `ctrl+d`: `g` groups while `ctrl+g` dispatches again, `s` sorts while `ctrl+s` starts, and `f` folds while `ctrl+f` archives.
+Bare `s` and `f` are navigation beside their Ctrl verbs, like `d` beside `ctrl+d`: `s` sorts while `ctrl+s` starts, and `f` folds while `ctrl+f` archives. Bare `g` groups.
 
 On a fold header (a group sub-header, the inbox, or archived in the done drawer), `←` / `h` folds it when it is open and `→` / `l` unfolds it when it is folded; the cursor stays on the header. When there is nothing to fold or unfold, the key keeps its usual meaning (the peek, or the wide stage slider), so a header never blocks the slider. `Enter` on a group sub-header opens its project's board, the desk, or its thread's or assignee's cross-project view; `no thread` and `unassigned` open nothing, and `Enter` on the inbox or archived header does nothing. A click on any header only selects it; a double-click opens a sub-header's board, or folds and unfolds a header that opens nothing (`no thread`, `unassigned`, `desk` on the desk, the inbox, archived).
 
@@ -114,7 +114,7 @@ These keys apply in **view mode**:
 | Close task | `Esc` |
 | Quit the board | `ctrl+q` |
 
-Click a step to select it. Click **+ step** to add at the end. Click a review check to cycle it, or the `N passed` line to show or fold the passed checks. Click the paper trail's heading to expand or collapse it, and a closed record to expand it. Field clicks become editable only after task editing starts.
+Click a step to select it. Click **+ step** to add at the end. Click a review check to cycle it, or the `N passed` line to show or hide the passed checks. Click the paper trail's heading to expand or collapse it, and a closed record to expand it. Field clicks become editable only after task editing starts.
 
 `alt+↑` / `alt+↓` is the one mutating shortcut without `ctrl`: macOS reserves `ctrl+arrows` for Mission Control. It also works during task editing while a step is selected and no field is open. Your terminal must send `alt+↑` as one modified key (xterm's default); a terminal set to prefix Option or Alt with `Esc` delivers `Esc` and then the arrow, which closes the task page.
 
@@ -174,9 +174,9 @@ In Herdr quick capture, `Shift+Enter` saves and closes the popup. `Esc` closes a
 | Filter/view selector | `Tab` switches `threads · @assignees` (the desk filter: `threads · projects · @assignees`, `Shift+Tab` back); type or paste to filter the current tab; arrows select; `Enter` chooses; `Esc` closes |
 | Assignee picker | Type to filter; arrows or `Tab` select; `Enter` applies; `Esc` closes with no change |
 | Base picker | Open from palette **set base**, task footer `⎇`, or edit **Base** field; type to filter; arrows or `Tab` select; `Enter` applies; `Esc` closes with no change. No dedicated key |
-| Task picker (after) | Open from palette **set after…** or edit **After** field; type to filter by number or title; arrows or `Tab` select; `Space` ticks several; `Enter` applies the ticked tasks (or the highlighted one), **none** clears; `Esc` closes with no change. No dedicated key |
+| Task picker (after) | Open from palette **set after (wait for)…** or edit **After** field; type to filter by number or title; arrows or `Tab` select; `Space` ticks several; `Enter` applies the ticked tasks (or the highlighted one), **none** clears; `Esc` closes with no change. No dedicated key |
 | Board search | Type or paste; `Backspace` edits; `Enter` pins; `Esc` clears and closes |
-| Palette | Type to filter; arrows or `Tab` select; `Enter` runs; `Esc` closes. **set assignee** opens the assignee picker; **set base** opens the branch picker; **set after…** opens the task picker (all support marked sets); with two or more marked, **chain in order** runs each after the one marked before it; a dispatched task offers **dispatch again** |
+| Palette | Type to filter; arrows or `Tab` select; `Enter` runs; `Esc` closes. **set assignee** opens the assignee picker; **set base** opens the branch picker; **set after (wait for)…** opens the task picker (all support marked sets); with two or more marked, **chain marked tasks in order** runs each after the one marked before it; a dispatched task offers **dispatch again** |
 | Help | Type or paste to filter by key or action; arrows, page keys, or wheel scroll; `Esc` clears the search, then closes |
 | Archived-project launch prompt | `y` restores; `n`, `Esc`, or a click on `esc keep archived` keeps archived (the `▸` starts on `n`); `↑`/`↓` move the `▸` cursor and `Enter` runs it (not right as the card opens); a click on an option line selects it, a double click runs it; `?` opens Help |
 | Start card (marked set) | `y` starts and launches every listed task; `↑`/`↓` move the `▸` cursor and `Enter` runs it (not right as the card opens); a click on an option line selects it, a double click runs it; page keys or the wheel scroll a long set; `Esc`, `[x]`, or a click on `esc cancel` cancels and keeps the marks |

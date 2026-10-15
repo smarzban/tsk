@@ -34,7 +34,7 @@ Click the footer's `⎇` slot to choose the [base branch](/docs/board/#base-bran
 
 ## After
 
-The footer's `after T202, T205` slot lists the tasks this one [runs after](/docs/board/#after); it is hidden when empty. `before T203, T204` lists the tasks that run after this one: it is read-only, derived from their lists, and changes only when you edit theirs. During editing the **After** field opens the task picker on `Enter` or a click: tasks not done, this project's first, `Space` ticks several, `Enter` applies, **none** clears. The draft saves with the rest of the edit; a choice that would close a loop, such as `T202 already runs after T205`, is refused and the draft stays. The same picker opens in view mode from palette **set after…**, where the choice saves at once.
+The footer's `after T202, T205` slot lists the tasks this one [runs after](/docs/board/#after); it is hidden when empty. `before T203, T204` lists the tasks that run after this one: it is read-only, derived from their lists, and changes only when you edit theirs. During editing the **After** field opens the task picker on `Enter` or a click: tasks not done, this project's first, `Space` ticks several, `Enter` applies, **none** clears. The draft saves with the rest of the edit; a choice that would close a loop, such as `T202 already runs after T205`, is refused and the draft stays. The same picker opens in view mode from palette **set after (wait for)…**, where the choice saves at once.
 
 In view mode, `Tab` selects steps, **+ step**, then the paper trail's heading (and its closed blocks and review rounds while it is expanded). It does not cycle task fields. Status shortcuts remain available on the task page; use `ctrl+e`, then `Tab` to reach Notes.
 
@@ -88,13 +88,13 @@ Review found 2 file-safety issues in move-aside. Which way?
 claude · 3m   Recommend 1; it's the smaller change.
 you · 1m      Go with 1, keep the worker.
 
-1-2 choose · r reply · ctrl+s reply + unblock
-──────────────────────────────────────────────
+1-2 choose · r reply · ctrl+s reply and unblock
+────────────────────────────────────────────────
 ```
 
 The top line is the same text as the board row's [live line](/docs/board/#status): `@claude blocked on you · 2h`, `waiting on T169`, or `T169 is done · unblock it · 1h`. Below it, the why and then the needs read as plain text, the suggested options are numbered `1`…`9`, and the replies run as a thread: `name · age` in one column (`you`, or the agent's profile), the text wrapped beside it. At 40 columns a name too wide for the column takes its own row. A deleted reply leaves a dim `deleted` stub. The section shows only while the task is blocked; the closed block moves to the [paper trail](#paper-trail) and stays in `tsk list --json` under `past_blocks`.
 
-The dim action line above the rule shows only the keys that work right now and follows the cursor: `ctrl+e edit` on the top line, `enter toggle step` on a step, `ctrl+e edit · ctrl+x delete` on your reply. A block waiting on another task or on something else offers `r reply · ctrl+b unblock` instead of `ctrl+s`. While the reply box is open, its own keys take the line.
+The dim action line above the rule shows only the keys that work right now and follows the cursor: `ctrl+e edit` on the top line, `enter check / uncheck` on a step, `ctrl+e edit · ctrl+x delete` on your reply. A block waiting on another task or on something else offers `r reply · ctrl+b unblock` instead of `ctrl+s`. While the reply box is open, its own keys take the line.
 
 The page opens with nothing selected. `Tab` walks the top line, the options, and the replies, then the steps, **+ step**, and the paper trail, and wraps; `Shift+Tab` goes back the same way, from the top line round to the paper trail. The ring never leaves the page for task editing.
 
@@ -128,8 +128,8 @@ Check
 
 you · 5m      B still fails on an empty string.
 
-tab next · enter mark · r feedback · ctrl+s send back · ctrl+d approve
-──────────────────────────────────────────────────────────────────────
+tab next field · enter cycle check · r feedback · ctrl+s send back · ctrl+d approve
+───────────────────────────────────────────────────────────────────────────────────
 ```
 
 The top line is the row's live line (`@claude needs your review · 40m`, or `@pi reviewing` for a review on someone else). No round number shows on the page; closed rounds are on the paper trail. Below it, what was done and what is next read as plain text, then the checks under a small `Check` heading: `✓` passed, `✗` failed, `○` open. Passed checks fold into a dim `N passed ▸` line under them. The fold is taken when the page opens: a check you cycle on the page keeps its row and the cursor (`○` → `✓` → `✗` → `○`), so you can pass and then fail it in one place, and it folds the next time you open the page. Folding the line with `Enter` takes in the checks passed since. Your feedback runs as a thread like a block's replies. The section shows only while the task is in review; closed rounds stay in `tsk list --json` under `past_reviews`. Checks are the review's own list and never become steps.

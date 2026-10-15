@@ -594,7 +594,7 @@ fn task_form_unifies_palette_field_routes_scope_dropdown_and_atomic_save() {
     let palette_scope_route = model
         .available_commands()
         .into_iter()
-        .find(|command| command.label == "change scope")
+        .find(|command| command.label == "move to project / desk")
         .expect("palette Change scope command")
         .intent;
     assert_eq!(palette_scope_route, BoardIntent::BeginEditScope);

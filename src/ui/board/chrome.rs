@@ -47,7 +47,7 @@ fn edit_chrome_legends(mode: BoardInputMode, review: bool) -> [&'static str; 3] 
     match mode {
         BoardInputMode::EditReply if review => [
             "shift+enter save · ctrl+s send back · ctrl+d approve · esc cancel",
-            "shift+enter save · ctrl+s back · ctrl+d approve · esc",
+            "shift+enter save · ctrl+s send back · ctrl+d approve · esc",
             "shift+enter · ctrl+s · ctrl+d · esc",
         ],
         BoardInputMode::BlockCard if review => [
@@ -61,14 +61,14 @@ fn edit_chrome_legends(mode: BoardInputMode, review: bool) -> [&'static str; 3] 
             "Shift+Enter save · Esc",
         ],
         BoardInputMode::EditScope => [
-            "Space cycle · Enter scopes · Esc cancel",
-            "Space · Enter scopes · Esc",
-            "Enter scopes · Esc",
+            "Space cycle · Enter projects · Esc cancel",
+            "Space · Enter projects · Esc",
+            "Enter projects · Esc",
         ],
         BoardInputMode::EditAssignee => [
-            "Space / arrows cycle · Enter pick · Esc cancel",
-            "Space cycle · Enter pick · Esc",
-            "Enter pick · Esc",
+            "Space / arrows cycle · Enter choose · Esc cancel",
+            "Space cycle · Enter choose · Esc",
+            "Enter choose · Esc",
         ],
         BoardInputMode::SelectThread => [
             "Enter edit thread · Tab next · Esc cancel",
@@ -96,7 +96,7 @@ fn edit_chrome_legends(mode: BoardInputMode, review: bool) -> [&'static str; 3] 
             "Enter close · Esc",
         ],
         BoardInputMode::EditReply => [
-            "shift+enter save · ctrl+s save + unblock · esc cancel",
+            "shift+enter save · ctrl+s save and unblock · esc cancel",
             "shift+enter save · ctrl+s unblock · esc",
             "shift+enter · ctrl+s · esc",
         ],
@@ -168,10 +168,8 @@ fn edit_chrome_line(
     format!("  {}  ·  {}", fit_chrome_row(lead, room), shortest)
 }
 
-/// The Undo control on the delete recovery notice: the key and its label.
+/// The Undo control on the delete recovery notice, single or bulk: the key and its label.
 pub const DELETE_NOTICE_UNDO: &str = "ctrl+u undo";
-/// Undo control text for a bulk delete notice.
-pub const BULK_DELETE_NOTICE_UNDO: &str = "ctrl+u restores";
 
 const CHROME_ROW_SEPARATOR: &str = "  ·  ";
 const CHROME_ROW_OMITTED: &str = "…";

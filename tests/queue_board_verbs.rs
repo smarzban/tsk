@@ -1950,7 +1950,7 @@ fn bulk_start_names_skipped_done_marks_on_the_status_row() {
 }
 
 #[test]
-fn help_names_where_archived_tasks_live_and_the_group_sort_fold_keys() {
+fn help_names_archive_restore_and_the_group_sort_fold_keys() {
     let lines = tsk_tui::ui::input::help_card_lines();
     let row = |chord: &str| {
         lines
@@ -1961,8 +1961,8 @@ fn help_names_where_archived_tasks_live_and_the_group_sort_fold_keys() {
     };
     let archive = row("ctrl+f");
     assert!(
-        archive.contains("restore") && archive.contains("archived: d drawer"),
-        "ctrl+f help must say where archived tasks live: {archive}"
+        archive.contains("archive / restore task"),
+        "ctrl+f help must name the whole action: {archive}"
     );
     for (chord, label) in [
         ("g", "group by"),
@@ -2140,7 +2140,7 @@ fn bulk_delete_confirms_count_once_and_one_undo_restores_the_set() {
         .all(|id| domain.get(id).expect("task").soft_deleted));
     assert_eq!(model.marked_count(), 0);
     assert!(
-        rendered_board(&model, 80, 24).contains("deleted 2 tasks · ctrl+u restores"),
+        rendered_board(&model, 80, 24).contains("deleted 2 tasks · ctrl+u undo"),
         "bulk delete notice must name its one-step recovery"
     );
 
@@ -3167,18 +3167,18 @@ fn palette_lists_exactly_m1_commands_for_selection_filters_by_subsequence_and_di
         "set status: blocked",
         "set status: review",
         "edit notes",
-        "change scope",
+        "move to project / desk",
         "set assignee",
         "set base",
-        "set after…",
-        "new task",
-        "delete",
+        "set after (wait for)…",
+        "add task",
+        "delete task",
         "undo",
-        "done drawer",
+        "show / hide done drawer",
         "group by…",
         "sort by…",
         "fold / unfold group",
-        "help",
+        "show all keys",
         "quit",
     ];
     assert_eq!(
@@ -3422,7 +3422,7 @@ fn help_card_lists_every_binding_scrolls_and_closes_on_esc() {
         "TASK ACTIONS",
         "CREATE & EDIT",
         "VIEWS & FIND",
-        "SURFACE CONTROLS",
+        "PICKERS & EDITING",
         "APP CONTROLS",
     ] {
         assert!(
@@ -3434,14 +3434,14 @@ fn help_card_lists_every_binding_scrolls_and_closes_on_esc() {
     for (chord, action) in [
         ("ctrl+x / ctrl+delete", "delete"),
         ("ctrl+c", "cancel editing"),
-        ("ctrl+e", "line end (text input)"),
-        ("ctrl+←", "word left (text input)"),
-        ("home", "line start (text input)"),
-        ("backspace", "delete backward (text input)"),
+        ("ctrl+e", "go to line end (text input)"),
+        ("ctrl+←", "move one word left (text input)"),
+        ("home", "go to line start (text input)"),
+        ("backspace", "delete previous character (text input)"),
         ("q", "close project picker"),
-        ("y", "unarchive launch project"),
+        ("y", "unarchive this project (launch prompt)"),
         ("r / enter", "retry failed save"),
-        ("↑↓ / page keys", "scroll Help"),
+        ("↑↓ / page keys", "scroll (Help)"),
     ] {
         assert!(
             lines
@@ -3594,7 +3594,7 @@ fn help_card_lists_every_binding_scrolls_and_closes_on_esc() {
         "wrapped rows must extend the scroll horizon"
     );
     assert!(
-        scrolled_help.contains("ctrl+q") && scrolled_help.contains("quit"),
+        scrolled_help.contains("clear search"),
         "the wrapped tail must remain reachable:\n{scrolled_help}"
     );
     assert!(

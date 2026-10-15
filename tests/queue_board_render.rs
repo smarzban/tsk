@@ -322,7 +322,7 @@ fn palette_commands() -> Vec<PaletteCommandRow> {
             "set status: started",
             "set status: blocked",
             "set status: review",
-            "set after…",
+            "set after (wait for)…",
         ],
         "the \"stat\" query against the real M1 catalog must narrow to exactly the five \
          status commands plus `set after…` (s-t-a-t is a subsequence of it; no dispatch, no \
@@ -4094,7 +4094,7 @@ fn palette_golden_scene_commands_are_bound_to_the_real_m1_catalog_and_exclude_di
             "set status: started",
             "set status: blocked",
             "set status: review",
-            "set after…",
+            "set after (wait for)…",
         ],
         "the palette golden scene's command rows must be exactly what \
          `BoardModel::visible_commands` produces for the fixture's selection and query, not \
@@ -4106,6 +4106,43 @@ fn palette_golden_scene_commands_are_bound_to_the_real_m1_catalog_and_exclude_di
             .all(|command| !command.label.contains("dispatch")),
         "AC-17 excludes dispatch from the M1 palette outright; the golden scene must never \
          show it: {commands:?}"
+    );
+}
+
+/// T235: a verb bar that outgrows its row falls back to short labels; a wide row keeps the
+/// full words.
+#[test]
+fn step_editor_bar_falls_back_to_short_labels_when_narrow() {
+    let step_bar = |width: u16| -> String {
+        let mut domain = DomainState::new();
+        let id = domain
+            .create(
+                "Step bar witness",
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create task");
+        domain.add_step(id, "only step").expect("add step");
+        let mut model = BoardModel::from_domain(&domain, None);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None)
+            .expect("open task page");
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginAddStep, None).expect("add step");
+        let rows = board_rows(&model, width, 24);
+        let verb_row = tier::resolve(width, 24).verb_row.expect("verb row");
+        trimmed(&rows[verb_row as usize])
+    };
+
+    let wide = step_bar(100);
+    assert!(
+        wide.contains("enter save step · shift+enter save all · esc cancel"),
+        "a wide bar names the whole action:\n{wide}"
+    );
+    let narrow = step_bar(40);
+    assert!(
+        narrow.contains("enter step · shift+enter save · esc"),
+        "a narrow bar falls back to the short labels:\n{narrow}"
     );
 }
 
@@ -4147,7 +4184,7 @@ fn footer_lists_the_step_add_verb() {
 
     for row in [&with, &without] {
         assert!(
-            row.contains("ctrl+a step"),
+            row.contains("ctrl+a add step"),
             "task edit mode must list the step-add verb, including an empty checklist:\n{row}"
         );
     }
@@ -4158,7 +4195,7 @@ fn footer_lists_the_step_add_verb() {
 
     let floor = page_verb_row_with(&["only step"], 78);
     assert!(
-        floor.contains("ctrl+a step") && floor.contains("esc cancel"),
+        floor.contains("ctrl+a add step") && floor.contains("esc cancel"),
         "the editing bar fits the standard floor without clipping:\n{floor}"
     );
 }
@@ -5833,7 +5870,7 @@ fn project_picker_main_tab_advertises_archive_without_leaking_to_thread_picker()
     .expect("thread picker");
     let threads = board_rows(&model, 80, 24).join("\n");
     assert!(
-        threads.contains("tab switch \u{b7} ↑↓ move \u{b7} enter pick \u{b7} esc close"),
+        threads.contains("tab switch \u{b7} ↑↓ move \u{b7} enter choose \u{b7} esc close"),
         "the Filter picker advertises its tab switch:\n{threads}"
     );
     assert!(
@@ -6221,7 +6258,7 @@ fn real_thread_picker_paints_query_and_options() {
     )
     .expect("open picker");
     let rows = board_rows(&model, 162, 43).join("\n");
-    assert!(rows.contains("Filter"), "picker title missing:\n{rows}");
+    assert!(rows.contains("─ filter"), "picker title missing:\n{rows}");
     assert!(
         rows.contains("threads \u{b7} @assignees"),
         "picker tabs missing:\n{rows}"

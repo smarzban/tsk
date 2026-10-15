@@ -10,12 +10,12 @@
 │    └─ ne│  / search keys or actions…                                 │         │
 │         │ ────────────────────────────────────────────────────────── │         │
 │ IN MOTIO│  NAVIGATION                                                │───────2 │
-│         │  ↑↓ / jk            move                                   │         │
-│▸ ● T1 Sm│  shift+M            multi-select                           │         │
+│         │  ↑↓ / jk            move up / down                         │         │
+│▸ ● T1 Sm│  shift+M            start / stop multi-select              │         │
 │  ● T2 Ed│  shift+↑↓           mark and move (multi-select)           │         │
 │         │                                                            │         │
 │ ON DECK ├────────────────────────────────────────────────────────────┤───────1 │
-│         │ type search · ↑↓ scroll · esc clear/close                  │         │
+│         │ type search · ↑↓ scroll · esc clear / close                │         │
 │  ○ T7 Gl└────────────────────────────────────────────────────────────┘         │
 │                                                                                │
 │                                                                                │

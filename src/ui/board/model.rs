@@ -15,8 +15,8 @@ use crate::scope::{archived_path_contains, paths_equivalent, PathIdentityCache};
 use crate::ui::capture::CaptureField;
 use crate::ui::edit::{seeded_draft, EditBuffer};
 use crate::ui::input::{
-    BoardIntent, BOARD_HELP_LINE, COMMAND_SURFACE_HELP_LINE, HELP_SURFACE_HELP_LINE,
-    LAUNCH_CARD_HELP_LINE, SAVE_RECOVERY_HELP_LINE,
+    BoardIntent, COMMAND_SURFACE_HELP_LINE, HELP_SURFACE_HELP_LINE, LAUNCH_CARD_HELP_LINE,
+    SAVE_RECOVERY_HELP_LINE,
 };
 use crate::ui::mouse::BoardPopup;
 pub use crate::ui::queue::BoardTab;
@@ -6824,7 +6824,7 @@ impl BoardModel {
         true
     }
 
-    /// Help line listing primary key bindings.
+    /// Compact key legend for a modal surface; the board itself has its verb bar instead.
     pub fn help_line(&self) -> &'static str {
         match self.input_mode() {
             BoardInputMode::Palette => COMMAND_SURFACE_HELP_LINE,
@@ -6832,7 +6832,7 @@ impl BoardModel {
             BoardInputMode::LaunchCard => LAUNCH_CARD_HELP_LINE,
             BoardInputMode::Help => HELP_SURFACE_HELP_LINE,
             BoardInputMode::Search => crate::ui::input::SEARCH_HELP_LINE,
-            _ => BOARD_HELP_LINE,
+            _ => "",
         }
     }
 

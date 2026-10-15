@@ -60,8 +60,8 @@ impl BoardModel {
         // Unresolved save failure: only the recovery routes the boundary accepts.
         if self.popup == BoardPopup::SaveRecovery {
             return vec![
-                command("Retry save", BoardIntent::RetrySave),
-                command("Cancel save", BoardIntent::CancelSave),
+                command("retry save", BoardIntent::RetrySave),
+                command("cancel save", BoardIntent::CancelSave),
             ];
         }
         let mut commands = Vec::new();
@@ -90,15 +90,18 @@ impl BoardModel {
                     BoardIntent::SetStatus(HumanStatus::Review),
                 ),
                 command("edit notes", BoardIntent::BeginEditNotes),
-                command("change scope", BoardIntent::BeginEditScope),
+                command("move to project / desk", BoardIntent::BeginEditScope),
                 command("set assignee", BoardIntent::OpenAssigneePicker),
                 command("set base", BoardIntent::OpenBasePicker),
-                command("set after…", BoardIntent::OpenAfterPicker),
+                command("set after (wait for)…", BoardIntent::OpenAfterPicker),
             ]);
             // Two or more marked tasks chain in the order they were marked. The palette owns
             // input while it lists this, so ask about the task list underneath it.
             if self.marks_under_palette() >= 2 {
-                commands.push(command("chain in order", BoardIntent::ChainAfter));
+                commands.push(command(
+                    "chain marked tasks in order",
+                    BoardIntent::ChainAfter,
+                ));
             }
             // Starting dispatches an assigned task (`set status: started`, `ctrl+s`); dispatch
             // again is the explicit, cursor-only relaunch.
@@ -120,13 +123,13 @@ impl BoardModel {
         // Always-available board commands, then selection-gated delete when present.
         // The status commands above are absolute, so `set status: open` replaces the old
         // done-only `reopen` entry and stays useful from every status.
-        commands.push(command("new task", BoardIntent::OpenCapture));
+        commands.push(command("add task", BoardIntent::OpenCapture));
         if self.selected_id().is_some() {
-            commands.push(command("delete", BoardIntent::SoftDelete));
+            commands.push(command("delete task", BoardIntent::SoftDelete));
         }
         commands.extend_from_slice(&[
             command("undo", BoardIntent::Undo),
-            command("done drawer", BoardIntent::ToggleDoneDrawer),
+            command("show / hide done drawer", BoardIntent::ToggleDoneDrawer),
         ]);
         // Layout commands act on the task list, never over an open task page.
         if self.task_list_under_surfaces() {
@@ -137,7 +140,7 @@ impl BoardModel {
             ]);
         }
         commands.extend_from_slice(&[
-            command("help", BoardIntent::OpenHelp),
+            command("show all keys", BoardIntent::OpenHelp),
             command("quit", BoardIntent::Quit),
         ]);
         // Park / resume / link stay out of the palette.

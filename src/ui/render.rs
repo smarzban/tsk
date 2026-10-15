@@ -2094,11 +2094,11 @@ fn bottom_input_slot<'a>(overlay: &'a QueueOverlay<'a>) -> Option<&'a BottomInpu
 pub(crate) const QUICK_ADD_VERBS: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "enter",
-        label: "save",
+        label: "add",
     },
     VerbEntry {
         key: "tab",
-        label: "details",
+        label: "expand",
     },
     VerbEntry {
         key: "esc",
@@ -2171,7 +2171,7 @@ const FORM_ASSIGNEE_VERBS: &[VerbEntry<'static>] = &[
     },
     VerbEntry {
         key: "enter",
-        label: "pick",
+        label: "choose",
     },
     VerbEntry {
         key: "esc",
@@ -2795,7 +2795,7 @@ const HELP_FOOTER: &[VerbEntry<'static>] = &[
     },
     VerbEntry {
         key: "esc",
-        label: "clear/close",
+        label: "clear / close",
     },
 ];
 
@@ -2882,7 +2882,7 @@ const PROJECT_PICKER_FOOTER: &[VerbEntry<'static>] = &[
     },
 ];
 
-/// The tabbed Filter / View picker's legend: `tab` flips `threads · @assignees`.
+/// Every tabbed filter / view picker's legend: `tab` (or `←` / `→`) switches tabs.
 const FILTER_PICKER_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "tab",
@@ -2894,7 +2894,7 @@ const FILTER_PICKER_FOOTER: &[VerbEntry<'static>] = &[
     },
     VerbEntry {
         key: "enter",
-        label: "pick",
+        label: "choose",
     },
     VerbEntry {
         key: "esc",
@@ -2907,21 +2907,6 @@ const FILTER_PICKER_FOOTER_COMPACT: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "tab",
         label: "switch",
-    },
-    VerbEntry {
-        key: "esc",
-        label: "close",
-    },
-];
-/// The desk filter's tabbed picker: arrows flip tabs, the rest is the list contract.
-const FILTER_FOOTER: &[VerbEntry<'static>] = &[
-    VerbEntry {
-        key: "←→",
-        label: "tab",
-    },
-    VerbEntry {
-        key: "enter",
-        label: "choose",
     },
     VerbEntry {
         key: "esc",
@@ -4831,11 +4816,15 @@ fn paint_scope_dropdown(
                 0
             },
             legend: match tabs {
-                Some(PickerTabsPaint::DeskFilter { .. }) => FILTER_FOOTER,
-                Some(PickerTabsPaint::Filter { .. }) if legend_fits(geo, FILTER_PICKER_FOOTER) => {
+                // Every tabbed filter and view picker takes the same keys, so one legend.
+                Some(PickerTabsPaint::Filter { .. } | PickerTabsPaint::DeskFilter { .. })
+                    if legend_fits(geo, FILTER_PICKER_FOOTER) =>
+                {
                     FILTER_PICKER_FOOTER
                 }
-                Some(PickerTabsPaint::Filter { .. }) => FILTER_PICKER_FOOTER_COMPACT,
+                Some(PickerTabsPaint::Filter { .. } | PickerTabsPaint::DeskFilter { .. }) => {
+                    FILTER_PICKER_FOOTER_COMPACT
+                }
                 Some(PickerTabsPaint::Project {
                     archived_active: true,
                     ..
@@ -6855,6 +6844,16 @@ fn mutating_verb_key(key: &str) -> bool {
     )
 }
 
+/// The short label a verb falls back to when the full bar outgrows its row; Help keeps the
+/// full wording.
+fn compact_verb_label(label: &str) -> &str {
+    match label {
+        "save step" | "add step" => "step",
+        "save all" => "save",
+        _ => label,
+    }
+}
+
 fn paint_verb_bar(
     entries: &[VerbEntry<'_>],
     budget: usize,
@@ -6862,6 +6861,20 @@ fn paint_verb_bar(
     prefix: bool,
 ) -> (Line<'static>, Vec<(usize, u16, u16)>) {
     let shown: Vec<&VerbEntry<'_>> = entries.iter().take(budget).collect();
+    let key_text = |entry: &VerbEntry<'_>| {
+        if prefix && mutating_verb_key(entry.key) {
+            format!("ctrl+{}", entry.key)
+        } else {
+            entry.key.to_string()
+        }
+    };
+    let full_width = 1
+        + shown
+            .iter()
+            .map(|entry| display_width(&key_text(entry)) + 1 + display_width(entry.label))
+            .sum::<usize>()
+        + 3 * shown.len().saturating_sub(1);
+    let compact = full_width > width as usize;
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut hits = Vec::new();
     let mut x = 0u16;
@@ -6875,16 +6888,16 @@ fn paint_verb_bar(
             spans.push(Span::styled(sep.to_string(), style_dim()));
             x = x.saturating_add(display_width(sep) as u16);
         }
-        let key = if prefix && mutating_verb_key(entry.key) {
-            format!("ctrl+{}", entry.key)
-        } else {
-            entry.key.to_string()
-        };
+        let key = key_text(entry);
         let key_w = display_width(&key) as u16;
         let start = x;
         spans.push(Span::styled(key, style_bold()));
         x = x.saturating_add(key_w);
-        let label = format!(" {}", entry.label);
+        let label = if compact {
+            format!(" {}", compact_verb_label(entry.label))
+        } else {
+            format!(" {}", entry.label)
+        };
         let label_w = display_width(&label) as u16;
         spans.push(Span::styled(label, style_plain()));
         x = x.saturating_add(label_w);

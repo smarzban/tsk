@@ -1003,7 +1003,7 @@ import { parseCapture } from "./capture.js";
       )
       .join(
         "",
-      )}</div><div class="tsk-box-foot">←→ tab · enter choose · esc close</div></div>`;
+      )}</div><div class="tsk-box-foot">tab switch · ↑↓ move · enter choose · esc close</div></div>`;
   }
 
   // ── Group and sort pickers ──
@@ -1539,7 +1539,7 @@ import { parseCapture } from "./capture.js";
       )
       .join(
         "",
-      )}</div><div class="tsk-box-foot">tab switch · ↑↓ move · enter pick · esc close</div></div>`;
+      )}</div><div class="tsk-box-foot">tab switch · ↑↓ move · enter choose · esc close</div></div>`;
   }
 
   function previewSelectableIds(rows = previewRows()) {
@@ -1685,7 +1685,7 @@ import { parseCapture } from "./capture.js";
     if (state.tab === "projects") dropProjectPreview();
   }
   function renderFilter() {
-    const title = state.focusProject ? "Filter" : "projects View";
+    const title = state.focusProject ? "filter" : "view";
     return `<div class="tsk-box" role="dialog" aria-label="${title}"><div class="tsk-box-top"><span class="tsk-box-title">${title}</span><button type="button" class="tsk-box-close" data-close="1">[x]</button></div>${renderFilterTabs()}<div class="tsk-box-body">${filterOptions()
       .map(
         (o, i) =>
@@ -1693,7 +1693,7 @@ import { parseCapture } from "./capture.js";
       )
       .join(
         "",
-      )}</div><div class="tsk-box-foot">tab switch · ↑↓ move · enter pick · esc close</div></div>`;
+      )}</div><div class="tsk-box-foot">tab switch · ↑↓ move · enter choose · esc close</div></div>`;
   }
   const matchesThread = (t) =>
     state.focusProject
@@ -3017,32 +3017,42 @@ import { parseCapture } from "./capture.js";
 
   function renderHelp() {
     const rows = [
-      ["navigation", "↑↓ / jk", "move", "select"],
-      ["navigation", "shift+M", "multi-select", "select multiple"],
+      ["navigation", "↑↓ / jk", "move up / down", "select"],
+      ["navigation", "shift+M", "start / stop multi-select", "select multiple"],
       [
         "navigation",
         "shift+↑↓",
         "mark and move (multi-select)",
         "select multiple",
       ],
-      ["navigation", "space", "toggle mark (multi-select)", "select multiple"],
+      [
+        "navigation",
+        "space",
+        "mark / unmark (multi-select)",
+        "select multiple",
+      ],
       ["navigation", "enter", "open task", "detail"],
-      ["navigation", "←/h · →/l", "close or peek / slide", "wide view"],
-      ["task actions", "s", "start", "status open or ready"],
-      ["task actions", "d", "done", "status finish complete"],
-      ["task actions", "b", "block", "status"],
-      ["task actions", "r", "review", "status"],
-      ["task actions", "n", "pick", "status ready"],
-      ["task actions", "o", "inbox", "status open"],
-      ["task actions", "x", "delete", "remove"],
-      ["task actions", "u", "undo", "restore"],
+      [
+        "navigation",
+        "←/h · →/l",
+        "close / peek · slide panes (wide)",
+        "wide view",
+      ],
       [
         "task actions",
-        "f",
-        "archive / restore (archived: z drawer)",
-        "file hide restore",
+        "s",
+        "start (assigned: dispatch)",
+        "status open or ready",
       ],
-      ["create & edit", "+", "quick-add", "capture new task"],
+      ["task actions", "d", "mark done", "status finish complete"],
+      ["task actions", "b", "block / unblock", "status"],
+      ["task actions", "r", "send to review / back to ready", "status"],
+      ["task actions", "n", "mark ready (next)", "status ready pick"],
+      ["task actions", "o", "send to inbox", "status open"],
+      ["task actions", "x", "delete task (press twice)", "remove"],
+      ["task actions", "u", "undo last change", "restore"],
+      ["task actions", "f", "archive / restore task", "file hide restore"],
+      ["create & edit", "+", "add task", "capture new task quick-add"],
       ["create & edit", "e", "edit title", "rename"],
       [
         "create & edit",
@@ -3053,14 +3063,14 @@ import { parseCapture } from "./capture.js";
       [
         "task actions",
         "alt+↑ / alt+↓",
-        "move selected step (task page)",
+        "move step up / down (task page)",
         "checklist reorder",
       ],
-      ["views & find", "1", "desk", "switch view"],
-      ["views & find", "2", "selected project", "switch view"],
-      ["views & find", "3", "projects", "switch view"],
-      ["views & find", "p", "project picker", "switch find"],
-      ["views & find", "z / D", "done drawer", "completed tasks"],
+      ["views & find", "1", "open desk", "switch view"],
+      ["views & find", "2", "open last project", "switch view"],
+      ["views & find", "3", "open projects", "switch view"],
+      ["views & find", "p", "choose project", "switch find"],
+      ["views & find", "z / D", "show / hide done drawer", "completed tasks"],
       ["views & find", "g", "group by", "layout group project thread"],
       [
         "views & find",
@@ -3071,13 +3081,13 @@ import { parseCapture } from "./capture.js";
       [
         "views & find",
         "← / →",
-        "fold / unfold a header (sub-group, inbox, archived)",
+        "fold / unfold header",
         "collapse expand group",
       ],
       [
         "views & find",
         "enter",
-        "open a sub-header's project, desk, or thread",
+        "open group's board (header)",
         "group board view",
       ],
       [
@@ -3086,11 +3096,11 @@ import { parseCapture } from "./capture.js";
         "fold / unfold all groups",
         "collapse expand inbox archived",
       ],
-      ["views & find", "t", "filter", "thread project narrow"],
+      ["views & find", "t", "filter board", "thread project narrow"],
       ["views & find", "/", "search board", "find filter tasks projects"],
-      ["views & find", ":", "command palette", "find actions"],
-      ["app controls", "?", "help", "shortcuts keys"],
-      ["app controls", "esc", "clear / close", "cancel"],
+      ["views & find", ":", "open command palette", "find actions"],
+      ["app controls", "?", "show all keys", "shortcuts keys help"],
+      ["app controls", "esc", "close, or quit from the board", "cancel clear"],
       ["app controls", "q", "quit", "exit"],
     ];
     const query = state.helpQ.trim().toLowerCase();
@@ -3114,7 +3124,7 @@ import { parseCapture } from "./capture.js";
         <div class="tsk-help-search"><span>/ </span><span>${state.helpQ ? esc(state.helpQ) : '<span class="dim">search keys or actions…</span>'}</span><span class="cursor">█</span></div>
         <div class="tsk-help-divider" aria-hidden="true"></div>
         <div class="tsk-box-body tsk-help-body">${list || '<div class="dim">no shortcuts match</div>'}</div>
-        <div class="tsk-box-foot">type search · ↑/↓ scroll · esc clear/close</div>
+        <div class="tsk-box-foot">type search · ↑/↓ scroll · esc clear / close</div>
       </div>`;
   }
 
@@ -3708,8 +3718,8 @@ import { parseCapture } from "./capture.js";
     const selectedCount = owner.markedIds.size;
     const selectionMessage = owner.markMode
       ? selectedCount
-        ? `multi-select · ${selectedCount} selected · esc clears`
-        : "multi-select · space/click marks · esc exits"
+        ? `multi-select · ${selectedCount} selected · esc clear`
+        : "multi-select · space/click mark · esc exit"
       : "";
     const baseContext = previewOwnsFooter
       ? preview.project || "project"
@@ -3753,8 +3763,8 @@ import { parseCapture } from "./capture.js";
              state.refuse
                ? esc(state.refuse)
                : hintBar([
-                   { id: "save", label: "enter save" },
-                   { id: "details", label: "tab details" },
+                   { id: "save", label: "enter add" },
+                   { id: "details", label: "tab expand" },
                    { id: "close", label: "esc close" },
                  ])
            }</div>`

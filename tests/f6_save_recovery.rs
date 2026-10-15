@@ -2249,7 +2249,7 @@ fn input_surface_help_lines_use_the_shared_lowercase_verb_grammar() {
     );
     assert_eq!(
         HELP_SURFACE_HELP_LINE,
-        "type search · ↑↓ scroll · esc clear/close"
+        "type search · ↑↓ scroll · esc clear / close"
     );
     assert_eq!(LAUNCH_CARD_HELP_LINE, "y unarchive · n keep archived");
     assert_eq!(SAVE_RECOVERY_HELP_LINE, "↑↓ · r retry · c cancel");

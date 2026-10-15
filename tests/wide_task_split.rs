@@ -2628,7 +2628,7 @@ fn changed_thread_and_scope_drafts_refuse_retarget_and_paint_unsaved() {
     let original = model.form_scope().cloned();
     go(&mut domain, &mut model, BoardIntent::FormCycleScope);
     assert_ne!(model.form_scope(), original.as_ref());
-    assert!(header_title_row(&model, WideStage::Rail).ends_with("editing scope"));
+    assert!(header_title_row(&model, WideStage::Rail).ends_with("editing project"));
     let bound = model.edit_target().expect("bound");
     let other = model
         .visible_ids()

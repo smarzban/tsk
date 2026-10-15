@@ -386,7 +386,7 @@ fn the_page_leads_with_the_blocked_section_and_a_rule_above_the_notes() {
     );
     assert_eq!(
         page[top + 8],
-        "  1-2 choose · r reply · ctrl+s reply + unblock",
+        "  1-2 choose · r reply · ctrl+s reply and unblock",
         "{joined}"
     );
     let rule = page[top + 9].trim();
@@ -435,7 +435,7 @@ fn number_keys_pick_an_option_and_open_the_reply_box_prefilled() {
     // The box replaces the action line with its own keys.
     let page = page_body(&rows(&model, 80, 30)).join("\n");
     assert!(
-        page.contains("  shift+enter save · ctrl+s save + unblock · esc cancel\n  ───"),
+        page.contains("  shift+enter save · ctrl+s save and unblock · esc cancel\n  ───"),
         "{page}"
     );
     assert!(!page.contains("1-2 choose"), "{page}");
@@ -472,7 +472,7 @@ fn the_action_line_follows_the_cursor() {
     };
     assert_eq!(
         action(&model),
-        "1-2 choose · r reply · ctrl+s reply + unblock"
+        "1-2 choose · r reply · ctrl+s reply and unblock"
     );
     press(
         &mut domain,
@@ -482,7 +482,7 @@ fn the_action_line_follows_the_cursor() {
     assert_eq!(model.block_target(), Some(BlockTarget::Heading));
     assert_eq!(
         action(&model),
-        "ctrl+e edit · 1-2 choose · r reply · ctrl+s reply + unblock"
+        "ctrl+e edit · 1-2 choose · r reply · ctrl+s reply and unblock"
     );
     press(
         &mut domain,
@@ -491,7 +491,7 @@ fn the_action_line_follows_the_cursor() {
     );
     assert_eq!(
         action(&model),
-        "enter choose · 1-2 choose · r reply · ctrl+s reply + unblock"
+        "enter choose · 1-2 choose · r reply · ctrl+s reply and unblock"
     );
     for _ in 0..2 {
         press(
@@ -503,7 +503,7 @@ fn the_action_line_follows_the_cursor() {
     assert!(model.stored_step_selected());
     assert_eq!(
         action(&model),
-        "enter toggle step · 1-2 choose · r reply · ctrl+s reply + unblock"
+        "enter check / uncheck · 1-2 choose · r reply · ctrl+s reply and unblock"
     );
 }
 
@@ -564,7 +564,7 @@ fn the_thread_keeps_names_in_a_fixed_column_and_wraps_at_40_and_110() {
         "change.",
         "running.",
         "1-2 choose · r reply",
-        "ctrl+s reply + unblock",
+        "ctrl+s reply and unblock",
     ] {
         assert!(joined.contains(text), "{text}:\n{}", narrow.join("\n"));
     }

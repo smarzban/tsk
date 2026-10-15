@@ -10,7 +10,7 @@
 │    └─ ne│   set status: started                                      │         │
 │         │ ▸ set status: blocked                                      │         │
 │ IN MOTIO│   set status: review                                       │───────2 │
-│         │   set after…                                               │         │
+│         │   set after (wait for)…                                    │         │
 │▸ ● T1 Sm│                                                            │         │
 │  ● T2 Ed├────────────────────────────────────────────────────────────┤         │
 │         │ ↑↓ move · enter run · esc close                            │         │

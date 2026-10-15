@@ -9914,7 +9914,7 @@ mod tests {
         assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
     }
 
-    /// #159 review F-2: `:` reaches the palette's "new task" from a task page. It must refuse
+    /// #159 review F-2: `:` reaches the palette's "add task" from a task page. It must refuse
     /// while the task session holds staged step changes instead of dropping them.
     #[test]
     fn palette_new_task_refuses_over_a_dirty_task_session() {
@@ -9927,11 +9927,11 @@ mod tests {
             BoardIntent::SoftDelete,
             BoardIntent::OpenCommandPalette,
         ];
-        intents.extend("new task".chars().map(BoardIntent::CommandQueryInsert));
+        intents.extend("add task".chars().map(BoardIntent::CommandQueryInsert));
         drive(&temp, &mut domain, &mut model, &mut recovery, intents);
         assert_eq!(
             model.selected_command().map(|command| command.label),
-            Some("new task".to_string())
+            Some("add task".to_string())
         );
         drive(
             &temp,
@@ -13906,7 +13906,7 @@ mod quick_assign_tests {
         );
         assert!(
             at("○ tests pass")
-                < at("tab next · enter mark · r feedback · ctrl+s send back · ctrl+d approve")
+                < at("tab next field · enter cycle check · r feedback · ctrl+s send back")
         );
         assert!(at("ctrl+d approve") < at("see PR #41 for the diff"));
         for gone in ["REVIEW", "round", "done   ", "next   "] {
@@ -14020,7 +14020,7 @@ mod quick_assign_tests {
             assert!(at("▸  ○ C works") < at("   2 passed ▸"));
             assert!(at("   2 passed ▸") < at("builder · "));
             assert!(at("builder · ") < at("you · "));
-            assert!(at("you · ") < at("tab next · enter mark"));
+            assert!(at("you · ") < at("tab next field · enter cycle check"));
             assert!(at("ctrl+d approve\n  ───") > at("tab next"));
             assert!(!joined.contains("A works"), "folded: {joined}");
             let builder = section
@@ -19769,7 +19769,7 @@ mod quick_assign_tests {
         let index = model
             .visible_commands()
             .iter()
-            .position(|command| command.label == "chain in order")
+            .position(|command| command.label == "chain marked tasks in order")
             .expect("the open palette offers chain in order");
         handle(
             &temp,
