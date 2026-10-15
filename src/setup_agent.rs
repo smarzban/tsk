@@ -1267,6 +1267,8 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    // Unix only: Win32 rejects control characters such as ESC in directory names.
+    #[cfg(unix)]
     #[test]
     fn setup_listing_escapes_control_characters_in_home_derived_paths() {
         let _lock = env_lock();
