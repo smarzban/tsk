@@ -1,0 +1,76 @@
+{
+  "run_id": "run-1",
+  "repo": "smarzban/tsk",
+  "target": "/workspace",
+  "source_ref": {
+    "commit": "ceca7657a52d244d1d89bff04c70a9cc5ea93d7e",
+    "base_audited": "ade0385fa49f28035c35dc846ce90158c4117207",
+    "worktree_dirty": false,
+    "commits": [
+      "9b3745633547 Escape terminal controls in setup path output (#210)",
+      "ceca7657a52d Text editing: macOS word keys and clearer new-line hints (#204) (#212)"
+    ]
+  },
+  "profile": "standard",
+  "scope": "scoped-delta",
+  "scope_paths": [
+    "CHANGELOG.md",
+    "site/public/board-demo.js",
+    "site/public/llms.txt",
+    "site/src/content/docs/docs/capture.md",
+    "site/src/content/docs/docs/keys.md",
+    "site/src/content/docs/docs/steps.md",
+    "site/test/site.test.mjs",
+    "src/app.rs",
+    "src/cli/presenter.rs",
+    "src/setup.rs",
+    "src/setup/tests.rs",
+    "src/setup_agent.rs",
+    "src/ui/board/apply.rs",
+    "src/ui/board/model.rs",
+    "src/ui/edit.rs",
+    "src/ui/input.rs",
+    "src/ui/mouse.rs",
+    "src/ui/render.rs",
+    "tests/docs_parity.rs",
+    "tests/queue_board_edit.rs",
+    "tests/queue_board_mouse.rs",
+    "tests/queue_board_verbs.rs",
+    "tests/quick_add_capture.rs"
+  ],
+  "prior_leads_in_scope": [
+    "terminal-control-escape-setup-path (prior confirmed, fixed in 9b37456, revalidate)",
+    "TSK_UPDATE_CURL background check",
+    "bidi characters",
+    "PI_CONFIG_DIR dot-dot segments",
+    "Windows ACLs"
+  ],
+  "budget": null,
+  "execution_policy": "sandboxed-source-and-local-only",
+  "selected_companion_files": [
+    "DESKTOP-MOBILE-AND-LOCAL-IPC.md",
+    "SUPPLY-CHAIN-AND-RELEASE.md",
+    "CLIENT-SIDE.md"
+  ],
+  "prior_run_paths": [],
+  "prior_ledger_status": "no compatible coverage-ledger.json or findings.json found on origin security-audit/* or security-fix/* (ls-remote empty) or in local history",
+  "shared_file_owners": {
+    "parent": "run-1"
+  },
+  "run_status": "complete",
+  "agents_spent": {
+    "reconnaissance": 4,
+    "hunters_wave_1": 4,
+    "post_wave_critic_1": 1,
+    "hunters_wave_2": 1,
+    "post_wave_critic_2": 1,
+    "final_clean_critic": 1,
+    "phase3_verifier": 1,
+    "phase5_verifier": 1
+  },
+  "execution_note": "Source review only. Target cargo tests were not run: no bubblewrap, and the parent did not expose a full read-only target mount to target-controlled processes. A parent-written rustc replica of std::path normalization observed PI_CONFIG_DIR=../../../tmp/pwn under HOME=/home/user resolving to /tmp/pwn. That replica was not a promoted scratch artifact and was not treated as tsk execution. No confirmed finding depended on it.",
+  "final_critic": "stop true, no missing units, no reassign ids",
+  "phase5": {
+    "windows-state-dir-acl": "verified"
+  }
+}
