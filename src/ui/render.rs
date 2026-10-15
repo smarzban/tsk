@@ -6262,13 +6262,13 @@ fn section_title(section: &QueueSection, surface: BoardSurface) -> String {
 }
 
 fn paint_empty_hint(width: u16) -> Line<'static> {
-    // " no open tasks here — p rescope or + add"
+    // " no open tasks here — p choose project or + add task"
     let spans = vec![
         Span::styled("    no open tasks here — ".to_string(), style_dim()),
         Span::styled("p".to_string(), style_bold()),
-        Span::styled(" rescope or ".to_string(), style_dim()),
+        Span::styled(" choose project or ".to_string(), style_dim()),
         Span::styled("+".to_string(), style_bold()),
-        Span::styled(" add".to_string(), style_dim()),
+        Span::styled(" add task".to_string(), style_dim()),
     ];
     bound_line(Line::from(spans), width as usize)
 }

@@ -176,7 +176,7 @@ test("marked task sets complete, delete, and undo as one demo action", async ({
   );
   await page.keyboard.press("x");
   await expect(page.locator("#tsk-demo")).toContainText(
-    "deleted 2 tasks · u restores",
+    "deleted 2 tasks · u undo",
   );
   await expect(row(page, 12)).toHaveCount(0);
   await expect(row(page, 13)).toHaveCount(0);

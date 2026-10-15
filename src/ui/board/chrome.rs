@@ -56,44 +56,44 @@ fn edit_chrome_legends(mode: BoardInputMode, review: bool) -> [&'static str; 3] 
             "enter · tab · esc",
         ],
         BoardInputMode::EditNotes => [
-            "Shift+Enter save · Enter newline · Esc cancel",
-            "Shift+Enter save · Esc cancel",
-            "Shift+Enter save · Esc",
+            "shift+enter save · enter newline · esc cancel",
+            "shift+enter save · esc cancel",
+            "shift+enter save · esc",
         ],
         BoardInputMode::EditScope => [
-            "Space cycle · Enter projects · Esc cancel",
-            "Space · Enter projects · Esc",
-            "Enter projects · Esc",
+            "space cycle · enter projects · esc cancel",
+            "space · enter projects · esc",
+            "enter projects · esc",
         ],
         BoardInputMode::EditAssignee => [
-            "Space / arrows cycle · Enter choose · Esc cancel",
-            "Space cycle · Enter choose · Esc",
-            "Enter choose · Esc",
+            "space / arrows cycle · enter choose · esc cancel",
+            "space cycle · enter choose · esc",
+            "enter choose · esc",
         ],
         BoardInputMode::SelectThread => [
-            "Enter edit thread · Tab next · Esc cancel",
-            "Enter edit · Tab next · Esc",
-            "Enter edit · Esc",
+            "enter edit thread · tab next · esc cancel",
+            "enter edit · tab next · esc",
+            "enter edit · esc",
         ],
         BoardInputMode::SelectBase => [
-            "Enter choose base · Tab next · Esc cancel",
-            "Enter choose · Tab next · Esc",
-            "Enter choose · Esc",
+            "enter choose base · tab next · esc cancel",
+            "enter choose · tab next · esc",
+            "enter choose · esc",
         ],
         BoardInputMode::SelectAfter => [
-            "Enter choose tasks · Tab next · Esc cancel",
-            "Enter choose · Tab next · Esc",
-            "Enter choose · Esc",
+            "enter choose tasks · tab next · esc cancel",
+            "enter choose · tab next · esc",
+            "enter choose · esc",
         ],
         BoardInputMode::EditTitle => [
-            "Shift+Enter save · Esc cancel",
-            "Shift+Enter save · Esc cancel",
-            "Shift+Enter save · Esc",
+            "shift+enter save · esc cancel",
+            "shift+enter save · esc cancel",
+            "shift+enter save · esc",
         ],
         BoardInputMode::EditThread => [
-            "Enter close · Shift+Enter save · Esc cancel",
-            "Enter close · Shift+Enter save · Esc",
-            "Enter close · Esc",
+            "enter close · shift+enter save · esc cancel",
+            "enter close · shift+enter save · esc",
+            "enter close · esc",
         ],
         BoardInputMode::EditReply => [
             "shift+enter save · ctrl+s save and unblock · esc cancel",
@@ -106,9 +106,9 @@ fn edit_chrome_legends(mode: BoardInputMode, review: bool) -> [&'static str; 3] 
             "enter · tab · esc",
         ],
         BoardInputMode::EditStep => [
-            "Enter next · Shift+Enter save · Esc cancel",
-            "Enter next · Shift+Enter save · Esc",
-            "Enter · Shift+Enter · Esc",
+            "enter next · shift+enter save · esc cancel",
+            "enter next · shift+enter save · esc",
+            "enter · shift+enter · esc",
         ],
         BoardInputMode::QuickAdd
         | BoardInputMode::FormDropdown
@@ -125,9 +125,9 @@ fn edit_chrome_legends(mode: BoardInputMode, review: bool) -> [&'static str; 3] 
         | BoardInputMode::Help
         | BoardInputMode::TaskPage
         | BoardInputMode::CapturePage => [
-            "Enter save · Esc cancel",
-            "Enter save · Esc cancel",
-            "Enter save · Esc",
+            "enter save · esc cancel",
+            "enter save · esc cancel",
+            "enter save · esc",
         ],
     }
 }
@@ -296,5 +296,38 @@ fn fit_chrome_row(parts: &[ChromeRowPart<'_>], width: usize) -> String {
         present_line(&text, width)
     } else {
         text
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// T235: field-edit legends name keys in lowercase, like every footer and verb bar.
+    #[test]
+    fn edit_chrome_legends_name_keys_in_lowercase() {
+        for mode in [
+            BoardInputMode::Normal,
+            BoardInputMode::EditTitle,
+            BoardInputMode::EditNotes,
+            BoardInputMode::SelectThread,
+            BoardInputMode::SelectBase,
+            BoardInputMode::SelectAfter,
+            BoardInputMode::EditThread,
+            BoardInputMode::EditScope,
+            BoardInputMode::EditAssignee,
+            BoardInputMode::EditReply,
+            BoardInputMode::BlockCard,
+            BoardInputMode::EditStep,
+        ] {
+            for review in [false, true] {
+                for legend in edit_chrome_legends(mode, review) {
+                    assert!(
+                        !legend.chars().any(|c| c.is_ascii_uppercase()),
+                        "{mode:?} legend {legend:?} must be lowercase"
+                    );
+                }
+            }
+        }
     }
 }

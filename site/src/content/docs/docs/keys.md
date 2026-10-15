@@ -38,7 +38,7 @@ Press `?` on the board, task page, or another non-text surface for a searchable 
 | Sort by recent / project / thread / title / assignee | `s` |
 | Fold or unfold the cursor's group: a sub-group (inbox sub-groups included), the inbox, or archived in the done drawer | `f` |
 | Fold or unfold every group in view | `Shift+F` |
-| Desk / selected project / projects | `1` / `2` / `3` |
+| Open desk / last project / projects | `1` / `2` / `3` |
 | Project picker | `p` |
 | Filter: thread, project, and assignee (`threads · projects · @assignees`) on the desk; thread and assignee (`threads · @assignees`) on a project board | `t` |
 | Switch a filter or view picker's tab (the desk filter's three wrap; `←` and `Shift+Tab` go back) | `Tab`, `←` / `→` |

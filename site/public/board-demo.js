@@ -2188,13 +2188,13 @@ import { parseCapture } from "./capture.js";
       { id: "projects", label: "go projects", run: () => goTab("projects") },
       {
         id: "project",
-        label: "go selected project",
+        label: "go last project",
         run: () => goTab("project"),
       },
-      { id: "capture", label: "capture", run: () => openQuickAdd() },
+      { id: "capture", label: "add task", run: () => openQuickAdd() },
       {
         id: "help",
-        label: "help",
+        label: "show all keys",
         run: () => {
           state.overlay = "help";
           state.helpQ = "";
@@ -2801,7 +2801,7 @@ import { parseCapture } from "./capture.js";
     state.pendingDeleteBulk = false;
     clearMarks();
     state.message = bulk
-      ? `deleted ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"} · u restores`
+      ? `deleted ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"} · u undo`
       : `Deleted T${tasks[0].number} "${tasks[0].title}" · u undo`;
     expireDeleteNotice(state);
     state.peekId = null;
@@ -2944,7 +2944,7 @@ import { parseCapture } from "./capture.js";
     preview.pendingDeleteBulk = false;
     clearMarks(preview);
     preview.message = bulk
-      ? `deleted ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"} · u restores`
+      ? `deleted ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"} · u undo`
       : `Deleted T${tasks[0].number} "${tasks[0].title}" · u undo`;
     expireDeleteNotice(preview);
     preview.peekId = null;
