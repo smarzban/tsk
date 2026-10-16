@@ -137,7 +137,19 @@ fn load_board_inner(
     } else {
         None
     };
-    if let Some(message) = profiles_error.or(board_error).or(backup_error) {
+    // The first-backup suggestion is recorded as shown, so it is taken only when nothing
+    // else wants the status row.
+    let message = profiles_error.or(board_error).or(backup_error).or_else(|| {
+        let tasks = state
+            .tasks()
+            .iter()
+            .filter(|task| !task.is_notice() && !task.soft_deleted)
+            .count();
+        full_board_open
+            .then(|| crate::backup::take_backup_nudge(&state_dir, tasks))
+            .flatten()
+    });
+    if let Some(message) = message {
         model.set_message(message);
     }
     if full_board_open {

@@ -2034,7 +2034,7 @@ pub fn backup_help() -> CliOutput {
                 "Actions",
                 &[
                     ("now", "back up to every target now (the default)"),
-                    ("add <folder|git-url>", "add a target to config.toml"),
+                    ("add <folder|git-url>", "add a target to config.toml and test it with a first backup"),
                     ("list", "show targets, their last backup, and their last error"),
                     ("remove <target>", "remove a target by its path, URL, or number in list"),
                 ],
@@ -2058,7 +2058,7 @@ pub fn backup_help() -> CliOutput {
             "no backup targets".into(),
             "folder not found".into(),
             "no backup target <target>".into(),
-            "a target failed to back up".into(),
+            "a target failed to back up (a new target stays added)".into(),
         ],
         exit: exit_line(
             "backed up, added, listed, or removed",

@@ -166,15 +166,25 @@ fn a_git_target_restores_into_a_fresh_state_dir() {
     assert_eq!(added.status.code(), Some(0), "{}", stderr(&added));
     assert!(stdout(&added).contains("git target"), "{}", stdout(&added));
     assert!(stdout(&added).contains("(daily)"), "{}", stdout(&added));
-    let pushed = tsk(&laptop, &["backup"]);
-    assert_eq!(pushed.status.code(), Some(0), "{}", stderr(&pushed));
-    assert!(stdout(&pushed).contains("machines/"), "{}", stdout(&pushed));
+    // `add` tests the target with a first backup.
+    assert!(
+        stdout(&added).contains("backed up to"),
+        "{}",
+        stdout(&added)
+    );
+    assert!(stdout(&added).contains("machines/"), "{}", stdout(&added));
     let again = tsk(&laptop, &["backup"]);
     assert!(stdout(&again).contains("up to date"), "{}", stdout(&again));
 
     let fresh = root.0.join("new-laptop");
     let added = tsk(&fresh, &["backup", "add", "--git", repo_arg]);
     assert_eq!(added.status.code(), Some(0), "{}", stderr(&added));
+    assert!(
+        stdout(&added).contains("reached the repository"),
+        "{}",
+        stdout(&added)
+    );
+    let fresh_config = fs::read(fresh.join("config.toml")).expect("fresh config");
     let listed = tsk(&fresh, &["restore"]);
     assert_eq!(listed.status.code(), Some(0), "{}", stderr(&listed));
     let table = stdout(&listed);
@@ -185,6 +195,17 @@ fn a_git_target_restores_into_a_fresh_state_dir() {
     let restored = tsk(&fresh, &["restore", id]);
     assert_eq!(restored.status.code(), Some(0), "{}", stderr(&restored));
     assert!(stdout(&restored).starts_with(&format!("restored {id}")));
+    // Restore leaves config.toml alone and says where the backed-up one is.
+    assert!(
+        stdout(&restored).contains("config.toml was not changed")
+            && stdout(&restored).contains("machines/"),
+        "{}",
+        stdout(&restored)
+    );
+    assert_eq!(
+        fs::read(fresh.join("config.toml")).expect("config"),
+        fresh_config
+    );
     assert_eq!(
         fs::read(fresh.join("tsk.json")).expect("restored"),
         fs::read(laptop.join("tsk.json")).expect("original")
@@ -195,6 +216,68 @@ fn a_git_target_restores_into_a_fresh_state_dir() {
     let unknown = tsk(&fresh, &["restore", "deadbeef"]);
     assert_eq!(unknown.status.code(), Some(1));
     assert!(stderr(&unknown).contains("unknown version"));
+    assert!(!stderr(&unknown).contains("trash restore"));
+    let task = tsk(&fresh, &["restore", "T12"]);
+    assert_eq!(task.status.code(), Some(1));
+    assert!(
+        stderr(&task).contains("did you mean `tsk trash restore T12`?"),
+        "{}",
+        stderr(&task)
+    );
+}
+
+#[test]
+fn backup_add_tests_the_target_and_keeps_it_when_the_first_backup_fails() {
+    let state = TempDir::new("add-test");
+    add(&state.0, "needs a home");
+    let missing = state.0.join("no-such-repo.git");
+    let added = tsk(
+        &state.0,
+        &["backup", "add", "--git", missing.to_str().expect("utf-8")],
+    );
+    assert_eq!(added.status.code(), Some(1), "{}", stdout(&added));
+    assert!(
+        stderr(&added).contains("the first backup to"),
+        "{}",
+        stderr(&added)
+    );
+    assert!(
+        stderr(&added).contains("git clone failed"),
+        "{}",
+        stderr(&added)
+    );
+    assert!(
+        stderr(&added).contains("then run `tsk backup`"),
+        "{}",
+        stderr(&added)
+    );
+    let listed = stdout(&tsk(&state.0, &["backup", "list"]));
+    assert!(
+        listed.contains("no-such-repo.git"),
+        "the target is kept: {listed}"
+    );
+
+    let folder = TempDir::new("add-test-folder");
+    let added = tsk(
+        &state.0,
+        &["backup", "add", folder.0.to_str().expect("utf-8")],
+    );
+    assert_eq!(added.status.code(), Some(0), "{}", stderr(&added));
+    assert!(
+        stdout(&added).contains("backed up to"),
+        "{}",
+        stdout(&added)
+    );
+    assert!(
+        stdout(&added).contains("check your sync app"),
+        "{}",
+        stdout(&added)
+    );
+    assert_eq!(
+        copies(&folder.0).len(),
+        1,
+        "the first copy is written by add"
+    );
 }
 
 #[test]

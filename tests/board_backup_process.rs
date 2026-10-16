@@ -47,8 +47,8 @@ fn seeded(root: &Path, every: &str) -> (PathBuf, PathBuf, String) {
             every,
         ],
     );
+    // `backup add` writes the first copy.
     assert_eq!(target.status.code(), Some(0));
-    assert_eq!(tsk(&state, &["backup"]).status.code(), Some(0));
     let listed = String::from_utf8_lossy(&tsk(&state, &["restore"]).stdout).into_owned();
     let id = listed
         .lines()
@@ -109,4 +109,20 @@ fn an_open_quick_capture_blocks_restore() {
     let mut session = pty::Session::spawn(root, &cwd, &["capture"], &[], 24, 78);
     session.output_until("cancel");
     assert_restore_refused(&state, &id);
+}
+
+#[test]
+fn a_board_with_ten_tasks_and_no_target_suggests_a_first_backup() {
+    let root = pty::scratch_root("nudge");
+    let state = root.join("state");
+    for n in 0..10 {
+        let added = tsk(&state, &["add", "-t", &format!("task {n}"), "--desk"]);
+        assert_eq!(added.status.code(), Some(0));
+    }
+    let cwd = root.clone();
+    let mut session = pty::Session::spawn(root, &cwd, &[], &[], 30, 100);
+    // The board paints word by word; "backup" is only in the suggestion.
+    session.output_until("backup");
+    let status = fs::read_to_string(state.join("backup-status.json")).expect("recorded");
+    assert!(status.contains("\"nudged\": true"), "{status}");
 }

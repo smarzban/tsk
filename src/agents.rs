@@ -147,18 +147,25 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 
 # --- Backups ------------------------------------------------------------------
 
-# Copies of tsk.json to a folder (iCloud Drive, Dropbox, a USB disk) or a git
-# repository. `tsk backup add <folder|git-url>` writes these entries; `tsk
-# backup list` shows how each went; `tsk restore` puts a copy back. Backups hold
-# your task notes, so keep the folder or repository private.
+# Copies of tsk.json (and this file) to a folder (iCloud Drive, Dropbox,
+# OneDrive, Google Drive, a USB disk) or a git repository. `tsk backup add
+# <folder|git-url>` writes these entries and runs a first backup; `tsk backup
+# list` shows how each went; `tsk restore` puts a copy back. Backups hold your
+# task notes, so keep the folder or repository private.
 #   every      "save", "open" (board open), "daily", or "twice-daily"
 #              (default: "save" for a folder, "daily" for git)
 #   keep_last  folder only: the newest copies kept (default 10)
-#   keep_days  folder only: also one copy a day for this many days (default 7)
+#   keep_days  folder only: also the first copy of each day for this many
+#              days (default 30)
 # [[backup]]
 # kind = "folder"
 # path = "/Users/you/Library/Mobile Documents/com~apple~CloudDocs/tsk"
 # every = "save"
+
+# On Windows, a OneDrive folder (a literal string keeps the backslashes):
+# [[backup]]
+# kind = "folder"
+# path = 'C:\Users\you\OneDrive\tsk'
 "##;
 
 /// Seed the commented profile examples on a full board open.

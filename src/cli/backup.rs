@@ -236,9 +236,58 @@ fn backup_add(
             );
             if outcome == AddOutcome::Added {
                 stdout.push_str("Backups contain your task notes: keep the target private.\n");
-                stdout.push_str("Run `tsk backup` to back up now.\n");
             }
-            output(stdout, String::new(), 0)
+            // Test the target now with a first backup, so a wrong path, URL, or missing access
+            // shows here rather than at the first restore.
+            let index = backup::load_targets(state_dir)
+                .ok()
+                .and_then(|targets| {
+                    targets
+                        .iter()
+                        .position(|t| t.kind == target.kind && t.location == target.location)
+                })
+                .unwrap_or(0);
+            let result = backup::run(state_dir, RunMode::One(index), SystemTime::now()).and_then(
+                |mut results| {
+                    results
+                        .pop()
+                        .map(|(_, result)| result)
+                        .unwrap_or(Err("the target is no longer in config.toml".into()))
+                },
+            );
+            match result {
+                Ok(outcome) => {
+                    stdout.push_str(&match outcome {
+                        RunOutcome::Written(place) => {
+                            format!("backed up to {}\n", terminal_text(&place))
+                        }
+                        RunOutcome::UpToDate => "the target is up to date\n".into(),
+                        RunOutcome::NoStore if target.kind == Kind::Git => {
+                            "reached the repository; nothing to back up yet\n".into()
+                        }
+                        _ => "nothing to back up yet\n".into(),
+                    });
+                    if target.kind == Kind::Folder {
+                        stdout.push_str(
+                            "tsk only writes the copy into this folder: check your sync app (iCloud, Dropbox, OneDrive, Google Drive) shows it uploaded.\n",
+                        );
+                    }
+                    output(stdout, String::new(), 0)
+                }
+                Err(error) => output(
+                    stdout,
+                    format!(
+                        "tsk backup: the first backup to {} failed: {}\nThe target is saved. Fix the {}, then run `tsk backup`.\n",
+                        terminal_text(&target.location),
+                        terminal_text(&error),
+                        match target.kind {
+                            Kind::Folder => "folder",
+                            Kind::Git => "URL or your git access",
+                        }
+                    ),
+                    1,
+                ),
+            }
         }
         Err(error) => refused("backup", &error),
     }
@@ -376,6 +425,12 @@ pub fn run_restore<R: Read>(args: Vec<String>, stdin: &mut R, stdin_is_tty: bool
                 "tsk restore: unknown version {}; run tsk restore to list them\n",
                 terminal_text(&id)
             ));
+            if looks_like_task(&id) {
+                stderr.push_str(&format!(
+                    "did you mean `tsk trash restore {}`?\n",
+                    terminal_text(&id)
+                ));
+            }
             return output(String::new(), stderr, 1);
         };
         let mut result = restore_version(&state_dir, version);
@@ -423,6 +478,15 @@ pub fn run_restore<R: Read>(args: Vec<String>, stdin: &mut R, stdin_is_tty: bool
         Some(version) => restore_version(&state_dir, version),
         None => refused("restore", &format!("unknown version {answer}")),
     }
+}
+
+/// `T12`, `t12`, or `12`: a task address, never a version id (eight hex characters).
+fn looks_like_task(word: &str) -> bool {
+    let digits = word
+        .strip_prefix('T')
+        .or_else(|| word.strip_prefix('t'))
+        .unwrap_or(word);
+    !digits.is_empty() && digits.len() < 8 && digits.bytes().all(|b| b.is_ascii_digit())
 }
 
 fn version_table(versions: &[Version]) -> String {
@@ -485,6 +549,13 @@ fn restore_version(state_dir: &std::path::Path, version: &Version) -> CliOutput 
                 stdout.push_str(&format!(
                     "the store it replaced is saved as {}\n",
                     terminal_text(&kept.display().to_string())
+                ));
+            }
+            // Restore never touches config.toml: say where the backed-up one is.
+            if let Some(config) = backup::version_config(version) {
+                stdout.push_str(&format!(
+                    "config.toml was not changed; the one backed up with this version is at {}\n",
+                    terminal_text(&config)
                 ));
             }
             output(stdout, String::new(), 0)

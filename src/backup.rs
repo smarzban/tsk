@@ -42,7 +42,9 @@ const FOLDER_ROOT: &str = "tsk-backups";
 pub(crate) const STATUS_TEMP_PREFIX: &str = ".backup-status.json.tmp.";
 
 pub const DEFAULT_KEEP_LAST: usize = 10;
-pub const DEFAULT_KEEP_DAYS: usize = 7;
+pub const DEFAULT_KEEP_DAYS: usize = 30;
+/// The board suggests a first backup target once, when the store holds this many tasks.
+pub const NUDGE_AFTER_TASKS: usize = 10;
 /// A git target is listed with this many versions per machine unless `--all` asks for more.
 pub const GIT_VERSIONS_SHOWN: usize = 20;
 const GIT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -471,6 +473,9 @@ pub struct TargetStatus {
 struct StatusFile {
     #[serde(default)]
     targets: BTreeMap<String, TargetStatus>,
+    /// The board already suggested adding a first target.
+    #[serde(default)]
+    nudged: bool,
 }
 
 fn load_status(state_dir: &Path) -> StatusFile {
@@ -547,6 +552,34 @@ pub fn take_unshown_error(state_dir: &Path) -> Option<String> {
     .flatten()
 }
 
+/// The one-time suggestion to add a first target: once the store holds
+/// [`NUDGE_AFTER_TASKS`] tasks and no target is configured, the first call says so and records
+/// it; every later call, and any call while a target exists or `config.toml` is broken, is
+/// `None`. `None` too while a run holds the lock.
+pub fn take_backup_nudge(state_dir: &Path, tasks: usize) -> Option<String> {
+    if tasks < NUDGE_AFTER_TASKS
+        || !matches!(load_targets(state_dir), Ok(targets) if targets.is_empty())
+    {
+        return None;
+    }
+    if load_status(state_dir).nudged {
+        return None;
+    }
+    with_run_lock(state_dir, false, || {
+        let mut status = load_status(state_dir);
+        if status.nudged {
+            return Ok(None);
+        }
+        status.nudged = true;
+        save_status(state_dir, &status)?;
+        Ok(Some(
+            "No backup yet: tsk backup add <folder|git-url>".to_string(),
+        ))
+    })
+    .ok()
+    .flatten()
+}
+
 /// Whether `target` should back up now. `save` and `open` targets follow their trigger;
 /// `daily` and `twice-daily` are due on either trigger once 24 or 12 hours have passed since
 /// their last success, and a failed attempt is retried after ten minutes.
@@ -571,8 +604,8 @@ pub fn is_due(every: Every, trigger: Trigger, status: &TargetStatus, now: u64) -
 /// `n` for `-n`), so copies made within one second still order and count one by one.
 pub type CopyKey = (u64, u32);
 
-/// The copies a folder target keeps: the `keep_last` newest, plus the newest of each of the
-/// `keep_days` UTC days ending today.
+/// The copies a folder target keeps: the `keep_last` newest, plus the first of each of the
+/// `keep_days` UTC days ending today (the store as it was before that day's changes).
 pub fn retention_keep(
     copies: &[CopyKey],
     now: u64,
@@ -588,7 +621,11 @@ pub fn retention_keep(
         let Some(day) = today.checked_sub(back) else {
             break;
         };
-        if let Some(copy) = newest_first.iter().find(|copy| copy.0 / DAY_SECS == day) {
+        if let Some(copy) = newest_first
+            .iter()
+            .rev()
+            .find(|copy| copy.0 / DAY_SECS == day)
+        {
             keep.insert(*copy);
         }
     }
@@ -679,6 +716,8 @@ pub enum RunMode {
     Now,
     /// Only due targets whose copy is out of date (the background run).
     Due(Trigger),
+    /// The one target at this index of `[[backup]]`, now (`tsk backup add` tests it).
+    One(usize),
 }
 
 /// One target and what a run did for it.
@@ -695,7 +734,7 @@ pub enum RunOutcome {
     /// The target already holds this store.
     UpToDate,
     NotDue,
-    /// There is no `tsk.json` yet.
+    /// There is no `tsk.json` yet. A git target was still reached (cloned or fetched).
     NoStore,
 }
 
@@ -704,7 +743,10 @@ pub enum RunOutcome {
 /// slot; a run that finds the slot taken exits, and the waiter, once it holds the run lock,
 /// backs up for every trigger recorded until then, its own included.
 pub fn run(state_dir: &Path, mode: RunMode, now: SystemTime) -> Result<Vec<TargetRun>, String> {
-    let targets = load_targets(state_dir)?;
+    let mut targets = load_targets(state_dir)?;
+    if let RunMode::One(index) = mode {
+        targets = targets.into_iter().skip(index).take(1).collect();
+    }
     if targets.is_empty() {
         return Ok(Vec::new());
     }
@@ -727,7 +769,7 @@ pub fn run(state_dir: &Path, mode: RunMode, now: SystemTime) -> Result<Vec<Targe
     let _run = LockGuard(run_lock);
     drop(_pending);
     let triggers: Vec<Trigger> = match mode {
-        RunMode::Now => Vec::new(),
+        RunMode::Now | RunMode::One(_) => Vec::new(),
         RunMode::Due(own) => {
             let mut triggers = vec![own];
             for trigger in [Trigger::Save, Trigger::Open] {
@@ -744,14 +786,40 @@ pub fn run(state_dir: &Path, mode: RunMode, now: SystemTime) -> Result<Vec<Targe
     let bytes = match fs::read(state_dir.join("tsk.json")) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            // Nothing to copy, but a git target is still reached, so a bad URL or missing
+            // access shows now rather than at the first backup.
             return Ok(targets
                 .into_iter()
-                .map(|target| (target, Ok(RunOutcome::NoStore)))
-                .collect())
+                .map(|target| {
+                    let reached = match (mode, target.kind) {
+                        (RunMode::Due(_), _) | (_, Kind::Folder) => Ok(RunOutcome::NoStore),
+                        (_, Kind::Git) => {
+                            sync_clone(state_dir, &target).map(|_| RunOutcome::NoStore)
+                        }
+                    };
+                    (target, reached)
+                })
+                .collect());
         }
         Err(error) => return Err(format!("could not read tsk.json: {error}")),
     };
-    let hash = format!("{:016x}", fnv1a(&bytes));
+    // A damaged store is never copied over good backups.
+    let invalid = crate::store::check_document(&bytes)
+        .err()
+        .map(|error| format!("store does not parse, not backed up: {error}"));
+    let config = match fs::read(state_dir.join("config.toml")) {
+        Ok(config) => Some(config),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!("could not read config.toml: {error}")),
+    };
+    let copy = Payload {
+        store: &bytes,
+        config: config.as_deref(),
+    };
+    let mut hashed = bytes.clone();
+    hashed.extend_from_slice(b"\0config.toml\0");
+    hashed.extend_from_slice(config.as_deref().unwrap_or_default());
+    let hash = format!("{:016x}", fnv1a(&hashed));
     let machine = machine_name(state_dir).map_err(|error| error.to_string())?;
     let mut status = load_status(state_dir);
     let now_secs = unix_secs(now);
@@ -766,6 +834,15 @@ pub fn run(state_dir: &Path, mode: RunMode, now: SystemTime) -> Result<Vec<Targe
                 results.push((target, Ok(RunOutcome::NotDue)));
                 continue;
             }
+        }
+        if let Some(error) = &invalid {
+            record.last_attempt = Some(now_secs);
+            record.last_error = Some(error.clone());
+            record.error_shown = false;
+            results.push((target, Err(error.clone())));
+            continue;
+        }
+        if let RunMode::Due(_) = mode {
             if record.last_hash.as_deref() == Some(hash.as_str()) && record.last_error.is_none() {
                 record.last_success = Some(now_secs);
                 results.push((target, Ok(RunOutcome::UpToDate)));
@@ -774,8 +851,8 @@ pub fn run(state_dir: &Path, mode: RunMode, now: SystemTime) -> Result<Vec<Targe
         }
         record.last_attempt = Some(now_secs);
         let outcome = match target.kind {
-            Kind::Folder => backup_to_folder(&target, &machine, &bytes, now),
-            Kind::Git => backup_to_git(state_dir, &target, &machine, &bytes, now),
+            Kind::Folder => backup_to_folder(&target, &machine, &copy, now),
+            Kind::Git => backup_to_git(state_dir, &target, &machine, &copy, now),
         };
         match &outcome {
             Ok(_) => {
@@ -800,10 +877,38 @@ fn trigger_flag(state_dir: &Path, trigger: Trigger) -> PathBuf {
     state_dir.join(format!("{TRIGGER_FLAG_PREFIX}{}", trigger.word()))
 }
 
+/// What one backup writes: the store, and `config.toml` beside it when there is one.
+struct Payload<'a> {
+    store: &'a [u8],
+    config: Option<&'a [u8]>,
+}
+
+/// Write `bytes` to `path` the way every folder copy is written: a private (`0600` on Unix)
+/// temp file beside it, synced, then renamed, so a sync client never uploads half a copy.
+fn write_private_copy(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let tmp = dir.join(format!(
+        ".tsk-backup.tmp.{}.{}",
+        std::process::id(),
+        now_nanos()
+    ));
+    let result = (|| -> io::Result<()> {
+        let mut file = fsperm::create_private_file(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
 fn backup_to_folder(
     target: &Target,
     machine: &str,
-    bytes: &[u8],
+    copy: &Payload<'_>,
     now: SystemTime,
 ) -> Result<RunOutcome, String> {
     let root = Path::new(&target.location);
@@ -823,37 +928,34 @@ fn backup_to_folder(
         .map(|((_, suffix), _)| suffix + 1)
         .max()
         .unwrap_or(0);
-    let name = |suffix: u32| match suffix {
-        0 => format!("tsk-{stamp}.json"),
-        n => format!("tsk-{stamp}-{n}.json"),
+    let names = |suffix: u32| {
+        let tail = match suffix {
+            0 => stamp.clone(),
+            n => format!("{stamp}-{n}"),
+        };
+        (
+            dir.join(format!("tsk-{tail}.json")),
+            dir.join(format!("config-{tail}.toml")),
+        )
     };
-    let mut path = dir.join(name(suffix));
-    while fs::symlink_metadata(&path).is_ok() {
+    let (mut path, mut config_path) = names(suffix);
+    while fs::symlink_metadata(&path).is_ok() || fs::symlink_metadata(&config_path).is_ok() {
         suffix += 1;
-        path = dir.join(name(suffix));
+        (path, config_path) = names(suffix);
     }
-    // Written whole beside the target, then renamed, so a sync client never uploads half a copy.
-    let tmp = dir.join(format!(
-        ".tsk-backup.tmp.{}.{}",
-        std::process::id(),
-        now_nanos()
-    ));
-    let result = (|| -> io::Result<()> {
-        let mut file = fsperm::create_private_file(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&tmp, &path)
-    })();
-    if let Err(error) = result {
-        let _ = fs::remove_file(&tmp);
-        return Err(format!("could not write {}: {error}", path.display()));
+    // The config twin first: a store copy is listed as soon as it exists.
+    if let Some(config) = copy.config {
+        write_private_copy(&config_path, config)
+            .map_err(|error| format!("could not write {}: {error}", config_path.display()))?;
     }
+    write_private_copy(&path, copy.store)
+        .map_err(|error| format!("could not write {}: {error}", path.display()))?;
     prune_folder(&dir, unix_secs(now), target.keep_last, target.keep_days);
     Ok(RunOutcome::Written(path.display().to_string()))
 }
 
-/// Delete the copies [`retention_keep`] does not keep. Other files are left alone.
+/// Delete the copies [`retention_keep`] does not keep, each with its `config-` twin, and any
+/// config copy whose store copy is gone. Other files are left alone.
 fn prune_folder(dir: &Path, now: u64, keep_last: usize, keep_days: usize) {
     let copies = folder_copies(dir);
     let keys: Vec<CopyKey> = copies.iter().map(|(key, _)| *key).collect();
@@ -863,10 +965,28 @@ fn prune_folder(dir: &Path, now: u64, keep_last: usize, keep_days: usize) {
             let _ = fs::remove_file(path);
         }
     }
+    for (key, path) in stamped_files(dir, "config-", ".toml") {
+        if !keep.contains(&key) {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+/// The `config-` twin of a folder store copy, when it exists.
+fn config_twin(store_copy: &Path) -> Option<PathBuf> {
+    let name = store_copy.file_name()?.to_str()?;
+    let tail = name.strip_prefix("tsk-")?.strip_suffix(".json")?;
+    let twin = store_copy.with_file_name(format!("config-{tail}.toml"));
+    twin.is_file().then_some(twin)
 }
 
 /// `tsk-<stamp>[-<n>].json` copies in one machine directory with their keys.
 fn folder_copies(dir: &Path) -> Vec<(CopyKey, PathBuf)> {
+    stamped_files(dir, "tsk-", ".json")
+}
+
+/// `<prefix><stamp>[-<n>]<suffix>` files in one directory with their keys.
+fn stamped_files(dir: &Path, prefix: &str, extension: &str) -> Vec<(CopyKey, PathBuf)> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -874,7 +994,10 @@ fn folder_copies(dir: &Path) -> Vec<(CopyKey, PathBuf)> {
         .flatten()
         .filter_map(|entry| {
             let name = entry.file_name();
-            let stem = name.to_str()?.strip_prefix("tsk-")?.strip_suffix(".json")?;
+            let stem = name
+                .to_str()?
+                .strip_prefix(prefix)?
+                .strip_suffix(extension)?;
             // `<stamp>` or a same-second `<stamp>-<n>`.
             let stamp = parse_utc_stamp(stem.get(..16)?)?;
             let rest = &stem[16..];
@@ -900,11 +1023,12 @@ fn backup_to_git(
     state_dir: &Path,
     target: &Target,
     machine: &str,
-    bytes: &[u8],
+    copy: &Payload<'_>,
     now: SystemTime,
 ) -> Result<RunOutcome, String> {
     let clone = sync_clone(state_dir, target)?;
     let relative = format!("machines/{machine}/tsk.json");
+    let config_relative = format!("machines/{machine}/config.toml");
     let mut last_error = String::new();
     for attempt in 0..2 {
         if attempt > 0 {
@@ -929,11 +1053,22 @@ fn backup_to_git(
                 ],
             )?;
         }
-        write_in_clone(&clone.dir, &relative, bytes)?;
+        write_in_clone(&clone.dir, &relative, copy.store)?;
         git_ok(&clone.dir, &["add", "--", &relative])?;
+        if let Some(config) = copy.config {
+            write_in_clone(&clone.dir, &config_relative, config)?;
+            git_ok(&clone.dir, &["add", "--", &config_relative])?;
+        }
         let staged = git(
             &clone.dir,
-            &["diff", "--cached", "--quiet", "--", &relative],
+            &[
+                "diff",
+                "--cached",
+                "--quiet",
+                "--",
+                &relative,
+                &config_relative,
+            ],
         )?;
         if !staged.status.success() {
             let message = format!(
@@ -1312,6 +1447,22 @@ fn git_versions(state_dir: &Path, target: &Target, all: bool) -> Result<Vec<Vers
     Ok(versions)
 }
 
+/// Where the `config.toml` backed up with `version` can be read, for people: a file path, or
+/// the git command that prints it. `None` when the version has none.
+pub fn version_config(version: &Version) -> Option<String> {
+    match &version.source {
+        Source::File(path) => config_twin(path).map(|twin| twin.display().to_string()),
+        Source::Git { dir, commit, path } => {
+            let config = format!("{}/config.toml", path.rsplit_once('/')?.0);
+            let spec = format!("{commit}:{config}");
+            git(dir, &["cat-file", "-e", &spec])
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|_| format!("git -C \"{}\" show {spec}", dir.display()))
+        }
+    }
+}
+
 /// The bytes of one listed version.
 pub fn read_version(version: &Version) -> Result<Vec<u8>, String> {
     read_source(&version.source)
@@ -1616,13 +1767,14 @@ mod tests {
         let keys: Vec<CopyKey> = (0..17u32)
             .map(|n| (now - 6 + u64::from(n / 3), n % 3))
             .collect();
-        let keep = retention_keep(&keys, now, 10, 7);
         let mut newest_first = keys.clone();
         newest_first.sort_unstable_by(|a, b| b.cmp(a));
-        assert_eq!(
-            keep,
-            newest_first[..10].iter().copied().collect::<BTreeSet<_>>()
-        );
+        let newest_ten: BTreeSet<CopyKey> = newest_first[..10].iter().copied().collect();
+        assert_eq!(retention_keep(&keys, now, 10, 0), newest_ten);
+        // With day slots, the day's first copy, (s, 0), is kept too.
+        let mut with_first = newest_ten.clone();
+        with_first.insert(keys[0]);
+        assert_eq!(retention_keep(&keys, now, 10, 7), with_first);
     }
 
     #[test]
@@ -1631,21 +1783,24 @@ mod tests {
         let folder = TempDir::new("burst-folder");
         folder_config(&state.0, &folder.0, "");
         let start = 400 * DAY;
+        let mut written = Vec::new();
         for n in 0..17u64 {
-            write_store(&state.0, &format!("{{\"n\":{n}}}"));
+            written.push(write_store(&state.0, &format!("n{n}")));
             run(&state.0, RunMode::Now, at(start + n / 3)).expect("run");
         }
         let machine = machine_name(&state.0).expect("machine");
+        // The newest ten, and the day's first copy.
         assert_eq!(
             folder_copies(&folder.0.join(FOLDER_ROOT).join(&machine)).len(),
-            10
+            11
         );
         let (versions, _) = list_versions(&state.0, false).expect("versions");
-        let bodies: Vec<String> = versions
+        let bodies: Vec<Vec<u8>> = versions
             .iter()
-            .map(|version| String::from_utf8(read_version(version).expect("read")).expect("utf-8"))
+            .map(|version| read_version(version).expect("read"))
             .collect();
-        let expected: Vec<String> = (7..17u64).rev().map(|n| format!("{{\"n\":{n}}}")).collect();
+        let mut expected: Vec<Vec<u8>> = written[7..].iter().rev().cloned().collect();
+        expected.push(written[0].clone());
         assert_eq!(
             bodies, expected,
             "same-second copies list newest suffix first"
@@ -1653,7 +1808,7 @@ mod tests {
     }
 
     #[test]
-    fn retention_keeps_the_newest_ten_plus_one_per_day_for_seven_days() {
+    fn retention_keeps_the_newest_ten_plus_the_first_copy_of_each_day() {
         let now = 100 * DAY + 12 * HOUR;
         // Twelve copies an hour apart today, then two a day for the ten days before.
         let mut stamps: Vec<u64> = (0..12).map(|hour| now - hour * HOUR).collect();
@@ -1666,21 +1821,21 @@ mod tests {
         for stamp in &newest_ten {
             assert!(keep.contains(stamp));
         }
-        // Today's newest is already among the ten; days 1..=6 each keep their newest only.
+        // Today's first copy is kept beside the newest ten; days 1..=6 each keep their first
+        // copy (the store before that day's changes) only.
+        assert!(keep.contains(&(now - 11 * HOUR)), "today's first copy");
         for day in 1..=6 {
-            assert!(keep.contains(&(now - day * DAY)), "day {day}");
-            assert!(
-                !keep.contains(&(now - day * DAY - HOUR)),
-                "day {day} older copy"
-            );
+            assert!(keep.contains(&(now - day * DAY - HOUR)), "day {day}");
+            assert!(!keep.contains(&(now - day * DAY)), "day {day} later copy");
         }
         for day in 7..=10 {
             assert!(
-                !keep.contains(&(now - day * DAY)),
+                !keep.contains(&(now - day * DAY - HOUR)),
                 "day {day} is past the window"
             );
         }
-        assert_eq!(keep.len(), 10 + 6);
+        assert_eq!(keep.len(), 10 + 1 + 6);
+        assert_eq!(DEFAULT_KEEP_DAYS, 30);
     }
 
     #[test]
@@ -1777,7 +1932,7 @@ url = "git@example.com:me/tsk.git"
         .expect("parses");
         assert_eq!(targets.len(), 3);
         assert_eq!(targets[0].every, Every::Save);
-        assert_eq!((targets[0].keep_last, targets[0].keep_days), (10, 7));
+        assert_eq!((targets[0].keep_last, targets[0].keep_days), (10, 30));
         assert_eq!(targets[1].every, Every::Daily);
         assert_eq!((targets[1].keep_last, targets[1].keep_days), (3, 0));
         assert_eq!(
@@ -1832,11 +1987,12 @@ url = "git@example.com:me/tsk.git"
             .collect::<Vec<_>>()
             .join("\n");
         let targets = parse_targets(&uncommented).expect("example parses");
-        assert_eq!(targets.len(), 1);
+        assert_eq!(targets.len(), 2);
         assert_eq!(
             (targets[0].kind, targets[0].every),
             (Kind::Folder, Every::Save)
         );
+        assert_eq!(targets[1].location, r"C:\Users\you\OneDrive\tsk");
     }
 
     #[test]
@@ -1939,8 +2095,21 @@ url = "git@example.com:me/tsk.git"
         assert_eq!(count_tasks(b"nope"), None);
     }
 
-    fn write_store(dir: &Path, body: &str) {
-        fs::write(dir.join("tsk.json"), body).expect("store");
+    /// Write a valid store holding one task titled `title`; returns its bytes.
+    fn write_store(dir: &Path, title: &str) -> Vec<u8> {
+        let mut state = crate::domain::DomainState::new();
+        state
+            .create(
+                title,
+                None,
+                crate::domain::TaskScope::Global,
+                crate::domain::ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create");
+        let bytes = serde_json::to_vec_pretty(&state).expect("json");
+        fs::write(dir.join("tsk.json"), &bytes).expect("store");
+        bytes
     }
 
     #[test]
@@ -1960,8 +2129,9 @@ url = "git@example.com:me/tsk.git"
             run(&state.0, RunMode::Due(Trigger::Save), at(now)).expect("run")[0].1,
             Ok(RunOutcome::NoStore)
         );
-        for (index, body) in ["{\"a\":1}", "{\"a\":2}", "{\"a\":3}"].iter().enumerate() {
-            write_store(&state.0, body);
+        let mut last = Vec::new();
+        for (index, body) in ["a1", "a2", "a3"].iter().enumerate() {
+            last = write_store(&state.0, body);
             let results = run(
                 &state.0,
                 RunMode::Due(Trigger::Save),
@@ -1987,7 +2157,7 @@ url = "git@example.com:me/tsk.git"
         let (versions, failures) = list_versions(&state.0, false).expect("versions");
         assert!(failures.is_empty());
         assert_eq!(versions.len(), 2);
-        assert_eq!(read_version(&versions[0]).expect("read"), b"{\"a\":3}");
+        assert_eq!(read_version(&versions[0]).expect("read"), last);
         assert_eq!(versions[0].machine, machine);
     }
 
@@ -1999,7 +2169,7 @@ url = "git@example.com:me/tsk.git"
             "[[backup]]\nkind = \"folder\"\npath = \"/nonexistent/tsk-backup-target\"\n",
         )
         .expect("config");
-        write_store(&state.0, "{}");
+        write_store(&state.0, "x");
         let results = run(&state.0, RunMode::Now, at(DAY)).expect("run");
         assert!(results[0]
             .1
@@ -2031,7 +2201,7 @@ url = "git@example.com:me/tsk.git"
         let state = TempDir::new("union-state");
         let folder = TempDir::new("union-folder");
         folder_config(&state.0, &folder.0, "every = \"save\"\n");
-        write_store(&state.0, "{\"a\":1}");
+        write_store(&state.0, "a1");
         // A waiter holds the slot when a save's run arrives: that run exits at once.
         let slot = open_lock(&state.0, PENDING_LOCK_FILE).expect("slot");
         slot.try_lock().expect("take the slot");
@@ -2054,9 +2224,9 @@ url = "git@example.com:me/tsk.git"
         let state = TempDir::new("same-second-state");
         let folder = TempDir::new("same-second-folder");
         folder_config(&state.0, &folder.0, "");
-        write_store(&state.0, "{\"a\":1}");
+        write_store(&state.0, "a1");
         run(&state.0, RunMode::Now, at(DAY)).expect("first");
-        write_store(&state.0, "{\"a\":2}");
+        write_store(&state.0, "a2");
         run(&state.0, RunMode::Now, at(DAY)).expect("second");
         let machine = machine_name(&state.0).expect("machine");
         let mut copies = folder_copies(&folder.0.join(FOLDER_ROOT).join(&machine));
@@ -2144,7 +2314,7 @@ url = "git@example.com:me/tsk.git"
                 ),
             )
             .expect("config");
-            write_store(&state, "{\"store\":true}");
+            write_store(&state, "store");
             let _ = run(&state, RunMode::Now, at(DAY)).expect("run");
             assert_eq!(
                 fs::read(&victim).expect("victim"),
@@ -2217,10 +2387,126 @@ url = "git@example.com:me/tsk.git"
         // The unsuffixed copy of this second was pruned; -1 and -2 remain.
         fs::write(dir.join(format!("tsk-{stamp}-1.json")), "{\"n\":1}").expect("copy 1");
         fs::write(dir.join(format!("tsk-{stamp}-2.json")), "{\"n\":2}").expect("copy 2");
-        write_store(&state.0, "{\"n\":3}");
+        let newest = write_store(&state.0, "n3");
         run(&state.0, RunMode::Now, at(now)).expect("run");
         assert!(dir.join(format!("tsk-{stamp}-3.json")).exists());
         let (versions, _) = list_versions(&state.0, false).expect("versions");
-        assert_eq!(read_version(&versions[0]).expect("read"), b"{\"n\":3}");
+        assert_eq!(read_version(&versions[0]).expect("read"), newest);
+    }
+
+    #[test]
+    fn a_store_that_does_not_parse_is_never_copied() {
+        let state = TempDir::new("damaged-state");
+        let folder = TempDir::new("damaged-folder");
+        folder_config(&state.0, &folder.0, "");
+        fs::write(
+            state.0.join("tsk.json"),
+            b"{\"format_version\":13,\"tasks\":7}",
+        )
+        .expect("store");
+        let results = run(&state.0, RunMode::Now, at(DAY)).expect("run");
+        let error = results[0].1.clone().expect_err("refused");
+        assert!(
+            error.starts_with("store does not parse, not backed up"),
+            "{error}"
+        );
+        let machine = machine_name(&state.0).expect("machine");
+        assert!(folder_copies(&folder.0.join(FOLDER_ROOT).join(&machine)).is_empty());
+        assert_eq!(
+            statuses(&state.0).expect("status")[0].1.last_error,
+            Some(error)
+        );
+    }
+
+    #[test]
+    fn config_toml_is_copied_beside_each_store_copy_and_pruned_with_it() {
+        let state = TempDir::new("config-copy-state");
+        let folder = TempDir::new("config-copy-folder");
+        folder_config(&state.0, &folder.0, "keep_last = 1\nkeep_days = 0\n");
+        let config = fs::read(state.0.join("config.toml")).expect("config");
+        write_store(&state.0, "one");
+        run(&state.0, RunMode::Now, at(DAY)).expect("first");
+        write_store(&state.0, "two");
+        run(&state.0, RunMode::Now, at(DAY + 1)).expect("second");
+        let machine = machine_name(&state.0).expect("machine");
+        let dir = folder.0.join(FOLDER_ROOT).join(&machine);
+        let configs = stamped_files(&dir, "config-", ".toml");
+        assert_eq!(configs.len(), 1, "pruned with its store copy: {configs:?}");
+        let (_, store_copy) = folder_copies(&dir).pop().expect("one store copy");
+        let twin = config_twin(&store_copy).expect("twin");
+        assert_eq!(fs::read(&twin).expect("twin"), config);
+        let (versions, _) = list_versions(&state.0, false).expect("versions");
+        assert_eq!(
+            version_config(&versions[0]),
+            Some(twin.display().to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn folder_copies_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let state = TempDir::new("private-state");
+        let folder = TempDir::new("private-folder");
+        folder_config(&state.0, &folder.0, "");
+        write_store(&state.0, "secret notes");
+        run(&state.0, RunMode::Now, at(DAY)).expect("run");
+        let machine = machine_name(&state.0).expect("machine");
+        let dir = folder.0.join(FOLDER_ROOT).join(&machine);
+        let files: Vec<PathBuf> = fs::read_dir(&dir)
+            .expect("dir")
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        assert_eq!(files.len(), 2, "store and config copies: {files:?}");
+        for file in files {
+            let mode = fs::metadata(&file).expect("meta").permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{}", file.display());
+        }
+    }
+
+    #[test]
+    fn the_first_backup_nudge_shows_once_past_ten_tasks_and_never_with_a_target() {
+        let state = TempDir::new("nudge");
+        assert_eq!(take_backup_nudge(&state.0, NUDGE_AFTER_TASKS - 1), None);
+        let message = take_backup_nudge(&state.0, NUDGE_AFTER_TASKS).expect("shown");
+        assert!(message.contains("tsk backup add"), "{message}");
+        assert_eq!(take_backup_nudge(&state.0, 50), None, "only once ever");
+
+        let configured = TempDir::new("nudge-configured");
+        folder_config(&configured.0, &configured.0, "");
+        assert_eq!(take_backup_nudge(&configured.0, 50), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_git_backup_carries_config_toml() {
+        let root = TempDir::new("git-config");
+        let state = root.0.join("state");
+        fs::create_dir_all(&state).expect("state");
+        let remote = root.0.join("remote.git");
+        fs::create_dir_all(&remote).expect("remote");
+        git_in(&remote, &["init", "--quiet", "--bare"]);
+        let config = format!(
+            "[[backup]]\nkind = \"git\"\nurl = {:?}\n",
+            remote.display().to_string()
+        );
+        fs::write(state.join("config.toml"), &config).expect("config");
+        write_store(&state, "with config");
+        let results = run(&state, RunMode::Now, at(DAY)).expect("run");
+        assert!(
+            matches!(results[0].1, Ok(RunOutcome::Written(_))),
+            "{results:?}"
+        );
+        let machine = machine_name(&state).expect("machine");
+        let shown = Command::new("git")
+            .arg("-C")
+            .arg(&remote)
+            .args(["show", &format!("HEAD:machines/{machine}/config.toml")])
+            .output()
+            .expect("git show");
+        assert_eq!(String::from_utf8_lossy(&shown.stdout), config);
+        let (versions, _) = list_versions(&state, false).expect("versions");
+        assert!(version_config(&versions[0]).is_some_and(|hint| hint.contains("config.toml")));
     }
 }

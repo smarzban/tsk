@@ -817,29 +817,7 @@ impl TaskStore {
         document: &[u8],
         now: SystemTime,
     ) -> Result<Option<PathBuf>, RestoreError> {
-        let text = std::str::from_utf8(document)
-            .map_err(|_| RestoreError::Invalid("backup is not UTF-8 text".into()))?;
-        let found = peek_format_version(text).map_err(|error| {
-            RestoreError::Invalid(format!("backup is not a tsk store: {error}"))
-        })?;
-        if found == 0 || found > STORE_FORMAT_VERSION {
-            return Err(RestoreError::Unsupported {
-                found,
-                supported: STORE_FORMAT_VERSION,
-            });
-        }
-        // Parse it the way the next open will, so a damaged copy never replaces the store.
-        let parsed: Result<DomainState, StoreError> = if found < STORE_FORMAT_VERSION {
-            serde_json::from_str(text)
-                .map_err(StoreError::from)
-                .and_then(|document| migrate(document, found))
-                .and_then(|migrated| serde_json::from_value(migrated).map_err(StoreError::from))
-        } else {
-            serde_json::from_str(text).map_err(StoreError::from)
-        };
-        parsed.map_err(|error| {
-            RestoreError::Invalid(format!("backup is not a readable store: {error}"))
-        })?;
+        check_document(document)?;
         fsperm::ensure_private_dir(&self.path).map_err(|e| RestoreError::Store(e.into()))?;
         let presence_path = self.path.join(BOARD_LOCK_FILE);
         let presence =
@@ -901,6 +879,7 @@ impl TaskStore {
             let _ = fs::remove_file(&tmp);
             return Err(RestoreError::Store(error.into()));
         }
+        prune_pre_restore(&self.path);
         Ok(kept)
     }
 
@@ -1124,6 +1103,61 @@ fn is_private_state_name(name: &str) -> bool {
         || name.starts_with(crate::agents::CONFIG_TEMP_PREFIX)
 }
 
+/// Check `document` is a store this binary opens: UTF-8 JSON with a supported
+/// `format_version` that parses (after migrating, when older) the way the next open will.
+/// Restore runs it before a swap and backups before a copy, so neither passes on a damaged
+/// store. Refusals are [`RestoreError::Invalid`] or [`RestoreError::Unsupported`].
+pub fn check_document(document: &[u8]) -> Result<(), RestoreError> {
+    let text = std::str::from_utf8(document)
+        .map_err(|_| RestoreError::Invalid("not UTF-8 text".into()))?;
+    let found = peek_format_version(text)
+        .map_err(|error| RestoreError::Invalid(format!("not a tsk store: {error}")))?;
+    if found == 0 || found > STORE_FORMAT_VERSION {
+        return Err(RestoreError::Unsupported {
+            found,
+            supported: STORE_FORMAT_VERSION,
+        });
+    }
+    let parsed: Result<DomainState, StoreError> = if found < STORE_FORMAT_VERSION {
+        serde_json::from_str(text)
+            .map_err(StoreError::from)
+            .and_then(|document| migrate(document, found))
+            .and_then(|migrated| serde_json::from_value(migrated).map_err(StoreError::from))
+    } else {
+        serde_json::from_str(text).map_err(StoreError::from)
+    };
+    parsed
+        .map(drop)
+        .map_err(|error| RestoreError::Invalid(format!("not a readable store: {error}")))
+}
+
+/// Restores keep this many `tsk.json.pre-restore-*` copies, deleting older ones.
+pub const PRE_RESTORE_KEPT: usize = 5;
+
+/// Delete all but the newest [`PRE_RESTORE_KEPT`] pre-restore copies. Names sort by their UTC
+/// time; a same-second `-<n>` copy sorts after its unsuffixed sibling.
+fn prune_pre_restore(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut copies: Vec<(String, u32, PathBuf)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_str()?.to_string();
+            let rest = name.strip_prefix(PRE_RESTORE_PREFIX)?;
+            let (stamp, suffix) = match rest.split_once('-') {
+                Some((stamp, n)) => (stamp.to_string(), n.parse().ok()?),
+                None => (rest.to_string(), 0),
+            };
+            Some((stamp, suffix, entry.path()))
+        })
+        .collect();
+    copies.sort_by(|a, b| (&b.0, b.1).cmp(&(&a.0, a.1)));
+    for (_, _, path) in copies.into_iter().skip(PRE_RESTORE_KEPT) {
+        let _ = fs::remove_file(path);
+    }
+}
+
 /// A board or quick-capture session's shared hold on `board.lock` (released on drop or exit).
 #[derive(Debug)]
 pub struct BoardPresence {
@@ -1165,7 +1199,7 @@ impl std::fmt::Display for RestoreError {
                 f,
                 "backup is store format {found}, newer than this tsk reads ({supported}); update tsk first"
             ),
-            RestoreError::Invalid(message) => write!(f, "{message}"),
+            RestoreError::Invalid(message) => write!(f, "backup is {message}"),
             RestoreError::Store(error) => write!(f, "{error}"),
         }
     }
@@ -3643,5 +3677,45 @@ mod tests {
             .restore_document(&backup, SystemTime::now())
             .expect("restores once every board quit");
         assert_eq!(titles(&store.load().expect("load")), ["old"]);
+    }
+
+    #[test]
+    fn restore_keeps_only_the_newest_five_replaced_stores() {
+        let dir = temp_dir("restore-prune");
+        let _guard = TempDirGuard(dir.clone());
+        saved_with_titles(&dir, &["one"]);
+        let backup = fs::read(dir.join(STATE_FILE)).expect("bytes");
+        let store = TaskStore::new(&dir);
+        let mut kept = Vec::new();
+        for second in 0..7u64 {
+            let now = UNIX_EPOCH + Duration::from_secs(1_792_135_428 + second);
+            kept.push(
+                store
+                    .restore_document(&backup, now)
+                    .expect("restore")
+                    .expect("kept"),
+            );
+        }
+        let mut left: Vec<PathBuf> = fs::read_dir(&dir)
+            .expect("dir")
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(PRE_RESTORE_PREFIX))
+            })
+            .collect();
+        left.sort();
+        assert_eq!(left, kept[2..].to_vec(), "the newest five stay");
+    }
+
+    #[test]
+    fn a_newer_backup_tells_the_user_to_update_tsk() {
+        let error = check_document(
+            format!(r#"{{"format_version":{}}}"#, STORE_FORMAT_VERSION + 1).as_bytes(),
+        )
+        .expect_err("newer");
+        assert!(error.to_string().contains("update tsk first"), "{error}");
     }
 }

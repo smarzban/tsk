@@ -439,11 +439,11 @@ tsk backup remove 2
 | Action | Effect |
 | --- | --- |
 | `now` (or none) | Back up to every target in the foreground. Prints where each copy went or that a target is up to date; exits 1 if any target failed |
-| `add <folder\|git-url>` | Add a `[[backup]]` entry to `config.toml`, creating the file if needed. A folder must exist and is stored as an absolute path. `--every save\|open\|daily\|twice-daily` sets the frequency (default `save` for a folder, `daily` for git); `--git` or `--folder` says what the location is when tsk cannot tell. Adding an existing target only updates its `every` |
+| `add <folder\|git-url>` | Add a `[[backup]]` entry to `config.toml`, creating the file if needed, then test it with a first backup in the foreground (with no tasks yet, a git target is still cloned). A failed first backup keeps the entry, exits 1, and says what to fix before rerunning `tsk backup`. A folder must exist and is stored as an absolute path. `--every save\|open\|daily\|twice-daily` sets the frequency (default `save` for a folder, `daily` for git); `--git` or `--folder` says what the location is when tsk cannot tell. Adding an existing target only updates its `every` |
 | `list` | Each target with its frequency, last backup, retention, and last error |
 | `remove <target>` | Remove a target by its number in `list`, its path, or its URL. Copies already made stay where they are |
 
-Saves and board opens back up due targets in the background and never fail because of them. Frequencies, layout, retention, and privacy: [backup targets](/docs/storage/#backup-targets).
+Each backup copies `tsk.json` and `config.toml`. Saves and board opens back up due targets in the background and never fail because of them. For a folder, tsk only writes the copy into the folder: check your sync app shows it uploaded. Frequencies, layout, retention, and privacy: [backup targets](/docs/storage/#backup-targets).
 
 ## restore
 
@@ -453,9 +453,9 @@ tsk restore 3f9a1c2e   # restore one version, no prompt
 tsk restore --all      # list every git version, not the newest 20 per machine
 ```
 
-The list shows each version's id, time, machine, task count, and target, newest first. In a terminal, `tsk restore` asks which to restore (a number or an id; Enter cancels); otherwise it prints the list and changes nothing. A restore keeps the replaced store as `tsk.json.pre-restore-<UTC time>` and prints its path.
+The list shows each version's id, time, machine, task count, and target, newest first. In a terminal, `tsk restore` asks which to restore (a number or an id; Enter cancels); otherwise it prints the list and changes nothing. A restore keeps the replaced store as `tsk.json.pre-restore-<UTC time>` (the newest five are kept) and prints its path. It never changes `config.toml`; it prints where the one backed up with that version is. `tsk restore T12` is not a version: it suggests `tsk trash restore T12`.
 
-`tsk restore` exits 1, replacing nothing, when there are no targets, the id is unknown, a board or quick capture is open on the store, or the version's store format is newer than this tsk (or it is not a store). A target it cannot read is reported on stderr and the others are still listed. [Restore](/docs/storage/#restore).
+`tsk restore` exits 1, replacing nothing, when there are no targets, the id is unknown, a board or quick capture is open on the store, or the version's store format is newer than this tsk (it says to update tsk) or it is not a store. A target it cannot read is reported on stderr and the others are still listed. [Restore](/docs/storage/#restore).
 
 ## help and version
 
