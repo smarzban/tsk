@@ -40,7 +40,7 @@ Use `--json` on `add`, `list`, or `clean` for machine-readable output. Read the 
 | `tsk archive` / `tsk unarchive` | Hide or restore a task |
 | `tsk project archive` / `tsk project unarchive` | Hide or restore a project |
 | `tsk trash restore` | Restore a task from trash |
-| `tsk backup` | Back the store up to folders or git repositories; add, list, or remove targets |
+| `tsk backup` | Back the store up to a git repository; set up GitHub, add, list, or remove targets |
 | `tsk restore` | List backed-up versions of the store, or put one back |
 | `tsk setup` | Configure Herdr or install an agent skill |
 | `tsk update` | Upgrade an installer-managed copy, or print Homebrew guidance |
@@ -428,9 +428,10 @@ Recent deletions may still be in the main store; use board undo until they move 
 ## backup
 
 ```sh
-tsk backup add ~/Dropbox/tsk                      # folder target, every save
-tsk backup add git@github.com:me/tsk-backup.git   # git target, daily
-tsk backup add /srv/tsk.git --git --every twice-daily
+tsk backup setup                                  # private GitHub repository via gh
+tsk backup setup --repo team/tsk-backup
+tsk backup add git@gitlab.com:me/tsk-backup.git   # any other git repository
+tsk backup add /srv/tsk.git --every daily
 tsk backup list
 tsk backup                                        # same as tsk backup now
 tsk backup remove 2
@@ -438,22 +439,23 @@ tsk backup remove 2
 
 | Action | Effect |
 | --- | --- |
-| `now` (or none) | Back up to every target in the foreground. Prints where each copy went or that a target is up to date; exits 1 if any target failed |
-| `add <folder\|git-url>` | Add a `[[backup]]` entry to `config.toml`, creating the file if needed, then test it with a first backup in the foreground (with no tasks yet, a git target is still cloned). A failed first backup keeps the entry, exits 1, and says what to fix before rerunning `tsk backup`. A folder must exist and is stored as an absolute path. `--every save\|open\|daily\|twice-daily` sets the frequency (default `save` for a folder, `daily` for git); `--git` or `--folder` says what the location is when tsk cannot tell. Adding an existing target only updates its `every` |
-| `list` | Each target with its frequency, last backup, retention, and last error |
-| `remove <target>` | Remove a target by its number in `list`, its path, or its URL. Copies already made stay where they are |
+| `setup [--repo <name\|owner/name\|host/owner/name>]` | Needs `gh` logged in (a refusal shows `gh`'s own message). A host runs every `gh` call with `GH_HOST` set to it. Creates the private repository (default `<your user>/tsk-backup`) or reuses an existing private or internal one that is empty or holds tsk backups (internal with a note); refuses a public one or one with other content, writing nothing. Then adds it as `add` does, with the clone URL of your `gh` git protocol. Already added: says so and changes nothing. On an empty store it points at `tsk restore` when other machines' backups are there |
+| `now` (or none) | Back up to every target in the foreground. Prints where each backup went or that a target is up to date; exits 1 if any target failed |
+| `add <git-url>` | Add a `[[backup]]` entry to `config.toml`, creating the file if needed, then test it with a first backup in the foreground (with no tasks yet, the repository is still cloned). A failed first backup keeps the entry, exits 1, and says what to fix before rerunning `tsk backup`. A local repository path is stored absolute. After a first backup that worked, it starts one detached run as a save would and, if only that run cannot reach the repository within five seconds, says so on stderr (exit 0). `--every save\|daily` sets the frequency (default `save`). Adding an existing target only updates its `every` |
+| `list` | Each target with its frequency, last backup, and last error |
+| `remove <target>` | Remove a target by its number in `list`, its URL, or its path. Backups already pushed stay |
 
-Each backup copies `tsk.json` and `config.toml`. Saves and board opens back up due targets in the background and never fail because of them. For a folder, tsk only writes the copy into the folder: check your sync app shows it uploaded. Frequencies, layout, retention, and privacy: [backup targets](/docs/storage/#backup-targets).
+Each backup commits `tsk.json`, `config.toml` (values under `[agent.<name>.env]` are never pushed), and `machine.toml` under `machines/<machine-id>/`. Saves and board opens back up due targets in the background and never fail because of them. Frequencies, layout, secrets, and git settings: [backup targets](/docs/storage/#backup-targets).
 
 ## restore
 
 ```sh
 tsk restore            # list versions; in a terminal, pick one
 tsk restore 3f9a1c2e   # restore one version, no prompt
-tsk restore --all      # list every git version, not the newest 20 per machine
+tsk restore --all      # list every version, not the newest 20 per machine
 ```
 
-The list shows each version's id, time, machine, task count, and target, newest first. In a terminal, `tsk restore` asks which to restore (a number or an id; Enter cancels); otherwise it prints the list and changes nothing. A restore keeps the replaced store as `tsk.json.pre-restore-<UTC time>` (the newest five are kept) and prints its path. It never changes `config.toml`; it prints where the one backed up with that version is. `tsk restore T12` is not a version: it suggests `tsk trash restore T12`.
+The list shows each version's id, time, host name, task count, and target, newest first. In a terminal, `tsk restore` asks which to restore (a number or an id; Enter cancels); otherwise it prints the list and changes nothing. A restore keeps the replaced store as `tsk.json.pre-restore-<UTC time>` (the newest five are kept) and prints its path. It never changes `config.toml`; it prints the `git show` command for the one backed up with that version. `tsk restore T12` is not a version: it suggests `tsk trash restore T12`.
 
 `tsk restore` exits 1, replacing nothing, when there are no targets, the id is unknown, a board or quick capture is open on the store, or the version's store format is newer than this tsk (it says to update tsk) or it is not a store. A target it cannot read is reported on stderr and the others are still listed. [Restore](/docs/storage/#restore).
 

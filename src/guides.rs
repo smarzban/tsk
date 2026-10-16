@@ -94,7 +94,7 @@ pub const CATALOG: [Guide; 4] = [
                 Run `tsk setup` once: it finds the coding agents on your machine (Claude, Pi, Cursor, Codex, and others) and offers to install the tsk skill for each. `tsk setup claude` targets one. Then ask the agent in plain words. \"Add a task for each failing test.\" \"Mark T7 as review.\" `tsk guide` prints the same instructions if you want to read them yourself.\n\
                 \n\
                 **Back up your board**\n\
-                Your tasks live on this machine only. `tsk backup add ~/Dropbox/tsk` (any iCloud Drive, Dropbox, OneDrive, or Google Drive folder) or `tsk backup add git@github.com:you/tsk-backup.git` (a private repository) keeps copies there, and `tsk restore` brings one back.",
+                Your tasks live on this machine only. Run `tsk backup setup`: with the GitHub CLI (`gh`) logged in, it makes a private `tsk-backup` repository and pushes a copy after every save. For another git host, `tsk backup add <git-url>`. `tsk restore` brings a copy back.",
         status: HumanStatus::Ready,
         steps: &[
             ("Run tsk add -t \"Try the CLI\" in another terminal", false),
@@ -364,7 +364,7 @@ mod tests {
     fn the_cli_guide_points_at_backups() {
         assert!(CATALOG
             .iter()
-            .any(|guide| guide.notes.contains("tsk backup add")
+            .any(|guide| guide.notes.contains("tsk backup setup")
                 && guide.notes.contains("tsk restore")));
     }
 

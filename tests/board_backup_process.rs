@@ -1,6 +1,6 @@
 //! The real board and quick capture against backups: an open session holds `board.lock`, so
-//! `tsk restore` refuses until it quits, and a full board open backs up `every = "open"`
-//! targets. Isolated PTY, store, and folder; never a live Herdr session.
+//! `tsk restore` refuses until it quits, and a full board open backs up a due `daily`
+//! target. Isolated PTY, store, and a local bare repository; never a live Herdr session.
 #![cfg(unix)]
 use crate::pty;
 
@@ -20,21 +20,32 @@ fn tsk(state: &Path, args: &[&str]) -> Output {
         .expect("run tsk")
 }
 
-fn copies(folder: &Path) -> usize {
-    fs::read_dir(folder.join("tsk-backups"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .flat_map(|machine| fs::read_dir(machine.path()).into_iter().flatten().flatten())
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with("tsk-"))
-        .count()
+/// Commits in the bare repository `repo`.
+fn copies(repo: &Path) -> usize {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-list", "--count", "--all"])
+        .output()
+        .expect("git");
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0)
 }
 
-/// A state dir with one task and one folder copy of it, plus that copy's version id.
+/// A state dir with one task backed up once to a local bare repository, plus that version's id.
 fn seeded(root: &Path, every: &str) -> (PathBuf, PathBuf, String) {
     let state = root.join("state");
-    let folder = root.join("folder");
-    fs::create_dir_all(&folder).expect("folder");
+    let repo = root.join("remote.git");
+    fs::create_dir_all(&repo).expect("repo");
+    let init = Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["init", "--quiet", "--bare"])
+        .output()
+        .expect("git init");
+    assert!(init.status.success());
     let added = tsk(&state, &["add", "-t", "kept in the backup", "--desk"]);
     assert_eq!(added.status.code(), Some(0));
     let target = tsk(
@@ -42,13 +53,18 @@ fn seeded(root: &Path, every: &str) -> (PathBuf, PathBuf, String) {
         &[
             "backup",
             "add",
-            folder.to_str().expect("utf-8"),
+            repo.to_str().expect("utf-8"),
             "--every",
             every,
         ],
     );
-    // `backup add` writes the first copy.
-    assert_eq!(target.status.code(), Some(0));
+    // `backup add` pushes the first backup.
+    assert_eq!(
+        target.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&target.stderr)
+    );
     let listed = String::from_utf8_lossy(&tsk(&state, &["restore"]).stdout).into_owned();
     let id = listed
         .lines()
@@ -56,7 +72,7 @@ fn seeded(root: &Path, every: &str) -> (PathBuf, PathBuf, String) {
         .and_then(|row| row.split_whitespace().nth(1))
         .expect("a version row")
         .to_string();
-    (state, folder, id)
+    (state, repo, id)
 }
 
 fn assert_restore_refused(state: &Path, id: &str) {
@@ -70,17 +86,19 @@ fn assert_restore_refused(state: &Path, id: &str) {
 }
 
 #[test]
-fn an_open_board_blocks_restore_and_backs_up_open_targets() {
+fn an_open_board_blocks_restore_and_backs_up_due_daily_targets() {
     let root = pty::scratch_root("board-backup");
-    let (state, folder, id) = seeded(&root, "open");
+    let (state, folder, id) = seeded(&root, "daily");
     assert_eq!(copies(&folder), 1);
+    // Forget the first backup, so the daily target is due again when the board opens.
+    fs::remove_file(state.join("backup-status.json")).expect("forget status");
     let cwd = root.clone();
     let mut session = pty::Session::spawn(root, &cwd, &[], &[], 30, 100);
     // Any painted frame (here its header) comes after the session took board.lock.
     session.output_until("backup");
 
     assert_restore_refused(&state, &id);
-    // The open seeded starter tasks, so the store changed and the open target got a copy.
+    // The open found the daily target due, and the store had changed (starter tasks).
     let deadline = Instant::now() + Duration::from_secs(20);
     while copies(&folder) < 2 {
         assert!(

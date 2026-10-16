@@ -1,16 +1,17 @@
-//! Backups of the task store to folders and git repositories, and the versions a restore
-//! picks from.
+//! Backups of the task store to git repositories, and the versions a restore picks from.
 //!
-//! A backup is the live `tsk.json` byte for byte, so it carries its own `format_version`.
-//! Targets are the `[[backup]]` entries of `config.toml`. Saves and full board opens never
-//! wait on a backup: when a target is due they start a detached `tsk backup run` child and
-//! return. Each target's last success and last error live in `backup-status.json`.
+//! A backup is the live `tsk.json` byte for byte, so it carries its own `format_version`,
+//! plus `config.toml`. Targets are the `[[backup]]` entries of `config.toml`. Saves and full
+//! board opens never wait on a backup: when a target is due they start a detached
+//! `tsk backup run` child and return. Each target's last success and last error live in
+//! `backup-status.json`.
 //!
-//! Layout, shared with the cross-machine sync that builds on it: a folder target holds
-//! `<folder>/tsk-backups/<machine>/tsk-<UTC time>.json`; a git target holds
-//! `machines/<machine>/tsk.json`, one commit per backup, with the repository root left free.
+//! Layout, shared with the cross-machine sync that builds on it: a target holds
+//! `machines/<machine-id>/` with `tsk.json`, `config.toml` (agent `env` values removed), and
+//! `machine.toml` (host name, tsk version), one commit per backup. The repository root is left
+//! free on purpose: the later sync (T253) puts its shared file there.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -33,22 +34,22 @@ const PENDING_LOCK_FILE: &str = "backup.pending.lock";
 /// A background run records its trigger here before it looks for the waiter's slot, so the
 /// waiter that runs instead of it also backs up what that trigger made due.
 const TRIGGER_FLAG_PREFIX: &str = "backup.trigger-";
+/// A detached probe writes what it found here (`backup.probe-<nonce>`) for the command waiting.
+const PROBE_FILE_PREFIX: &str = "backup.probe-";
+/// How long `tsk backup add` and `setup` wait for the detached probe.
+const PROBE_WAIT: Duration = Duration::from_secs(5);
 /// This machine's id, generated once.
 const MACHINE_ID_FILE: &str = "machine-id";
 /// Clones of git targets, one directory per target.
 const REPOS_DIR: &str = "backup-repos";
-/// Folder targets keep their copies under this directory.
-const FOLDER_ROOT: &str = "tsk-backups";
 pub(crate) const STATUS_TEMP_PREFIX: &str = ".backup-status.json.tmp.";
 
-pub const DEFAULT_KEEP_LAST: usize = 10;
-pub const DEFAULT_KEEP_DAYS: usize = 30;
 /// The board suggests a first backup target once, when the store holds this many tasks.
 pub const NUDGE_AFTER_TASKS: usize = 10;
 /// A git target is listed with this many versions per machine unless `--all` asks for more.
 pub const GIT_VERSIONS_SHOWN: usize = 20;
 const GIT_TIMEOUT: Duration = Duration::from_secs(120);
-/// A failed daily or twice-daily backup is retried no sooner than this.
+/// A failed daily backup is retried no sooner than this.
 const RETRY_AFTER_SECS: u64 = 10 * 60;
 const DAY_SECS: u64 = 24 * 60 * 60;
 
@@ -59,36 +60,21 @@ pub(crate) fn is_private_state_name(name: &str) -> bool {
         || name == PENDING_LOCK_FILE
         || name == MACHINE_ID_FILE
         || name.starts_with(TRIGGER_FLAG_PREFIX)
+        || name.starts_with(PROBE_FILE_PREFIX)
         || name.starts_with(STATUS_TEMP_PREFIX)
 }
 
-/// Where a target writes.
+/// Where a target writes. Git is the only kind; `kind` stays in the entry's grammar so
+/// another can be added without changing existing files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    Folder,
     Git,
 }
 
 impl Kind {
     pub fn word(self) -> &'static str {
         match self {
-            Self::Folder => "folder",
             Self::Git => "git",
-        }
-    }
-
-    fn location_key(self) -> &'static str {
-        match self {
-            Self::Folder => "path",
-            Self::Git => "url",
-        }
-    }
-
-    /// The frequency a target of this kind gets when its entry names none.
-    pub fn default_every(self) -> Every {
-        match self {
-            Self::Folder => Every::Save,
-            Self::Git => Every::Daily,
         }
     }
 }
@@ -97,20 +83,16 @@ impl Kind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Every {
     Save,
-    Open,
     Daily,
-    TwiceDaily,
 }
 
 impl Every {
-    pub const ALL: [Every; 4] = [Every::Save, Every::Open, Every::Daily, Every::TwiceDaily];
+    pub const ALL: [Every; 2] = [Every::Save, Every::Daily];
 
     pub fn word(self) -> &'static str {
         match self {
             Self::Save => "save",
-            Self::Open => "open",
             Self::Daily => "daily",
-            Self::TwiceDaily => "twice-daily",
         }
     }
 
@@ -118,13 +100,11 @@ impl Every {
         Self::ALL.into_iter().find(|every| every.word() == word)
     }
 
-    /// How often, for people: `every save`, `on open`, `daily`, `twice daily`.
+    /// How often, for people: `every save` or `daily`.
     pub fn phrase(self) -> &'static str {
         match self {
             Self::Save => "every save",
-            Self::Open => "on open",
             Self::Daily => "daily",
-            Self::TwiceDaily => "twice daily",
         }
     }
 }
@@ -157,21 +137,19 @@ impl Trigger {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
     pub kind: Kind,
-    /// The folder path or the git URL, as written in the entry.
+    /// The repository URL or path, as written in the entry.
     pub location: String,
     pub every: Every,
-    pub keep_last: usize,
-    pub keep_days: usize,
 }
 
 impl Target {
-    pub fn new(kind: Kind, location: String) -> Self {
+    /// A target backed up on every save: the commit is local and quick, and the push runs in
+    /// the background child, coalesced so a burst of saves pushes at most twice.
+    pub fn new(location: String) -> Self {
         Self {
-            kind,
+            kind: Kind::Git,
             location,
-            every: kind.default_every(),
-            keep_last: DEFAULT_KEEP_LAST,
-            keep_days: DEFAULT_KEEP_DAYS,
+            every: Every::Save,
         }
     }
 
@@ -232,57 +210,24 @@ fn parse_target(index: usize, table: &dyn TableLike) -> Result<Target, String> {
                 .ok_or_else(|| invalid(format!("{key} must be a string"))),
         }
     };
-    let kind = match string("kind")?.as_deref() {
-        Some("folder") => Kind::Folder,
-        Some("git") => Kind::Git,
-        Some(other) => return Err(invalid(format!("kind {other:?} is not folder or git"))),
-        None => return Err(invalid("kind is required (folder or git)".into())),
-    };
-    let allowed: &[&str] = match kind {
-        Kind::Folder => &["kind", "path", "every", "keep_last", "keep_days"],
-        Kind::Git => &["kind", "url", "every"],
-    };
+    match string("kind")?.as_deref() {
+        None | Some("git") => {}
+        Some(other) => return Err(invalid(format!("kind {other:?} is not git"))),
+    }
     if let Some(key) = table
         .iter()
         .map(|(key, _)| key)
-        .find(|key| !allowed.contains(key))
+        .find(|key| !["kind", "url", "every"].contains(key))
     {
-        return Err(invalid(format!(
-            "unknown key {key:?} for a {} target",
-            kind.word()
-        )));
+        return Err(invalid(format!("unknown key {key:?}")));
     }
-    let location = string(kind.location_key())?
+    let location = string("url")?
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| invalid(format!("{} is required", kind.location_key())))?;
-    let mut target = Target::new(kind, location);
+        .ok_or_else(|| invalid("url is required".into()))?;
+    let mut target = Target::new(location);
     if let Some(word) = string("every")? {
-        target.every = Every::parse(&word).ok_or_else(|| {
-            invalid(format!(
-                "every {word:?} is not save, open, daily, or twice-daily"
-            ))
-        })?;
-    }
-    let count = |key: &str, minimum: i64| -> Result<Option<usize>, String> {
-        match table.get(key) {
-            None => Ok(None),
-            Some(item) => item
-                .as_integer()
-                .filter(|value| *value >= minimum)
-                .and_then(|value| usize::try_from(value).ok())
-                .map(Some)
-                .ok_or_else(|| {
-                    invalid(format!(
-                        "{key} must be a whole number of at least {minimum}"
-                    ))
-                }),
-        }
-    };
-    if let Some(keep_last) = count("keep_last", 1)? {
-        target.keep_last = keep_last;
-    }
-    if let Some(keep_days) = count("keep_days", 0)? {
-        target.keep_days = keep_days;
+        target.every = Every::parse(&word)
+            .ok_or_else(|| invalid(format!("every {word:?} is not save or daily")))?;
     }
     Ok(target)
 }
@@ -301,7 +246,6 @@ pub enum AddOutcome {
 /// other line of it. An existing entry for the same target only has its `every` updated.
 pub fn add_target(
     state_dir: &Path,
-    kind: Kind,
     location: &str,
     every: Option<Every>,
 ) -> Result<(Target, AddOutcome), String> {
@@ -314,7 +258,7 @@ pub fn add_target(
         .map_err(|error| format!("config.toml is malformed: {error}"))?;
     if let Some(index) = existing
         .iter()
-        .position(|target| target.kind == kind && target.location == location)
+        .position(|target| target.location == location)
     {
         let mut target = existing[index].clone();
         let Some(every) = every.filter(|every| *every != target.every) else {
@@ -330,13 +274,12 @@ pub fn add_target(
         write_document(state_dir, &document)?;
         return Ok((target, AddOutcome::Updated));
     }
-    let mut target = Target::new(kind, location.to_string());
+    let mut target = Target::new(location.to_string());
     if let Some(every) = every {
         target.every = every;
     }
     let mut table = toml_edit::Table::new();
-    table["kind"] = toml_edit::value(kind.word());
-    table[kind.location_key()] = toml_edit::value(location);
+    table["url"] = toml_edit::value(location);
     table["every"] = toml_edit::value(target.every.word());
     match document.get_mut("backup") {
         None => {
@@ -353,8 +296,8 @@ pub fn add_target(
     Ok((target, AddOutcome::Added))
 }
 
-/// Remove the `[[backup]]` entry `selector` names: its folder path or URL as `tsk backup list`
-/// shows it, or its number there. Its status is forgotten; copies already written stay.
+/// Remove the `[[backup]]` entry `selector` names: its URL or path as `tsk backup list` shows
+/// it, or its number there. Its status is forgotten; backups already pushed stay.
 pub fn remove_target(state_dir: &Path, selector: &str) -> Result<Target, String> {
     let targets = load_targets(state_dir)?;
     let index = selector
@@ -401,7 +344,8 @@ fn write_document(state_dir: &Path, document: &DocumentMut) -> Result<(), String
         .map_err(|error| format!("could not write config.toml: {error}"))
 }
 
-/// `path` made absolute against the working directory, when it names an existing directory.
+/// `path` made absolute against the working directory, when it names an existing directory
+/// (a local repository), so the target works from any directory.
 pub fn absolute_path(path: &str) -> Option<String> {
     let path = Path::new(path);
     if !path.is_dir() {
@@ -434,21 +378,6 @@ pub fn plain_path(path: &str) -> String {
         }
     }
     path.to_string()
-}
-
-/// Whether `location` reads as a git remote rather than a folder: a URL, scp-style
-/// `user@host:path`, a path ending in `.git`, or a directory holding a bare repository.
-pub fn looks_like_git(location: &str) -> bool {
-    if location.contains("://") || location.ends_with(".git") || location.ends_with(".git/") {
-        return true;
-    }
-    if let Some((user_host, _)) = location.split_once(':') {
-        if user_host.contains('@') && !user_host.contains('/') {
-            return true;
-        }
-    }
-    let path = Path::new(location);
-    path.join("HEAD").is_file() && path.join("objects").is_dir() && path.join("refs").is_dir()
 }
 
 /// One target's backup history, as `backup-status.json` keeps it.
@@ -572,23 +501,19 @@ pub fn take_backup_nudge(state_dir: &Path, tasks: usize) -> Option<String> {
         }
         status.nudged = true;
         save_status(state_dir, &status)?;
-        Ok(Some(
-            "No backup yet: tsk backup add <folder|git-url>".to_string(),
-        ))
+        Ok(Some("No backup yet: run tsk backup setup".to_string()))
     })
     .ok()
     .flatten()
 }
 
-/// Whether `target` should back up now. `save` and `open` targets follow their trigger;
-/// `daily` and `twice-daily` are due on either trigger once 24 or 12 hours have passed since
-/// their last success, and a failed attempt is retried after ten minutes.
+/// Whether `target` should back up now. A `save` target follows saves; a `daily` one is due
+/// on a save or a full board open once 24 hours have passed since its last success, and a
+/// failed attempt is retried after ten minutes.
 pub fn is_due(every: Every, trigger: Trigger, status: &TargetStatus, now: u64) -> bool {
     let interval = match every {
         Every::Save => return trigger == Trigger::Save,
-        Every::Open => return trigger == Trigger::Open,
         Every::Daily => DAY_SECS,
-        Every::TwiceDaily => DAY_SECS / 2,
     };
     let stale = status
         .last_success
@@ -598,38 +523,6 @@ pub fn is_due(every: Every, trigger: Trigger, status: &TargetStatus, now: u64) -
             .last_attempt
             .is_some_and(|attempt| now.saturating_sub(attempt) < RETRY_AFTER_SECS);
     stale && !retrying_too_soon
-}
-
-/// A folder copy's place in time: its Unix second, then its same-second suffix (`0` for none,
-/// `n` for `-n`), so copies made within one second still order and count one by one.
-pub type CopyKey = (u64, u32);
-
-/// The copies a folder target keeps: the `keep_last` newest, plus the first of each of the
-/// `keep_days` UTC days ending today (the store as it was before that day's changes).
-pub fn retention_keep(
-    copies: &[CopyKey],
-    now: u64,
-    keep_last: usize,
-    keep_days: usize,
-) -> BTreeSet<CopyKey> {
-    let mut newest_first = copies.to_vec();
-    newest_first.sort_unstable_by(|a, b| b.cmp(a));
-    newest_first.dedup();
-    let mut keep: BTreeSet<CopyKey> = newest_first.iter().take(keep_last).copied().collect();
-    let today = now / DAY_SECS;
-    for back in 0..keep_days as u64 {
-        let Some(day) = today.checked_sub(back) else {
-            break;
-        };
-        if let Some(copy) = newest_first
-            .iter()
-            .rev()
-            .find(|copy| copy.0 / DAY_SECS == day)
-        {
-            keep.insert(*copy);
-        }
-    }
-    keep
 }
 
 static BACKGROUND: AtomicBool = AtomicBool::new(false);
@@ -655,9 +548,24 @@ fn start_background(state_dir: &Path, trigger: Trigger) {
     if !BACKGROUND.load(Ordering::SeqCst) {
         return;
     }
-    if any_due(state_dir, trigger, unix_secs(SystemTime::now())) {
+    if any_due(state_dir, trigger, unix_secs(SystemTime::now()))
+        && !waiter_will_cover(state_dir, trigger)
+    {
         let _ = spawn_run(state_dir, trigger);
     }
+}
+
+/// Record `trigger` for the run waiting behind the current one, and say whether such a
+/// waiter exists. It reads the flags only after it lets go of its slot, so while the slot is
+/// held this flag is still ahead of it, and a burst of saves starts one child, not one each.
+fn waiter_will_cover(state_dir: &Path, trigger: Trigger) -> bool {
+    if fs::write(trigger_flag(state_dir, trigger), b"").is_err() {
+        return false;
+    }
+    let Ok(pending) = open_lock(state_dir, PENDING_LOCK_FILE) else {
+        return false;
+    };
+    matches!(pending.try_lock(), Err(fs::TryLockError::WouldBlock))
 }
 
 /// Whether any configured target is due for `trigger`. A configuration error is never due.
@@ -682,10 +590,17 @@ pub fn any_due(state_dir: &Path, trigger: Trigger, now: u64) -> bool {
 /// Start `tsk backup run --on <trigger>` detached: no stdio, its own process group, no
 /// console window. A thread reaps it so a long-lived board leaves no zombies.
 fn spawn_run(state_dir: &Path, trigger: Trigger) -> io::Result<()> {
+    spawn_detached(state_dir, &["--on", trigger.word()])
+}
+
+/// Start `tsk backup run <args>` the way the board does: detached, without stdio.
+fn spawn_detached(state_dir: &Path, args: &[&str]) -> io::Result<()> {
     let executable = std::env::current_exe()?;
     let mut command = Command::new(executable);
     command
-        .args(["backup", "run", "--on", trigger.word(), "--state-dir"])
+        .args(["backup", "run"])
+        .args(args)
+        .arg("--state-dir")
         .arg(state_dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -707,6 +622,100 @@ fn spawn_run(state_dir: &Path, trigger: Trigger) -> io::Result<()> {
         let _ = child.wait();
     });
     Ok(())
+}
+
+/// What a detached probe of a target found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Probe {
+    /// A detached `tsk backup run`, as the board starts one, reached the target.
+    Reached,
+    /// It could not; the string is git's reason.
+    Failed(String),
+    /// No answer within [`PROBE_WAIT`] (or it could not be started).
+    NoAnswer,
+}
+
+/// Check that a background run can reach the target at `index` of `[[backup]]`: start a
+/// detached `tsk backup run --probe` (no terminal, no stdin, its own process group, exactly
+/// as a save starts one) and wait up to [`PROBE_WAIT`] for what it found. A foreground push
+/// can succeed where this fails, for example when git needs a passphrase prompt.
+pub fn probe_detached(state_dir: &Path, index: usize) -> Probe {
+    sweep_late_probes(state_dir);
+    let nonce = format!("{}-{}", std::process::id(), now_nanos());
+    let file = state_dir.join(format!("{PROBE_FILE_PREFIX}{nonce}"));
+    if spawn_detached(state_dir, &["--probe", &format!("{index}:{nonce}")]).is_err() {
+        return Probe::NoAnswer;
+    }
+    let deadline = std::time::Instant::now() + PROBE_WAIT;
+    while std::time::Instant::now() < deadline {
+        if let Ok(found) = fs::read_to_string(&file) {
+            if let Some(line) = found.strip_suffix('\n') {
+                let _ = fs::remove_file(&file);
+                return match line.strip_prefix("error: ") {
+                    Some(error) => Probe::Failed(error.to_string()),
+                    None => Probe::Reached,
+                };
+            }
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    // A late answer is left to the next probe's sweep.
+    Probe::NoAnswer
+}
+
+/// Remove probe answers no one waited for (older than a minute).
+fn sweep_late_probes(state_dir: &Path) {
+    let Ok(entries) = fs::read_dir(state_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let late = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > Duration::from_secs(60));
+        if late
+            && entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(PROBE_FILE_PREFIX))
+        {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// The detached half of [`probe_detached`]: `git ls-remote` the target and write the result
+/// for the waiting command. Reads nothing else and touches no clone or lock.
+pub fn run_probe(state_dir: &Path, spec: &str) -> Result<(), String> {
+    let (index, nonce) = spec.split_once(':').ok_or("bad probe")?;
+    if nonce.is_empty() || !nonce.chars().all(|c| c.is_ascii_digit() || c == '-') {
+        return Err("bad probe".into());
+    }
+    let index: usize = index.parse().map_err(|_| "bad probe")?;
+    let target = load_targets(state_dir)?
+        .into_iter()
+        .nth(index)
+        .ok_or("no such target")?;
+    let repos = state_dir.join(REPOS_DIR);
+    fsperm::ensure_private_dir(&repos).map_err(|error| error.to_string())?;
+    let mut command = git_command(&repos);
+    command.args(["ls-remote", "--heads", "--", &target.location]);
+    let found = match crate::git_base::bounded_process_output(command, "git", PROBE_WAIT) {
+        Ok(output) if output.status.success() => "reached\n".to_string(),
+        Ok(output) => format!("error: {}\n", git_failure("ls-remote", &output)),
+        Err(error) => format!("error: {}\n", error.replace('\n', " / ")),
+    };
+    // Written beside its name and renamed, so the waiter never reads half a line.
+    let file = state_dir.join(format!("{PROBE_FILE_PREFIX}{nonce}"));
+    let tmp = state_dir.join(format!("{PROBE_FILE_PREFIX}{nonce}.tmp"));
+    let mut handle = fsperm::create_private_file(&tmp).map_err(|e| e.to_string())?;
+    handle
+        .write_all(found.as_bytes())
+        .map_err(|e| e.to_string())?;
+    drop(handle);
+    fsperm::replace_file(&tmp, &file).map_err(|e| e.to_string())
 }
 
 /// Which targets a run backs up.
@@ -791,9 +800,9 @@ pub fn run(state_dir: &Path, mode: RunMode, now: SystemTime) -> Result<Vec<Targe
             return Ok(targets
                 .into_iter()
                 .map(|target| {
-                    let reached = match (mode, target.kind) {
-                        (RunMode::Due(_), _) | (_, Kind::Folder) => Ok(RunOutcome::NoStore),
-                        (_, Kind::Git) => {
+                    let reached = match mode {
+                        RunMode::Due(_) => Ok(RunOutcome::NoStore),
+                        RunMode::Now | RunMode::One(_) => {
                             sync_clone(state_dir, &target).map(|_| RunOutcome::NoStore)
                         }
                     };
@@ -807,20 +816,32 @@ pub fn run(state_dir: &Path, mode: RunMode, now: SystemTime) -> Result<Vec<Targe
     let invalid = crate::store::check_document(&bytes)
         .err()
         .map(|error| format!("store does not parse, not backed up: {error}"));
-    let config = match fs::read(state_dir.join("config.toml")) {
-        Ok(config) => Some(config),
+    let config = match fs::read_to_string(state_dir.join("config.toml")) {
+        Ok(config) => sanitized_config(&config),
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => return Err(format!("could not read config.toml: {error}")),
     };
+    let machine = Machine {
+        id: machine_id(state_dir).map_err(|error| error.to_string())?,
+        hostname: hostname(),
+    };
     let copy = Payload {
         store: &bytes,
-        config: config.as_deref(),
+        config: config.as_deref().map(str::as_bytes),
+        machine_toml: format!(
+            "# Written by tsk backup: which machine these files come from.\nhostname = {:?}\ntsk_version = {:?}\n",
+            machine.hostname,
+            env!("CARGO_PKG_VERSION")
+        ),
+        summary: Summary {
+            tasks: count_tasks(&bytes),
+            format: crate::store::format_version(&bytes),
+        },
     };
     let mut hashed = bytes.clone();
     hashed.extend_from_slice(b"\0config.toml\0");
-    hashed.extend_from_slice(config.as_deref().unwrap_or_default());
+    hashed.extend_from_slice(config.as_deref().unwrap_or_default().as_bytes());
     let hash = format!("{:016x}", fnv1a(&hashed));
-    let machine = machine_name(state_dir).map_err(|error| error.to_string())?;
     let mut status = load_status(state_dir);
     let now_secs = unix_secs(now);
     let mut results = Vec::new();
@@ -851,9 +872,11 @@ pub fn run(state_dir: &Path, mode: RunMode, now: SystemTime) -> Result<Vec<Targe
         }
         record.last_attempt = Some(now_secs);
         let outcome = match target.kind {
-            Kind::Folder => backup_to_folder(&target, &machine, &copy, now),
             Kind::Git => backup_to_git(state_dir, &target, &machine, &copy, now),
         };
+        if outcome.is_ok() && !matches!(mode, RunMode::Due(_)) {
+            tidy_clone(state_dir, &target);
+        }
         match &outcome {
             Ok(_) => {
                 record.last_success = Some(now_secs);
@@ -877,160 +900,82 @@ fn trigger_flag(state_dir: &Path, trigger: Trigger) -> PathBuf {
     state_dir.join(format!("{TRIGGER_FLAG_PREFIX}{}", trigger.word()))
 }
 
-/// What one backup writes: the store, and `config.toml` beside it when there is one.
+/// What one backup writes: the store, `config.toml` beside it when there is one (already
+/// stripped of secrets), `machine.toml`, and what its commit message records.
 struct Payload<'a> {
     store: &'a [u8],
     config: Option<&'a [u8]>,
+    machine_toml: String,
+    summary: Summary,
 }
 
-/// Write `bytes` to `path` the way every folder copy is written: a private (`0600` on Unix)
-/// temp file beside it, synced, then renamed, so a sync client never uploads half a copy.
-fn write_private_copy(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let dir = path.parent().unwrap_or(Path::new("."));
-    let tmp = dir.join(format!(
-        ".tsk-backup.tmp.{}.{}",
-        std::process::id(),
-        now_nanos()
-    ));
-    let result = (|| -> io::Result<()> {
-        let mut file = fsperm::create_private_file(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&tmp, path)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    result
+/// What a commit message records about its backup, so `tsk restore` lists versions from one
+/// `git log` without reading each file.
+struct Summary {
+    tasks: Option<usize>,
+    format: Option<u32>,
 }
 
-fn backup_to_folder(
-    target: &Target,
-    machine: &str,
-    copy: &Payload<'_>,
-    now: SystemTime,
-) -> Result<RunOutcome, String> {
-    let root = Path::new(&target.location);
-    if !root.is_dir() {
-        return Err(format!("folder {} not found", target.location));
-    }
-    let dir = root.join(FOLDER_ROOT).join(machine);
-    fs::create_dir_all(&dir)
-        .map_err(|error| format!("could not create {}: {error}", dir.display()))?;
-    // A second copy in the same second gets the next suffix above every copy of that second,
-    // even one pruned since, so the newest always sorts newest.
-    let stamp = utc_stamp(now);
-    let second = unix_secs(now);
-    let mut suffix = folder_copies(&dir)
-        .into_iter()
-        .filter(|((at, _), _)| *at == second)
-        .map(|((_, suffix), _)| suffix + 1)
-        .max()
-        .unwrap_or(0);
-    let names = |suffix: u32| {
-        let tail = match suffix {
-            0 => stamp.clone(),
-            n => format!("{stamp}-{n}"),
-        };
-        (
-            dir.join(format!("tsk-{tail}.json")),
-            dir.join(format!("config-{tail}.toml")),
-        )
-    };
-    let (mut path, mut config_path) = names(suffix);
-    while fs::symlink_metadata(&path).is_ok() || fs::symlink_metadata(&config_path).is_ok() {
-        suffix += 1;
-        (path, config_path) = names(suffix);
-    }
-    // The config twin first: a store copy is listed as soon as it exists.
-    if let Some(config) = copy.config {
-        write_private_copy(&config_path, config)
-            .map_err(|error| format!("could not write {}: {error}", config_path.display()))?;
-    }
-    write_private_copy(&path, copy.store)
-        .map_err(|error| format!("could not write {}: {error}", path.display()))?;
-    prune_folder(&dir, unix_secs(now), target.keep_last, target.keep_days);
-    Ok(RunOutcome::Written(path.display().to_string()))
+/// This machine as a backup names it: the directory key and the name people read.
+struct Machine {
+    id: String,
+    hostname: String,
 }
 
-/// Delete the copies [`retention_keep`] does not keep, each with its `config-` twin, and any
-/// config copy whose store copy is gone. Other files are left alone.
-fn prune_folder(dir: &Path, now: u64, keep_last: usize, keep_days: usize) {
-    let copies = folder_copies(dir);
-    let keys: Vec<CopyKey> = copies.iter().map(|(key, _)| *key).collect();
-    let keep = retention_keep(&keys, now, keep_last, keep_days);
-    for (key, path) in copies {
-        if !keep.contains(&key) {
-            let _ = fs::remove_file(path);
-        }
-    }
-    for (key, path) in stamped_files(dir, "config-", ".toml") {
-        if !keep.contains(&key) {
-            let _ = fs::remove_file(path);
-        }
-    }
-}
+/// Value every `[agent.<name>.env]` entry takes in a backed-up `config.toml`.
+pub const ENV_PLACEHOLDER: &str = "<not backed up>";
 
-/// The `config-` twin of a folder store copy, when it exists.
-fn config_twin(store_copy: &Path) -> Option<PathBuf> {
-    let name = store_copy.file_name()?.to_str()?;
-    let tail = name.strip_prefix("tsk-")?.strip_suffix(".json")?;
-    let twin = store_copy.with_file_name(format!("config-{tail}.toml"));
-    twin.is_file().then_some(twin)
-}
-
-/// `tsk-<stamp>[-<n>].json` copies in one machine directory with their keys.
-fn folder_copies(dir: &Path) -> Vec<(CopyKey, PathBuf)> {
-    stamped_files(dir, "tsk-", ".json")
-}
-
-/// `<prefix><stamp>[-<n>]<suffix>` files in one directory with their keys.
-fn stamped_files(dir: &Path, prefix: &str, extension: &str) -> Vec<(CopyKey, PathBuf)> {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .filter_map(|entry| {
-            let name = entry.file_name();
-            let stem = name
-                .to_str()?
-                .strip_prefix(prefix)?
-                .strip_suffix(extension)?;
-            // `<stamp>` or a same-second `<stamp>-<n>`.
-            let stamp = parse_utc_stamp(stem.get(..16)?)?;
-            let rest = &stem[16..];
-            let suffix = if rest.is_empty() {
-                0
-            } else {
-                let digits = rest.strip_prefix('-')?;
-                if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-                    return None;
-                }
-                digits.parse::<u32>().ok()?
+/// `config.toml` as a backup pushes it: every value of every `[agent.<name>.env]` table
+/// replaced by [`ENV_PLACEHOLDER`] (the keys stay, so a restore shows what to fill in), under a
+/// comment saying so. A file that does not parse is not pushed at all, since its secrets
+/// cannot be found.
+pub fn sanitized_config(content: &str) -> Option<String> {
+    let mut document: DocumentMut = content.parse().ok()?;
+    if let Some(agents) = document
+        .get_mut("agent")
+        .and_then(|item| item.as_table_like_mut())
+    {
+        for (_, profile) in agents.iter_mut() {
+            let Some(env) = profile
+                .as_table_like_mut()
+                .and_then(|profile| profile.get_mut("env"))
+                .and_then(|env| env.as_table_like_mut())
+            else {
+                continue;
             };
-            entry
-                .file_type()
-                .ok()
-                .filter(|kind| kind.is_file())
-                .map(|_| ((stamp, suffix), entry.path()))
-        })
-        .collect()
+            for (_, value) in env.iter_mut() {
+                let decor = value.as_value().map(|v| v.decor().clone());
+                *value = toml_edit::value(ENV_PLACEHOLDER);
+                if let (Some(decor), Some(v)) = (decor, value.as_value_mut()) {
+                    *v.decor_mut() = decor;
+                }
+            }
+        }
+    }
+    Some(format!(
+        "# Backed up by tsk. Values under [agent.<name>.env] are never pushed: they read\n# \"{ENV_PLACEHOLDER}\" here. Fill them in by hand after copying a profile over.\n{document}"
+    ))
 }
+
+/// Pushes a backup tries before recording the rejection as the target's error. Each retry
+/// fetches and rebuilds the commit on the new remote head: a machine writes only its own
+/// directory, so the rebuild is the conflict-free rebase.
+const PUSH_ATTEMPTS: usize = 3;
 
 fn backup_to_git(
     state_dir: &Path,
     target: &Target,
-    machine: &str,
+    machine: &Machine,
     copy: &Payload<'_>,
     now: SystemTime,
 ) -> Result<RunOutcome, String> {
     let clone = sync_clone(state_dir, target)?;
-    let relative = format!("machines/{machine}/tsk.json");
-    let config_relative = format!("machines/{machine}/config.toml");
+    let base = format!("machines/{}", machine.id);
+    let relative = format!("{base}/tsk.json");
+    let config_relative = format!("{base}/config.toml");
+    let machine_relative = format!("{base}/machine.toml");
     let mut last_error = String::new();
-    for attempt in 0..2 {
+    for attempt in 0..PUSH_ATTEMPTS {
         if attempt > 0 {
             git_ok(&clone.dir, &["fetch", "--quiet", "--prune", "origin"])?;
         }
@@ -1059,6 +1004,8 @@ fn backup_to_git(
             write_in_clone(&clone.dir, &config_relative, config)?;
             git_ok(&clone.dir, &["add", "--", &config_relative])?;
         }
+        write_in_clone(&clone.dir, &machine_relative, copy.machine_toml.as_bytes())?;
+        git_ok(&clone.dir, &["add", "--", &machine_relative])?;
         let staged = git(
             &clone.dir,
             &[
@@ -1068,22 +1015,16 @@ fn backup_to_git(
                 "--",
                 &relative,
                 &config_relative,
+                &machine_relative,
             ],
         )?;
         if !staged.status.success() {
-            let message = format!(
-                "tsk backup from {machine} at {}",
-                human_time(unix_secs(now))
-            );
+            let message = commit_message(machine, &copy.summary, now);
             git_ok(
                 &clone.dir,
                 &[
                     "-c",
-                    &format!("user.name=tsk ({machine})"),
-                    "-c",
-                    "user.email=tsk@localhost",
-                    "-c",
-                    "commit.gpgsign=false",
+                    &format!("user.email=tsk@{}", machine.hostname),
                     "commit",
                     "--quiet",
                     "--no-verify",
@@ -1124,8 +1065,53 @@ fn backup_to_git(
             )));
         }
         last_error = git_failure("push", &push);
+        // Only a push another machine raced is worth another try; anything else (access,
+        // a hook on the server) fails the same way again.
+        let stderr = String::from_utf8_lossy(&push.stderr);
+        let raced = [
+            "non-fast-forward",
+            "fetch first",
+            "cannot lock ref",
+            "reference already exists",
+        ]
+        .iter()
+        .any(|sign| stderr.contains(sign));
+        if !raced {
+            return Err(last_error);
+        }
     }
-    Err(last_error)
+    Err(format!(
+        "push rejected {PUSH_ATTEMPTS} times (another machine kept pushing): {last_error}"
+    ))
+}
+
+/// Let git repack the target's clone if it wants to (`gc --auto` with git's own threshold).
+/// Only foreground runs (`tsk backup`, `add`, `setup`) call this, where the user is already
+/// waiting; a failure only leaves loose objects for the next one.
+fn tidy_clone(state_dir: &Path, target: &Target) {
+    let dir = state_dir.join(REPOS_DIR).join(target.id());
+    if dir.is_dir() {
+        let _ = git(&dir, &["-c", "gc.auto=6700", "gc", "--auto", "--quiet"]);
+    }
+}
+
+/// A backup commit's message: a readable subject, then `key: value` lines `tsk restore` reads.
+fn commit_message(machine: &Machine, summary: &Summary, now: SystemTime) -> String {
+    let mut message = format!(
+        "tsk backup from {} at {}\n\nmachine: {}\nhostname: {}\ntsk: {}\n",
+        machine.hostname,
+        human_time(unix_secs(now)),
+        machine.id,
+        machine.hostname,
+        env!("CARGO_PKG_VERSION")
+    );
+    if let Some(tasks) = summary.tasks {
+        message.push_str(&format!("tasks: {tasks}\n"));
+    }
+    if let Some(format) = summary.format {
+        message.push_str(&format!("format: {format}\n"));
+    }
+    message
 }
 
 /// Write `bytes` at `relative` inside `clone` without following a link: every component
@@ -1247,15 +1233,46 @@ fn sync_clone(state_dir: &Path, target: &Target) -> Result<GitClone, String> {
     Ok(GitClone { dir, branch })
 }
 
+/// Every git call a backup makes. It runs in a detached child with no terminal, so it must
+/// never prompt and never depend on the user's global git setup: a fixed identity, no signing,
+/// no hooks (an empty hooks directory), no interactive credential helper, and ssh in batch
+/// mode unless the user chose their own `GIT_SSH_COMMAND`. A backup remote is not trusted to
+/// plant links in the clone either: links are checked out as plain files.
 fn git_command(dir: &Path) -> Command {
+    // `dir` is the repos directory or a clone inside it; the empty hooks directory lives there.
+    let repos = if dir.file_name().is_some_and(|name| name == REPOS_DIR) {
+        dir.to_path_buf()
+    } else {
+        dir.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| dir.to_path_buf())
+    };
+    let hooks = repos.join(".no-hooks");
+    let _ = fs::create_dir_all(&hooks);
     let mut command = Command::new("git");
-    // A backup remote is not trusted to plant links in the clone: check them out as files.
+    command.arg("-C").arg(dir);
+    for setting in [
+        "core.symlinks=false".to_string(),
+        "user.name=tsk".to_string(),
+        "user.email=tsk@localhost".to_string(),
+        "commit.gpgsign=false".to_string(),
+        "tag.gpgsign=false".to_string(),
+        format!("core.hooksPath={}", hooks.display()),
+        "credential.interactive=never".to_string(),
+        // A background run never stops to repack: `gc --auto` can take seconds on a clone
+        // that has collected thousands of backups. Foreground runs tidy instead (see
+        // `tidy_clone`).
+        "gc.auto=0".to_string(),
+        "maintenance.auto=false".to_string(),
+    ] {
+        command.arg("-c").arg(setting);
+    }
     command
-        .arg("-C")
-        .arg(dir)
-        .args(["-c", "core.symlinks=false"])
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "never");
+    if std::env::var_os("GIT_SSH_COMMAND").is_none() {
+        command.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    }
     command
 }
 
@@ -1297,25 +1314,26 @@ pub struct Version {
     pub id: String,
     /// Unix seconds the copy was made.
     pub at: u64,
+    /// The host name the backup's commit records (the machine id's start when it has none).
     pub machine: String,
-    /// The target's folder path or URL.
+    /// The machine id: the directory under `machines/` the version came from.
+    pub machine_id: String,
+    /// The target's URL or path.
     pub target: String,
     /// Tasks in the copy (notices and deleted tasks excluded); `None` when unreadable.
     pub tasks: Option<usize>,
-    /// Orders versions made in the same second: a folder copy's suffix, a git commit's
-    /// place in history (newer is higher).
+    /// Orders versions made in the same second: the commit's place in history (newer is
+    /// higher).
     order: u32,
     source: Source,
 }
 
+/// Where a version lives: a file at a commit of a target's clone.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Source {
-    File(PathBuf),
-    Git {
-        dir: PathBuf,
-        commit: String,
-        path: String,
-    },
+struct Source {
+    dir: PathBuf,
+    commit: String,
+    path: String,
 }
 
 /// Every version on every target, newest first, plus a failure per target that could not be
@@ -1325,15 +1343,12 @@ pub fn list_versions(state_dir: &Path, all: bool) -> Result<Listing, String> {
     let mut versions = Vec::new();
     let mut failures = Vec::new();
     for target in targets {
-        let listed = match target.kind {
-            Kind::Folder => folder_versions(&target),
-            // The clone is shared with backup runs: never fetch it under one.
-            Kind::Git => with_run_lock(state_dir, true, || {
-                Ok(git_versions(state_dir, &target, all))
-            })
-            .map_err(|error| error.to_string())
-            .and_then(|listed| listed),
-        };
+        // The clone is shared with backup runs: never fetch it under one.
+        let listed = with_run_lock(state_dir, true, || {
+            Ok(git_versions(state_dir, &target, all))
+        })
+        .map_err(|error| error.to_string())
+        .and_then(|listed| listed);
         match listed {
             Ok(found) => versions.extend(found),
             Err(error) => failures.push((target, error)),
@@ -1347,36 +1362,6 @@ pub fn list_versions(state_dir: &Path, all: bool) -> Result<Listing, String> {
     Ok((versions, failures))
 }
 
-fn folder_versions(target: &Target) -> Result<Vec<Version>, String> {
-    let root = Path::new(&target.location);
-    if !root.is_dir() {
-        return Err(format!("folder {} not found", target.location));
-    }
-    let Ok(machines) = fs::read_dir(root.join(FOLDER_ROOT)) else {
-        return Ok(Vec::new());
-    };
-    let mut versions = Vec::new();
-    for machine in machines.flatten() {
-        if !machine.file_type().is_ok_and(|kind| kind.is_dir()) {
-            continue;
-        }
-        let machine_name = machine.file_name().to_string_lossy().into_owned();
-        for ((at, order), path) in folder_copies(&machine.path()) {
-            let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
-            versions.push(Version {
-                id: version_id(target, &machine_name, name.as_deref().unwrap_or_default()),
-                at,
-                machine: machine_name.clone(),
-                target: target.location.clone(),
-                tasks: fs::read(&path).ok().and_then(|bytes| count_tasks(&bytes)),
-                order,
-                source: Source::File(path),
-            });
-        }
-    }
-    Ok(versions)
-}
-
 fn git_versions(state_dir: &Path, target: &Target, all: bool) -> Result<Vec<Version>, String> {
     let clone = sync_clone(state_dir, target)?;
     let remote = format!("refs/remotes/origin/{}", clone.branch);
@@ -1386,11 +1371,12 @@ fn git_versions(state_dir: &Path, target: &Target, all: bool) -> Result<Vec<Vers
     {
         return Ok(Vec::new());
     }
+    // One `git log`: each commit's message carries its host name and task count.
     let log = git_ok(
         &clone.dir,
         &[
             "log",
-            "--format=%x01%H %ct",
+            "--format=%x01%H %ct%x02%B%x03",
             "--name-only",
             &remote,
             "--",
@@ -1406,14 +1392,28 @@ fn git_versions(state_dir: &Path, target: &Target, all: bool) -> Result<Vec<Vers
         .enumerate()
     {
         let order = u32::MAX - u32::try_from(position).unwrap_or(u32::MAX);
-        let mut lines = record.lines();
-        let Some((commit, time)) = lines.next().and_then(|line| line.split_once(' ')) else {
+        let Some((head, rest)) = record.split_once('\u{2}') else {
+            continue;
+        };
+        let Some((message, names)) = rest.split_once('\u{3}') else {
+            continue;
+        };
+        let Some((commit, time)) = head.trim().split_once(' ') else {
             continue;
         };
         let Ok(at) = time.trim().parse::<u64>() else {
             continue;
         };
-        for path in lines.map(str::trim) {
+        let field = |key: &str| {
+            message.lines().find_map(|line| {
+                line.strip_prefix(key)
+                    .and_then(|rest| rest.strip_prefix(':'))
+                    .map(|value| value.trim().to_string())
+            })
+        };
+        let hostname = field("hostname");
+        let tasks = field("tasks").and_then(|count| count.parse().ok());
+        for path in names.lines().map(str::trim) {
             let Some(machine) = path
                 .strip_prefix("machines/")
                 .and_then(|rest| rest.strip_suffix("/tsk.json"))
@@ -1426,7 +1426,7 @@ fn git_versions(state_dir: &Path, target: &Target, all: bool) -> Result<Vec<Vers
                 continue;
             }
             *shown += 1;
-            let source = Source::Git {
+            let source = Source {
                 dir: clone.dir.clone(),
                 commit: commit.to_string(),
                 path: path.to_string(),
@@ -1434,11 +1434,12 @@ fn git_versions(state_dir: &Path, target: &Target, all: bool) -> Result<Vec<Vers
             versions.push(Version {
                 id: version_id(target, machine, commit),
                 at,
-                machine: machine.to_string(),
+                machine: hostname
+                    .clone()
+                    .unwrap_or_else(|| machine.chars().take(8).collect()),
+                machine_id: machine.to_string(),
                 target: target.location.clone(),
-                tasks: read_source(&source)
-                    .ok()
-                    .and_then(|bytes| count_tasks(&bytes)),
+                tasks,
                 order,
                 source,
             });
@@ -1447,20 +1448,58 @@ fn git_versions(state_dir: &Path, target: &Target, all: bool) -> Result<Vec<Vers
     Ok(versions)
 }
 
-/// Where the `config.toml` backed up with `version` can be read, for people: a file path, or
-/// the git command that prints it. `None` when the version has none.
+/// The git command that prints the `config.toml` backed up with `version`, for people.
+/// `None` when the version has none.
 pub fn version_config(version: &Version) -> Option<String> {
-    match &version.source {
-        Source::File(path) => config_twin(path).map(|twin| twin.display().to_string()),
-        Source::Git { dir, commit, path } => {
-            let config = format!("{}/config.toml", path.rsplit_once('/')?.0);
-            let spec = format!("{commit}:{config}");
-            git(dir, &["cat-file", "-e", &spec])
-                .ok()
-                .filter(|output| output.status.success())
-                .map(|_| format!("git -C \"{}\" show {spec}", dir.display()))
-        }
-    }
+    let Source { dir, commit, path } = &version.source;
+    let config = format!("{}/config.toml", path.rsplit_once('/')?.0);
+    let spec = format!("{commit}:{config}");
+    git(dir, &["cat-file", "-e", &spec])
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|_| format!("git -C \"{}\" show {spec}", dir.display()))
+}
+
+/// What a repository holds, for `tsk backup setup` deciding whether to reuse it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoContents {
+    Empty,
+    /// It has `machines/`: backups from tsk.
+    Backups,
+    /// Anything else: someone else's repository.
+    Other,
+}
+
+/// Clone (or fetch) `location` the way a backup would and say what its default branch holds.
+pub fn repo_contents(state_dir: &Path, location: &str) -> Result<RepoContents, String> {
+    let target = Target::new(location.to_string());
+    with_run_lock(state_dir, true, || {
+        Ok((|| {
+            let clone = sync_clone(state_dir, &target)?;
+            let remote = format!("refs/remotes/origin/{}", clone.branch);
+            if !git(&clone.dir, &["rev-parse", "--verify", "--quiet", &remote])?
+                .status
+                .success()
+            {
+                return Ok(RepoContents::Empty);
+            }
+            let names = git_ok(&clone.dir, &["ls-tree", "--name-only", &remote])?;
+            let names: Vec<&str> = names
+                .lines()
+                .map(str::trim)
+                .filter(|n| !n.is_empty())
+                .collect();
+            Ok(if names.is_empty() {
+                RepoContents::Empty
+            } else if names.contains(&"machines") {
+                RepoContents::Backups
+            } else {
+                RepoContents::Other
+            })
+        })())
+    })
+    .map_err(|error| error.to_string())
+    .and_then(|contents| contents)
 }
 
 /// The bytes of one listed version.
@@ -1469,18 +1508,14 @@ pub fn read_version(version: &Version) -> Result<Vec<u8>, String> {
 }
 
 fn read_source(source: &Source) -> Result<Vec<u8>, String> {
-    match source {
-        Source::File(path) => {
-            fs::read(path).map_err(|error| format!("could not read {}: {error}", path.display()))
-        }
-        Source::Git { dir, commit, path } => {
-            let output = git(dir, &["show", &format!("{commit}:{path}")])?;
-            if output.status.success() {
-                Ok(output.stdout)
-            } else {
-                Err(git_failure("show", &output))
-            }
-        }
+    let output = git(
+        &source.dir,
+        &["show", &format!("{}:{}", source.commit, source.path)],
+    )?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(git_failure("show", &output))
     }
 }
 
@@ -1500,12 +1535,6 @@ pub fn count_tasks(bytes: &[u8]) -> Option<usize> {
             .filter(|task| task.get("soft_deleted") != Some(&serde_json::Value::Bool(true)))
             .count(),
     )
-}
-
-/// `<host>-<first 8 of the machine id>`, the directory a machine's backups go under.
-pub fn machine_name(state_dir: &Path) -> io::Result<String> {
-    let id = machine_id(state_dir)?;
-    Ok(format!("{}-{}", hostname(), &id[..8]))
 }
 
 /// This state directory's machine id, generated once and kept in `machine-id` (never in
@@ -1542,7 +1571,7 @@ fn read_machine_id(path: &Path) -> Option<String> {
 }
 
 /// The host name's first label, lowercased, as letters, digits, and hyphens.
-fn hostname() -> String {
+pub fn hostname() -> String {
     let raw = raw_hostname().unwrap_or_default();
     let label = raw.split('.').next().unwrap_or_default().to_lowercase();
     let cleaned: String = label
@@ -1648,17 +1677,6 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
     (yoe + era * 400 + i64::from(month <= 2), month, day)
 }
 
-/// Days since the Unix epoch from a civil date, the inverse of [`civil_from_days`].
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = year.div_euclid(400);
-    let yoe = year.rem_euclid(400);
-    let mp = if month > 2 { month - 3 } else { month + 9 };
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
 fn split_secs(secs: u64) -> ((i64, i64, i64), (u64, u64, u64)) {
     let date = civil_from_days((secs / DAY_SECS) as i64);
     let rest = secs % DAY_SECS;
@@ -1669,27 +1687,6 @@ fn split_secs(secs: u64) -> ((i64, i64, i64), (u64, u64, u64)) {
 pub fn utc_stamp(time: SystemTime) -> String {
     let ((year, month, day), (hour, minute, second)) = split_secs(unix_secs(time));
     format!("{year:04}{month:02}{day:02}T{hour:02}{minute:02}{second:02}Z")
-}
-
-/// Unix seconds from a [`utc_stamp`].
-pub fn parse_utc_stamp(stamp: &str) -> Option<u64> {
-    let bytes = stamp.as_bytes();
-    if bytes.len() != 16 || bytes[8] != b'T' || bytes[15] != b'Z' {
-        return None;
-    }
-    let number = |range: std::ops::Range<usize>| stamp.get(range)?.parse::<i64>().ok();
-    let (year, month, day) = (number(0..4)?, number(4..6)?, number(6..8)?);
-    let (hour, minute, second) = (number(9..11)?, number(11..13)?, number(13..15)?);
-    if !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
-        || hour > 23
-        || minute > 59
-        || second > 59
-    {
-        return None;
-    }
-    let days = days_from_civil(year, month, day);
-    u64::try_from(days * 86_400 + hour * 3_600 + minute * 60 + second).ok()
 }
 
 /// `YYYY-MM-DD HH:MM UTC` for people.
@@ -1733,125 +1730,83 @@ mod tests {
         UNIX_EPOCH + Duration::from_secs(secs)
     }
 
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    /// An empty bare repository under `root`.
+    fn bare_repo(root: &Path) -> PathBuf {
+        let remote = root.join("remote.git");
+        fs::create_dir_all(&remote).expect("remote");
+        git_in(&remote, &["init", "--quiet", "--bare"]);
+        remote
+    }
+
+    /// A state dir under `root` whose one target is `remote`, plus `extra` entry keys.
+    fn state_with_target(root: &Path, remote: &Path, extra: &str) -> PathBuf {
+        let state = root.join("state");
+        fs::create_dir_all(&state).expect("state");
+        fs::write(
+            state.join("config.toml"),
+            format!(
+                "[[backup]]\nurl = {:?}\n{extra}",
+                remote.display().to_string()
+            ),
+        )
+        .expect("config");
+        state
+    }
+
+    /// Commits on every branch of `remote`.
+    fn commits(remote: &Path) -> usize {
+        git_in(remote, &["rev-list", "--count", "--all"])
+            .trim()
+            .parse()
+            .unwrap_or(0)
+    }
+
+    /// Write a valid store holding one task titled `title`; returns its bytes.
+    fn write_store(dir: &Path, title: &str) -> Vec<u8> {
+        let mut state = crate::domain::DomainState::new();
+        state
+            .create(
+                title,
+                None,
+                crate::domain::TaskScope::Global,
+                crate::domain::ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create");
+        let bytes = serde_json::to_vec_pretty(&state).expect("json");
+        fs::write(dir.join("tsk.json"), &bytes).expect("store");
+        bytes
+    }
+
     #[test]
-    fn stamps_round_trip_and_sort_by_time() {
-        for secs in [
-            0,
-            1_792_135_428,
-            951_782_400, /* 2000-02-29 */
-            4_102_444_799,
-        ] {
-            let stamp = utc_stamp(at(secs));
-            assert_eq!(parse_utc_stamp(&stamp), Some(secs), "{stamp}");
-        }
+    fn stamps_and_human_times_read_in_utc() {
         assert_eq!(utc_stamp(at(951_782_400)), "20000229T000000Z");
+        assert_eq!(utc_stamp(at(1_792_135_428)), "20261016T072348Z");
         assert_eq!(human_time(1_792_135_428), "2026-10-16 07:23 UTC");
         assert!(utc_stamp(at(100)) < utc_stamp(at(1_000_000)));
-        assert_eq!(parse_utc_stamp("20261301T000000Z"), None);
-        assert_eq!(parse_utc_stamp("garbage"), None);
-    }
-
-    /// [`retention_keep`] for copies with no same-second suffix, as plain stamps.
-    fn keep_stamps(stamps: &[u64], now: u64, keep_last: usize, keep_days: usize) -> BTreeSet<u64> {
-        let keys: Vec<CopyKey> = stamps.iter().map(|stamp| (*stamp, 0)).collect();
-        retention_keep(&keys, now, keep_last, keep_days)
-            .into_iter()
-            .map(|(stamp, _)| stamp)
-            .collect()
-    }
-
-    #[test]
-    fn retention_counts_same_second_copies_one_by_one() {
-        let now = 100 * DAY + 12 * HOUR;
-        // Seventeen copies at three a second: (s, 0), (s, 1), (s, 2), (s + 1, 0), …
-        let keys: Vec<CopyKey> = (0..17u32)
-            .map(|n| (now - 6 + u64::from(n / 3), n % 3))
-            .collect();
-        let mut newest_first = keys.clone();
-        newest_first.sort_unstable_by(|a, b| b.cmp(a));
-        let newest_ten: BTreeSet<CopyKey> = newest_first[..10].iter().copied().collect();
-        assert_eq!(retention_keep(&keys, now, 10, 0), newest_ten);
-        // With day slots, the day's first copy, (s, 0), is kept too.
-        let mut with_first = newest_ten.clone();
-        with_first.insert(keys[0]);
-        assert_eq!(retention_keep(&keys, now, 10, 7), with_first);
-    }
-
-    #[test]
-    fn a_burst_of_saves_keeps_ten_copies_and_lists_the_newest_first() {
-        let state = TempDir::new("burst-state");
-        let folder = TempDir::new("burst-folder");
-        folder_config(&state.0, &folder.0, "");
-        let start = 400 * DAY;
-        let mut written = Vec::new();
-        for n in 0..17u64 {
-            written.push(write_store(&state.0, &format!("n{n}")));
-            run(&state.0, RunMode::Now, at(start + n / 3)).expect("run");
-        }
-        let machine = machine_name(&state.0).expect("machine");
-        // The newest ten, and the day's first copy.
-        assert_eq!(
-            folder_copies(&folder.0.join(FOLDER_ROOT).join(&machine)).len(),
-            11
-        );
-        let (versions, _) = list_versions(&state.0, false).expect("versions");
-        let bodies: Vec<Vec<u8>> = versions
-            .iter()
-            .map(|version| read_version(version).expect("read"))
-            .collect();
-        let mut expected: Vec<Vec<u8>> = written[7..].iter().rev().cloned().collect();
-        expected.push(written[0].clone());
-        assert_eq!(
-            bodies, expected,
-            "same-second copies list newest suffix first"
-        );
-    }
-
-    #[test]
-    fn retention_keeps_the_newest_ten_plus_the_first_copy_of_each_day() {
-        let now = 100 * DAY + 12 * HOUR;
-        // Twelve copies an hour apart today, then two a day for the ten days before.
-        let mut stamps: Vec<u64> = (0..12).map(|hour| now - hour * HOUR).collect();
-        for day in 1..=10 {
-            stamps.push(now - day * DAY);
-            stamps.push(now - day * DAY - HOUR);
-        }
-        let keep = keep_stamps(&stamps, now, 10, 7);
-        let newest_ten: Vec<u64> = (0..10).map(|hour| now - hour * HOUR).collect();
-        for stamp in &newest_ten {
-            assert!(keep.contains(stamp));
-        }
-        // Today's first copy is kept beside the newest ten; days 1..=6 each keep their first
-        // copy (the store before that day's changes) only.
-        assert!(keep.contains(&(now - 11 * HOUR)), "today's first copy");
-        for day in 1..=6 {
-            assert!(keep.contains(&(now - day * DAY - HOUR)), "day {day}");
-            assert!(!keep.contains(&(now - day * DAY)), "day {day} later copy");
-        }
-        for day in 7..=10 {
-            assert!(
-                !keep.contains(&(now - day * DAY - HOUR)),
-                "day {day} is past the window"
-            );
-        }
-        assert_eq!(keep.len(), 10 + 1 + 6);
-        assert_eq!(DEFAULT_KEEP_DAYS, 30);
-    }
-
-    #[test]
-    fn retention_honours_custom_numbers() {
-        let now = 50 * DAY;
-        let stamps: Vec<u64> = (0..20).map(|n| now - n * DAY).collect();
-        let keep = keep_stamps(&stamps, now, 2, 3);
-        assert_eq!(
-            keep,
-            [now, now - DAY, now - 2 * DAY]
-                .into_iter()
-                .collect::<BTreeSet<_>>()
-        );
-        let keep = keep_stamps(&stamps, now, 5, 0);
-        assert_eq!(keep.len(), 5);
-        assert!(keep.contains(&now) && keep.contains(&(now - 4 * DAY)));
     }
 
     #[test]
@@ -1860,14 +1815,11 @@ mod tests {
         let now = 10 * DAY;
         assert!(is_due(Every::Save, Trigger::Save, &never, now));
         assert!(!is_due(Every::Save, Trigger::Open, &never, now));
-        assert!(is_due(Every::Open, Trigger::Open, &never, now));
-        assert!(!is_due(Every::Open, Trigger::Save, &never, now));
         for trigger in [Trigger::Save, Trigger::Open] {
             assert!(
                 is_due(Every::Daily, trigger, &never, now),
                 "never backed up"
             );
-            assert!(is_due(Every::TwiceDaily, trigger, &never, now));
         }
         let recent = |ago: u64| TargetStatus {
             last_success: Some(now - ago),
@@ -1881,18 +1833,7 @@ mod tests {
             now
         ));
         assert!(is_due(Every::Daily, Trigger::Save, &recent(24 * HOUR), now));
-        assert!(!is_due(
-            Every::TwiceDaily,
-            Trigger::Open,
-            &recent(11 * HOUR),
-            now
-        ));
-        assert!(is_due(
-            Every::TwiceDaily,
-            Trigger::Open,
-            &recent(12 * HOUR),
-            now
-        ));
+        assert!(is_due(Every::Daily, Trigger::Open, &recent(24 * HOUR), now));
         let failed = |ago: u64| TargetStatus {
             last_success: Some(now - 2 * DAY),
             last_attempt: Some(now - ago),
@@ -1914,53 +1855,49 @@ mod tests {
 command = ["claude"]
 
 [[backup]]
-kind = "folder"
-path = "/backups"
-
-[[backup]]
-kind = "folder"
-path = "/other"
-every = "daily"
-keep_last = 3
-keep_days = 0
+url = "git@github.com:me/tsk-backup.git"
 
 [[backup]]
 kind = "git"
-url = "git@example.com:me/tsk.git"
+url = "/srv/tsk.git"
+every = "daily"
 "#,
         )
         .expect("parses");
-        assert_eq!(targets.len(), 3);
-        assert_eq!(targets[0].every, Every::Save);
-        assert_eq!((targets[0].keep_last, targets[0].keep_days), (10, 30));
-        assert_eq!(targets[1].every, Every::Daily);
-        assert_eq!((targets[1].keep_last, targets[1].keep_days), (3, 0));
+        assert_eq!(targets.len(), 2);
         assert_eq!(
-            (targets[2].kind, targets[2].every),
+            (targets[0].kind, targets[0].every),
+            (Kind::Git, Every::Save)
+        );
+        assert_eq!(
+            (targets[1].kind, targets[1].every),
             (Kind::Git, Every::Daily)
         );
-        let inline =
-            parse_targets(r#"backup = [{ kind = "folder", path = "/x", every = "open" }]"#)
-                .expect("inline list parses");
-        assert_eq!(inline[0].every, Every::Open);
+        let inline = parse_targets(r#"backup = [{ url = "/x.git", every = "daily" }]"#)
+            .expect("inline list parses");
+        assert_eq!(inline[0].every, Every::Daily);
+        for gone in ["open", "twice-daily"] {
+            let error = parse_targets(&format!("[[backup]]\nurl = \"/x\"\nevery = \"{gone}\""))
+                .expect_err(gone);
+            assert!(error.contains("not save or daily"), "{error}");
+        }
         for (bad, why) in [
-            ("[[backup]]\npath = \"/x\"", "kind is required"),
+            ("[[backup]]\nevery = \"save\"", "url is required"),
             (
-                "[[backup]]\nkind = \"s3\"\npath = \"/x\"",
-                "not folder or git",
+                "[[backup]]\nkind = \"folder\"\nurl = \"/x\"",
+                "kind \"folder\" is not git",
             ),
-            ("[[backup]]\nkind = \"folder\"", "path is required"),
             (
-                "[[backup]]\nkind = \"git\"\nurl = \"u\"\nkeep_last = 2",
+                "[[backup]]\nurl = \"/x\"\npath = \"/y\"",
+                "unknown key \"path\"",
+            ),
+            (
+                "[[backup]]\nurl = \"/x\"\nkeep_last = 2",
                 "unknown key \"keep_last\"",
             ),
             (
-                "[[backup]]\nkind = \"folder\"\npath = \"/x\"\nevery = \"hourly\"",
-                "not save, open",
-            ),
-            (
-                "[[backup]]\nkind = \"folder\"\npath = \"/x\"\nkeep_last = 0",
-                "at least 1",
+                "[[backup]]\nurl = \"/x\"\nevery = \"hourly\"",
+                "not save or daily",
             ),
             ("backup = 3", "list of [[backup]]"),
         ] {
@@ -1987,18 +1924,14 @@ url = "git@example.com:me/tsk.git"
             .collect::<Vec<_>>()
             .join("\n");
         let targets = parse_targets(&uncommented).expect("example parses");
-        assert_eq!(targets.len(), 2);
-        assert_eq!(
-            (targets[0].kind, targets[0].every),
-            (Kind::Folder, Every::Save)
-        );
-        assert_eq!(targets[1].location, r"C:\Users\you\OneDrive\tsk");
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].every, Every::Save);
+        assert!(targets[0].location.contains("github.com"));
     }
 
     #[test]
     fn other_config_readers_ignore_backup_tables() {
-        let content =
-            "[[backup]]\nkind = \"folder\"\npath = \"/x\"\n\n[agent.a]\ncommand = [\"a\"]\n";
+        let content = "[[backup]]\nurl = \"/x.git\"\n\n[agent.a]\ncommand = [\"a\"]\n";
         let dir = TempDir::new("readers");
         fs::write(dir.0.join("config.toml"), content).expect("write");
         assert!(crate::agents::AgentProfiles::load(&dir.0)
@@ -2014,21 +1947,24 @@ url = "git@example.com:me/tsk.git"
         let dir = TempDir::new("config");
         let original = "# my notes\n[agent.a]\ncommand = [\"a\"] # keep me\n";
         fs::write(dir.0.join("config.toml"), original).expect("write");
-        let (target, outcome) =
-            add_target(&dir.0, Kind::Folder, "/backups", None).expect("add folder");
+        let (target, outcome) = add_target(&dir.0, "git@h:me/one.git", None).expect("add");
         assert_eq!((outcome, target.every), (AddOutcome::Added, Every::Save));
-        let (_, outcome) = add_target(&dir.0, Kind::Git, "/r.git", Some(Every::Open)).expect("git");
+        let (_, outcome) = add_target(&dir.0, "/r.git", Some(Every::Daily)).expect("second");
         assert_eq!(outcome, AddOutcome::Added);
-        let (_, again) = add_target(&dir.0, Kind::Folder, "/backups", None).expect("again");
+        let (_, again) = add_target(&dir.0, "git@h:me/one.git", None).expect("again");
         assert_eq!(again, AddOutcome::Unchanged);
         let (updated, outcome) =
-            add_target(&dir.0, Kind::Folder, "/backups", Some(Every::Daily)).expect("update");
+            add_target(&dir.0, "git@h:me/one.git", Some(Every::Daily)).expect("update");
         assert_eq!(
             (outcome, updated.every),
             (AddOutcome::Updated, Every::Daily)
         );
         let content = fs::read_to_string(dir.0.join("config.toml")).expect("read");
         assert!(content.starts_with(original), "{content}");
+        assert!(
+            !content.contains("kind"),
+            "a git entry needs no kind: {content}"
+        );
         let targets = load_targets(&dir.0).expect("load");
         assert_eq!(targets.len(), 2);
         assert_eq!(targets[0].every, Every::Daily);
@@ -2038,10 +1974,12 @@ url = "git@example.com:me/tsk.git"
             "/r.git"
         );
         assert_eq!(
-            remove_target(&dir.0, "/backups").expect("by path").location,
-            "/backups"
+            remove_target(&dir.0, "git@h:me/one.git")
+                .expect("by url")
+                .location,
+            "git@h:me/one.git"
         );
-        assert!(remove_target(&dir.0, "/backups").is_err());
+        assert!(remove_target(&dir.0, "git@h:me/one.git").is_err());
         assert_eq!(
             fs::read_to_string(dir.0.join("config.toml")).expect("read"),
             original,
@@ -2052,28 +1990,8 @@ url = "git@example.com:me/tsk.git"
     #[test]
     fn add_creates_config_toml_in_a_fresh_state_dir() {
         let dir = TempDir::new("fresh");
-        add_target(&dir.0, Kind::Git, "file:///r.git", None).expect("add");
-        assert_eq!(load_targets(&dir.0).expect("load")[0].every, Every::Daily);
-    }
-
-    #[test]
-    fn git_locations_are_recognized() {
-        for git in [
-            "https://github.com/me/tsk-backup",
-            "file:///tmp/r",
-            "git@github.com:me/tsk-backup.git",
-            "me@host:backups",
-            "/tmp/r.git",
-        ] {
-            assert!(looks_like_git(git), "{git}");
-        }
-        for folder in [
-            "/Users/me/Library/Mobile Documents",
-            "C:\\Users\\me\\Dropbox",
-            "backups",
-        ] {
-            assert!(!looks_like_git(folder), "{folder}");
-        }
+        add_target(&dir.0, "file:///r.git", None).expect("add");
+        assert_eq!(load_targets(&dir.0).expect("load")[0].every, Every::Save);
     }
 
     #[test]
@@ -2081,9 +1999,9 @@ url = "git@example.com:me/tsk.git"
         let dir = TempDir::new("machine");
         let first = machine_id(&dir.0).expect("id");
         assert_eq!(machine_id(&dir.0).expect("again"), first);
-        let name = machine_name(&dir.0).expect("name");
-        assert!(name.ends_with(&first[..8]), "{name}");
-        assert!(name
+        assert!(first.chars().all(|c| c.is_ascii_hexdigit()), "{first}");
+        let host = hostname();
+        assert!(host
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
     }
@@ -2095,171 +2013,188 @@ url = "git@example.com:me/tsk.git"
         assert_eq!(count_tasks(b"nope"), None);
     }
 
-    /// Write a valid store holding one task titled `title`; returns its bytes.
-    fn write_store(dir: &Path, title: &str) -> Vec<u8> {
-        let mut state = crate::domain::DomainState::new();
-        state
-            .create(
-                title,
-                None,
-                crate::domain::TaskScope::Global,
-                crate::domain::ProvenanceOrigin::Manual,
-                None,
-            )
-            .expect("create");
-        let bytes = serde_json::to_vec_pretty(&state).expect("json");
-        fs::write(dir.join("tsk.json"), &bytes).expect("store");
-        bytes
-    }
-
     #[test]
-    fn folder_run_writes_prunes_and_skips_unchanged_bytes() {
-        let state = TempDir::new("run-state");
-        let folder = TempDir::new("run-folder");
-        fs::write(
-            state.0.join("config.toml"),
-            format!(
-                "[[backup]]\nkind = \"folder\"\npath = {:?}\nkeep_last = 2\nkeep_days = 0\n",
-                folder.0.display().to_string()
-            ),
-        )
-        .expect("config");
+    fn a_run_follows_its_trigger_and_skips_an_unchanged_store() {
+        let root = TempDir::new("run");
+        let remote = bare_repo(&root.0);
+        let state = state_with_target(&root.0, &remote, "");
         let now = 400 * DAY;
         assert_eq!(
-            run(&state.0, RunMode::Due(Trigger::Save), at(now)).expect("run")[0].1,
+            run(&state, RunMode::Due(Trigger::Save), at(now)).expect("run")[0].1,
             Ok(RunOutcome::NoStore)
         );
         let mut last = Vec::new();
-        for (index, body) in ["a1", "a2", "a3"].iter().enumerate() {
-            last = write_store(&state.0, body);
-            let results = run(
-                &state.0,
-                RunMode::Due(Trigger::Save),
-                at(now + index as u64),
-            )
-            .expect("run");
+        for (index, title) in ["a1", "a2"].iter().enumerate() {
+            last = write_store(&state, title);
+            let results =
+                run(&state, RunMode::Due(Trigger::Save), at(now + index as u64)).expect("run");
             assert!(
                 matches!(results[0].1, Ok(RunOutcome::Written(_))),
                 "{results:?}"
             );
         }
-        let results = run(&state.0, RunMode::Due(Trigger::Save), at(now + 10)).expect("run");
+        assert_eq!(commits(&remote), 2, "one commit per backup");
+        let results = run(&state, RunMode::Due(Trigger::Save), at(now + 10)).expect("run");
         assert_eq!(
             results[0].1,
             Ok(RunOutcome::UpToDate),
-            "same bytes are not copied twice"
+            "same bytes are not pushed twice"
         );
-        let results = run(&state.0, RunMode::Due(Trigger::Open), at(now + 11)).expect("run");
+        let results = run(&state, RunMode::Due(Trigger::Open), at(now + 11)).expect("run");
         assert_eq!(results[0].1, Ok(RunOutcome::NotDue));
-        let machine = machine_name(&state.0).expect("machine");
-        let copies = folder_copies(&folder.0.join(FOLDER_ROOT).join(&machine));
-        assert_eq!(copies.len(), 2, "keep_last = 2 pruned the oldest");
-        let (versions, failures) = list_versions(&state.0, false).expect("versions");
-        assert!(failures.is_empty());
+        let machine = machine_id(&state).expect("machine");
+        let (versions, failures) = list_versions(&state, false).expect("versions");
+        assert!(failures.is_empty(), "{failures:?}");
         assert_eq!(versions.len(), 2);
         assert_eq!(read_version(&versions[0]).expect("read"), last);
-        assert_eq!(versions[0].machine, machine);
+        // Keyed by machine id, listed by host name and task count from the commit message.
+        assert_eq!(versions[0].machine_id, machine);
+        assert_eq!(versions[0].machine, hostname());
+        assert_eq!(versions[0].tasks, Some(1));
+        let machine_toml = git_in(
+            &remote,
+            &["show", &format!("HEAD:machines/{machine}/machine.toml")],
+        );
+        assert!(
+            machine_toml.contains(&format!("hostname = {:?}", hostname())),
+            "{machine_toml}"
+        );
+        let message = git_in(&remote, &["log", "-1", "--format=%B"]);
+        for line in [
+            format!("machine: {machine}"),
+            "tasks: 1".to_string(),
+            format!("format: {}", crate::domain::STORE_FORMAT_VERSION),
+            format!("tsk: {}", env!("CARGO_PKG_VERSION")),
+        ] {
+            assert!(message.contains(&line), "{line} in {message}");
+        }
+    }
+
+    #[test]
+    fn versions_made_in_one_second_list_newest_first() {
+        let root = TempDir::new("same-second");
+        let remote = bare_repo(&root.0);
+        let state = state_with_target(&root.0, &remote, "");
+        let mut written = Vec::new();
+        for n in 0..3 {
+            written.push(write_store(&state, &format!("n{n}")));
+            run(&state, RunMode::Now, at(DAY)).expect("run");
+        }
+        let (versions, _) = list_versions(&state, false).expect("versions");
+        let bodies: Vec<Vec<u8>> = versions
+            .iter()
+            .map(|version| read_version(version).expect("read"))
+            .collect();
+        written.reverse();
+        assert_eq!(bodies, written);
     }
 
     #[test]
     fn a_failing_target_records_its_error_once_for_the_board() {
-        let state = TempDir::new("fail-state");
-        fs::write(
-            state.0.join("config.toml"),
-            "[[backup]]\nkind = \"folder\"\npath = \"/nonexistent/tsk-backup-target\"\n",
-        )
-        .expect("config");
-        write_store(&state.0, "x");
-        let results = run(&state.0, RunMode::Now, at(DAY)).expect("run");
+        let root = TempDir::new("fail");
+        let state = state_with_target(&root.0, &root.0.join("no-such-repo.git"), "");
+        write_store(&state, "x");
+        let results = run(&state, RunMode::Now, at(DAY)).expect("run");
         assert!(results[0]
             .1
             .as_ref()
-            .is_err_and(|e| e.contains("not found")));
-        let listed = statuses(&state.0).expect("statuses");
+            .is_err_and(|e| e.contains("git clone failed")));
+        let listed = statuses(&state).expect("statuses");
         assert!(listed[0].1.last_error.is_some());
-        let message = take_unshown_error(&state.0).expect("first open shows it");
+        let message = take_unshown_error(&state).expect("first open shows it");
         assert!(
-            message.starts_with("backup failed: folder /nonexistent/tsk-backup-target"),
+            message.starts_with("backup failed: git clone failed"),
             "{message}"
         );
-        assert_eq!(take_unshown_error(&state.0), None, "shown once");
-    }
-
-    fn folder_config(state: &Path, folder: &Path, extra: &str) {
-        fs::write(
-            state.join("config.toml"),
-            format!(
-                "[[backup]]\nkind = \"folder\"\npath = {:?}\n{extra}",
-                folder.display().to_string()
-            ),
-        )
-        .expect("config");
+        assert_eq!(
+            take_unshown_error(&state),
+            None,
+            "shown once per failed attempt"
+        );
     }
 
     #[test]
     fn a_run_that_loses_the_waiter_slot_leaves_its_trigger_to_the_waiter() {
-        let state = TempDir::new("union-state");
-        let folder = TempDir::new("union-folder");
-        folder_config(&state.0, &folder.0, "every = \"save\"\n");
-        write_store(&state.0, "a1");
+        let root = TempDir::new("union");
+        let remote = bare_repo(&root.0);
+        let state = state_with_target(&root.0, &remote, "every = \"save\"\n");
+        write_store(&state, "a1");
         // A waiter holds the slot when a save's run arrives: that run exits at once.
-        let slot = open_lock(&state.0, PENDING_LOCK_FILE).expect("slot");
+        let slot = open_lock(&state, PENDING_LOCK_FILE).expect("slot");
         slot.try_lock().expect("take the slot");
-        assert!(run(&state.0, RunMode::Due(Trigger::Save), at(DAY))
+        assert!(run(&state, RunMode::Due(Trigger::Save), at(DAY))
             .expect("save run")
             .is_empty());
         drop(slot);
         // The waiter was started by a board open; it still backs up for the save.
-        let results = run(&state.0, RunMode::Due(Trigger::Open), at(DAY + 1)).expect("waiter");
+        let results = run(&state, RunMode::Due(Trigger::Open), at(DAY + 1)).expect("waiter");
         assert!(
             matches!(results[0].1, Ok(RunOutcome::Written(_))),
             "{results:?}"
         );
-        let results = run(&state.0, RunMode::Due(Trigger::Open), at(DAY + 2)).expect("next");
+        write_store(&state, "a2");
+        let results = run(&state, RunMode::Due(Trigger::Open), at(DAY + 2)).expect("next");
         assert_eq!(results[0].1, Ok(RunOutcome::NotDue), "the flag is used up");
     }
 
     #[test]
-    fn copies_in_the_same_second_are_both_kept() {
-        let state = TempDir::new("same-second-state");
-        let folder = TempDir::new("same-second-folder");
-        folder_config(&state.0, &folder.0, "");
-        write_store(&state.0, "a1");
-        run(&state.0, RunMode::Now, at(DAY)).expect("first");
-        write_store(&state.0, "a2");
-        run(&state.0, RunMode::Now, at(DAY)).expect("second");
-        let machine = machine_name(&state.0).expect("machine");
-        let mut copies = folder_copies(&folder.0.join(FOLDER_ROOT).join(&machine));
-        copies.sort();
-        assert_eq!(copies.len(), 2, "{copies:?}");
-        let bodies: BTreeSet<Vec<u8>> = copies
-            .iter()
-            .map(|(_, path)| fs::read(path).expect("copy"))
-            .collect();
-        assert_eq!(bodies.len(), 2, "neither copy replaced the other");
+    fn a_store_that_does_not_parse_is_never_pushed() {
+        let root = TempDir::new("damaged");
+        let remote = bare_repo(&root.0);
+        let state = state_with_target(&root.0, &remote, "");
+        fs::write(
+            state.join("tsk.json"),
+            b"{\"format_version\":13,\"tasks\":7}",
+        )
+        .expect("store");
+        let results = run(&state, RunMode::Now, at(DAY)).expect("run");
+        let error = results[0].1.clone().expect_err("refused");
+        assert!(
+            error.starts_with("store does not parse, not backed up"),
+            "{error}"
+        );
+        assert_eq!(commits(&remote), 0);
+        assert_eq!(
+            statuses(&state).expect("status")[0].1.last_error,
+            Some(error)
+        );
     }
 
-    #[cfg(unix)]
-    fn git_in(dir: &Path, args: &[&str]) {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args([
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@t",
-                "-c",
-                "commit.gpgsign=false",
-            ])
-            .args(args)
-            .output()
-            .expect("git");
+    #[test]
+    fn a_backup_carries_config_toml() {
+        let root = TempDir::new("git-config");
+        let remote = bare_repo(&root.0);
+        let state = state_with_target(&root.0, &remote, "");
+        let config = fs::read_to_string(state.join("config.toml")).expect("config");
+        let config = sanitized_config(&config).expect("sanitized");
+        write_store(&state, "with config");
+        let results = run(&state, RunMode::Now, at(DAY)).expect("run");
         assert!(
-            output.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
+            matches!(results[0].1, Ok(RunOutcome::Written(_))),
+            "{results:?}"
         );
+        let machine = machine_id(&state).expect("machine");
+        let shown = git_in(
+            &remote,
+            &["show", &format!("HEAD:machines/{machine}/config.toml")],
+        );
+        assert_eq!(shown, config);
+        let (versions, _) = list_versions(&state, false).expect("versions");
+        assert!(version_config(&versions[0])
+            .is_some_and(|hint| hint.contains(&format!("machines/{machine}/config.toml"))));
+    }
+
+    #[test]
+    fn the_first_backup_nudge_shows_once_past_ten_tasks_and_never_with_a_target() {
+        let state = TempDir::new("nudge");
+        assert_eq!(take_backup_nudge(&state.0, NUDGE_AFTER_TASKS - 1), None);
+        let message = take_backup_nudge(&state.0, NUDGE_AFTER_TASKS).expect("shown");
+        assert!(message.contains("tsk backup setup"), "{message}");
+        assert_eq!(take_backup_nudge(&state.0, 50), None, "only once ever");
+
+        let root = TempDir::new("nudge-configured");
+        let configured = state_with_target(&root.0, &root.0.join("r.git"), "");
+        assert_eq!(take_backup_nudge(&configured, 50), None);
     }
 
     /// A backup remote whose `machines/<machine>/tsk.json`, or that machine's directory, is a
@@ -2269,17 +2204,14 @@ url = "git@example.com:me/tsk.git"
     fn a_hostile_remote_cannot_redirect_a_git_backup_through_a_link() {
         for planted_dir in [false, true] {
             let root = TempDir::new("hostile");
-            let state = root.0.join("state");
-            fs::create_dir_all(&state).expect("state");
-            let machine = machine_name(&state).expect("machine");
+            let remote = bare_repo(&root.0);
+            let state = state_with_target(&root.0, &remote, "");
+            let machine = machine_id(&state).expect("machine");
             let victim_dir = root.0.join("victim");
             fs::create_dir_all(&victim_dir).expect("victim dir");
             let victim = victim_dir.join("tsk.json");
             fs::write(&victim, b"precious").expect("victim");
 
-            let remote = root.0.join("remote.git");
-            fs::create_dir_all(&remote).expect("remote");
-            git_in(&remote, &["init", "--quiet", "--bare"]);
             let work = root.0.join("work");
             fs::create_dir_all(work.join("machines")).expect("work");
             git_in(&work, &["init", "--quiet"]);
@@ -2306,14 +2238,6 @@ url = "git@example.com:me/tsk.git"
             );
             git_in(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
 
-            fs::write(
-                state.join("config.toml"),
-                format!(
-                    "[[backup]]\nkind = \"git\"\nurl = {:?}\n",
-                    remote.display().to_string()
-                ),
-            )
-            .expect("config");
             write_store(&state, "store");
             let _ = run(&state, RunMode::Now, at(DAY)).expect("run");
             assert_eq!(
@@ -2350,7 +2274,7 @@ url = "git@example.com:me/tsk.git"
             r"\\?\C:relative",
             r"C:\Users\me",
             r"\\server\share",
-            "/Users/me/Dropbox",
+            "/Users/me/repo.git",
         ] {
             assert_eq!(plain_path(unchanged), unchanged);
         }
@@ -2375,138 +2299,118 @@ url = "git@example.com:me/tsk.git"
     }
 
     #[test]
-    fn a_same_second_copy_after_a_prune_still_sorts_newest() {
-        let state = TempDir::new("after-prune-state");
-        let folder = TempDir::new("after-prune-folder");
-        folder_config(&state.0, &folder.0, "");
-        let machine = machine_name(&state.0).expect("machine");
-        let dir = folder.0.join(FOLDER_ROOT).join(&machine);
-        fs::create_dir_all(&dir).expect("machine dir");
-        let now = 400 * DAY;
-        let stamp = utc_stamp(at(now));
-        // The unsuffixed copy of this second was pruned; -1 and -2 remain.
-        fs::write(dir.join(format!("tsk-{stamp}-1.json")), "{\"n\":1}").expect("copy 1");
-        fs::write(dir.join(format!("tsk-{stamp}-2.json")), "{\"n\":2}").expect("copy 2");
-        let newest = write_store(&state.0, "n3");
-        run(&state.0, RunMode::Now, at(now)).expect("run");
-        assert!(dir.join(format!("tsk-{stamp}-3.json")).exists());
-        let (versions, _) = list_versions(&state.0, false).expect("versions");
-        assert_eq!(read_version(&versions[0]).expect("read"), newest);
-    }
-
-    #[test]
-    fn a_store_that_does_not_parse_is_never_copied() {
-        let state = TempDir::new("damaged-state");
-        let folder = TempDir::new("damaged-folder");
-        folder_config(&state.0, &folder.0, "");
-        fs::write(
-            state.0.join("tsk.json"),
-            b"{\"format_version\":13,\"tasks\":7}",
-        )
-        .expect("store");
-        let results = run(&state.0, RunMode::Now, at(DAY)).expect("run");
-        let error = results[0].1.clone().expect_err("refused");
-        assert!(
-            error.starts_with("store does not parse, not backed up"),
-            "{error}"
+    fn env_values_never_leave_the_machine() {
+        let root = TempDir::new("secrets");
+        let remote = bare_repo(&root.0);
+        let state = state_with_target(
+            &root.0,
+            &remote,
+            "\n[agent.claude]\ncommand = [\"claude\"]\n[agent.claude.env]\nAPI_TOKEN = \"s3cret-token\" # mine\n\n[agent.pi]\ncommand = [\"pi\"]\nenv = { OTHER = \"inline-s3cret\" }\n",
         );
-        let machine = machine_name(&state.0).expect("machine");
-        assert!(folder_copies(&folder.0.join(FOLDER_ROOT).join(&machine)).is_empty());
-        assert_eq!(
-            statuses(&state.0).expect("status")[0].1.last_error,
-            Some(error)
-        );
-    }
-
-    #[test]
-    fn config_toml_is_copied_beside_each_store_copy_and_pruned_with_it() {
-        let state = TempDir::new("config-copy-state");
-        let folder = TempDir::new("config-copy-folder");
-        folder_config(&state.0, &folder.0, "keep_last = 1\nkeep_days = 0\n");
-        let config = fs::read(state.0.join("config.toml")).expect("config");
-        write_store(&state.0, "one");
-        run(&state.0, RunMode::Now, at(DAY)).expect("first");
-        write_store(&state.0, "two");
-        run(&state.0, RunMode::Now, at(DAY + 1)).expect("second");
-        let machine = machine_name(&state.0).expect("machine");
-        let dir = folder.0.join(FOLDER_ROOT).join(&machine);
-        let configs = stamped_files(&dir, "config-", ".toml");
-        assert_eq!(configs.len(), 1, "pruned with its store copy: {configs:?}");
-        let (_, store_copy) = folder_copies(&dir).pop().expect("one store copy");
-        let twin = config_twin(&store_copy).expect("twin");
-        assert_eq!(fs::read(&twin).expect("twin"), config);
-        let (versions, _) = list_versions(&state.0, false).expect("versions");
-        assert_eq!(
-            version_config(&versions[0]),
-            Some(twin.display().to_string())
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn folder_copies_are_private() {
-        use std::os::unix::fs::PermissionsExt;
-        let state = TempDir::new("private-state");
-        let folder = TempDir::new("private-folder");
-        folder_config(&state.0, &folder.0, "");
-        write_store(&state.0, "secret notes");
-        run(&state.0, RunMode::Now, at(DAY)).expect("run");
-        let machine = machine_name(&state.0).expect("machine");
-        let dir = folder.0.join(FOLDER_ROOT).join(&machine);
-        let files: Vec<PathBuf> = fs::read_dir(&dir)
-            .expect("dir")
-            .flatten()
-            .map(|entry| entry.path())
-            .collect();
-        assert_eq!(files.len(), 2, "store and config copies: {files:?}");
-        for file in files {
-            let mode = fs::metadata(&file).expect("meta").permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600, "{}", file.display());
-        }
-    }
-
-    #[test]
-    fn the_first_backup_nudge_shows_once_past_ten_tasks_and_never_with_a_target() {
-        let state = TempDir::new("nudge");
-        assert_eq!(take_backup_nudge(&state.0, NUDGE_AFTER_TASKS - 1), None);
-        let message = take_backup_nudge(&state.0, NUDGE_AFTER_TASKS).expect("shown");
-        assert!(message.contains("tsk backup add"), "{message}");
-        assert_eq!(take_backup_nudge(&state.0, 50), None, "only once ever");
-
-        let configured = TempDir::new("nudge-configured");
-        folder_config(&configured.0, &configured.0, "");
-        assert_eq!(take_backup_nudge(&configured.0, 50), None);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_git_backup_carries_config_toml() {
-        let root = TempDir::new("git-config");
-        let state = root.0.join("state");
-        fs::create_dir_all(&state).expect("state");
-        let remote = root.0.join("remote.git");
-        fs::create_dir_all(&remote).expect("remote");
-        git_in(&remote, &["init", "--quiet", "--bare"]);
-        let config = format!(
-            "[[backup]]\nkind = \"git\"\nurl = {:?}\n",
-            remote.display().to_string()
-        );
-        fs::write(state.join("config.toml"), &config).expect("config");
-        write_store(&state, "with config");
+        write_store(&state, "x");
         let results = run(&state, RunMode::Now, at(DAY)).expect("run");
         assert!(
             matches!(results[0].1, Ok(RunOutcome::Written(_))),
             "{results:?}"
         );
-        let machine = machine_name(&state).expect("machine");
-        let shown = Command::new("git")
-            .arg("-C")
-            .arg(&remote)
-            .args(["show", &format!("HEAD:machines/{machine}/config.toml")])
-            .output()
-            .expect("git show");
-        assert_eq!(String::from_utf8_lossy(&shown.stdout), config);
-        let (versions, _) = list_versions(&state, false).expect("versions");
-        assert!(version_config(&versions[0]).is_some_and(|hint| hint.contains("config.toml")));
+        let machine = machine_id(&state).expect("machine");
+        let pushed = git_in(
+            &remote,
+            &["show", &format!("HEAD:machines/{machine}/config.toml")],
+        );
+        assert!(!pushed.contains("s3cret"), "{pushed}");
+        assert!(
+            pushed.contains("API_TOKEN") && pushed.contains("OTHER"),
+            "{pushed}"
+        );
+        assert!(pushed.contains(ENV_PLACEHOLDER), "{pushed}");
+        assert!(pushed.starts_with("# Backed up by tsk."), "{pushed}");
+        let parsed = crate::agents::AgentProfiles::parse_for_tests(&pushed);
+        assert!(parsed, "the pushed file still parses as profiles");
+        assert_eq!(
+            sanitized_config("not = [toml"),
+            None,
+            "a broken file is not pushed"
+        );
+    }
+
+    #[test]
+    fn two_machines_pushing_at_once_both_land() {
+        let root = TempDir::new("race");
+        let remote = bare_repo(&root.0);
+        let states: Vec<PathBuf> = (0..2)
+            .map(|n| {
+                let dir = root.0.join(format!("machine{n}"));
+                fs::create_dir_all(&dir).expect("dir");
+                state_with_target(&dir, &remote, "")
+            })
+            .collect();
+        for round in 0..3 {
+            let handles: Vec<_> = states
+                .iter()
+                .cloned()
+                .map(|state| {
+                    std::thread::spawn(move || {
+                        write_store(&state, &format!("round {round}"));
+                        run(&state, RunMode::Now, at(DAY + round)).expect("run")
+                    })
+                })
+                .collect();
+            for handle in handles {
+                let results = handle.join().expect("thread");
+                assert!(
+                    matches!(results[0].1, Ok(RunOutcome::Written(_))),
+                    "{results:?}"
+                );
+            }
+        }
+        assert_eq!(
+            commits(&remote),
+            6,
+            "every backup from both machines landed"
+        );
+    }
+
+    #[test]
+    fn a_background_run_never_repacks_the_clone() {
+        let root = TempDir::new("no-gc");
+        let remote = bare_repo(&root.0);
+        let state = state_with_target(&root.0, &remote, "");
+        write_store(&state, "first");
+        run(&state, RunMode::Now, at(DAY)).expect("run");
+        let clone = fs::read_dir(state.join(REPOS_DIR))
+            .expect("repos")
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| path.join(".git").is_dir())
+            .expect("a clone");
+        // Enough loose objects that git's own fetch or commit would start `gc --auto`.
+        let blobs = root.0.join("blobs");
+        fs::create_dir_all(&blobs).expect("blobs");
+        let mut paths = Vec::new();
+        for n in 0..2000 {
+            let path = blobs.join(n.to_string());
+            fs::write(&path, format!("loose {n}")).expect("blob");
+            paths.push(path.display().to_string());
+        }
+        let mut args = vec!["hash-object", "-w"];
+        args.extend(paths.iter().map(String::as_str));
+        git_in(&clone, &args);
+        git_in(&clone, &["config", "gc.auto", "10"]);
+        git_in(&clone, &["config", "gc.autoDetach", "false"]);
+        let packs = || {
+            git_in(&clone, &["count-objects", "-v"])
+                .lines()
+                .find_map(|line| line.strip_prefix("packs: ").map(str::to_string))
+                .expect("packs line")
+        };
+        let before = packs();
+        write_store(&state, "second");
+        let results = run(&state, RunMode::Due(Trigger::Save), at(2 * DAY)).expect("run");
+        assert!(
+            matches!(results[0].1, Ok(RunOutcome::Written(_))),
+            "{results:?}"
+        );
+        assert_eq!(packs(), before, "no repack in a background run");
     }
 }

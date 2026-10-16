@@ -12,7 +12,7 @@ The board, CLI, and Herdr plugin share one store. The current store format is v1
 | `TSK_STATE_DIR` | Platform default | Task data, configuration, backups, trash, and release-check cache. The default is `~/.tsk` on macOS/Linux, `%LOCALAPPDATA%\tsk` on Windows, or `%USERPROFILE%\.tsk` when `LOCALAPPDATA` is unavailable. Without a usable platform home, tsk refuses to run rather than pick a directory |
 | `--state-dir <dir>` | State directory | Override storage for a data command |
 
-Use a local disk. NFS and synced folders such as Dropbox, iCloud Drive, or OneDrive are unsupported for the state directory; back up to them instead ([backup targets](#backup-targets)). Directory roots must be real directories, not symlinks or Windows reparse points such as junctions.
+Use a local disk. NFS and synced folders such as Dropbox, iCloud Drive, or OneDrive are unsupported for the state directory; use a [backup target](#backup-targets) instead. Directory roots must be real directories, not symlinks or Windows reparse points such as junctions.
 
 Herdr's plugin-specific state/config directories do not override these locations. Removing tsk leaves its task data intact.
 
@@ -90,7 +90,7 @@ A missing key keeps its default (`none`, `recent`). `g` and `s` still change the
 | `tsk.json.pre-restore-<time>` | The store a [`tsk restore`](#restore) replaced, named by UTC time; the newest five are kept |
 | `backup-status.json` | Each backup target's last success, last attempt, and last error |
 | `machine-id` | This state directory's machine id, generated once; names its backups |
-| `backup-repos/` | Local clones of git backup targets |
+| `backup-repos/` | Local clones of backup targets |
 | `launchers\`, `cleanups\` | Windows only: dispatch launchers and cleanup progress |
 
 An older binary refuses a newer or unversioned store instead of rewriting it. Use a compatible tsk version to open it. On first save, older stores migrate to v13. v6 added task assignees, dispatch base branches, and dispatch records; v7 added blocks (why, needs, options, what the block waits on, and replies) and the block undo step; v8 added the undo step for a start that dispatched; v9 added review rounds (done, checks, next, who the review is on, feedback, and how each round closed); v10 added who made each change (`by`) and what it changed (`detail`) to every new task event; v11 added `after`, the task numbers a task runs after, the prerequisite that started a task on its event, and the undo step that puts an `after` list back; v12 added `sent` to a reply that `tsk reply --send` delivered on its own, so an unblock or send-back does not send it again; v13 adds the status a done's undo goes back to, and undo steps for status changes, step changes, and archiving. A done from an older store undoes to open, as it did before. A reply from an older store reads as not sent. A task from an older store runs after nothing. Events from an older store keep their kind and time and show on the [paper trail](/docs/task-page/#paper-trail) without who or what. The original document is saved as `tsk.json.v<N>`, for example `tsk.json.v5` from v0.11. A blocked task from an older store keeps its status with no block and reads as blocked on you; a task in review keeps its status with no round and reads as in review on you. Earlier stores still run through each migration in order, including v5 batch undo and the v3 to v4 move from ready to open.
@@ -99,63 +99,72 @@ Archived tasks stay in the task document with their existing status. [Archive an
 
 ## Backup targets
 
-`tsk.json.1` and `tsk.json.v<N>` sit on the same disk as the store. A backup target puts copies somewhere else: a folder (an iCloud Drive, Dropbox, OneDrive, or Google Drive folder their desktop apps upload, or a USB disk) or a git repository (for example a private GitHub repository). Each backup is `tsk.json` byte for byte, so it carries its store format, plus a copy of `config.toml` beside it.
+`tsk.json.1` and `tsk.json.v<N>` sit on the same disk as the store. A backup target puts copies in a git repository somewhere else, such as a private GitHub repository. Each backup is `tsk.json` byte for byte, so it carries its store format, plus `config.toml` with secrets removed.
 
 ```sh
-tsk backup add ~/Dropbox/tsk                      # a folder, backed up on every save
-tsk backup add git@github.com:me/tsk-backup.git   # a git repository, backed up daily
+tsk backup setup                                  # make (or reuse) a private GitHub repository and add it
+tsk backup add git@gitlab.com:me/tsk-backup.git   # any other git repository
 tsk backup list                                   # targets, last backup, last error
 tsk backup                                        # back up to every target now
-tsk backup remove 2                               # by number in list, path, or URL
+tsk backup remove 2                               # by number in list, URL, or path
 ```
 
-On Windows, add a OneDrive folder the same way: `tsk backup add C:\Users\me\OneDrive\tsk`.
+### Set up with GitHub
 
-`tsk backup add` tests the target straight away: it runs the first backup to it in the foreground and prints where the copy went. When there is nothing to back up yet (a new machine), a git target is still cloned, so a wrong URL or missing access shows here. If the first backup fails, the target stays in `config.toml`, the command exits 1, and it says what to fix; rerun `tsk backup` once it is fixed.
+`tsk backup setup` needs the [GitHub CLI](https://cli.github.com) (`gh`; on Windows `winget install GitHub.cli`), installed and logged in (`gh auth login`); without it, it says how to get it and writes nothing. When `gh` refuses, its own message is shown. It uses `<your GitHub user>/tsk-backup`, or the repository `--repo` names: `name`, `owner/name`, or `host/owner/name` for GitHub Enterprise (every `gh` call then runs with `GH_HOST` set to that host; otherwise your own `GH_HOST` or `gh`'s default host applies).
 
-A folder target is only as safe as the app that syncs it: tsk writes the copy into the folder and cannot see whether iCloud, Dropbox, OneDrive, or Google Drive uploaded it, so check the app shows the file. A git target is the one tsk can confirm left the machine: a backup succeeds only once the push does.
+- A repository that does not exist is created private and empty.
+- An existing private repository is used when it is empty or already holds tsk backups (`machines/`); one with other content is refused.
+- An internal (enterprise) repository is used, with a note that everyone in the enterprise can read it.
+- A public repository is refused: backups hold your task notes.
+
+It then adds the repository like `tsk backup add`, with the clone URL that matches your `gh` git protocol (ssh or https), and prints it. Run again with the target already added, it says so and changes nothing. On a new machine whose store is still empty, it says when the repository already holds other machines' backups and suggests `tsk restore`; it never restores by itself.
+
+### Add any repository
+
+`tsk backup add <git-url>` takes a URL (`git@host:me/repo.git`, `https://…`, `ssh://…`, `file://…`) or the path of a local repository, stored as an absolute path. It tests the target straight away: it runs the first backup in the foreground and prints where it went. With nothing to back up yet (a new machine), it still clones the repository, so a wrong URL or missing access shows here. If the first backup fails, the target stays in `config.toml`, the command exits 1, and it says what to fix; rerun `tsk backup` once it is fixed. Adding a target that exists only updates its `every` (and tests it again).
+
+After a first backup that worked, `add` and `setup` also start one detached `tsk backup run`, exactly as a save does, and wait up to five seconds for it to reach the repository. If only that run fails, they say so (the exit code stays 0): background runs have no terminal, so git must reach the repository without a prompt. The usual cause is an ssh key with a passphrase and no ssh-agent the board's environment can see, for example a board started in Herdr from a shell that has no `SSH_AUTH_SOCK`. Load the key into an agent that every shell sees (on macOS, `UseKeychain yes` and `AddKeysToAgent yes` in `~/.ssh/config`), or use https with a credential helper.
+
+Advanced: a local bare repository works as a target too, including one inside a Dropbox, iCloud Drive, OneDrive, or Google Drive folder (`git init --bare ~/Dropbox/tsk-backup.git`), for **one machine only**. tsk can only confirm the push into the folder; the cloud app still has to finish syncing it, and two machines pushing to the same synced folder can corrupt the repository. For more than one machine, use `tsk backup setup` or another hosted repository.
+
+### config.toml
 
 The verbs write `[[backup]]` entries to `config.toml`; you can also edit them by hand:
 
 ```toml
 [[backup]]
-kind = "folder"            # "folder" or "git"
-path = "/Users/me/Dropbox/tsk"
-every = "save"             # "save", "open", "daily", or "twice-daily"
-keep_last = 10             # folder only
-keep_days = 30             # folder only
-
-[[backup]]
-kind = "folder"
-path = 'C:\Users\me\OneDrive\tsk'   # Windows: a literal string keeps the backslashes
-
-[[backup]]
-kind = "git"
 url = "git@github.com:me/tsk-backup.git"
-every = "daily"
+every = "save"             # "save" (the default) or "daily"
 ```
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `kind` | required | `folder` or `git` |
-| `path` / `url` | required | The folder (it must exist) or the repository tsk pushes to |
-| `every` | `save` (folder), `daily` (git) | `save`: after every save. `open`: on every full board open. `daily` / `twice-daily`: on the first save or board open 24 or 12 hours after the target's last backup (there is no background service; a failed attempt is retried ten minutes later) |
-| `keep_last` | 10 | Folder only: the newest copies kept |
-| `keep_days` | 30 | Folder only: also the first copy of each of the last this-many UTC days, today included, which is the store as it was before that day's changes |
+| `url` | required | The repository tsk pushes to: a URL or a local path |
+| `every` | `save` | `save`: after every save. `daily`: on the first save or full board open 24 hours after the target's last backup (there is no background service; a failed attempt is retried ten minutes later) |
+| `kind` | `git` | Optional; `git` is the only kind |
 
-`tsk backup add` treats a location as git when it is a URL (`https://…`, `ssh://…`, `file://…`), `user@host:path`, ends in `.git`, or is a bare repository; `--git` or `--folder` says so when it cannot tell. Adding a target that exists only updates its `every` (and tests it again).
+### How a backup runs
 
-A folder target holds `tsk-backups/<machine>/tsk-<UTC time>.json` with `config-<UTC time>.toml` beside it (a second backup within one second adds `-1`, `-2`, …). Each file is written privately (owner-only on macOS and Linux) beside its final name and renamed, so a sync app never uploads half a file, and copies past `keep_last` and `keep_days` are deleted with their config copy. A git target holds `machines/<machine>/tsk.json` and `machines/<machine>/config.toml` with one commit per backup, so its history is every version. tsk runs your own `git` with your credentials and stores no tokens, checks files out with links off, and refuses to write through a link in its clone; it never prompts, so use a key or credential helper that works without one. `<machine>` is the host name plus the first eight characters of `machine-id`. Several machines can share one target.
+Backups never block or fail a save. When a target is due, the save or board open starts a detached `tsk backup run` and returns; that child commits and pushes. Runs are coalesced: one runs and at most one waits, so a burst of saves pushes at most twice, and a save that finds a run already waiting leaves its trigger to it instead of starting another child. A background run never stops to repack its clone (git's automatic `gc` is off there); `tsk backup`, `add`, and `setup` let git tidy it when it wants to. A store and `config.toml` unchanged since a target's last backup are not pushed again. A store that does not parse is never pushed: the target records `store does not parse, not backed up` instead.
 
-Backups never block or fail a save. When a target is due, the save or board open starts a detached `tsk backup run` and returns; a store and `config.toml` unchanged since a target's last backup are not copied again. A store that does not parse is never copied: the target records `store does not parse, not backed up` instead. A failure is recorded in `backup-status.json`: `tsk backup list` shows it, and after each failed attempt the next full board open shows it on the status row, until the target succeeds. `tsk backup` runs every target in the foreground and exits 1 if any failed.
+A failure is recorded in `backup-status.json`: `tsk backup list` shows it, and after each failed attempt the next full board open shows it on the status row, until the target succeeds. `tsk backup` runs every target in the foreground and exits 1 if any failed.
 
-Once the store holds 10 tasks and no target is configured, one full board open says `No backup yet: tsk backup add <folder|git-url>` on the status row. It is shown once per state directory, never again.
+The repository holds `machines/<machine-id>/tsk.json`, `config.toml`, and `machine.toml` (host name and tsk version), one commit per backup, so its history is every version. Each commit message records the host name, task count, tsk version, and store format. `<machine-id>` is this state directory's `machine-id`, so a host name change keeps the same directory; several machines can share one repository. The repository root is left free on purpose: a later sync across machines puts its shared file there.
 
-Backups are not encrypted and contain your task notes: use a private folder or a private repository. Trash (`trash.jsonl`) is not backed up. tsk never prunes a `<machine>` directory a machine stopped writing to (after a host name change, say) or the clones under `backup-repos/`; delete them by hand when you no longer want them.
+tsk runs your own `git` with your credentials and stores no tokens. The detached child never prompts and does not depend on your global git setup: it commits as `tsk`, without signing or hooks, with interactive credential helpers off and ssh in batch mode (unless you set `GIT_SSH_COMMAND` yourself), so use a key or credential helper that works without a prompt. It checks files out with links off and refuses to write through a link in its clone. A push another machine raced is retried up to three times (the machines write different directories, so there is never a conflict); any other refusal is recorded at once.
+
+### Secrets
+
+The pushed `config.toml` keeps every key but replaces each value under `[agent.<name>.env]` with `"<not backed up>"`, under a comment saying so; fill them in by hand after copying a profile over. A `config.toml` that does not parse is not pushed at all. Backups are not encrypted and contain your task notes: keep the repository private. Trash (`trash.jsonl`) is not backed up.
+
+Once the store holds 10 tasks and no target is configured, one full board open says `No backup yet: run tsk backup setup` on the status row. It is shown once per state directory, never again.
+
+tsk never deletes `machines/<machine-id>/` directories a machine stopped writing to, or the clones under `backup-repos/`; delete them by hand when you no longer want them.
 
 ### Restore
 
-`tsk restore` lists the versions every target holds, newest first, with an id, time, machine, task count, and target (a git target shows the newest 20 per machine; `--all` shows every one). In a terminal it asks which to restore, by number or id; `tsk restore <id>` restores one without asking. A task number such as `T12` is not a version: restore suggests `tsk trash restore T12`.
+`tsk restore` lists the versions every target holds, newest first, with an id, time, host name, task count, and target (the newest 20 per machine; `--all` shows every one). In a terminal it asks which to restore, by number or id; `tsk restore <id>` restores one without asking. A task number such as `T12` is not a version: restore suggests `tsk trash restore T12`.
 
 ```sh
 tsk restore
@@ -164,14 +173,14 @@ tsk restore 3f9a1c2e
 
 Restore copies the current `tsk.json` to `tsk.json.pre-restore-<UTC time>`, then replaces it with the chosen version under the store lock. It keeps the newest five `tsk.json.pre-restore-*` copies and deletes older ones. A version in an older store format is written as is and migrates on the next open; one newer than this tsk is refused with a request to update tsk, as are files that are not a store.
 
-Restore never changes `config.toml`. It prints where the `config.toml` backed up with that version is (a file in the folder, or the `git show` command that prints it), so you can copy agent profiles and settings over by hand.
+Restore never changes `config.toml`. It prints the `git show` command that prints the `config.toml` backed up with that version, so you can copy agent profiles and settings over by hand.
 
 Restore refuses while a board or quick capture is open on the store: an open board merges what is on disk into what it holds and would write back, on its next save, every task the restored version does not have. Quit them, then restore.
 
-On a new machine, add the same target and restore from it:
+On a new machine, set up the same repository and restore from it:
 
 ```sh
-tsk backup add git@github.com:me/tsk-backup.git
+tsk backup setup        # or: tsk backup add <git-url>
 tsk restore
 ```
 

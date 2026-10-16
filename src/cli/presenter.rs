@@ -133,7 +133,7 @@ pub fn top_level_help() -> String {
         "  unarchive  put an archived task back\n",
         "  project    archive or unarchive a project\n",
         "  trash      restore a trashed task\n",
-        "  backup     back the store up to folders or git repositories\n",
+        "  backup     back the store up to a git repository\n",
         "  restore    put a backed-up version of the store back\n\n",
         "Setup\n",
         "  setup    register herdr, or install the agent skill\n",
@@ -2023,40 +2023,43 @@ pub fn trash_help() -> CliOutput {
 pub fn backup_help() -> CliOutput {
     help(HelpDoc {
         usage: vec![
+            "tsk backup setup [--repo <[host/]owner/name|name>] [--state-dir <dir>]".into(),
             "tsk backup [now] [--state-dir <dir>]".into(),
-            "tsk backup add <folder|git-url> [--every <when>] [--folder | --git] [--state-dir <dir>]".into(),
+            "tsk backup add <git-url> [--every <when>] [--state-dir <dir>]".into(),
             "tsk backup list [--state-dir <dir>]".into(),
             "tsk backup remove <target> [--state-dir <dir>]".into(),
         ],
-        purpose: "Back the task store up to folders or git repositories.".into(),
+        purpose: "Back the task store and config.toml up to git repositories.".into(),
         groups: vec![
             group(
                 "Actions",
                 &[
+                    ("setup", "create or reuse a private GitHub repository with gh, then add it"),
                     ("now", "back up to every target now (the default)"),
-                    ("add <folder|git-url>", "add a target to config.toml and test it with a first backup"),
+                    ("add <git-url>", "add a repository (URL or local path) to config.toml and test it with a first backup"),
                     ("list", "show targets, their last backup, and their last error"),
-                    ("remove <target>", "remove a target by its path, URL, or number in list"),
+                    ("remove <target>", "remove a target by its URL, path, or number in list"),
                 ],
             ),
             group(
                 "Values",
                 &[
-                    ("--every <when>", "save, open, daily, or twice-daily (default: save for a folder, daily for git)"),
-                    ("--folder, --git", "say what the location is when tsk cannot tell"),
+                    ("--repo <name>", "setup: name, owner/name, or host/owner/name (default tsk-backup)"),
+                    ("--every <when>", "save (the default) or daily"),
                     ("--state-dir <dir>", "use another board store"),
                 ],
             ),
         ],
         examples: vec![
-            "tsk backup add ~/Dropbox".into(),
+            "tsk backup setup".into(),
             "tsk backup add git@github.com:me/tsk-backup.git".into(),
+            "tsk backup add https://github.com/me/tsk-backup.git --every daily".into(),
             "tsk backup list".into(),
             "tsk backup".into(),
         ],
         refusals: vec![
             "no backup targets".into(),
-            "folder not found".into(),
+            "setup: gh missing or not logged in, or the repository is public or holds other content".into(),
             "no backup target <target>".into(),
             "a target failed to back up (a new target stays added)".into(),
         ],
@@ -2072,7 +2075,7 @@ pub fn backup_usage(reason: &str) -> CliOutput {
     CliOutput {
         stdout: String::new(),
         stderr: format!(
-            "tsk backup: {}\nusage: tsk backup [now | add <folder|git-url> [--every <when>] [--folder | --git] | list | remove <target>] [--state-dir <dir>]\n",
+            "tsk backup: {}\nusage: tsk backup [setup [--repo <name>] | now | add <git-url> [--every <when>] | list | remove <target>] [--state-dir <dir>]\n",
             human_reason(reason)
         ),
         code: 2,

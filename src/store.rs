@@ -1131,6 +1131,13 @@ pub fn check_document(document: &[u8]) -> Result<(), RestoreError> {
         .map_err(|error| RestoreError::Invalid(format!("not a readable store: {error}")))
 }
 
+/// A store document's `format_version`, when it has one.
+pub fn format_version(document: &[u8]) -> Option<u32> {
+    peek_format_version(std::str::from_utf8(document).ok()?)
+        .ok()
+        .filter(|version| *version > 0)
+}
+
 /// Restores keep this many `tsk.json.pre-restore-*` copies, deleting older ones.
 pub const PRE_RESTORE_KEPT: usize = 5;
 

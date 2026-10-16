@@ -147,25 +147,16 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 
 # --- Backups ------------------------------------------------------------------
 
-# Copies of tsk.json (and this file) to a folder (iCloud Drive, Dropbox,
-# OneDrive, Google Drive, a USB disk) or a git repository. `tsk backup add
-# <folder|git-url>` writes these entries and runs a first backup; `tsk backup
-# list` shows how each went; `tsk restore` puts a copy back. Backups hold your
-# task notes, so keep the folder or repository private.
-#   every      "save", "open" (board open), "daily", or "twice-daily"
-#              (default: "save" for a folder, "daily" for git)
-#   keep_last  folder only: the newest copies kept (default 10)
-#   keep_days  folder only: also the first copy of each day for this many
-#              days (default 30)
+# Copies of tsk.json and this file to a git repository. `tsk backup setup`
+# makes a private GitHub repository with the GitHub CLI and adds it; `tsk
+# backup add <git-url>` adds any other repository. Both write these entries and
+# run a first backup; `tsk backup list` shows how each went; `tsk restore` puts a
+# version back. tsk uses your own `git` and its credentials. Backups hold your
+# task notes, so keep the repository private.
+#   every  "save" (the default) or "daily"
 # [[backup]]
-# kind = "folder"
-# path = "/Users/you/Library/Mobile Documents/com~apple~CloudDocs/tsk"
+# url = "git@github.com:you/tsk-backup.git"
 # every = "save"
-
-# On Windows, a OneDrive folder (a literal string keeps the backslashes):
-# [[backup]]
-# kind = "folder"
-# path = 'C:\Users\you\OneDrive\tsk'
 "##;
 
 /// Seed the commented profile examples on a full board open.
@@ -315,6 +306,12 @@ impl AgentProfiles {
             profiles.insert(name.to_string(), parse_profile(name, table)?);
         }
         Ok(Self { profiles })
+    }
+
+    /// Whether `content` parses as profiles (tests of other modules).
+    #[cfg(test)]
+    pub(crate) fn parse_for_tests(content: &str) -> bool {
+        Self::parse(content).is_ok()
     }
 
     pub fn get(&self, name: &str) -> Option<&AgentProfile> {
