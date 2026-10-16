@@ -165,11 +165,7 @@ fn a_git_target_restores_into_a_fresh_state_dir() {
     let added = tsk(&laptop, &["backup", "add", repo_arg]);
     assert_eq!(added.status.code(), Some(0), "{}", stderr(&added));
     assert!(stdout(&added).contains("git target"), "{}", stdout(&added));
-    assert!(
-        stdout(&added).contains("(every daily)"),
-        "{}",
-        stdout(&added)
-    );
+    assert!(stdout(&added).contains("(daily)"), "{}", stdout(&added));
     let pushed = tsk(&laptop, &["backup"]);
     assert_eq!(pushed.status.code(), Some(0), "{}", stderr(&pushed));
     assert!(stdout(&pushed).contains("machines/"), "{}", stdout(&pushed));

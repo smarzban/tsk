@@ -115,6 +115,16 @@ impl Every {
     pub fn parse(word: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|every| every.word() == word)
     }
+
+    /// How often, for people: `every save`, `on open`, `daily`, `twice daily`.
+    pub fn phrase(self) -> &'static str {
+        match self {
+            Self::Save => "every save",
+            Self::Open => "on open",
+            Self::Daily => "daily",
+            Self::TwiceDaily => "twice daily",
+        }
+    }
 }
 
 /// What started a background run.
@@ -537,25 +547,29 @@ pub fn is_due(every: Every, trigger: Trigger, status: &TargetStatus, now: u64) -
     stale && !retrying_too_soon
 }
 
+/// A folder copy's place in time: its Unix second, then its same-second suffix (`0` for none,
+/// `n` for `-n`), so copies made within one second still order and count one by one.
+pub type CopyKey = (u64, u32);
+
 /// The copies a folder target keeps: the `keep_last` newest, plus the newest of each of the
-/// `keep_days` UTC days ending today. `stamps` are Unix seconds.
+/// `keep_days` UTC days ending today.
 pub fn retention_keep(
-    stamps: &[u64],
+    copies: &[CopyKey],
     now: u64,
     keep_last: usize,
     keep_days: usize,
-) -> BTreeSet<u64> {
-    let mut newest_first = stamps.to_vec();
+) -> BTreeSet<CopyKey> {
+    let mut newest_first = copies.to_vec();
     newest_first.sort_unstable_by(|a, b| b.cmp(a));
     newest_first.dedup();
-    let mut keep: BTreeSet<u64> = newest_first.iter().take(keep_last).copied().collect();
+    let mut keep: BTreeSet<CopyKey> = newest_first.iter().take(keep_last).copied().collect();
     let today = now / DAY_SECS;
     for back in 0..keep_days as u64 {
         let Some(day) = today.checked_sub(back) else {
             break;
         };
-        if let Some(stamp) = newest_first.iter().find(|stamp| **stamp / DAY_SECS == day) {
-            keep.insert(*stamp);
+        if let Some(copy) = newest_first.iter().find(|copy| copy.0 / DAY_SECS == day) {
+            keep.insert(*copy);
         }
     }
     keep
@@ -811,17 +825,17 @@ fn backup_to_folder(
 /// Delete the copies [`retention_keep`] does not keep. Other files are left alone.
 fn prune_folder(dir: &Path, now: u64, keep_last: usize, keep_days: usize) {
     let copies = folder_copies(dir);
-    let stamps: Vec<u64> = copies.iter().map(|(stamp, _)| *stamp).collect();
-    let keep = retention_keep(&stamps, now, keep_last, keep_days);
-    for (stamp, path) in copies {
-        if !keep.contains(&stamp) {
+    let keys: Vec<CopyKey> = copies.iter().map(|(key, _)| *key).collect();
+    let keep = retention_keep(&keys, now, keep_last, keep_days);
+    for (key, path) in copies {
+        if !keep.contains(&key) {
             let _ = fs::remove_file(path);
         }
     }
 }
 
-/// `tsk-<stamp>.json` copies in one machine directory with their times.
-fn folder_copies(dir: &Path) -> Vec<(u64, PathBuf)> {
+/// `tsk-<stamp>[-<n>].json` copies in one machine directory with their keys.
+fn folder_copies(dir: &Path) -> Vec<(CopyKey, PathBuf)> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -833,18 +847,20 @@ fn folder_copies(dir: &Path) -> Vec<(u64, PathBuf)> {
             // `<stamp>` or a same-second `<stamp>-<n>`.
             let stamp = parse_utc_stamp(stem.get(..16)?)?;
             let rest = &stem[16..];
-            if !(rest.is_empty()
-                || rest
-                    .strip_prefix('-')
-                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
-            {
-                return None;
-            }
+            let suffix = if rest.is_empty() {
+                0
+            } else {
+                let digits = rest.strip_prefix('-')?;
+                if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                    return None;
+                }
+                digits.parse::<u32>().ok()?
+            };
             entry
                 .file_type()
                 .ok()
                 .filter(|kind| kind.is_file())
-                .map(|_| (stamp, entry.path()))
+                .map(|_| ((stamp, suffix), entry.path()))
         })
         .collect()
 }
@@ -1114,6 +1130,9 @@ pub struct Version {
     pub target: String,
     /// Tasks in the copy (notices and deleted tasks excluded); `None` when unreadable.
     pub tasks: Option<usize>,
+    /// Orders versions made in the same second: a folder copy's suffix, a git commit's
+    /// place in history (newer is higher).
+    order: u32,
     source: Source,
 }
 
@@ -1148,7 +1167,11 @@ pub fn list_versions(state_dir: &Path, all: bool) -> Result<Listing, String> {
             Err(error) => failures.push((target, error)),
         }
     }
-    versions.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| a.id.cmp(&b.id)));
+    versions.sort_by(|a, b| {
+        (b.at, b.order)
+            .cmp(&(a.at, a.order))
+            .then_with(|| a.id.cmp(&b.id))
+    });
     Ok((versions, failures))
 }
 
@@ -1166,7 +1189,7 @@ fn folder_versions(target: &Target) -> Result<Vec<Version>, String> {
             continue;
         }
         let machine_name = machine.file_name().to_string_lossy().into_owned();
-        for (at, path) in folder_copies(&machine.path()) {
+        for ((at, order), path) in folder_copies(&machine.path()) {
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
             versions.push(Version {
                 id: version_id(target, &machine_name, name.as_deref().unwrap_or_default()),
@@ -1174,6 +1197,7 @@ fn folder_versions(target: &Target) -> Result<Vec<Version>, String> {
                 machine: machine_name.clone(),
                 target: target.location.clone(),
                 tasks: fs::read(&path).ok().and_then(|bytes| count_tasks(&bytes)),
+                order,
                 source: Source::File(path),
             });
         }
@@ -1203,10 +1227,13 @@ fn git_versions(state_dir: &Path, target: &Target, all: bool) -> Result<Vec<Vers
     )?;
     let mut per_machine: BTreeMap<String, usize> = BTreeMap::new();
     let mut versions = Vec::new();
-    for record in log
+    // `git log` lists newest first: the first record gets the highest order.
+    for (position, record) in log
         .split('\u{1}')
         .filter(|record| !record.trim().is_empty())
+        .enumerate()
     {
+        let order = u32::MAX - u32::try_from(position).unwrap_or(u32::MAX);
         let mut lines = record.lines();
         let Some((commit, time)) = lines.next().and_then(|line| line.split_once(' ')) else {
             continue;
@@ -1240,6 +1267,7 @@ fn git_versions(state_dir: &Path, target: &Target, all: bool) -> Result<Vec<Vers
                 tasks: read_source(&source)
                     .ok()
                     .and_then(|bytes| count_tasks(&bytes)),
+                order,
                 source,
             });
         }
@@ -1535,6 +1563,58 @@ mod tests {
         assert_eq!(parse_utc_stamp("garbage"), None);
     }
 
+    /// [`retention_keep`] for copies with no same-second suffix, as plain stamps.
+    fn keep_stamps(stamps: &[u64], now: u64, keep_last: usize, keep_days: usize) -> BTreeSet<u64> {
+        let keys: Vec<CopyKey> = stamps.iter().map(|stamp| (*stamp, 0)).collect();
+        retention_keep(&keys, now, keep_last, keep_days)
+            .into_iter()
+            .map(|(stamp, _)| stamp)
+            .collect()
+    }
+
+    #[test]
+    fn retention_counts_same_second_copies_one_by_one() {
+        let now = 100 * DAY + 12 * HOUR;
+        // Seventeen copies at three a second: (s, 0), (s, 1), (s, 2), (s + 1, 0), …
+        let keys: Vec<CopyKey> = (0..17u32)
+            .map(|n| (now - 6 + u64::from(n / 3), n % 3))
+            .collect();
+        let keep = retention_keep(&keys, now, 10, 7);
+        let mut newest_first = keys.clone();
+        newest_first.sort_unstable_by(|a, b| b.cmp(a));
+        assert_eq!(
+            keep,
+            newest_first[..10].iter().copied().collect::<BTreeSet<_>>()
+        );
+    }
+
+    #[test]
+    fn a_burst_of_saves_keeps_ten_copies_and_lists_the_newest_first() {
+        let state = TempDir::new("burst-state");
+        let folder = TempDir::new("burst-folder");
+        folder_config(&state.0, &folder.0, "");
+        let start = 400 * DAY;
+        for n in 0..17u64 {
+            write_store(&state.0, &format!("{{\"n\":{n}}}"));
+            run(&state.0, RunMode::Now, at(start + n / 3)).expect("run");
+        }
+        let machine = machine_name(&state.0).expect("machine");
+        assert_eq!(
+            folder_copies(&folder.0.join(FOLDER_ROOT).join(&machine)).len(),
+            10
+        );
+        let (versions, _) = list_versions(&state.0, false).expect("versions");
+        let bodies: Vec<String> = versions
+            .iter()
+            .map(|version| String::from_utf8(read_version(version).expect("read")).expect("utf-8"))
+            .collect();
+        let expected: Vec<String> = (7..17u64).rev().map(|n| format!("{{\"n\":{n}}}")).collect();
+        assert_eq!(
+            bodies, expected,
+            "same-second copies list newest suffix first"
+        );
+    }
+
     #[test]
     fn retention_keeps_the_newest_ten_plus_one_per_day_for_seven_days() {
         let now = 100 * DAY + 12 * HOUR;
@@ -1544,7 +1624,7 @@ mod tests {
             stamps.push(now - day * DAY);
             stamps.push(now - day * DAY - HOUR);
         }
-        let keep = retention_keep(&stamps, now, 10, 7);
+        let keep = keep_stamps(&stamps, now, 10, 7);
         let newest_ten: Vec<u64> = (0..10).map(|hour| now - hour * HOUR).collect();
         for stamp in &newest_ten {
             assert!(keep.contains(stamp));
@@ -1570,14 +1650,14 @@ mod tests {
     fn retention_honours_custom_numbers() {
         let now = 50 * DAY;
         let stamps: Vec<u64> = (0..20).map(|n| now - n * DAY).collect();
-        let keep = retention_keep(&stamps, now, 2, 3);
+        let keep = keep_stamps(&stamps, now, 2, 3);
         assert_eq!(
             keep,
             [now, now - DAY, now - 2 * DAY]
                 .into_iter()
                 .collect::<BTreeSet<_>>()
         );
-        let keep = retention_keep(&stamps, now, 5, 0);
+        let keep = keep_stamps(&stamps, now, 5, 0);
         assert_eq!(keep.len(), 5);
         assert!(keep.contains(&now) && keep.contains(&(now - 4 * DAY)));
     }

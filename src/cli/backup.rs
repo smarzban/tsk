@@ -229,10 +229,10 @@ fn backup_add(
                 AddOutcome::Unchanged => "already have",
             };
             let mut stdout = format!(
-                "{verb} {} target {} (every {})\n",
+                "{verb} {} target {} ({})\n",
                 target.kind.word(),
                 terminal_text(&target.location),
-                target.every.word()
+                target.every.phrase()
             );
             if outcome == AddOutcome::Added {
                 stdout.push_str("Backups contain your task notes: keep the target private.\n");
@@ -293,11 +293,11 @@ fn backup_list(state_dir: &std::path::Path) -> CliOutput {
     let mut stdout = String::new();
     for (index, (target, status)) in listed.iter().enumerate() {
         stdout.push_str(&format!(
-            "{}. {} {} (every {})\n",
+            "{}. {} {} ({})\n",
             index + 1,
             target.kind.word(),
             terminal_text(&target.location),
-            target.every.word()
+            target.every.phrase()
         ));
         let last = status
             .last_success

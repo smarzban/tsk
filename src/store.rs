@@ -875,7 +875,12 @@ impl TaskStore {
             (|| -> io::Result<()> {
                 fs::copy(&file, &kept)?;
                 fsperm::tighten_file(&kept);
-                File::open(&kept)?.sync_all()?;
+                // Write access: Windows flushes only a handle opened for writing.
+                fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&kept)?
+                    .sync_all()?;
                 StdFilesystem.sync_directory(&self.path)
             })()
             .map_err(|e| RestoreError::Store(e.into()))?;
