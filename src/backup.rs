@@ -411,7 +411,27 @@ pub fn absolute_path(path: &str) -> Option<String> {
         std::env::current_dir().ok()?.join(path)
     };
     let absolute = fs::canonicalize(&absolute).unwrap_or(absolute);
-    absolute.to_str().map(str::to_string)
+    absolute.to_str().map(plain_path)
+}
+
+/// A Windows verbatim path (`\\?\C:\…`, `\\?\UNC\server\share\…`), as `canonicalize`
+/// returns, in its ordinary spelling (`C:\…`, `\\server\share\…`), which git and people
+/// can use. Any other path, including a verbatim one with no drive or UNC form, is unchanged.
+pub fn plain_path(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    if let Some(rest) = path.strip_prefix(r"\\?\") {
+        let bytes = rest.as_bytes();
+        let drive = bytes.len() >= 2
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && (bytes.len() == 2 || bytes[2] == b'\\');
+        if drive {
+            return rest.to_string();
+        }
+    }
+    path.to_string()
 }
 
 /// Whether `location` reads as a git remote rather than a folder: a URL, scp-style
@@ -793,13 +813,24 @@ fn backup_to_folder(
     let dir = root.join(FOLDER_ROOT).join(machine);
     fs::create_dir_all(&dir)
         .map_err(|error| format!("could not create {}: {error}", dir.display()))?;
-    // A second copy in the same second gets `-1`, `-2`, … rather than replacing the first.
+    // A second copy in the same second gets the next suffix above every copy of that second,
+    // even one pruned since, so the newest always sorts newest.
     let stamp = utc_stamp(now);
-    let mut path = dir.join(format!("tsk-{stamp}.json"));
-    let mut collisions = 0_u32;
+    let second = unix_secs(now);
+    let mut suffix = folder_copies(&dir)
+        .into_iter()
+        .filter(|((at, _), _)| *at == second)
+        .map(|((_, suffix), _)| suffix + 1)
+        .max()
+        .unwrap_or(0);
+    let name = |suffix: u32| match suffix {
+        0 => format!("tsk-{stamp}.json"),
+        n => format!("tsk-{stamp}-{n}.json"),
+    };
+    let mut path = dir.join(name(suffix));
     while fs::symlink_metadata(&path).is_ok() {
-        collisions += 1;
-        path = dir.join(format!("tsk-{stamp}-{collisions}.json"));
+        suffix += 1;
+        path = dir.join(name(suffix));
     }
     // Written whole beside the target, then renamed, so a sync client never uploads half a copy.
     let tmp = dir.join(format!(
@@ -1109,12 +1140,18 @@ fn git_ok(dir: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 fn git_failure(verb: &str, output: &std::process::Output) -> String {
+    // Git's whole message (its last few lines when long): one line alone can be a fragment.
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let detail = stderr
+    let lines: Vec<&str> = stderr
         .lines()
         .map(str::trim)
-        .rfind(|line| !line.is_empty())
-        .unwrap_or("no error output");
+        .filter(|line| !line.is_empty())
+        .collect();
+    let detail = if lines.is_empty() {
+        "no error output".to_string()
+    } else {
+        lines[lines.len().saturating_sub(4)..].join(" / ")
+    };
     format!("git {verb} failed: {detail}")
 }
 
@@ -2125,5 +2162,65 @@ url = "git@example.com:me/tsk.git"
                 "nothing written beside the victim: {stray:?}"
             );
         }
+    }
+
+    #[test]
+    fn verbatim_windows_paths_read_as_plain_paths() {
+        assert_eq!(
+            plain_path(r"\\?\C:\Users\me\remote.git"),
+            r"C:\Users\me\remote.git"
+        );
+        assert_eq!(plain_path(r"\\?\D:"), r"D:");
+        assert_eq!(
+            plain_path(r"\\?\UNC\server\share\tsk"),
+            r"\\server\share\tsk"
+        );
+        for unchanged in [
+            r"\\?\Volume{0a1b}\tsk",
+            r"\\?\C:relative",
+            r"C:\Users\me",
+            r"\\server\share",
+            "/Users/me/Dropbox",
+        ] {
+            assert_eq!(plain_path(unchanged), unchanged);
+        }
+    }
+
+    #[test]
+    fn a_git_failure_keeps_the_whole_message() {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt;
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(1),
+            stdout: Vec::new(),
+            stderr: b"fatal: destination path 'x' already exists\n  and the repository exists.\n\n"
+                .to_vec(),
+        };
+        assert_eq!(
+            git_failure("clone", &output),
+            "git clone failed: fatal: destination path 'x' already exists / and the repository exists."
+        );
+    }
+
+    #[test]
+    fn a_same_second_copy_after_a_prune_still_sorts_newest() {
+        let state = TempDir::new("after-prune-state");
+        let folder = TempDir::new("after-prune-folder");
+        folder_config(&state.0, &folder.0, "");
+        let machine = machine_name(&state.0).expect("machine");
+        let dir = folder.0.join(FOLDER_ROOT).join(&machine);
+        fs::create_dir_all(&dir).expect("machine dir");
+        let now = 400 * DAY;
+        let stamp = utc_stamp(at(now));
+        // The unsuffixed copy of this second was pruned; -1 and -2 remain.
+        fs::write(dir.join(format!("tsk-{stamp}-1.json")), "{\"n\":1}").expect("copy 1");
+        fs::write(dir.join(format!("tsk-{stamp}-2.json")), "{\"n\":2}").expect("copy 2");
+        write_store(&state.0, "{\"n\":3}");
+        run(&state.0, RunMode::Now, at(now)).expect("run");
+        assert!(dir.join(format!("tsk-{stamp}-3.json")).exists());
+        let (versions, _) = list_versions(&state.0, false).expect("versions");
+        assert_eq!(read_version(&versions[0]).expect("read"), b"{\"n\":3}");
     }
 }
