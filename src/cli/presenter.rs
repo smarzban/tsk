@@ -1519,6 +1519,7 @@ pub fn cleaned_merged(
     let branch_reason = result
         .branch_reason
         .map(|reason| reason.message(result.base.as_deref(), result.remote.as_deref()));
+    let warning = crate::dispatch::join_warnings(result.warning, result.workspace_warning);
     let stdout = if json {
         format!("{}\n", {
             let mut value = serde_json::json!({
@@ -1527,7 +1528,7 @@ pub fn cleaned_merged(
                 "worktree": {"path": result.worktree_path, "outcome": worktree},
                 "branch": {"name": result.branch_name, "outcome": branch, "reason": branch_reason},
                 "workspace": {"id": result.workspace_id, "outcome": workspace},
-                "warning": result.warning,
+                "warning": warning,
             });
             if let Some(merged) = merged {
                 value["merge"] = merge_json(merged);
@@ -1540,8 +1541,7 @@ pub fn cleaned_merged(
             Some(reason) => format!("{branch}, {}", terminal_text(&reason)),
             None => branch.to_string(),
         };
-        let warning = result
-            .warning
+        let warning = warning
             .as_deref()
             .map(|warning| format!("warning: {}\n", terminal_text(warning)))
             .unwrap_or_default();
@@ -2727,6 +2727,7 @@ mod tests {
         let result = CleanupResult {
             remote: None,
             warning: None,
+            workspace_warning: None,
             branch_reason: Some(crate::dispatch::BranchRetentionReason::NotMerged),
             number: 12,
             title: "finished".into(),
@@ -2761,6 +2762,7 @@ mod tests {
         let result = CleanupResult {
             remote: None,
             warning: None,
+            workspace_warning: None,
             branch_reason: None,
             number: 12,
             title: "finished".into(),

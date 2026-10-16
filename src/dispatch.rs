@@ -269,7 +269,10 @@ pub struct CleanupPreview {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CleanupResult {
+    /// The bounded fetch failed: why.
     pub warning: Option<String>,
+    /// Why Herdr kept open the workspace of a worktree already gone: it refused the close.
+    pub workspace_warning: Option<String>,
     pub branch_reason: Option<BranchRetentionReason>,
     /// The remote a [`BranchRetentionReason::RemoteUnreachable`] names, or the branch a
     /// [`BranchRetentionReason::PrMergedIntoOtherBase`] PR merged into.
@@ -1648,13 +1651,11 @@ fn rename_when_detected(
     }
 }
 
-/// Herdr says the workspace no longer exists. Any other answer, a failure to ask included,
-/// counts as open, so a cleanup never calls a workspace gone that it could not check.
 /// Whether the recorded workspace is still open on `worktree`, a checkout already deleted.
-/// Herdr keeps a workspace's checkout path after the directory goes, so an id that now names
-/// another checkout reads as closed: cleanup never closes a workspace it did not open. Only
-/// Herdr saying so reads as closed; a Herdr that cannot answer, or names no checkout, leaves
-/// it open.
+/// Herdr keeps a workspace's checkout path after the directory goes (and after a `git
+/// worktree prune`), so only a workspace that still names this checkout reads as open: an id
+/// that now names another checkout, or none, is never closed. A Herdr that cannot answer
+/// leaves it open, for the close to fail and say why.
 fn herdr_workspace_open_on(workspace_id: &str, worktree: &Path) -> bool {
     let Ok(output) = Command::new("herdr")
         .args(["workspace", "get", workspace_id])
@@ -1666,15 +1667,11 @@ fn herdr_workspace_open_on(workspace_id: &str, worktree: &Path) -> bool {
         return herdr_error_code(&output.stderr).as_deref() != Some("workspace_not_found");
     }
     let value = serde_json::from_slice::<Value>(&output.stdout).unwrap_or(Value::Null);
-    match value
+    value
         .pointer("/result/workspace/worktree")
         .and_then(herdr_checkout_path)
-    {
-        Some(path) => {
-            canonical_cleanup_path(Path::new(path)).is_ok_and(|path| same_path(&path, worktree))
-        }
-        None => true,
-    }
+        .and_then(|path| canonical_cleanup_path(Path::new(path)).ok())
+        .is_some_and(|path| same_path(&path, worktree))
 }
 
 fn herdr_error_code(stderr: &[u8]) -> Option<String> {
@@ -2341,7 +2338,8 @@ pub fn clean_planned_with_host(
         _ => None,
     };
     Ok(CleanupResult {
-        warning: join_warnings(preview.inspection.warning, close_warning),
+        warning: preview.inspection.warning,
+        workspace_warning: close_warning,
         branch_reason,
         remote,
         number: preview.number,
@@ -4930,9 +4928,20 @@ mod tests {
         let result = clean_with_host(&mut state, id, true, &mut host).expect("converged");
         assert_eq!(result.worktree, WorktreeCleanup::Missing);
         assert_eq!(result.workspace, WorkspaceCleanup::Kept);
+        assert_eq!(result.warning.as_deref(), Some("could not fetch origin"));
         assert_eq!(
-            result.warning.as_deref(),
-            Some("could not fetch origin; could not close workspace w9: herdr is not running")
+            result.workspace_warning.as_deref(),
+            Some("could not close workspace w9: herdr is not running")
+        );
+        // The CLI warns about both on one line.
+        let human = crate::cli::presenter::cleaned(result.clone(), false);
+        assert!(
+            human.stdout.starts_with(
+                "warning: could not fetch origin; could not close workspace w9: herdr is not \
+                 running\n"
+            ),
+            "{}",
+            human.stdout
         );
         assert!(state
             .get(id)

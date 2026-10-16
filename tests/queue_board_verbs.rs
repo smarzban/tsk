@@ -656,9 +656,8 @@ fn a_confirmed_card_reports_each_row_and_esc_closes_it_once_finished() {
     assert!(!screen.contains(" y  "), "{screen}");
 
     let mut run = model.cleanup_run_mut().expect("run");
-    run.rows[0].state = CleanupRowState::Cleaned {
-        branch_kept: Some(("not merged".into(), "not merged into main".into())),
-    };
+    run.rows[0].state =
+        CleanupRowState::cleaned(Some(("not merged".into(), "not merged into main".into())));
     run.settled = true;
     drop(run);
     let screen = rendered_board(&model, 100, 30);

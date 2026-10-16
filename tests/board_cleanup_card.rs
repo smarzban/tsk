@@ -549,7 +549,7 @@ fn finished_run(rows: Vec<CleanupRunRow>, bulk: Option<(usize, usize)>) -> Clean
 
 #[test]
 fn h_the_finished_card_says_what_happened_and_reports_the_remote_branch_truthfully() {
-    let cleaned = CleanupRowState::Cleaned { branch_kept: None };
+    let cleaned = CleanupRowState::cleaned(None);
     for (remote_left, note) in [
         (Some(false), "remote branch deleted by GitHub"),
         (Some(true), "remote branch kept"),
@@ -574,9 +574,7 @@ fn h_the_finished_card_says_what_happened_and_reports_the_remote_branch_truthful
     model.begin_cleanup_run(finished_run(
         vec![run_row(
             7,
-            CleanupRowState::Cleaned {
-                branch_kept: Some(("not merged".into(), "not merged into main".into())),
-            },
+            CleanupRowState::cleaned(Some(("not merged".into(), "not merged into main".into()))),
         )],
         None,
     ));

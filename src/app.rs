@@ -2225,6 +2225,7 @@ pub fn offer_cleanup_prompt_with_host(
         let result = CleanupResult {
             remote: None,
             warning: preview.inspection.warning,
+            workspace_warning: None,
             branch_reason: Some(dispatch::BranchRetentionReason::MissingWorktree),
             number: preview.number,
             title: preview.title,
@@ -3092,6 +3093,7 @@ pub fn poll_cleanup_runs(
                                     mutated = true;
                                 }
                             }
+                            let worktree_gone = result.worktree == WorktreeCleanup::Missing;
                             row.state = CleanupRowState::Cleaned {
                                 branch_kept: result.branch_reason.map(|reason| {
                                     (
@@ -3102,6 +3104,14 @@ pub fn poll_cleanup_runs(
                                         ),
                                     )
                                 }),
+                                worktree_gone,
+                                workspace: match (&result.workspace, &result.workspace_warning) {
+                                    _ if !worktree_gone => None,
+                                    (dispatch::WorkspaceCleanup::Removed, _) => Some(Ok(())),
+                                    (_, Some(why)) => Some(Err(why.clone())),
+                                    _ => None,
+                                },
+                                warning: result.warning.clone(),
                             };
                         }
                         Some(dispatch::CleanupSlot::Done(Err(error))) => {
@@ -21998,9 +22008,12 @@ mod bulk_cleanup_tests {
             disk.last_undo(),
             Some(UndoEntry::Batch { entries }) if entries.len() == 3
         ));
+        // In target order, which tasks created in the same instant may break either way.
+        let mut closed = host.closed.clone();
+        closed.sort();
         assert_eq!(
-            host.closed,
-            vec!["w-clean".to_string(), "w-dirty".to_string()],
+            closed,
+            ["w-clean", "w-dirty"],
             "each gone worktree's own workspace closes"
         );
         assert_eq!(
@@ -22084,6 +22097,56 @@ mod bulk_cleanup_tests {
 
     /// On a marked set's card, `y` closes the workspace of a row whose worktree was already
     /// gone; `n` keeps everything the dispatches left, that workspace included.
+    /// A worktree deleted after the card opened is found gone by the worker: its row says
+    /// whether the workspace closed, and a close Herdr refused is never silent.
+    #[test]
+    fn a_card_row_whose_worktree_went_after_the_card_opened_reports_its_workspace() {
+        for (close_error, outcome, summary) in [
+            (
+                None,
+                "done · worktree already gone · workspace closed · branch kept",
+                "1 workspace closed",
+            ),
+            (
+                Some("herdr is not running"),
+                "done · worktree already gone · could not close workspace w-clean: herdr is not \
+                 running · branch kept",
+                // Named past the summary's width, so counted.
+                "workspace kept 1",
+            ),
+        ] {
+            let mut board = marked_board("gone-later");
+            let mut host = host();
+            press(&mut board, BoardIntent::Complete, &mut host);
+            host.land_all(true);
+            tick(&mut board, &mut host);
+            // Deleted by hand while the card was open.
+            host.missing = HashSet::from(["/tmp/tsk-bulk-clean".to_string()]);
+            host.close_error = close_error.map(str::to_string);
+            press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+            tick(&mut board, &mut host);
+            let run = board.model.cleanup_run().expect("run");
+            assert!(run.finished());
+            let row = run
+                .rows
+                .iter()
+                .find(|row| row.task_id == board.ids[0])
+                .expect("T1 row");
+            assert_eq!(run.row_outcome(row).as_deref(), Some(outcome));
+            let (text, clean) = run.summary();
+            assert!(text.contains(summary), "{text}");
+            assert!(!clean, "a kept branch (and pane) never expires on its own");
+            assert_eq!(
+                host.closed,
+                if close_error.is_none() {
+                    vec!["w-clean".to_string()]
+                } else {
+                    Vec::new()
+                }
+            );
+        }
+    }
+
     #[test]
     fn a_marked_set_card_closes_a_gone_worktrees_workspace_only_on_y() {
         for (intent, closed) in [
@@ -22325,10 +22388,7 @@ mod bulk_cleanup_tests {
         assert_eq!(row_state(&board, 0), CleanupRowState::Removing);
         host.release(first);
         tick(&mut board, &mut host);
-        assert_eq!(
-            row_state(&board, 0),
-            CleanupRowState::Cleaned { branch_kept: None }
-        );
+        assert_eq!(row_state(&board, 0), CleanupRowState::cleaned(None));
         assert!(cleaned(&board, 0));
         let disk = board.store.load().expect("load");
         assert!(
