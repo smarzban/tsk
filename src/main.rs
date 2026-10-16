@@ -7,6 +7,8 @@ use tsk_tui::cli::router::{route, Surface};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
+    // Saves and board opens of this binary may start a detached `tsk backup run`.
+    tsk_tui::backup::enable_background_backups();
     match route(&args, std::env::var(tsk_tui::app::MODE_ENV).ok().as_deref()) {
         Surface::FindBoardPane => find_board_main(false),
         Surface::FindBoardTab => find_board_main(true),
@@ -34,6 +36,8 @@ fn main() -> ExitCode {
         | Surface::Clean
         | Surface::Edit
         | Surface::Trash
+        | Surface::Backup
+        | Surface::Restore
         | Surface::Archive
         | Surface::Unarchive
         | Surface::Project => match tsk_tui::store::require_home_or_override(&args) {

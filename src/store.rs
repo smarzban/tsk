@@ -24,6 +24,12 @@ const STATE_FILE: &str = "tsk.json";
 const BACKUP_FILE: &str = "tsk.json.1";
 /// Inter-process exclusive lock file (sibling of the state document).
 const LOCK_FILE: &str = "tsk.json.lock";
+/// Held shared by every open board and quick-capture popup for its whole session, so a
+/// restore can refuse while one is open (its next save would write back tasks the restored
+/// document no longer holds).
+const BOARD_LOCK_FILE: &str = "board.lock";
+/// Prefix of the copy a restore keeps of the document it replaced.
+const PRE_RESTORE_PREFIX: &str = "tsk.json.pre-restore-";
 /// Trash file for tasks removed from the live store, rewritten atomically on
 /// each change and bounded by the 30-day purge.
 const TRASH_FILE: &str = "trash.jsonl";
@@ -781,7 +787,98 @@ impl TaskStore {
                 .saves
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
+        if write_result.is_ok() {
+            // Best effort and off the save path: at most a detached child is started.
+            crate::backup::after_save(&self.path);
+        }
         write_result
+    }
+
+    /// Hold a shared lock on `board.lock` for as long as the guard lives. Every board and
+    /// quick-capture session holds one; [`Self::restore_document`] refuses while any is held.
+    pub fn hold_board_presence(&self) -> io::Result<BoardPresence> {
+        fsperm::ensure_private_dir(&self.path)?;
+        let path = self.path.join(BOARD_LOCK_FILE);
+        let file = fsperm::open_lock_file(&path)?;
+        fsperm::tighten_file(&path);
+        file.lock_shared()?;
+        Ok(BoardPresence { file })
+    }
+
+    /// Replace the live document with `document`, byte for byte, under the store lock.
+    ///
+    /// Refuses while a board or quick capture is open, and refuses a document that is not a
+    /// store or whose format is newer than this binary reads, before writing anything. An
+    /// older format is written as is and migrates on the next open like any older store. The
+    /// replaced document is first copied to `tsk.json.pre-restore-<UTC time>`; that path is
+    /// returned (`None` when there was no live document).
+    pub fn restore_document(
+        &self,
+        document: &[u8],
+        now: SystemTime,
+    ) -> Result<Option<PathBuf>, RestoreError> {
+        let text = std::str::from_utf8(document)
+            .map_err(|_| RestoreError::Invalid("backup is not UTF-8 text".into()))?;
+        let found = peek_format_version(text).map_err(|error| {
+            RestoreError::Invalid(format!("backup is not a tsk store: {error}"))
+        })?;
+        if found == 0 || found > STORE_FORMAT_VERSION {
+            return Err(RestoreError::Unsupported {
+                found,
+                supported: STORE_FORMAT_VERSION,
+            });
+        }
+        fsperm::ensure_private_dir(&self.path).map_err(|e| RestoreError::Store(e.into()))?;
+        let presence_path = self.path.join(BOARD_LOCK_FILE);
+        let presence =
+            fsperm::open_lock_file(&presence_path).map_err(|e| RestoreError::Store(e.into()))?;
+        fsperm::tighten_file(&presence_path);
+        match presence.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => return Err(RestoreError::BoardOpen),
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(RestoreError::Store(error.into()))
+            }
+        }
+        // Held exclusively until the swap is durable, so a board opening meanwhile waits and
+        // then loads the restored document.
+        let _presence = BoardPresence { file: presence };
+        let _guard = self.lock_exclusive().map_err(RestoreError::Store)?;
+        self.sweep_orphan_temps();
+        let file = self.state_file();
+        let kept = if file.exists() {
+            let mut kept = self.path.join(format!(
+                "{PRE_RESTORE_PREFIX}{}",
+                crate::backup::utc_stamp(now)
+            ));
+            let mut collisions = 0_u32;
+            while kept.exists() {
+                collisions += 1;
+                kept = self.path.join(format!(
+                    "{PRE_RESTORE_PREFIX}{}-{collisions}",
+                    crate::backup::utc_stamp(now)
+                ));
+            }
+            fs::copy(&file, &kept).map_err(|e| RestoreError::Store(e.into()))?;
+            fsperm::tighten_file(&kept);
+            Some(kept)
+        } else {
+            None
+        };
+        let tmp = self.unique_tmp_path();
+        let write_result = (|| -> io::Result<()> {
+            let mut temp_file = fsperm::create_private_file(&tmp)?;
+            temp_file.write_all(document)?;
+            temp_file.sync_all()?;
+            drop(temp_file);
+            fsperm::replace_file(&tmp, &file)?;
+            StdFilesystem.sync_directory(&self.path)
+        })();
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&tmp);
+            return Err(RestoreError::Store(error.into()));
+        }
+        Ok(kept)
     }
 
     /// Move soft-deleted tasks undo can no longer reach (or that aged past the
@@ -989,6 +1086,9 @@ fn is_private_state_name(name: &str) -> bool {
         || name == BACKUP_FILE
         || name == LOCK_FILE
         || name == TRASH_FILE
+        || name == BOARD_LOCK_FILE
+        || name.starts_with(PRE_RESTORE_PREFIX)
+        || crate::backup::is_private_state_name(name)
         || name == "update.json"
         || name == crate::delivery::DELIVERY_FILE
         || name.starts_with(&format!("{STATE_FILE}.v"))
@@ -998,6 +1098,53 @@ fn is_private_state_name(name: &str) -> bool {
         || name.starts_with(crate::update::UPDATE_TEMP_PREFIX)
         || name.starts_with(crate::delivery::DELIVERY_TEMP_PREFIX)
         || name.starts_with(crate::agents::CONFIG_TEMP_PREFIX)
+}
+
+/// A board or quick-capture session's shared hold on `board.lock` (released on drop or exit).
+#[derive(Debug)]
+pub struct BoardPresence {
+    file: File,
+}
+
+impl Drop for BoardPresence {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+/// Why [`TaskStore::restore_document`] refused or failed.
+#[derive(Debug)]
+pub enum RestoreError {
+    /// A board or quick capture holds `board.lock`.
+    BoardOpen,
+    /// The backup's format is unversioned or newer than this binary.
+    Unsupported {
+        found: u32,
+        supported: u32,
+    },
+    /// The bytes are not a store document.
+    Invalid(String),
+    Store(StoreError),
+}
+
+impl std::fmt::Display for RestoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RestoreError::BoardOpen => write!(
+                f,
+                "a board or quick capture is open on this store; quit it, then restore"
+            ),
+            RestoreError::Unsupported { found: 0, .. } => {
+                write!(f, "backup has no format version; this tsk cannot read it")
+            }
+            RestoreError::Unsupported { found, supported } => write!(
+                f,
+                "backup is store format {found}, newer than this tsk reads ({supported}); update tsk first"
+            ),
+            RestoreError::Invalid(message) => write!(f, "{message}"),
+            RestoreError::Store(error) => write!(f, "{error}"),
+        }
+    }
 }
 
 /// RAII exclusive lock on the store lock file (released on drop via `File::unlock`).
@@ -3286,5 +3433,186 @@ mod tests {
             payload,
             "leftover tasks.json must be left untouched"
         );
+    }
+
+    fn saved_with_titles(dir: &Path, titles: &[&str]) -> DomainState {
+        let store = TaskStore::new(dir);
+        let mut state = store.load().expect("load");
+        for title in titles {
+            state
+                .create(
+                    title,
+                    None,
+                    TaskScope::Global,
+                    ProvenanceOrigin::Manual,
+                    None,
+                )
+                .expect("create");
+        }
+        store.reload_merge_save(&mut state).expect("save");
+        state
+    }
+
+    fn titles(state: &DomainState) -> Vec<String> {
+        let mut titles: Vec<String> = state.tasks().iter().map(|t| t.title.clone()).collect();
+        titles.sort();
+        titles
+    }
+
+    #[test]
+    fn restore_round_trips_bytes_and_keeps_the_replaced_store() {
+        let dir = temp_dir("restore-round-trip");
+        let _guard = TempDirGuard(dir.clone());
+        saved_with_titles(&dir, &["one"]);
+        let backup = fs::read(dir.join(STATE_FILE)).expect("backup bytes");
+        saved_with_titles(&dir, &["two"]);
+        let replaced = fs::read(dir.join(STATE_FILE)).expect("replaced bytes");
+
+        let store = TaskStore::new(&dir);
+        let now = UNIX_EPOCH + Duration::from_secs(1_792_135_428);
+        let kept = store
+            .restore_document(&backup, now)
+            .expect("restore")
+            .expect("a live store was kept");
+        assert_eq!(
+            kept.file_name().and_then(|n| n.to_str()),
+            Some("tsk.json.pre-restore-20261016T072348Z")
+        );
+        assert_eq!(fs::read(&kept).expect("kept"), replaced);
+        assert_eq!(fs::read(dir.join(STATE_FILE)).expect("live"), backup);
+        assert_eq!(titles(&store.load().expect("load")), ["one"]);
+        // A second restore in the same second keeps both replaced stores.
+        let second = store
+            .restore_document(&replaced, now)
+            .expect("restore again")
+            .expect("kept");
+        assert_ne!(second, kept);
+        assert_eq!(titles(&store.load().expect("load")), ["one", "two"]);
+    }
+
+    #[test]
+    fn restore_into_a_fresh_state_dir_keeps_nothing() {
+        let source = temp_dir("restore-source");
+        let _source = TempDirGuard(source.clone());
+        saved_with_titles(&source, &["from the old laptop"]);
+        let bytes = fs::read(source.join(STATE_FILE)).expect("bytes");
+        let fresh = temp_dir("restore-fresh");
+        let _fresh = TempDirGuard(fresh.clone());
+        let store = TaskStore::new(&fresh);
+        assert_eq!(
+            store
+                .restore_document(&bytes, SystemTime::now())
+                .expect("restore"),
+            None
+        );
+        assert_eq!(
+            titles(&store.load().expect("load")),
+            ["from the old laptop"]
+        );
+    }
+
+    #[test]
+    fn restore_refuses_a_newer_or_unversioned_format_without_writing() {
+        let dir = temp_dir("restore-newer");
+        let _guard = TempDirGuard(dir.clone());
+        saved_with_titles(&dir, &["keep me"]);
+        let live = fs::read(dir.join(STATE_FILE)).expect("live");
+        let store = TaskStore::new(&dir);
+        let newer = format!(
+            r#"{{"format_version":{},"tasks":[]}}"#,
+            STORE_FORMAT_VERSION + 1
+        );
+        assert!(matches!(
+            store.restore_document(newer.as_bytes(), SystemTime::now()),
+            Err(RestoreError::Unsupported { found, .. }) if found == STORE_FORMAT_VERSION + 1
+        ));
+        assert!(matches!(
+            store.restore_document(br#"{"tasks":[]}"#, SystemTime::now()),
+            Err(RestoreError::Unsupported { found: 0, .. })
+        ));
+        assert!(matches!(
+            store.restore_document(b"not json", SystemTime::now()),
+            Err(RestoreError::Invalid(_))
+        ));
+        assert_eq!(fs::read(dir.join(STATE_FILE)).expect("live"), live);
+        let leftovers: Vec<String> = fs::read_dir(&dir)
+            .expect("dir")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(PRE_RESTORE_PREFIX))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn restore_writes_an_older_format_as_is_and_it_migrates_on_open() {
+        let dir = temp_dir("restore-older");
+        let _guard = TempDirGuard(dir.clone());
+        saved_with_titles(&dir, &["current"]);
+        let older = br#"{"format_version":12,"next_task_number":2,"next_notice_number":1,"projects":{},"tasks":[],"undo_stack":[]}"#;
+        let store = TaskStore::new(&dir);
+        store
+            .restore_document(older, SystemTime::now())
+            .expect("an older format restores");
+        assert_eq!(fs::read(dir.join(STATE_FILE)).expect("live"), older);
+        let loaded = store.load().expect("migrates in memory on open");
+        assert_eq!(loaded.format_version(), STORE_FORMAT_VERSION);
+    }
+
+    /// What a board that stays open across a restore does: its next save merges the disk and
+    /// writes back every task it holds that the restored document lacks. Restore therefore
+    /// refuses while a board holds `board.lock`.
+    #[test]
+    fn an_open_board_would_resurrect_tasks_so_restore_refuses_while_one_is_open() {
+        let dir = temp_dir("restore-board-open");
+        let _guard = TempDirGuard(dir.clone());
+        saved_with_titles(&dir, &["old"]);
+        let backup = fs::read(dir.join(STATE_FILE)).expect("backup");
+        saved_with_titles(&dir, &["created after the backup"]);
+        let store = TaskStore::new(&dir);
+
+        // Characterize: a board's in-memory state, a restore under it, then its next save.
+        let mut board = store.load().expect("board load");
+        store
+            .restore_document(&backup, SystemTime::now())
+            .expect("no board holds the lock in this half");
+        let disk = store.load().expect("disk");
+        board.merge_tasks_from_disk(&disk);
+        board
+            .create(
+                "typed on the board",
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create");
+        store.reload_merge_save(&mut board).expect("board save");
+        assert!(
+            titles(&store.load().expect("load")).contains(&"created after the backup".to_string()),
+            "the open board wrote back a task the restore removed"
+        );
+
+        // So restore refuses while any board or quick capture is open, and works once it quits.
+        let presence = store.hold_board_presence().expect("board presence");
+        let second = TaskStore::new(&dir)
+            .hold_board_presence()
+            .expect("boards share it");
+        let before = fs::read(dir.join(STATE_FILE)).expect("live");
+        assert!(matches!(
+            store.restore_document(&backup, SystemTime::now()),
+            Err(RestoreError::BoardOpen)
+        ));
+        assert_eq!(fs::read(dir.join(STATE_FILE)).expect("live"), before);
+        drop(presence);
+        assert!(matches!(
+            store.restore_document(&backup, SystemTime::now()),
+            Err(RestoreError::BoardOpen)
+        ));
+        drop(second);
+        store
+            .restore_document(&backup, SystemTime::now())
+            .expect("restores once every board quit");
+        assert_eq!(titles(&store.load().expect("load")), ["old"]);
     }
 }

@@ -144,6 +144,21 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 # sort = "recent"
 # project_group = "thread"
 # project_sort = "title"
+
+# --- Backups ------------------------------------------------------------------
+
+# Copies of tsk.json to a folder (iCloud Drive, Dropbox, a USB disk) or a git
+# repository. `tsk backup add <folder|git-url>` writes these entries; `tsk
+# backup list` shows how each went; `tsk restore` puts a copy back. Backups hold
+# your task notes, so keep the folder or repository private.
+#   every      "save", "open" (board open), "daily", or "twice-daily"
+#              (default: "save" for a folder, "daily" for git)
+#   keep_last  folder only: the newest copies kept (default 10)
+#   keep_days  folder only: also one copy a day for this many days (default 7)
+# [[backup]]
+# kind = "folder"
+# path = "/Users/you/Library/Mobile Documents/com~apple~CloudDocs/tsk"
+# every = "save"
 "##;
 
 /// Seed the commented profile examples on a full board open.
@@ -204,6 +219,36 @@ fn unique_tmp_path(dir: &Path) -> PathBuf {
         "{CONFIG_TEMP_PREFIX}{}.{nanos}.{sequence}",
         std::process::id()
     ))
+}
+
+/// `<state_dir>/config.toml`'s text, `None` when the file does not exist.
+pub(crate) fn read_config(state_dir: &Path) -> io::Result<Option<String>> {
+    match fs::read_to_string(state_dir.join(CONFIG_FILE)) {
+        Ok(content) => Ok(Some(content)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Replace `<state_dir>/config.toml` with `content`: a private, synced temp file renamed over
+/// the target, so a reader sees the old file or the new one, never a torn one.
+pub(crate) fn write_config(state_dir: &Path, content: &str) -> io::Result<()> {
+    crate::fsperm::ensure_private_dir(state_dir)?;
+    let tmp = unique_tmp_path(state_dir);
+    let result = (|| -> io::Result<()> {
+        let mut temp_file = create_private_temp(&tmp)?;
+        temp_file.write_all(content.as_bytes())?;
+        temp_file.sync_all()?;
+        drop(temp_file);
+        crate::fsperm::replace_file(&tmp, &state_dir.join(CONFIG_FILE))?;
+        #[cfg(not(windows))]
+        fs::File::open(state_dir)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// Prompt used by a profile that does not define its own template. It assumes a git

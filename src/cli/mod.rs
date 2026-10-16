@@ -9,6 +9,7 @@ use crate::dispatch::CleanupError;
 
 pub mod add;
 pub mod archive;
+pub mod backup;
 pub mod clean;
 pub mod dispatch;
 pub mod edit;
@@ -89,6 +90,8 @@ fn run_verb<R: Read>(
         Some("clean") => run_clean(args),
         Some("edit") => run_edit(args),
         Some("trash") => run_trash(args),
+        Some("backup") => backup::run_backup(args),
+        Some("restore") => backup::run_restore(args, &mut stdin, stdin_is_tty),
         Some("project") => run_project(args),
         verb @ (Some("archive") | Some("unarchive")) => {
             let (verb, archive) = if verb == Some("archive") {
@@ -99,7 +102,7 @@ fn run_verb<R: Read>(
             run_archive(args, verb, archive)
         }
         _ => presenter::usage(
-            "expected add, steps, list, status, reply, dispatch, clean, edit, trash, archive, unarchive, or project command",
+            "expected add, steps, list, status, reply, dispatch, clean, edit, trash, backup, restore, archive, unarchive, or project command",
         ),
     }
 }
@@ -129,6 +132,8 @@ fn run_help(args: Vec<String>) -> CliOutput {
             "clean" => presenter::clean_help(),
             "edit" => presenter::edit_help(),
             "trash" => presenter::trash_help(),
+            "backup" => presenter::backup_help(),
+            "restore" => presenter::restore_help(),
             "archive" => presenter::archive_help("archive"),
             "unarchive" => presenter::archive_help("unarchive"),
             "project" => presenter::project_help(),

@@ -40,6 +40,8 @@ Use `--json` on `add`, `list`, or `clean` for machine-readable output. Read the 
 | `tsk archive` / `tsk unarchive` | Hide or restore a task |
 | `tsk project archive` / `tsk project unarchive` | Hide or restore a project |
 | `tsk trash restore` | Restore a task from trash |
+| `tsk backup` | Back the store up to folders or git repositories; add, list, or remove targets |
+| `tsk restore` | List backed-up versions of the store, or put one back |
 | `tsk setup` | Configure Herdr or install an agent skill |
 | `tsk update` | Upgrade an installer-managed copy, or print Homebrew guidance |
 | `tsk guide` | Print the agent workflow |
@@ -423,6 +425,38 @@ Restore returns a task from trash with its original number, no soft-delete flag,
 
 Recent deletions may still be in the main store; use board undo until they move to trash. [Retention and storage](/docs/storage/#deleted-tasks).
 
+## backup
+
+```sh
+tsk backup add ~/Dropbox/tsk                      # folder target, every save
+tsk backup add git@github.com:me/tsk-backup.git   # git target, daily
+tsk backup add /srv/tsk.git --git --every twice-daily
+tsk backup list
+tsk backup                                        # same as tsk backup now
+tsk backup remove 2
+```
+
+| Action | Effect |
+| --- | --- |
+| `now` (or none) | Back up to every target in the foreground. Prints where each copy went or that a target is up to date; exits 1 if any target failed |
+| `add <folder\|git-url>` | Add a `[[backup]]` entry to `config.toml`, creating the file if needed. A folder must exist and is stored as an absolute path. `--every save\|open\|daily\|twice-daily` sets the frequency (default `save` for a folder, `daily` for git); `--git` or `--folder` says what the location is when tsk cannot tell. Adding an existing target only updates its `every` |
+| `list` | Each target with its frequency, last backup, retention, and last error |
+| `remove <target>` | Remove a target by its number in `list`, its path, or its URL. Copies already made stay where they are |
+
+Saves and board opens back up due targets in the background and never fail because of them. Frequencies, layout, retention, and privacy: [backup targets](/docs/storage/#backup-targets).
+
+## restore
+
+```sh
+tsk restore            # list versions; in a terminal, pick one
+tsk restore 3f9a1c2e   # restore one version, no prompt
+tsk restore --all      # list every git version, not the newest 20 per machine
+```
+
+The list shows each version's id, time, machine, task count, and target, newest first. In a terminal, `tsk restore` asks which to restore (a number or an id; Enter cancels); otherwise it prints the list and changes nothing. A restore keeps the replaced store as `tsk.json.pre-restore-<UTC time>` and prints its path.
+
+`tsk restore` exits 1, replacing nothing, when there are no targets, the id is unknown, a board or quick capture is open on the store, or the version's store format is newer than this tsk (or it is not a store). A target it cannot read is reported on stderr and the others are still listed. [Restore](/docs/storage/#restore).
+
 ## help and version
 
 ```sh
@@ -521,6 +555,8 @@ After an uncertain add, inspect `tsk list --all --json`. Also check `--done` and
 | Status | `unknown-task`, `soft-deleted-task`, `text-too-long`, `invalid-blocker`; `started` adds `after-not-done`, `agent-gone`, and the launch codes `unknown-agent`, `agent-config`, `unsupported-platform`, `unsafe-state-dir`, `needs-git-project`, `unknown-base`, `no-default-base`, `herdr-failed`; with `--clean`, cleanup codes above except `not-dispatched` and `already-cleaned`; with `--merge`, every cleanup code above plus `gh-unavailable`, `no-pr`, `pr-not-open`, `pr-base-mismatch`, `merge-failed`, `merge-config` |
 | Reply | `unknown-task`, `soft-deleted-task`, `not-blocked`, `empty-reply`, `text-too-long` |
 | Archive / unarchive | `unknown-task`, `soft-deleted-task` |
+
+Trash, backup, and restore refusals carry no code: they print `tsk <command>: <message>` and exit 1.
 
 A refusal prints as `tsk <command>: <code>: <message>` on stderr, for example `tsk status: unknown-task: T99 is not on the board`. Branch on the code; the message is for people and may change.
 

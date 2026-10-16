@@ -13,6 +13,7 @@ mod board_paper_trail;
 mod board_start_cards;
 mod cli_after;
 mod cli_archive;
+mod cli_backup;
 mod cli_discovery;
 mod cli_dispatch;
 mod cli_edit;

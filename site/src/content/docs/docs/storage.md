@@ -1,6 +1,6 @@
 ---
 title: Storage
-description: Task data, backups, deleted tasks, and update checks.
+description: Task data, backups and restore, deleted tasks, and update checks.
 ---
 
 The board, CLI, and Herdr plugin share one store. The current store format is v13.
@@ -12,13 +12,13 @@ The board, CLI, and Herdr plugin share one store. The current store format is v1
 | `TSK_STATE_DIR` | Platform default | Task data, configuration, backups, trash, and release-check cache. The default is `~/.tsk` on macOS/Linux, `%LOCALAPPDATA%\tsk` on Windows, or `%USERPROFILE%\.tsk` when `LOCALAPPDATA` is unavailable. Without a usable platform home, tsk refuses to run rather than pick a directory |
 | `--state-dir <dir>` | State directory | Override storage for a data command |
 
-Use a local disk. NFS and synced folders such as Dropbox or iCloud Drive are unsupported. Directory roots must be real directories, not symlinks or Windows reparse points such as junctions.
+Use a local disk. NFS and synced folders such as Dropbox or iCloud Drive are unsupported for the state directory; back up to them instead ([backup targets](#backup-targets)). Directory roots must be real directories, not symlinks or Windows reparse points such as junctions.
 
 Herdr's plugin-specific state/config directories do not override these locations. Removing tsk leaves its task data intact.
 
 ## Configuration
 
-Settings are read from `config.toml` in the state directory, beside `tsk.json`. The first full board open creates a starter file when it is missing: it explains profiles and placeholders, quotes the default prompt, and holds commented examples (Claude Code, Codex, Pi, Grok, and any other terminal agent) that define no profiles until you uncomment one. Quick capture, CLI commands, and setup do not create it, and tsk never replaces an existing file, even an empty one. Top-level keys and tables tsk does not recognize are ignored, so a file written for a newer tsk still loads; inside an `[agent.<name>]`, `[merge]`, or `[board]` table an unknown key is an error.
+Settings are read from `config.toml` in the state directory, beside `tsk.json`. The first full board open creates a starter file when it is missing: it explains profiles and placeholders, quotes the default prompt, and holds commented examples (Claude Code, Codex, Pi, Grok, and any other terminal agent) that define no profiles until you uncomment one, plus a commented [backup target](#backup-targets). Quick capture, CLI commands, and setup do not create it, and tsk never replaces an existing file, even an empty one. Top-level keys and tables tsk does not recognize are ignored, so a file written for a newer tsk still loads; inside an `[agent.<name>]`, `[merge]`, `[board]`, or `[[backup]]` table an unknown key is an error. Each table is read on its own, so one broken table never blocks the others.
 
 ### Agent profiles
 
@@ -87,11 +87,79 @@ A missing key keeps its default (`none`, `recent`). `g` and `s` still change the
 | `tsk.json.v<N>` | Backup made when migrating an older store format, such as `tsk.json.v12` for the v12 → v13 migration |
 | `config.toml` | Settings, including agent launch profiles, seeded with commented examples on the first full board open |
 | `delivery.json` | Which starter tasks this install has received or dismissed, and the newest release note it has seen |
+| `tsk.json.pre-restore-<time>` | The store a [`tsk restore`](#restore) replaced, named by UTC time |
+| `backup-status.json` | Each backup target's last success, last attempt, and last error |
+| `machine-id` | This state directory's machine id, generated once; names its backups |
+| `backup-repos/` | Local clones of git backup targets |
 | `launchers\`, `cleanups\` | Windows only: dispatch launchers and cleanup progress |
 
 An older binary refuses a newer or unversioned store instead of rewriting it. Use a compatible tsk version to open it. On first save, older stores migrate to v13. v6 added task assignees, dispatch base branches, and dispatch records; v7 added blocks (why, needs, options, what the block waits on, and replies) and the block undo step; v8 added the undo step for a start that dispatched; v9 added review rounds (done, checks, next, who the review is on, feedback, and how each round closed); v10 added who made each change (`by`) and what it changed (`detail`) to every new task event; v11 added `after`, the task numbers a task runs after, the prerequisite that started a task on its event, and the undo step that puts an `after` list back; v12 added `sent` to a reply that `tsk reply --send` delivered on its own, so an unblock or send-back does not send it again; v13 adds the status a done's undo goes back to, and undo steps for status changes, step changes, and archiving. A done from an older store undoes to open, as it did before. A reply from an older store reads as not sent. A task from an older store runs after nothing. Events from an older store keep their kind and time and show on the [paper trail](/docs/task-page/#paper-trail) without who or what. The original document is saved as `tsk.json.v<N>`, for example `tsk.json.v5` from v0.11. A blocked task from an older store keeps its status with no block and reads as blocked on you; a task in review keeps its status with no round and reads as in review on you. Earlier stores still run through each migration in order, including v5 batch undo and the v3 to v4 move from ready to open.
 
 Archived tasks stay in the task document with their existing status. [Archive and restore](/docs/board/#archive).
+
+## Backup targets
+
+`tsk.json.1` and `tsk.json.v<N>` sit on the same disk as the store. A backup target puts copies somewhere else: a folder (an iCloud Drive, Dropbox, or Google Drive folder their desktop apps upload, or a USB disk) or a git repository (for example a private GitHub repository). Each copy is `tsk.json` byte for byte, so it carries its store format.
+
+```sh
+tsk backup add ~/Dropbox/tsk                      # a folder, backed up on every save
+tsk backup add git@github.com:me/tsk-backup.git   # a git repository, backed up daily
+tsk backup list                                   # targets, last backup, last error
+tsk backup                                        # back up to every target now
+tsk backup remove 2                               # by number in list, path, or URL
+```
+
+The verbs write `[[backup]]` entries to `config.toml`; you can also edit them by hand:
+
+```toml
+[[backup]]
+kind = "folder"            # "folder" or "git"
+path = "/Users/me/Dropbox/tsk"
+every = "save"             # "save", "open", "daily", or "twice-daily"
+keep_last = 10             # folder only
+keep_days = 7              # folder only
+
+[[backup]]
+kind = "git"
+url = "git@github.com:me/tsk-backup.git"
+every = "daily"
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `kind` | required | `folder` or `git` |
+| `path` / `url` | required | The folder (it must exist) or the repository tsk pushes to |
+| `every` | `save` (folder), `daily` (git) | `save`: after every save. `open`: on every full board open. `daily` / `twice-daily`: on the first save or board open 24 or 12 hours after the target's last backup (there is no background service; a failed attempt is retried ten minutes later) |
+| `keep_last` | 10 | Folder only: the newest copies kept |
+| `keep_days` | 7 | Folder only: also the newest copy of each of the last this-many UTC days, today included |
+
+`tsk backup add` treats a location as git when it is a URL (`https://…`, `ssh://…`, `file://…`), `user@host:path`, ends in `.git`, or is a bare repository; `--git` or `--folder` says so when it cannot tell. Adding a target that exists only updates its `every`.
+
+A folder target holds `tsk-backups/<machine>/tsk-<UTC time>.json`; each copy is written beside its final name and renamed, so a sync app never uploads half a file, and older copies past `keep_last` and `keep_days` are deleted. A git target holds `machines/<machine>/tsk.json` with one commit per backup, so its history is every version. tsk runs your own `git` with your credentials and stores no tokens; it never prompts, so use a key or credential helper that works without one. `<machine>` is the host name plus the first eight characters of `machine-id`. Several machines can share one target.
+
+Backups never block or fail a save. When a target is due, the save or board open starts a detached `tsk backup run` and returns; a store unchanged since a target's last backup is not copied again. A failure is recorded in `backup-status.json`: `tsk backup list` shows it, and the next full board open shows it once on the status row. `tsk backup` runs every target in the foreground and exits 1 if any failed.
+
+Backups are not encrypted and contain your task notes: use a private folder or a private repository. Trash (`trash.jsonl`) is not backed up.
+
+### Restore
+
+`tsk restore` lists the versions every target holds, newest first, with an id, time, machine, task count, and target (a git target shows the newest 20 per machine; `--all` shows every one). In a terminal it asks which to restore, by number or id; `tsk restore <id>` restores one without asking.
+
+```sh
+tsk restore
+tsk restore 3f9a1c2e
+```
+
+Restore copies the current `tsk.json` to `tsk.json.pre-restore-<UTC time>`, then replaces it with the chosen version under the store lock. A version in an older store format is written as is and migrates on the next open; one newer than this tsk is refused, as are files that are not a store.
+
+Restore refuses while a board or quick capture is open on the store: an open board merges what is on disk into what it holds and would write back, on its next save, every task the restored version does not have. Quit them, then restore.
+
+On a new machine, add the same target and restore from it:
+
+```sh
+tsk backup add git@github.com:me/tsk-backup.git
+tsk restore
+```
 
 ## Starter guides and release notes
 

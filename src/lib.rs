@@ -4,6 +4,7 @@ pub mod activity;
 pub mod agents;
 pub mod announcements;
 pub mod app;
+pub mod backup;
 pub mod board_pane;
 pub mod capture;
 pub mod cli;

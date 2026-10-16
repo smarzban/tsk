@@ -132,7 +132,9 @@ pub fn top_level_help() -> String {
         "  archive    keep a task off the working views\n",
         "  unarchive  put an archived task back\n",
         "  project    archive or unarchive a project\n",
-        "  trash      restore a trashed task\n\n",
+        "  trash      restore a trashed task\n",
+        "  backup     back the store up to folders or git repositories\n",
+        "  restore    put a backed-up version of the store back\n\n",
         "Setup\n",
         "  setup    register herdr, or install the agent skill\n",
         "  update   install the latest stable release\n",
@@ -2016,6 +2018,110 @@ pub fn trash_help() -> CliOutput {
             true,
         ),
     })
+}
+
+pub fn backup_help() -> CliOutput {
+    help(HelpDoc {
+        usage: vec![
+            "tsk backup [now] [--state-dir <dir>]".into(),
+            "tsk backup add <folder|git-url> [--every <when>] [--folder | --git] [--state-dir <dir>]".into(),
+            "tsk backup list [--state-dir <dir>]".into(),
+            "tsk backup remove <target> [--state-dir <dir>]".into(),
+        ],
+        purpose: "Back the task store up to folders or git repositories.".into(),
+        groups: vec![
+            group(
+                "Actions",
+                &[
+                    ("now", "back up to every target now (the default)"),
+                    ("add <folder|git-url>", "add a target to config.toml"),
+                    ("list", "show targets, their last backup, and their last error"),
+                    ("remove <target>", "remove a target by its path, URL, or number in list"),
+                ],
+            ),
+            group(
+                "Values",
+                &[
+                    ("--every <when>", "save, open, daily, or twice-daily (default: save for a folder, daily for git)"),
+                    ("--folder, --git", "say what the location is when tsk cannot tell"),
+                    ("--state-dir <dir>", "use another board store"),
+                ],
+            ),
+        ],
+        examples: vec![
+            "tsk backup add ~/Dropbox".into(),
+            "tsk backup add git@github.com:me/tsk-backup.git".into(),
+            "tsk backup list".into(),
+            "tsk backup".into(),
+        ],
+        refusals: vec![
+            "no backup targets".into(),
+            "folder not found".into(),
+            "no backup target <target>".into(),
+            "a target failed to back up".into(),
+        ],
+        exit: exit_line(
+            "backed up, added, listed, or removed",
+            Some("refused, or a target failed"),
+            false,
+        ),
+    })
+}
+
+pub fn backup_usage(reason: &str) -> CliOutput {
+    CliOutput {
+        stdout: String::new(),
+        stderr: format!(
+            "tsk backup: {}\nusage: tsk backup [now | add <folder|git-url> [--every <when>] [--folder | --git] | list | remove <target>] [--state-dir <dir>]\n",
+            human_reason(reason)
+        ),
+        code: 2,
+    }
+}
+
+pub fn restore_help() -> CliOutput {
+    help(HelpDoc {
+        usage: vec!["tsk restore [<version>] [--all] [--state-dir <dir>]".into()],
+        purpose: "List the backed-up versions of the task store, or replace the store with one."
+            .into(),
+        groups: vec![group(
+            "Values",
+            &[
+                (
+                    "<version>",
+                    "a version id from the list; without one, a terminal asks which",
+                ),
+                (
+                    "--all",
+                    "list every git version, not the newest 20 per machine",
+                ),
+                ("--state-dir <dir>", "use another board store"),
+            ],
+        )],
+        examples: vec!["tsk restore".into(), "tsk restore 3f9a1c2e".into()],
+        refusals: vec![
+            "no backup targets".into(),
+            "unknown version".into(),
+            "a board or quick capture is open".into(),
+            "backup is newer than this tsk".into(),
+        ],
+        exit: exit_line(
+            "listed, or restored",
+            Some("refused, nothing replaced"),
+            true,
+        ),
+    })
+}
+
+pub fn restore_usage(reason: &str) -> CliOutput {
+    CliOutput {
+        stdout: String::new(),
+        stderr: format!(
+            "tsk restore: {}\nusage: tsk restore [<version>] [--all] [--state-dir <dir>]\n",
+            human_reason(reason)
+        ),
+        code: 2,
+    }
 }
 
 pub fn trash_usage(reason: &str) -> CliOutput {

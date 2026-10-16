@@ -40,7 +40,7 @@ Every text field (Title, Notes, steps, Thread, and the quick-add line and draft)
 - Guide: https://gettsk.sh/docs/agents.md
 - `tsk help [<command>]` prints the CLI or one command's syntax reference; `tsk --version` (or `tsk -V`) prints the installed version.
 
-Storage, backups, and release-check settings: https://gettsk.sh/docs/storage.md
+Storage, backups, and release-check settings: https://gettsk.sh/docs/storage.md (`tsk backup add <folder|git-url>` backs the store up to a folder or git repository in the background; `tsk restore` lists versions and puts one back, refusing while a board is open)
 - Full docs: https://gettsk.sh/llms-full.txt
 
 ## Docs
