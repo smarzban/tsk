@@ -236,9 +236,18 @@ pub(crate) fn cleanup_run_overlay<'a>(
             }
             if let Some(bulk) = &prompt.bulk {
                 for (_, identifier, _) in &bulk.missing {
+                    let workspace = run
+                        .workspaces
+                        .iter()
+                        .find(|(closed, _)| closed == identifier)
+                        .map(|(_, closed)| match closed {
+                            Ok(()) => " · workspace closed".to_string(),
+                            Err(why) => format!(" · {why}"),
+                        })
+                        .unwrap_or_default();
                     lines.push(CleanupCardLine::Field {
                         label: identifier.clone(),
-                        value: "done · worktree already gone".into(),
+                        value: format!("done · worktree already gone{workspace}"),
                     });
                 }
                 for identifier in &bulk.plain {

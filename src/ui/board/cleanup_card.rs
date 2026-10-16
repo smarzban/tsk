@@ -321,6 +321,11 @@ fn possessive(names: &[String], one: &str, many: &str) -> String {
     }
 }
 
+/// `close T9's agent pane`: a gone worktree's workspace, still open.
+fn close_panes(names: &[String]) -> String {
+    format!("close {}", possessive(names, "agent pane", "agent panes"))
+}
+
 /// `remove worktree, branch and agent pane`.
 fn remove_list(branch: bool, pane: bool) -> String {
     let mut items = vec!["worktree".to_string()];
@@ -358,6 +363,8 @@ struct Buckets {
     extra: Vec<String>,
     /// Targets that could not be inspected: `m` leaves them unchanged.
     refused: Vec<String>,
+    /// Targets whose worktree is gone but whose agent pane is open: `y` and `m` close it.
+    missing_panes: Vec<String>,
     /// `other` holds only branches known not to be merged.
     other_not_merged: bool,
     /// A tidied row still has its agent pane.
@@ -501,6 +508,9 @@ impl CleanupPrompt {
             buckets
                 .refused
                 .extend(bulk.refused.iter().map(|(_, name, _)| name.clone()));
+            buckets
+                .missing_panes
+                .extend(bulk.missing_panes.iter().cloned());
             buckets.extra.extend(buckets.refused.iter().cloned());
         }
         buckets
@@ -570,6 +580,9 @@ impl CleanupPrompt {
             if !plain.is_empty() {
                 parts.push(done_phrase(&plain));
             }
+            if !b.missing_panes.is_empty() {
+                parts.push(close_panes(&b.missing_panes));
+            }
             let unchanged = [b.dirty.clone(), b.refused.clone()].concat();
             if !unchanged.is_empty() {
                 parts.push(format!("{} unchanged", tasks(&unchanged)));
@@ -621,6 +634,9 @@ impl CleanupPrompt {
             let kept = [open_names, b.other.clone()].concat();
             if !kept.is_empty() {
                 parts.push(format!("keep {}", possessive(&kept, "branch", "branches")));
+            }
+            if !b.missing_panes.is_empty() {
+                parts.push(close_panes(&b.missing_panes));
             }
             if !b.dirty.is_empty() {
                 parts.push(format!("{} unchanged", tasks(&b.dirty)));

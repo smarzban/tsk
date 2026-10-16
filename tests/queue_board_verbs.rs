@@ -792,7 +792,7 @@ fn missing_worktree_converges_cleaned_and_done_in_one_board_save_without_a_popup
     assert!(matches!(
         offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
             .expect("missing worktree converges"),
-        CleanupOffer::MissingConverged(_)
+        CleanupOffer::MissingConverged { .. }
     ));
     assert_eq!(model.popup(), BoardPopup::None);
     assert!(domain.get(id).unwrap().dispatch.as_ref().unwrap().cleaned);

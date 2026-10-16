@@ -57,6 +57,7 @@ the GitHub release notes verbatim.
 - When GitHub deletes a pull request's branch on merge, the cleanup card now says `remote branch deleted by GitHub` and `--merge` reports `remote_branch: deleted`; both read it as kept before, because they looked a moment too early.
 - Cleanup deletes a squash- or rebase-merged branch when `gh` confirms its pull request merged at exactly the branch's tip; before, it was always kept as not merged. Without `gh` nothing changes.
 - A project reached through a symlinked path, such as `/tmp/repo` and `/private/tmp/repo` on macOS, is one project.
+- Completing or cleaning a dispatched task whose worktree was already deleted by hand now closes the Herdr workspace its dispatch opened (`done T12 · worktree already gone · workspace closed · branch kept`); before, the workspace and its agent tabs stayed open. Only that workspace closes, and only while it is still on the deleted checkout; one Herdr refuses to close stays open with the reason. Under `n` on a marked set's card nothing closes.
 - With tasks marked, `Esc` in the thread or view picker closes the picker and keeps the marks.
 
 ## v0.12.0

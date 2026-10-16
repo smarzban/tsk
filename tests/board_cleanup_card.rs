@@ -543,6 +543,7 @@ fn finished_run(rows: Vec<CleanupRunRow>, bulk: Option<(usize, usize)>) -> Clean
         started: true,
         merged: Vec::new(),
         unmerged: Vec::new(),
+        workspaces: Vec::new(),
     }
 }
 

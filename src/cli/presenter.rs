@@ -1503,9 +1503,9 @@ pub fn cleaned_merged(
     merged: Option<&crate::cli::clean::Merged>,
     json: bool,
 ) -> CliOutput {
-    let worktree = match result.worktree {
-        WorktreeCleanup::Removed => "removed",
-        WorktreeCleanup::Missing => "missing",
+    let (worktree, worktree_detail) = match result.worktree {
+        WorktreeCleanup::Removed => ("removed", "removed"),
+        WorktreeCleanup::Missing => ("missing", "already gone"),
     };
     let branch = match result.branch {
         BranchCleanup::Removed => "removed",
@@ -1549,7 +1549,7 @@ pub fn cleaned_merged(
             "{warning}cleaned T{}: worktree {} ({}), branch {} ({}), workspace {} ({})\n",
             result.number,
             terminal_text(&result.worktree_path),
-            worktree,
+            worktree_detail,
             terminal_text(&result.branch_name),
             branch_detail,
             terminal_text(&result.workspace_id),

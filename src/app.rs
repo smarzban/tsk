@@ -2173,7 +2173,13 @@ pub enum CleanupOffer {
     Prompted,
     /// A confirmed cleanup still runs: nothing opens and nothing completes.
     Busy,
-    MissingConverged(CleanupResult),
+    /// The worktree was already gone: converged and completed, for the caller to save. With
+    /// `close_workspace`, its workspace is still open and closes once the save lands
+    /// ([`close_converged_workspace`]).
+    MissingConverged {
+        result: CleanupResult,
+        close_workspace: bool,
+    },
 }
 
 /// Offer cleanup only when one cursor task would newly become done. A missing recorded
@@ -2211,11 +2217,12 @@ pub fn offer_cleanup_prompt_with_host(
     let preview = dispatch::inspect_cleanup_cached_with_host(domain, id, in_herdr, host)?;
     if !preview.inspection.worktree_exists {
         let workspace = dispatch::untouched_workspace(in_herdr, &preview.inspection);
+        let close_workspace = in_herdr && preview.inspection.workspace_exists;
         domain
             .record_dispatch_cleaned(id, crate::domain::CleanupOutcome::Missing)
             .and_then(|()| domain.complete_after_cleanup(id))
             .map_err(|error| CleanupError::Store(error.to_string()))?;
-        return Ok(CleanupOffer::MissingConverged(CleanupResult {
+        let result = CleanupResult {
             remote: None,
             warning: preview.inspection.warning,
             branch_reason: Some(dispatch::BranchRetentionReason::MissingWorktree),
@@ -2228,7 +2235,11 @@ pub fn offer_cleanup_prompt_with_host(
             worktree: WorktreeCleanup::Missing,
             branch: BranchCleanup::Kept,
             workspace,
-        }));
+        };
+        return Ok(CleanupOffer::MissingConverged {
+            result,
+            close_workspace,
+        });
     }
     let pr_probe = begin_cleanup_pr_probe(task_project(domain, id), &preview.record, host);
     model.begin_cleanup_prompt(CleanupPrompt::single(cleanup_row(
@@ -2238,6 +2249,47 @@ pub fn offer_cleanup_prompt_with_host(
         pr_probe,
     )));
     Ok(CleanupOffer::Prompted)
+}
+
+/// After a converged completion is saved, close the workspace its gone worktree left open,
+/// and say what happened for the status row.
+fn close_converged_workspace(
+    result: &CleanupResult,
+    close_workspace: bool,
+    host: &mut impl DispatchHost,
+) -> String {
+    let (workspace, warning) = if close_workspace {
+        dispatch::close_orphaned_workspace(host, &result.workspace_id)
+    } else {
+        (result.workspace, None)
+    };
+    let mut parts = vec![
+        format!("done T{}", result.number),
+        "worktree already gone".to_string(),
+    ];
+    if workspace == dispatch::WorkspaceCleanup::Removed {
+        parts.push("workspace closed".into());
+    }
+    parts.push("branch kept".into());
+    parts.extend(warning);
+    parts.join(" · ")
+}
+
+/// Close each workspace a marked set's gone worktrees left open, once its completion is
+/// saved: how many closed, and why each other one stayed open.
+fn close_converged_workspaces(
+    workspaces: &[String],
+    host: &mut impl DispatchHost,
+) -> (usize, Vec<String>) {
+    let mut closed = 0;
+    let mut warnings = Vec::new();
+    for workspace_id in workspaces {
+        match dispatch::close_orphaned_workspace(host, workspace_id) {
+            (dispatch::WorkspaceCleanup::Removed, _) => closed += 1,
+            (_, warning) => warnings.extend(warning),
+        }
+    }
+    (closed, warnings)
 }
 
 /// Name the configured merge method on a card that just opened, for its `m` line. A broken
@@ -2353,8 +2405,13 @@ pub enum BulkCleanupOffer {
     /// A confirmed cleanup still runs: nothing opens and nothing completes.
     Busy,
     /// Every live dispatch's worktree was already gone: they converged to cleaned and the
-    /// whole set completed in this transaction, still one undo entry. The caller saves.
-    MissingConverged { done: usize, missing: usize },
+    /// whole set completed in this transaction, still one undo entry. The caller saves, then
+    /// closes the workspaces they left open.
+    MissingConverged {
+        done: usize,
+        missing: usize,
+        workspaces: Vec<String>,
+    },
 }
 
 /// Bulk `ctrl+d`: when the marked set holds tasks with a live dispatch, open one card listing
@@ -2396,6 +2453,8 @@ pub fn offer_bulk_cleanup_prompt_with_host(
         targets: targets.clone(),
         ..BulkCleanup::default()
     };
+    // Workspaces still open on a worktree already gone.
+    let mut workspaces = Vec::new();
     for &id in &targets {
         let task = domain.get(id).expect("targets exist");
         let identifier = task
@@ -2410,6 +2469,10 @@ pub fn offer_bulk_cleanup_prompt_with_host(
         let merge_check = begin_cleanup_merge_check(task, record, host);
         match dispatch::inspect_cleanup_cached_with_host(domain, id, in_herdr, host) {
             Ok(preview) if !preview.inspection.worktree_exists => {
+                if in_herdr && preview.inspection.workspace_exists {
+                    workspaces.push(preview.record.herdr_workspace_id.clone());
+                    bulk.missing_panes.push(identifier.clone());
+                }
                 bulk.missing.push((id, identifier, preview.record));
             }
             Ok(preview) => {
@@ -2430,6 +2493,7 @@ pub fn offer_bulk_cleanup_prompt_with_host(
         return Ok(BulkCleanupOffer::MissingConverged {
             done: targets.len(),
             missing,
+            workspaces,
         });
     }
     model.begin_cleanup_prompt(CleanupPrompt::bulk(rows, bulk));
@@ -2444,6 +2508,9 @@ pub struct CleanupConfirmed {
     pub run: Option<CleanupRun>,
     /// `n`: the status-row outcome.
     pub message: Option<String>,
+    /// `y`: a marked set's tasks whose worktree was already gone and whose workspace is still
+    /// open, identifier and workspace id. They close once the completion is saved.
+    pub workspaces: Vec<(String, String)>,
 }
 
 /// Apply a cleanup card's choice to the domain: complete the card's task, or the whole marked
@@ -2536,8 +2603,9 @@ pub fn confirm_cleanup_with_host(
         });
     }
     let mut missing = 0;
+    let mut workspaces = Vec::new();
     if let Some(bulk) = &prompt.bulk {
-        for (id, _, inspected) in &bulk.missing {
+        for (id, identifier, inspected) in &bulk.missing {
             // The card's snapshot may be stale: another board can have relaunched this task
             // since. Converge only the dispatch that was inspected, and only while its
             // worktree is still gone; a relaunched or reappeared worktree is left live.
@@ -2545,12 +2613,20 @@ pub fn confirm_cleanup_with_host(
                 .get(*id)
                 .and_then(|task| task.dispatch.as_ref())
                 .is_some_and(|record| record == inspected);
-            let still_missing = same_dispatch
-                && dispatch::inspect_cleanup_cached_with_host(domain, *id, in_herdr, host)
-                    .is_ok_and(|preview| !preview.inspection.worktree_exists);
-            if still_missing {
+            let still_missing = if same_dispatch {
+                dispatch::inspect_cleanup_cached_with_host(domain, *id, in_herdr, host)
+                    .ok()
+                    .filter(|preview| !preview.inspection.worktree_exists)
+            } else {
+                None
+            };
+            if let Some(preview) = still_missing {
                 domain.record_dispatch_cleaned(*id, crate::domain::CleanupOutcome::Missing)?;
                 missing += 1;
+                // `n` keeps what the dispatch left, its workspace included.
+                if clean && in_herdr && preview.inspection.workspace_exists {
+                    workspaces.push((identifier.clone(), preview.record.herdr_workspace_id));
+                }
             }
         }
     }
@@ -2583,6 +2659,7 @@ pub fn confirm_cleanup_with_host(
         return Ok(Some(CleanupConfirmed {
             run: None,
             message: Some(message),
+            workspaces,
         }));
     }
     // The run owns the merged checks from here: the card's copies stop competing for them.
@@ -2616,10 +2693,12 @@ pub fn confirm_cleanup_with_host(
             .into_iter()
             .map(|(_, identifier, reason)| (identifier, reason))
             .collect(),
+        workspaces: Vec::new(),
     };
     Ok(Some(CleanupConfirmed {
         run: Some(run),
         message: None,
+        workspaces,
     }))
 }
 
@@ -2673,8 +2752,17 @@ fn confirm_cleanup_and_save(
     model.released_note = report_released(&released, name_agent);
     match confirmed {
         Some(CleanupConfirmed {
-            run: Some(mut run), ..
+            run: Some(mut run),
+            workspaces,
+            ..
         }) => {
+            for (identifier, workspace_id) in workspaces {
+                let closed = match dispatch::close_orphaned_workspace(host, &workspace_id) {
+                    (_, Some(warning)) => Err(warning),
+                    _ => Ok(()),
+                };
+                run.workspaces.push((identifier, closed));
+            }
             run.merged = choice.merges.merged;
             run.unmerged.splice(0..0, choice.merges.unmerged);
             model.begin_cleanup_run(run);
@@ -3517,7 +3605,10 @@ fn approve_review(
             adopt_merge_method(store, model);
             return Ok(());
         }
-        Ok(CleanupOffer::MissingConverged(result)) => {
+        Ok(CleanupOffer::MissingConverged {
+            result,
+            close_workspace,
+        }) => {
             let Some(baseline) = load_baseline(store, model)? else {
                 return Ok(());
             };
@@ -3530,8 +3621,9 @@ fn approve_review(
                 }
             };
             model.sync_from_domain(domain);
+            let message = close_converged_workspace(&result, close_workspace, host);
             model.set_message(with_released(
-                format!("done T{} · worktree missing · branch kept", result.number),
+                message,
                 report_released(&released, name_agent),
             ));
             record_notice_dismissals_without_blocking_persist(store, domain);
@@ -4517,7 +4609,11 @@ fn handle_board_intent_with_host(
                 adopt_merge_method(store, model);
                 return Ok(false);
             }
-            Ok(BulkCleanupOffer::MissingConverged { done, missing }) => {
+            Ok(BulkCleanupOffer::MissingConverged {
+                done,
+                missing,
+                workspaces,
+            }) => {
                 let dispatch_running = model.bulk_dispatch_running();
                 let released = match save_releasing(store, domain, dispatch_running, in_herdr, host)
                 {
@@ -4528,8 +4624,17 @@ fn handle_board_intent_with_host(
                     }
                 };
                 model.sync_from_domain(domain);
+                let (closed, warnings) = close_converged_workspaces(&workspaces, host);
+                let mut parts = vec![
+                    format!("done {done}"),
+                    format!("{} already gone", plural(missing, "worktree")),
+                ];
+                if closed > 0 {
+                    parts.push(format!("{} closed", plural(closed, "workspace")));
+                }
+                parts.extend(warnings);
                 model.set_message(with_released(
-                    format!("done {done} · {} already gone", plural(missing, "worktree")),
+                    parts.join(" · "),
                     report_released(&released, name_agent),
                 ));
                 record_notice_dismissals_without_blocking_persist(store, domain);
@@ -4554,7 +4659,10 @@ fn handle_board_intent_with_host(
                     adopt_merge_method(store, model);
                     return Ok(false);
                 }
-                Ok(CleanupOffer::MissingConverged(result)) => {
+                Ok(CleanupOffer::MissingConverged {
+                    result,
+                    close_workspace,
+                }) => {
                     let dispatch_running = model.bulk_dispatch_running();
                     let released =
                         match save_releasing(store, domain, dispatch_running, in_herdr, host) {
@@ -4571,8 +4679,9 @@ fn handle_board_intent_with_host(
                             }
                         };
                     model.sync_from_domain(domain);
+                    let message = close_converged_workspace(&result, close_workspace, host);
                     model.set_message(with_released(
-                        format!("done T{} · worktree missing · branch kept", result.number),
+                        message,
                         report_released(&released, name_agent),
                     ));
                     record_notice_dismissals_without_blocking_persist(store, domain);
@@ -21385,6 +21494,12 @@ mod bulk_cleanup_tests {
         /// A slow host: `y` hands the plan over and the test lands each row by hand.
         hold: bool,
         held: Option<(CleanupJob, Vec<CleanupPlanRow>)>,
+        /// Workspaces already closed when cleanup looks.
+        gone_workspaces: HashSet<String>,
+        /// Workspaces closed by id, in order.
+        closed: Vec<String>,
+        /// What a workspace close returns instead of closing.
+        close_error: Option<String>,
     }
 
     impl DispatchHost for BulkHost {
@@ -21421,7 +21536,7 @@ mod bulk_cleanup_tests {
                 dirty_files: Vec::new(),
                 checked_out_elsewhere: false,
                 branch_merged: self.cached_merged,
-                workspace_exists: true,
+                workspace_exists: !self.gone_workspaces.contains(&record.herdr_workspace_id),
                 target_matches: true,
                 warning: None,
                 base_available: true,
@@ -21440,6 +21555,13 @@ mod bulk_cleanup_tests {
                 return Err(format!("herdr could not remove {workspace_id}"));
             }
             self.removed.push(workspace_id.to_string());
+            Ok(())
+        }
+        fn close_herdr_workspace(&mut self, workspace_id: &str) -> Result<(), String> {
+            if let Some(error) = self.close_error.clone() {
+                return Err(error);
+            }
+            self.closed.push(workspace_id.to_string());
             Ok(())
         }
         fn delete_branch(&mut self, _: &Path, branch: &str) -> Result<(), String> {
@@ -21876,6 +21998,140 @@ mod bulk_cleanup_tests {
             disk.last_undo(),
             Some(UndoEntry::Batch { entries }) if entries.len() == 3
         ));
+        assert_eq!(
+            host.closed,
+            vec!["w-clean".to_string(), "w-dirty".to_string()],
+            "each gone worktree's own workspace closes"
+        );
+        assert_eq!(
+            board.model.message(),
+            Some("done 3 · 2 worktrees already gone · 2 workspaces closed")
+        );
+    }
+
+    /// The single cursor task: unmarked, selected on the board.
+    fn cursor_on_clean(board: &mut Board) {
+        board.model.clear_marks();
+        let index = board
+            .model
+            .visible_ids()
+            .iter()
+            .position(|visible| *visible == board.ids[0])
+            .expect("visible");
+        apply_intent(
+            &mut board.domain,
+            &mut board.model,
+            BoardIntent::SelectIndex(index),
+            None,
+        )
+        .expect("select");
+    }
+
+    /// T234: `ctrl+d` on a task whose worktree was deleted by hand closes the Herdr workspace
+    /// the dispatch opened, once the completion is saved; only that workspace, by its id.
+    #[test]
+    fn done_on_a_task_whose_worktree_is_gone_closes_its_workspace() {
+        let mut board = marked_board("gone-single");
+        cursor_on_clean(&mut board);
+        let mut host = host();
+        host.missing = HashSet::from(["/tmp/tsk-bulk-clean".to_string()]);
+        press(&mut board, BoardIntent::Complete, &mut host);
+        assert!(board.model.cleanup_prompt().is_none());
+        assert_eq!(host.closed, vec!["w-clean".to_string()]);
+        assert!(host.removed.is_empty() && host.deleted.is_empty());
+        assert_eq!(
+            board.model.message(),
+            Some("done T1 · worktree already gone · workspace closed · branch kept")
+        );
+        let disk = board.store.load().expect("load");
+        let task = disk.get(board.ids[0]).unwrap();
+        assert_eq!(task.status, HumanStatus::Done);
+        assert!(task.dispatch.as_ref().unwrap().cleaned);
+    }
+
+    /// A workspace already closed is never closed again, and one Herdr refuses to close
+    /// stays open with the reason on the status row: the task is done either way.
+    #[test]
+    fn done_on_a_task_whose_worktree_is_gone_reports_a_workspace_it_could_not_close() {
+        let mut board = marked_board("gone-closed");
+        cursor_on_clean(&mut board);
+        let mut closed = host();
+        closed.missing = HashSet::from(["/tmp/tsk-bulk-clean".to_string()]);
+        closed.gone_workspaces = HashSet::from(["w-clean".to_string()]);
+        press(&mut board, BoardIntent::Complete, &mut closed);
+        assert!(closed.closed.is_empty());
+        assert_eq!(
+            board.model.message(),
+            Some("done T1 · worktree already gone · branch kept")
+        );
+
+        let mut board = marked_board("gone-refused");
+        cursor_on_clean(&mut board);
+        let mut refusing = host();
+        refusing.missing = HashSet::from(["/tmp/tsk-bulk-clean".to_string()]);
+        refusing.close_error = Some("herdr is not running".into());
+        press(&mut board, BoardIntent::Complete, &mut refusing);
+        assert_eq!(
+            board.model.message(),
+            Some(
+                "done T1 · worktree already gone · branch kept · could not close workspace \
+                 w-clean: herdr is not running"
+            )
+        );
+        let disk = board.store.load().expect("load");
+        assert_eq!(disk.get(board.ids[0]).unwrap().status, HumanStatus::Done);
+    }
+
+    /// On a marked set's card, `y` closes the workspace of a row whose worktree was already
+    /// gone; `n` keeps everything the dispatches left, that workspace included.
+    #[test]
+    fn a_marked_set_card_closes_a_gone_worktrees_workspace_only_on_y() {
+        for (intent, closed) in [
+            (BoardIntent::ConfirmCleanup, vec!["w-clean".to_string()]),
+            (BoardIntent::KeepCleanup, Vec::new()),
+        ] {
+            let mut board = marked_board("gone-card");
+            // T2 is clean here, so the card offers `y`.
+            let mut host = BulkHost {
+                missing: HashSet::from(["/tmp/tsk-bulk-clean".to_string()]),
+                ..BulkHost::default()
+            };
+            press(&mut board, BoardIntent::Complete, &mut host);
+            host.land_all(true);
+            tick(&mut board, &mut host);
+            let options = board
+                .model
+                .cleanup_prompt()
+                .expect("T2 is still live")
+                .options()
+                .into_iter()
+                .map(|option| option.text)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                options
+                    .iter()
+                    .filter(|text| text.contains("close T1's agent pane"))
+                    .count(),
+                1,
+                "`y` says it closes T1's pane, `n` keeps it: {options:?}"
+            );
+            // The run stays on the card while T2's removal is held.
+            host.hold = true;
+            press(&mut board, intent.clone(), &mut host);
+            assert_eq!(host.closed, closed, "{intent:?}");
+            assert!(cleaned(&board, 0), "{intent:?}");
+            if intent == BoardIntent::ConfirmCleanup {
+                let run = board.model.cleanup_run().expect("run");
+                assert_eq!(run.workspaces, vec![("T1".to_string(), Ok(()))]);
+                assert!(
+                    run.summary()
+                        .0
+                        .contains("1 already gone · 1 workspace closed"),
+                    "{}",
+                    run.summary().0
+                );
+            }
+        }
     }
 
     #[test]
@@ -22520,6 +22776,8 @@ mod merge_cleanup_tests {
         merges: Vec<(String, MergeMethod, String)>,
         deleted_at_tip: Vec<String>,
         removed: Vec<String>,
+        /// Workspaces closed by id, a gone worktree's.
+        closed: Vec<String>,
         /// A slow `gh`: `m` hands the merges over and the test lands them by hand.
         hold: bool,
         /// No `gh` on PATH.
@@ -22586,6 +22844,10 @@ mod merge_cleanup_tests {
         }
         fn remove_herdr_worktree(&mut self, workspace_id: &str) -> Result<(), String> {
             self.removed.push(workspace_id.to_string());
+            Ok(())
+        }
+        fn close_herdr_workspace(&mut self, workspace_id: &str) -> Result<(), String> {
+            self.closed.push(workspace_id.to_string());
             Ok(())
         }
         fn pull_request(&mut self, _: &Path, branch: &str) -> PrLookup {
@@ -23611,8 +23873,8 @@ mod merge_cleanup_tests {
             format!(
                 "squash-merge PR #7 (T1) · mark T1 and T2 done, remove their worktrees, \
                  branches and agent panes · mark {unmerged} done, remove their worktrees and \
-                 agent panes, keep their branches (not merged) · mark T6 and T7 done · T4 and \
-                 T8 unchanged"
+                 agent panes, keep their branches (not merged) · mark T6 and T7 done · close \
+                 T7's agent pane · T4 and T8 unchanged"
             )
         );
         press(&mut board, BoardIntent::MergeCleanup, &mut host);
@@ -23635,6 +23897,11 @@ mod merge_cleanup_tests {
         let mut removed = host.removed.clone();
         removed.sort();
         assert_eq!(removed, ["w-closed", "w-merged", "w-nopr", "w-open"]);
+        assert_eq!(
+            host.closed,
+            ["w-gone"],
+            "`m` closes the gone worktree's pane as `y` does"
+        );
         let mut deleted = host.deleted_at_tip.clone();
         deleted.sort();
         assert_eq!(deleted, [tip("tsk/merged"), tip("tsk/open")]);
@@ -23647,7 +23914,7 @@ mod merge_cleanup_tests {
         let painted = screen(&board.model);
         for line in [
             "T6  done",
-            "T7  done · worktree already gone",
+            "T7  done · worktree already gone · workspace closed",
             "unchanged · uncommitted changes",
             "unchanged · can't inspect",
         ] {

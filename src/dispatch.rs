@@ -158,7 +158,8 @@ pub enum WorktreeCleanup {
 pub enum WorkspaceCleanup {
     /// Closed by this cleanup.
     Removed,
-    /// Left open: cleanup ran outside Herdr, or found no worktree to remove.
+    /// Left open: cleanup ran outside Herdr, or Herdr refused to close it (the cleanup's
+    /// warning says why).
     Kept,
     /// Already closed when cleanup looked, for example by an earlier refused Windows cleanup.
     Missing,
@@ -1649,14 +1650,27 @@ fn rename_when_detected(
 
 /// Herdr says the workspace no longer exists. Any other answer, a failure to ask included,
 /// counts as open, so a cleanup never calls a workspace gone that it could not check.
-fn herdr_workspace_gone(workspace_id: &str) -> bool {
-    Command::new("herdr")
+/// Whether the recorded workspace is still open on `worktree`, a checkout already deleted.
+/// Herdr keeps a workspace's checkout path after the directory goes, so an id that now names
+/// another checkout reads as closed: cleanup never closes a workspace it did not open. Only
+/// Herdr saying so reads as closed; a Herdr that cannot answer leaves it open.
+fn herdr_workspace_open_on(workspace_id: &str, worktree: &Path) -> bool {
+    let Ok(output) = Command::new("herdr")
         .args(["workspace", "get", workspace_id])
         .output()
-        .is_ok_and(|output| {
-            !output.status.success()
-                && herdr_error_code(&output.stderr).as_deref() == Some("workspace_not_found")
-        })
+    else {
+        return true;
+    };
+    if !output.status.success() {
+        return herdr_error_code(&output.stderr).as_deref() != Some("workspace_not_found");
+    }
+    serde_json::from_slice::<Value>(&output.stdout)
+        .ok()
+        .as_ref()
+        .and_then(|value| value.pointer("/result/workspace/worktree/checkout_path"))
+        .and_then(Value::as_str)
+        .and_then(|path| canonical_cleanup_path(Path::new(path)).ok())
+        .is_some_and(|path| same_path(&path, worktree))
 }
 
 fn herdr_error_code(stderr: &[u8]) -> Option<String> {
@@ -1822,10 +1836,11 @@ fn system_inspect_cleanup(
         }
     };
     if !worktree.exists() {
-        // Nothing to remove, but the result still says whether the workspace is open.
+        // Nothing to remove, but the workspace it ran in may still be open: cleanup closes it.
         return Ok(CleanupInspection {
             target_matches: true,
-            workspace_exists: in_herdr && !herdr_workspace_gone(&dispatch.herdr_workspace_id),
+            workspace_exists: in_herdr
+                && herdr_workspace_open_on(&dispatch.herdr_workspace_id, &worktree_path),
             ..CleanupInspection::default()
         });
     }
@@ -2251,6 +2266,8 @@ pub fn clean_planned_with_host(
 
     // The branch a PR merged into when it was not the recorded base.
     let mut merged_into = None;
+    // Why the workspace of a worktree already gone stayed open.
+    let mut close_warning = None;
     let (worktree, deletion, workspace) = if preview.inspection.worktree_exists {
         let workspace_removed = in_herdr && preview.inspection.workspace_exists;
         let worktree = Path::new(&preview.record.worktree);
@@ -2288,10 +2305,18 @@ pub fn clean_planned_with_host(
         };
         (WorktreeCleanup::Removed, deletion, workspace)
     } else {
+        let workspace = if in_herdr && preview.inspection.workspace_exists {
+            let (workspace, warning) =
+                close_orphaned_workspace(host, &preview.record.herdr_workspace_id);
+            close_warning = warning;
+            workspace
+        } else {
+            untouched_workspace(in_herdr, &preview.inspection)
+        };
         (
             WorktreeCleanup::Missing,
             BranchDeletion::Kept(BranchRetentionReason::MissingWorktree),
-            untouched_workspace(in_herdr, &preview.inspection),
+            workspace,
         )
     };
     if host.platform() == HostPlatform::Windows {
@@ -2312,7 +2337,7 @@ pub fn clean_planned_with_host(
         _ => None,
     };
     Ok(CleanupResult {
-        warning: preview.inspection.warning,
+        warning: join_warnings(preview.inspection.warning, close_warning),
         branch_reason,
         remote,
         number: preview.number,
@@ -2334,6 +2359,30 @@ pub fn untouched_workspace(in_herdr: bool, inspection: &CleanupInspection) -> Wo
         WorkspaceCleanup::Missing
     } else {
         WorkspaceCleanup::Kept
+    }
+}
+
+/// Close the recorded workspace of a dispatch whose worktree was already gone, which the
+/// inspection found still open: with no checkout left, `herdr worktree remove` cannot close
+/// it. A refused close keeps the workspace and says why; the cleanup converges anyway.
+pub fn close_orphaned_workspace(
+    host: &mut impl DispatchHost,
+    workspace_id: &str,
+) -> (WorkspaceCleanup, Option<String>) {
+    match host.close_herdr_workspace(workspace_id) {
+        Ok(()) => (WorkspaceCleanup::Removed, None),
+        Err(error) => (
+            WorkspaceCleanup::Kept,
+            Some(format!("could not close workspace {workspace_id}: {error}")),
+        ),
+    }
+}
+
+/// Both warnings a cleanup has to show, in one line.
+pub fn join_warnings(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(format!("{first}; {second}")),
+        (first, second) => first.or(second),
     }
 }
 
@@ -4062,6 +4111,10 @@ mod tests {
         blockers: Vec<Option<RemovalBlock>>,
         blocker_checks: usize,
         closed: usize,
+        /// Every workspace closed by id, in order.
+        closed_ids: Vec<String>,
+        /// What a workspace close returns instead of closing.
+        close_error: Option<String>,
         /// The state dir launchers go under; `C:\Users\Some One\tsk` when unset.
         state_dir: Option<String>,
         /// What a failed Windows removal left; `Intact` when unset.
@@ -4211,8 +4264,12 @@ mod tests {
             self.retry_waits += 1;
         }
 
-        fn close_herdr_workspace(&mut self, _: &str) -> Result<(), String> {
+        fn close_herdr_workspace(&mut self, workspace_id: &str) -> Result<(), String> {
+            if let Some(error) = self.close_error.clone() {
+                return Err(error);
+            }
             self.closed += 1;
+            self.closed_ids.push(workspace_id.into());
             Ok(())
         }
 
@@ -4801,35 +4858,82 @@ mod tests {
         fs::remove_dir_all(path).expect("cleanup");
     }
 
-    /// A worktree that is already gone (deleted by hand after a refused cleanup) still reports
-    /// whether its workspace is open: closed earlier reads as missing, open as kept.
+    /// A worktree that is already gone (deleted by hand, or after a refused cleanup) still
+    /// closes the workspace it ran in when that is open, and only that one, by its recorded
+    /// id: closed earlier reads as missing, and outside Herdr nothing is touched.
     #[test]
-    fn a_missing_worktree_reports_whether_its_workspace_is_still_open() {
+    fn a_missing_worktree_closes_its_workspace_when_still_open() {
         let (path, profiles) = profiles();
-        for (in_herdr, open, expected) in [
-            (true, false, WorkspaceCleanup::Missing),
-            (true, true, WorkspaceCleanup::Kept),
-            (false, false, WorkspaceCleanup::Kept),
-        ] {
-            let (mut state, id) = task();
-            run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
-                .expect("dispatch");
-            let mut host = FakeHost {
-                cleanup: Some(CleanupInspection {
-                    worktree_exists: false,
-                    workspace_exists: open,
-                    ..clean_inspection()
-                }),
-                ..windows_host()
-            };
-            let result = clean_with_host(&mut state, id, in_herdr, &mut host).expect("converged");
-            assert_eq!(result.worktree, WorktreeCleanup::Missing);
-            assert_eq!(
-                result.workspace, expected,
-                "in_herdr {in_herdr}, open {open}"
-            );
-            assert_eq!(host.closed, 0, "a missing worktree never closes anything");
+        for windows in [true, false] {
+            for (in_herdr, open, expected, closed) in [
+                (true, false, WorkspaceCleanup::Missing, 0),
+                (true, true, WorkspaceCleanup::Removed, 1),
+                (false, false, WorkspaceCleanup::Kept, 0),
+                (false, true, WorkspaceCleanup::Kept, 0),
+            ] {
+                let (mut state, id) = task();
+                run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
+                    .expect("dispatch");
+                let mut host = FakeHost {
+                    cleanup: Some(CleanupInspection {
+                        worktree_exists: false,
+                        workspace_exists: open,
+                        ..clean_inspection()
+                    }),
+                    windows,
+                    ..windows_host()
+                };
+                let result =
+                    clean_with_host(&mut state, id, in_herdr, &mut host).expect("converged");
+                let case = format!("windows {windows}, in_herdr {in_herdr}, open {open}");
+                assert_eq!(result.worktree, WorktreeCleanup::Missing, "{case}");
+                assert_eq!(result.workspace, expected, "{case}");
+                assert_eq!(result.branch, BranchCleanup::Kept, "{case}");
+                assert_eq!(
+                    result.branch_reason,
+                    Some(BranchRetentionReason::MissingWorktree),
+                    "{case}"
+                );
+                assert_eq!(host.closed_ids, vec!["w9".to_string(); closed], "{case}");
+                assert_eq!(
+                    (host.removed_herdr, host.removed_git, host.deleted_branches),
+                    (0, 0, 0),
+                    "{case}: nothing but the workspace is touched"
+                );
+                assert_eq!(result.outcome(), crate::domain::CleanupOutcome::Missing);
+            }
         }
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    /// A workspace Herdr refuses to close stays open and the cleanup says why, but still
+    /// converges: the worktree is gone either way.
+    #[test]
+    fn a_missing_worktree_whose_workspace_will_not_close_still_converges() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        run_with_host(&mut state, id, &profiles, false, true, &mut windows_host())
+            .expect("dispatch");
+        let mut host = FakeHost {
+            cleanup: Some(CleanupInspection {
+                worktree_exists: false,
+                warning: Some("could not fetch origin".into()),
+                ..clean_inspection()
+            }),
+            close_error: Some("herdr is not running".into()),
+            ..windows_host()
+        };
+        let result = clean_with_host(&mut state, id, true, &mut host).expect("converged");
+        assert_eq!(result.worktree, WorktreeCleanup::Missing);
+        assert_eq!(result.workspace, WorkspaceCleanup::Kept);
+        assert_eq!(
+            result.warning.as_deref(),
+            Some("could not fetch origin; could not close workspace w9: herdr is not running")
+        );
+        assert!(state
+            .get(id)
+            .and_then(|task| task.dispatch.as_ref())
+            .is_some_and(|dispatch| dispatch.cleaned));
         fs::remove_dir_all(path).expect("cleanup");
     }
 
