@@ -631,7 +631,8 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
         ];
     }
 
-    // The read-only archived focus offers only what works there.
+    // The read-only archived focus offers only what works there. Its primary action is the
+    // unarchive, so a narrow bar lets `enter open` go to keep `? help`.
     if model.focus_is_archived() {
         return vec![
             VerbEntry {
@@ -639,7 +640,7 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
                 label: "unarchive",
                 shed: 0,
             },
-            OPEN,
+            VerbEntry { shed: 1, ..OPEN },
             VerbEntry {
                 key: "esc",
                 label: "close",

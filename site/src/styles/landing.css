@@ -2782,7 +2782,7 @@ html[data-theme="light"] .pane {
 .tsk-page-scrollbar > span { display: block; height: 1lh; }
 .board:has(.tsk-task-column) > .tsk-foot { flex: none; padding-top: 0; margin-top: 0; }
 .board:has(.tsk-task-column) > .tsk-foot .foot-rule { height: 1lh; margin: 0; background: linear-gradient(var(--line-2),var(--line-2)) center / 100% 1px no-repeat; }
-.board:has(.tsk-task-column) > .tsk-foot .tsk-verbs { height: 1lh; flex-wrap: wrap; overflow: hidden; gap: 0; }
+.board:has(.tsk-task-column) > .tsk-foot .tsk-verbs { height: 1lh; flex-wrap: nowrap; overflow: hidden; gap: 0; }
 .board:has(.tsk-task-column) > .tsk-foot .foot { font-size: inherit; line-height: inherit; }
 .tsk-task-column.is-narrow .tsk-task-rule { flex: none; height: 1lh; margin: 0; background: linear-gradient(var(--line-2), var(--line-2)) center / 100% 1px no-repeat; }
 
