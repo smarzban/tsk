@@ -36,7 +36,7 @@ const MACHINE_ID_FILE: &str = "machine-id";
 const REPOS_DIR: &str = "backup-repos";
 /// Folder targets keep their copies under this directory.
 const FOLDER_ROOT: &str = "tsk-backups";
-const STATUS_TEMP_PREFIX: &str = ".backup-status.json.tmp.";
+pub(crate) const STATUS_TEMP_PREFIX: &str = ".backup-status.json.tmp.";
 
 pub const DEFAULT_KEEP_LAST: usize = 10;
 pub const DEFAULT_KEEP_DAYS: usize = 7;

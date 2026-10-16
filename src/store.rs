@@ -828,6 +828,18 @@ impl TaskStore {
                 supported: STORE_FORMAT_VERSION,
             });
         }
+        // Parse it the way the next open will, so a damaged copy never replaces the store.
+        let parsed: Result<DomainState, StoreError> = if found < STORE_FORMAT_VERSION {
+            serde_json::from_str(text)
+                .map_err(StoreError::from)
+                .and_then(|document| migrate(document, found))
+                .and_then(|migrated| serde_json::from_value(migrated).map_err(StoreError::from))
+        } else {
+            serde_json::from_str(text).map_err(StoreError::from)
+        };
+        parsed.map_err(|error| {
+            RestoreError::Invalid(format!("backup is not a readable store: {error}"))
+        })?;
         fsperm::ensure_private_dir(&self.path).map_err(|e| RestoreError::Store(e.into()))?;
         let presence_path = self.path.join(BOARD_LOCK_FILE);
         let presence =
@@ -1031,6 +1043,7 @@ impl TaskStore {
             crate::update::UPDATE_TEMP_PREFIX,
             crate::delivery::DELIVERY_TEMP_PREFIX,
             crate::agents::CONFIG_TEMP_PREFIX,
+            crate::backup::STATUS_TEMP_PREFIX,
         ];
         let stale_after = Duration::from_secs(60);
         for entry in entries.flatten() {
@@ -3532,6 +3545,11 @@ mod tests {
         ));
         assert!(matches!(
             store.restore_document(b"not json", SystemTime::now()),
+            Err(RestoreError::Invalid(_))
+        ));
+        let damaged = format!(r#"{{"format_version":{STORE_FORMAT_VERSION},"tasks":"oops"}}"#);
+        assert!(matches!(
+            store.restore_document(damaged.as_bytes(), SystemTime::now()),
             Err(RestoreError::Invalid(_))
         ));
         assert_eq!(fs::read(dir.join(STATE_FILE)).expect("live"), live);
