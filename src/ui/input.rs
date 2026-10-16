@@ -65,7 +65,7 @@ pub enum CaptureIntent {
     /// Either end of the cursor's own line.
     MoveLineStart,
     MoveLineEnd,
-    /// The nearest word boundary in the asked direction.
+    /// Start of the previous word / end of the next word, as macOS Option+arrow moves.
     MoveWordLeft,
     MoveWordRight,
     FocusNext,
@@ -206,7 +206,7 @@ pub enum BoardIntent {
     /// Either end of the cursor's own line.
     EditMoveLineStart,
     EditMoveLineEnd,
-    /// The nearest word boundary in the asked direction.
+    /// Start of the previous word / end of the next word, as macOS Option+arrow moves.
     EditMoveWordLeft,
     EditMoveWordRight,
     /// Remove the word before / after the cursor, never across a line break.

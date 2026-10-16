@@ -123,31 +123,41 @@ impl EditBuffer {
             .map_or(chars.len(), |offset| from + offset);
     }
 
-    /// the nearest word boundary strictly before the cursor, stopping at 0.
+    /// the start of the word before the cursor, as macOS Option+← moves: skip the whitespace
+    /// before the cursor (line breaks included), then the word, stopping at 0. Inside a word
+    /// this is the start of that word.
     pub(crate) fn move_word_left(&mut self) {
         let chars: Vec<char> = self.value.chars().collect();
-        if let Some(target) = (0..self.cursor)
-            .rev()
-            .find(|position| is_word_boundary(&chars, *position))
-        {
-            self.cursor = target;
+        let mut target = self.cursor;
+        while target > 0 && chars[target - 1].is_whitespace() {
+            target -= 1;
         }
+        while target > 0 && !chars[target - 1].is_whitespace() {
+            target -= 1;
+        }
+        self.cursor = target;
     }
 
-    /// the nearest word boundary strictly after the cursor, stopping at the end.
+    /// the end of the word after the cursor, as macOS Option+→ moves: skip the whitespace
+    /// after the cursor (line breaks included), then the word, stopping at the end. Inside a
+    /// word this is the end of that word.
     pub(crate) fn move_word_right(&mut self) {
         let chars: Vec<char> = self.value.chars().collect();
-        if let Some(target) =
-            (self.cursor + 1..=chars.len()).find(|position| is_word_boundary(&chars, *position))
-        {
-            self.cursor = target;
+        let mut target = self.cursor;
+        while target < chars.len() && chars[target].is_whitespace() {
+            target += 1;
         }
+        while target < chars.len() && !chars[target].is_whitespace() {
+            target += 1;
+        }
+        self.cursor = target;
     }
 
     /// remove the word before the cursor: any whitespace run, then the word before it.
     ///
-    /// Words are the whitespace-separated runs word movement measures, but a deletion never
-    /// crosses a line break: it stops just after one, and a cursor right after a break (or
+    /// Words are the whitespace-separated runs word movement measures, and on one line a
+    /// deletion takes exactly what word movement passes over; but where movement crosses
+    /// line breaks, a deletion never does: it stops just after one, and a cursor right after a break (or
     /// inside a `\r\n` pair) removes that whole break instead, as Backspace would.
     pub(crate) fn delete_word_left(&mut self) {
         let chars: Vec<char> = self.value.chars().collect();
@@ -303,15 +313,6 @@ fn line_cursor(chars: &[char], cursor: usize) -> usize {
     } else {
         cursor
     }
-}
-
-/// A cursor position is a word boundary at either end of the value, or wherever the
-/// characters around it cross between whitespace and non-whitespace.
-fn is_word_boundary(chars: &[char], position: usize) -> bool {
-    if position == 0 || position == chars.len() {
-        return true;
-    }
-    chars[position - 1].is_whitespace() != chars[position].is_whitespace()
 }
 
 /// window a field value into `width` display columns, keeping the cursor visible.
@@ -1317,30 +1318,107 @@ mod tests {
         );
     }
 
-    /// word movement lands on the nearest boundary strictly in the asked direction.
+    /// word movement follows macOS Option+arrow: right skips whitespace to the end of the
+    /// next word (or the current one), left skips whitespace to the start of the previous
+    /// word (or the current one).
     #[test]
-    fn word_movement_lands_on_the_nearest_boundary_in_the_requested_direction() {
-        // " alpha beta " boundaries: 0, 2, 7, 8, 12, 14.
-        let value = "  alpha beta  ";
+    fn word_movement_lands_at_the_far_end_of_the_next_word_like_macos() {
+        // From the end of "aa", right goes to the end of "bb", not the start.
+        let mut aa_bb = EditBuffer::new("aa bb", 2);
+        aa_bb.move_word_right();
+        assert_eq!(aa_bb.cursor(), 5);
+        aa_bb.move_word_left();
+        assert_eq!(aa_bb.cursor(), 3);
+        aa_bb.move_word_left();
+        assert_eq!(aa_bb.cursor(), 0);
 
+        // Leading and trailing whitespace: words are "alpha" 2..7 and "beta" 8..12.
+        let value = "  alpha beta  ";
         let mut right = EditBuffer::new(value, 0);
-        right.move_word_right();
-        assert_eq!(right.cursor(), 2);
         right.move_word_right();
         assert_eq!(right.cursor(), 7);
         right.move_word_right();
-        assert_eq!(right.cursor(), 8);
+        assert_eq!(right.cursor(), 12);
+        right.move_word_right();
+        assert_eq!(right.cursor(), 14, "trailing spaces run to the end");
 
-        let mut left = EditBuffer::new(value, 9);
+        let mut left = EditBuffer::new(value, 14);
         left.move_word_left();
         assert_eq!(left.cursor(), 8);
         left.move_word_left();
-        assert_eq!(left.cursor(), 7);
+        assert_eq!(left.cursor(), 2);
+        left.move_word_left();
+        assert_eq!(left.cursor(), 0, "leading spaces run to the start");
 
-        // Strictly in the requested direction: sitting on a boundary still moves off it.
-        let mut on_boundary = EditBuffer::new(value, 7);
-        on_boundary.move_word_right();
-        assert_eq!(on_boundary.cursor(), 8);
+        // Inside a word: the ends of that same word.
+        let mut inside_right = EditBuffer::new(value, 4);
+        inside_right.move_word_right();
+        assert_eq!(inside_right.cursor(), 7);
+        let mut inside_left = EditBuffer::new(value, 10);
+        inside_left.move_word_left();
+        assert_eq!(inside_left.cursor(), 8);
+    }
+
+    /// in multi-line notes word movement crosses line breaks, `\r\n` included, and never
+    /// lands inside a pair.
+    #[test]
+    fn word_movement_crosses_line_breaks() {
+        for (value, first_end, second_start) in [("one\ntwo", 3, 4), ("one \r\n two", 3, 7)] {
+            let end = value.chars().count();
+            let mut right = EditBuffer::new(value, first_end);
+            right.move_word_right();
+            assert_eq!(
+                right.cursor(),
+                end,
+                "{value:?} right from the first word's end"
+            );
+
+            let mut left = EditBuffer::new(value, second_start);
+            left.move_word_left();
+            assert_eq!(
+                left.cursor(),
+                0,
+                "{value:?} left from the second word's start"
+            );
+        }
+    }
+
+    /// on one line, a word delete removes exactly the run word movement passes over.
+    #[test]
+    fn word_deletion_and_word_movement_share_their_boundaries_on_one_line() {
+        let value = "  alpha  beta gamma  ";
+        let count = value.chars().count();
+        for cursor in 0..=count {
+            let mut moved = EditBuffer::new(value, cursor);
+            moved.move_word_left();
+            let mut deleted = EditBuffer::new(value, cursor);
+            deleted.delete_word_left();
+            let expected: String = value
+                .chars()
+                .take(moved.cursor())
+                .chain(value.chars().skip(cursor))
+                .collect();
+            assert_eq!(
+                (deleted.value(), deleted.cursor()),
+                (expected.as_str(), moved.cursor()),
+                "left from {cursor}"
+            );
+
+            let mut moved = EditBuffer::new(value, cursor);
+            moved.move_word_right();
+            let mut deleted = EditBuffer::new(value, cursor);
+            deleted.delete_word_right();
+            let expected: String = value
+                .chars()
+                .take(cursor)
+                .chain(value.chars().skip(moved.cursor()))
+                .collect();
+            assert_eq!(
+                (deleted.value(), deleted.cursor()),
+                (expected.as_str(), cursor),
+                "right from {cursor}"
+            );
+        }
     }
 
     /// word movement stops at the value bounds rather than wrapping.
@@ -1426,8 +1504,8 @@ mod tests {
 
             // Every movement leaves the value untouched and lands on the position the
             // pinned rules give, computed here from the same character vector: the current
-            // line is the maximal break-free run around the cursor, and a word boundary is
-            // the value's end or a whitespace/non-whitespace transition.
+            // line is the maximal break-free run around the cursor, and a word move skips the
+            // whitespace (breaks included) in its direction, then the word beyond it.
 
             // The runs, cut on the one definition of a break: a `\r\n` pair, a lone `\n`,
             // or a lone `\r`. Segmenting the whole value is independent of how the buffer
@@ -1458,26 +1536,21 @@ mod tests {
                 .find(|(start, end)| (k >= *start && k <= *end) || *start > k)
                 .copied()
                 .expect("every cursor position has a line");
-            let boundaries: Vec<usize> = (0..=count)
-                .filter(|position| {
-                    *position == 0
-                        || *position == count
-                        || original[*position - 1].is_whitespace()
-                            != original[*position].is_whitespace()
-                })
-                .collect();
-            // Strictly in the asked direction, and a no-op when there is none that way.
-            let word_left = boundaries
-                .iter()
-                .rev()
-                .find(|position| **position < k)
-                .copied()
-                .unwrap_or(k);
-            let word_right = boundaries
-                .iter()
-                .find(|position| **position > k)
-                .copied()
-                .unwrap_or(k);
+            let is_space = |position: usize| original[position].is_whitespace();
+            let mut word_left = k;
+            while word_left > 0 && is_space(word_left - 1) {
+                word_left -= 1;
+            }
+            while word_left > 0 && !is_space(word_left - 1) {
+                word_left -= 1;
+            }
+            let mut word_right = k;
+            while word_right < count && is_space(word_right) {
+                word_right += 1;
+            }
+            while word_right < count && !is_space(word_right) {
+                word_right += 1;
+            }
 
             let movements: [(Movement, usize, &str); 6] = [
                 (EditBuffer::move_left, k.saturating_sub(1), "move_left"),
