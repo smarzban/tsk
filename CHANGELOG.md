@@ -1,47 +1,36 @@
 # Changelog
 
-One `## vX.Y.Z` section per release, newest first, with `## Unreleased` on top. Inside a
-section the subsections are, in this order and only when non-empty: `### Breaking`,
-`### Added`, `### Changed`, `### Fixed`. Every user-visible change lands here in the PR
-that makes it, written for a user, not a contributor: omit demo alignment, CI wiring,
-review history, and other maintainer-only work. On release the version's section becomes
-the GitHub release notes verbatim.
+One `## vX.Y.Z` section per release, newest first, with `## Unreleased
 
-## Unreleased
+## v0.12.0
 
 ### Added
 
-- Board rows show their thread and project at every width: a dim `#thread · project` label (`desk` for a desk task) follows the title, wrapping to the title's indent when it does not fit and leaving out whatever the view already says. A peeked row's closing line shows the same label. Thanks @LukasGold (#175).
-- Group and sort the board. `g` groups the live sections, the inbox included, by project or thread (a project board groups by thread), `s` sorts by recent, project, thread, or title, `f` folds or unfolds the group under the cursor, and `Shift+F` folds or unfolds every group; every sub-header is a cursor stop that `←` / `h` folds and `→` / `l` unfolds (the inbox and archived headings too), a click on one selects it, `Enter` or a double-click opens its project's board, the desk, or its thread's cross-project view (a double-click on a header that opens nothing, the inbox and archived included, folds or unfolds it instead), and `Shift+M` on a sub-header marks the whole group. Every task list's header (the desk, project boards, the thread view, and the Projects preview) shows clickable `group: …` and `sort: …` controls beside its filter. Also **group by…**, **sort by…**, and **fold / unfold group** in the `:` palette. Choices last for the board session. Thanks @LukasGold and @GalShnapp (#175, #158).
-- macOS word keys in every text field: `alt+←` / `alt+→` (Option+arrow, also sent as `Esc b` / `Esc f`) move by word beside `ctrl+←` / `ctrl+→`, `alt+Backspace` or `ctrl+w` deletes the word before the cursor, and `alt+Delete` or `alt+d` the word after it. In Notes a word delete stops at a line break. Search, the palette, Help, and pickers drop their last word on `alt+Backspace` / `ctrl+w`. AltGr characters on Windows still type. Thanks @maximilliangeorge (#204).
-- Line deletes in every text field: `ctrl+u` deletes from the cursor to the line start (macOS terminals such as Ghostty send `Cmd+Backspace` this way) and `ctrl+k` to the line end. In Notes, `ctrl+u` at the start of a line joins it to the line above and `ctrl+k` at the end joins the next line. Outside text fields `ctrl+u` is still undo (#204).
-- Notes say how to start a new line: while Notes is focused the footer shows `enter new line`, and the quick-add line's `Tab` hint now reads `tab notes`. Thanks @maximilliangeorge (#204).
-- The desk has a filter too: `t` (or the new `all ▾` control) opens it with a threads tab and a projects tab whose choices combine, so a thread that spans repositories reads as one initiative. Thanks @GalShnapp (#158).
-
-- `tsk list` reaches the board's grouping, sorting, and desk filter. `--group project|thread` and `--sort recent|project|thread|title` arrange live tasks like `g` and `s`, with sub-headings under each status (groups hottest first) and a `group` label on each `--json` row; `project` needs `--all`. `--no-thread` lists only unthreaded tasks in any scope and view. `tsk list --all --thread release` is a thread across every project and the desk.
-- Reorder steps. On the task page, `alt+↑` / `alt+↓` moves the selected step (also **move step up** / **move step down** in the `:` palette, which now opens on the task page too), and `ctrl+a` with a step selected adds the new step directly below it. From the CLI, `tsk steps T12 move <short-id> --before|--after <short-id>` or `--first`/`--last`, and `tsk steps T12 add "…"` with the same place flags. A moved step keeps its short ID and checked state. Thanks @LukasGold (#159).
+- Board rows show their thread and project as a dim `#thread · project` label (`desk` for a desk task), leaving out whatever the view already says. Thanks @LukasGold (#175).
+- Group, sort, and fold the board: `g` groups by project or thread, `s` sorts by recent, project, thread, or title, `f` folds the group under the cursor, and `Shift+F` folds every group. Group headers are cursor stops: `←` / `→` fold and unfold, `Enter` opens the group's board, and `Shift+M` marks the whole group. Also as clickable `group:` and `sort:` controls and in the `:` palette. Thanks @LukasGold and @GalShnapp (#175, #158).
+- Filter the desk by thread and project with `t` (or the `all ▾` control), so a thread that spans repositories reads as one initiative. Thanks @GalShnapp (#158).
+- Reorder steps: `alt+↑` / `alt+↓` moves the selected step and `ctrl+a` adds a step below it. From the CLI, `tsk steps T12 move <id> --before|--after <id>` (or `--first` / `--last`), and `tsk steps T12 add` takes the same place flags. Thanks @LukasGold (#159).
+- Text editing keys in every field: macOS word moves and deletes (`alt+←` / `alt+→`, `alt+Backspace` or `ctrl+w`, `alt+Delete` or `alt+d`), and `ctrl+u` / `ctrl+k` to delete to the line start or end. The footer shows how to start a new line in Notes. Thanks @maximilliangeorge (#204).
+- `tsk list --group project|thread`, `--sort recent|project|thread|title`, and `--no-thread`. `tsk list --all --thread X` lists a thread across every project and the desk.
 
 ### Changed
 
-- In a text field `ctrl+a` now moves to line start, like `ctrl+e` moves to line end, so `Cmd+←` on macOS (which terminals send as `ctrl+a`) no longer opens a new step while you type. It still adds a step on the task page when no field is open (#204).
-- Bare `g` now opens **group by** instead of folding the inbox or archived group; fold with `f` (the cursor's group) or `Shift+F` (every group). Help calls `t` **filter**.
-- `Enter` on the inbox or archived heading no longer folds it, and a single click on it now only selects it; use `←` / `→` (or `h` / `l`), `f`, or a double-click.
+- In a text field `ctrl+a` moves to the line start, so macOS `Cmd+←` no longer adds a step while you type. It still adds a step when no field is open (#204).
+- Bare `g` opens **group by** instead of folding the inbox or archived group; fold with `f` or `Shift+F`. `Enter` and a single click on those headings no longer fold them.
+- Agent skill 1.5.0 covers threads across projects, grouping, and step reordering. Rerun `tsk setup` to update installed copies.
 
 ### Fixed
 
-- `tsk setup` no longer prints raw terminal control characters from a skill directory or a previous Herdr plugin root. Those characters are shown as visible escapes, the same way other setup paths already are.
-- The `Deleted … · ctrl+u undo` line no longer stays on the status row after you move on: it clears on the next cursor move or view change, or after a few seconds, while the footer keeps offering `ctrl+u undo` as long as that undo still applies. The line now names the task by its number, such as `Deleted T12 "title"`.
-- `tsk list` refuses a repeated `-p`/`--project`, `--thread`, or `--state-dir` (exit 2) instead of silently keeping the last one, so `-p alpha -p beta` no longer lists only beta.
-- At 110 columns or wider, the Task view's narrow board rail keeps an open done drawer and the archived group's fold state, like Split does, so a done task opened from the drawer stays selected beside its page instead of vanishing from the rail. Thanks @LukasGold (#174).
-- A form editor that receives `Shift+Enter` as `ctrl+j` (a terminal binding that sends a plain line feed, such as Ghostty's `shift+enter=text:\n`) says so on the status row instead of ignoring the key. Thanks @WAWLixiong and @Rag0n.
-- `tsk setup herdr` follows a symlinked Herdr `config.toml` (or `herdr` config directory), as dotfiles managers create, instead of failing with `Too many levels of symbolic links`. It edits the target in place, keeps the link, and backs up beside the target; a dangling or looping link is refused with a clear message.
-- `ctrl+s` on a marked set that includes done tasks says how many it skipped and how to reopen them, instead of skipping them silently. Thanks @LukasGold.
-- Help (`?`) says archived tasks live in the done drawer's archived group. Thanks @LukasGold.
-- The task page's project chooser lists options top to bottom, so `↓` moves the highlight down instead of up.
-- Windows: `tsk update` and the board's update check work instead of crashing on the first HTTPS request, so update notices appear. A failed check stays silent.
-- `tsk add --file` and piped JSON plans accept a leading UTF-8 byte order mark, as Windows PowerShell 5.1 writes by default.
-- Windows: characters typed with AltGr, such as `[ ] { } @` on a German layout, insert in every text field (quick-add, task editors, search, the palette, Help, and pickers) instead of being dropped. Thanks @LukasGold (#178).
-- `tsk list` orders tasks within each status like the board: ready by oldest pick, open by oldest capture, everything else by most recent status change. `--json` is that flat board order. With `--all`, human output still groups each status by scope, ordering the groups by their first row and keeping the board order inside each group. Thanks @dangerousdan.
+- Windows: `tsk update` and the board's update check no longer crash on the first HTTPS request, and `tsk add --file` and piped JSON plans accept the byte order mark Windows PowerShell 5.1 writes.
+- Windows: characters typed with AltGr, such as `[ ] { } @` on a German layout, insert in every text field. Thanks @LukasGold (#178).
+- `tsk setup herdr` follows a symlinked Herdr config, as dotfiles managers create, instead of failing with `Too many levels of symbolic links`. Thanks @yasith (#129).
+- `tsk setup` shows terminal control characters in paths as visible escapes instead of printing them raw.
+- `tsk list` orders tasks within each status like the board does. Thanks @dangerousdan (#123).
+- `tsk list` refuses a repeated `-p`, `--thread`, or `--state-dir` (exit 2) instead of silently keeping the last one.
+- A form that receives `Shift+Enter` as `ctrl+j` (such as Ghostty's `shift+enter=text:\n` binding) says so instead of ignoring the key. Thanks @WAWLixiong and @Rag0n (#125).
+- Done drawer and archive: Help says where archived tasks live, `ctrl+s` on a marked set says how many done tasks it skipped, and at 110+ columns the Task view keeps the done drawer and archived fold. Thanks @LukasGold (#174).
+- The `Deleted T12 "…" · ctrl+u undo` line clears on your next move or after a few seconds; the footer keeps offering undo while it applies.
+- The task page's project chooser lists top to bottom, so `↓` moves down.
 
 ## v0.11.6
 
