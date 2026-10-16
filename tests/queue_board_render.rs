@@ -4139,10 +4139,17 @@ fn step_editor_bar_falls_back_to_short_labels_when_narrow() {
         wide.contains("enter save step · shift+enter save all · esc cancel"),
         "a wide bar names the whole action:\n{wide}"
     );
-    let narrow = step_bar(40);
+    let middling = step_bar(50);
     assert!(
-        narrow.contains("enter step · shift+enter save · esc"),
-        "a narrow bar falls back to the short labels:\n{narrow}"
+        middling.contains("enter step · shift+enter save · esc cancel"),
+        "a narrower bar falls back to the short labels:\n{middling}"
+    );
+    // T252: where even short labels overflow, `shift+enter save all` leaves whole and the
+    // full words come back for what stays.
+    let narrow = step_bar(40);
+    assert_eq!(
+        narrow, " enter save step · esc cancel",
+        "a narrow bar drops a whole entry, never cuts one"
     );
 }
 

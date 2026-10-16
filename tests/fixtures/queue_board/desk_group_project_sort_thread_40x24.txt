@@ -22,5 +22,5 @@
 │ ▾ herdr · 1                            │
 │────────────────────────────────────────│
 │ desk                                   │
-│ enter open · ctrl+d done · ctrl+b unbl…│
+│ enter open · ctrl+d done · ? help      │
 └────────────────────────────────────────┘

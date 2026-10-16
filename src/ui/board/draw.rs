@@ -516,24 +516,29 @@ fn relaunch_overlay<'a>(prompt: &DispatchPrompt, relaunch: &RelaunchPrompt) -> Q
 ///
 /// The bar is a prompt, not a keymap: the few things you are most likely to do next from
 /// where the cursor is, then the way out, then `? help`. Everything else lives in `?` and
-/// `:`. Every surface reads the same shape (primary · status · create · out · help) so the
-/// compact budget clips help first and never an action.
+/// `:`. Every surface reads the same shape (primary · status · create · out · help). A
+/// narrow footer drops the status and create seats from the right, whole; the primary
+/// action, the way out, and `? help` stay.
 pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
     const HELP: VerbEntry<'static> = VerbEntry {
         key: "?",
         label: "help",
+        shed: 0,
     };
     const ADD: VerbEntry<'static> = VerbEntry {
         key: "+",
         label: "add",
+        shed: 1,
     };
     const OPEN: VerbEntry<'static> = VerbEntry {
         key: "enter",
         label: "open",
+        shed: 0,
     };
     const UNDO: VerbEntry<'static> = VerbEntry {
         key: "u",
         label: "undo",
+        shed: 0,
     };
     // After a delete the board's navigation legends lead with its undo. The seat follows the
     // delete's undo entry, not the status-row notice: the notice clears on the next move or
@@ -549,10 +554,12 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
             VerbEntry {
                 key: "enter",
                 label: "pin",
+                shed: 0,
             },
             VerbEntry {
                 key: "esc",
                 label: "clear",
+                shed: 0,
             },
         ];
     }
@@ -564,14 +571,17 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
             VerbEntry {
                 key: "enter",
                 label: "save step",
+                shed: 0,
             },
             VerbEntry {
                 key: "shift+enter",
                 label: "save all",
+                shed: 1,
             },
             VerbEntry {
                 key: "esc",
                 label: "cancel",
+                shed: 0,
             },
         ];
     }
@@ -581,18 +591,22 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
             VerbEntry {
                 key: "shift+enter",
                 label: "save",
+                shed: 0,
             },
             VerbEntry {
                 key: "ctrl+s",
                 label: "send back",
+                shed: 1,
             },
             VerbEntry {
                 key: "ctrl+d",
                 label: "approve",
+                shed: 1,
             },
             VerbEntry {
                 key: "esc",
                 label: "cancel",
+                shed: 0,
             },
         ];
     }
@@ -602,14 +616,17 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
             VerbEntry {
                 key: "shift+enter",
                 label: "save",
+                shed: 0,
             },
             VerbEntry {
                 key: "ctrl+s",
                 label: "save and unblock",
+                shed: 1,
             },
             VerbEntry {
                 key: "esc",
                 label: "cancel",
+                shed: 0,
             },
         ];
     }
@@ -620,11 +637,13 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
             VerbEntry {
                 key: "u",
                 label: "unarchive",
+                shed: 0,
             },
             OPEN,
             VerbEntry {
                 key: "esc",
                 label: "close",
+                shed: 0,
             },
             HELP,
         ];
@@ -657,6 +676,7 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
             VerbEntry {
                 key: "/",
                 label: "search",
+                shed: 1,
             },
             HELP,
         ]);
@@ -681,11 +701,13 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
             VerbEntry {
                 key: "→",
                 label: "unfold",
+                shed: 1,
             }
         } else {
             VerbEntry {
                 key: "←",
                 label: "fold",
+                shed: 1,
             }
         });
         items.extend([ADD, HELP]);
@@ -732,18 +754,22 @@ fn status_verbs(status: HumanStatus) -> Vec<VerbEntry<'static>> {
     const START: VerbEntry<'static> = VerbEntry {
         key: "s",
         label: "start",
+        shed: 1,
     };
     const NEXT: VerbEntry<'static> = VerbEntry {
         key: "n",
         label: "next",
+        shed: 1,
     };
     const INBOX: VerbEntry<'static> = VerbEntry {
         key: "o",
         label: "inbox",
+        shed: 1,
     };
     const DONE: VerbEntry<'static> = VerbEntry {
         key: "d",
         label: "done",
+        shed: 1,
     };
     match status {
         HumanStatus::Open => vec![START, NEXT, DONE],
@@ -755,6 +781,7 @@ fn status_verbs(status: HumanStatus) -> Vec<VerbEntry<'static>> {
             VerbEntry {
                 key: "b",
                 label: "block",
+                shed: 1,
             },
         ],
         HumanStatus::Blocked => vec![
@@ -762,6 +789,7 @@ fn status_verbs(status: HumanStatus) -> Vec<VerbEntry<'static>> {
             VerbEntry {
                 key: "b",
                 label: "unblock",
+                shed: 1,
             },
             INBOX,
         ],
@@ -770,6 +798,7 @@ fn status_verbs(status: HumanStatus) -> Vec<VerbEntry<'static>> {
             VerbEntry {
                 key: "b",
                 label: "block",
+                shed: 1,
             },
             INBOX,
         ],
@@ -779,6 +808,7 @@ fn status_verbs(status: HumanStatus) -> Vec<VerbEntry<'static>> {
             VerbEntry {
                 key: "u",
                 label: "undo",
+                shed: 1,
             },
         ],
     }
@@ -791,14 +821,17 @@ fn task_page_verb_items(model: &BoardModel, task: &crate::domain::Task) -> Vec<V
             VerbEntry {
                 key: "shift+enter",
                 label: "save",
+                shed: 0,
             },
             VerbEntry {
                 key: "a",
                 label: "add step",
+                shed: 1,
             },
             VerbEntry {
                 key: "esc",
                 label: "cancel",
+                shed: 0,
             },
         ];
     }
@@ -806,11 +839,13 @@ fn task_page_verb_items(model: &BoardModel, task: &crate::domain::Task) -> Vec<V
     entries.push(VerbEntry {
         key: "e",
         label: "edit",
+        shed: 0,
     });
     entries.extend(status_verbs(task.status));
     entries.push(VerbEntry {
         key: "esc",
         label: "close",
+        shed: 0,
     });
     entries
 }

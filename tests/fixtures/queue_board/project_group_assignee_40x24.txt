@@ -22,5 +22,5 @@
 │       #dispatch                        │
 │────────────────────────────────────────│
 │ herdr                                  │
-│ enter open · ctrl+d done · ctrl+b unbl…│
+│ enter open · ctrl+d done · ? help      │
 └────────────────────────────────────────┘

@@ -2374,14 +2374,16 @@ fn page_verb_clicks_resolve_through_the_page_legend() {
     assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
 
     // Every seat of the fixed page bar dispatches what its label says: the painted legend
-    // is `ctrl+e edit · <status verbs> · esc close`, indexed exactly as painted.
+    // is `ctrl+e edit · <status verbs> · esc close`, indexed exactly as painted. The started
+    // page's six seats outgrow 80 columns, so the bar is read where every seat fits.
+    let roomy = Rect::new(0, 0, 100, 24);
     let click_verb = |model: &BoardModel, key: &str| -> BoardIntent {
         let verbs = board_verb_items(model);
         let index = verbs
             .iter()
             .position(|entry| entry.key == key)
             .unwrap_or_else(|| panic!("no {key:?} seat in {verbs:?}"));
-        let hits = board_hit_map(STANDARD, model);
+        let hits = board_hit_map(roomy, model);
         let area = hits
             .regions
             .iter()
@@ -2426,6 +2428,26 @@ fn page_verb_clicks_resolve_through_the_page_legend() {
     assert_eq!(click_verb(&model, "s"), BoardIntent::PrimaryVerb);
     apply_intent(&mut domain, &mut model, BoardIntent::PrimaryVerb, None).expect("start");
     assert_eq!(click_verb(&model, "b"), BoardIntent::ToggleBlock);
+    // T252: at 80 columns the started bar drops `ctrl+b block` whole; the seats it keeps
+    // still resolve to their own entries, and the way out stays.
+    let verbs = board_verb_items(&model);
+    let block = verbs
+        .iter()
+        .position(|entry| entry.key == "b")
+        .expect("b seat");
+    let esc = verbs
+        .iter()
+        .position(|entry| entry.key == "esc")
+        .expect("esc seat");
+    let narrow = board_hit_map(STANDARD, &model);
+    let has_hit = |index: usize| {
+        narrow
+            .regions
+            .iter()
+            .any(|hit| hit.target == QueueHitTarget::Verb(index))
+    };
+    assert!(!has_hit(block), "block is dropped whole at 80 columns");
+    assert!(has_hit(esc), "the way out stays at 80 columns");
     let close = click_verb(&model, "esc");
     assert_eq!(close, BoardIntent::CloseLayer);
     apply_intent(&mut domain, &mut model, close, None).expect("close via click");

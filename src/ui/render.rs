@@ -549,6 +549,10 @@ pub fn assert_buffer_mono(buffer: &Buffer) {
 pub struct VerbEntry<'a> {
     pub key: &'a str,
     pub label: &'a str,
+    /// How readily the entry leaves a footer too narrow for it ([`fit_verbs`]). `0` is
+    /// essential (the primary action, save, the way out, `? help`) and stays; otherwise the
+    /// highest number goes first, the rightmost among equals.
+    pub shed: u8,
 }
 
 /// One palette command row for overlay paint.
@@ -2095,14 +2099,17 @@ pub(crate) const QUICK_ADD_VERBS: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "enter",
         label: "add",
+        shed: 0,
     },
     VerbEntry {
         key: "tab",
         label: "notes",
+        shed: 1,
     },
     VerbEntry {
         key: "esc",
         label: "close",
+        shed: 0,
     },
 ];
 
@@ -2112,14 +2119,17 @@ const FORM_TITLE_VERBS: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "enter",
         label: "next",
+        shed: 1,
     },
     VerbEntry {
         key: "shift+enter",
         label: "save",
+        shed: 0,
     },
     VerbEntry {
         key: "esc",
         label: "cancel",
+        shed: 0,
     },
 ];
 /// Notes names its plain Enter too: it opens a line rather than saving (#204). It goes last so
@@ -2128,84 +2138,102 @@ const FORM_NOTES_VERBS: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "shift+enter",
         label: "save",
+        shed: 0,
     },
     VerbEntry {
         key: "tab",
         label: "next",
+        shed: 2,
     },
     VerbEntry {
         key: "esc",
         label: "cancel",
+        shed: 0,
     },
     VerbEntry {
         key: "enter",
         label: "new line",
+        shed: 1,
     },
 ];
 const FORM_THREAD_VERBS: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "shift+enter",
         label: "save",
+        shed: 0,
     },
     VerbEntry {
         key: "tab",
         label: "next",
+        shed: 1,
     },
     VerbEntry {
         key: "esc",
         label: "cancel",
+        shed: 0,
     },
 ];
 const FORM_SCOPE_VERBS: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "enter",
         label: "choose",
+        shed: 0,
     },
     VerbEntry {
         key: "space",
         label: "cycle",
+        shed: 1,
     },
     VerbEntry {
         key: "esc",
         label: "cancel",
+        shed: 0,
     },
 ];
 const FORM_ASSIGNEE_VERBS: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "space/←→",
         label: "cycle",
+        shed: 1,
     },
     VerbEntry {
         key: "enter",
         label: "choose",
+        shed: 0,
     },
     VerbEntry {
         key: "esc",
         label: "cancel",
+        shed: 0,
     },
 ];
 const FORM_BASE_VERBS: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "enter",
         label: "choose",
+        shed: 0,
     },
     VerbEntry {
         key: "esc",
         label: "cancel",
+        shed: 0,
     },
 ];
 const FORM_SCOPE_DROPDOWN_VERBS: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "↑↓",
         label: "move",
+        shed: 1,
     },
     VerbEntry {
         key: "enter",
         label: "choose",
+        shed: 0,
     },
     VerbEntry {
         key: "esc",
         label: "close",
+        shed: 0,
     },
 ];
 
@@ -2232,10 +2260,12 @@ const EDIT_TITLE_VERBS: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "shift+enter",
         label: "save",
+        shed: 0,
     },
     VerbEntry {
         key: "esc",
         label: "cancel",
+        shed: 0,
     },
 ];
 
@@ -2245,14 +2275,17 @@ const EDIT_NOTES_VERBS: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "shift+enter",
         label: "save",
+        shed: 0,
     },
     VerbEntry {
         key: "esc",
         label: "cancel",
+        shed: 0,
     },
     VerbEntry {
         key: "enter",
         label: "new line",
+        shed: 1,
     },
 ];
 
@@ -2642,33 +2675,15 @@ fn paint_modal_card(
             rule_offset,
             modal_plain_border_row('├', '─', '┤', card_w),
         );
-        paint_row_in(
-            frame,
-            surface,
-            area,
-            legend_offset,
-            modal_legend_line(legend, card_w as usize),
-        );
+        let (legend_line, entry_hits) = modal_legend_line(legend, card_w as usize);
+        paint_row_in(frame, surface, area, legend_offset, legend_line);
         if let Some(target_for) = legend_hits {
-            // Mirror `modal_legend_line`'s layout: two leading pad cells, then
-            // `key label` per entry with ` · ` between them.
-            let mut cursor = x0.saturating_add(2);
             let legend_y = y0.saturating_add(legend_offset);
-            for (index, entry) in legend.iter().enumerate() {
-                if index > 0 {
-                    cursor = cursor.saturating_add(3);
-                }
-                let entry_w = display_width(&format!("{} {}", entry.key, entry.label)) as u16;
-                let right = x0.saturating_add(card_w).saturating_sub(1);
-                if cursor >= right {
-                    break;
-                }
-                let width = entry_w.min(right.saturating_sub(cursor));
+            for (index, x, width) in entry_hits {
                 hits.push(
                     target_for(index),
-                    Rect::new(cursor, legend_y, width.max(1), 1),
+                    Rect::new(x0.saturating_add(x), legend_y, width.max(1), 1),
                 );
-                cursor = cursor.saturating_add(entry_w);
             }
         }
     }
@@ -2771,18 +2786,24 @@ fn modal_title_border_row(title: &str, card_w: u16) -> (Line<'static>, u16) {
     (bound_line(Line::from(spans), width), close_x)
 }
 
-/// A modal card's footer legend line: dim separators and labels, bold keys, e.g.
-/// `  esc close · enter run`.
-fn modal_legend_line(entries: &[VerbEntry<'_>], width: usize) -> Line<'static> {
-    let mut spans: Vec<Span<'static>> = vec![Span::styled("  ".to_string(), style_plain())];
-    for (i, entry) in entries.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled(" · ".to_string(), style_dim()));
-        }
-        spans.push(Span::styled(entry.key.to_string(), style_bold()));
-        spans.push(Span::styled(format!(" {}", entry.label), style_dim()));
-    }
-    bound_line(Line::from(spans), width)
+/// A modal card's footer legend line across the card's `card_w` cells: dim separators and
+/// labels, bold keys, e.g. `  esc close · enter run`. The first and last cells belong to the
+/// side borders, and one blank cell keeps the last entry off the right border. Hits are
+/// (entry index, x from the card's left edge, width).
+fn modal_legend_line(
+    entries: &[VerbEntry<'_>],
+    card_w: usize,
+) -> (Line<'static>, Vec<(usize, u16, u16)>) {
+    let keys: Vec<String> = entries.iter().map(|entry| entry.key.to_string()).collect();
+    let fit = fit_verbs(entries, &keys, usize::MAX, card_w.saturating_sub(3), 1);
+    let (line, hits) = paint_fitted_verbs(entries, &keys, &fit, 1, style_dim());
+    let mut spans = vec![Span::styled(" ".to_string(), style_plain())];
+    spans.extend(line.spans);
+    let hits = hits
+        .into_iter()
+        .map(|(index, x, w)| (index, x.saturating_add(1), w))
+        .collect();
+    (Line::from(spans), hits)
 }
 
 /// The vertical band a modal card ( [`paint_modal_card`] ) may center within: the whole
@@ -2798,14 +2819,17 @@ const HELP_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "type",
         label: "search",
+        shed: 1,
     },
     VerbEntry {
         key: "↑↓",
         label: "scroll",
+        shed: 1,
     },
     VerbEntry {
         key: "esc",
         label: "clear / close",
+        shed: 0,
     },
 ];
 
@@ -2814,14 +2838,17 @@ const PALETTE_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "↑↓",
         label: "move",
+        shed: 1,
     },
     VerbEntry {
         key: "enter",
         label: "run",
+        shed: 0,
     },
     VerbEntry {
         key: "esc",
         label: "close",
+        shed: 0,
     },
 ];
 
@@ -2832,95 +2859,67 @@ const ARCHIVED_TAB_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "ctrl+u",
         label: "unarchive",
+        shed: 0,
     },
     VerbEntry {
         key: "enter",
         label: "open",
+        shed: 1,
     },
     VerbEntry {
         key: "esc",
         label: "close",
+        shed: 0,
     },
 ];
 
-/// Painted width of a card legend: the two-cell lead, `key label` seats, ` · ` between.
-fn legend_fits(geo: &TierGeometry, entries: &[VerbEntry<'_>]) -> bool {
-    let pad: usize = usize::from(geo.tier != Tier::Compact);
-    let content = (geo.row_width as usize)
-        .saturating_sub(4)
-        .min(62)
-        .saturating_sub(2)
-        .saturating_sub(2 * pad);
-    let width = 2
-        + entries
-            .iter()
-            .map(|entry| display_width(entry.key) + 1 + display_width(entry.label))
-            .sum::<usize>()
-        + 3 * entries.len().saturating_sub(1);
-    width <= content
-}
-
-/// Compact terminals cap the card near 34 content columns, so the legend keeps only the
-/// seat that is not guessable (`ctrl+f archive`) beside the way out.
-const PROJECT_PICKER_FOOTER_COMPACT: &[VerbEntry<'static>] = &[
-    VerbEntry {
-        key: "ctrl+f",
-        label: "archive",
-    },
-    VerbEntry {
-        key: "esc",
-        label: "close",
-    },
-];
-
+/// A narrow card sheds `↑↓ move`, then `enter choose`, keeping the seat that is not
+/// guessable (`ctrl+f archive`) beside the way out.
 const PROJECT_PICKER_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "↑↓",
         label: "move",
+        shed: 2,
     },
     VerbEntry {
         key: "enter",
         label: "choose",
+        shed: 1,
     },
     VerbEntry {
         key: "ctrl+f",
         label: "archive",
+        shed: 0,
     },
     VerbEntry {
         key: "esc",
         label: "close",
+        shed: 0,
     },
 ];
 
-/// Every tabbed filter / view picker's legend: `tab` (or `←` / `→`) switches tabs.
+/// Every tabbed filter / view picker's legend: `tab` (or `←` / `→`) switches tabs. A narrow
+/// card keeps that seat, which is not guessable, beside the way out.
 const FILTER_PICKER_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "tab",
         label: "switch",
+        shed: 0,
     },
     VerbEntry {
         key: "↑↓",
         label: "move",
+        shed: 2,
     },
     VerbEntry {
         key: "enter",
         label: "choose",
+        shed: 1,
     },
     VerbEntry {
         key: "esc",
         label: "close",
-    },
-];
-
-/// Narrow cards keep the seat that is not guessable (`tab switch`) beside the way out.
-const FILTER_PICKER_FOOTER_COMPACT: &[VerbEntry<'static>] = &[
-    VerbEntry {
-        key: "tab",
-        label: "switch",
-    },
-    VerbEntry {
-        key: "esc",
-        label: "close",
+        shed: 0,
     },
 ];
 
@@ -2928,14 +2927,17 @@ const SCOPE_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "↑↓",
         label: "move",
+        shed: 1,
     },
     VerbEntry {
         key: "enter",
         label: "choose",
+        shed: 0,
     },
     VerbEntry {
         key: "esc",
         label: "close",
+        shed: 0,
     },
 ];
 
@@ -4472,14 +4474,17 @@ const BLOCK_CARD_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "enter",
         label: "block",
+        shed: 0,
     },
     VerbEntry {
         key: "tab",
         label: "next field",
+        shed: 1,
     },
     VerbEntry {
         key: "esc",
         label: "cancel",
+        shed: 0,
     },
 ];
 
@@ -4487,14 +4492,17 @@ const BLOCK_EDIT_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "enter",
         label: "save",
+        shed: 0,
     },
     VerbEntry {
         key: "tab",
         label: "next field",
+        shed: 1,
     },
     VerbEntry {
         key: "esc",
         label: "cancel",
+        shed: 0,
     },
 ];
 
@@ -4502,18 +4510,22 @@ const REVIEW_CARD_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "enter",
         label: "review",
+        shed: 0,
     },
     VerbEntry {
         key: "shift+enter",
         label: "new check",
+        shed: 1,
     },
     VerbEntry {
         key: "tab",
         label: "next field",
+        shed: 1,
     },
     VerbEntry {
         key: "esc",
         label: "cancel",
+        shed: 0,
     },
 ];
 
@@ -4521,18 +4533,22 @@ const REVIEW_EDIT_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "enter",
         label: "save",
+        shed: 0,
     },
     VerbEntry {
         key: "shift+enter",
         label: "new check",
+        shed: 1,
     },
     VerbEntry {
         key: "tab",
         label: "next field",
+        shed: 1,
     },
     VerbEntry {
         key: "esc",
         label: "cancel",
+        shed: 0,
     },
 ];
 
@@ -4827,22 +4843,14 @@ fn paint_scope_dropdown(
             },
             legend: match tabs {
                 // Every tabbed filter and view picker takes the same keys, so one legend.
-                Some(PickerTabsPaint::Filter { .. } | PickerTabsPaint::DeskFilter { .. })
-                    if legend_fits(geo, FILTER_PICKER_FOOTER) =>
-                {
-                    FILTER_PICKER_FOOTER
-                }
                 Some(PickerTabsPaint::Filter { .. } | PickerTabsPaint::DeskFilter { .. }) => {
-                    FILTER_PICKER_FOOTER_COMPACT
+                    FILTER_PICKER_FOOTER
                 }
                 Some(PickerTabsPaint::Project {
                     archived_active: true,
                     ..
                 }) => ARCHIVED_TAB_FOOTER,
-                // Keyed on the painted width, not the tier: a tall-but-narrow frame and a
-                // wide-but-short one both get the largest legend their card can hold.
-                Some(_) if legend_fits(geo, PROJECT_PICKER_FOOTER) => PROJECT_PICKER_FOOTER,
-                Some(_) => PROJECT_PICKER_FOOTER_COMPACT,
+                Some(_) => PROJECT_PICKER_FOOTER,
                 None => SCOPE_FOOTER,
             },
             dismiss: None,
@@ -6299,6 +6307,17 @@ fn paint_rule_row(width: u16) -> Line<'static> {
 /// first in that text rather than the one actually painted -- Minor 1's regression. The one
 /// thing this function still verifies is that the control survived the row's own width
 /// clipping, exactly as the pre-fix code did for a control it had located by search.
+/// An input's placeholder in `width` cells. Its ` · `-separated hints (quick-add's
+/// `!p project · !t thread …`) leave whole from the right, never cut, as footer entries do.
+fn fit_placeholder(placeholder: &str, width: usize) -> String {
+    let parts: Vec<&str> = placeholder.split(VERB_SEPARATOR).collect();
+    (1..=parts.len())
+        .rev()
+        .map(|count| parts[..count].join(VERB_SEPARATOR))
+        .find(|shown| display_width(shown) <= width)
+        .unwrap_or_else(|| present_line(parts[0], width))
+}
+
 /// Paint a shared bottom input: a bold prompt glyph, mono body, dim placeholder
 /// while empty, and an optional refusal tail. The caller supplies already-windowed
 /// text at `width - 2` cells, exactly matching the cursor budget below.
@@ -6340,7 +6359,11 @@ pub(crate) fn paint_bottom_input_slot(
     let prefix_width = display_width(prefix) as u16;
     let avail = width.saturating_sub(prefix_width) as usize;
     let empty = body.is_empty();
-    let shown = present_line(if empty { placeholder } else { body }, avail);
+    let shown = if empty {
+        fit_placeholder(placeholder, avail)
+    } else {
+        present_line(body, avail)
+    };
     let style = if empty { style_dim() } else { style_bold() };
     let mut spans = vec![
         Span::styled(prefix, style_bold()),
@@ -6870,54 +6893,146 @@ fn paint_verb_bar(
     width: u16,
     prefix: bool,
 ) -> (Line<'static>, Vec<(usize, u16, u16)>) {
-    let shown: Vec<&VerbEntry<'_>> = entries.iter().take(budget).collect();
-    let key_text = |entry: &VerbEntry<'_>| {
-        if prefix && mutating_verb_key(entry.key) {
-            format!("ctrl+{}", entry.key)
+    let keys: Vec<String> = entries
+        .iter()
+        .map(|entry| {
+            if prefix && mutating_verb_key(entry.key) {
+                format!("ctrl+{}", entry.key)
+            } else {
+                entry.key.to_string()
+            }
+        })
+        .collect();
+    let fit = fit_verbs(entries, &keys, budget, width as usize, 1);
+    paint_fitted_verbs(entries, &keys, &fit, 1, style_plain())
+}
+
+/// The separator between footer entries, and the one a footer too narrow for its essentials
+/// falls back to.
+const VERB_SEPARATOR: &str = " · ";
+const VERB_SEPARATOR_TIGHT: &str = " ";
+
+/// Which entries a footer row paints, and how tightly. Entries are whole or absent, never cut.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FittedVerbs {
+    /// Indices into the declared entries, in declared order.
+    kept: Vec<usize>,
+    /// Short labels ([`compact_verb_label`]) in place of the full wording.
+    compact: bool,
+    /// The lead padding and ` · ` separators are gone: the essentials alone did not fit.
+    tight: bool,
+}
+
+/// Fit one footer row of `entries` (painted with `keys`) into `width` cells after a `lead`
+/// of padding. Every footer, verb bar and card legend alike, goes through here: at most
+/// `budget` entries, then full labels, then short labels, then one whole entry dropped by
+/// [`VerbEntry::shed`] and both label lengths measured again, until the row fits.
+/// Essentials that still do not fit lose the padding and separators, and below that only
+/// the leading essentials that fit whole remain.
+fn fit_verbs(
+    entries: &[VerbEntry<'_>],
+    keys: &[String],
+    budget: usize,
+    width: usize,
+    lead: usize,
+) -> FittedVerbs {
+    let painted = |kept: &[usize], compact: bool, tight: bool| -> usize {
+        let (lead, separator) = if tight {
+            (0, VERB_SEPARATOR_TIGHT)
         } else {
-            entry.key.to_string()
-        }
-    };
-    let full_width = 1
-        + shown
+            (lead, VERB_SEPARATOR)
+        };
+        let labels: usize = kept
             .iter()
-            .map(|entry| display_width(&key_text(entry)) + 1 + display_width(entry.label))
-            .sum::<usize>()
-        + 3 * shown.len().saturating_sub(1);
-    let compact = full_width > width as usize;
+            .map(|&index| {
+                let label = if compact {
+                    compact_verb_label(entries[index].label)
+                } else {
+                    entries[index].label
+                };
+                display_width(&keys[index]) + 1 + display_width(label)
+            })
+            .sum();
+        lead + labels + display_width(separator) * kept.len().saturating_sub(1)
+    };
+    // The next entry to go: the highest `shed`, the rightmost among equals. None once only
+    // essentials remain.
+    let shed_one = |kept: &mut Vec<usize>| -> bool {
+        let next = kept
+            .iter()
+            .enumerate()
+            .filter(|(_, &index)| entries[index].shed > 0)
+            .max_by_key(|(position, &index)| (entries[index].shed, *position))
+            .map(|(position, _)| position);
+        next.map(|position| kept.remove(position)).is_some()
+    };
+
+    let mut kept: Vec<usize> = (0..entries.len()).collect();
+    while kept.len() > budget && shed_one(&mut kept) {}
+    loop {
+        for compact in [false, true] {
+            if painted(&kept, compact, false) <= width {
+                return FittedVerbs {
+                    kept,
+                    compact,
+                    tight: false,
+                };
+            }
+        }
+        if !shed_one(&mut kept) {
+            break;
+        }
+    }
+    while !kept.is_empty() && painted(&kept, true, true) > width {
+        kept.pop();
+    }
+    FittedVerbs {
+        kept,
+        compact: true,
+        tight: true,
+    }
+}
+
+/// Paint a fitted footer row: bold keys, `label_style` labels, dim separators. Returns hit
+/// regions as (declared entry index, x, width), so a click still names the entry it shows.
+fn paint_fitted_verbs(
+    entries: &[VerbEntry<'_>],
+    keys: &[String],
+    fit: &FittedVerbs,
+    lead: usize,
+    label_style: Style,
+) -> (Line<'static>, Vec<(usize, u16, u16)>) {
+    let (lead, separator) = if fit.tight {
+        (0, VERB_SEPARATOR_TIGHT)
+    } else {
+        (lead, VERB_SEPARATOR)
+    };
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut hits = Vec::new();
-    let mut x = 0u16;
-
-    spans.push(Span::styled(" ".to_string(), style_plain()));
-    x = x.saturating_add(1);
-
-    for (i, entry) in shown.iter().enumerate() {
-        if i > 0 {
-            let sep = " · ";
-            spans.push(Span::styled(sep.to_string(), style_dim()));
-            x = x.saturating_add(display_width(sep) as u16);
-        }
-        let key = key_text(entry);
-        let key_w = display_width(&key) as u16;
-        let start = x;
-        spans.push(Span::styled(key, style_bold()));
-        x = x.saturating_add(key_w);
-        let label = if compact {
-            format!(" {}", compact_verb_label(entry.label))
-        } else {
-            format!(" {}", entry.label)
-        };
-        let label_w = display_width(&label) as u16;
-        spans.push(Span::styled(label, style_plain()));
-        x = x.saturating_add(label_w);
-        hits.push((i, start, key_w.saturating_add(label_w)));
+    let mut x = lead as u16;
+    if lead > 0 {
+        spans.push(Span::styled(" ".repeat(lead), style_plain()));
     }
-
-    let line = bound_line(Line::from(spans), width as usize);
-    // Drop hits that fall entirely past the clipped width.
-    hits.retain(|(_, start, w)| (*start as usize) < width as usize && *w > 0);
-    (line, hits)
+    for (position, &index) in fit.kept.iter().enumerate() {
+        if position > 0 {
+            spans.push(Span::styled(separator.to_string(), style_dim()));
+            x = x.saturating_add(display_width(separator) as u16);
+        }
+        let key = keys[index].clone();
+        let key_w = display_width(&key) as u16;
+        let label = if fit.compact {
+            compact_verb_label(entries[index].label)
+        } else {
+            entries[index].label
+        };
+        let label = format!(" {label}");
+        let label_w = display_width(&label) as u16;
+        hits.push((index, x, key_w.saturating_add(label_w)));
+        spans.push(Span::styled(key, style_bold()));
+        spans.push(Span::styled(label, label_style));
+        x = x.saturating_add(key_w).saturating_add(label_w);
+    }
+    (Line::from(spans), hits)
 }
 
 /// The row label: `#thread · project`, each part only when its flag is set.
@@ -7073,6 +7188,94 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect::<String>()
+    }
+
+    const fn verb(key: &'static str, label: &'static str, shed: u8) -> VerbEntry<'static> {
+        VerbEntry { key, label, shed }
+    }
+
+    /// A started row's board bar: open · four status verbs · help.
+    const STARTED_BAR: &[VerbEntry<'static>] = &[
+        verb("enter", "open", 0),
+        verb("d", "done", 1),
+        verb("n", "next", 1),
+        verb("o", "inbox", 1),
+        verb("b", "block", 1),
+        verb("?", "help", 0),
+    ];
+
+    #[test]
+    fn a_narrow_verb_bar_drops_whole_entries_rightmost_first_and_keeps_essentials() {
+        let bar = |budget: usize, width: u16| {
+            let (line, hits) = paint_verb_bar(STARTED_BAR, budget, width, true);
+            let indices: Vec<usize> = hits.iter().map(|(index, _, _)| *index).collect();
+            (plain(&line), indices)
+        };
+        assert_eq!(
+            bar(7, 120).0,
+            " enter open · ctrl+d done · ctrl+n next · ctrl+o inbox · ctrl+b block · ? help"
+        );
+        // The compact budget sheds `block`, not `? help`.
+        assert_eq!(
+            bar(5, 120),
+            (
+                " enter open · ctrl+d done · ctrl+n next · ctrl+o inbox · ? help".to_string(),
+                vec![0, 1, 2, 3, 5]
+            )
+        );
+        // Hits keep the declared index, so a click on `? help` still opens Help.
+        assert_eq!(
+            bar(7, 40),
+            (
+                " enter open · ctrl+d done · ? help".to_string(),
+                vec![0, 1, 5]
+            )
+        );
+        let (_, hits) = paint_verb_bar(STARTED_BAR, 7, 40, true);
+        assert_eq!(hits.last(), Some(&(5, 28, 6)));
+    }
+
+    #[test]
+    fn essentials_too_wide_for_their_row_shed_padding_then_trailing_entries_never_a_cut() {
+        const EDIT: &[VerbEntry<'static>] = &[
+            verb("shift+enter", "save", 0),
+            verb("tab", "next", 1),
+            verb("esc", "cancel", 0),
+        ];
+        let bar = |width: u16| plain(&paint_verb_bar(EDIT, 7, width, false).0);
+        assert_eq!(bar(30), " shift+enter save · esc cancel");
+        // Below the essentials: the padding and ` · ` go first.
+        assert_eq!(bar(29), "shift+enter save esc cancel");
+        assert_eq!(bar(27), "shift+enter save esc cancel");
+        // Then trailing entries go whole; a label is never cut.
+        assert_eq!(bar(26), "shift+enter save");
+        assert_eq!(bar(15), "");
+    }
+
+    #[test]
+    fn a_placeholder_drops_trailing_hints_whole() {
+        let hints = "title…   !p project · !t thread · !a assignee · !b base";
+        assert_eq!(fit_placeholder(hints, 60), hints);
+        // The 41-column quick-add line leaves 39 cells after its prompt glyph.
+        assert_eq!(
+            fit_placeholder(hints, 39),
+            "title…   !p project · !t thread"
+        );
+        assert_eq!(fit_placeholder(hints, 19), "title…   !p project");
+        assert_eq!(fit_placeholder("thread…", 40), "thread…");
+    }
+
+    #[test]
+    fn a_card_legend_fits_inside_its_borders_with_a_blank_cell_before_the_right_one() {
+        // `  ↑↓ move · enter run · esc close` is 33 cells; a 35-cell card holds it whole,
+        // its last two cells a blank and the right border.
+        let (line, hits) = modal_legend_line(PALETTE_FOOTER, 35);
+        assert_eq!(plain(&line), "  ↑↓ move · enter run · esc close");
+        assert_eq!(hits, vec![(0, 2, 7), (1, 12, 9), (2, 24, 9)]);
+        // One cell narrower sheds `↑↓ move` whole.
+        let (line, hits) = modal_legend_line(PALETTE_FOOTER, 34);
+        assert_eq!(plain(&line), "  enter run · esc close");
+        assert_eq!(hits, vec![(1, 2, 9), (2, 14, 9)]);
     }
 
     #[test]

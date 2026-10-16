@@ -32,6 +32,7 @@ mod docs_parity;
 mod e2e_persist;
 mod edit_target_binding;
 mod f6_save_recovery;
+mod footer_fit;
 mod git_base;
 mod host_scripts;
 mod host_scripts_windows;

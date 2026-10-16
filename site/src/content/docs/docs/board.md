@@ -3,7 +3,7 @@ title: Board
 description: Find tasks, switch projects, and keep work moving.
 ---
 
-Click to navigate, or use the keyboard. The footer shows actions for the cursor or your marked task set; those actions are clickable.
+Click to navigate, or use the keyboard. The footer shows actions for the cursor or your marked task set; those actions are clickable. Every footer, a card's legend included, stays one row: when the pane is too narrow it shortens labels, then drops whole actions, least likely first, and keeps the main action, the way out, and `? help`. It never cuts an action short.
 
 ## Navigate
 
