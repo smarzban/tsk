@@ -81,7 +81,11 @@ fn git(dir: &Path, args: &[&str]) -> String {
 fn bare_repo(root: &Path) -> String {
     let repo = root.join("remote.git");
     fs::create_dir_all(&repo).expect("repo dir");
-    git(&repo, &["init", "--quiet", "--bare"]);
+    // Not `main`: backups follow the remote's default branch (Git for Windows: `master`).
+    git(
+        &repo,
+        &["init", "--quiet", "--bare", "--initial-branch=trunk"],
+    );
     repo.to_str().expect("utf-8").to_string()
 }
 

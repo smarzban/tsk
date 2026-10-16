@@ -1229,6 +1229,16 @@ fn sync_clone(state_dir: &Path, target: &Target) -> Result<GitClone, String> {
             .map(|_| name.to_string())
         })
     })
+    // An empty remote: `git clone` set the clone's HEAD to the remote's unborn default branch
+    // (`master` from a Git for Windows `init --bare`, `main` on GitHub), so the first push
+    // lands where the remote's HEAD already points.
+    .or_else(|| {
+        git(&dir, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .filter(|name| !name.is_empty())
+    })
     .unwrap_or_else(|| "main".to_string());
     Ok(GitClone { dir, branch })
 }
@@ -1757,7 +1767,12 @@ mod tests {
     fn bare_repo(root: &Path) -> PathBuf {
         let remote = root.join("remote.git");
         fs::create_dir_all(&remote).expect("remote");
-        git_in(&remote, &["init", "--quiet", "--bare"]);
+        // Not `main`: the first push must follow the remote's own default branch, as on Git
+        // for Windows, whose `init` still defaults to `master`.
+        git_in(
+            &remote,
+            &["init", "--quiet", "--bare", "--initial-branch=trunk"],
+        );
         remote
     }
 
@@ -2393,9 +2408,21 @@ every = "daily"
             fs::write(&path, format!("loose {n}")).expect("blob");
             paths.push(path.display().to_string());
         }
-        let mut args = vec!["hash-object", "-w"];
-        args.extend(paths.iter().map(String::as_str));
-        git_in(&clone, &args);
+        // Through stdin: 2000 paths overflow a Windows command line.
+        let mut hash = Command::new("git")
+            .arg("-C")
+            .arg(&clone)
+            .args(["hash-object", "-w", "--stdin-paths"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("git hash-object");
+        hash.stdin
+            .take()
+            .expect("stdin")
+            .write_all(format!("{}\n", paths.join("\n")).as_bytes())
+            .expect("paths");
+        assert!(hash.wait().expect("hash-object").success());
         git_in(&clone, &["config", "gc.auto", "10"]);
         git_in(&clone, &["config", "gc.autoDetach", "false"]);
         let packs = || {
