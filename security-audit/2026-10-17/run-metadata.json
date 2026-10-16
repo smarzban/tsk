@@ -1,0 +1,78 @@
+{
+  "run_id": "run-1",
+  "repo": "smarzban/tsk",
+  "target": "/workspace",
+  "source_ref": {
+    "commit": "82e934e9dc77192fedb184f986b1e1a26c3a8a7d",
+    "base_audited": "ceca7657a52d244d1d89bff04c70a9cc5ea93d7e",
+    "worktree_dirty": false,
+    "commits": [
+      "9582b05 Align the demo thread normalizer with board name rules. (#214)",
+      "82e934e Release v0.12.0: changelog, version bump, What's new notice (#216)"
+    ]
+  },
+  "profile": "standard",
+  "scope": "scoped-delta",
+  "scope_paths": [
+    "CHANGELOG.md",
+    "Cargo.lock",
+    "Cargo.toml",
+    "herdr-plugin.toml",
+    "site/public/capture.js",
+    "site/public/board-demo.js",
+    "site/src/version.mjs",
+    "site/test/capture-thread.test.mjs",
+    "site/public/install.sh",
+    "src/announcements/catalog.toml",
+    "src/announcements.rs",
+    "src/domain/thread.rs",
+    "src/ui/edit.rs",
+    "src/ui/markdown.rs",
+    "src/ui/render.rs",
+    "src/ui/mod.rs",
+    "src/cli/presenter.rs",
+    "src/cli/update.rs",
+    "src/update.rs",
+    "src/setup.rs",
+    "src/setup_agent.rs",
+    "src/fsperm.rs",
+    "src/store.rs"
+  ],
+  "budget": null,
+  "execution_policy": "sandboxed-source-and-local-only",
+  "selected_companion_files": [
+    "CLIENT-SIDE.md",
+    "SUPPLY-CHAIN-AND-RELEASE.md",
+    "DESKTOP-MOBILE-AND-LOCAL-IPC.md"
+  ],
+  "prior_run_paths": [
+    "/tmp/prior-audit/security-audit/2026-10-16/coverage-ledger.json",
+    "/tmp/prior-audit/security-audit/2026-10-16/findings.json",
+    "/tmp/prior-audit/security-audit/2026-10-16/architecture.md"
+  ],
+  "prior_ledger_status": "compatible ledger and findings from origin/security-audit/2026-10-16 at ceca7657; no earlier security-audit/* branch",
+  "shared_file_owners": {
+    "parent": "run-1"
+  },
+  "run_status": "complete",
+  "execution_note": "Source review only. unshare, prlimit, and timeout exist. No bubblewrap or firejail, and no read-only target mount was prepared, so target-controlled execution was not approved. No confirmed finding depended on execution.",
+  "agents_spent": {
+    "reconnaissance": "parent source map; four recon roles were not separate delegated calls",
+    "hunters_wave_1": 8,
+    "post_wave_critic": 1,
+    "final_clean_critic": 1,
+    "phase3_verifier": 1,
+    "phase5_verifier": 1
+  },
+  "final_critic": "stop true, no missing units, no reassign ids",
+  "phase5": {
+    "windows-state-dir-acl": "wording replacement applied; same fingerprint, verdict, and root cause; line 578 load path verified by parent"
+  },
+  "carried_exclusions": [
+    {
+      "fingerprint": "windows-state-dir-acl",
+      "title": "Windows state files inherit the parent directory DACL",
+      "root_cause": "ensure_private_dir, create_private_file, and tighten_file apply owner-only mode bits only on Unix."
+    }
+  ]
+}

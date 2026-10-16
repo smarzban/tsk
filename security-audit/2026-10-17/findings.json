@@ -1,0 +1,120 @@
+[
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "windows-state-dir-acl",
+    "title": "Windows state files inherit the parent directory DACL",
+    "description": "At 82e934e9, src/fsperm.rs and src/store.rs are unchanged since ceca7657. The lower-trust reader is a second local Windows account that is not the file owner and is not an Administrator or SYSTEM. Those two principals are comparable to root, which can already read the Unix 0600 files. On Unix, tsk forces the state directory to 0700 and task files such as tsk.json to 0600 so another local user cannot read task data. On Windows, ensure_private_dir, create_private_file, and tighten_file set no security descriptor and no mode: a missing state directory is created with create_dir_all, and tsk.json is opened with OpenOptions that apply mode 0600 only under cfg(unix). tighten_file is a no-op off Unix, including on later load, so this repository never narrows a Windows DACL after creation. The header comment that no permission is claimed off Unix does not show whether the inherited parent DACL already excludes that second account. The installer creates the program directory and does not ACL the state directory.",
+    "claimed_root_cause": "ensure_private_dir, create_private_file, and tighten_file apply owner-only mode bits only on Unix. On Windows they create the state directory and task files through std::fs with no security descriptor and never call a DACL API, so the directory and tsk.json keep the parent directory's inherited DACL and are not tightened later.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/store.rs",
+        "line": 952,
+        "scope": "default_state_dir",
+        "description": "When TSK_STATE_DIR is unset and LOCALAPPDATA is non-empty, the Windows default is that directory joined with tsk. Lines 955-957 fall back to USERPROFILE joined with .tsk when LOCALAPPDATA is empty."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/store.rs",
+        "line": 623,
+        "scope": "TaskStore::save_unlocked_supported",
+        "description": "Each supported save calls ensure_private_dir on the state directory, then tighten_state_files at line 625, before replacing tsk.json."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/fsperm.rs",
+        "line": 45,
+        "scope": "ensure_private_dir",
+        "description": "A missing directory is created with fs::create_dir_all. The Windows-only extra step is reject_reparse_ancestors at line 36. tighten_private_dir, which applies 0700, is cfg(unix) at lines 55-56."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/store.rs",
+        "line": 862,
+        "scope": "TaskStore::tighten_state_files",
+        "description": "Each existing private state name, including tsk.json, is passed to tighten_file. Load at line 578 and save at line 625 both call this function, so a later load is the same no-op off Unix."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/fsperm.rs",
+        "line": 302,
+        "scope": "tighten_file",
+        "description": "The cfg(not(unix)) body discards the path. No mode bits and no security descriptor are written."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/store.rs",
+        "line": 656,
+        "scope": "TaskStore::save_unlocked_supported",
+        "description": "The temp document is opened with filesystem.create_file. StdFilesystem::create_file at line 215 calls create_private_file. tighten_state_files has already returned and does not run again after this create."
+      },
+      {
+        "kind": "sink",
+        "file": "src/fsperm.rs",
+        "line": 181,
+        "scope": "create_private_file",
+        "description": "OpenOptions is write, create, and truncate, then open. mode(0o600) exists only inside cfg(unix) at lines 176-179. The Windows open passes no security descriptor."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/fsperm.rs",
+        "line": 9,
+        "description": "The module header says Unix state directories are 0700 and files are 0600, and that no permission is claimed on other platforms, where these helpers compile down to plain create and copy."
+      },
+      {
+        "file": "src/fsperm.rs",
+        "line": 36,
+        "description": "Before create_dir_all, Windows only calls reject_reparse_ancestors. The directory create attaches no security descriptor."
+      },
+      {
+        "file": "src/fsperm.rs",
+        "line": 55,
+        "description": "The directory tighten call is gated by cfg(unix); the Windows function returns after the reparse and directory checks."
+      },
+      {
+        "file": "src/fsperm.rs",
+        "line": 179,
+        "description": "options.mode(0o600) is inside the cfg(unix) block that begins at line 176."
+      },
+      {
+        "file": "src/fsperm.rs",
+        "line": 302,
+        "description": "Under cfg(not(unix)), tighten_file ignores its path. An existing Windows state file is not given an owner-only DACL."
+      },
+      {
+        "file": "src/store.rs",
+        "line": 215,
+        "description": "The production AtomicFilesystem create_file implementation is create_private_file, with no Windows security-attribute argument."
+      },
+      {
+        "file": "src/store.rs",
+        "line": 578,
+        "description": "Load calls tighten_state_files, which is a no-op off Unix."
+      },
+      {
+        "file": "src/store.rs",
+        "line": 952,
+        "description": "The non-empty LOCALAPPDATA branch returns PathBuf::from(local).join(tsk)."
+      },
+      {
+        "file": "src/store.rs",
+        "line": 957,
+        "description": "When LOCALAPPDATA is unavailable, the Windows fallback returns PathBuf::from(userprofile).join(.tsk)."
+      },
+      {
+        "file": "site/src/content/docs/docs/storage.md",
+        "line": 12,
+        "description": "The storage guide documents the Windows default as LOCALAPPDATA\\tsk, or USERPROFILE\\.tsk when LOCALAPPDATA is unavailable, and does not document a Windows ACL."
+      }
+    ],
+    "blockers": [
+      "The inherited DACL is an operating-system fact. This repository never sets or records a Windows security descriptor, so source cannot show whether a second non-admin account has an allow ACE.",
+      "This host is Linux and cannot create a Windows profile or query a DACL. That missing observation decides whether the inherited ACL is wider than the Unix owner-only control, and it was not performed."
+    ],
+    "validation_plan": {
+      "local": "On a fresh Windows 10 or 11 profile that is not a member of Administrators and is not elevated, leave TSK_STATE_DIR unset and do not pass --state-dir. Run tsk add with a dummy title so the default state directory and tsk.json are created. As that same user, run icacls with only the path, and no /grant, /deny, /remove, /reset, /setowner, /inheritance, /restore, or /replace, on %LOCALAPPDATA%\\tsk and on %LOCALAPPDATA%\\tsk\\tsk.json and record every ACE and inheritance flag. If LOCALAPPDATA was unset, use %USERPROFILE%\\.tsk instead. From a second local account that is also not a member of Administrators, attempt only to read those two paths and stop at access denied or at seeing the dummy text. Do not take ownership, change the ACL, or use an elevated token. If that second account can read the dummy text, the boundary the Unix build enforces with 0700 and 0600 is crossed. If access is denied and the DACL allows only the creating user, SYSTEM, and Administrators, the inherited DACL already matches that account boundary.",
+      "deployment": "On an existing Windows store, run icacls with only the path on the state directory and on tsk.json. Do not change the ACL, do not take ownership, and do not open the task file. Record whether any allow ACE, including an inherited ACE, grants read to a principal other than the owner, SYSTEM, and Administrators. Stop after recording the DACL."
+    }
+  }
+]
