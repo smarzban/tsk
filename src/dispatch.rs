@@ -1653,7 +1653,8 @@ fn rename_when_detected(
 /// Whether the recorded workspace is still open on `worktree`, a checkout already deleted.
 /// Herdr keeps a workspace's checkout path after the directory goes, so an id that now names
 /// another checkout reads as closed: cleanup never closes a workspace it did not open. Only
-/// Herdr saying so reads as closed; a Herdr that cannot answer leaves it open.
+/// Herdr saying so reads as closed; a Herdr that cannot answer, or names no checkout, leaves
+/// it open.
 fn herdr_workspace_open_on(workspace_id: &str, worktree: &Path) -> bool {
     let Ok(output) = Command::new("herdr")
         .args(["workspace", "get", workspace_id])
@@ -1664,13 +1665,16 @@ fn herdr_workspace_open_on(workspace_id: &str, worktree: &Path) -> bool {
     if !output.status.success() {
         return herdr_error_code(&output.stderr).as_deref() != Some("workspace_not_found");
     }
-    serde_json::from_slice::<Value>(&output.stdout)
-        .ok()
-        .as_ref()
-        .and_then(|value| value.pointer("/result/workspace/worktree/checkout_path"))
-        .and_then(Value::as_str)
-        .and_then(|path| canonical_cleanup_path(Path::new(path)).ok())
-        .is_some_and(|path| same_path(&path, worktree))
+    let value = serde_json::from_slice::<Value>(&output.stdout).unwrap_or(Value::Null);
+    match value
+        .pointer("/result/workspace/worktree")
+        .and_then(herdr_checkout_path)
+    {
+        Some(path) => {
+            canonical_cleanup_path(Path::new(path)).is_ok_and(|path| same_path(&path, worktree))
+        }
+        None => true,
+    }
 }
 
 fn herdr_error_code(stderr: &[u8]) -> Option<String> {
