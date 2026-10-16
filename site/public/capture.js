@@ -1,11 +1,7 @@
-export function normalizeThread(raw) {
-  const normalized = String(raw)
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 32);
-  if (!normalized || !/^[a-z0-9]/.test(normalized)) return null;
-  return normalized;
+function normalizeThread(raw) {
+  const input = String(raw);
+  if (!/^[A-Za-z0-9][A-Za-z0-9.-]{0,31}$/.test(input)) return null;
+  return input.toLowerCase();
 }
 
 export function parseCapture(raw, fallbackProject) {
