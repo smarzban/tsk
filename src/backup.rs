@@ -30,6 +30,9 @@ const RUN_LOCK_FILE: &str = "backup.lock";
 /// Held by the one `backup run` waiting for the run lock; a third finds it taken and exits,
 /// since the waiter reads the store only once it runs.
 const PENDING_LOCK_FILE: &str = "backup.pending.lock";
+/// A background run records its trigger here before it looks for the waiter's slot, so the
+/// waiter that runs instead of it also backs up what that trigger made due.
+const TRIGGER_FLAG_PREFIX: &str = "backup.trigger-";
 /// This machine's id, generated once.
 const MACHINE_ID_FILE: &str = "machine-id";
 /// Clones of git targets, one directory per target.
@@ -53,6 +56,7 @@ pub(crate) fn is_private_state_name(name: &str) -> bool {
         || name == RUN_LOCK_FILE
         || name == PENDING_LOCK_FILE
         || name == MACHINE_ID_FILE
+        || name.starts_with(TRIGGER_FLAG_PREFIX)
         || name.starts_with(STATUS_TEMP_PREFIX)
 }
 
@@ -662,14 +666,19 @@ pub enum RunOutcome {
 }
 
 /// Back the live store up to the targets `mode` selects. Runs one at a time per state
-/// directory; a background run that finds another already waiting leaves the work to it.
+/// directory. A background run first records its trigger, then takes the single waiter's
+/// slot; a run that finds the slot taken exits, and the waiter, once it holds the run lock,
+/// backs up for every trigger recorded until then, its own included.
 pub fn run(state_dir: &Path, mode: RunMode, now: SystemTime) -> Result<Vec<TargetRun>, String> {
     let targets = load_targets(state_dir)?;
     if targets.is_empty() {
         return Ok(Vec::new());
     }
     fsperm::ensure_private_dir(state_dir).map_err(|error| error.to_string())?;
-    let _pending = if matches!(mode, RunMode::Due(_)) {
+    let _pending = if let RunMode::Due(trigger) = mode {
+        // Recorded before the slot check: a run that loses the slot leaves its trigger to the
+        // waiter, which reads the flags only after it releases the slot.
+        fs::write(trigger_flag(state_dir, trigger), b"").map_err(|e| e.to_string())?;
         let pending = open_lock(state_dir, PENDING_LOCK_FILE).map_err(|e| e.to_string())?;
         match pending.try_lock() {
             Ok(()) => Some(LockGuard(pending)),
@@ -683,6 +692,20 @@ pub fn run(state_dir: &Path, mode: RunMode, now: SystemTime) -> Result<Vec<Targe
     run_lock.lock().map_err(|e| e.to_string())?;
     let _run = LockGuard(run_lock);
     drop(_pending);
+    let triggers: Vec<Trigger> = match mode {
+        RunMode::Now => Vec::new(),
+        RunMode::Due(own) => {
+            let mut triggers = vec![own];
+            for trigger in [Trigger::Save, Trigger::Open] {
+                if fs::remove_file(trigger_flag(state_dir, trigger)).is_ok()
+                    && !triggers.contains(&trigger)
+                {
+                    triggers.push(trigger);
+                }
+            }
+            triggers
+        }
+    };
 
     let bytes = match fs::read(state_dir.join("tsk.json")) {
         Ok(bytes) => bytes,
@@ -701,8 +724,11 @@ pub fn run(state_dir: &Path, mode: RunMode, now: SystemTime) -> Result<Vec<Targe
     let mut results = Vec::new();
     for target in targets {
         let record = status.targets.entry(target.key()).or_default();
-        if let RunMode::Due(trigger) = mode {
-            if !is_due(target.every, trigger, record, now_secs) {
+        if let RunMode::Due(_) = mode {
+            let due = triggers
+                .iter()
+                .any(|trigger| is_due(target.every, *trigger, record, now_secs));
+            if !due {
                 results.push((target, Ok(RunOutcome::NotDue)));
                 continue;
             }
@@ -736,6 +762,10 @@ pub fn run(state_dir: &Path, mode: RunMode, now: SystemTime) -> Result<Vec<Targe
     Ok(results)
 }
 
+fn trigger_flag(state_dir: &Path, trigger: Trigger) -> PathBuf {
+    state_dir.join(format!("{TRIGGER_FLAG_PREFIX}{}", trigger.word()))
+}
+
 fn backup_to_folder(
     target: &Target,
     machine: &str,
@@ -749,8 +779,14 @@ fn backup_to_folder(
     let dir = root.join(FOLDER_ROOT).join(machine);
     fs::create_dir_all(&dir)
         .map_err(|error| format!("could not create {}: {error}", dir.display()))?;
-    let name = format!("tsk-{}.json", utc_stamp(now));
-    let path = dir.join(&name);
+    // A second copy in the same second gets `-1`, `-2`, … rather than replacing the first.
+    let stamp = utc_stamp(now);
+    let mut path = dir.join(format!("tsk-{stamp}.json"));
+    let mut collisions = 0_u32;
+    while fs::symlink_metadata(&path).is_ok() {
+        collisions += 1;
+        path = dir.join(format!("tsk-{stamp}-{collisions}.json"));
+    }
     // Written whole beside the target, then renamed, so a sync client never uploads half a copy.
     let tmp = dir.join(format!(
         ".tsk-backup.tmp.{}.{}",
@@ -793,11 +829,17 @@ fn folder_copies(dir: &Path) -> Vec<(u64, PathBuf)> {
         .flatten()
         .filter_map(|entry| {
             let name = entry.file_name();
-            let stamp = name
-                .to_str()?
-                .strip_prefix("tsk-")?
-                .strip_suffix(".json")
-                .and_then(parse_utc_stamp)?;
+            let stem = name.to_str()?.strip_prefix("tsk-")?.strip_suffix(".json")?;
+            // `<stamp>` or a same-second `<stamp>-<n>`.
+            let stamp = parse_utc_stamp(stem.get(..16)?)?;
+            let rest = &stem[16..];
+            if !(rest.is_empty()
+                || rest
+                    .strip_prefix('-')
+                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
+            {
+                return None;
+            }
             entry
                 .file_type()
                 .ok()
@@ -840,11 +882,7 @@ fn backup_to_git(
                 ],
             )?;
         }
-        let file = clone.dir.join(&relative);
-        if let Some(parent) = file.parent() {
-            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        fs::write(&file, bytes).map_err(|error| error.to_string())?;
+        write_in_clone(&clone.dir, &relative, bytes)?;
         git_ok(&clone.dir, &["add", "--", &relative])?;
         let staged = git(
             &clone.dir,
@@ -908,6 +946,58 @@ fn backup_to_git(
     Err(last_error)
 }
 
+/// Write `bytes` at `relative` inside `clone` without following a link: every component
+/// below the clone must be a real directory (or, for the last, absent or a regular file),
+/// and the file is written beside its name and renamed over it, which replaces a link itself
+/// rather than its target. Checkouts already run with `core.symlinks=false`; this holds even
+/// for a link some other git put in the work tree.
+fn write_in_clone(clone: &Path, relative: &str, bytes: &[u8]) -> Result<(), String> {
+    let components: Vec<&str> = relative.split('/').collect();
+    let mut path = clone.to_path_buf();
+    for (index, component) in components.iter().enumerate() {
+        path.push(component);
+        let last = index + 1 == components.len();
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!(
+                    "refusing to write through a link at {relative} in the backup repository"
+                ))
+            }
+            Ok(metadata) if !last && !metadata.is_dir() => {
+                return Err(format!(
+                    "{relative} in the backup repository is not a directory"
+                ))
+            }
+            Ok(metadata) if last && !metadata.is_file() => {
+                return Err(format!("{relative} in the backup repository is not a file"))
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if !last {
+                    fs::create_dir(&path).map_err(|error| error.to_string())?;
+                }
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    let tmp = path.with_file_name(format!(".tsk-backup.tmp.{}", std::process::id()));
+    let _ = fs::remove_file(&tmp);
+    let result = (|| -> io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        file.write_all(bytes)?;
+        drop(file);
+        fs::rename(&tmp, &path)
+    })();
+    if let Err(error) = result {
+        let _ = fs::remove_file(&tmp);
+        return Err(error.to_string());
+    }
+    Ok(())
+}
+
 /// A git target's local clone, fetched, and the branch backups go to.
 struct GitClone {
     dir: PathBuf,
@@ -927,7 +1017,14 @@ fn sync_clone(state_dir: &Path, target: &Target) -> Result<GitClone, String> {
         let _ = fs::remove_dir_all(&dir);
         let mut command = git_command(&repos);
         command
-            .args(["clone", "--quiet", "--no-checkout", &target.location])
+            .args([
+                "clone",
+                "--quiet",
+                "--no-checkout",
+                "--config",
+                "core.symlinks=false",
+                &target.location,
+            ])
             .arg(&dir);
         let output = crate::git_base::bounded_process_output(command, "git", GIT_TIMEOUT)?;
         if !output.status.success() {
@@ -970,9 +1067,11 @@ fn sync_clone(state_dir: &Path, target: &Target) -> Result<GitClone, String> {
 
 fn git_command(dir: &Path) -> Command {
     let mut command = Command::new("git");
+    // A backup remote is not trusted to plant links in the clone: check them out as files.
     command
         .arg("-C")
         .arg(dir)
+        .args(["-c", "core.symlinks=false"])
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "never");
     command
@@ -1037,7 +1136,12 @@ pub fn list_versions(state_dir: &Path, all: bool) -> Result<Listing, String> {
     for target in targets {
         let listed = match target.kind {
             Kind::Folder => folder_versions(&target),
-            Kind::Git => git_versions(state_dir, &target, all),
+            // The clone is shared with backup runs: never fetch it under one.
+            Kind::Git => with_run_lock(state_dir, true, || {
+                Ok(git_versions(state_dir, &target, all))
+            })
+            .map_err(|error| error.to_string())
+            .and_then(|listed| listed),
         };
         match listed {
             Ok(found) => versions.extend(found),
@@ -1792,5 +1896,154 @@ url = "git@example.com:me/tsk.git"
             "{message}"
         );
         assert_eq!(take_unshown_error(&state.0), None, "shown once");
+    }
+
+    fn folder_config(state: &Path, folder: &Path, extra: &str) {
+        fs::write(
+            state.join("config.toml"),
+            format!(
+                "[[backup]]\nkind = \"folder\"\npath = {:?}\n{extra}",
+                folder.display().to_string()
+            ),
+        )
+        .expect("config");
+    }
+
+    #[test]
+    fn a_run_that_loses_the_waiter_slot_leaves_its_trigger_to_the_waiter() {
+        let state = TempDir::new("union-state");
+        let folder = TempDir::new("union-folder");
+        folder_config(&state.0, &folder.0, "every = \"save\"\n");
+        write_store(&state.0, "{\"a\":1}");
+        // A waiter holds the slot when a save's run arrives: that run exits at once.
+        let slot = open_lock(&state.0, PENDING_LOCK_FILE).expect("slot");
+        slot.try_lock().expect("take the slot");
+        assert!(run(&state.0, RunMode::Due(Trigger::Save), at(DAY))
+            .expect("save run")
+            .is_empty());
+        drop(slot);
+        // The waiter was started by a board open; it still backs up for the save.
+        let results = run(&state.0, RunMode::Due(Trigger::Open), at(DAY + 1)).expect("waiter");
+        assert!(
+            matches!(results[0].1, Ok(RunOutcome::Written(_))),
+            "{results:?}"
+        );
+        let results = run(&state.0, RunMode::Due(Trigger::Open), at(DAY + 2)).expect("next");
+        assert_eq!(results[0].1, Ok(RunOutcome::NotDue), "the flag is used up");
+    }
+
+    #[test]
+    fn copies_in_the_same_second_are_both_kept() {
+        let state = TempDir::new("same-second-state");
+        let folder = TempDir::new("same-second-folder");
+        folder_config(&state.0, &folder.0, "");
+        write_store(&state.0, "{\"a\":1}");
+        run(&state.0, RunMode::Now, at(DAY)).expect("first");
+        write_store(&state.0, "{\"a\":2}");
+        run(&state.0, RunMode::Now, at(DAY)).expect("second");
+        let machine = machine_name(&state.0).expect("machine");
+        let mut copies = folder_copies(&folder.0.join(FOLDER_ROOT).join(&machine));
+        copies.sort();
+        assert_eq!(copies.len(), 2, "{copies:?}");
+        let bodies: BTreeSet<Vec<u8>> = copies
+            .iter()
+            .map(|(_, path)| fs::read(path).expect("copy"))
+            .collect();
+        assert_eq!(bodies.len(), 2, "neither copy replaced the other");
+    }
+
+    #[cfg(unix)]
+    fn git_in(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// A backup remote whose `machines/<machine>/tsk.json`, or that machine's directory, is a
+    /// link out of the clone must never get the store written through it.
+    #[cfg(unix)]
+    #[test]
+    fn a_hostile_remote_cannot_redirect_a_git_backup_through_a_link() {
+        for planted_dir in [false, true] {
+            let root = TempDir::new("hostile");
+            let state = root.0.join("state");
+            fs::create_dir_all(&state).expect("state");
+            let machine = machine_name(&state).expect("machine");
+            let victim_dir = root.0.join("victim");
+            fs::create_dir_all(&victim_dir).expect("victim dir");
+            let victim = victim_dir.join("tsk.json");
+            fs::write(&victim, b"precious").expect("victim");
+
+            let remote = root.0.join("remote.git");
+            fs::create_dir_all(&remote).expect("remote");
+            git_in(&remote, &["init", "--quiet", "--bare"]);
+            let work = root.0.join("work");
+            fs::create_dir_all(work.join("machines")).expect("work");
+            git_in(&work, &["init", "--quiet"]);
+            let (link, link_target) = if planted_dir {
+                (work.join("machines").join(&machine), victim_dir.clone())
+            } else {
+                fs::create_dir_all(work.join("machines").join(&machine)).expect("machine dir");
+                (
+                    work.join("machines").join(&machine).join("tsk.json"),
+                    victim.clone(),
+                )
+            };
+            std::os::unix::fs::symlink(&link_target, &link).expect("plant link");
+            git_in(&work, &["add", "-A"]);
+            git_in(&work, &["commit", "--quiet", "-m", "plant"]);
+            git_in(
+                &work,
+                &[
+                    "push",
+                    "--quiet",
+                    remote.to_str().expect("utf-8"),
+                    "HEAD:refs/heads/main",
+                ],
+            );
+            git_in(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+
+            fs::write(
+                state.join("config.toml"),
+                format!(
+                    "[[backup]]\nkind = \"git\"\nurl = {:?}\n",
+                    remote.display().to_string()
+                ),
+            )
+            .expect("config");
+            write_store(&state, "{\"store\":true}");
+            let _ = run(&state, RunMode::Now, at(DAY)).expect("run");
+            assert_eq!(
+                fs::read(&victim).expect("victim"),
+                b"precious",
+                "planted_dir={planted_dir}"
+            );
+            let stray: Vec<_> = fs::read_dir(&victim_dir)
+                .expect("victim dir")
+                .flatten()
+                .map(|entry| entry.file_name())
+                .collect();
+            assert_eq!(
+                stray.len(),
+                1,
+                "nothing written beside the victim: {stray:?}"
+            );
+        }
     }
 }

@@ -1,0 +1,112 @@
+//! The real board and quick capture against backups: an open session holds `board.lock`, so
+//! `tsk restore` refuses until it quits, and a full board open backs up `every = "open"`
+//! targets. Isolated PTY, store, and folder; never a live Herdr session.
+#![cfg(unix)]
+use crate::pty;
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+use std::time::{Duration, Instant};
+
+fn tsk(state: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_tsk"))
+        .args(args)
+        .arg("--state-dir")
+        .arg(state)
+        .env("TSK_NO_UPDATE_CHECK", "1")
+        .env_remove("TSK_AGENT")
+        .output()
+        .expect("run tsk")
+}
+
+fn copies(folder: &Path) -> usize {
+    fs::read_dir(folder.join("tsk-backups"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .flat_map(|machine| fs::read_dir(machine.path()).into_iter().flatten().flatten())
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("tsk-"))
+        .count()
+}
+
+/// A state dir with one task and one folder copy of it, plus that copy's version id.
+fn seeded(root: &Path, every: &str) -> (PathBuf, PathBuf, String) {
+    let state = root.join("state");
+    let folder = root.join("folder");
+    fs::create_dir_all(&folder).expect("folder");
+    let added = tsk(&state, &["add", "-t", "kept in the backup", "--desk"]);
+    assert_eq!(added.status.code(), Some(0));
+    let target = tsk(
+        &state,
+        &[
+            "backup",
+            "add",
+            folder.to_str().expect("utf-8"),
+            "--every",
+            every,
+        ],
+    );
+    assert_eq!(target.status.code(), Some(0));
+    assert_eq!(tsk(&state, &["backup"]).status.code(), Some(0));
+    let listed = String::from_utf8_lossy(&tsk(&state, &["restore"]).stdout).into_owned();
+    let id = listed
+        .lines()
+        .nth(1)
+        .and_then(|row| row.split_whitespace().nth(1))
+        .expect("a version row")
+        .to_string();
+    (state, folder, id)
+}
+
+fn assert_restore_refused(state: &Path, id: &str) {
+    let refused = tsk(state, &["restore", id]);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("board or quick capture is open"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+}
+
+#[test]
+fn an_open_board_blocks_restore_and_backs_up_open_targets() {
+    let root = pty::scratch_root("board-backup");
+    let (state, folder, id) = seeded(&root, "open");
+    assert_eq!(copies(&folder), 1);
+    let cwd = root.clone();
+    let mut session = pty::Session::spawn(root, &cwd, &[], &[], 30, 100);
+    // Any painted frame (here its header) comes after the session took board.lock.
+    session.output_until("backup");
+
+    assert_restore_refused(&state, &id);
+    // The open seeded starter tasks, so the store changed and the open target got a copy.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while copies(&folder) < 2 {
+        assert!(
+            Instant::now() < deadline,
+            "the board open backed nothing up"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    session.send(b"\x11");
+    assert!(session.wait_exit(Duration::from_secs(20)).success());
+    let restored = tsk(&state, &["restore", &id]);
+    assert_eq!(
+        restored.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+}
+
+#[test]
+fn an_open_quick_capture_blocks_restore() {
+    let root = pty::scratch_root("capture-backup");
+    let (state, _folder, id) = seeded(&root, "save");
+    let cwd = root.clone();
+    let mut session = pty::Session::spawn(root, &cwd, &["capture"], &[], 24, 78);
+    session.output_until("cancel");
+    assert_restore_refused(&state, &id);
+}

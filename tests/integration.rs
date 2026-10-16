@@ -3,10 +3,14 @@
 
 // Shared fixture, not a suite (`pub(crate)` keeps cli_discovery from counting it).
 #[cfg(unix)]
+#[path = "support/pty.rs"]
+pub(crate) mod pty;
+#[cfg(unix)]
 #[path = "support/stub.rs"]
 pub(crate) mod stub;
 
 mod archive_launch_card;
+mod board_backup_process;
 mod board_blocks;
 mod board_cleanup_card;
 mod board_paper_trail;

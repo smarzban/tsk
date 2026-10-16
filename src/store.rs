@@ -871,8 +871,14 @@ impl TaskStore {
                     crate::backup::utc_stamp(now)
                 ));
             }
-            fs::copy(&file, &kept).map_err(|e| RestoreError::Store(e.into()))?;
-            fsperm::tighten_file(&kept);
+            // Durable before the swap: a crash after it must still leave the replaced store.
+            (|| -> io::Result<()> {
+                fs::copy(&file, &kept)?;
+                fsperm::tighten_file(&kept);
+                File::open(&kept)?.sync_all()?;
+                StdFilesystem.sync_directory(&self.path)
+            })()
+            .map_err(|e| RestoreError::Store(e.into()))?;
             Some(kept)
         } else {
             None

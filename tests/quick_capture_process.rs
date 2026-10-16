@@ -1,7 +1,6 @@
 //! Real capture entrypoint, isolated PTY and store. Never uses a live Herdr session.
 #![cfg(unix)]
-#[path = "support/pty.rs"]
-mod pty;
+use crate::pty;
 
 use std::ffi::OsString;
 use std::fs;
