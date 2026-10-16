@@ -299,6 +299,16 @@ pub fn add_target(
 /// Remove the `[[backup]]` entry `selector` names: its URL or path as `tsk backup list` shows
 /// it, or its number there. Its status is forgotten; backups already pushed stay.
 pub fn remove_target(state_dir: &Path, selector: &str) -> Result<Target, String> {
+    // Under the run lock: a run reads its targets and saves its status under it, so it never
+    // pushes to this target afterwards or writes its status back.
+    with_run_lock(state_dir, true, || {
+        Ok(remove_target_locked(state_dir, selector))
+    })
+    .map_err(|error| error.to_string())
+    .and_then(|removed| removed)
+}
+
+fn remove_target_locked(state_dir: &Path, selector: &str) -> Result<Target, String> {
     let targets = load_targets(state_dir)?;
     let index = selector
         .parse::<usize>()
@@ -331,11 +341,9 @@ pub fn remove_target(state_dir: &Path, selector: &str) -> Result<Target, String>
     }
     write_document(state_dir, &document)?;
     let removed = targets[index].clone();
-    let _ = with_run_lock(state_dir, true, || {
-        let mut status = load_status(state_dir);
-        status.targets.remove(&removed.key());
-        save_status(state_dir, &status)
-    });
+    let mut status = load_status(state_dir);
+    status.targets.remove(&removed.key());
+    let _ = save_status(state_dir, &status);
     Ok(removed)
 }
 
@@ -393,9 +401,6 @@ pub struct TargetStatus {
     /// FNV-1a of the bytes the last success wrote.
     #[serde(default)]
     pub last_hash: Option<String>,
-    /// The board already showed `last_error` once.
-    #[serde(default)]
-    pub error_shown: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -451,34 +456,23 @@ pub fn statuses(state_dir: &Path) -> Result<Vec<(Target, TargetStatus)>, String>
         .collect())
 }
 
-/// The first backup failure the board has not shown yet, marked shown. `None` while a run
-/// holds the lock: the board never waits for one.
-pub fn take_unshown_error(state_dir: &Path) -> Option<String> {
-    // Most boards have no targets: answer without creating lock files.
+/// The first failing target's error, for the status row of every full board open until
+/// that target succeeds. Reads only: `backup-status.json` is replaced whole, so this never
+/// waits for a run.
+pub fn failure_message(state_dir: &Path) -> Option<String> {
+    // Most boards have no targets: answer without reading config.toml.
     if !state_dir.join(STATUS_FILE).exists() {
         return None;
     }
-    with_run_lock(state_dir, false, || {
-        let targets = load_targets(state_dir).unwrap_or_default();
-        let mut status = load_status(state_dir);
-        let mut message = None;
-        for target in &targets {
-            if let Some(record) = status.targets.get_mut(&target.key()) {
-                if let (Some(error), false) = (&record.last_error, record.error_shown) {
-                    record.error_shown = true;
-                    message.get_or_insert_with(|| {
-                        format!("backup failed: {} (tsk backup list)", first_line(error))
-                    });
-                }
-            }
-        }
-        if message.is_some() {
-            save_status(state_dir, &status)?;
-        }
-        Ok(message)
+    let targets = load_targets(state_dir).ok()?;
+    let status = load_status(state_dir);
+    targets.iter().find_map(|target| {
+        let error = status.targets.get(&target.key())?.last_error.as_deref()?;
+        Some(format!(
+            "backup failed: {} (tsk backup list)",
+            first_line(error)
+        ))
     })
-    .ok()
-    .flatten()
 }
 
 /// The one-time suggestion to add a first target: once the store holds
@@ -698,7 +692,7 @@ pub fn run_probe(state_dir: &Path, spec: &str) -> Result<(), String> {
         .into_iter()
         .nth(index)
         .ok_or("no such target")?;
-    let repos = state_dir.join(REPOS_DIR);
+    let repos = repos_dir(state_dir);
     fsperm::ensure_private_dir(&repos).map_err(|error| error.to_string())?;
     let mut command = git_command(&repos);
     command.args(["ls-remote", "--heads", "--", &target.location]);
@@ -752,11 +746,15 @@ pub enum RunOutcome {
 /// slot; a run that finds the slot taken exits, and the waiter, once it holds the run lock,
 /// backs up for every trigger recorded until then, its own included.
 pub fn run(state_dir: &Path, mode: RunMode, now: SystemTime) -> Result<Vec<TargetRun>, String> {
-    let mut targets = load_targets(state_dir)?;
-    if let RunMode::One(index) = mode {
-        targets = targets.into_iter().skip(index).take(1).collect();
-    }
-    if targets.is_empty() {
+    let select = |targets: Vec<Target>| -> Vec<Target> {
+        match mode {
+            RunMode::One(index) => targets.into_iter().skip(index).take(1).collect(),
+            RunMode::Now | RunMode::Due(_) => targets,
+        }
+    };
+    // A first look without the lock only to skip the common no-target case; the targets
+    // backed up are read again once the run lock is held.
+    if select(load_targets(state_dir)?).is_empty() {
         return Ok(Vec::new());
     }
     fsperm::ensure_private_dir(state_dir).map_err(|error| error.to_string())?;
@@ -777,6 +775,12 @@ pub fn run(state_dir: &Path, mode: RunMode, now: SystemTime) -> Result<Vec<Targe
     run_lock.lock().map_err(|e| e.to_string())?;
     let _run = LockGuard(run_lock);
     drop(_pending);
+    // Read under the lock: `tsk backup remove` rewrites config.toml under it, so a run that
+    // waited never pushes to a target removed meanwhile.
+    let targets = select(load_targets(state_dir)?);
+    if targets.is_empty() {
+        return Ok(Vec::new());
+    }
     let triggers: Vec<Trigger> = match mode {
         RunMode::Now | RunMode::One(_) => Vec::new(),
         RunMode::Due(own) => {
@@ -797,18 +801,29 @@ pub fn run(state_dir: &Path, mode: RunMode, now: SystemTime) -> Result<Vec<Targe
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             // Nothing to copy, but a git target is still reached, so a bad URL or missing
             // access shows now rather than at the first backup.
-            return Ok(targets
+            if let RunMode::Due(_) = mode {
+                return Ok(targets
+                    .into_iter()
+                    .map(|target| (target, Ok(RunOutcome::NoStore)))
+                    .collect());
+            }
+            // Recorded like a backup's result, so `tsk backup list` and the board show a
+            // target that cannot be reached.
+            let mut status = load_status(state_dir);
+            let now_secs = unix_secs(now);
+            let results: Vec<TargetRun> = targets
                 .into_iter()
                 .map(|target| {
-                    let reached = match mode {
-                        RunMode::Due(_) => Ok(RunOutcome::NoStore),
-                        RunMode::Now | RunMode::One(_) => {
-                            sync_clone(state_dir, &target).map(|_| RunOutcome::NoStore)
-                        }
-                    };
+                    let reached = sync_clone(state_dir, &target).map(|_| RunOutcome::NoStore);
+                    let record = status.targets.entry(target.key()).or_default();
+                    record.last_attempt = Some(now_secs);
+                    record.last_error = reached.as_ref().err().cloned();
                     (target, reached)
                 })
-                .collect());
+                .collect();
+            save_status(state_dir, &status)
+                .map_err(|error| format!("could not record backup status: {error}"))?;
+            return Ok(results);
         }
         Err(error) => return Err(format!("could not read tsk.json: {error}")),
     };
@@ -859,7 +874,6 @@ pub fn run(state_dir: &Path, mode: RunMode, now: SystemTime) -> Result<Vec<Targe
         if let Some(error) = &invalid {
             record.last_attempt = Some(now_secs);
             record.last_error = Some(error.clone());
-            record.error_shown = false;
             results.push((target, Err(error.clone())));
             continue;
         }
@@ -882,11 +896,9 @@ pub fn run(state_dir: &Path, mode: RunMode, now: SystemTime) -> Result<Vec<Targe
                 record.last_success = Some(now_secs);
                 record.last_error = None;
                 record.last_hash = Some(hash.clone());
-                record.error_shown = false;
             }
             Err(error) => {
                 record.last_error = Some(error.clone());
-                record.error_shown = false;
             }
         }
         results.push((target, outcome));
@@ -952,9 +964,45 @@ pub fn sanitized_config(content: &str) -> Option<String> {
             }
         }
     }
+    // A token written into a target's URL (`https://user:token@host/…`) stays here too.
+    if let Some(backups) = document
+        .get_mut("backup")
+        .and_then(|item| item.as_array_of_tables_mut())
+    {
+        for table in backups.iter_mut() {
+            let stripped = table
+                .get("url")
+                .and_then(|url| url.as_str())
+                .and_then(without_credentials);
+            if let (Some(stripped), Some(url)) = (stripped, table.get_mut("url")) {
+                let decor = url.as_value().map(|v| v.decor().clone());
+                *url = toml_edit::value(stripped);
+                if let (Some(decor), Some(v)) = (decor, url.as_value_mut()) {
+                    *v.decor_mut() = decor;
+                }
+            }
+        }
+    }
     Some(format!(
-        "# Backed up by tsk. Values under [agent.<name>.env] are never pushed: they read\n# \"{ENV_PLACEHOLDER}\" here. Fill them in by hand after copying a profile over.\n{document}"
+        "# Backed up by tsk. Values under [agent.<name>.env] and credentials in backup URLs\n# are never pushed: env values read \"{ENV_PLACEHOLDER}\" here. Fill them in by\n# hand after copying a profile over.\n{document}"
     ))
+}
+
+/// `url` without the credentials of its `scheme://userinfo@` part, or `None` when it has
+/// none. A user name alone stays for ssh (`ssh://git@host/…`), where it is not a secret;
+/// over http(s) a bare user name is often a token, so it goes too. scp-style `git@host:path`
+/// carries no password and is left as is.
+pub fn without_credentials(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (userinfo, host) = rest[..authority_end].rsplit_once('@')?;
+    let http = scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
+    let kept = match userinfo.split_once(':') {
+        None if !http => return None,
+        Some((user, _)) if !http && !user.is_empty() => format!("{user}@"),
+        _ => String::new(),
+    };
+    Some(format!("{scheme}://{kept}{host}{}", &rest[authority_end..]))
 }
 
 /// Pushes a backup tries before recording the rejection as the target's error. Each retry
@@ -1089,7 +1137,7 @@ fn backup_to_git(
 /// Only foreground runs (`tsk backup`, `add`, `setup`) call this, where the user is already
 /// waiting; a failure only leaves loose objects for the next one.
 fn tidy_clone(state_dir: &Path, target: &Target) {
-    let dir = state_dir.join(REPOS_DIR).join(target.id());
+    let dir = repos_dir(state_dir).join(target.id());
     if dir.is_dir() {
         let _ = git(&dir, &["-c", "gc.auto=6700", "gc", "--auto", "--quiet"]);
     }
@@ -1174,8 +1222,15 @@ struct GitClone {
 
 /// Clone the target under `backup-repos/<id>` the first time, fetch it after. The branch is
 /// the remote's default, or `main` for an empty repository.
-fn sync_clone(state_dir: &Path, target: &Target) -> Result<GitClone, String> {
+/// Where target clones live, absolute: git runs with `-C` in one directory and is handed
+/// paths for another, so a relative state directory would resolve twice.
+fn repos_dir(state_dir: &Path) -> PathBuf {
     let repos = state_dir.join(REPOS_DIR);
+    std::path::absolute(&repos).unwrap_or(repos)
+}
+
+fn sync_clone(state_dir: &Path, target: &Target) -> Result<GitClone, String> {
+    let repos = repos_dir(state_dir);
     fsperm::ensure_private_dir(&repos).map_err(|error| error.to_string())?;
     let dir = repos.join(target.id());
     if dir.join(".git").is_dir() {
@@ -1427,7 +1482,7 @@ fn git_versions(state_dir: &Path, target: &Target, all: bool) -> Result<Vec<Vers
             let Some(machine) = path
                 .strip_prefix("machines/")
                 .and_then(|rest| rest.strip_suffix("/tsk.json"))
-                .filter(|machine| !machine.contains('/'))
+                .filter(|machine| is_machine_id(machine))
             else {
                 continue;
             };
@@ -1577,7 +1632,13 @@ pub fn machine_id(state_dir: &Path) -> io::Result<String> {
 
 fn read_machine_id(path: &Path) -> Option<String> {
     let id = fs::read_to_string(path).ok()?.trim().to_string();
-    (id.len() >= 8 && id.chars().all(|c| c.is_ascii_alphanumeric())).then_some(id)
+    is_machine_id(&id).then_some(id)
+}
+
+/// The shape of a machine id, and so of every `machines/<id>/` directory tsk lists: anything
+/// else in a shared repository is skipped, since its name ends up in a printed command.
+fn is_machine_id(id: &str) -> bool {
+    (8..=64).contains(&id.len()) && id.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
 /// The host name's first label, lowercased, as letters, digits, and hyphens.
@@ -1638,6 +1699,8 @@ fn with_run_lock<T>(
     wait: bool,
     body: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
+    // A new machine's first `tsk backup setup` may come before any store exists.
+    fsperm::ensure_private_dir(state_dir)?;
     let file = open_lock(state_dir, RUN_LOCK_FILE)?;
     if wait {
         file.lock()?;
@@ -2105,9 +2168,10 @@ every = "daily"
     }
 
     #[test]
-    fn a_failing_target_records_its_error_once_for_the_board() {
+    fn a_failing_target_shows_on_every_board_open_until_it_succeeds() {
         let root = TempDir::new("fail");
-        let state = state_with_target(&root.0, &root.0.join("no-such-repo.git"), "");
+        let missing = root.0.join("no-such-repo.git");
+        let state = state_with_target(&root.0, &missing, "");
         write_store(&state, "x");
         let results = run(&state, RunMode::Now, at(DAY)).expect("run");
         assert!(results[0]
@@ -2116,16 +2180,18 @@ every = "daily"
             .is_err_and(|e| e.contains("git clone failed")));
         let listed = statuses(&state).expect("statuses");
         assert!(listed[0].1.last_error.is_some());
-        let message = take_unshown_error(&state).expect("first open shows it");
-        assert!(
-            message.starts_with("backup failed: git clone failed"),
-            "{message}"
-        );
-        assert_eq!(
-            take_unshown_error(&state),
-            None,
-            "shown once per failed attempt"
-        );
+        for open in 0..3 {
+            let message = failure_message(&state).expect("every open shows it");
+            assert!(
+                message.starts_with("backup failed: git clone failed"),
+                "open {open}: {message}"
+            );
+        }
+        fs::create_dir_all(&missing).expect("repo");
+        git_in(&missing, &["init", "--quiet", "--bare"]);
+        let results = run(&state, RunMode::Now, at(DAY + 1)).expect("run");
+        assert!(results[0].1.is_ok(), "{results:?}");
+        assert_eq!(failure_message(&state), None, "gone once it succeeds");
     }
 
     #[test]
@@ -2150,6 +2216,115 @@ every = "daily"
         write_store(&state, "a2");
         let results = run(&state, RunMode::Due(Trigger::Open), at(DAY + 2)).expect("next");
         assert_eq!(results[0].1, Ok(RunOutcome::NotDue), "the flag is used up");
+    }
+
+    #[test]
+    fn a_waiting_run_never_pushes_to_a_target_removed_meanwhile() {
+        let root = TempDir::new("removed");
+        let remote = bare_repo(&root.0);
+        let state = state_with_target(&root.0, &remote, "");
+        write_store(&state, "a1");
+        // A run is pushing (it holds the run lock) when a save starts the waiter.
+        let running = open_lock(&state, RUN_LOCK_FILE).expect("lock");
+        running.lock().expect("hold the run lock");
+        let waiter = {
+            let state = state.clone();
+            std::thread::spawn(move || run(&state, RunMode::Due(Trigger::Save), at(DAY)))
+        };
+        // It records its trigger just before it queues on the run lock.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !trigger_flag(&state, Trigger::Save).exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the waiter never queued"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        // Meanwhile the user removes the target (as `tsk backup remove` writes it).
+        fs::write(state.join("config.toml"), "").expect("config");
+        running.unlock().expect("release");
+        let results = waiter.join().expect("waiter").expect("run");
+        assert!(results.is_empty(), "{results:?}");
+        assert_eq!(commits(&remote), 0);
+        assert!(
+            load_status(&state).targets.is_empty(),
+            "no status resurrected"
+        );
+    }
+
+    #[test]
+    fn remove_waits_for_a_running_backup() {
+        let root = TempDir::new("remove-lock");
+        let remote = bare_repo(&root.0);
+        let state = state_with_target(&root.0, &remote, "");
+        let running = open_lock(&state, RUN_LOCK_FILE).expect("lock");
+        running.lock().expect("hold the run lock");
+        let remover = {
+            let state = state.clone();
+            std::thread::spawn(move || remove_target(&state, "1"))
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            load_targets(&state).expect("targets").len(),
+            1,
+            "config.toml untouched while a run holds the lock"
+        );
+        running.unlock().expect("release");
+        remover.join().expect("remover").expect("removed");
+        assert!(load_targets(&state).expect("targets").is_empty());
+    }
+
+    #[test]
+    fn only_machine_id_directories_are_listed() {
+        let root = TempDir::new("hostile-machine");
+        let remote = bare_repo(&root.0);
+        let state = state_with_target(&root.0, &remote, "");
+        write_store(&state, "mine");
+        run(&state, RunMode::Now, at(DAY)).expect("run");
+        // Another writer to a shared repository adds a directory whose name is a command.
+        let work = root.0.join("work");
+        git_in(
+            &root.0,
+            &["clone", "--quiet", remote.to_str().expect("utf-8"), "work"],
+        );
+        let hostile = work.join("machines").join("x$(touch pwned)");
+        fs::create_dir_all(&hostile).expect("dir");
+        fs::write(hostile.join("tsk.json"), "{}").expect("file");
+        git_in(&work, &["add", "-A"]);
+        git_in(
+            &work,
+            &["commit", "--quiet", "-m", "tsk backup\n\nhostname: evil"],
+        );
+        git_in(&work, &["push", "--quiet", "origin", "HEAD"]);
+        let (versions, failures) = list_versions(&state, true).expect("list");
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(versions.len(), 1, "{versions:?}");
+        assert!(versions.iter().all(|v| is_machine_id(&v.machine_id)));
+    }
+
+    #[test]
+    fn credentials_in_backup_urls_are_never_pushed() {
+        let pushed = sanitized_config(
+            "[[backup]]\nurl = \"https://me:ghp_s3cret@github.com/me/b.git\" # mine\n\n[[backup]]\nurl = \"ssh://git:pw@host/x.git\"\n\n[[backup]]\nurl = \"git@github.com:me/b.git\"\n",
+        )
+        .expect("parses");
+        assert!(
+            !pushed.contains("s3cret") && !pushed.contains(":pw@"),
+            "{pushed}"
+        );
+        assert!(
+            pushed.contains("url = \"https://github.com/me/b.git\" # mine"),
+            "{pushed}"
+        );
+        assert!(pushed.contains("ssh://git@host/x.git"), "{pushed}");
+        assert!(pushed.contains("git@github.com:me/b.git"), "{pushed}");
+        assert_eq!(
+            without_credentials("https://TOKEN@github.com/a.git").as_deref(),
+            Some("https://github.com/a.git")
+        );
+        assert_eq!(without_credentials("ssh://git@host/a.git"), None);
+        assert_eq!(without_credentials("https://github.com/a@b.git"), None);
     }
 
     #[test]

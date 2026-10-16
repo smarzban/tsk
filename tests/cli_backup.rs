@@ -272,6 +272,58 @@ fn backup_add_tests_the_target_and_keeps_it_when_the_first_backup_fails() {
 }
 
 #[test]
+fn a_relative_state_dir_backs_up() {
+    let root = TempDir::new("relative");
+    let repo = bare_repo(&root.0);
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_tsk"))
+            .args(args)
+            .args(["--state-dir", "rel"])
+            .current_dir(&root.0)
+            .env_remove("TSK_AGENT")
+            .env("TSK_NO_UPDATE_CHECK", "1")
+            .output()
+            .expect("run tsk")
+    };
+    let added = run(&["add", "-t", "relative", "--desk"]);
+    assert_eq!(added.status.code(), Some(0), "{}", stderr(&added));
+    let target = run(&["backup", "add", &repo]);
+    assert_eq!(target.status.code(), Some(0), "{}", stderr(&target));
+    let now = run(&["backup"]);
+    assert_eq!(now.status.code(), Some(0), "{}", stderr(&now));
+    assert_eq!(commits(&repo), 1);
+}
+
+#[test]
+fn a_target_unreachable_before_any_task_shows_its_error_in_list() {
+    let state = TempDir::new("add-fresh");
+    let missing = state.0.join("no-such-repo.git");
+    let added = tsk(
+        &state.0,
+        &["backup", "add", missing.to_str().expect("utf-8")],
+    );
+    assert_eq!(added.status.code(), Some(1), "{}", stdout(&added));
+    assert!(!state.0.join("tsk.json").exists(), "no store yet");
+    let listed = stdout(&tsk(&state.0, &["backup", "list"]));
+    assert!(
+        listed.contains("last error (") && listed.contains("git clone failed"),
+        "{listed}"
+    );
+}
+
+#[test]
+fn restore_of_a_task_number_points_at_trash_even_without_targets() {
+    let state = TempDir::new("restore-task");
+    let restored = tsk(&state.0, &["restore", "T12"]);
+    assert_eq!(restored.status.code(), Some(1));
+    assert!(
+        stderr(&restored).contains("did you mean `tsk trash restore T12`?"),
+        "{}",
+        stderr(&restored)
+    );
+}
+
+#[test]
 fn backup_add_checks_a_detached_run_reaches_the_target_too() {
     let state = TempDir::new("probe-ok");
     add(&state.0, "reachable");
@@ -523,12 +575,18 @@ echo "fake gh: unexpected $*" >&2; exit 2
             "{}",
             stderr(&output)
         );
-        // gh's own words come through.
+        // gh's own words come through, and tsk's two lines print as two lines.
         assert!(
             stderr(&output).contains("You are not logged into any GitHub hosts."),
             "{}",
             stderr(&output)
         );
+        assert!(
+            stderr(&output).contains("again.\nFor another git host"),
+            "{}",
+            stderr(&output)
+        );
+        assert!(!stderr(&output).contains("\\u{"), "{}", stderr(&output));
         assert!(!state.0.join("config.toml").exists());
         assert!(fake.created().is_empty());
     }
@@ -577,6 +635,18 @@ echo "fake gh: unexpected $*" >&2; exit 2
             !fresh.0.join("tsk.json").exists(),
             "never restores by itself"
         );
+    }
+
+    #[test]
+    fn a_new_machine_without_a_state_dir_reuses_its_repository() {
+        let fake = Fake::new(true);
+        fake.existing("me/tsk-backup", "PRIVATE");
+        let root = TempDir::new("new-laptop");
+        let state = root.0.join("not-created-yet");
+        let output = fake.setup(&state, &[]);
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert!(stdout(&output).starts_with("using private repository me/tsk-backup\n"));
+        assert!(state.join("config.toml").exists());
     }
 
     #[test]

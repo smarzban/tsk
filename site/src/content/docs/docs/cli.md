@@ -445,7 +445,7 @@ tsk backup remove 2
 | `list` | Each target with its frequency, last backup, and last error |
 | `remove <target>` | Remove a target by its number in `list`, its URL, or its path. Backups already pushed stay |
 
-Each backup commits `tsk.json`, `config.toml` (values under `[agent.<name>.env]` are never pushed), and `machine.toml` under `machines/<machine-id>/`. Saves and board opens back up due targets in the background and never fail because of them. Frequencies, layout, secrets, and git settings: [backup targets](/docs/storage/#backup-targets).
+Each backup commits `tsk.json`, `config.toml` (values under `[agent.<name>.env]` and credentials in backup URLs are never pushed), and `machine.toml` under `machines/<machine-id>/`. Saves and board opens back up due targets in the background and never fail because of them. Frequencies, layout, secrets, and git settings: [backup targets](/docs/storage/#backup-targets).
 
 ## restore
 

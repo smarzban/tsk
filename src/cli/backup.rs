@@ -164,10 +164,13 @@ fn output(stdout: String, stderr: String, code: u8) -> CliOutput {
     }
 }
 
+/// `tsk <verb>: <message>` on stderr, exit 1. Each line is made safe on its own, so a
+/// message tsk writes on two lines prints as two lines rather than an escaped newline.
 fn refused(verb: &str, message: &str) -> CliOutput {
+    let lines: Vec<String> = message.split('\n').map(terminal_text).collect();
     output(
         String::new(),
-        format!("tsk {verb}: {}\n", terminal_text(message)),
+        format!("tsk {verb}: {}\n", lines.join("\n")),
         1,
     )
 }
@@ -635,6 +638,17 @@ pub fn run_restore<R: Read>(args: Vec<String>, stdin: &mut R, stdin_is_tty: bool
             }
         }
     }
+    // A task number is never a version id: answer that before anything about targets.
+    if let Some(id) = wanted.as_deref().filter(|id| looks_like_task(id)) {
+        return output(
+            String::new(),
+            format!(
+                "tsk restore: {0} is a task, not a backup version\ndid you mean `tsk trash restore {0}`?\n",
+                terminal_text(id)
+            ),
+            1,
+        );
+    }
     let state_dir = state_dir.unwrap_or_else(default_state_dir);
     match backup::load_targets(&state_dir) {
         Ok(targets) if targets.is_empty() => {
@@ -664,12 +678,6 @@ pub fn run_restore<R: Read>(args: Vec<String>, stdin: &mut R, stdin_is_tty: bool
                 "tsk restore: unknown version {}; run tsk restore to list them\n",
                 terminal_text(&id)
             ));
-            if looks_like_task(&id) {
-                stderr.push_str(&format!(
-                    "did you mean `tsk trash restore {}`?\n",
-                    terminal_text(&id)
-                ));
-            }
             return output(String::new(), stderr, 1);
         };
         let mut result = restore_version(&state_dir, version);

@@ -148,7 +148,7 @@ every = "save"             # "save" (the default) or "daily"
 
 Backups never block or fail a save. When a target is due, the save or board open starts a detached `tsk backup run` and returns; that child commits and pushes. Runs are coalesced: one runs and at most one waits, so a burst of saves pushes at most twice, and a save that finds a run already waiting leaves its trigger to it instead of starting another child. A background run never stops to repack its clone (git's automatic `gc` is off there); `tsk backup`, `add`, and `setup` let git tidy it when it wants to. A store and `config.toml` unchanged since a target's last backup are not pushed again. A store that does not parse is never pushed: the target records `store does not parse, not backed up` instead.
 
-A failure is recorded in `backup-status.json`: `tsk backup list` shows it, and after each failed attempt the next full board open shows it on the status row, until the target succeeds. `tsk backup` runs every target in the foreground and exits 1 if any failed.
+A failure is recorded in `backup-status.json`: `tsk backup list` shows it, and every full board open shows it on the status row until the target succeeds (a configuration error that needs the row takes it first; the backup failure shows on a later open). A target that cannot be reached is recorded even before there is a store to back up. `tsk backup` runs every target in the foreground and exits 1 if any failed.
 
 The repository holds `machines/<machine-id>/tsk.json`, `config.toml`, and `machine.toml` (host name and tsk version), one commit per backup on the repository's default branch (the branch its `HEAD` names, even in an empty repository), so its history is every version. Each commit message records the host name, task count, tsk version, and store format. `<machine-id>` is this state directory's `machine-id`, so a host name change keeps the same directory; several machines can share one repository. The repository root is left free on purpose: a later sync across machines puts its shared file there.
 
@@ -156,7 +156,7 @@ tsk runs your own `git` with your credentials and stores no tokens. The detached
 
 ### Secrets
 
-The pushed `config.toml` keeps every key but replaces each value under `[agent.<name>.env]` with `"<not backed up>"`, under a comment saying so; fill them in by hand after copying a profile over. A `config.toml` that does not parse is not pushed at all. Backups are not encrypted and contain your task notes: keep the repository private. Trash (`trash.jsonl`) is not backed up.
+The pushed `config.toml` keeps every key but replaces each value under `[agent.<name>.env]` with `"<not backed up>"`, under a comment saying so; fill them in by hand after copying a profile over. Credentials written into a `[[backup]]` URL are dropped too (`https://user:token@host/…` is pushed as `https://host/…`; an ssh user name such as `git@` stays). A `config.toml` that does not parse is not pushed at all. Backups are not encrypted and contain your task notes: keep the repository private. Trash (`trash.jsonl`) is not backed up.
 
 Once the store holds 10 tasks and no target is configured, one full board open says `No backup yet: run tsk backup setup` on the status row. It is shown once per state directory, never again.
 
@@ -173,7 +173,7 @@ tsk restore 3f9a1c2e
 
 Restore copies the current `tsk.json` to `tsk.json.pre-restore-<UTC time>`, then replaces it with the chosen version under the store lock. It keeps the newest five `tsk.json.pre-restore-*` copies and deletes older ones. A version in an older store format is written as is and migrates on the next open; one newer than this tsk is refused with a request to update tsk, as are files that are not a store.
 
-Restore never changes `config.toml`. It prints the `git show` command that prints the `config.toml` backed up with that version, so you can copy agent profiles and settings over by hand.
+Only `machines/` directories shaped like a machine id are listed; anything else another writer put there is skipped. Restore never changes `config.toml`. It prints the `git show` command that prints the `config.toml` backed up with that version, so you can copy agent profiles and settings over by hand.
 
 Restore refuses while a board or quick capture is open on the store: an open board merges what is on disk into what it holds and would write back, on its next save, every task the restored version does not have. Quit them, then restore.
 

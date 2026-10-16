@@ -133,7 +133,9 @@ fn load_board_inner(
     };
     let backup_error = if full_board_open {
         crate::backup::after_open(&state_dir);
-        crate::backup::take_unshown_error(&state_dir)
+        // Shown on every full open until the target succeeds; nothing is marked shown, so a
+        // profile or `[board]` error that wins the row this time loses nothing.
+        crate::backup::failure_message(&state_dir)
     } else {
         None
     };
