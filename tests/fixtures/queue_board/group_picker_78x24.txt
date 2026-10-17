@@ -5,18 +5,18 @@
 │ NEEDS YOU ─────────────────────────────────────────────────────────────────2 │
 │                                                                              │
 │  ■ T5 Wire dispatch cleanup receipts  #dispatch · herdr                      │
-│    └─ @claude blocked on you · 41m                                           │
+│    └─ @claude: Which receipt format? · 41m                                   │
 │  ▲ T6 D┌─ group by ──────────────────────────────────────────── [x]─┐        │
-│    └─ n│                                                            │        │
-│        │ ▸ none  ✓                                                  │        │
-│ IN MOTI│   project                                                  │──────2 │
-│        │   thread                                                   │        │
-│  ● T1 S│   assignee                                                 │        │
-│  ● T2 E│                                                            │        │
-│        ├────────────────────────────────────────────────────────────┤        │
-│ ON DECK│ ↑↓ move · enter choose · esc close                         │──────1 │
-│        └────────────────────────────────────────────────────────────┘        │
-│  ○ T7 Global backlog note  #release                                          │
+│        │                                                            │        │
+│ IN MOTI│ ▸ none  ✓                                                  │──────2 │
+│        │   project                                                  │        │
+│  ● T1 S│   thread                                                   │        │
+│  ● T2 E│   assignee                                                 │        │
+│        │                                                            │        │
+│ ON DECK├────────────────────────────────────────────────────────────┤──────1 │
+│        │ ↑↓ move · enter choose · esc close                         │        │
+│  ○ T7 G└────────────────────────────────────────────────────────────┘        │
+│                                                                              │
 │                                                                              │
 │                                                                              │
 │                                                                              │

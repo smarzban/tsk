@@ -6,10 +6,9 @@
 │                                                                                                              │
 │ ▾ @claude · 1                                                                                                │
 │▸ ■ T5 Wire dispatch cleanup receipts  #dispatch · herdr                                                      │
-│    └─ @claude blocked on you · 41m                                                                           │
+│    └─ @claude: Which receipt format? · 41m                                                                   │
 │ ▾ @pi · 1                                                                                                    │
 │  ▲ T6 Docs refresh pass after F9 ships  herdr                                                                │
-│    └─ needs your review · 3h                                                                                 │
 │                                                                                                              │
 │ IN MOTION ─────────────────────────────────────────────────────────────────────────────────────────────────2 │
 │                                                                                                              │
@@ -22,6 +21,7 @@
 │                                                                                                              │
 │ ▾ unassigned · 1                                                                                             │
 │  ○ T7 Global backlog note  #release                                                                          │
+│                                                                                                              │
 │                                                                                                              │
 │                                                                                                              │
 │                                                                                                              │

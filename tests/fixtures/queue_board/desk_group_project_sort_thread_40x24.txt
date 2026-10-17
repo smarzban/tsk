@@ -9,10 +9,10 @@
 │ ▾ herdr · 2                           ▌│
 │▸ ■ T5 Wire dispatch cleanup           ▌│
 │    │  receipts  #dispatch             ▌│
-│    └─ @claude blocked on you · 41m    ▌│
+│    └─ @claude: Which receipt          ▌│
+│       format? · 41m                   ▌│
 │  ▲ T6 Docs refresh pass after F9      ▌│
-│    │  ships                           ▌│
-│    └─ needs your review · 3h          ▌│
+│       ships                           ▌│
 │                                       ▌│
 │ IN MOTION ─────────────────────────2  ▌│
 │                                       ▌│

@@ -7,16 +7,16 @@
 │  ■ T5 Wire dispatch cleanup receipts  herdr                                    │
 │    └─ @c┌─ help ▼ ────────────────────────────────────────────── [x]─┐         │
 │  ▲ T6 Do│                                                            │         │
-│    └─ ne│  / search keys or actions…                                 │         │
-│         │ ────────────────────────────────────────────────────────── │         │
-│ IN MOTIO│  NAVIGATION                                                │───────2 │
-│         │  ↑↓ / jk            move up / down                         │         │
-│▸ ● T1 Sm│  shift+M            start / stop multi-select              │         │
-│  ● T2 Ed│  shift+↑↓           mark and move (multi-select)           │         │
-│         │                                                            │         │
-│ ON DECK ├────────────────────────────────────────────────────────────┤───────1 │
-│         │ type search · ↑↓ scroll · esc clear / close                │         │
-│  ○ T7 Gl└────────────────────────────────────────────────────────────┘         │
+│         │  / search keys or actions…                                 │         │
+│ IN MOTIO│ ────────────────────────────────────────────────────────── │───────2 │
+│         │  NAVIGATION                                                │         │
+│▸ ● T1 Sm│  ↑↓ / jk            move up / down                         │         │
+│  ● T2 Ed│  shift+M            start / stop multi-select              │         │
+│         │  shift+↑↓           mark and move (multi-select)           │         │
+│ ON DECK │                                                            │───────1 │
+│         ├────────────────────────────────────────────────────────────┤         │
+│  ○ T7 Gl│ type search · ↑↓ scroll · esc clear / close                │         │
+│         └────────────────────────────────────────────────────────────┘         │
 │                                                                                │
 │                                                                                │
 │                                                                                │

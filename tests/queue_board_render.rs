@@ -188,7 +188,7 @@ fn fixture_tasks() -> Vec<Task> {
     for (index, task) in tasks.iter_mut().enumerate() {
         task.number = Some((index + 1) as u64);
     }
-    // The blocked task carries an agent's block: its live line reads `@claude blocked on you`.
+    // The blocked task carries an agent's block: its live line reads `@claude: <why>`.
     tasks[4].block = Some(tsk_tui::domain::Block::open(
         tsk_tui::domain::BlockDraft {
             why: Some("Which receipt format?".into()),
@@ -767,7 +767,7 @@ fn standard_78x24_fixture_has_selector_list_rule_status_verb_and_no_other_chrome
         "task titles must appear:\n{list}"
     );
     // Attribution lives in the peek only; the one `└─` a collapsed board paints is the live
-    // line under a blocked or review row.
+    // line under the blocked row that has something to say (the bare review has nothing).
     let corners = list
         .lines()
         .filter(|line| line.contains("└─"))
@@ -775,10 +775,7 @@ fn standard_78x24_fixture_has_selector_list_rule_status_verb_and_no_other_chrome
         .collect::<Vec<_>>();
     assert_eq!(
         corners,
-        [
-            "└─ @claude blocked on you · 41m",
-            "└─ needs your review · 3h"
-        ],
+        ["└─ @claude: Which receipt format? · 41m"],
         "collapsed board must hide attribution:\n{list}"
     );
     assert!(
@@ -795,12 +792,9 @@ fn standard_78x24_fixture_has_selector_list_rule_status_verb_and_no_other_chrome
         list.contains("Docs refresh pass after F9 ships"),
         "review rows join blocked rows in the global lane:\n{list}"
     );
-    // A block's live line names who asks (`@claude blocked on you`); no other agent field
-    // paints.
+    // A block's live line names who asks (`@claude: …`); no other agent field paints.
     assert!(
-        !list
-            .replace("└─ @claude blocked on you", "")
-            .contains("claude")
+        !list.replace("└─ @claude: ", "").contains("claude")
             && !list.contains("grok")
             && !list.contains("agent"),
         "M1 must not paint agent fields:\n{list}"
@@ -7012,7 +7006,9 @@ fn a_pending_update_notice_and_long_filters_keep_the_list_height_through_a_messa
 
 /// One task per live-line case, numbered from `T1`, plus the tasks they point at.
 fn live_line_tasks() -> Vec<Task> {
-    use tsk_tui::domain::{Block, BlockDraft, BlockOn, Check, CheckState, ReviewDraft, OWNER};
+    use tsk_tui::domain::{
+        Block, BlockDraft, BlockOn, Check, CheckState, Reply, ReviewDraft, OWNER,
+    };
     let numbered = |number: u64, title: &str, status: HumanStatus, secs_ago: u64| {
         let mut task = task(
             u128::from(number),
@@ -7091,6 +7087,49 @@ fn live_line_tasks() -> Vec<Task> {
     assigned.assignee = Some("claude".into());
     let mut archived = blocked(11, "Archived block", "claude", BlockDraft::default(), 60);
     archived.archived = true;
+    let reply = |by: &str, secs_ago: u64, text: &str| Reply {
+        by: by.into(),
+        at: at_secs_ago(secs_ago),
+        text: text.into(),
+        edited: false,
+        deleted: false,
+        sent: false,
+    };
+    let asked = |why: Option<&str>, needs: Option<&str>| BlockDraft {
+        why: why.map(Into::into),
+        needs: needs.map(Into::into),
+        ..Default::default()
+    };
+    // The asker answered your reply: the board row shows the asker's newest words.
+    let mut answered = blocked(
+        16,
+        "Reply thread",
+        "claude",
+        asked(Some("Which port?"), Some("a port number")),
+        3 * 3600,
+    );
+    if let Some(block) = answered.block.as_mut() {
+        block.replies = vec![
+            reply(OWNER, 2 * 3600, "8080?"),
+            reply("claude", 25, "8080 is taken; 8081 then?"),
+            reply(OWNER, 10, "a reply I deleted"),
+        ];
+        block.replies[2].deleted = true;
+    }
+    // You replied last: the row falls back to the needs.
+    let mut replied = blocked(
+        17,
+        "You replied last",
+        "claude",
+        asked(None, Some("a port number")),
+        3 * 3600,
+    );
+    if let Some(block) = replied.block.as_mut() {
+        block.replies = vec![
+            reply("claude", 2 * 3600, "any port works"),
+            reply(OWNER, 60, "try 8080"),
+        ];
+    }
     vec![
         asks,
         blocked(
@@ -7132,6 +7171,67 @@ fn live_line_tasks() -> Vec<Task> {
         },
         numbered(22, "Started prerequisite", HumanStatus::Started, 9 * 3600),
         numbered(23, "Open prerequisite", HumanStatus::Open, 9 * 3600),
+        blocked(
+            15,
+            "Why only",
+            "claude",
+            asked(Some("Which staging client?"), None),
+            25,
+        ),
+        answered,
+        replied,
+        blocked(18, "No message", "claude", BlockDraft::default(), 60),
+        blocked(
+            19,
+            "Blocked on pi with a message",
+            "claude",
+            BlockDraft {
+                needs: Some("pi's schema\nfor the pagination".into()),
+                on: BlockOn::Agent("pi".into()),
+                ..Default::default()
+            },
+            3 * 60,
+        ),
+        blocked(
+            24,
+            "Blocked on pi without one",
+            "claude",
+            BlockDraft {
+                on: BlockOn::Agent("pi".into()),
+                ..Default::default()
+            },
+            60,
+        ),
+        {
+            let mut silent = review(25, "Review without done", BlockOn::You, 60);
+            if let Some(block) = silent.block.as_mut() {
+                block.done = None;
+            }
+            silent
+        },
+        {
+            // Someone else replied last: the asker's reply after yours still shows.
+            let mut third = blocked(
+                27,
+                "Third party replied last",
+                "claude",
+                asked(None, Some("a port number")),
+                3 * 3600,
+            );
+            if let Some(block) = third.block.as_mut() {
+                block.replies = vec![
+                    reply(OWNER, 2 * 3600, "8080?"),
+                    reply("claude", 30 * 60, "8081 instead?"),
+                    reply("pi", 60, "8081 is free"),
+                ];
+            }
+            third
+        },
+        {
+            let mut open = numbered(26, "Open and waiting", HumanStatus::Open, 9 * 3600);
+            open.after = vec![23];
+            open
+        },
     ]
 }
 
@@ -7172,6 +7272,112 @@ fn live_line_says_what_is_going_on_for_every_case() {
     }
 }
 
+/// What each case paints on the board row: the asker's own words under it, or what it waits on
+/// in its label (`after T22, T23`, `→ @pi`). The peek and task page keep the words above.
+const ROW_CASES: [(u64, &str, Option<&str>, Option<&str>); 25] = [
+    // Blocked on you with a message: the needs (options never replace it here).
+    (1, "Agent asks", Some("@claude: a decision · 2h"), None),
+    // Your own block: no asker.
+    (2, "Self block", Some("the vendor's reply · 30m"), None),
+    (
+        3,
+        "Review on you",
+        Some("@claude: Built the widget; empty input now handled. · 40m"),
+        None,
+    ),
+    (
+        4,
+        "Blocker finished",
+        Some("T20 is done · unblock it · 1h"),
+        None,
+    ),
+    (
+        5,
+        "Blocker deleted",
+        Some("T21 was deleted · unblock it · 5m"),
+        None,
+    ),
+    (
+        6,
+        "Blocker purged",
+        Some("T99 was deleted · unblock it"),
+        None,
+    ),
+    (7, "Blocked elsewhere", None, Some("→ design team")),
+    (8, "Waits on two", None, Some("after T22, T23")),
+    (9, "Waited on a done task", None, None),
+    (10, "Assigned and started", None, None),
+    (12, "Waits on a started task", None, Some("→ T22")),
+    (
+        13,
+        "Review on pi",
+        Some("@claude: Built the widget; empty input now handled. · 1m"),
+        Some("→ @pi"),
+    ),
+    (14, "Bare review", None, None),
+    (
+        15,
+        "Why only",
+        Some("@claude: Which staging client? · 25s"),
+        None,
+    ),
+    // The asker's reply after yours, aged from the reply; a deleted reply never counts.
+    (
+        16,
+        "Reply thread",
+        Some("@claude: 8080 is taken; 8081 then? · 25s"),
+        None,
+    ),
+    (
+        17,
+        "You replied last",
+        Some("@claude: a port number · 3h"),
+        None,
+    ),
+    (18, "No message", None, None),
+    // A multi-line message flattens onto one line.
+    (
+        19,
+        "Blocked on pi with a message",
+        Some("@claude: pi's schema for the pagination · 3m"),
+        Some("→ @pi"),
+    ),
+    (24, "Blocked on pi without one", None, Some("→ @pi")),
+    (25, "Review without done", None, None),
+    (26, "Open and waiting", None, Some("after T23")),
+    (
+        27,
+        "Third party replied last",
+        Some("@claude: 8081 instead? · 30m"),
+        None,
+    ),
+    (20, "Finished blocker", None, None),
+    (22, "Started prerequisite", None, None),
+    (23, "Open prerequisite", None, None),
+];
+
+#[test]
+fn row_live_line_says_the_askers_words_and_the_label_says_what_it_waits_on() {
+    use tsk_tui::ui::render::{row_live_line, row_wait_label};
+    let tasks = live_line_tasks();
+    for (number, title, live, label) in ROW_CASES {
+        let task = tasks
+            .iter()
+            .find(|task| task.number == Some(number))
+            .expect("task");
+        assert_eq!(task.title, title);
+        assert_eq!(
+            row_live_line(task, &tasks, now()).as_deref(),
+            live,
+            "T{number}"
+        );
+        assert_eq!(row_wait_label(task, &tasks).as_deref(), label, "T{number}");
+    }
+    let archived = tasks.iter().find(|task| task.number == Some(11)).unwrap();
+    assert_eq!(row_live_line(archived, &tasks, now()), None);
+    assert_eq!(row_wait_label(archived, &tasks), None);
+}
+
 #[test]
 fn live_lines_sit_under_their_rows_and_the_right_edge_stays_empty() {
     let tasks = live_line_tasks();
@@ -7188,11 +7394,34 @@ fn live_lines_sit_under_their_rows_and_the_right_edge_stays_empty() {
                 .iter()
                 .position(|row| row.contains(title))
                 .unwrap_or_else(|| panic!("{width}: {title} missing:\n{}", body.join("\n")));
-            assert!(
-                body[at].trim_end().ends_with(title),
-                "{width}: the right edge is empty: {:?}",
-                body[at]
-            );
+            // The title, then its label (on the row or wrapped under it), with nothing at the
+            // right edge.
+            let label = ROW_CASES
+                .iter()
+                .find(|case| case.1 == title)
+                .and_then(|case| case.3);
+            let mut at = at;
+            match label {
+                Some(label) if body[at].trim_end().ends_with(label) => {}
+                Some(label) => {
+                    assert!(
+                        body[at].trim_end().ends_with(title),
+                        "{width}: {:?}",
+                        body[at]
+                    );
+                    at += 1;
+                    assert!(
+                        body[at].trim().ends_with(label),
+                        "{width}: {title} label: {:?}",
+                        body[at]
+                    );
+                }
+                None => assert!(
+                    body[at].trim_end().ends_with(title),
+                    "{width}: the right edge is empty: {:?}",
+                    body[at]
+                ),
+            }
             // The live line and its wrapped continuations, rejoined.
             let mut text = Vec::new();
             for (index, row) in body[at + 1..].iter().enumerate() {
@@ -7210,21 +7439,8 @@ fn live_lines_sit_under_their_rows_and_the_right_edge_stays_empty() {
             }
             (!text.is_empty()).then(|| text.join(" "))
         };
-        let expect = [
-            ("Agent asks", Some("@claude blocked on you · 2h")),
-            ("Self block", Some("blocked on you · 30m")),
-            ("Review on you", Some("@claude needs your review · 40m")),
-            ("Blocker finished", Some("T20 is done · unblock it · 1h")),
-            ("Blocker deleted", Some("T21 was deleted · unblock it · 5m")),
-            ("Blocked elsewhere", Some("waiting on design team")),
-            ("Waits on a started task", Some("waiting on T22")),
-            ("Review on pi", Some("@pi reviewing")),
-            ("Waits on two", Some("after T22 (started), T23 (open)")),
-            ("Waited on a done task", None),
-            ("Assigned and started", None),
-            ("Started prerequisite", None),
-        ];
-        for (title, live) in expect {
+        // A done task is not on the board.
+        for (_, title, live, _) in ROW_CASES.into_iter().filter(|case| case.0 != 20) {
             assert_eq!(under(title).as_deref(), live, "{width}: {title}");
         }
         // Nothing is cut: at 40 columns the long lines wrap under themselves.
@@ -7245,8 +7461,8 @@ fn wrapped_titles_above_a_live_line_carry_a_gutter_in_its_column() {
                 each width tier the board paints so the gutter shows on all of them END";
     let mut tasks = live_line_tasks();
     for task in &mut tasks {
-        // T13 is a review on pi (a live line); T9 waits on nothing left (none).
-        if matches!(task.number, Some(13) | Some(9)) {
+        // T3 is a review on you (a live line); T9 waits on nothing left (none).
+        if matches!(task.number, Some(3) | Some(9)) {
             task.title = format!("{} {long}", task.number.unwrap());
         }
     }
@@ -7274,7 +7490,7 @@ fn wrapped_titles_above_a_live_line_carry_a_gutter_in_its_column() {
     for width in [40u16, 78, 109, 120, 160] {
         let (rows, _) = paint(width, 80, &model);
         let body = rows.iter().map(|row| list_body(row)).collect::<Vec<_>>();
-        for (number, live) in [(13, true), (9, false)] {
+        for (number, live) in [(3, true), (9, false)] {
             let lines = block(&body, number);
             assert!(
                 lines.len() > 1,
@@ -7300,19 +7516,22 @@ fn wrapped_titles_above_a_live_line_carry_a_gutter_in_its_column() {
                 .position(|row| row == lines.last().unwrap())
                 .map(|at| body[at + 1].as_str());
             if live {
-                assert_eq!(next, Some("    └─ @pi reviewing"), "{width}");
+                assert!(
+                    next.is_some_and(|line| line.starts_with("    └─ @claude: Built the")),
+                    "{width}: {next:?}"
+                );
             }
         }
         let text = body.join("\n");
         assert!(
-            text.contains("END\n    └─ @pi reviewing"),
+            text.contains("END\n    └─ @claude: Built the"),
             "{width}:\n{text}"
         );
     }
 
     // An open peek replaces the live line and keeps the gutter, so the title runs into the
     // peek's own `│` with no gap; a row with no live line gains it while its peek is open.
-    for (number, first_peek) in [(13, "    │ @pi reviewing"), (9, "    │ ")] {
+    for (number, first_peek) in [(3, "    │ @claude needs your review"), (9, "    │ ")] {
         model.selection_id = Some(Uuid::from_u128(number.into()));
         model.detail_open = Some(Uuid::from_u128(number.into()));
         let (rows, _) = paint(40, 80, &model);
@@ -7517,24 +7736,25 @@ fn a_click_on_the_live_line_acts_on_its_row() {
 
 #[test]
 fn a_tall_live_line_never_scrolls_its_selected_title_out_of_a_40x10_frame() {
+    use tsk_tui::domain::{Block, BlockDraft};
     let mut tasks = live_line_tasks();
-    // A short ready title whose live line names six unfinished prerequisites wraps to more
-    // rows than a 40x10 viewport holds.
-    let mut waits = task(30, "Waits", HumanStatus::Ready, project("/repos/tsk"), 60);
+    // A short blocked title whose asker wrote a long message wraps to more rows than a 40x10
+    // viewport holds.
+    let mut waits = task(30, "Waits", HumanStatus::Blocked, project("/repos/tsk"), 60);
     waits.number = Some(30);
-    waits.after = vec![22, 23, 31, 32, 33, 34];
+    waits.block = Some(Block::open(
+        BlockDraft {
+            needs: Some(
+                "the staging client id from the identity provider, the callback URL it \
+                 registered, and whether the shared client may be reused for preview builds"
+                    .into(),
+            ),
+            ..Default::default()
+        },
+        "claude",
+        at_secs_ago(60),
+    ));
     tasks.push(waits);
-    for number in 31..=34 {
-        let mut prerequisite = task(
-            u128::from(number),
-            &format!("Prerequisite {number}"),
-            HumanStatus::Open,
-            project("/repos/tsk"),
-            60,
-        );
-        prerequisite.number = Some(number);
-        tasks.push(prerequisite);
-    }
     let view = fixture_view_projects(&tasks, false);
     let mut model = fixture_model_on_tab(&tasks, &view, NavTab::ProjectBoard);
     model.selection_id = Some(Uuid::from_u128(30));
@@ -7545,14 +7765,14 @@ fn a_tall_live_line_never_scrolls_its_selected_title_out_of_a_40x10_frame() {
         .map(|row| list_body(row))
         .collect::<Vec<_>>();
     assert!(
-        viewport.iter().any(|row| row.starts_with("▸ ○ T30 Waits")),
+        viewport.iter().any(|row| row.starts_with("▸ ■ T30 Waits")),
         "the selected title stays visible:\n{}",
         viewport.join("\n")
     );
     assert!(
         viewport
             .iter()
-            .any(|row| row.starts_with("    └─ after T22 (started)")),
+            .any(|row| row.starts_with("    └─ @claude: the staging client")),
         "and its live line starts under it:\n{}",
         viewport.join("\n")
     );

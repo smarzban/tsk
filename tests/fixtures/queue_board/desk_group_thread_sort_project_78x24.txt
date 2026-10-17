@@ -6,10 +6,9 @@
 │                                                                             ▌│
 │ ▾ #dispatch · 1                                                             ▌│
 │▸ ■ T5 Wire dispatch cleanup receipts  herdr                                 ▌│
-│    └─ @claude blocked on you · 41m                                          ▌│
+│    └─ @claude: Which receipt format? · 41m                                  ▌│
 │ ▾ no thread · 1                                                             ▌│
 │  ▲ T6 Docs refresh pass after F9 ships  herdr                               ▌│
-│    └─ needs your review · 3h                                                ▌│
 │                                                                             ▌│
 │ IN MOTION ───────────────────────────────────────────────────────────────2  ▌│
 │                                                                             ▌│
@@ -19,7 +18,8 @@
 │  ● T2 Edit target binding pin  herdr                                        ▌│
 │                                                                             ▌│
 │ ON DECK · desk ──────────────────────────────────────────────────────────1  ▌│
-│                                                                              │
+│                                                                             ▌│
+│ ▾ #release · 1                                                              ▌│
 │──────────────────────────────────────────────────────────────────────────────│
 │ desk                                                                         │
 │ enter open · ctrl+d done · ctrl+b unblock · ctrl+o inbox · + add · ? help    │

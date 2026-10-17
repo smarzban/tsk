@@ -13453,7 +13453,7 @@ mod quick_assign_tests {
             let lines: Vec<&str> = screen.lines().collect();
             // The live line stays with its row and the reply box opens under it; an open
             // peek replaces the live line and paints below the box.
-            let live = usize::from(lines[row + 1].contains("└─ @builder blocked on you · "));
+            let live = usize::from(lines[row + 1].contains("└─ @builder: a decision · "));
             assert_eq!(live == 1, !screen.contains("│ which db?"), "{screen}");
             let row = row + live;
             assert!(lines[row + 1].contains("why    which db?"), "{screen}");
@@ -14866,8 +14866,9 @@ mod quick_assign_tests {
         assert!(screen.contains("feedback to @builder…"), "{screen}");
     }
 
-    /// A review handed to another agent rides IN MOTION with `△` and `@pi reviewing` under it;
-    /// on you it is `▲` in NEEDS YOU with `@claude needs your review`. The right edge is empty.
+    /// A review handed to another agent rides IN MOTION with `△` and `→ @pi` in its label; on
+    /// you it is `▲` in NEEDS YOU. Both say what was done under the row (`@claude: done`). The
+    /// right edge is empty.
     #[test]
     fn a_review_on_another_agent_rides_in_motion() {
         let temp = Temp::new("review-elsewhere", &["builder", "pi"]);
@@ -14913,14 +14914,17 @@ mod quick_assign_tests {
             "{mine}"
         );
         assert!(
-            lines[mine_at + 1].starts_with("    └─ @claude needs your review · "),
+            lines[mine_at + 1].starts_with("    └─ @claude: done · "),
             "{screen}"
         );
         assert!(
-            theirs.contains("△") && theirs.trim_end().ends_with("theirs"),
+            theirs.contains("△") && theirs.trim_end().ends_with("theirs  → @pi"),
             "{theirs}"
         );
-        assert_eq!(lines[theirs_at + 1].trim_end(), "    └─ @pi reviewing");
+        assert!(
+            lines[theirs_at + 1].starts_with("    └─ @claude: done · "),
+            "{screen}"
+        );
         let at = |line: &str| screen.find(line).expect("row");
         assert!(needs < at(mine) && at(mine) < motion, "{screen}");
         assert!(motion < at(theirs), "{screen}");

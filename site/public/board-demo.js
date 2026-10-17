@@ -2263,6 +2263,21 @@ import { parseCapture } from "./capture.js";
     return "";
   }
 
+  // The dim line under a board row: the asker's own words (`@claude: <needs> · 1m`, the why
+  // when there are no needs). A block with nothing to say, or a review (the demo's reviews
+  // carry no round), paints no line: the NEEDS YOU header already says it. The peek and the
+  // task page keep `liveLine`'s status words.
+  function rowLiveLine(task) {
+    if (task.archived || task.status !== "blocked" || !task.block) return "";
+    const message = (task.block.needs || task.block.why || "")
+      .replace(/[\r\n]+/g, " ")
+      .trim();
+    if (!message) return "";
+    const by =
+      task.block.by && task.block.by !== "you" ? `@${task.block.by}: ` : "";
+    return `${by}${message} · ${age(task.block.at ?? statusAt(task))}`;
+  }
+
   // The peek of a blocked task with a block: the live line, then why and `Decide:` the
   // options (or the needs). No notes. Empty for any other task, which peeks its notes.
   function blockPeekLines(task) {
@@ -2326,7 +2341,7 @@ import { parseCapture } from "./capture.js";
 
   // The live line inside its row's button (a click on it acts on the task), `columns` wide.
   function liveHtml(task, columns) {
-    const live = liveLine(task);
+    const live = rowLiveLine(task);
     if (!live) return "";
     return `<span class="tsk-live dim">${wrapText(live, columns - 9)
       .map(

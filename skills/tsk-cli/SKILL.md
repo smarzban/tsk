@@ -124,15 +124,19 @@ other tools.
 
 **Hand back.** `tsk status T12 review --done "…" --check "…" [--check "…"] [--next "…"]`: what you
 did, one `--check` per thing the user should verify (they mark each passed or failed), and what comes
-after. `--on <agent>` hands the review to another agent profile instead of the user. Running it again
-while the task is in review updates the same round; say in one line what to look at. Read the round
+after. Keep `--done` to one short sentence: the board paints it under the task's row; details go in
+`--check`, `--next`, or the pull request. `--on <agent>` hands the review to another agent profile
+instead of the user. Running it again while the task is in review updates the same round; say in
+one line what to look at. Read the round
 in `tsk list T12 --json` under `review` (`round`, `checks` with `state`, `feedback`, `answered`).
 A message `[tsk T12 sent back] …` (with `Failed checks: …`) is the user's feedback: the task is
 `started` again, the round is closed in `past_reviews`; address it, then set review again (round N+1).
 `tsk reply T12 "…"` adds feedback to the open round. Never approve (set done) yourself.
 
 **Block on the user.** `tsk status T12 blocked --why "…"` with your question; add `--needs "…"`
-for what would unblock you and one `--option "…"` per choice the user can pick. `--on T9` waits on
+for what would unblock you and one `--option "…"` per choice the user can pick. Keep `--needs` (or,
+without it, `--why`) to one short sentence: the board paints it under the row, and a later `tsk reply`
+of yours shows there instead until the user replies. `--on T9` waits on
 another task, `--on "<text>"` on anything else; the default is the user. Running it again edits the
 same block. Read answers in `tsk list T12 --json` under `block` (`replies`, `answered`). Unblocking
 or a relaunch closes the block. On a relaunch, read whichever record closed last (`closed_at`): the

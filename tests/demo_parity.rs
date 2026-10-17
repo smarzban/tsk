@@ -358,10 +358,7 @@ fn fixture_flow(export: bool) {
             width,
         );
         let closed = capture(&model, width, "peek-closed");
-        assert!(
-            closed.contains("└─ @claude blocked on you · 1m"),
-            "{closed}"
-        );
+        assert!(closed.contains("└─ @claude: your pick · 1m"), "{closed}");
         key(
             &mut state,
             &mut model,
@@ -493,7 +490,7 @@ fn fixture_flow(export: bool) {
             capture(&model, width, "projects");
         }
         let live = capture(&model, width, "preview-live");
-        assert!(live.contains("└─ @claude blocked on you · 1m"), "{live}");
+        assert!(live.contains("└─ @claude: your pick · 1m"), "{live}");
         apply_intent(
             &mut state,
             model.input_target_mut(),
@@ -513,10 +510,7 @@ fn fixture_flow(export: bool) {
         )
         .unwrap();
         let closed = capture(&model, width, "preview-closed");
-        assert!(
-            closed.contains("└─ @claude blocked on you · 1m"),
-            "{closed}"
-        );
+        assert!(closed.contains("└─ @claude: your pick · 1m"), "{closed}");
     }
 }
 
