@@ -332,13 +332,19 @@ fn open_block(task: &Task) -> Option<&crate::domain::Block> {
 
 /// What a block or review says to the board row, and since when: the asker's newest reply
 /// when it came after yours, else the needs (then the why) of a block or the done of a review.
+/// A deleted reply never counts, and nobody else's reply hides the asker's.
 fn block_message(block: &crate::domain::Block) -> Option<(String, SystemTime)> {
-    let reply = block
-        .replies
-        .iter()
-        .rfind(|reply| !reply.deleted)
-        .filter(|reply| reply.by == block.by && !reply.is_owner())
-        .map(|reply| (reply.text.as_str(), reply.at));
+    let newest = |by: &str| {
+        block
+            .replies
+            .iter()
+            .enumerate()
+            .rfind(|(_, reply)| !reply.deleted && reply.by == by)
+    };
+    let yours = newest(crate::domain::OWNER).map(|(index, _)| index);
+    let reply = newest(&block.by)
+        .filter(|(index, reply)| !reply.is_owner() && yours.is_none_or(|yours| *index > yours))
+        .map(|(_, reply)| (reply.text.as_str(), reply.at));
     let own = if block.is_review() {
         block.done.as_deref()
     } else {

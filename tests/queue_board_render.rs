@@ -7210,6 +7210,24 @@ fn live_line_tasks() -> Vec<Task> {
             silent
         },
         {
+            // Someone else replied last: the asker's reply after yours still shows.
+            let mut third = blocked(
+                27,
+                "Third party replied last",
+                "claude",
+                asked(None, Some("a port number")),
+                3 * 3600,
+            );
+            if let Some(block) = third.block.as_mut() {
+                block.replies = vec![
+                    reply(OWNER, 2 * 3600, "8080?"),
+                    reply("claude", 30 * 60, "8081 instead?"),
+                    reply("pi", 60, "8081 is free"),
+                ];
+            }
+            third
+        },
+        {
             let mut open = numbered(26, "Open and waiting", HumanStatus::Open, 9 * 3600);
             open.after = vec![23];
             open
@@ -7256,7 +7274,7 @@ fn live_line_says_what_is_going_on_for_every_case() {
 
 /// What each case paints on the board row: the asker's own words under it, or what it waits on
 /// in its label (`after T22, T23`, `→ @pi`). The peek and task page keep the words above.
-const ROW_CASES: [(u64, &str, Option<&str>, Option<&str>); 24] = [
+const ROW_CASES: [(u64, &str, Option<&str>, Option<&str>); 25] = [
     // Blocked on you with a message: the needs (options never replace it here).
     (1, "Agent asks", Some("@claude: a decision · 2h"), None),
     // Your own block: no asker.
@@ -7327,6 +7345,12 @@ const ROW_CASES: [(u64, &str, Option<&str>, Option<&str>); 24] = [
     (24, "Blocked on pi without one", None, Some("→ @pi")),
     (25, "Review without done", None, None),
     (26, "Open and waiting", None, Some("after T23")),
+    (
+        27,
+        "Third party replied last",
+        Some("@claude: 8081 instead? · 30m"),
+        None,
+    ),
     (20, "Finished blocker", None, None),
     (22, "Started prerequisite", None, None),
     (23, "Open prerequisite", None, None),
