@@ -6,15 +6,15 @@
 │                                                                              │
 │ ▾ @claude · 1                                                                │
 │▸ ■ T5 Wire dispatch cleanup receipts  #dispatch                              │
-│    └─ @claude blocked on you · 41m                                           │
+│    └─ @claude: Which receipt format? · 41m                                   │
 │ ▾ @pi · 1                                                                    │
 │  ▲ T6 Docs refresh pass after F9 ships                                       │
-│    └─ needs your review · 3h                                                 │
 │                                                                              │
 │ IN MOTION ─────────────────────────────────────────────────────────────────1 │
 │                                                                              │
 │ ▾ @pi · 1                                                                    │
 │  ● T2 Edit target binding pin  #dispatch                                     │
+│                                                                              │
 │                                                                              │
 │                                                                              │
 │                                                                              │

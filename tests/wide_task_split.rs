@@ -333,7 +333,14 @@ fn project_preview_wrapped_titles_carry_the_live_line_gutter_in_split_and_rail()
         .create(long, None, alpha(), ProvenanceOrigin::Manual, None)
         .expect("create blocked task");
     domain
-        .block(blocked, tsk_tui::domain::BlockDraft::default(), "claude")
+        .block(
+            blocked,
+            tsk_tui::domain::BlockDraft {
+                needs: Some("a decision".into()),
+                ..Default::default()
+            },
+            "claude",
+        )
         .expect("block it");
     domain
         .create(
@@ -396,7 +403,7 @@ fn project_preview_wrapped_titles_carry_the_live_line_gutter_in_split_and_rail()
                 .position(|line| line.contains("T5 Blocked"))
                 .and_then(|at| lines.get(at + 1 + live.len()));
             assert!(
-                after_end.is_some_and(|line| line.starts_with("    └─ @claude blocked on you")),
+                after_end.is_some_and(|line| line.starts_with("    └─ @claude: a decision")),
                 "{width} {stage:?}:\n{}",
                 lines.join("\n")
             );

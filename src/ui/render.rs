@@ -277,6 +277,82 @@ pub fn live_line(task: &Task, tasks: &[Task], now: SystemTime) -> Option<String>
     status_line(task, tasks, now)
 }
 
+/// The dim line a board row paints under itself: the asker's own words, `@claude: <message> ·
+/// 25s`, or a finished or deleted blocker to unblock. A block or review with nothing to say
+/// paints no line: the section header (or the row label's `→ @pi`) already says who it waits
+/// on, and a waiting on-deck row carries `after T202` in its label instead. The peek and the
+/// task page keep the status words of [`live_line`].
+pub fn row_live_line(task: &Task, tasks: &[Task], now: SystemTime) -> Option<String> {
+    use crate::ui::queue::{block_wait, BlockWait};
+    if task.archived || task.status == HumanStatus::Done || task.is_notice() {
+        return None;
+    }
+    match block_wait(task, tasks)? {
+        BlockWait::BlockerDone(_) | BlockWait::BlockerGone(_) => status_line(task, tasks, now),
+        BlockWait::You | BlockWait::Elsewhere => {
+            let block = open_block(task)?;
+            let (message, at) = block_message(block)?;
+            let asker = (block.by != crate::domain::OWNER)
+                .then(|| format!("@{}: ", block.by))
+                .unwrap_or_default();
+            Some(format!("{asker}{message} · {}", format_age(now, at)))
+        }
+    }
+}
+
+/// The row label's lead for a row that waits: `after T202, T205` for an on-deck task with
+/// unfinished prerequisites, `→ @pi` / `→ T12` / `→ <text>` for a block or review waiting
+/// elsewhere. `None` otherwise. The peek's footer never carries it: the peek says it in words.
+pub fn row_wait_label(task: &Task, tasks: &[Task]) -> Option<String> {
+    use crate::ui::queue::{block_wait, BlockWait};
+    if task.archived || task.status == HumanStatus::Done || task.is_notice() {
+        return None;
+    }
+    match block_wait(task, tasks) {
+        Some(BlockWait::Elsewhere) => open_block(task)
+            .map(|block| format!("→ {}", super::terminal_text(&one_line(&block.on.label())))),
+        Some(_) => None,
+        None => {
+            let waiting = waiting_after(task, tasks);
+            (!waiting.is_empty() && matches!(task.status, HumanStatus::Ready | HumanStatus::Open))
+                .then(|| format!("after {}", task_list(waiting)))
+        }
+    }
+}
+
+/// The task's open block or review record, when it matches the status.
+fn open_block(task: &Task) -> Option<&crate::domain::Block> {
+    let review = task.status == HumanStatus::Review;
+    task.block
+        .as_ref()
+        .filter(|block| block.is_review() == review)
+}
+
+/// What a block or review says to the board row, and since when: the asker's newest reply
+/// when it came after yours, else the needs (then the why) of a block or the done of a review.
+fn block_message(block: &crate::domain::Block) -> Option<(String, SystemTime)> {
+    let reply = block
+        .replies
+        .iter()
+        .rfind(|reply| !reply.deleted)
+        .filter(|reply| reply.by == block.by && !reply.is_owner())
+        .map(|reply| (reply.text.as_str(), reply.at));
+    let own = if block.is_review() {
+        block.done.as_deref()
+    } else {
+        block.needs.as_deref().or(block.why.as_deref())
+    };
+    reply
+        .or_else(|| own.map(|text| (text, block.at)))
+        .map(|(text, at)| (one_line(text).trim().to_string(), at))
+        .filter(|(text, _)| !text.is_empty())
+}
+
+/// A multi-line field flattened onto one line, as the peek shows it.
+fn one_line(text: &str) -> String {
+    text.replace(['\n', '\r'], " ")
+}
+
 /// [`live_line`] whether or not the task is archived: the task page's BLOCKED or REVIEW section
 /// leads with it, and an archived task's page still shows its open block.
 pub fn status_line(task: &Task, tasks: &[Task], now: SystemTime) -> Option<String> {
@@ -5369,7 +5445,7 @@ fn peek_block_lines(task: &Task, tasks: &[Task], now: SystemTime) -> Vec<String>
     if !matches!(task.status, HumanStatus::Blocked | HumanStatus::Review) || task.is_notice() {
         return lines;
     }
-    let one_line = |text: &str| super::terminal_text(&text.replace(['\n', '\r'], " "));
+    let one_line = |text: &str| super::terminal_text(&one_line(text));
     // Gate on the record, not the status: a bare blocked or review task (a notice in review,
     // say) peeks as today, notes and all.
     let review = task.status == HumanStatus::Review;
@@ -5522,9 +5598,18 @@ fn build_list_rows_inner(
         // The live line belongs to its row: every wrapped line is a task line, so a click on
         // it acts on the task and selection follow keeps it in view. The peek replaces it.
         let live_text = (!rail && detail_target != Some(task.id))
-            .then(|| live_line(task, model.tasks, model.now))
+            .then(|| row_live_line(task, model.tasks, model.now))
             .flatten();
-        let label = (detail_target != Some(task.id) && !meta.is_empty()).then_some(meta.as_str());
+        // What the row waits on (`after T202`, `→ @pi`) leads its label; the peek says it in
+        // words, so the peek's footer keeps the plain label.
+        let row_meta = fit_row_meta(
+            None,
+            None,
+            row_wait_label(task, model.tasks),
+            Some(meta.clone()),
+        );
+        let label =
+            (detail_target != Some(task.id) && !row_meta.is_empty()).then_some(row_meta.as_str());
         let lines = if rail {
             paint_rail_row_lines(
                 task,

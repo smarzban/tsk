@@ -7,16 +7,16 @@
 │  ■ T5 Wi│                                                            │         │
 │    └─ @c│   set status: ready                                        │         │
 │  ▲ T6 Do│   set status: open                                         │         │
-│    └─ ne│   set status: started                                      │         │
-│         │ ▸ set status: blocked                                      │         │
-│ IN MOTIO│   set status: review                                       │───────2 │
-│         │   set after (wait for)…                                    │         │
-│▸ ● T1 Sm│                                                            │         │
-│  ● T2 Ed├────────────────────────────────────────────────────────────┤         │
-│         │ ↑↓ move · enter run · esc close                            │         │
-│ ON DECK └────────────────────────────────────────────────────────────┘───────1 │
-│                                                                                │
+│         │   set status: started                                      │         │
+│ IN MOTIO│ ▸ set status: blocked                                      │───────2 │
+│         │   set status: review                                       │         │
+│▸ ● T1 Sm│   set after (wait for)…                                    │         │
+│  ● T2 Ed│                                                            │         │
+│         ├────────────────────────────────────────────────────────────┤         │
+│ ON DECK │ ↑↓ move · enter run · esc close                            │───────1 │
+│         └────────────────────────────────────────────────────────────┘         │
 │  ○ T7 Global backlog note                                                      │
+│                                                                                │
 │                                                                                │
 │                                                                                │
 │                                                                                │

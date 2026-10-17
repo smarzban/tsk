@@ -653,7 +653,8 @@ fn tab_reaches_an_option_enter_prefills_the_reply_and_shift_enter_answers() {
         &mut model,
         key(KeyCode::Esc, KeyModifiers::NONE),
     );
-    // The block is still yours to clear: the live line does not change after you answer.
+    // The block is still yours to clear: after your answer the live line falls back to what the
+    // asker needs, not your own words.
     let board = rows(&model, 80, 24);
     let at = board
         .iter()
@@ -666,7 +667,7 @@ fn tab_reaches_an_option_enter_prefills_the_reply_and_shift_enter_answers() {
         board[at]
     );
     assert!(
-        board[at + 1].starts_with("    └─ @claude blocked on you · "),
+        board[at + 1].starts_with("    └─ @claude: a decision · "),
         "{}",
         board[at + 1]
     );
@@ -694,7 +695,7 @@ fn an_agent_block_says_who_asks_on_the_live_line() {
         board[at]
     );
     assert!(
-        board[at + 1].starts_with("    └─ @claude blocked on you · "),
+        board[at + 1].starts_with("    └─ @claude: a decision · "),
         "{}",
         board[at + 1]
     );
