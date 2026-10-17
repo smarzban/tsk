@@ -50,7 +50,7 @@
         next: "blocked",
       },
       {
-        sec: "ON DECK",
+        sec: "NEEDS YOU",
         glyph: "■",
         status: "blocked",
         key: "ctrl+b",
@@ -64,7 +64,7 @@
         next: "review",
       },
       {
-        sec: "ON DECK",
+        sec: "NEEDS YOU",
         glyph: "▲",
         status: "review",
         key: "ctrl+d",
