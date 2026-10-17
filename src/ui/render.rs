@@ -292,9 +292,11 @@ pub fn row_live_line(task: &Task, tasks: &[Task], now: SystemTime) -> Option<Str
         BlockWait::You | BlockWait::Elsewhere => {
             let block = open_block(task)?;
             let (message, at) = block_message(block)?;
-            let asker = (block.by != crate::domain::OWNER)
-                .then(|| format!("@{}: ", block.by))
-                .unwrap_or_default();
+            let asker = if block.by == crate::domain::OWNER {
+                String::new()
+            } else {
+                format!("@{}: ", block.by)
+            };
             Some(format!("{asker}{message} · {}", format_age(now, at)))
         }
     }

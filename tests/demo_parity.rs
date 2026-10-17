@@ -358,10 +358,7 @@ fn fixture_flow(export: bool) {
             width,
         );
         let closed = capture(&model, width, "peek-closed");
-        assert!(
-            closed.contains("└─ @claude: your pick · 1m"),
-            "{closed}"
-        );
+        assert!(closed.contains("└─ @claude: your pick · 1m"), "{closed}");
         key(
             &mut state,
             &mut model,
@@ -513,10 +510,7 @@ fn fixture_flow(export: bool) {
         )
         .unwrap();
         let closed = capture(&model, width, "preview-closed");
-        assert!(
-            closed.contains("└─ @claude: your pick · 1m"),
-            "{closed}"
-        );
+        assert!(closed.contains("└─ @claude: your pick · 1m"), "{closed}");
     }
 }
 
