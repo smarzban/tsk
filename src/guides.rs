@@ -91,7 +91,10 @@ pub const CATALOG: [Guide; 4] = [
                 `tsk --help` lists every command and status. `tsk help list` explains one command: its flags, examples, and exit codes.\n\
                 \n\
                 **Let an agent work the board**\n\
-                Run `tsk setup` once: it finds the coding agents on your machine (Claude, Pi, Cursor, Codex, and others) and offers to install the tsk skill for each. `tsk setup claude` targets one. Then ask the agent in plain words. \"Add a task for each failing test.\" \"Mark T7 as review.\" `tsk guide` prints the same instructions if you want to read them yourself.",
+                Run `tsk setup` once: it finds the coding agents on your machine (Claude, Pi, Cursor, Codex, and others) and offers to install the tsk skill for each. `tsk setup claude` targets one. Then ask the agent in plain words. \"Add a task for each failing test.\" \"Mark T7 as review.\" `tsk guide` prints the same instructions if you want to read them yourself.\n\
+                \n\
+                **Back up your board**\n\
+                Your tasks live on this machine only. Run `tsk backup setup`: with the GitHub CLI (`gh`) logged in, it makes a private `tsk-backup` repository and pushes a copy after every save. For another git host, `tsk backup add <git-url>`. `tsk restore` brings a copy back.",
         status: HumanStatus::Ready,
         steps: &[
             ("Run tsk add -t \"Try the CLI\" in another terminal", false),
@@ -355,6 +358,14 @@ mod tests {
         );
         assert_eq!(delivery::load(store.path()).guides, catalog_ids());
         let _ = fs::remove_dir_all(store.path());
+    }
+
+    #[test]
+    fn the_cli_guide_points_at_backups() {
+        assert!(CATALOG
+            .iter()
+            .any(|guide| guide.notes.contains("tsk backup setup")
+                && guide.notes.contains("tsk restore")));
     }
 
     #[test]

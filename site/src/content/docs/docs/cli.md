@@ -15,13 +15,13 @@ tsk list
 Install the skill with `tsk setup pi`, or use your [agent's setup target](#setup). `tsk guide` prints the workflow.
 
 1. Read the task with `tsk list T12`.
-2. Set its status with `tsk status T12 started` (or `ready` to pick it from the inbox).
+2. Set its status with `tsk status T12 started --no-dispatch` when you are doing the work yourself (or `ready` to pick it from the inbox). A plain `started` on an assigned task launches its agent.
 3. Update notes or steps as work progresses.
-4. Set `review`, `blocked`, `open`, or `done` explicitly.
+4. Set `review`, `blocked`, `open`, or `done` explicitly. Hand back with what you did and what to check: `tsk status T12 review --done "…" --check "…"`, and read feedback under `review.feedback` (once the review is sent back, in the last `past_reviews` entry). Block with your question: `tsk status T12 blocked --why "…"`, and read the answers under `block.replies` in `tsk list T12 --json` (once it is unblocked or relaunched, in the last `past_blocks` entry).
 
 The CLI can mark a task done with `tsk status <task> done`. Agent lifecycle does not change task status automatically.
 
-Use `--json` on `add` or `list` for machine-readable output. Read the [exit contract](#exit-contract) before retrying a write.
+Use `--json` on `add`, `list`, or `clean` for machine-readable output. Read the [exit contract](#exit-contract) before retrying a write.
 
 ## Commands
 
@@ -31,12 +31,17 @@ Use `--json` on `add` or `list` for machine-readable output. Read the [exit cont
 | `tsk capture` | Open capture; save or discard exits |
 | `tsk add` | Add a task or JSON plan |
 | `tsk list` | Read tasks |
-| `tsk status` | Set task status |
-| `tsk edit` | Replace title or notes |
+| `tsk status` | Set task status, block with a reason, or put work up for review |
+| `tsk reply` | Answer a blocked task, or give feedback on a review |
+| `tsk edit` | Replace title or notes; assign or unassign |
+| `tsk dispatch` | Launch an assigned task's agent in its own worktree |
+| `tsk clean` | Remove a dispatched worktree and its merged branch |
 | `tsk steps` | Add, toggle, rename, move, or remove steps |
 | `tsk archive` / `tsk unarchive` | Hide or restore a task |
 | `tsk project archive` / `tsk project unarchive` | Hide or restore a project |
 | `tsk trash restore` | Restore a task from trash |
+| `tsk backup` | Back the store up to a git repository; set up GitHub, add, list, or remove targets |
+| `tsk restore` | List backed-up versions of the store, or put one back |
 | `tsk setup` | Configure Herdr or install an agent skill |
 | `tsk update` | Upgrade an installer-managed copy, or print Homebrew guidance |
 | `tsk guide` | Print the agent workflow |
@@ -67,7 +72,7 @@ Board notice tasks paint as `N1`… (starter tasks and `What's new in tsk`). Tho
 
 ### Scope
 
-Without a scope flag, `add` and filtered `list` use the launch repository inside Git, or desk outside Git. Commands addressed to a task ignore that default. The outside-Git current directory remains available through `-p /full/path`.
+Without a scope flag, `add` and filtered `list` use the launch repository inside Git, or desk outside Git. Commands addressed to a task ignore that default. The outside-Git current directory remains available through `-p /full/path`. A launch repository reached through a symlink (macOS reports `/tmp/repo` as `/private/tmp/repo`) uses the spelling already on the board, so it stays one project.
 
 | Flag | Scope |
 | --- | --- |
@@ -81,7 +86,7 @@ For adds, a bare project name must match exactly one project the board already k
 ## add
 
 ```sh
-tsk add -t "Fix login timeout" -n "Reproduce on a slow connection" --thread auth
+tsk add -t "Fix login timeout" -n "Reproduce on a slow connection" --thread auth --assignee reviewer --base main
 # new tasks start open; use `tsk status T<n> ready` when picked
 tsk add -t "Buy coffee" --desk
 tsk add -t "Draft release notes" -p atlas --json
@@ -93,15 +98,19 @@ tsk add -t "Draft release notes" -p atlas --json
 | `-n`, `--notes` | Optional notes |
 | `-p`, `--project` or `--desk` | Destination |
 | `--thread` | [Thread name](/docs/capture/#thread-names) |
+| `--assignee` | Exact configured agent profile name |
+| `--unassign` | Explicitly create without an assignee |
+| `--base <branch>` | Explicit dispatch base, an existing local or remote branch in the task's project repository |
+| `--clear-base` | Explicitly create without a base; conflicts with `--base` |
 | `--json` | One result object |
 | `--file <path>` or `--file -` | Read a JSON plan |
 | `--state-dir <dir>` | Alternate state directory |
 
-Duplicate detection compares the trimmed title, resolved project, and normalized thread. A matching non-deleted task succeeds without changing the task (`outcome: existing` in JSON), even if done or individually archived. Adding into an archived project refuses.
+Duplicate detection compares the trimmed title, resolved project, normalized thread, assignee, and explicit base. A matching non-deleted task succeeds without changing the task (`outcome: existing` in JSON), even if done or individually archived. Adding into an archived project refuses.
 
 Plain output: `added <title>` or `task already exists`.
 
-JSON output: `outcome` (`created` or `existing`), `id`, `number`, `title`, and `project` (`null` for desk).
+JSON output: `outcome` (`created` or `existing`), `id`, `number`, `title`, `project` (`null` for desk), and `assignee` (`null` when unassigned).
 
 Values starting with `-` use equals syntax: `--title="-fix parser"`, `--notes="-5 degrees"`, `--project="-maintenance"`, `--file=...`, or `--state-dir=...`.
 
@@ -111,8 +120,8 @@ Blank notes are omitted. C0 control characters in titles are rejected before tri
 
 ```json
 [
-  {"title": "Reproduce login timeout", "project": "atlas", "thread": "auth"},
-  {"title": "Draft release notes", "notes": "Include migration instructions"}
+  {"title": "Reproduce login timeout", "project": "atlas", "thread": "auth", "assignee": "reviewer", "base": "main"},
+  {"title": "Draft release notes", "notes": "Include migration instructions", "after": [202]}
 ]
 ```
 
@@ -130,8 +139,14 @@ cat plan.json | tsk add
 | `project` string | Project name or path |
 | `thread` omitted or `null` | No thread |
 | `thread` string | Normalized thread |
+| `assignee` omitted or `null` | Unassigned |
+| `assignee` string | Exact configured agent profile name |
+| `base` omitted or `null` | Dispatch from the repository's default branch |
+| `base` string | Existing local or remote branch in the task's project repository |
+| `after` omitted, `null`, or `[]` | Runs after nothing |
+| `after` array | Task numbers it runs after, such as `[202]` or `["T202"]`, in any project; an unknown or done task refuses the item with `invalid-after` |
 
-Output contains `created`, `existing`, and `failed` arrays. Items carry their input index `i`; failures include `code` and `error`. Successful entries include task ID, number, and title. Notes are not echoed.
+Output contains `created`, `existing`, and `failed` arrays. Items carry their input index `i`; failures include `code` and `error`. Successful entries include task ID, number, and title. Notes and assignees are not echoed; read the task back when needed.
 
 Valid items persist even if another item fails. Retry only failed or confirmed-missing items.
 
@@ -145,10 +160,11 @@ A leading UTF-8 byte order mark, which Windows PowerShell 5.1 writes by default,
 tsk list
 tsk list T12
 tsk list --all --json
-tsk list -p atlas --thread auth
+tsk list -p atlas --thread auth --assignee reviewer
 tsk list --all --thread release --json
 tsk list --all --no-thread
 tsk list --all --group project --sort title
+tsk list --all --group assignee
 tsk list --done --all
 tsk list --open --all
 tsk list --ready --all
@@ -157,7 +173,7 @@ tsk list --deleted --all
 ```
 
 ```text
-tsk list [<task>] [-p <project> | --desk | --all] [--thread <name> | --no-thread] [--open | --ready | --done | --deleted | --archived] [--group <by>] [--sort <by>] [--json] [--state-dir <dir>]
+tsk list [<task>] [-p <project> | --desk | --all] [--thread <name> | --no-thread] [--assignee <name>] [--open | --ready | --done | --deleted | --archived] [--group <by>] [--sort <by>] [--json] [--state-dir <dir>]
 ```
 
 | Filter | Result |
@@ -170,23 +186,24 @@ tsk list [<task>] [-p <project> | --desk | --all] [--thread <name> | --no-thread
 | `--deleted` | Live soft-deleted tasks and `trash.jsonl` entries, deduped by task with the live copy winning, newest deletion first. Trash is retained for 30 days, see [storage](/docs/storage/#deleted-tasks). |
 | `--thread` | Filter within the selected scope; with `--all`, a thread across every project and the desk |
 | `--no-thread` | Only tasks without a thread, within the selected scope (the board filter's **without a thread**). Works with every view |
+| `--assignee` | Filter by exact normalized assignee name |
 
 | Arrange | Result |
 | --- | --- |
 | `--group none\|project\|thread` | The board's `g`: sub-groups under each status, ordered hottest first (the group whose newest row changed status most recently leads, ties by name) |
 | `--sort recent\|project\|thread\|title` | The board's `s`: row order inside each group, or inside each status while ungrouped. `recent` is the default order; desk tasks sort after projects and unthreaded tasks after threads; ties keep recent order |
 
-`--group` and `--sort` apply to live tasks only: like the board's done drawer and archived group, `--done`, `--archived`, and `--deleted` refuse them. Like the board, neither arranges by a dimension every row shares: `project` needs `--all` (a project board or the desk is one project), and `thread` refuses with `--thread` or `--no-thread`. A refusal exits 2.
+`--group` and `--sort` apply to live tasks only: like the board's done drawer and archived group, `--done`, `--archived`, and `--deleted` refuse them. Like the board, neither arranges by a dimension every row shares: `project` needs `--all` (a project board or the desk is one project), `thread` refuses with `--thread` or `--no-thread`, and `assignee` refuses with `--assignee`. A refusal exits 2.
 
-Scope flags are mutually exclusive. So are `--open`, `--ready`, `--done`, `--deleted`, and `--archived`, and `--thread` with `--no-thread`. A single-value flag (`-p`/`--project`, `--thread`, `--group`, `--sort`, `--state-dir`) given twice exits 2 instead of keeping the last value.
+Scope flags are mutually exclusive. So are `--open`, `--ready`, `--done`, `--deleted`, and `--archived`, and `--thread` with `--no-thread`. A single-value flag (`-p`/`--project`, `--thread`, `--assignee`, `--group`, `--sort`, `--state-dir`) given twice exits 2 instead of keeping the last value.
 
-A direct task address searches the main store, including done, archived, and recently deleted tasks. It cannot be combined with scope, thread, or status filters, `--group`, or `--sort`. A missing task exits 2. A task already moved to `trash.jsonl` is not addressable; find it with `tsk list --deleted` (optionally `-p`), or restore it with `tsk trash restore`.
+A direct task address searches the main store, including done, archived, and recently deleted tasks. It cannot be combined with scope, thread, assignee, or status filters, `--group`, or `--sort`. A missing task exits 2. A task already moved to `trash.jsonl` is not addressable; find it with `tsk list --deleted` (optionally `-p`), or restore it with `tsk trash restore`.
 
-Human output groups by status in `STARTED`, `READY`, `OPEN`, `BLOCKED`, `REVIEW` order. Within a status, rows follow the board's section order: `ready` oldest pick first, `open` oldest capture first, and `started`, `blocked`, `review` and `done` most recent status change first. JSON is that flat board order. With `--all`, human output groups each status by scope: the groups are ordered by their first row, and the rows inside each group keep the board order, so interleaved scopes print in a different order from JSON. `--sort` other than `recent` drops those scope groups: each status lists its rows in sorted order, every row ending with its scope label. With `--group`, sub-headings under each status name the group as the board paints it (a project basename, `desk`, `#thread`, or `no thread`) and replace the scope groups; rows leave out the grouped dimension, and `--all --group thread` rows end with their scope label; filtered rows include the task number and thread, and `--all` adds scope labels using a unique concise trailing path or desk. List output and errors wrap to the attached terminal width with hanging indentation. Task rows, scope labels, notes, steps, archived marks, and threads use the same wrapping behavior, supported from 50 columns. Redirected output keeps stored logical lines. Command help is reference text and instead always wraps at 80 columns.
+Human output groups by status in `STARTED`, `READY`, `OPEN`, `BLOCKED`, `REVIEW` order. Within a status, rows follow the board's section order: `ready` oldest pick first, `open` oldest capture first, and `started`, `blocked`, `review` and `done` most recent status change first. JSON is that flat board order. With `--all`, human output groups each status by scope: the groups are ordered by their first row, and the rows inside each group keep the board order, so interleaved scopes print in a different order from JSON. `--sort` other than `recent` drops those scope groups: each status lists its rows in sorted order, every row ending with its scope label. With `--group`, sub-headings under each status name the group as the board paints it (a project basename, `desk`, `#thread`, `no thread`, `@assignee`, or `unassigned`) and replace the scope groups; rows leave out the grouped dimension, and `--all --group thread` or `--group assignee` rows end with their scope label; filtered rows include the task number, assignee, base, and thread, and `--all` adds scope labels using a unique concise trailing path or desk. List output and errors wrap to the attached terminal width with hanging indentation. Task rows, scope labels, notes, steps, archived marks, and threads use the same wrapping behavior, supported from 50 columns. Redirected output keeps stored logical lines. Command help is reference text and instead always wraps at 80 columns.
 
-Single-task output removes the thread from the title row and presents notes, steps, then `#thread` as separate blocks. A blank line separates adjacent blocks that exist. Human step rows show state and text without machine-oriented short IDs.
+Single-task output removes metadata from the title row and presents notes, steps, `@assignee`, `⎇ <base>` when explicitly set, `after T202, T205 (done)` and `before T203` when it has them, `#thread`, then `activity` (the latest five [paper trail](/docs/task-page/#paper-trail) entries, newest first, such as `open → started · @claude 2m`, and `+ N earlier`) as separate blocks. A blank line separates adjacent blocks that exist. Human step rows show state and text without machine-oriented short IDs.
 
-JSON returns an array with `id`, `number`, `title`, `status`, `project`, and `thread`. Direct lookup returns the complete task, including `notes` (`null` when absent) and `steps` (an empty array when absent). Its fields are ordered `id`, `number`, `project`, `status`, `title`, `notes`, `steps`, `thread`; each JSON step retains its `short_id` for step commands. Archived listings include an `archived` mark: `archived` or `project archived`. With `--group`, JSON stays one flat array in the listed order and each row gains `group`, the painted group label.
+JSON returns an array with `id`, `number`, `title`, `status`, `project`, `assignee`, `base`, `thread`, `after`, and `before`. `after` lists the tasks this one [runs after](/docs/board/#after), in its own order, each `{"task": 202, "done": false}`; a task that is no longer on the board reads as done. `before` is the read-only list of task numbers that run after this one, derived from their `after`. Both are `[]` when empty. There is no `waiting` field: a task waits while any `after` entry has `done: false`. Direct lookup returns the complete task, including `notes` (`null` when absent) and `steps` (an empty array when absent). Its fields are ordered `id`, `number`, `project`, `status`, `title`, `notes`, `steps`, `assignee`, `base`, `thread`, `after`, `before`, then `dispatch` when a record exists; each JSON step retains its `short_id` for step commands. `base` is the task's explicit base branch or `null`. `dispatch` is the launch record: `argv`, `worktree`, `branch`, `base` (the ref it started from), `base_ref` (the same ref, fully qualified), `base_commit` (the starting commit), `base_remote` (when the base has a remote), `herdr_workspace_id`, `at`, and `cleaned` once cleaned up. A blocked task adds `block`: `why`, `needs` (`null` when absent), `options`, `on` (`you`, `task:<number>`, or `other:<text>`), `by` (`you` or the agent profile), `at`, `edited`, `replies` (each `at`, `by`, `text`, `edited: true` once edited, and `sent: true` once `tsk reply --send` delivered it, so the unblock or send-back skips it; deleted replies are left out), and `answered` (the last reply is yours). Closed blocks follow under `past_blocks`, each adding `closed_at` and `closed_by`. A task in review adds `review`: `round` (from 1), `done`, `checks` (each `text` and `state`: `open`, `passed`, or `failed`), `next` (`null` when absent), `on` (`you`, `agent:<profile>`, or `other:<text>`), `by`, `at`, `edited`, `feedback` (shaped like `replies`), and `answered`. Closed rounds follow under `past_reviews`, each adding `closed_at`, `closed_by`, and `resolution`: `sent_back` when the round closed with a start, `approved` when it closed with done, absent otherwise. Last comes `activity`: every event on the task, newest first, each `at`, `by` (`you`, the agent profile `TSK_AGENT` named, or `null` for an event recorded before store v10), `kind` (`created`, `edited`, `status_set`, `completed`, `reopened`, `soft_deleted`, `restored`, `archived`, `unarchived`, `step_added`, `step_checked`, `step_unchecked`, `step_renamed`, `step_removed`, `assigned`, `base_set`, `dispatched`, `cleaned`, `block_edited`, `replied`, `reply_edited`, `reply_deleted`, `review_edited`, or `check_set`), and `detail` (`null` when the event carries none): `from` and `to` for a status change, plus `after` (the prerequisite whose completion started it) on a start a done released, also on such a `dispatched`; `assignee` for `assigned` (absent: unassigned); `base` for `base_set` (absent: cleared); `branch`, `base`, `sha` (short), and `relaunch: true` for a relaunch on `dispatched`; `outcome` (`removed`, `branch_kept`, or `missing`) for `cleaned`; and `fields` (`title`, `notes`, `thread`, `project`, `after`) for `edited` (an edit that changed none of them, only steps, the assignee, or the base, has an empty `detail` and stays off the paper trail). Filtered listings do not include `dispatch`, `block`, `past_blocks`, `review`, `past_reviews`, or `activity`; human output prints `blocked: <why>` under a blocked row with a reason. Archived listings include an `archived` mark: `archived` or `project archived`. With `--group`, JSON stays one flat array in the listed order and each row gains `group`, the painted group label.
 
 ## status
 
@@ -194,27 +211,158 @@ JSON returns an array with `id`, `number`, `title`, `status`, `project`, and `th
 tsk status T12 open
 tsk status T12 ready
 tsk status T12 started
+tsk status T12 started --no-dispatch
 tsk status T12 review
+tsk status T12 done --clean
+tsk status T12 done --merge
+tsk status T13 started --force
 ```
 
 Accepts `open`, `ready`, `started` (or `start`), `blocked`, `review`, and `done`.
 
-Unlike keyboard toggles, this command sets the requested status directly. Repeating the same value is safe.
+Unlike keyboard toggles, this command sets the requested status directly. Repeating the same value is safe. `--clean` is valid only with `done`: tsk saves done first, then runs [`tsk clean`](#clean) when the task has a live dispatch. With no dispatch, or one already cleaned, it exits 0 and prints `nothing to clean`. A real cleanup refusal (such as `dirty-worktree`) exits 1 and leaves the task done.
+
+`--merge` is valid only with `done` and implies `--clean`. Before anything else it merges the task's open pull request with the GitHub CLI: `gh pr merge <branch> --<method> --match-head-commit <tip>`, the method from [`[merge]` in `config.toml`](/docs/storage/#merge-method), never `--admin`, `--auto`, or `--delete-branch`. It refuses, changing nothing, when the task has no live dispatch, its worktree has uncommitted changes, `gh` is missing or not logged in, or no remote of the repository is on GitHub (`gh-unavailable`, with `no GitHub remote`), there is no pull request for the branch (`no-pr`), the pull request is not open (`pr-not-open`), it targets another branch than the recorded base (`pr-base-mismatch`), the `[merge]` setting is invalid (`merge-config`), or GitHub refuses the merge or the pull request head is not the local branch tip (`merge-failed`, with gh's whole message on one line, without its leading `X ` mark). A successful `gh` is confirmed with GitHub first: a pull request a merge queue or auto-merge only accepted refuses with `merge-failed: queued or not merged yet: open`. Only after GitHub shows the pull request merged does it set done and clean, as `--clean` does. The first line says what merged: `merged T12 pull request #41 (squash)`, adding `· remote branch origin/tsk/t12-… left in place` when the merge left it (tsk never deletes remote branches). GitHub deletes a merged branch a moment after the merge when the repository is set to, so tsk looks again three times over about two seconds of waiting before it calls the branch left; each look is its own `git ls-remote`, bounded by the network timeout, so a slow remote adds to that. When the merge succeeded but what follows fails, the exit code says so (3 when saving done fails, 1 for a cleanup refusal) and `--json` still prints one object with `merge`, `status` (`done`, or `null` when done was not saved), and `error` (`stage` `done` or `cleanup`, `code`, `message`). If saving done failed, the pull request is merged and the task is not done: run `tsk status T12 done --clean`, which cleans the merged branch through `gh`. A pull request that is already merged refuses `--merge` with `pr-not-open`; plain `tsk clean` (or `done --clean`) cleans it.
 
 Output: `status T12 <status> <title>`. The output uses `started`, even when the input was `start`.
+
+`ready` on a blocked task whose dispatched agent still runs sends that agent the block's replies, as the board's `ctrl+b` does, and prints a second line such as `ready · reply sent to @claude`. A block with no reply of yours sends nothing. Only your own status changes send, never an agent's (`TSK_AGENT` set).
+
+`done` also starts what it releases: each task that [runs after](/docs/board/#after) this one, is `ready`, and now has every prerequisite done starts in the same save as the done, the way `started` below starts it, decided under the store lock so a prerequisite completed concurrently counts; an assigned task never dispatched then dispatches right after that save. A second line says what happened, such as `T13 started · T12 done`, `T13 dispatched to @claude · T12 done`, or `T13 back to ready: <reason> · T12 done` when a launch fails; the done stands either way. If the agent launched but its record could not be saved, a warning on stderr names its worktree; if the launch failed and the task could not be saved back to ready, the warning says it is started with no agent. The exit code stays 0 either way. Tasks in `open`, `blocked`, or `review` do not move, and `review` is not done.
+
+### Start
+
+`started` does what `ctrl+s` does on the board, so starting an assigned task gets its agent going:
+
+| Task | `tsk status T12 started` |
+| --- | --- |
+| Unassigned, already started, done, or archived | Sets the status |
+| Assigned, never dispatched | [Dispatches](#dispatch) it, which sets `started`, and prints a second line, `dispatched T12 to @claude in /path/to/worktree` |
+| Dispatched, agent still running, or Herdr cannot say | Sets the status. From `blocked` or `review` (a send-back), it then sends the running agent the block's replies or the round's feedback and failed checks, as the [board's `ctrl+s`](/docs/board/#reply-to-a-running-agent) does, and prints the board's status line second, such as `started · 2 feedback entries sent to @claude` or `started · reply not sent: not in Herdr` |
+| Dispatched, agent gone | Refuses with `agent-gone` and changes nothing |
+| Assigned, never dispatched, but outside Herdr or a desk task | Sets the status, exits 0, and prints a second line, `no launch: not in Herdr` or `no launch: desk task has no repository` |
+| Run by the task's own dispatched agent (`TSK_AGENT` names the assignee) | Sets the status; never launches another copy |
+| Runs after a task that is not done | Refuses with `after-not-done` (`T13 runs after T12 (started)`) and changes nothing, unless `--force` |
+
+| Flag | Effect |
+| --- | --- |
+| `--no-dispatch` | Only set the status, never launch or send |
+| `--again` | Relaunch a dispatched task whose agent is gone, as `tsk dispatch --again` does |
+| `--force` | Start even though tasks it runs after are not done |
+
+These flags are valid only with `started`; `--again` and `--no-dispatch` not together. Any other launch refusal (such as `unknown-agent` or `needs-git-project`) leaves the task unstarted and exits 1. `tsk dispatch` remains the explicit form, with `--base`.
+
+### Block with a reason
+
+```sh
+tsk status T12 blocked --why "Which database?" --needs "A decision" --option postgres --option sqlite
+tsk status T12 blocked --why "Needs the API from T9" --on T9
+tsk status T12 blocked --why "Waiting for legal" --on "legal sign-off"
+```
+
+| Flag | Value |
+| --- | --- |
+| `--why <text>` | What stops the work |
+| `--needs <text>` | What would unblock it |
+| `--option <text>` | One suggested answer; repeat for more |
+| `--on <who>` | `you` (default), another task (`T9`, `t9`, or `9`), or any other text |
+
+The flags are accepted only with `blocked`; use `--why=-…` for a value that starts with `-`. Each text is at most 4 KB (`text-too-long`, never truncated). `--on` must name another task on the board (`invalid-blocker`). A task has at most one open block. Running the command again on a blocked task edits that block in place and marks it edited, replacing only the fields given. `blocked` without flags still works and opens a block with no reason. Leaving `blocked` by any route closes the block; it stays in `past_blocks`.
+
+A task blocked on you shows in the board's NEEDS YOU; one blocked on another task or on something else rides in IN MOTION until the blocking task is done. The command takes one task: the board blocks a marked set at once.
+
+### Review with what was done
+
+```sh
+tsk status T12 review --done "Opened PR #41" --check "tests pass" --check "no flicker at 80 columns" --next "docs"
+tsk status T12 review --on pi
+```
+
+| Flag | Value |
+| --- | --- |
+| `--done <text>` | What was done |
+| `--check <text>` | One thing the reviewer should check; repeat for more |
+| `--next <text>` | What comes after |
+| `--on <who>` | `you` (default), an agent profile from `config.toml` (`pi` or `@pi`), or any other text |
+
+The flags are accepted only with `review` (`--on` also with `blocked`); use `--done=-…` for a value that starts with `-`. Each text is at most 4 KB (`text-too-long`). Entering review opens a round; running the command again while the task is in review edits that round in place and marks it edited, replacing only the fields given (a check whose text is unchanged keeps its state). `review` without flags opens a round with nothing recorded. Leaving `review` closes the round into `past_reviews`; the next review opens round N+1. A review on you shows in NEEDS YOU; one on an agent or on something else rides in IN MOTION.
+
+The author of a block, review, or reply is `you`, unless tsk runs inside a [dispatched](#dispatch) agent: dispatch sets `TSK_AGENT=<profile>` in the agent's environment, and blocks, reviews, and replies made from there carry that profile name.
+
+## reply
+
+```sh
+tsk reply T12 "Use postgres"
+tsk reply T12 "Use postgres" --send
+tsk reply T12 -- "-5 degrees is fine"
+```
+
+Adds a reply to the task's open block, or feedback to its open review round, authored as above. Put `--` before text that begins with `-`. A task that is neither blocked nor in review refuses with `not-blocked`; empty text refuses with `empty-reply`, and text over 4 KB with `text-too-long`. Each run adds a reply, so read the task before retrying. The board's owner answers from the [task page](/docs/task-page/#blocked) or a [blocked row](/docs/board/#block-with-a-reason).
+
+`--send` also delivers the reply this run stored, and only it, to the task's running [dispatched](#dispatch) agent, as `[tsk T12 reply] <text>`. The status stays; the board's reply box `ctrl+s` is the way to answer and unblock (or send a review back) in one step. A reply that went out is marked sent, so the later unblock or send-back does not deliver it again; one that did not go out (`not sent: …`) stays unsent and goes out with the unblock or send-back. Only your own replies are sent, only inside Herdr, and only to the agent tsk dispatched: the pane's live agent must carry its dispatch name (`t12-claude`).
+
+Output: `replied T12 as <author> <title>`. With `--send`, a second line says `sent to @claude` or `not sent: <reason>`: the agent is waiting on a prompt, Herdr could not reach it, the agent is not in its pane (another or an unnamed agent holds it), the agent is gone, the task was never dispatched or has no assignee, not in Herdr, or the reply is an agent's. The reply is stored either way, so the exit is 0. Rerunning adds and sends another reply; it never resends an earlier one.
 
 ## edit
 
 ```sh
 tsk edit T12 --title "Fix timeout on slow connections"
 tsk edit T12 --notes "Reproduced with a delayed response"
+tsk edit T12 --assignee reviewer
+tsk edit T12 --unassign
+tsk edit T12 --base dispatch
+tsk edit T12 --clear-base
+tsk edit T13 --after T12 --after T9
+tsk edit T13 --clear-after
 ```
 
-Requires `--title`, `--notes`, or both. Scope and thread stay unchanged.
+Requires `--title`, `--notes`, `--assignee`, `--unassign`, `--base`, `--clear-base`, `--after`, `--clear-after`, or a combination. `--assignee` and `--unassign` conflict; so do `--base` and `--clear-base`. Scope and thread stay unchanged. `--base` must be an existing branch in the task's repository, not a tag or commit; an unknown branch refuses with `unknown-base`. `--clear-base` returns the task to the repository's default branch. `--after <task>` (repeatable, `T12` or `12`) replaces the list of tasks this one [runs after](/docs/board/#after), in any project; `--clear-after` empties it, and the two conflict. A task cannot run after itself, a task not on the board, or one already done (`invalid-after`), and a link that would close a loop refuses with `after-loop`: `T12 already runs after T13`. There is no `--before`: set the other task's `--after`.
 
 Blank notes clear the field. Notes preserve newlines and tabs. Use `--title=...` or `--notes=...` for values starting with `-`.
 
 Output: `edited T12 <title>`. Repeating the same values is safe.
+
+## dispatch
+
+```sh
+tsk dispatch T12
+tsk dispatch T12 --again
+tsk dispatch T12 --base dispatch
+```
+
+Launches an assigned task's agent in its own Git worktree and Herdr workspace, then sets the task to `started`. It needs Herdr (on Windows a [preview](/docs/board/#dispatch-on-windows-preview) that runs a PowerShell launcher and refuses with `unsupported-platform` when Windows PowerShell is missing, and with `unsafe-state-dir`, naming the character, when the state directory holds one the pane's shell would expand), a task in a project that is a Git repository, and an assignee with a profile in [`config.toml`](/docs/storage/#agent-profiles).
+
+tsk creates a branch and worktree from the base, opens a Herdr workspace there, and runs the profile's rendered command in its root pane. Only after the launch succeeds does it save the dispatch record and set `started`, in one write. `tsk dispatch` is not undoable. [`tsk status T12 started`](#start) dispatches an assigned task the same way. Names follow the task number and title, as on the [board](/docs/board/#dispatch): branch `tsk/t12-fix-login-timeout`, worktree directory `tsk-t12-fix-login-timeout`, workspace `T12 Fix login timeout`, with `-2`, `-3` appended when a name is taken. tsk then names the agent `t12-<assignee>` once Herdr detects it, so `herdr agent get t12-claude` finds it. The command returns right away and a background tsk process does the naming; an agent Herdr does not detect within 30 seconds stays unnamed and the dispatch still succeeds.
+
+The base is the one-off `--base <branch>` when given, then the task's `base`, otherwise the repository's default branch (`origin/HEAD`), never the branch checked out where you run the command. `--base` does not change the task. A base must be an existing local or remote branch in the task's repository, not a tag or commit; an unknown branch refuses with `unknown-base`, and with no base given, a repository without `origin/HEAD` refuses with `no-default-base`. tsk fetches the base's remote first unless it was fetched in the last 60 seconds ([fetch window](/docs/storage/#fetch-window)), so a newly pushed branch works; this also applies when `tsk add` or `tsk edit` sets a remote branch as the base. A local branch that tracks a remote starts from the remote branch. Offline, dispatch starts from the local copy and says so. `{base}` in agent templates is the short branch name, such as `dispatch` for `origin/dispatch`.
+
+A dispatched task refuses with `already-dispatched`. `--again` relaunches deliberately: it reruns the command in the recorded workspace (or, if that workspace was closed, a new one on the kept worktree) and keeps the recorded base, ignoring `--base` and later changes to the task's base. After a cleanup it recreates the worktree, reopening the kept branch or recreating a deleted one from its original starting commit. Status changes never remove the record.
+
+Output: `dispatched T12 to @implementer in /path/to/worktree`. On Windows with Git's `core.longpaths` off, a warning line says how to turn it on; the dispatch still succeeds.
+
+Refusal codes: `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `unsupported-platform`, `unsafe-state-dir`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, `unknown-base`, `no-default-base`, and `herdr-failed`. A refusal leaves the task unchanged. A storage failure after a successful launch exits 3; read the task before retrying, because the agent may already be running.
+
+## clean
+
+```sh
+tsk clean T12
+tsk clean T12 --json
+tsk clean T12 --merge
+```
+
+Removes a dispatched task's worktree after review, without changing its status. To complete and clean in one step, use `tsk status T12 done --clean`. `--merge` first merges the task's pull request, then marks it done and cleans, exactly as [`tsk status T12 done --merge`](#status); with `--json` the result adds `merge` (`pr`, `url`, `method`, and `remote_branch`: `kept`, `deleted`, or `null` when unknown) and `"status": "done"`.
+
+- A worktree with uncommitted changes refuses with `dirty-worktree` and nothing is touched.
+- Otherwise tsk checks that the recorded path is a Git worktree of the project, not its root, and matches the recorded Herdr workspace (`worktree-mismatch` if not). It closes that workspace when running inside Herdr and removes the worktree.
+- The branch is deleted only when it is merged into the recorded base. tsk fetches the base first (unless inside the [fetch window](/docs/storage/#fetch-window)), so a merge on GitHub counts without a local pull.
+- A squash or rebase merge leaves no Git ancestry. When the branch reads unmerged and `gh` is installed and logged in, tsk asks GitHub (`gh pr view <branch>`): it deletes the branch only when the pull request is merged into the recorded base and its head is exactly the local branch tip, comparing that tip as it deletes, and never while the branch is checked out in another worktree. A pull request merged into another branch keeps it: "PR merged into dev, not origin/main; delete by hand". A merged pull request whose head differs keeps the branch: "PR merged but the branch has newer commits; delete by hand".
+- The branch is kept, with a reason, when it is not merged (without `gh`, a squash merge reads as "not merged into origin/main; squash-merged? delete by hand"), when the fetch fails and the merge cannot be confirmed (`could not reach <remote> to confirm the merge`), when the base no longer exists, or when the branch is checked out elsewhere or changes during cleanup.
+- A worktree that is already gone counts as cleaned, and its branch is kept. Inside Herdr, tsk still closes the dispatch's recorded workspace when Herdr shows it open on that deleted checkout; if Herdr refuses, the workspace is kept and `warning` says why.
+- On Windows, cleanup can also refuse with `files-in-use`, `path-too-long`, `removal-timed-out`, or `partly-removed`, keeping the dispatch; see [Dispatch on Windows](/docs/board/#dispatch-on-windows-preview) for what to do.
+
+The task keeps its dispatch record, marked `cleaned`. Human output says whether the worktree, branch, and workspace were removed or kept, says `already gone` for a worktree deleted before cleanup ran, and `already closed` for a workspace that was gone before cleanup ran, such as one an earlier refused Windows cleanup closed. `--json` returns the same outcomes (`worktree.outcome` is `removed` or `missing`; `workspace.outcome` is `removed`, `kept`, or `missing`), with `branch.reason` for a kept branch (`null` when deleted) and `warning` naming a failed fetch or a workspace Herdr would not close (`null` otherwise).
+
+Refusal codes: `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`, and `herdr-failed`; with `--merge` also `gh-unavailable`, `no-pr`, `pr-not-open`, `pr-base-mismatch`, `merge-failed`, `merge-config`. These exit 1. Store failures exit 3 with `store-error`. There is no force option.
 
 ## steps
 
@@ -276,6 +424,40 @@ tsk trash restore T12
 Restore returns a task from trash with its original number, no soft-delete flag, a restored event, and a new revision. A task absent from trash, or already live, refuses with `T12 is not in trash`.
 
 Recent deletions may still be in the main store; use board undo until they move to trash. [Retention and storage](/docs/storage/#deleted-tasks).
+
+## backup
+
+```sh
+tsk backup setup                                  # private GitHub repository via gh
+tsk backup setup --repo team/tsk-backup
+tsk backup add git@gitlab.com:me/tsk-backup.git   # any other git repository
+tsk backup add /srv/tsk.git --every daily
+tsk backup list
+tsk backup                                        # same as tsk backup now
+tsk backup remove 2
+```
+
+| Action | Effect |
+| --- | --- |
+| `setup [--repo <name\|owner/name\|host/owner/name>]` | Needs `gh` logged in (a refusal shows `gh`'s own message). A host runs every `gh` call with `GH_HOST` set to it. Creates the private repository (default `<your user>/tsk-backup`) or reuses an existing private or internal one that is empty or holds tsk backups (internal with a note); refuses a public one or one with other content, writing nothing. Then adds it as `add` does, with the clone URL of your `gh` git protocol. Already added: says so and changes nothing. On an empty store it points at `tsk restore` when other machines' backups are there |
+| `now` (or none) | Back up to every target in the foreground. Prints where each backup went or that a target is up to date; exits 1 if any target failed |
+| `add <git-url>` | Add a `[[backup]]` entry to `config.toml`, creating the file if needed, then test it with a first backup in the foreground (with no tasks yet, the repository is still cloned). A failed first backup keeps the entry, exits 1, and says what to fix before rerunning `tsk backup`. A local repository path is stored absolute. After a first backup that worked, it starts one detached run as a save would and, if only that run cannot reach the repository within five seconds, says so on stderr (exit 0). `--every save\|daily` sets the frequency (default `save`). Adding an existing target only updates its `every` |
+| `list` | Each target with its frequency, last backup, and last error |
+| `remove <target>` | Remove a target by its number in `list`, its URL, or its path. Backups already pushed stay |
+
+Each backup commits `tsk.json`, `config.toml` (values under `[agent.<name>.env]` and credentials in backup URLs are never pushed), and `machine.toml` under `machines/<machine-id>/`. Saves and board opens back up due targets in the background and never fail because of them. Frequencies, layout, secrets, and git settings: [backup targets](/docs/storage/#backup-targets).
+
+## restore
+
+```sh
+tsk restore            # list versions; in a terminal, pick one
+tsk restore 3f9a1c2e   # restore one version, no prompt
+tsk restore --all      # list every version, not the newest 20 per machine
+```
+
+The list shows each version's id, time, host name, task count, and target, newest first. In a terminal, `tsk restore` asks which to restore (a number or an id; Enter cancels); otherwise it prints the list and changes nothing. A restore keeps the replaced store as `tsk.json.pre-restore-<UTC time>` (the newest five are kept) and prints its path. It never changes `config.toml`; it prints the `git show` command for the one backed up with that version. `tsk restore T12` is not a version: it suggests `tsk trash restore T12`.
+
+`tsk restore` exits 1, replacing nothing, when there are no targets, the id is unknown, a board or quick capture is open on the store, or the version's store format is newer than this tsk (it says to update tsk) or it is not a store. A target it cannot read is reported on stderr and the others are still listed. [Restore](/docs/storage/#restore).
 
 ## help and version
 
@@ -360,25 +542,32 @@ For data commands:
 | --- | --- | --- |
 | `0` | Success, including an already-existing task or unchanged value | Continue |
 | `1` | Refusal; a plan may have saved other items | Correct refusals; retry only failed items |
-| `2` | Invalid arguments or input; nothing saved | Fix the invocation |
+| `2` | Invalid arguments, input, or assignee profile configuration; nothing saved | Fix the invocation or `config.toml` |
 | `3` | Storage error; a write may have committed | Read back before retrying |
 
 After an uncertain add, inspect `tsk list --all --json`. Also check `--done` and `--archived` when a duplicate could be hidden there. If you know the task number, use direct lookup.
 
 | Command | Refusal codes |
 | --- | --- |
-| Add | `empty-title`, `invalid-title`, `invalid-thread`, `invalid-item`, `unknown-project`, `project-archived` |
+| Add | `empty-title`, `invalid-title`, `invalid-thread`, `invalid-item`, `unknown-project`, `unknown-agent`, `unknown-base`, `project-archived`, `invalid-after` |
+| Edit | `empty-title`, `invalid-title`, `unknown-task`, `soft-deleted-task`, `unknown-agent`, `unknown-base`, `invalid-after`, `after-loop` |
+| Dispatch | `unknown-task`, `soft-deleted-task`, `no-assignee`, `unknown-agent`, `agent-config`, `not-in-herdr`, `unsupported-platform`, `unsafe-state-dir`, `needs-git-project`, `done-task`, `archived-task`, `already-dispatched`, `unknown-base`, `no-default-base`, `herdr-failed` |
+| Clean | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`, `herdr-failed`; with `--merge` also `gh-unavailable`, `no-pr`, `pr-not-open`, `pr-base-mismatch`, `merge-failed`, `merge-config` |
 | Steps | `empty-step-text`, `invalid-step-text`, `unknown-task`, `soft-deleted-task`, `unknown-step`, `ambiguous-step`, `same-step` |
-| Status | `unknown-task`, `soft-deleted-task` |
-| Edit | `unknown-task`, `soft-deleted-task`, `empty-title`, `invalid-title` |
+| Status | `unknown-task`, `soft-deleted-task`, `text-too-long`, `invalid-blocker`; `started` adds `after-not-done`, `agent-gone`, and the launch codes `unknown-agent`, `agent-config`, `unsupported-platform`, `unsafe-state-dir`, `needs-git-project`, `unknown-base`, `no-default-base`, `herdr-failed`; with `--clean`, cleanup codes above except `not-dispatched` and `already-cleaned`; with `--merge`, every cleanup code above plus `gh-unavailable`, `no-pr`, `pr-not-open`, `pr-base-mismatch`, `merge-failed`, `merge-config` |
+| Reply | `unknown-task`, `soft-deleted-task`, `not-blocked`, `empty-reply`, `text-too-long` |
 | Archive / unarchive | `unknown-task`, `soft-deleted-task` |
+
+Trash, backup, and restore refusals carry no code: they print `tsk <command>: <message>` and exit 1.
 
 A refusal prints as `tsk <command>: <code>: <message>` on stderr, for example `tsk status: unknown-task: T99 is not on the board`. Branch on the code; the message is for people and may change.
 
-Invalid thread flags fail argument parsing with exit 2; an invalid thread in a JSON plan is an item refusal with exit 1. Unknown or archived project refusals save nothing for that item; other valid plan items can still save.
+Invalid thread flags fail argument parsing with exit 2; an invalid thread in a JSON plan is an item refusal with exit 1. When add or edit supplies an assignee, an invalid `config.toml` also exits 2 without saving. Unknown agents and unknown or archived project refusals save nothing for that item; other valid plan items can still save.
 
 Human-readable output escapes stored terminal control characters. JSON retains the underlying text.
 
 ## Herdr helper
 
 `tsk --find-board-pane` reads Herdr `pane list` JSON from stdin and prints the ID of the pane labelled `tsk`. It exits 1 if none matches.
+
+`tsk --name-agent <pane> <name>` is the background process `tsk dispatch` starts to name its agent: it retries `herdr agent rename` until Herdr detects the agent, for up to 30 seconds, then exits. It prints nothing and always exits 0.

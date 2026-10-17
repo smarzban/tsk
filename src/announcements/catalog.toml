@@ -22,3 +22,8 @@ notes = "Press / on any tab to filter what it shows: tasks by title, notes, step
 id = 5
 title = "Group the board, reorder steps, and better text editing"
 notes = "Rows now show their thread and project. Press g to group the board by project or thread, s to sort, and f to fold a group (Shift+F folds them all). On the desk, t filters by thread and project, so a thread that spans repositories reads as one piece of work.\n\nOn a task page, alt+↑ and alt+↓ move the selected step, and ctrl+a adds a step below it. tsk steps T12 move does the same from the CLI.\n\nText fields learn macOS editing keys: alt+← and alt+→ move by word, alt+Backspace or ctrl+w deletes a word, and ctrl+u or ctrl+k delete to the start or end of the line. In a text field ctrl+a now moves to the line start.\n\nOn Windows, tsk update works again and AltGr characters type in every field. Rerun tsk setup to update your agent skill.\n\nChangelog: https://github.com/smarzban/tsk/blob/main/CHANGELOG.md"
+
+[[announcement]]
+id = 6
+title = "Hand tasks to your agents"
+notes = "Define agent profiles in config.toml beside your tasks (~/.tsk on macOS and Linux); the starter file has examples. Press @ to assign a task, or type !a name in quick add.\n\nOn a project task in Herdr, ctrl+s on an assigned task dispatches it (a preview on Windows): tsk opens a Git worktree and Herdr workspace from the task's base branch, launches the agent there, and starts the task. Mark several tasks to start them together; one card lists what launches.\n\nWhen the work is merged, ctrl+d completes the task and offers to clean up its worktree and branch. Unmerged or uncommitted work is never removed.\n\nChangelog: https://github.com/smarzban/tsk/blob/main/CHANGELOG.md"

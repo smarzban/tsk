@@ -7,9 +7,15 @@ use tsk_tui::cli::router::{route, Surface};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
+    // Saves and board opens of this binary may start a detached `tsk backup run`.
+    tsk_tui::backup::enable_background_backups();
     match route(&args, std::env::var(tsk_tui::app::MODE_ENV).ok().as_deref()) {
         Surface::FindBoardPane => find_board_main(false),
         Surface::FindBoardTab => find_board_main(true),
+        Surface::NameAgent => {
+            tsk_tui::dispatch::name_agent(&args[2], &args[3]);
+            ExitCode::SUCCESS
+        }
         Surface::GlobalHelp => {
             print!("{}", tsk_tui::cli::presenter::top_level_help());
             ExitCode::SUCCESS
@@ -25,8 +31,13 @@ fn main() -> ExitCode {
         | Surface::Steps
         | Surface::List
         | Surface::Status
+        | Surface::Reply
+        | Surface::Dispatch
+        | Surface::Clean
         | Surface::Edit
         | Surface::Trash
+        | Surface::Backup
+        | Surface::Restore
         | Surface::Archive
         | Surface::Unarchive
         | Surface::Project => match tsk_tui::store::require_home_or_override(&args) {
@@ -94,6 +105,7 @@ fn headless_main(args: Vec<String>) -> ExitCode {
     if io::stderr().write_all(output.stderr.as_bytes()).is_err() {
         return ExitCode::from(1);
     }
+    let _ = io::stdout().flush();
     ExitCode::from(output.code)
 }
 

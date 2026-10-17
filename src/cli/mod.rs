@@ -5,13 +5,19 @@ use std::io::{IsTerminal, Read};
 
 use serde_json::Value;
 
+use crate::dispatch::CleanupError;
+
 pub mod add;
 pub mod archive;
+pub mod backup;
+pub mod clean;
+pub mod dispatch;
 pub mod edit;
 pub mod guide;
 pub mod list;
 pub mod parser;
 pub mod presenter;
+pub mod reply;
 pub mod router;
 pub mod status;
 pub mod steps;
@@ -53,6 +59,18 @@ where
         .into_iter()
         .map(|argument| argument.as_ref().to_owned())
         .collect::<Vec<_>>();
+    // Every change a verb makes is recorded as made by the agent `TSK_AGENT` names, or you.
+    crate::domain::acting_as(&crate::domain::actor_from_env(), || {
+        run_verb(args, &mut stdin, stdin_is_tty, terminal_width)
+    })
+}
+
+fn run_verb<R: Read>(
+    args: Vec<String>,
+    mut stdin: &mut R,
+    stdin_is_tty: bool,
+    terminal_width: Option<usize>,
+) -> CliOutput {
     match args.get(1).map(String::as_str) {
         Some("help") => run_help(args),
         Some("setup") => run_setup(args, &mut stdin, stdin_is_tty),
@@ -67,8 +85,13 @@ where
         Some("steps") => run_steps(args),
         Some("list") => run_list(args, terminal_width),
         Some("status") => run_status(args),
+        Some("reply") => run_reply(args),
+        Some("dispatch") => run_dispatch(args),
+        Some("clean") => run_clean(args),
         Some("edit") => run_edit(args),
         Some("trash") => run_trash(args),
+        Some("backup") => backup::run_backup(args),
+        Some("restore") => backup::run_restore(args, &mut stdin, stdin_is_tty),
         Some("project") => run_project(args),
         verb @ (Some("archive") | Some("unarchive")) => {
             let (verb, archive) = if verb == Some("archive") {
@@ -79,9 +102,17 @@ where
             run_archive(args, verb, archive)
         }
         _ => presenter::usage(
-            "expected add, steps, list, status, edit, trash, archive, unarchive, or project command",
+            "expected add, steps, list, status, reply, dispatch, clean, edit, trash, backup, restore, archive, unarchive, or project command",
         ),
     }
+}
+
+/// Verbs that may fetch a base's remote share the fetch window with later `tsk` processes.
+fn share_fetch_window(state_dir: &Option<std::path::PathBuf>) {
+    let dir = state_dir
+        .clone()
+        .unwrap_or_else(crate::store::default_state_dir);
+    crate::git_base::remember_fetches_in(&dir);
 }
 
 fn run_help(args: Vec<String>) -> CliOutput {
@@ -96,8 +127,13 @@ fn run_help(args: Vec<String>) -> CliOutput {
             "steps" => presenter::steps_help(),
             "list" => presenter::list_help(None),
             "status" => presenter::status_help(),
+            "reply" => presenter::reply_help(),
+            "dispatch" => presenter::dispatch_help(),
+            "clean" => presenter::clean_help(),
             "edit" => presenter::edit_help(),
             "trash" => presenter::trash_help(),
+            "backup" => presenter::backup_help(),
+            "restore" => presenter::restore_help(),
             "archive" => presenter::archive_help("archive"),
             "unarchive" => presenter::archive_help("unarchive"),
             "project" => presenter::project_help(),
@@ -127,6 +163,139 @@ fn run_steps(args: Vec<String>) -> CliOutput {
     }
 }
 
+fn run_dispatch(args: Vec<String>) -> CliOutput {
+    let input = match parser::parse_flag_dispatch(&args) {
+        Ok(input) => input,
+        Err(reason) => return presenter::dispatch_usage(&reason),
+    };
+    if input.help {
+        return presenter::dispatch_help();
+    }
+    let Some(task) = input.task else {
+        return presenter::dispatch_usage("task number is required");
+    };
+    share_fetch_window(&input.state_dir);
+    match dispatch::run(task, input.again, input.base, input.state_dir) {
+        Ok(result) => presenter::dispatched(result),
+        Err(error) => presenter::dispatch_rejected(error, task),
+    }
+}
+
+fn run_clean(args: Vec<String>) -> CliOutput {
+    let input = match parser::parse_flag_clean(&args) {
+        Ok(input) => input,
+        Err(reason) => return presenter::clean_usage(&reason),
+    };
+    if input.help {
+        return presenter::clean_help();
+    }
+    let Some(task) = input.task else {
+        return presenter::clean_usage("task number is required");
+    };
+    share_fetch_window(&input.state_dir);
+    if input.merge {
+        let (state_dir, mut host) = dispatch::system_host(input.state_dir);
+        let in_herdr = crate::dispatch::running_inside_herdr();
+        return merge_done_clean_with_host(
+            task, state_dir, "clean", input.json, in_herdr, &mut host,
+        );
+    }
+    match clean::run(task, input.state_dir) {
+        Ok(result) => presenter::cleaned(result, input.json),
+        Err(error) => presenter::clean_rejected(error, task),
+    }
+}
+
+/// Both `--merge` forms: merge the task's pull request first, and only once GitHub shows it
+/// merged set the task done, then clean its dispatch. A refusal before the merge changes
+/// nothing. After it, a done-save failure (exit 3) or a cleanup refusal (exit 1) still
+/// reports what merged, in `--json` too: the PR is merged whatever follows.
+pub fn merge_done_clean_with_host(
+    task: parser::TaskAddress,
+    state_dir: std::path::PathBuf,
+    verb: &str,
+    json: bool,
+    in_herdr: bool,
+    host: &mut impl crate::dispatch::DispatchHost,
+) -> CliOutput {
+    let merged = match clean::merge_with_host(task, Some(state_dir.clone()), in_herdr, host) {
+        Ok(merged) => merged,
+        Err(refused) => return presenter::merge_rejected(verb, &refused),
+    };
+    let mut output = CliOutput {
+        stdout: String::new(),
+        stderr: String::new(),
+        code: 0,
+    };
+    if !json {
+        output.stdout.push_str(&presenter::merged(&merged));
+    }
+    let done = status::run_done_with_host(
+        task,
+        Some(state_dir.clone()),
+        in_herdr,
+        &crate::domain::actor_from_env(),
+        host,
+    );
+    let (result, released) = match done {
+        Ok(done) => done,
+        Err(error) => {
+            let code = error.code();
+            let refused = presenter::status_rejected(error, task);
+            let refused_stderr = refused
+                .stderr
+                .replacen("tsk status:", &format!("tsk {verb}:"), 1);
+            if json {
+                output.stdout =
+                    presenter::merge_partial_json(&merged, false, "done", code, &refused_stderr);
+            }
+            output.stderr.push_str(&refused_stderr);
+            output.code = refused.code;
+            return output;
+        }
+    };
+    status::name_released(&released);
+    let lines = if json {
+        &mut output.stderr
+    } else {
+        &mut output.stdout
+    };
+    if !json {
+        lines.push_str(&presenter::status(result).stdout);
+    }
+    if let Some(line) = crate::dispatch::released_message(&released) {
+        lines.push_str(&crate::ui::terminal_text(&line));
+        lines.push('\n');
+    }
+    // The done and the start are durable: a lost record or rollback is a warning.
+    for warning in crate::dispatch::released_warnings(&released) {
+        output.stderr.push_str(&crate::ui::terminal_text(&format!(
+            "tsk {verb}: warning: {warning}"
+        )));
+        output.stderr.push('\n');
+    }
+    share_fetch_window(&Some(state_dir.clone()));
+    match clean::run_with_host(task, Some(state_dir), in_herdr, host) {
+        Ok(result) => output
+            .stdout
+            .push_str(&presenter::cleaned_merged(result, Some(&merged), json).stdout),
+        Err(error) => {
+            let code = error.code();
+            let refused = presenter::clean_rejected(error, task);
+            let refused_stderr = refused
+                .stderr
+                .replacen("tsk clean:", &format!("tsk {verb}:"), 1);
+            if json {
+                output.stdout =
+                    presenter::merge_partial_json(&merged, true, "cleanup", code, &refused_stderr);
+            }
+            output.stderr.push_str(&refused_stderr);
+            output.code = refused.code;
+        }
+    }
+    output
+}
+
 fn run_status(args: Vec<String>) -> CliOutput {
     let input = match parser::parse_flag_status(&args) {
         Ok(input) => input,
@@ -142,9 +311,120 @@ fn run_status(args: Vec<String>) -> CliOutput {
             "status is required"
         });
     };
-    match status::run(task, status, input.state_dir) {
-        Ok(result) => presenter::status(result),
+    // A start may launch the assigned agent (`--again` and `--no-dispatch` only reach here).
+    if status == crate::domain::HumanStatus::Started {
+        share_fetch_window(&input.state_dir);
+        let flags = status::StartFlags {
+            again: input.again,
+            no_dispatch: input.no_dispatch,
+            force: input.force,
+        };
+        return match status::run_started(task, flags, input.state_dir) {
+            Ok(status::StartOutcome::Status(result)) => presenter::status(result),
+            Ok(status::StartOutcome::NoLaunch(result, reason)) => {
+                let mut output = presenter::status(result);
+                output.stdout.push_str(&format!("no launch: {reason}\n"));
+                output
+            }
+            Ok(status::StartOutcome::Dispatched(result, dispatched)) => {
+                presenter::status_dispatched(result, *dispatched)
+            }
+            Ok(status::StartOutcome::Delivered(result, line)) => {
+                let mut output = presenter::status(result);
+                output.stdout.push_str(&crate::ui::terminal_text(&line));
+                output.stdout.push('\n');
+                output
+            }
+            Err(error) => presenter::status_rejected(error, task),
+        };
+    }
+    if input.merge {
+        share_fetch_window(&input.state_dir);
+        let (state_dir, mut host) = dispatch::system_host(input.state_dir);
+        let in_herdr = crate::dispatch::running_inside_herdr();
+        return merge_done_clean_with_host(task, state_dir, "status", false, in_herdr, &mut host);
+    }
+    let state_dir = input.state_dir.clone();
+    let outcome = if status == crate::domain::HumanStatus::Done {
+        share_fetch_window(&input.state_dir);
+        status::run_done(task, input.state_dir)
+    } else if status == crate::domain::HumanStatus::Ready {
+        // Leaving a block for ready sends its replies to the running agent.
+        return match status::run_ready(task, input.state_dir) {
+            Ok((result, line)) => {
+                let mut output = presenter::status(result);
+                if let Some(line) = line {
+                    output.stdout.push_str(&crate::ui::terminal_text(&line));
+                    output.stdout.push('\n');
+                }
+                output
+            }
+            Err(error) => presenter::status_rejected(error, task),
+        };
+    } else {
+        status::run(task, status, input.block, input.state_dir).map(|result| (result, Vec::new()))
+    };
+    match outcome {
+        Ok((result, released)) => {
+            let mut output = presenter::status(result);
+            if let Some(line) = crate::dispatch::released_message(&released) {
+                output.stdout.push_str(&crate::ui::terminal_text(&line));
+                output.stdout.push('\n');
+            }
+            // The done and the start are durable: a lost record or rollback is a warning.
+            for warning in crate::dispatch::released_warnings(&released) {
+                output.stderr.push_str(&crate::ui::terminal_text(&format!(
+                    "tsk status: warning: {warning}"
+                )));
+                output.stderr.push('\n');
+            }
+            if input.clean {
+                share_fetch_window(&state_dir);
+                match clean::run(task, state_dir) {
+                    Ok(result) => output
+                        .stdout
+                        .push_str(&presenter::cleaned(result, false).stdout),
+                    // `--clean` means clean what is there: no live dispatch is success.
+                    Err(CleanupError::NotDispatched | CleanupError::AlreadyCleaned) => {
+                        output.stdout.push_str("nothing to clean\n")
+                    }
+                    Err(error) => {
+                        let refused = presenter::clean_rejected(error, task);
+                        output.stderr = refused.stderr.replacen("tsk clean:", "tsk status:", 1);
+                        output.code = refused.code;
+                    }
+                }
+            }
+            output
+        }
         Err(error) => presenter::status_rejected(error, task),
+    }
+}
+
+fn run_reply(args: Vec<String>) -> CliOutput {
+    let input = match parser::parse_flag_reply(&args) {
+        Ok(input) => input,
+        Err(reason) => return presenter::reply_usage(&reason),
+    };
+    if input.help {
+        return presenter::reply_help();
+    }
+    let (Some(task), Some(text)) = (input.task, input.text) else {
+        return presenter::reply_usage(if input.task.is_none() {
+            "task number is required"
+        } else {
+            "reply text is required"
+        });
+    };
+    if input.send {
+        return match reply::run_send(task, &text, input.state_dir) {
+            Ok((result, outcome)) => presenter::replied_and_sent(result, &outcome),
+            Err(error) => presenter::reply_rejected(error, task),
+        };
+    }
+    match reply::run(task, &text, input.state_dir) {
+        Ok(result) => presenter::replied(result),
+        Err(error) => presenter::reply_rejected(error, task),
     }
 }
 
@@ -159,14 +439,44 @@ fn run_edit(args: Vec<String>) -> CliOutput {
     let Some(task) = input.task else {
         return presenter::edit_usage("task number is required");
     };
-    if input.title.is_none() && input.notes.is_none() {
-        return presenter::edit_usage("title or notes is required");
+    if input.title.is_none()
+        && input.notes.is_none()
+        && input.assignee.is_none()
+        && !input.unassign
+        && input.base.is_none()
+        && !input.clear_base
+        && input.after.is_empty()
+        && !input.clear_after
+    {
+        return presenter::edit_usage(
+            "title, notes, assignee, base, after, --unassign, --clear-base, or --clear-after is required",
+        );
+    }
+    let assignee = if input.unassign {
+        Some(None)
+    } else {
+        input.assignee.map(Some)
+    };
+    let base = if input.clear_base {
+        Some(None)
+    } else {
+        input.base.map(Some)
+    };
+    if matches!(base, Some(Some(_))) {
+        share_fetch_window(&input.state_dir);
     }
     match edit::run(
         task,
         edit::EditFields {
             title: input.title,
             notes: input.notes,
+            assignee,
+            base,
+            after: if input.clear_after {
+                Some(Vec::new())
+            } else {
+                (!input.after.is_empty()).then_some(input.after)
+            },
         },
         input.state_dir,
     ) {
@@ -259,6 +569,7 @@ fn run_add<R: Read>(args: Vec<String>, stdin: &mut R, stdin_is_tty: bool) -> Cli
         return presenter::add_help();
     }
 
+    share_fetch_window(&input.state_dir);
     if input.has_item_flags {
         if input.title.is_none() {
             return presenter::usage("title is required");

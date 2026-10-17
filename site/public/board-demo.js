@@ -17,6 +17,10 @@ import { parseCapture } from "./capture.js";
     review: "▲",
     done: "✓",
   };
+  const taskGlyph = (task) =>
+    task.status === "started" && task.dispatch
+      ? "◉"
+      : GLYPH[task.status] || "○";
 
   const TABS = [
     ["desk", "desk"],
@@ -131,6 +135,13 @@ import { parseCapture } from "./capture.js";
         status: "blocked",
         project: "launchpad",
         thread: "auth",
+        block: {
+          why: "Which staging client should the callback use?",
+          needs: "The client id from the identity provider",
+          options: ["Shared staging client", "New client per environment"],
+          by: "claude",
+          answered: false,
+        },
         notes:
           "Waiting for the identity provider's staging client registration. The callback handler is ready.",
         steps: [
@@ -381,13 +392,20 @@ import { parseCapture } from "./capture.js";
     searchQuery: "",
     searchPinned: false,
     threadFilter: null,
-    // Desk filter: thread null (all) · "" (without) · name; project null · "desk" · name.
-    deskFilter: { thread: null, project: null },
+    // The project board's assignee choice: null all, "" unassigned, or a name.
+    assigneeFilter: null,
+    // The Filter / View picker's open tab: "threads" or "assignees".
+    filterTab: "threads",
+    // null Overview, a thread name, or "@name" for an assignee view.
+    // Desk filter: thread null (all) · "" (without) · name; project null · "desk" · name;
+    // assignee null (all) · "" (unassigned) · name.
+    deskFilter: { thread: null, project: null, assignee: null },
     deskFilterTab: "threads",
     layouts: {
       desk: freshLayout(),
       project: freshLayout(),
       thread: freshLayout(),
+      assignee: freshLayout(),
     },
     // Which board the open group / sort picker edits: the outer board or the preview seat.
     layoutOwner: "outer",
@@ -436,6 +454,7 @@ import { parseCapture } from "./capture.js";
     pendingDelete: null,
     pendingDeleteBulk: false,
     threadFilter: null,
+    assigneeFilter: null,
     peekId: null,
     drawer: false,
     archivedOpen: false,
@@ -506,7 +525,10 @@ import { parseCapture } from "./capture.js";
   }
   function openFullPage() {
     if (!state.selectedId) return;
-    if (state.stage !== "page") state.stageOrigin = state.stage;
+    if (state.stage !== "page") {
+      state.stageOrigin = state.stage;
+      steps.trailOpen = false;
+    }
     state.stage = "page";
   }
   function leaveTaskPage() {
@@ -536,6 +558,77 @@ import { parseCapture } from "./capture.js";
         })[c],
     );
 
+  // A status change, recorded on the task's paper trail as the TUI does (`open → started`).
+  function logStatus(task, status) {
+    const at = clock();
+    task.trail = [
+      ...(task.trail || []),
+      { text: `${task.status} → ${status}`, at },
+    ];
+    task.status = status;
+    task.updatedAt = at;
+    task.statusAt = at;
+  }
+
+  // The task page's PAPER TRAIL: collapsed and dim on every page open (`PAPER TRAIL · N ▸`);
+  // `g`, `Enter` on the heading (a Tab stop after `+ step`), or a click shows every entry,
+  // newest first, still dim (`▾`). The state lives on the page's step binding, so it resets
+  // whenever a page opens, closes, or binds another task.
+  function paperTrail(task, pageSteps, owner) {
+    const entries = [
+      ...(task.trail || []),
+      { text: "created", at: task.createdAt },
+    ]
+      .slice()
+      .sort((a, b) => b.at - a.at);
+    const open = pageSteps.trailOpen;
+    const selected = pageSteps.selected === "trail";
+    const rows = open
+      ? entries.map(
+          (entry) =>
+            `<div class="tsk-trail-entry dim">${esc(`${entry.text} · you ${age(entry.at)}`)}</div>`,
+        )
+      : [];
+    return `<div class="tsk-trail"><button type="button" class="tsk-trail-heading dim" data-trail-toggle="${owner}" aria-expanded="${open}" aria-selected="${selected}">${selected ? "▸ " : ""}PAPER TRAIL · ${entries.length} ${open ? "▾" : "▸"}</button>${rows.join("")}</div>`;
+  }
+
+  // Whether a page's selection is a stored step (not `+ step` or the trail heading).
+  const stepSelected = (pageSteps) =>
+    pageSteps.selected &&
+    pageSteps.selected !== "add" &&
+    pageSteps.selected !== "trail";
+
+  // A blocked task's BLOCKED section above the notes: the row's live line, why and needs as
+  // plain text, the numbered options, then the dim action line and the rule. The demo answers
+  // nothing, so the action line offers only what works here (bare `b` unblocks).
+  function blockSection(task, width) {
+    const block = task.status === "blocked" ? task.block : null;
+    if (!block) return "";
+    const line = (text, cls = "") =>
+      `<span class="${cls}">${esc(text) || " "}</span>`;
+    const rows = [line(liveLine(task), "is-bold")];
+    const body = [block.why, block.needs].filter(Boolean);
+    if (body.length) {
+      rows.push(line(""));
+      for (const text of body)
+        rows.push(...wrapText(text, width).map((part) => line(part)));
+    }
+    if (block.options?.length) {
+      rows.push(line(""));
+      block.options.forEach((option, index) => {
+        wrapText(option, width - 4).forEach((part, at) =>
+          rows.push(
+            line(
+              `${at ? "    " : `${String(index + 1).padStart(2)}  `}${part}`,
+            ),
+          ),
+        );
+      });
+    }
+    rows.push(line(""), line("b unblock", "dim"));
+    return `<div class="tsk-page-block" aria-label="blocked">${rows.join("")}</div><div class="tsk-page-block-rule" aria-hidden="true"></div>`;
+  }
+
   const age = (ts) => {
     const secs = Math.max(0, Math.floor((clock() - ts) / 1000));
     if (secs < 60) return `${secs}s`;
@@ -562,23 +655,23 @@ import { parseCapture } from "./capture.js";
   function layoutSlot(owner = "outer") {
     if (owner === "preview") return "project";
     if (state.focusProject) return "project";
-    return isProjectsThreadView() ? "thread" : "desk";
+    if (!isProjectsThreadView()) return "desk";
+    return state.projectView.startsWith("@") ? "assignee" : "thread";
   }
   function boardLayout(owner = "outer") {
     return owner === "preview" ? preview.layout : state.layouts[layoutSlot()];
   }
-  // A project board never groups by project and the thread View never by thread.
+  // A project board never groups by project, the thread View never by thread, and an
+  // `@name` View never by assignee: every row shares it. The slot names its dimension.
   function groupChoices(owner = "outer") {
     const slot = layoutSlot(owner);
-    if (slot === "project") return ["none", "thread"];
-    if (slot === "thread") return ["none", "project"];
-    return ["none", "project", "thread"];
+    return ["none", "project", "thread", "assignee"].filter((g) => g !== slot);
   }
   function sortChoices(owner = "outer") {
     const slot = layoutSlot(owner);
-    if (slot === "project") return ["recent", "thread", "title"];
-    if (slot === "thread") return ["recent", "project", "title"];
-    return ["recent", "project", "thread", "title"];
+    return ["recent", "project", "thread", "title", "assignee"].filter(
+      (sort) => sort !== slot,
+    );
   }
   // The header's group and sort controls: full words, or keyed (`g:thread`) when narrow.
   // The header's group and sort controls: full words, or keyed (`g:thread`) when narrow.
@@ -630,12 +723,13 @@ import { parseCapture } from "./capture.js";
       .join("");
   }
   const byteOrder = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
-  // Stable sort by the chosen key; desk tasks sort after projects and unthreaded after
-  // threaded. Ties keep the section's own order.
+  // Stable sort by the chosen key; desk tasks sort after projects, unthreaded after
+  // threaded, and unassigned after assigned. Ties keep the section's own order.
   const SORT_KEYS = {
     project: (t) => (t.project ? [0, t.project.toLowerCase()] : [1, ""]),
     thread: (t) => (t.thread ? [0, t.thread.toLowerCase()] : [1, ""]),
     title: (t) => [0, t.title.toLowerCase()],
+    assignee: (t) => (t.assignee ? [0, t.assignee.toLowerCase()] : [1, ""]),
   };
   function sortRows(tasks, sort) {
     const key = SORT_KEYS[sort];
@@ -655,6 +749,11 @@ import { parseCapture } from "./capture.js";
       return task.project
         ? [`p:${task.project}`, task.project]
         : ["desk", "desk"];
+    if (group === "assignee") {
+      if (!task.assignee) return ["unassigned", "unassigned"];
+      const name = task.assignee.toLowerCase();
+      return [`a:${name}`, `@${name}`];
+    }
     if (task.thread) {
       const thread = task.thread.toLowerCase();
       return [`t:${thread}`, `#${thread}`];
@@ -662,9 +761,12 @@ import { parseCapture } from "./capture.js";
     return ["none", "no thread"];
   }
   // What Enter or a double-click on a sub-header opens: its project's board, the desk, or
-  // its thread's cross-project view. `no thread` opens nothing.
+  // its thread's or assignee's cross-project view. `no thread` and `unassigned` open
+  // nothing.
   function groupTarget(task, group) {
     if (group === "project") return { project: task.project || "desk" };
+    if (group === "assignee")
+      return task.assignee ? { thread: `@${task.assignee}` } : null;
     return task.thread ? { thread: task.thread } : null;
   }
   // One section's rows, sorted and (when groupable) bucketed hottest group first: the
@@ -731,21 +833,34 @@ import { parseCapture } from "./capture.js";
   // Dimensions the surface or its filter leaves to the row label. Grouping drops its
   // dimension only in sections that actually group (see omitGrouped).
   function rowLabelDims() {
+    // `assignee` is the peek footer's `@name`, never a row label: dropped where an
+    // assignee filter or the `@name` View already says it.
     if (isDeskLens())
       return {
         thread: !state.deskFilter.thread,
         project: state.deskFilter.project === null,
+        assignee: !state.deskFilter.assignee,
       };
     if (state.focusProject)
-      return { thread: !state.threadFilter, project: false };
-    if (isProjectsThreadView()) return { thread: false, project: true };
-    return { thread: false, project: false };
+      return {
+        thread: !state.threadFilter,
+        project: false,
+        assignee: !state.assigneeFilter,
+      };
+    if (isProjectsThreadView())
+      return {
+        thread: false,
+        project: true,
+        assignee: !state.projectView.startsWith("@"),
+      };
+    return { thread: false, project: false, assignee: true };
   }
   function omitGrouped(dims, layout, grouped) {
     if (!grouped) return dims;
     return {
       thread: dims.thread && layout.group !== "thread",
       project: dims.project && layout.group !== "project",
+      assignee: dims.assignee && layout.group !== "assignee",
     };
   }
   function rowLabel(task, dims) {
@@ -760,6 +875,12 @@ import { parseCapture } from "./capture.js";
   // Title lines plus the dim row label, at every width: it follows the title two cells
   // after its last word, or starts the next line at the title's indent and wraps like the
   // title when it does not fit there. Nothing is truncated.
+  // The label's own lines when it does not fit after the title's last line, else none.
+  function labelOverflow(titleLines, label, room) {
+    if (!label) return [];
+    const last = titleLines[titleLines.length - 1] || "";
+    return last.length + 2 + label.length <= room ? [] : wrapText(label, room);
+  }
   function titleLinesHtml(titleLines, label, room) {
     const lines = titleLines.map(
       (line) => `<span class="tsk-title-line">${esc(line)}</span>`,
@@ -782,20 +903,29 @@ import { parseCapture } from "./capture.js";
     );
   }
 
-  // ── Desk filter: one thread choice and one project choice, combined ──
+  // ── Desk filter: one thread, one project, and one assignee choice, combined ──
+  const DESK_FILTER_TABS = ["threads", "projects", "assignees"];
+  const deskFilterKey = (tab) =>
+    ({ threads: "thread", projects: "project", assignees: "assignee" })[tab];
   function deskFilterAdmits(task) {
-    const { thread, project } = state.deskFilter;
+    const { thread, project, assignee } = state.deskFilter;
     const inProject =
       project === null ||
       (project === "desk" ? !task.project : task.project === project);
-    return inProject && (thread === null || (task.thread || "") === thread);
+    return (
+      inProject &&
+      (thread === null || (task.thread || "") === thread) &&
+      matchesAssignee(task, assignee)
+    );
   }
   function deskFilterLabel() {
-    const { thread, project } = state.deskFilter;
+    const { thread, project, assignee } = state.deskFilter;
     const parts = [];
     if (project !== null) parts.push(project);
     if (thread !== null)
       parts.push(thread === "" ? "without a thread" : `#${thread}`);
+    if (assignee !== null)
+      parts.push(assignee === "" ? "unassigned" : `@${assignee}`);
     return parts.length ? parts.join(" ") : "all";
   }
   function deskFilterOptions(tab = state.deskFilterTab) {
@@ -808,6 +938,13 @@ import { parseCapture } from "./capture.js";
       }
       return [...map];
     };
+    if (tab === "assignees") {
+      const [, ...named] = assigneeOptions(live, true);
+      return [
+        { value: null, label: `All assignees  ${live.length}` },
+        ...named,
+      ];
+    }
     if (tab === "threads") {
       const named = counts((t) => t.thread).sort(
         (a, b) => b[1] - a[1] || byteOrder(a[0], b[0]),
@@ -834,7 +971,7 @@ import { parseCapture } from "./capture.js";
     ];
   }
   function deskFilterIndex(tab = state.deskFilterTab) {
-    const current = state.deskFilter[tab === "threads" ? "thread" : "project"];
+    const current = state.deskFilter[deskFilterKey(tab)];
     return Math.max(
       0,
       deskFilterOptions(tab).findIndex((option) => option.value === current),
@@ -850,18 +987,15 @@ import { parseCapture } from "./capture.js";
     const option = deskFilterOptions()[index];
     if (!option) return;
     clearMarks();
-    state.deskFilter[state.deskFilterTab === "threads" ? "thread" : "project"] =
-      option.value;
+    state.deskFilter[deskFilterKey(state.deskFilterTab)] = option.value;
     state.overlay = null;
     state.peekId = null;
   }
   function renderDeskFilter() {
-    const tabs = ["threads", "projects"]
-      .map(
-        (tab) =>
-          `<button type="button" class="tsk-view-control ${tab === state.deskFilterTab ? "sel-text" : "dim"}" style="margin:0" data-desk-filter-tab="${tab}">${tab}</button>`,
-      )
-      .join('<span class="dim"> · </span>');
+    const tabs = DESK_FILTER_TABS.map(
+      (tab) =>
+        `<button type="button" class="tsk-view-control ${tab === state.deskFilterTab ? "sel-text" : "dim"}" style="margin:0" data-desk-filter-tab="${tab}">${tab === "assignees" ? "@assignees" : tab}</button>`,
+    ).join('<span class="dim"> · </span>');
     return `<div class="tsk-box" role="dialog" aria-label="filter"><div class="tsk-box-top"><span class="tsk-box-title">filter</span><button type="button" class="tsk-box-close" data-close="1">[x]</button></div><div class="tsk-box-body"><div class="tsk-pal-row"> ${tabs}</div><div class="tsk-pal-row dim" aria-hidden="true"> </div>${deskFilterOptions()
       .map(
         (option, index) =>
@@ -869,7 +1003,7 @@ import { parseCapture } from "./capture.js";
       )
       .join(
         "",
-      )}</div><div class="tsk-box-foot">←→ tab · enter choose · esc close</div></div>`;
+      )}</div><div class="tsk-box-foot">tab switch · ↑↓ move · enter choose · esc close</div></div>`;
   }
 
   // ── Group and sort pickers ──
@@ -1093,6 +1227,7 @@ import { parseCapture } from "./capture.js";
       task.notes,
       ...(task.steps || []).map((step) => step.text),
       task.thread,
+      task.assignee && `@${task.assignee}`,
       `T${task.number}`,
     ]
       .filter(Boolean)
@@ -1169,8 +1304,9 @@ import { parseCapture } from "./capture.js";
 
   function previewMatchesThread(task) {
     return (
-      preview.threadFilter === null ||
-      (task.thread || "") === preview.threadFilter
+      (preview.threadFilter === null ||
+        (task.thread || "") === preview.threadFilter) &&
+      matchesAssignee(task, preview.assigneeFilter)
     );
   }
 
@@ -1203,7 +1339,11 @@ import { parseCapture } from "./capture.js";
     const pushHeader = (label, count) =>
       rows.push({ kind: "section", label, count, selectable: false });
     const layout = preview.layout;
-    const dims = { thread: !preview.threadFilter, project: false };
+    const dims = {
+      thread: !preview.threadFilter,
+      project: false,
+      assignee: !preview.assigneeFilter,
+    };
     const pushTask = (task, dim = false, grouped = false) =>
       rows.push({
         kind: "task",
@@ -1212,6 +1352,7 @@ import { parseCapture } from "./capture.js";
         id: task.id,
         dim,
         label: rowLabel(task, omitGrouped(dims, layout, grouped)),
+        assignee: omitGrouped(dims, layout, grouped).assignee,
       });
     const arranged = (tasks, section) =>
       pushArranged(
@@ -1266,6 +1407,18 @@ import { parseCapture } from "./capture.js";
         !task.archived &&
         task.status !== "done",
     );
+    return state.filterTab === "assignees"
+      ? markActive(assigneeOptions(tasks, true), preview.assigneeFilter)
+      : markActive(previewThreadOptions(), preview.threadFilter);
+  }
+
+  function previewThreadOptions() {
+    const tasks = state.tasks.filter(
+      (task) =>
+        task.project === preview.project &&
+        !task.archived &&
+        task.status !== "done",
+    );
     const names = [
       ...new Set(tasks.map((task) => task.thread).filter(Boolean)),
     ].sort(
@@ -1275,7 +1428,7 @@ import { parseCapture } from "./capture.js";
         a.localeCompare(b),
     );
     return [
-      { value: null, label: `All tasks  ${tasks.length}` },
+      { value: null, label: `all  ${tasks.length}` },
       ...names.map((name) => ({
         value: name,
         label: `#${name}  ${tasks.filter((task) => task.thread === name).length}`,
@@ -1288,43 +1441,105 @@ import { parseCapture } from "./capture.js";
   }
 
   function previewFilterLabel() {
-    return preview.threadFilter === null
-      ? "all"
-      : preview.threadFilter === ""
-        ? "without a thread"
-        : `#${preview.threadFilter}`;
+    return filterLabel(preview.threadFilter, preview.assigneeFilter);
+  }
+
+  // The Filter / View picker's `threads · @assignees` tabs, shared by both seats.
+  function filterLabel(thread, assignee) {
+    const parts = [
+      thread === null
+        ? null
+        : thread === ""
+          ? "without a thread"
+          : `#${thread}`,
+      assignee === null
+        ? null
+        : assignee === ""
+          ? "unassigned"
+          : `@${assignee}`,
+    ].filter(Boolean);
+    return parts.length ? parts.join(" ") : "all";
+  }
+
+  function matchesAssignee(task, assignee) {
+    return assignee === null || (task.assignee || "") === assignee;
+  }
+
+  // `all`, every assignee on the tasks, then `unassigned`; the overview lists names only.
+  function assigneeOptions(tasks, board) {
+    const names = [
+      ...new Set(tasks.map((task) => task.assignee).filter(Boolean)),
+    ].sort((a, b) => a.localeCompare(b));
+    const count = (name) =>
+      tasks.filter((task) => (task.assignee || "") === name).length;
+    return [
+      ...(board ? [{ value: null, label: `all  ${tasks.length}` }] : []),
+      ...names.map((name) => ({
+        value: board ? name : `@${name}`,
+        label: `@${name}  ${count(name)}`,
+      })),
+      ...(board ? [{ value: "", label: `unassigned  ${count("")}` }] : []),
+    ];
+  }
+
+  function markActive(options, value) {
+    return options.map((option) =>
+      option.value === value
+        ? { ...option, label: `${option.label}  ✓`, active: true }
+        : option,
+    );
+  }
+
+  function activeFilterIndex(options) {
+    return Math.max(
+      0,
+      options.findIndex((option) => option.active),
+    );
+  }
+
+  function switchFilterTab(tab) {
+    state.filterTab =
+      tab || (state.filterTab === "threads" ? "assignees" : "threads");
+    state.filterI = activeFilterIndex(
+      state.overlay === "preview-filter"
+        ? previewFilterOptions()
+        : filterOptions(),
+    );
+  }
+
+  function renderFilterTabs() {
+    const tab = (name, label) =>
+      `<button type="button" class="tsk-filter-tab ${state.filterTab === name ? "is-on" : "dim"}" data-filter-tab="${name}">${label}</button>`;
+    return `<div class="tsk-filter-tabs">${tab("threads", "threads")}<span class="dim">·</span>${tab("assignees", "@assignees")}</div>`;
   }
 
   function openPreviewFilter() {
     if (!projectsPreviewFocused() || previewHasUnsavedWork()) return;
     state.overlay = "preview-filter";
-    state.filterI = Math.max(
-      0,
-      previewFilterOptions().findIndex(
-        (option) => option.value === preview.threadFilter,
-      ),
-    );
+    state.filterTab = "threads";
+    state.filterI = activeFilterIndex(previewFilterOptions());
   }
 
   function choosePreviewFilter(index) {
     const option = previewFilterOptions()[index];
     if (!option) return;
     clearMarks(preview);
-    preview.threadFilter = option.value;
+    if (state.filterTab === "assignees") preview.assigneeFilter = option.value;
+    else preview.threadFilter = option.value;
     preview.peekId = null;
     ensurePreviewSelection();
     state.overlay = null;
   }
 
   function renderPreviewFilter() {
-    return `<div class="tsk-box" role="dialog" aria-label="project thread filter"><div class="tsk-box-top"><span class="tsk-box-title">project thread</span><button type="button" class="tsk-box-close" data-close="1">[x]</button></div><div class="tsk-box-body">${previewFilterOptions()
+    return `<div class="tsk-box" role="dialog" aria-label="project filter"><div class="tsk-box-top"><span class="tsk-box-title">project Filter</span><button type="button" class="tsk-box-close" data-close="1">[x]</button></div>${renderFilterTabs()}<div class="tsk-box-body">${previewFilterOptions()
       .map(
         (option, index) =>
           `<div class="tsk-pal-row" data-preview-filter-option="${index}"><span class="${index === state.filterI ? "sel-text" : ""}">${index === state.filterI ? "▸" : " "} ${esc(option.label)}</span></div>`,
       )
       .join(
         "",
-      )}</div><div class="tsk-box-foot">↑↓ move · enter choose · esc close</div></div>`;
+      )}</div><div class="tsk-box-foot">tab switch · ↑↓ move · enter choose · esc close</div></div>`;
   }
 
   function previewSelectableIds(rows = previewRows()) {
@@ -1406,6 +1621,18 @@ import { parseCapture } from "./capture.js";
         t.status !== "done" &&
         (!project || t.project === project),
     );
+    if (state.filterTab === "assignees")
+      return markActive(
+        assigneeOptions(tasks, Boolean(project)),
+        project ? state.assigneeFilter : state.projectView,
+      );
+    return markActive(
+      threadOptions(tasks, project),
+      project ? state.threadFilter : state.projectView,
+    );
+  }
+
+  function threadOptions(tasks, project) {
     const names = [...new Set(tasks.map((t) => t.thread).filter(Boolean))].sort(
       (a, b) =>
         tasks.filter((t) => t.thread === b).length -
@@ -1414,7 +1641,7 @@ import { parseCapture } from "./capture.js";
     return [
       {
         value: null,
-        label: project ? `All tasks  ${tasks.length}` : "Overview",
+        label: project ? `all  ${tasks.length}` : "Overview",
       },
       ...names.map((name) => ({
         value: name,
@@ -1433,17 +1660,20 @@ import { parseCapture } from "./capture.js";
   function openFilter() {
     if (steps.dirty || steps.editor || previewHasUnsavedWork()) return;
     state.overlay = "filter";
-    const value = state.focusProject ? state.threadFilter : state.projectView;
-    state.filterI = Math.max(
-      0,
-      filterOptions().findIndex((o) => o.value === value),
-    );
+    // An `@name` view reopens on its own tab.
+    state.filterTab =
+      !state.focusProject && state.projectView?.startsWith("@")
+        ? "assignees"
+        : "threads";
+    state.filterI = activeFilterIndex(filterOptions());
   }
   function chooseFilter(index) {
     const option = filterOptions()[index];
     if (!option) return;
     clearMarks();
-    if (state.focusProject) state.threadFilter = option.value;
+    if (state.focusProject && state.filterTab === "assignees")
+      state.assigneeFilter = option.value;
+    else if (state.focusProject) state.threadFilter = option.value;
     else {
       state.projectView = option.value;
       state.searchQuery = "";
@@ -1455,24 +1685,28 @@ import { parseCapture } from "./capture.js";
     if (state.tab === "projects") dropProjectPreview();
   }
   function renderFilter() {
-    const title = state.focusProject ? "thread filter" : "projects View";
-    return `<div class="tsk-box" role="dialog" aria-label="${title}"><div class="tsk-box-top"><span class="tsk-box-title">${title}</span><button type="button" class="tsk-box-close" data-close="1">[x]</button></div><div class="tsk-box-body">${filterOptions()
+    const title = state.focusProject ? "filter" : "view";
+    return `<div class="tsk-box" role="dialog" aria-label="${title}"><div class="tsk-box-top"><span class="tsk-box-title">${title}</span><button type="button" class="tsk-box-close" data-close="1">[x]</button></div>${renderFilterTabs()}<div class="tsk-box-body">${filterOptions()
       .map(
         (o, i) =>
           `<div class="tsk-pal-row" data-filter-option="${i}"><span class="${i === state.filterI ? "sel-text" : ""}">${i === state.filterI ? "▸" : " "} ${esc(o.label)}</span></div>`,
       )
       .join(
         "",
-      )}</div><div class="tsk-box-foot">↑↓ move · enter choose · esc close</div></div>`;
+      )}</div><div class="tsk-box-foot">tab switch · ↑↓ move · enter choose · esc close</div></div>`;
   }
   const matchesThread = (t) =>
     state.focusProject
-      ? state.threadFilter === null || (t.thread || "") === state.threadFilter
+      ? (state.threadFilter === null ||
+          (t.thread || "") === state.threadFilter) &&
+        matchesAssignee(t, state.assigneeFilter)
       : state.tab === "desk"
         ? deskFilterAdmits(t)
         : state.tab !== "projects" ||
           state.projectView === null ||
-          t.thread === state.projectView;
+          (state.projectView.startsWith("@")
+            ? t.assignee === state.projectView.slice(1)
+            : t.thread === state.projectView);
   function visibleTasks() {
     // Hidden (archived) tasks leave every working view. The closed drawer keeps
     // its unfiltered count; opening it brings done tasks into content search.
@@ -1552,6 +1786,7 @@ import { parseCapture } from "./capture.js";
         selectable: true,
         id: task.id,
         label: rowLabel(task, labelDims),
+        assignee: labelDims.assignee,
       });
     };
     // Rows in ON DECK · desk and the desk inbox never repeat the project (desk).
@@ -1626,6 +1861,7 @@ import { parseCapture } from "./capture.js";
                 id: t.id,
                 dim: true,
                 label: rowLabel(t, dims),
+                assignee: dims.assignee,
               }),
             );
         }
@@ -1679,6 +1915,7 @@ import { parseCapture } from "./capture.js";
                 id: t.id,
                 dim: true,
                 label: rowLabel(t, dims),
+                assignee: dims.assignee,
               }),
             );
         }
@@ -1743,6 +1980,7 @@ import { parseCapture } from "./capture.js";
                 id: t.id,
                 dim: true,
                 label: rowLabel(t, dims),
+                assignee: dims.assignee,
               }),
             );
         }
@@ -1775,6 +2013,7 @@ import { parseCapture } from "./capture.js";
               id: t.id,
               dim: true,
               label: rowLabel(t, dims),
+              assignee: dims.assignee,
             }),
           );
       }
@@ -1949,13 +2188,13 @@ import { parseCapture } from "./capture.js";
       { id: "projects", label: "go projects", run: () => goTab("projects") },
       {
         id: "project",
-        label: "go selected project",
+        label: "go last project",
         run: () => goTab("project"),
       },
-      { id: "capture", label: "capture", run: () => openQuickAdd() },
+      { id: "capture", label: "add task", run: () => openQuickAdd() },
       {
         id: "help",
-        label: "help",
+        label: "show all keys",
         run: () => {
           state.overlay = "help";
           state.helpQ = "";
@@ -2010,14 +2249,101 @@ import { parseCapture } from "./capture.js";
     }, 420);
   }
 
+  // The dim line under a row, in plain words: who a block or review waits on, and since when.
+  // The demo's blocks and reviews are all on you.
+  function liveLine(task) {
+    if (task.archived) return "";
+    if (task.status === "blocked") {
+      const by =
+        task.block?.by && task.block.by !== "you" ? `@${task.block.by} ` : "";
+      return `${by}blocked on you · ${age(task.block?.at ?? statusAt(task))}`;
+    }
+    if (task.status === "review")
+      return `needs your review · ${age(statusAt(task))}`;
+    return "";
+  }
+
+  // The peek of a blocked task with a block: the live line, then why and `Decide:` the
+  // options (or the needs). No notes. Empty for any other task, which peeks its notes.
+  function blockPeekLines(task) {
+    const block = task.status === "blocked" ? task.block : null;
+    if (!block) return [];
+    const lines = [liveLine(task)];
+    if (block.why) lines.push(block.why);
+    if (block.options?.length)
+      lines.push(`Decide: ${block.options.join(" · ")}`);
+    else if (block.needs) lines.push(block.needs);
+    return lines;
+  }
+
+  // The open peek under a row, `columns` wide: a block's lines, or up to five note lines,
+  // then the metadata footer. Shared by the board and the project preview.
+  function peekHtml(task, columns, rowLabelText, showAssignee = true) {
+    const blockLines = blockPeekLines(task).flatMap((line) =>
+      wrapText(line, columns - 7),
+    );
+    const noteLines = blockLines.length
+      ? []
+      : wrapText((task.notes || "").trim() || "no notes yet", columns - 7);
+    // The footer: `@assignee` (unless the filter, `@name` View, or an assignee sub-header
+    // already says it), then the row's own `#thread · project` label.
+    const label = [
+      task.assignee && showAssignee ? `@${task.assignee}` : "",
+      rowLabelText || "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    return [
+      ...[...blockLines, ...noteLines.slice(0, 5)].map(
+        (line) => `<div class="tsk-peek dim">    │ ${esc(line)}</div>`,
+      ),
+      ...(noteLines.length > 5
+        ? [
+            `<div class="tsk-peek dim">    │ … ${noteLines.length - 5} more lines</div>`,
+          ]
+        : []),
+      ...(label
+        ? wrapText(label, columns - 9).map(
+            (line, i) =>
+              `<div class="tsk-attribution dim">${i ? "       " : "    └─ "}${esc(line)}</div>`,
+          )
+        : [`<div class="tsk-peek dim">    └</div>`]),
+    ].join("");
+  }
+
+  // A row with a live line or an open peek under it carries a dim `│` in the `└` column
+  // beside each wrapped title line, padded to the prefix so the title keeps its column.
+  function liveGutter(hanging, titleLines, prefixCells) {
+    if (!hanging) return "";
+    return titleLines
+      .slice(1)
+      .map(
+        () =>
+          `\n    <span class="dim">│</span>${" ".repeat(Math.max(0, prefixCells - 5))}`,
+      )
+      .join("");
+  }
+
+  // The live line inside its row's button (a click on it acts on the task), `columns` wide.
+  function liveHtml(task, columns) {
+    const live = liveLine(task);
+    if (!live) return "";
+    return `<span class="tsk-live dim">${wrapText(live, columns - 9)
+      .map(
+        (line, i) =>
+          `<span class="tsk-live-line">${i ? "       " : "    └─ "}${esc(line)}</span>`,
+      )
+      .join("")}</span>`;
+  }
+
   function setStatus(status) {
     const tasks = targetTasks();
     const changed = tasks.filter((task) => task.status !== status);
     if (status === "done" && changed.length) rememberUndo(state, changed);
     for (const task of changed) {
-      task.status = status;
-      task.updatedAt = clock();
-      task.statusAt = task.updatedAt;
+      logStatus(task, status);
+      // Leaving blocked closes the block.
+      if (status !== "blocked") delete task.block;
     }
     clearMarks();
     state.pendingDelete = null;
@@ -2030,6 +2356,7 @@ import { parseCapture } from "./capture.js";
     clearMarks();
     clearMarks(preview);
     state.threadFilter = null;
+    state.assigneeFilter = null;
     state.tab = tab;
     state.focusProject = tab === "project" ? state.selectedProject : null;
     state.searchQuery = "";
@@ -2051,6 +2378,7 @@ import { parseCapture } from "./capture.js";
       return;
     }
     state.threadFilter = null;
+    state.assigneeFilter = null;
     state.selectedProject = name;
     state.focusProject = name;
     state.tab = "project";
@@ -2080,6 +2408,7 @@ import { parseCapture } from "./capture.js";
     preview.pendingDelete = null;
     preview.pendingDeleteBulk = false;
     preview.threadFilter = null;
+    preview.assigneeFilter = null;
     preview.peekId = null;
     preview.drawer = false;
     preview.archivedOpen = false;
@@ -2169,12 +2498,15 @@ import { parseCapture } from "./capture.js";
   function resetDemo() {
     state.tasks = seed();
     state.threadFilter = null;
-    state.deskFilter = { thread: null, project: null };
+    state.assigneeFilter = null;
+    state.filterTab = "threads";
+    state.deskFilter = { thread: null, project: null, assignee: null };
     state.deskFilterTab = "threads";
     state.layouts = {
       desk: freshLayout(),
       project: freshLayout(),
       thread: freshLayout(),
+      assignee: freshLayout(),
     };
     state.layoutOwner = "outer";
     preview.layout = freshLayout();
@@ -2430,12 +2762,14 @@ import { parseCapture } from "./capture.js";
 
   function fileSelected() {
     const tasks = targetTasks();
+    if (!tasks.length) return;
+    // One undo step for the whole set: u right after brings it back.
+    rememberUndo(state, tasks);
     for (const task of tasks) task.archived = !task.archived;
     clearMarks();
     state.pendingDelete = null;
     state.message = "";
     state.peekId = null;
-    // The file verb has no undo entry: ctrl+u never brings it back.
   }
 
   function deleteSelected() {
@@ -2467,7 +2801,7 @@ import { parseCapture } from "./capture.js";
     state.pendingDeleteBulk = false;
     clearMarks();
     state.message = bulk
-      ? `deleted ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"} · u restores`
+      ? `deleted ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"} · u undo`
       : `Deleted T${tasks[0].number} "${tasks[0].title}" · u undo`;
     expireDeleteNotice(state);
     state.peekId = null;
@@ -2516,11 +2850,7 @@ import { parseCapture } from "./capture.js";
       (task) => task.status === "open" || task.status === "ready",
     );
     const skippedDone = tasks.filter((task) => task.status === "done").length;
-    for (const task of changed) {
-      task.status = "started";
-      task.updatedAt = clock();
-      task.statusAt = task.updatedAt;
-    }
+    for (const task of changed) logStatus(task, "started");
     clearMarks();
     state.pendingDelete = null;
     state.message =
@@ -2534,11 +2864,7 @@ import { parseCapture } from "./capture.js";
     const tasks = targetTasks(preview);
     const changed = tasks.filter((task) => task.status !== status);
     if (status === "done" && changed.length) rememberUndo(preview, changed);
-    for (const task of changed) {
-      task.status = status;
-      task.updatedAt = clock();
-      task.statusAt = task.updatedAt;
-    }
+    for (const task of changed) logStatus(task, status);
     clearMarks(preview);
     preview.pendingDelete = null;
     preview.message = "";
@@ -2572,11 +2898,7 @@ import { parseCapture } from "./capture.js";
       (task) => task.status === "open" || task.status === "ready",
     );
     const skippedDone = tasks.filter((task) => task.status === "done").length;
-    for (const task of changed) {
-      task.status = "started";
-      task.updatedAt = clock();
-      task.statusAt = task.updatedAt;
-    }
+    for (const task of changed) logStatus(task, "started");
     clearMarks(preview);
     preview.pendingDelete = null;
     preview.message =
@@ -2587,7 +2909,10 @@ import { parseCapture } from "./capture.js";
   }
 
   function previewFileSelected() {
-    for (const task of targetTasks(preview)) task.archived = !task.archived;
+    const tasks = targetTasks(preview);
+    if (!tasks.length) return;
+    rememberUndo(preview, tasks);
+    for (const task of tasks) task.archived = !task.archived;
     clearMarks(preview);
     preview.pendingDelete = null;
     preview.message = "";
@@ -2619,7 +2944,7 @@ import { parseCapture } from "./capture.js";
     preview.pendingDeleteBulk = false;
     clearMarks(preview);
     preview.message = bulk
-      ? `deleted ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"} · u restores`
+      ? `deleted ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"} · u undo`
       : `Deleted T${tasks[0].number} "${tasks[0].title}" · u undo`;
     expireDeleteNotice(preview);
     preview.peekId = null;
@@ -2656,6 +2981,8 @@ import { parseCapture } from "./capture.js";
   function openPreviewTaskPage(editField = null) {
     const task = previewTask();
     if (!task) return;
+    // A page opening fresh collapses its trail; an edit on the open page keeps it.
+    if (!preview.page) previewSteps.trailOpen = false;
     preview.page = true;
     preview.editField = editField;
     preview.editDraft =
@@ -2690,32 +3017,42 @@ import { parseCapture } from "./capture.js";
 
   function renderHelp() {
     const rows = [
-      ["navigation", "↑↓ / jk", "move", "select"],
-      ["navigation", "shift+M", "multi-select", "select multiple"],
+      ["navigation", "↑↓ / jk", "move up / down", "select"],
+      ["navigation", "shift+M", "start / stop multi-select", "select multiple"],
       [
         "navigation",
         "shift+↑↓",
         "mark and move (multi-select)",
         "select multiple",
       ],
-      ["navigation", "space", "toggle mark (multi-select)", "select multiple"],
+      [
+        "navigation",
+        "space",
+        "mark / unmark (multi-select)",
+        "select multiple",
+      ],
       ["navigation", "enter", "open task", "detail"],
-      ["navigation", "←/h · →/l", "close or peek / slide", "wide view"],
-      ["task actions", "s", "start", "status open or ready"],
-      ["task actions", "d", "done", "status finish complete"],
-      ["task actions", "b", "block", "status"],
-      ["task actions", "r", "review", "status"],
-      ["task actions", "n", "pick", "status ready"],
-      ["task actions", "o", "inbox", "status open"],
-      ["task actions", "x", "delete", "remove"],
-      ["task actions", "u", "undo", "restore"],
+      [
+        "navigation",
+        "←/h · →/l",
+        "close / peek · slide panes (wide)",
+        "wide view",
+      ],
       [
         "task actions",
-        "f",
-        "archive / restore (archived: z drawer)",
-        "file hide restore",
+        "s",
+        "start (assigned: dispatch)",
+        "status open or ready",
       ],
-      ["create & edit", "+", "quick-add", "capture new task"],
+      ["task actions", "d", "mark done", "status finish complete"],
+      ["task actions", "b", "block / unblock", "status"],
+      ["task actions", "r", "send to review / back to ready", "status"],
+      ["task actions", "n", "mark ready (next)", "status ready pick"],
+      ["task actions", "o", "send to inbox", "status open"],
+      ["task actions", "x", "delete task (press twice)", "remove"],
+      ["task actions", "u", "undo last change", "restore"],
+      ["task actions", "f", "archive / restore task", "file hide restore"],
+      ["create & edit", "+", "add task", "capture new task quick-add"],
       ["create & edit", "e", "edit title", "rename"],
       [
         "create & edit",
@@ -2726,14 +3063,14 @@ import { parseCapture } from "./capture.js";
       [
         "task actions",
         "alt+↑ / alt+↓",
-        "move selected step (task page)",
+        "move step up / down (task page)",
         "checklist reorder",
       ],
-      ["views & find", "1", "desk", "switch view"],
-      ["views & find", "2", "selected project", "switch view"],
-      ["views & find", "3", "projects", "switch view"],
-      ["views & find", "p", "project picker", "switch find"],
-      ["views & find", "z / D", "done drawer", "completed tasks"],
+      ["views & find", "1", "open desk", "switch view"],
+      ["views & find", "2", "open last project", "switch view"],
+      ["views & find", "3", "open projects", "switch view"],
+      ["views & find", "p", "choose project", "switch find"],
+      ["views & find", "z / D", "show / hide done drawer", "completed tasks"],
       ["views & find", "g", "group by", "layout group project thread"],
       [
         "views & find",
@@ -2744,13 +3081,13 @@ import { parseCapture } from "./capture.js";
       [
         "views & find",
         "← / →",
-        "fold / unfold a header (sub-group, inbox, archived)",
+        "fold / unfold header",
         "collapse expand group",
       ],
       [
         "views & find",
         "enter",
-        "open a sub-header's project, desk, or thread",
+        "open group's board (header)",
         "group board view",
       ],
       [
@@ -2759,11 +3096,11 @@ import { parseCapture } from "./capture.js";
         "fold / unfold all groups",
         "collapse expand inbox archived",
       ],
-      ["views & find", "t", "filter", "thread project narrow"],
+      ["views & find", "t", "filter board", "thread project narrow"],
       ["views & find", "/", "search board", "find filter tasks projects"],
-      ["views & find", ":", "command palette", "find actions"],
-      ["app controls", "?", "help", "shortcuts keys"],
-      ["app controls", "esc", "clear / close", "cancel"],
+      ["views & find", ":", "open command palette", "find actions"],
+      ["app controls", "?", "show all keys", "shortcuts keys help"],
+      ["app controls", "esc", "close, or quit from the board", "cancel clear"],
       ["app controls", "q", "quit", "exit"],
     ];
     const query = state.helpQ.trim().toLowerCase();
@@ -2787,7 +3124,7 @@ import { parseCapture } from "./capture.js";
         <div class="tsk-help-search"><span>/ </span><span>${state.helpQ ? esc(state.helpQ) : '<span class="dim">search keys or actions…</span>'}</span><span class="cursor">█</span></div>
         <div class="tsk-help-divider" aria-hidden="true"></div>
         <div class="tsk-box-body tsk-help-body">${list || '<div class="dim">no shortcuts match</div>'}</div>
-        <div class="tsk-box-foot">type search · ↑/↓ scroll · esc clear/close</div>
+        <div class="tsk-box-foot">type search · ↑/↓ scroll · esc clear / close</div>
       </div>`;
   }
 
@@ -2842,7 +3179,7 @@ import { parseCapture } from "./capture.js";
     enterTaskStage();
     const task = selectedTask();
     if (!task) return;
-    if (id === "edit" && steps.selected && steps.selected !== "add") {
+    if (id === "edit" && stepSelected(steps)) {
       steps.begin(task, steps.selected);
       return;
     }
@@ -2867,11 +3204,7 @@ import { parseCapture } from "./capture.js";
     clearMarks(preview);
     const task = previewTask();
     if (!task) return;
-    if (
-      id === "edit" &&
-      previewSteps.selected &&
-      previewSteps.selected !== "add"
-    ) {
+    if (id === "edit" && stepSelected(previewSteps)) {
       previewSteps.begin(task, previewSteps.selected);
       return;
     }
@@ -2944,7 +3277,7 @@ import { parseCapture } from "./capture.js";
       editing === "title"
         ? `<input class="tsk-field" id="${editId}" value="${esc(editDraft)}" />`
         : esc(task.title);
-    const glyph = GLYPH[task.status] || "○";
+    const glyph = taskGlyph(task);
     let header = `<div class="tsk-task-header ${focused ? "is-bold" : "dim"}"><span class="glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> <span class="sec">${headTitle}</span><span class="tsk-state-slot">${esc(stateSlot)}</span></div><div class="tsk-task-rule" aria-hidden="true"></div>`;
     if (narrow && !editing) {
       const room = terminalColumns() - 9 - stateSlot.length;
@@ -2965,6 +3298,7 @@ import { parseCapture } from "./capture.js";
             .map((line) => `<span>${esc(line) || " "}</span>`)
             .join("")}</div>`;
     const stepRows = pageSteps.rows(task);
+    const block = editing ? "" : blockSection(task, taskColumnWidth() - 6);
     const inlineEditor = `<textarea id="${stepEditId}" class="tsk-field" aria-label="Step text" rows="${wrapText(pageSteps.editor?.text ?? "", taskColumnWidth() - 8).length}">${esc(pageSteps.editor?.text ?? "")}</textarea><span class="tsk-step-refusal">${esc(pageSteps.refusal)}</span>`;
     const stepList = `<div class="tsk-steps"><div class="tsk-steps-heading dim">steps ${stepRows.filter((step) => step.done).length}/${stepRows.length}</div>${stepRows
       .map(
@@ -2991,28 +3325,57 @@ import { parseCapture } from "./capture.js";
       .join(
         "",
       )}${pageSteps.editor && !pageSteps.editor.id && !pageSteps.editor.after ? `<div class="tsk-step-new">${inlineEditor}</div>` : `<button type="button" class="tsk-step-add dim" ${addAttribute}="1">   + step</button>`}</div>`;
-    const metaField = (field, text) =>
-      editing === field
-        ? `<span class="tsk-meta-selected" data-page-field="${field}">${text}</span>`
-        : text;
-    const thread = task.thread
-      ? `#${esc(task.thread)}`
-      : editing === "thread"
-        ? "thread"
-        : "";
-    const scope = previewMode || narrow || editing ? esc(project) : "";
+    // Match the TUI's pinned, wrapped footer, including bases without a repo/default lookup.
+    const base =
+      task.base || (task.project && !fixture ? "main (default)" : "default");
     const parts = [
-      thread && metaField("thread", thread),
-      scope && metaField("scope", scope),
-      `created ${esc(age(task.createdAt))} ago`,
-      `updated ${esc(age(task.updatedAt))} ago`,
+      task.assignee && { field: "assignee", text: `@${task.assignee}` },
+      { field: "base", text: `⎇ ${base}` },
+      (task.thread || editing === "thread") && {
+        field: "thread",
+        text: task.thread ? `#${task.thread}` : "thread",
+      },
+      (previewMode || narrow || editing) && { field: "scope", text: project },
     ].filter(Boolean);
-    const meta = `<div class="tsk-page-meta dim">${parts.join(" · ")}</div>`;
+    let position = 0;
+    const fields = parts.map((part) => {
+      const start = position;
+      position += [...part.text].length;
+      const end = position;
+      position += 3;
+      return { ...part, start, end };
+    });
+    let offset = 0;
+    const metaRows = wrapText(
+      parts.map((part) => part.text).join(" · "),
+      taskColumnWidth() - 2,
+    ).map((line) => {
+      const chars = [...line];
+      const end = offset + chars.length;
+      let painted = "";
+      let cursor = offset;
+      for (const part of fields) {
+        const left = Math.max(offset, part.start);
+        const right = Math.min(end, part.end);
+        if (right <= left) continue;
+        painted += esc(chars.slice(cursor - offset, left - offset).join(""));
+        const text = esc(chars.slice(left - offset, right - offset).join(""));
+        painted +=
+          editing === part.field
+            ? `<span class="tsk-meta-selected" data-page-field="${part.field}">${text}</span>`
+            : text;
+        cursor = right;
+      }
+      painted += esc(chars.slice(cursor - offset).join(""));
+      offset = end;
+      return `<span class="tsk-meta-row">${painted}</span>`;
+    });
+    const meta = `<div class="tsk-page-meta dim">${metaRows.join("")}</div>`;
     const editField = editing?.startsWith("step:") ? "steps" : editing || "";
     const editTarget = editing?.startsWith("step:")
       ? editing.slice("step:".length)
       : "";
-    return `<div class="tsk-task-column tsk-surface ${narrow ? "is-narrow" : ""}" aria-label="T${task.number}${previewMode ? " project" : ""} task column" data-status="${esc(task.status)}" data-edit-state="${pageSteps.editor ? "editing" : pageSteps.dirty ? "unsaved" : "view"}" data-edit-field="${esc(editField)}" data-edit-target="${esc(editTarget)}">${header}<div class="tsk-task-surface tsk-page">${notes}${stepList}</div>${meta}</div>`;
+    return `<div class="tsk-task-column tsk-surface ${narrow ? "is-narrow" : ""}" aria-label="T${task.number}${previewMode ? " project" : ""} task column" data-status="${esc(task.status)}" data-edit-state="${pageSteps.editor ? "editing" : pageSteps.dirty ? "unsaved" : "view"}" data-edit-field="${esc(editField)}" data-edit-target="${esc(editTarget)}">${header}<div class="tsk-task-surface tsk-page">${block}${notes}${stepList}${paperTrail(task, pageSteps, previewMode ? "preview" : "main")}</div>${meta}</div>`;
   }
 
   function renderPage(embedded = false) {
@@ -3081,45 +3444,29 @@ import { parseCapture } from "./capture.js";
             ? "▪ "
             : "  ";
         const flash = task.id === state.flashId;
-        const glyph = GLYPH[task.status] || "○";
+        const glyph = taskGlyph(task);
         const titleRoom = Math.max(
           8,
           width - 2 - 4 - `T${task.number} `.length,
         );
         const titleLines = wrapText(task.title, titleRoom);
+        const peekOpen = rail && preview.peekId === task.id;
         // An open peek states the label on its closing line, so the row leaves it out.
-        const title = titleLinesHtml(
-          titleLines,
-          rail && preview.peekId === task.id ? "" : row.label,
-          titleRoom,
+        const rowLabelText = peekOpen ? "" : row.label;
+        const title = titleLinesHtml(titleLines, rowLabelText, titleRoom);
+        const peek = peekOpen
+          ? peekHtml(task, width, row.label, row.assignee)
+          : "";
+        const live = peekOpen ? "" : liveHtml(task, width);
+        const gutter = liveGutter(
+          live || peekOpen,
+          [
+            ...titleLines,
+            ...labelOverflow(titleLines, rowLabelText, titleRoom),
+          ],
+          4 + `T${task.number} `.length,
         );
-        const noteLines = wrapText(
-          (task.notes || "").trim() || "no notes yet",
-          Math.max(8, width - 7),
-        );
-        const peek =
-          rail && preview.peekId === task.id
-            ? [
-                ...noteLines
-                  .slice(0, 5)
-                  .map(
-                    (line) =>
-                      `<div class="tsk-peek dim">    │ ${esc(line)}</div>`,
-                  ),
-                ...(noteLines.length > 5
-                  ? [
-                      `<div class="tsk-peek dim">    │ … ${noteLines.length - 5} more lines</div>`,
-                    ]
-                  : []),
-                ...(row.label
-                  ? wrapText(row.label, Math.max(8, width - 9)).map(
-                      (line, i) =>
-                        `<div class="tsk-attribution dim">${i ? "       " : "    └─ "}${esc(line)}</div>`,
-                    )
-                  : [`<div class="tsk-peek dim">    └</div>`]),
-              ].join("")
-            : "";
-        return `<button type="button" class="tsk-row ${row.dim ? "dim" : ""} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-preview-task="${esc(task.id)}"><span class="tsk-row-main"><span class="tsk-row-prefix">${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> </span><span class="tsk-row-title">${title}</span></span></button>${peek}`;
+        return `<button type="button" class="tsk-row ${row.dim ? "dim" : ""} ${live ? "has-live" : ""} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-preview-task="${esc(task.id)}"><span class="tsk-row-main"><span class="tsk-row-prefix">${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> ${gutter}</span><span class="tsk-row-title">${title}</span></span>${live}</button>${peek}`;
       })
       .join("");
     const project = esc(preview.project || "project");
@@ -3183,15 +3530,13 @@ import { parseCapture } from "./capture.js";
       return `<span class="tsk-tab-group ${on ? "is-on" : ""}"><button type="button" class="tsk-tab ${on ? "is-on" : ""}" data-tab="${tab}">${esc(text)}</button>${tab === "project" ? `<button class="tsk-tab-arrow" data-chip="1" aria-label="choose project">▾</button>` : ""}</span>`;
     }).join(`<span class="dim"> · </span>`);
     const filter = state.focusProject
-      ? state.threadFilter === null
-        ? "all"
-        : state.threadFilter === ""
-          ? "without a thread"
-          : `#${state.threadFilter}`
+      ? filterLabel(state.threadFilter, state.assigneeFilter)
       : state.tab === "projects"
         ? state.projectView === null
           ? "Overview"
-          : `#${state.projectView}`
+          : state.projectView.startsWith("@")
+            ? state.projectView
+            : `#${state.projectView}`
         : null;
     const index =
       state.tab === "projects" &&
@@ -3297,7 +3642,7 @@ import { parseCapture } from "./capture.js";
             ? "▪ "
             : "  ";
         const flash = task.id === state.flashId;
-        const glyph = GLYPH[task.status] || "○";
+        const glyph = taskGlyph(task);
         const indent = "  ".repeat(row.indent || 0);
         if (rail) {
           const prefix = `${rowMark}${glyph} `;
@@ -3321,39 +3666,24 @@ import { parseCapture } from "./capture.js";
         const titleLines = wrapText(task.title, titleRoom);
         // An open peek states the label on its closing line, so the row leaves it out.
         const peeked = state.peekId === task.id && !isWideSplit();
-        const title = titleLinesHtml(
-          titleLines,
-          peeked ? "" : row.label,
-          titleRoom,
-        );
-        const noteLines = wrapText(
-          (task.notes || "").trim() || "no notes yet",
-          columns - 7,
-        );
-        const label = row.label;
-        const peek = peeked
-          ? [
-              ...noteLines
-                .slice(0, 5)
-                .map(
-                  (line) =>
-                    `<div class="tsk-peek dim">    │ ${esc(line)}</div>`,
-                ),
-              ...(noteLines.length > 5
-                ? [
-                    `<div class="tsk-peek dim">    │ … ${noteLines.length - 5} more lines</div>`,
-                  ]
-                : []),
-              ...(label
-                ? wrapText(label, columns - 9).map(
-                    (line, i) =>
-                      `<div class="tsk-attribution dim">${i ? "       " : "    └─ "}${esc(line)}</div>`,
-                  )
-                : [`<div class="tsk-peek dim">    └</div>`]),
-            ].join("")
+        const rowLabelText = peeked ? "" : row.label;
+        const title = titleLinesHtml(titleLines, rowLabelText, titleRoom);
+        const peekOpen = peeked;
+        const peek = peekOpen
+          ? peekHtml(task, columns, row.label, row.assignee)
           : "";
         const dimRow = row.dim ? "dim" : "";
-        return `<button type="button" class="tsk-row ${dimRow} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-task="${task.id}"><span class="tsk-row-main"><span class="tsk-row-prefix">${indent}${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> </span><span class="tsk-row-title">${title}</span></span></button>${peek}`;
+        // The peek replaces the live line.
+        const live = peekOpen ? "" : liveHtml(task, columns);
+        const gutter = liveGutter(
+          live || peekOpen,
+          [
+            ...titleLines,
+            ...labelOverflow(titleLines, rowLabelText, titleRoom),
+          ],
+          indent.length + 4 + `T${task.number} `.length,
+        );
+        return `<button type="button" class="tsk-row ${dimRow} ${live ? "has-live" : ""} ${selected ? "is-sel" : ""} ${flash ? "is-flash" : ""}" data-task="${task.id}"><span class="tsk-row-main"><span class="tsk-row-prefix">${indent}${rowMark}<span class="tsk-row-glyph">${glyph}</span> <span class="tsk-task-id" data-copy-task="${esc(task.id)}" title="copy T${task.number}">T${task.number}</span> ${gutter}</span><span class="tsk-row-title">${title}</span></span>${live}</button>${peek}`;
       })
       .join("");
 
@@ -3395,8 +3725,8 @@ import { parseCapture } from "./capture.js";
     const selectedCount = owner.markedIds.size;
     const selectionMessage = owner.markMode
       ? selectedCount
-        ? `multi-select · ${selectedCount} selected · esc clears`
-        : "multi-select · space/click marks · esc exits"
+        ? `multi-select · ${selectedCount} selected · esc clear`
+        : "multi-select · space/click mark · esc exit"
       : "";
     const baseContext = previewOwnsFooter
       ? preview.project || "project"
@@ -3409,7 +3739,7 @@ import { parseCapture } from "./capture.js";
         : state.tab === "desk"
           ? "desk"
           : state.focusProject
-            ? `${state.focusProject}${state.threadFilter ? ` · #${state.threadFilter}` : ""}`
+            ? `${state.focusProject}${filterLabel(state.threadFilter, state.assigneeFilter) === "all" ? "" : ` · ${filterLabel(state.threadFilter, state.assigneeFilter)}`}`
             : state.tab;
     const scopedContext =
       owner.searchPinned && owner.searchQuery.trim()
@@ -3440,7 +3770,7 @@ import { parseCapture } from "./capture.js";
              state.refuse
                ? esc(state.refuse)
                : hintBar([
-                   { id: "save", label: "enter save" },
+                   { id: "save", label: "enter add" },
                    { id: "details", label: "tab notes" },
                    { id: "close", label: "esc close" },
                  ])
@@ -3469,6 +3799,46 @@ import { parseCapture } from "./capture.js";
         <div class="foot-rule" aria-hidden="true"></div>
         ${footer}
       </div>`;
+  }
+
+  // Paint terminal-cell chrome separately from note/step text. The final blank row
+  // belongs to the scrolling stream, just as in ui/render.rs::page_content_layout.
+  function refreshPageScrollbars() {
+    root.querySelectorAll(".tsk-task-surface.tsk-page").forEach((content) => {
+      const column = content.closest(".tsk-task-column");
+      let track = column.querySelector(".tsk-page-scrollbar");
+      if (!track) {
+        track = document.createElement("div");
+        track.className = "tsk-page-scrollbar dim";
+        track.setAttribute("aria-hidden", "true");
+        column.append(track);
+      }
+      const paint = () => {
+        const lineHeight = parseFloat(getComputedStyle(content).lineHeight);
+        const viewport = Math.floor(content.clientHeight / lineHeight);
+        const total = Math.round(content.scrollHeight / lineHeight);
+        track.style.top = `${content.offsetTop}px`;
+        track.hidden = viewport === 0 || total <= viewport;
+        if (track.hidden) return;
+        const rows = Math.min(
+          viewport,
+          Math.max(1, Math.ceil((viewport * viewport) / total)),
+        );
+        const travel = viewport - rows;
+        const scroll = Math.round(content.scrollTop / lineHeight);
+        const start = Math.min(
+          travel,
+          Math.floor((scroll * travel) / (total - viewport)),
+        );
+        track.innerHTML = Array.from(
+          { length: viewport },
+          (_, row) =>
+            `<span>${row >= start && row < start + rows ? "▌" : " "}</span>`,
+        ).join("");
+      };
+      content.onscroll = paint;
+      paint();
+    });
   }
 
   function render() {
@@ -3527,6 +3897,7 @@ import { parseCapture } from "./capture.js";
       root.innerHTML = html;
       const content = root.querySelector(".tsk-task-surface");
       if (content) content.scrollTop = oldScroll;
+      refreshPageScrollbars();
       const stepInput = root.querySelector("#tsk-step-edit");
       const previewStepInput = root.querySelector("#tsk-preview-step-edit");
       if (stepInput || previewStepInput) {
@@ -3537,6 +3908,7 @@ import { parseCapture } from "./capture.js";
           stepState.refusal = "";
           root.querySelector(".tsk-step-refusal").textContent = "";
           input.rows = wrapText(input.value, taskColumnWidth() - 8).length;
+          refreshPageScrollbars();
         });
         input.focus({ preventScroll: true });
         input.setSelectionRange(input.value.length, input.value.length);
@@ -3736,6 +4108,7 @@ import { parseCapture } from "./capture.js";
       previewSteps.move(
         task,
         e.shiftKey || ["ArrowUp", "k"].includes(e.key) ? -1 : 1,
+        ["trail"],
       );
       render();
       root
@@ -3746,6 +4119,8 @@ import { parseCapture } from "./capture.js";
     if (bare && e.key === "Enter" && previewSteps.selected) {
       e.preventDefault();
       if (previewSteps.selected === "add") previewSteps.begin(task);
+      else if (previewSteps.selected === "trail")
+        previewSteps.trailOpen = !previewSteps.trailOpen;
       else {
         previewSteps.toggle(task);
         task.updatedAt = clock();
@@ -3759,21 +4134,22 @@ import { parseCapture } from "./capture.js";
       render();
       return true;
     }
+    if (bare && e.key === "g") {
+      e.preventDefault();
+      previewSteps.trailOpen = !previewSteps.trailOpen;
+      render();
+      return true;
+    }
     if (bare && e.key === "e") {
       e.preventDefault();
       clearMarks(preview);
-      if (previewSteps.selected && previewSteps.selected !== "add")
+      if (stepSelected(previewSteps))
         previewSteps.begin(task, previewSteps.selected);
       else openPreviewTaskPage("title");
       render();
       return true;
     }
-    if (
-      bare &&
-      e.key === "x" &&
-      previewSteps.selected &&
-      previewSteps.selected !== "add"
-    ) {
+    if (bare && e.key === "x" && stepSelected(previewSteps)) {
       e.preventDefault();
       if (previewSteps.remove(task)) task.updatedAt = clock();
       render();
@@ -4202,6 +4578,7 @@ import { parseCapture } from "./capture.js";
         steps.move(
           task,
           e.shiftKey || ["ArrowUp", "k"].includes(e.key) ? -1 : 1,
+          ["trail"],
         );
         render();
         root
@@ -4212,6 +4589,7 @@ import { parseCapture } from "./capture.js";
       if (bare && e.key === "Enter" && steps.selected) {
         e.preventDefault();
         if (steps.selected === "add") steps.begin(task);
+        else if (steps.selected === "trail") steps.trailOpen = !steps.trailOpen;
         else {
           steps.toggle(task);
           task.updatedAt = clock();
@@ -4225,13 +4603,19 @@ import { parseCapture } from "./capture.js";
         render();
         return;
       }
-      if (bare && e.key === "e" && steps.selected && steps.selected !== "add") {
+      if (bare && e.key === "g") {
+        e.preventDefault();
+        steps.trailOpen = !steps.trailOpen;
+        render();
+        return;
+      }
+      if (bare && e.key === "e" && stepSelected(steps)) {
         e.preventDefault();
         steps.begin(task, steps.selected);
         render();
         return;
       }
-      if (bare && e.key === "x" && steps.selected && steps.selected !== "add") {
+      if (bare && e.key === "x" && stepSelected(steps)) {
         e.preventDefault();
         if (steps.remove(task)) task.updatedAt = clock();
         render();
@@ -4379,6 +4763,8 @@ import { parseCapture } from "./capture.js";
     if (state.overlay === "preview-filter") {
       e.preventDefault();
       if (e.key === "Escape") state.overlay = null;
+      else if (["Tab", "ArrowLeft", "ArrowRight"].includes(e.key))
+        switchFilterTab();
       else if (e.key === "Enter") choosePreviewFilter(state.filterI);
       else if (["ArrowDown", "j"].includes(e.key))
         state.filterI = Math.min(
@@ -4394,11 +4780,14 @@ import { parseCapture } from "./capture.js";
       e.preventDefault();
       if (e.key === "Escape") state.overlay = null;
       else if (e.key === "Enter") chooseDeskFilter(state.filterI);
-      else if (["ArrowLeft", "ArrowRight", "h", "l", "Tab"].includes(e.key))
-        openDeskFilter(
-          state.deskFilterTab === "threads" ? "projects" : "threads",
-        );
-      else if (["ArrowDown", "j"].includes(e.key))
+      else if (["ArrowLeft", "ArrowRight", "h", "l", "Tab"].includes(e.key)) {
+        // The three tabs wrap: ←, h and shift+tab step back.
+        const back =
+          ["ArrowLeft", "h"].includes(e.key) || (e.key === "Tab" && e.shiftKey);
+        const at = DESK_FILTER_TABS.indexOf(state.deskFilterTab);
+        const step = back ? DESK_FILTER_TABS.length - 1 : 1;
+        openDeskFilter(DESK_FILTER_TABS[(at + step) % DESK_FILTER_TABS.length]);
+      } else if (["ArrowDown", "j"].includes(e.key))
         state.filterI = Math.min(
           deskFilterOptions().length - 1,
           state.filterI + 1,
@@ -4430,6 +4819,8 @@ import { parseCapture } from "./capture.js";
     if (state.overlay === "filter") {
       e.preventDefault();
       if (e.key === "Escape") state.overlay = null;
+      else if (["Tab", "ArrowLeft", "ArrowRight"].includes(e.key))
+        switchFilterTab();
       else if (e.key === "Enter") chooseFilter(state.filterI);
       else if (["ArrowDown", "j"].includes(e.key))
         state.filterI = Math.min(filterOptions().length - 1, state.filterI + 1);
@@ -4870,6 +5261,15 @@ import { parseCapture } from "./capture.js";
       render();
       return;
     }
+    const filterTab = e.target.closest("[data-filter-tab]");
+    if (
+      filterTab &&
+      (state.overlay === "filter" || state.overlay === "preview-filter")
+    ) {
+      switchFilterTab(filterTab.dataset.filterTab);
+      render();
+      return;
+    }
     const previewGroupControl = e.target.closest(
       "[data-preview-group-control]",
     );
@@ -4966,6 +5366,15 @@ import { parseCapture } from "./capture.js";
       if (previewStepTarget.hasAttribute("data-preview-step-add"))
         previewSteps.begin(task);
       else previewSteps.selected = previewStepTarget.dataset.previewStep;
+      render();
+      return;
+    }
+    const trailToggle = e.target.closest("[data-trail-toggle]");
+    if (trailToggle) {
+      const pageSteps =
+        trailToggle.dataset.trailToggle === "preview" ? previewSteps : steps;
+      pageSteps.selected = "trail";
+      pageSteps.trailOpen = !pageSteps.trailOpen;
       render();
       return;
     }

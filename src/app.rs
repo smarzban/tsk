@@ -4,19 +4,25 @@ use std::env;
 use std::error::Error;
 use std::io;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Position, Rect};
 use ratatui::DefaultTerminal;
 
+use crate::agents::AgentProfiles;
 use crate::context::{build_snapshot, InvocationSnapshot, RawHostContext};
-use crate::domain::{DomainError, DomainState};
+use crate::dispatch::{
+    self, BranchCleanup, CleanupError, CleanupResult, DispatchError, DispatchHost, DispatchResult,
+    SystemDispatchHost, WorktreeCleanup,
+};
+use crate::domain::{DomainError, DomainState, HumanStatus};
 use crate::save_recovery::SaveRecovery;
 use crate::store::{default_state_dir, StoreSignature, TaskStore};
 use crate::ui::board::{
     apply_intent, board_intent_may_persist, draw_board, resolve_board_command, BoardInputMode,
-    BoardModel, IntentOutcome, SaveResolution,
+    BoardModel, BulkCleanup, CleanupPrompt, CleanupRow, CleanupRowState, CleanupRun, CleanupRunRow,
+    IntentOutcome, SaveResolution,
 };
 use crate::ui::capture::{CaptureField, TITLE_REQUIRED_MESSAGE};
 use crate::ui::input::{
@@ -75,10 +81,15 @@ pub fn resolve_mode<S: AsRef<str>>(args: impl IntoIterator<Item = S>) -> AppMode
     resolve_mode_from(env::var(MODE_ENV).ok().as_deref(), args)
 }
 
-fn load_snapshot() -> InvocationSnapshot {
+/// The invocation snapshot, its default destination rewritten to the stored project it
+/// aliases (`/tmp/repo` for a launch from `/private/tmp/repo`). Board open, the quick-capture
+/// popup, and the board's quick add all take their snapshot from here.
+pub fn load_snapshot(state: &DomainState) -> InvocationSnapshot {
     let raw = RawHostContext::from_env();
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    build_snapshot(&raw, cwd)
+    let mut snapshot = build_snapshot(&raw, cwd);
+    crate::scope::adopt_stored_identity(&mut snapshot, state);
+    snapshot
 }
 
 /// Load store + snapshot into domain and board view-model (no TTY).
@@ -98,11 +109,51 @@ fn load_board_inner(
     let state_dir = default_state_dir();
     let store = TaskStore::new(state_dir.clone());
     if full_board_open {
+        seed_full_board_files_without_blocking_open(&store);
         seed_notices_without_blocking_open(&store);
     }
     let state = store.load()?;
-    let snapshot = load_snapshot();
+    let snapshot = load_snapshot(&state);
     let mut model = BoardModel::from_domain_for_snapshot(&state, &snapshot);
+    let profiles_error = match crate::agents::AgentProfiles::load(&state_dir) {
+        Ok(profiles) => {
+            model.set_agent_profiles(&profiles);
+            None
+        }
+        Err(error) => Some(error.to_string()),
+    };
+    // A bad `[board]` opens the board at the built-in layout; a profile error, which
+    // blocks assigning, keeps the status row.
+    let board_error = match crate::agents::BoardDefaults::load(&state_dir) {
+        Ok(defaults) => {
+            model.set_layout_defaults(defaults);
+            None
+        }
+        Err(error) => Some(error.to_string()),
+    };
+    let backup_error = if full_board_open {
+        crate::backup::after_open(&state_dir);
+        // Shown on every full open until the target succeeds; nothing is marked shown, so a
+        // profile or `[board]` error that wins the row this time loses nothing.
+        crate::backup::failure_message(&state_dir)
+    } else {
+        None
+    };
+    // The first-backup suggestion is recorded as shown, so it is taken only when nothing
+    // else wants the status row.
+    let message = profiles_error.or(board_error).or(backup_error).or_else(|| {
+        let tasks = state
+            .tasks()
+            .iter()
+            .filter(|task| !task.is_notice() && !task.soft_deleted)
+            .count();
+        full_board_open
+            .then(|| crate::backup::take_backup_nudge(&state_dir, tasks))
+            .flatten()
+    });
+    if let Some(message) = message {
+        model.set_message(message);
+    }
     if full_board_open {
         model.offer_launch_card(&state, &snapshot);
     }
@@ -111,6 +162,10 @@ fn load_board_inner(
         env!("CARGO_PKG_VERSION"),
     ));
     Ok((store, state, model))
+}
+
+fn seed_full_board_files_without_blocking_open(store: &TaskStore) {
+    let _ = crate::agents::seed_on_open(store.path());
 }
 
 fn seed_notices_without_blocking_open(store: &TaskStore) {
@@ -180,6 +235,9 @@ pub fn board_frame(
     wait: impl FnOnce(Duration) -> io::Result<bool>,
     active_animations: bool,
 ) -> io::Result<FramePoll> {
+    model.poll_base_picker_results();
+    model.poll_cleanup_check();
+    model.poll_dispatch_checks();
     paint(model)?;
     if wait(board_poll_duration(active_animations))? {
         Ok(FramePoll::Event)
@@ -269,15 +327,27 @@ pub fn quick_capture_finished(model: &BoardModel) -> bool {
 /// The popup lives exactly as long as that draft: a persisted save closes it, an
 /// explicit discard closes it, and a failed save keeps it open in recovery.
 fn run_capture() -> Result<(), Box<dyn Error>> {
+    let _presence = hold_board_presence();
     let (store, mut domain, mut model) = load_board_for_quick_capture()?;
-    let snapshot = load_snapshot();
+    let snapshot = load_snapshot(&domain);
     seed_quick_capture(&mut domain, &mut model, &snapshot);
     run_board_loop(store, domain, model, true)
 }
 
 fn run_board() -> Result<(), Box<dyn Error>> {
+    let _presence = hold_board_presence();
     let (store, domain, model) = load_board()?;
+    crate::git_base::remember_fetches_in(store.path());
     run_board_loop(store, domain, model, false)
+}
+
+/// Held for the whole session, taken before the first load, so `tsk restore` refuses while
+/// this process could still write back tasks the restored store no longer holds. Best effort:
+/// a store that cannot take the lock still opens.
+fn hold_board_presence() -> Option<crate::store::BoardPresence> {
+    TaskStore::new(default_state_dir())
+        .hold_board_presence()
+        .ok()
 }
 
 fn run_board_loop(
@@ -320,6 +390,20 @@ fn run_board_loop(
         // after one settled-size paint so a key typed mid-drag is not dropped.
         let mut pending_event: Option<Event> = None;
         loop {
+            // Apply completed branch discovery and cleanup checks only on the board thread,
+            // before painting.
+            board_background_step(
+                &store,
+                &mut domain,
+                &mut model,
+                &mut save_recovery,
+                dispatch::running_inside_herdr(),
+                &mut board_dispatch_host(&store),
+                &mut |naming| drop(dispatch::spawn_agent_naming(naming)),
+            )?;
+            if model.quit_after_cleanup_due() {
+                break;
+            }
             // Settle, paint, then wait. The wait is only the Frame Scheduler's idle floor.
             // All three are one call so the frame is painted before the wait can time out into
             // the `continue` below.
@@ -691,6 +775,7 @@ fn run_board_loop(
                     }
                 }
                 Event::Resize(_, _) => {
+                    model.follow_cleanup_selection();
                     // Dragging a pane edge fires a burst of resizes; wait them out
                     // so the next paint rebuilds layout once at the settled size.
                     pending_event = scheduler::coalesce_resizes(event::poll, event::read)?;
@@ -1017,6 +1102,22 @@ fn board_keyboard_intent(
                 | BoardInputMode::ListPicker
                 | BoardInputMode::Search
                 | BoardInputMode::QuickAdd
+                | BoardInputMode::CleanupConfirm
+                | BoardInputMode::CleanupDirtyConfirm
+                | BoardInputMode::DispatchConfirm
+                | BoardInputMode::BlockCard
+                | BoardInputMode::EditReply
+        );
+        // A list picker's or bulk cleanup card's Esc is its own cancel: clearing marks
+        // underneath would leave it open, still bound to the set it captured.
+        let surface_owns_escape = matches!(
+            mode,
+            BoardInputMode::ListPicker
+                | BoardInputMode::CleanupConfirm
+                | BoardInputMode::CleanupDirtyConfirm
+                | BoardInputMode::DispatchConfirm
+                | BoardInputMode::BlockCard
+                | BoardInputMode::EditReply
         );
         if !text_entry_owns_capital_m
             && mode != BoardInputMode::SaveRecovery
@@ -1028,6 +1129,7 @@ fn board_keyboard_intent(
             return Some(BoardIntent::ToggleMarkMode);
         }
         if mode != BoardInputMode::SaveRecovery
+            && !surface_owns_escape
             && key.code == KeyCode::Esc
             && key.modifiers.is_empty()
         {
@@ -1054,8 +1156,10 @@ fn board_keyboard_intent(
         BoardInputMode::EditTitle
             | BoardInputMode::EditNotes
             | BoardInputMode::EditThread
+            | BoardInputMode::SelectBase
             | BoardInputMode::EditScope
-            | BoardInputMode::FormScopeDropdown
+            | BoardInputMode::EditAssignee
+            | BoardInputMode::FormDropdown
     );
     // A selected task-page add target has no field mapper, but its enclosing edit session
     // still owns the one Shift+Enter task-save chord.
@@ -1065,6 +1169,38 @@ fn board_keyboard_intent(
         && key.modifiers == KeyModifiers::SHIFT
     {
         return Some(BoardIntent::ConfirmEdit);
+    }
+    // Bare Enter on a block option opens the reply box prefilled with it.
+    if mode == BoardInputMode::TaskPage
+        && key.code == KeyCode::Enter
+        && key.modifiers.is_empty()
+        && model.block_option_selected()
+    {
+        return Some(BoardIntent::ReplyWithOption);
+    }
+    // Bare Enter on a review check cycles it; on the `N passed` line it folds or unfolds them.
+    if mode == BoardInputMode::TaskPage && key.code == KeyCode::Enter && key.modifiers.is_empty() {
+        if model.review_check_selected() {
+            return Some(BoardIntent::CycleCheck);
+        }
+        if model.passed_checks_selected() {
+            return Some(BoardIntent::TogglePassedChecks);
+        }
+        if model.trail_record_selected() {
+            return Some(BoardIntent::ToggleTrailRecord(None));
+        }
+        if model.trail_heading_selected() {
+            return Some(BoardIntent::ToggleTrail);
+        }
+    }
+    // `ctrl+s` on a page showing its BLOCKED or REVIEW section unblocks, or sends the review
+    // back, the way the reply box's `ctrl+s` does with nothing typed.
+    if mode == BoardInputMode::TaskPage
+        && key.code == KeyCode::Char('s')
+        && key.modifiers == KeyModifiers::CONTROL
+        && model.page_section_open()
+    {
+        return Some(BoardIntent::PageReplyUnblock);
     }
     // Bare Enter on a stored step toggles it. Resolved here, where the model is in reach,
     // so the persisting intent is classified before the save boundary sees it.
@@ -1111,8 +1247,61 @@ fn board_keyboard_intent(
     }
 
     match model.form_focus().filter(|_| form_field_mode) {
-        Some(focus) => map_task_form_key(focus, mode == BoardInputMode::FormScopeDropdown, key),
+        Some(focus) => map_task_form_key(focus, mode == BoardInputMode::FormDropdown, key),
         None => map_key(mode, key),
+    }
+}
+
+/// Resolve a failed save on the board that owns it, which need not be the board the user
+/// answered from: a project preview parked by a narrowing frame keeps its held form and
+/// drafts while the visible board shows a proxy of its banner (and the reverse after the
+/// frame widens). Owners unwind their session; proxies only take the banner down.
+fn resolve_save_recovery(model: &mut BoardModel, domain: &DomainState, resolution: SaveResolution) {
+    let seat_owns = model
+        .preview_seat_mut()
+        .is_some_and(|seat| seat.owns_save_recovery());
+    // A board answering with no other owner in sight owns it.
+    let outer_owns =
+        model.owns_save_recovery() || (!seat_owns && !model.shows_save_recovery_proxy());
+    let retried = resolution == SaveResolution::Retried;
+    let before_sync = |board: &mut BoardModel| {
+        if retried {
+            board.release_task_edit_save();
+        }
+    };
+    let after_sync = |board: &mut BoardModel| {
+        board.finish_form_assignee_sync(retried);
+        board.finish_form_base_sync(retried);
+        board.finish_form_after_sync(retried);
+        let cancelled_quick_add = board.end_save_recovery(resolution);
+        if retried && !board.has_saved_task() {
+            board.set_message("saved");
+        } else if !retried && !cancelled_quick_add {
+            board.set_message("save cancelled");
+        }
+    };
+    let proxy_message = if retried { "saved" } else { "save cancelled" };
+    if outer_owns {
+        before_sync(model);
+    }
+    if seat_owns {
+        before_sync(model.preview_seat_mut().expect("seat owns recovery"));
+    }
+    // The outer sync carries the preview seat with it.
+    model.sync_from_domain(domain);
+    if outer_owns {
+        after_sync(model);
+    } else if model.shows_save_recovery_proxy() {
+        model.end_proxy_save_recovery();
+        model.set_message(proxy_message);
+    }
+    if let Some(seat) = model.preview_seat_mut() {
+        if seat_owns {
+            after_sync(seat);
+        } else if seat.shows_save_recovery_proxy() {
+            seat.end_proxy_save_recovery();
+            seat.set_message(proxy_message);
+        }
     }
 }
 
@@ -1144,12 +1333,7 @@ pub fn apply_board_intent_with_save_recovery(
                 model.close_command_surface();
                 if let Some(working) = recovery.retry(|working| persist(working)) {
                     *domain = working;
-                    model.release_task_edit_save();
-                    model.sync_from_domain(domain);
-                    model.end_save_recovery(SaveResolution::Retried);
-                    if !model.has_saved_task() {
-                        model.set_message("saved");
-                    }
+                    resolve_save_recovery(model, domain, SaveResolution::Retried);
                     return Ok(IntentOutcome::Persisted);
                 }
                 model.begin_save_recovery(recovery.error().unwrap_or("save failed"));
@@ -1161,11 +1345,7 @@ pub fn apply_board_intent_with_save_recovery(
                 // The failed mutation may have dropped the footer's undo hint; the baseline
                 // decides whether it is live again.
                 model.restore_undo_hint_before_save();
-                model.sync_from_domain(domain);
-                let cancelled_quick_add = model.end_save_recovery(SaveResolution::Cancelled);
-                if !cancelled_quick_add {
-                    model.set_message("save cancelled");
-                }
+                resolve_save_recovery(model, domain, SaveResolution::Cancelled);
                 return Ok(IntentOutcome::None);
             }
             // Navigation and presentation state mutate nothing.
@@ -1259,13 +1439,14 @@ pub fn apply_board_intent_with_save_recovery(
         return Ok(outcome);
     }
     if let Err(error) = persist(domain) {
-        let working = std::mem::take(domain);
-        recovery.fail(baseline, working, error);
-        model.begin_save_recovery(recovery.error().unwrap_or("save failed"));
+        fail_board_save(domain, model, recovery, baseline, error);
         return Ok(IntentOutcome::None);
     }
     model.release_task_edit_save();
     model.sync_from_domain(domain);
+    model.finish_form_assignee_sync(true);
+    model.finish_form_base_sync(true);
+    model.finish_form_after_sync(true);
     Ok(IntentOutcome::Persisted)
 }
 
@@ -1804,7 +1985,15 @@ fn board_rejection_message(error: &DomainError) -> String {
 ///
 /// [`confirm_edit_consults_the_record_without_merging_it`]: self::tests
 pub fn board_intent_needs_fresh_state(intent: &BoardIntent) -> bool {
-    matches!(intent, BoardIntent::Undo)
+    matches!(
+        intent,
+        BoardIntent::Undo
+            | BoardIntent::DispatchAgain
+            | BoardIntent::ConfirmDispatch
+            | BoardIntent::StartWithoutRelaunch
+            | BoardIntent::ConfirmCleanup
+            | BoardIntent::KeepCleanup
+    )
 }
 
 /// resolved decision 8: a soft-deleted task is not editable, and a stale in-memory snapshot is
@@ -1909,9 +2098,35 @@ fn dispatch_board_intent(
     quick_capture: bool,
 ) -> io::Result<bool> {
     let intent_for_preview = intent.clone();
+    // A palette Retry or Cancel is the same answer as the key: resolve it on the board whose
+    // palette chose it, then route it like the key below.
+    let palette_recovery = matches!(
+        intent,
+        BoardIntent::ConfirmCommand | BoardIntent::SelectCommand(_)
+    ) && board_intent_target_mut(model, route.target)
+        .selected_command_for(&intent)
+        .is_some_and(|command| {
+            matches!(
+                command.intent,
+                BoardIntent::RetrySave | BoardIntent::CancelSave
+            )
+        });
+    let intent = if palette_recovery {
+        match resolve_board_command(board_intent_target_mut(model, route.target), intent) {
+            Some(resolved) => resolved,
+            None => return Ok(false),
+        }
+    } else {
+        intent
+    };
     // Quit belongs to the whole application, even when a focused preview supplied it.
     // Its guard must see both the outer parked form and the nested preview's draft.
-    let target = if intent == BoardIntent::Quit {
+    // Retry and Cancel resolve the failed save on whichever board owns it, so they start from
+    // the outer board, which reaches its preview seat whether or not that seat has focus.
+    let target = if matches!(
+        intent,
+        BoardIntent::Quit | BoardIntent::RetrySave | BoardIntent::CancelSave
+    ) {
         BoardIntentTarget::Outer
     } else {
         route.target
@@ -1933,6 +2148,2297 @@ fn dispatch_board_intent(
     Ok(quit)
 }
 
+/// Dispatch the task that was under the cursor when the verb was invoked. Marks are cleared and
+/// never become targets, even if a refresh moves the visible cursor before host work begins.
+pub fn dispatch_task_with_host(
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    id: uuid::Uuid,
+    profiles: &AgentProfiles,
+    again: bool,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<DispatchResult, DispatchError> {
+    model.clear_marks();
+    dispatch::run_with_host(domain, id, profiles, again, in_herdr, host)
+}
+
+pub use crate::ui::board::CLEANUP_BUSY;
+
+// Returned once per `ctrl+d`; boxing the converged result would buy nothing.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CleanupOffer {
+    None,
+    Prompted,
+    /// A confirmed cleanup still runs: nothing opens and nothing completes.
+    Busy,
+    /// The worktree was already gone: converged and completed, for the caller to save. With
+    /// `close_workspace`, its workspace is still open and closes once the save lands
+    /// ([`close_converged_workspace`]).
+    MissingConverged {
+        result: CleanupResult,
+        close_workspace: bool,
+    },
+}
+
+/// Offer cleanup only when one cursor task would newly become done. A missing recorded
+/// worktree converges the retained dispatch and completion for one save without opening a popup.
+pub fn offer_cleanup_prompt_with_host(
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    id: uuid::Uuid,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<CleanupOffer, CleanupError> {
+    if model.bulk_verb_active() || model.focus_is_archived() {
+        return Ok(CleanupOffer::None);
+    }
+    let Some(task) = domain.get(id) else {
+        return Ok(CleanupOffer::None);
+    };
+    if task.archived || task.status == HumanStatus::Done {
+        return Ok(CleanupOffer::None);
+    }
+    let Some(record) = task.dispatch.as_ref() else {
+        return Ok(CleanupOffer::None);
+    };
+    if record.cleaned {
+        return Ok(CleanupOffer::None);
+    }
+    if model.cleanup_running() {
+        return Ok(CleanupOffer::Busy);
+    }
+    // Decide on the background check before the snapshot, as the base picker does: a fetch
+    // that lands between the two then still has a check to fill the card, rather than a
+    // fresh answer sitting over pre-fetch ancestry with nothing left to refresh it.
+    let merge_check = begin_cleanup_merge_check(task, record, host);
+    // Cached refs only: the card opens at once and the background check fills merged status.
+    let preview = dispatch::inspect_cleanup_cached_with_host(domain, id, in_herdr, host)?;
+    if !preview.inspection.worktree_exists {
+        let workspace = dispatch::untouched_workspace(in_herdr, &preview.inspection);
+        let close_workspace = in_herdr && preview.inspection.workspace_exists;
+        domain
+            .record_dispatch_cleaned(id, crate::domain::CleanupOutcome::Missing)
+            .and_then(|()| domain.complete_after_cleanup(id))
+            .map_err(|error| CleanupError::Store(error.to_string()))?;
+        let result = CleanupResult {
+            remote: None,
+            warning: preview.inspection.warning,
+            workspace_warning: None,
+            branch_reason: Some(dispatch::BranchRetentionReason::MissingWorktree),
+            number: preview.number,
+            title: preview.title,
+            worktree_path: preview.record.worktree,
+            branch_name: preview.record.branch,
+            base: preview.record.base.or(preview.record.base_ref),
+            workspace_id: preview.record.herdr_workspace_id,
+            worktree: WorktreeCleanup::Missing,
+            branch: BranchCleanup::Kept,
+            workspace,
+        };
+        return Ok(CleanupOffer::MissingConverged {
+            result,
+            close_workspace,
+        });
+    }
+    let pr_probe = begin_cleanup_pr_probe(task_project(domain, id), &preview.record, host);
+    model.begin_cleanup_prompt(CleanupPrompt::single(cleanup_row(
+        id,
+        preview,
+        merge_check,
+        pr_probe,
+    )));
+    Ok(CleanupOffer::Prompted)
+}
+
+/// After a converged completion is saved, close the workspace its gone worktree left open,
+/// and say what happened for the status row.
+fn close_converged_workspace(
+    result: &CleanupResult,
+    close_workspace: bool,
+    host: &mut impl DispatchHost,
+) -> String {
+    let (workspace, warning) = if close_workspace {
+        dispatch::close_orphaned_workspace(host, &result.workspace_id)
+    } else {
+        (result.workspace, None)
+    };
+    let mut parts = vec![
+        format!("done T{}", result.number),
+        "worktree already gone".to_string(),
+    ];
+    if workspace == dispatch::WorkspaceCleanup::Removed {
+        parts.push("workspace closed".into());
+    }
+    parts.push("branch kept".into());
+    parts.extend(warning);
+    parts.join(" · ")
+}
+
+/// Close each workspace a marked set's gone worktrees left open, once its completion is
+/// saved: how many closed, and why each other one stayed open.
+fn close_converged_workspaces(
+    workspaces: &[String],
+    host: &mut impl DispatchHost,
+) -> (usize, Vec<String>) {
+    let mut closed = 0;
+    let mut warnings = Vec::new();
+    for workspace_id in workspaces {
+        match dispatch::close_orphaned_workspace(host, workspace_id) {
+            (dispatch::WorkspaceCleanup::Removed, _) => closed += 1,
+            (_, warning) => warnings.extend(warning),
+        }
+    }
+    (closed, warnings)
+}
+
+/// Name the configured merge method on a card that just opened, for its `m` line. A broken
+/// `[merge]` setting reads as the default here; `m` itself refuses it on the card.
+fn adopt_merge_method(store: &TaskStore, model: &mut BoardModel) {
+    if let Some(prompt) = model.cleanup_prompt_mut() {
+        prompt.method = crate::agents::MergeMethod::load(store.path()).unwrap_or_default();
+    }
+}
+
+/// Start a dispatched task's background merged check, when it has a recorded base to check.
+fn begin_cleanup_merge_check(
+    task: &crate::domain::Task,
+    record: &crate::domain::Dispatch,
+    host: &mut impl DispatchHost,
+) -> Option<dispatch::MergeCheck> {
+    match (
+        &task.scope,
+        record.base.is_some() || record.base_ref.is_some(),
+    ) {
+        (crate::domain::TaskScope::Project { path }, true) => {
+            host.begin_merge_check(std::path::Path::new(path), record)
+        }
+        _ => None,
+    }
+}
+
+/// The project a task lives in, for host work on its repository.
+fn task_project(domain: &DomainState, id: uuid::Uuid) -> Option<std::path::PathBuf> {
+    match domain.get(id).map(|task| &task.scope) {
+        Some(crate::domain::TaskScope::Project { path }) => Some(path.into()),
+        _ => None,
+    }
+}
+
+/// Start the card's pull-request lookup through `gh`, off the event loop.
+fn begin_cleanup_pr_probe(
+    project: Option<std::path::PathBuf>,
+    record: &crate::domain::Dispatch,
+    host: &mut impl DispatchHost,
+) -> Option<dispatch::PrProbe> {
+    project.map(|project| host.begin_pr_probe(&project, &record.branch))
+}
+
+fn cleanup_row(
+    id: uuid::Uuid,
+    preview: dispatch::CleanupPreview,
+    merge_check: Option<dispatch::MergeCheck>,
+    pr_probe: Option<dispatch::PrProbe>,
+) -> CleanupRow {
+    let mut row = CleanupRow {
+        merge_check,
+        check_failed: false,
+        pr: crate::ui::board::CleanupPr {
+            probe: pr_probe,
+            ..Default::default()
+        },
+        unreachable_remote: preview.inspection.unreachable_remote.clone(),
+        inspected: Some(preview.record.clone()),
+        task_id: id,
+        number: preview.number,
+        worktree: preview.record.worktree,
+        branch: preview.record.branch,
+        base: preview
+            .record
+            .base
+            .or(preview.record.base_ref)
+            .unwrap_or_else(|| "unknown".to_string()),
+        dirty: preview.inspection.dirty,
+        dirty_files: preview.inspection.dirty_files,
+        checked_out_elsewhere: preview.inspection.checked_out_elsewhere,
+        branch_merged: preview.inspection.branch_merged,
+        base_available: preview.inspection.base_available,
+        warning: preview.inspection.warning,
+        workspace_exists: preview.inspection.workspace_exists,
+    };
+    // A lookup that already answered (no gh, or a host that runs it inline) lands at once.
+    row.poll_pr();
+    row
+}
+
+/// A board save failed: keep the working state aside and show save recovery for it.
+fn fail_board_save(
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    recovery: &mut SaveRecovery<DomainState>,
+    baseline: DomainState,
+    error: String,
+) {
+    let working = std::mem::take(domain);
+    recovery.fail(baseline, working, error);
+    model.begin_save_recovery(recovery.error().unwrap_or("save failed"));
+}
+
+/// Whether the task still carries the dispatch its cleanup row inspected. Another board or the
+/// CLI may have cleaned or relaunched it while the card was open; cleanup then must not touch
+/// the new worktree or agent.
+fn dispatch_unchanged(
+    domain: &DomainState,
+    task_id: uuid::Uuid,
+    inspected: Option<&crate::domain::Dispatch>,
+) -> bool {
+    inspected.is_some() && domain.get(task_id).and_then(|task| task.dispatch.as_ref()) == inspected
+}
+
+/// What a bulk `ctrl+d` on a marked set did before the reducer's plain batch completion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BulkCleanupOffer {
+    /// No target has a live dispatch: complete the set as a plain batch, no card.
+    None,
+    /// The card is open over the marked set, which stays marked until `y` or `n`.
+    Prompted,
+    /// A confirmed cleanup still runs: nothing opens and nothing completes.
+    Busy,
+    /// Every live dispatch's worktree was already gone: they converged to cleaned and the
+    /// whole set completed in this transaction, still one undo entry. The caller saves, then
+    /// closes the workspaces they left open.
+    MissingConverged {
+        done: usize,
+        missing: usize,
+        workspaces: Vec<String>,
+    },
+}
+
+/// Bulk `ctrl+d`: when the marked set holds tasks with a live dispatch, open one card listing
+/// each of them (cached refs plus a background merged check per task). Tasks without one are
+/// listed as just marked done. Nothing is mutated while the card is open.
+pub fn offer_bulk_cleanup_prompt_with_host(
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<BulkCleanupOffer, DomainError> {
+    if !model.bulk_verb_active() || model.focus_is_archived() {
+        return Ok(BulkCleanupOffer::None);
+    }
+    // The tasks this verb would newly complete, in the reducer's target order.
+    let targets = model
+        .marked_ids()
+        .iter()
+        .copied()
+        .filter(|id| {
+            domain
+                .get(*id)
+                .is_some_and(|task| task.status != HumanStatus::Done)
+        })
+        .collect::<Vec<_>>();
+    let live = |task: &crate::domain::Task| {
+        !task.archived
+            && matches!(task.scope, crate::domain::TaskScope::Project { .. })
+            && task.dispatch.as_ref().is_some_and(|record| !record.cleaned)
+    };
+    if !targets.iter().any(|id| domain.get(*id).is_some_and(&live)) {
+        return Ok(BulkCleanupOffer::None);
+    }
+    if model.cleanup_running() {
+        return Ok(BulkCleanupOffer::Busy);
+    }
+    let mut rows = Vec::new();
+    let mut bulk = BulkCleanup {
+        targets: targets.clone(),
+        ..BulkCleanup::default()
+    };
+    // Workspaces still open on a worktree already gone.
+    let mut workspaces = Vec::new();
+    for &id in &targets {
+        let task = domain.get(id).expect("targets exist");
+        let identifier = task
+            .board_identifier()
+            .unwrap_or_else(|| "new task".to_string());
+        let Some(record) = task.dispatch.as_ref().filter(|_| live(task)) else {
+            bulk.plain.push(identifier);
+            continue;
+        };
+        // Check before the snapshot, as the single card does, so a fetch landing between the
+        // two still has a check left to refresh the row.
+        let merge_check = begin_cleanup_merge_check(task, record, host);
+        match dispatch::inspect_cleanup_cached_with_host(domain, id, in_herdr, host) {
+            Ok(preview) if !preview.inspection.worktree_exists => {
+                if in_herdr && preview.inspection.workspace_exists {
+                    workspaces.push(preview.record.herdr_workspace_id.clone());
+                    bulk.missing_panes.push(identifier.clone());
+                }
+                bulk.missing.push((id, identifier, preview.record));
+            }
+            Ok(preview) => {
+                let pr_probe =
+                    begin_cleanup_pr_probe(task_project(domain, id), &preview.record, host);
+                rows.push(cleanup_row(id, preview, merge_check, pr_probe));
+            }
+            Err(error) => bulk.refused.push((id, identifier, error.reason())),
+        }
+    }
+    if rows.is_empty() && bulk.refused.is_empty() {
+        let missing = bulk.missing.len();
+        for (id, _, _) in &bulk.missing {
+            domain.record_dispatch_cleaned(*id, crate::domain::CleanupOutcome::Missing)?;
+        }
+        domain.complete_batch_after_cleanup(&targets)?;
+        model.clear_marks();
+        return Ok(BulkCleanupOffer::MissingConverged {
+            done: targets.len(),
+            missing,
+            workspaces,
+        });
+    }
+    model.begin_cleanup_prompt(CleanupPrompt::bulk(rows, bulk));
+    Ok(BulkCleanupOffer::Prompted)
+}
+
+/// What a cleanup card's `y` or `n` did to the domain, before its one save.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupConfirmed {
+    /// `y`: the run that reports the card's rows. Its worker starts after the save, once
+    /// every merged check landed ([`poll_cleanup_runs`]).
+    pub run: Option<CleanupRun>,
+    /// `n`: the status-row outcome.
+    pub message: Option<String>,
+    /// `y`: a marked set's tasks whose worktree was already gone and whose workspace is still
+    /// open, identifier and workspace id. They close once the completion is saved.
+    pub workspaces: Vec<(String, String)>,
+}
+
+/// Apply a cleanup card's choice to the domain: complete the card's task, or the whole marked
+/// set as one batch and one undo entry, and converge worktrees that were already gone. With
+/// `y`, also plan each cleanable row for the worker. Completion never waits on a merged
+/// check: it is saved at once, and the worker starts later ([`poll_cleanup_runs`]), so the
+/// event loop never waits on a removal. A row kept here (uncommitted changes, changed since
+/// the card opened) never stops the others.
+pub fn confirm_cleanup_with_host(
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    clean: bool,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<Option<CleanupConfirmed>, DomainError> {
+    let Some(prompt) = model.cleanup_prompt().cloned() else {
+        return Ok(None);
+    };
+    let targets = match &prompt.bulk {
+        // A target another actor removed since the card opened is dropped before any host
+        // work, so a refused batch can never follow a cleanup.
+        Some(bulk) => bulk
+            .targets
+            .iter()
+            .copied()
+            .filter(|id| domain.get(*id).is_some())
+            .collect::<Vec<_>>(),
+        None => match prompt.rows.first() {
+            Some(row) => vec![row.task_id],
+            None => return Ok(None),
+        },
+    };
+    // A marked set's `y` leaves uncommitted work exactly as it was: not even done.
+    let unchanged = prompt
+        .rows
+        .iter()
+        .filter(|row| clean && prompt.bulk.is_some() && row.dirty)
+        .filter(|row| targets.contains(&row.task_id))
+        .map(|row| {
+            (
+                row.task_id,
+                format!("T{}", row.number),
+                row.unchanged_reason(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let targets = targets
+        .into_iter()
+        .filter(|id| !unchanged.iter().any(|(dirty, ..)| dirty == id))
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        return Ok(None);
+    }
+    let mut plan = Vec::new();
+    let mut waiting = Vec::new();
+    let mut rows = Vec::new();
+    for row in prompt
+        .rows
+        .iter()
+        .filter(|row| clean && targets.contains(&row.task_id))
+    {
+        let kept = |error: CleanupError| CleanupRowState::kept(&error);
+        let state = if row.dirty {
+            Some(kept(CleanupError::DirtyWorktree))
+        } else if !dispatch_unchanged(domain, row.task_id, row.inspected.as_ref()) {
+            Some(kept(CleanupError::DispatchChanged))
+        } else {
+            // The refs are settled when the worker starts, from this row's merged check.
+            match dispatch::cleanup_plan(domain, row.task_id, dispatch::CleanupRefs::Unconfirmed) {
+                Ok(planned) => {
+                    plan.push(planned);
+                    waiting.push(row.clone());
+                    None
+                }
+                Err(error) => Some(kept(error)),
+            }
+        };
+        let state = state.unwrap_or(if row.checking() {
+            CleanupRowState::Checking
+        } else {
+            CleanupRowState::Queued
+        });
+        rows.push(CleanupRunRow {
+            task_id: row.task_id,
+            number: row.number,
+            slot: matches!(state, CleanupRowState::Checking | CleanupRowState::Queued)
+                .then(|| plan.len() - 1),
+            inspected: row.inspected.clone(),
+            state,
+        });
+    }
+    let mut missing = 0;
+    let mut workspaces = Vec::new();
+    if let Some(bulk) = &prompt.bulk {
+        for (id, identifier, inspected) in &bulk.missing {
+            // The card's snapshot may be stale: another board can have relaunched this task
+            // since. Converge only the dispatch that was inspected, and only while its
+            // worktree is still gone; a relaunched or reappeared worktree is left live.
+            let same_dispatch = domain
+                .get(*id)
+                .and_then(|task| task.dispatch.as_ref())
+                .is_some_and(|record| record == inspected);
+            let still_missing = if same_dispatch {
+                dispatch::inspect_cleanup_cached_with_host(domain, *id, in_herdr, host)
+                    .ok()
+                    .filter(|preview| !preview.inspection.worktree_exists)
+            } else {
+                None
+            };
+            if let Some(preview) = still_missing {
+                domain.record_dispatch_cleaned(*id, crate::domain::CleanupOutcome::Missing)?;
+                missing += 1;
+                // `n` keeps what the dispatch left, its workspace included.
+                if clean && in_herdr && preview.inspection.workspace_exists {
+                    workspaces.push((identifier.clone(), preview.record.herdr_workspace_id));
+                }
+            }
+        }
+    }
+    let done = targets
+        .iter()
+        .filter(|id| {
+            domain
+                .get(**id)
+                .is_some_and(|task| task.status != HumanStatus::Done)
+        })
+        .count();
+    if prompt.bulk.is_some() {
+        domain.complete_batch_after_cleanup(&targets)?;
+        model.clear_marks();
+    } else {
+        domain.complete_after_cleanup(targets[0])?;
+    }
+    if !clean {
+        model.close_popup();
+        let message = match prompt.bulk {
+            Some(_) if missing > 0 => {
+                format!("done {done} · worktrees kept · {missing} already gone")
+            }
+            Some(_) => format!("done {done} · worktrees kept"),
+            None => format!(
+                "done T{} · worktree kept",
+                prompt.rows.first().map_or(0, |row| row.number)
+            ),
+        };
+        return Ok(Some(CleanupConfirmed {
+            run: None,
+            message: Some(message),
+            workspaces,
+        }));
+    }
+    // The run owns the merged checks from here: the card's copies stop competing for them.
+    if let Some(prompt) = model.cleanup_prompt_mut() {
+        for row in &mut prompt.rows {
+            row.merge_check = None;
+        }
+    }
+    let refused = prompt
+        .bulk
+        .as_ref()
+        .map(|bulk| {
+            bulk.refused
+                .iter()
+                .map(|(_, identifier, reason)| (identifier.clone(), reason.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let run = CleanupRun {
+        job: dispatch::CleanupJob::new(plan.len()),
+        rows,
+        bulk: prompt.bulk.as_ref().map(|_| (done, missing)),
+        refused,
+        settled: false,
+        waiting,
+        plan,
+        start_deadline: Instant::now() + dispatch::MERGE_CHECK_TIMEOUT,
+        started: false,
+        merged: Vec::new(),
+        unmerged: unchanged
+            .into_iter()
+            .map(|(_, identifier, reason)| (identifier, reason))
+            .collect(),
+        workspaces: Vec::new(),
+    };
+    Ok(Some(CleanupConfirmed {
+        run: Some(run),
+        message: None,
+        workspaces,
+    }))
+}
+
+/// A cleanup card's choice: `y` (clean) or `n`, and what an `m` merged first.
+struct CleanupChoice {
+    clean: bool,
+    merges: MergeReport,
+}
+
+/// What a cleanup card's `m` did, for the run's card and status-row summary.
+#[derive(Default)]
+struct MergeReport {
+    merged: Vec<crate::ui::board::MergedPr>,
+    unmerged: Vec<(String, String)>,
+}
+
+/// Apply a cleanup card's choice and make the completion durable before any worktree is
+/// touched; with `y`, start the run that reports the card's rows.
+#[allow(clippy::too_many_arguments)]
+fn confirm_cleanup_and_save(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    save_recovery: &mut SaveRecovery<DomainState>,
+    baseline: DomainState,
+    choice: CleanupChoice,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
+) {
+    let confirmed = match confirm_cleanup_with_host(domain, model, choice.clean, in_herdr, host) {
+        Ok(confirmed) => confirmed,
+        Err(error) => {
+            model.close_popup();
+            model.set_message(board_rejection_message(&error));
+            return;
+        }
+    };
+    let dispatch_running = model.bulk_dispatch_running();
+    // Completion is durable before any worktree is touched.
+    let released = match save_releasing(store, domain, dispatch_running, in_herdr, host) {
+        Ok(released) => released,
+        Err(error) => {
+            model.close_popup();
+            fail_board_save(domain, model, save_recovery, baseline, error.to_string());
+            return;
+        }
+    };
+    model.sync_from_domain(domain);
+    // The cleanup card owns the status row: its summary carries what started.
+    model.released_note = report_released(&released, name_agent);
+    match confirmed {
+        Some(CleanupConfirmed {
+            run: Some(mut run),
+            workspaces,
+            ..
+        }) => {
+            for (identifier, workspace_id) in workspaces {
+                let closed = match dispatch::close_orphaned_workspace(host, &workspace_id) {
+                    (_, Some(warning)) => Err(warning),
+                    _ => Ok(()),
+                };
+                run.workspaces.push((identifier, closed));
+            }
+            run.merged = choice.merges.merged;
+            run.unmerged.splice(0..0, choice.merges.unmerged);
+            model.begin_cleanup_run(run);
+            poll_cleanup_runs(store, domain, model, save_recovery, in_herdr, host);
+        }
+        // Worktrees kept on purpose are still kept: the outcome stays until the next action.
+        Some(CleanupConfirmed {
+            message: Some(message),
+            ..
+        }) => model.post_cleanup_summary(message, false),
+        _ => {}
+    }
+    record_notice_dismissals_without_blocking_persist(store, domain);
+}
+
+/// Cleanup card `m`: merge each listed open pull request with gh, off the event loop. Nothing
+/// about the tasks changes until the merges land ([`land_cleanup_merges_with_host`]); an
+/// invalid `[merge]` setting merges nothing and says why on the card.
+fn begin_cleanup_merges(
+    store: &TaskStore,
+    domain: &DomainState,
+    model: &mut BoardModel,
+    host: &mut impl DispatchHost,
+) {
+    let Some(prompt) = model.cleanup_prompt_mut() else {
+        return;
+    };
+    if !prompt.can_merge_any() {
+        return;
+    }
+    let method = match crate::agents::MergeMethod::load(store.path()) {
+        Ok(method) => method,
+        Err(error) => {
+            prompt.merge_note = Some(error.to_string());
+            return;
+        }
+    };
+    prompt.merge_note = None;
+    let mut rows = Vec::new();
+    for row in prompt.rows.iter_mut().filter(|row| row.mergeable()) {
+        row.pr.merge_failed = None;
+        let project = task_project(domain, row.task_id);
+        match (project, &row.inspected) {
+            (Some(project), Some(record))
+                if dispatch_unchanged(domain, row.task_id, Some(record)) =>
+            {
+                rows.push(dispatch::MergeRow {
+                    task_id: row.task_id,
+                    number: row.number,
+                    project,
+                    record: record.clone(),
+                });
+            }
+            _ => row.pr.merge_failed = Some(CleanupError::DispatchChanged.reason()),
+        }
+    }
+    if rows.is_empty() {
+        return;
+    }
+    let job = dispatch::pr::MergeJob::new(rows.len());
+    prompt.merging = Some((job.clone(), rows.iter().map(|row| row.task_id).collect()));
+    host.begin_merges(job, rows, method);
+}
+
+/// Land a cleanup card's `m` once every merge answered, on this board and its project preview.
+/// Merged rows, and on a marked set every other task but uncommitted work or one that could
+/// not be inspected, go on exactly as `y` (done in one save, one undo entry, then cleanup); a
+/// row whose merge failed stays as it was, its card line saying why. Nothing went on: the card
+/// stays open with each reason.
+fn land_cleanup_merges_with_host(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    save_recovery: &mut SaveRecovery<DomainState>,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
+) {
+    if save_recovery.is_pending() {
+        return;
+    }
+    land_cleanup_merges_on(
+        store,
+        domain,
+        model,
+        save_recovery,
+        in_herdr,
+        host,
+        name_agent,
+    );
+    if let Some(seat) = model.preview_seat_mut() {
+        land_cleanup_merges_on(
+            store,
+            domain,
+            seat,
+            save_recovery,
+            in_herdr,
+            host,
+            name_agent,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn land_cleanup_merges_on(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    board: &mut BoardModel,
+    save_recovery: &mut SaveRecovery<DomainState>,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
+) {
+    let Some(prompt) = board.cleanup_prompt_mut() else {
+        return;
+    };
+    let Some(results) = prompt.merging.as_ref().and_then(|(job, _)| job.results()) else {
+        return;
+    };
+    let (_, ids) = prompt.merging.take().expect("merging");
+    let mut report = MergeReport::default();
+    let mut merged = Vec::new();
+    for (id, result) in ids.iter().zip(results) {
+        let Some(row) = prompt.rows.iter_mut().find(|row| row.task_id == *id) else {
+            continue;
+        };
+        let identifier = format!("T{}", row.number);
+        match result {
+            Ok(outcome) => {
+                report.merged.push(crate::ui::board::MergedPr {
+                    identifier,
+                    pr: format!("PR #{} ({})", outcome.pr.number, outcome.method.name()),
+                    remote_left: outcome.remote_branch_left,
+                });
+                // The run fetches the base itself; the card's pre-merge check is moot.
+                row.merge_check = None;
+                row.pr.merged = Some(outcome);
+                merged.push(*id);
+            }
+            Err(error) => {
+                let reason = match &error {
+                    dispatch::pr::MergeError::NotMergedYet(_) => {
+                        let number = row
+                            .pr_number()
+                            .map_or(String::new(), |number| format!(" #{number}"));
+                        format!("PR{number} is queued, not merged yet")
+                    }
+                    _ => format!("merge failed: {}", error.message()),
+                };
+                row.pr.merge_failed = Some(error.message());
+                report.unmerged.push((identifier, reason));
+            }
+        }
+    }
+    // Everything else on the card goes on with the ones `m` just merged, exactly as `y`: done,
+    // and tidied as far as is safe (a branch nothing confirms merged is kept). Targets without
+    // a row go on too (no dispatch: done; worktree already gone: converged). Only uncommitted
+    // work, a failed merge and a task that could not be inspected stay exactly as they were,
+    // and the card names each and why.
+    let mut dropped = Vec::new();
+    for row in &prompt.rows {
+        let failed = !merged.contains(&row.task_id)
+            && (ids.contains(&row.task_id) || row.pr.merge_failed.is_some());
+        if row.dirty || failed {
+            dropped.push(row.task_id);
+            if !ids.contains(&row.task_id) {
+                report
+                    .unmerged
+                    .push((format!("T{}", row.number), row.unchanged_reason()));
+            }
+        }
+    }
+    let going = match prompt.bulk.as_ref() {
+        Some(bulk) => {
+            for (id, identifier, reason) in &bulk.refused {
+                dropped.push(*id);
+                report
+                    .unmerged
+                    .push((identifier.clone(), format!("can't inspect: {reason}")));
+            }
+            bulk.targets.iter().any(|id| !dropped.contains(id))
+        }
+        None => prompt
+            .rows
+            .iter()
+            .any(|row| !dropped.contains(&row.task_id)),
+    };
+    if !going {
+        // Nothing went on: the card says why for each task, and only closes.
+        prompt.settled = Some(report.unmerged);
+        return;
+    }
+    prompt.rows.retain(|row| !dropped.contains(&row.task_id));
+    if let Some(bulk) = prompt.bulk.as_mut() {
+        bulk.targets.retain(|id| !dropped.contains(id));
+        bulk.refused.clear();
+    }
+    let baseline = domain.clone();
+    confirm_cleanup_and_save(
+        store,
+        domain,
+        board,
+        save_recovery,
+        baseline,
+        CleanupChoice {
+            clean: true,
+            merges: report,
+        },
+        in_herdr,
+        host,
+        name_agent,
+    );
+}
+
+/// Start the run's worker once its merged checks landed (or their bound passed), cleaning each
+/// row with the refs its check confirmed: an unfinished, failed or offline check keeps the
+/// branch. Rows whose task's dispatch changed since `y` are withdrawn before any host work.
+fn start_due_cleanup(
+    store: &TaskStore,
+    domain: &DomainState,
+    model: &mut BoardModel,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) {
+    let (job, plan) = {
+        let Some(mut run) = model.cleanup_run_mut() else {
+            return;
+        };
+        if run.started || !run.poll_checks() {
+            return;
+        }
+        let job = dispatch::CleanupJob::new(run.plan.len()).bound_to_store(store.path());
+        let run = &mut *run;
+        for (planned, row) in run.plan.iter_mut().zip(&run.waiting) {
+            planned.refs = row.cleanup_refs();
+        }
+        for row in &mut run.rows {
+            if row.state == CleanupRowState::Checking {
+                row.state = CleanupRowState::Queued;
+            }
+            if let Some(slot) = row.slot {
+                if !dispatch_unchanged(domain, row.task_id, row.inspected.as_ref()) {
+                    job.cancel(slot);
+                }
+            }
+        }
+        run.job = job.clone();
+        run.started = true;
+        (job, run.plan.clone())
+    };
+    if !plan.is_empty() {
+        host.begin_cleanup(job, plan, in_herdr);
+    }
+}
+
+/// One board-loop step for the running cleanup (one slot, shared with the project preview,
+/// so a dropped or rebound preview never loses it): start the worker when due, withdraw rows
+/// whose dispatch changed, apply landed rows (mark the dispatch cleaned while it is still the
+/// one inspected, then save), and keep the status row current. A finished run posts its
+/// summary and goes, unless its card is open with something kept: then the card shows why
+/// until Esc. Waits for an unresolved failed save, like every other background step.
+pub fn poll_cleanup_runs(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    save_recovery: &mut SaveRecovery<DomainState>,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) {
+    if !model.cleanup_running() {
+        model.set_cleanup_status(None);
+        model.drop_cleanup_refusals();
+        return;
+    }
+    if save_recovery.is_pending() {
+        return;
+    }
+    start_due_cleanup(store, domain, model, in_herdr, host);
+    // A preview's card counts only while the preview is painted and focused: a parked one
+    // (narrowed frame) is invisible and unreachable, so its run reports on the visible board.
+    let preview_focused = model.project_right_seat_focused();
+    // A quit waiting on the run reports nothing on a card: a card a merge kept open for its
+    // landing must not hold the run (and the quit) past its finish.
+    let card_open = !model.quitting_after_cleanup()
+        && (model.cleanup_card_open()
+            || (preview_focused
+                && model
+                    .preview_seat_mut()
+                    .is_some_and(|seat| seat.cleanup_card_open())));
+    let mut baseline = None;
+    let mut mutated = false;
+    let (finished, clean, progress) = {
+        let Some(mut run) = model.cleanup_run_mut() else {
+            return;
+        };
+        if run.started {
+            if let Some((slots, settled)) = run.job.snapshot() {
+                let job = run.job.clone();
+                for row in &mut run.rows {
+                    if row.state.landed() {
+                        continue;
+                    }
+                    let Some(index) = row.slot else {
+                        continue;
+                    };
+                    match slots.get(index) {
+                        Some(dispatch::CleanupSlot::Queued) => {
+                            // Not reached yet: withdraw it if its dispatch changed meanwhile.
+                            if !dispatch_unchanged(domain, row.task_id, row.inspected.as_ref()) {
+                                job.cancel(index);
+                            }
+                        }
+                        Some(dispatch::CleanupSlot::Running) => {
+                            row.state = CleanupRowState::Removing;
+                        }
+                        Some(dispatch::CleanupSlot::Done(Ok(result))) => {
+                            if dispatch_unchanged(domain, row.task_id, row.inspected.as_ref()) {
+                                // The pre-mutation state, for save recovery.
+                                baseline.get_or_insert_with(|| domain.clone());
+                                if domain
+                                    .record_dispatch_cleaned_keeping_undo(
+                                        row.task_id,
+                                        result.outcome(),
+                                    )
+                                    .is_ok()
+                                {
+                                    mutated = true;
+                                }
+                            }
+                            let worktree_gone = result.worktree == WorktreeCleanup::Missing;
+                            row.state = CleanupRowState::Cleaned {
+                                branch_kept: result.branch_reason.map(|reason| {
+                                    (
+                                        reason.short().to_string(),
+                                        reason.message(
+                                            result.base.as_deref(),
+                                            result.remote.as_deref(),
+                                        ),
+                                    )
+                                }),
+                                worktree_gone,
+                                workspace: match (&result.workspace, &result.workspace_warning) {
+                                    _ if !worktree_gone => None,
+                                    (dispatch::WorkspaceCleanup::Removed, _) => Some(Ok(())),
+                                    (_, Some(why)) => Some(Err(why.clone())),
+                                    _ => None,
+                                },
+                                warning: result.warning.clone(),
+                            };
+                        }
+                        Some(dispatch::CleanupSlot::Done(Err(error))) => {
+                            row.state = CleanupRowState::kept(error);
+                        }
+                        None => {}
+                    }
+                }
+                run.settled = settled;
+            }
+        }
+        (run.finished(), run.summary().1, run.progress_message())
+    };
+    if mutated {
+        if let Err(error) = store.reload_merge_save(domain) {
+            fail_board_save(
+                domain,
+                model,
+                save_recovery,
+                baseline.unwrap_or_default(),
+                error.to_string(),
+            );
+            return;
+        }
+        model.sync_from_domain(domain);
+    }
+    if finished && (!card_open || clean) {
+        if let Some((summary, clean)) = model.finish_cleanup_run() {
+            model.post_cleanup_summary(summary, clean);
+        }
+        return;
+    }
+    let status = if model.quitting_after_cleanup() {
+        Some(crate::ui::board::FINISHING_CLEANUP.to_string())
+    } else if !card_open && !finished {
+        Some(progress)
+    } else {
+        None
+    };
+    model.set_cleanup_status(status);
+}
+
+fn plural(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
+/// One board-loop step for cleanup cards: apply landed merged checks to an open card (this
+/// board's or its project preview's), then advance the running cleanup. `run_board_loop`
+/// calls this every iteration, before paint.
+pub fn finish_queued_cleanup_with_host(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    save_recovery: &mut SaveRecovery<DomainState>,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> io::Result<()> {
+    model.poll_cleanup_check();
+    model.present_save_recovery(save_recovery.error());
+    poll_cleanup_runs(store, domain, model, save_recovery, in_herdr, host);
+    model.present_save_recovery(save_recovery.error());
+    Ok(())
+}
+
+/// Save `domain` and start what its completions released, through the start route (plain, or
+/// a dispatch for an assigned task never dispatched), decided against the merged state under the
+/// save's lock. While a marked-set dispatch is landing nothing launches: a released assigned
+/// task stays ready and says so, since it may be in that batch.
+fn save_releasing(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    dispatch_running: bool,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Result<Vec<dispatch::Released>, crate::store::StoreError> {
+    dispatch::save_releasing_with_host(
+        store,
+        domain,
+        crate::domain::OWNER,
+        in_herdr,
+        dispatch_running.then_some(dispatch::NO_LAUNCH_DISPATCH_RUNNING),
+        host,
+    )
+}
+
+/// Once the save that carried them landed: name each launched agent and say what started.
+fn report_released(
+    released: &[dispatch::Released],
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
+) -> Option<String> {
+    for released in released {
+        if let dispatch::ReleasedStart::Dispatched(result)
+        | dispatch::ReleasedStart::Unrecorded(result, _) = &released.start
+        {
+            if let Some(naming) = result.naming.clone() {
+                name_agent(naming);
+            }
+        }
+    }
+    dispatch::released_message(released)
+}
+
+/// `message`, then what the completion released.
+fn with_released(message: String, note: Option<String>) -> String {
+    match note {
+        Some(note) => format!("{message} · {note}"),
+        None => message,
+    }
+}
+
+/// The board's single-task launch: `ctrl+s` on an assigned task never dispatched, `y` on the
+/// relaunch card (`again`), or the palette's **dispatch again**. Launches `target` through
+/// the real host and saves its record with `started`. A start that moved the status is
+/// undoable: `ctrl+u` restores the status and leaves the agent running. A refusal or a
+/// failed launch changes nothing and says why on the status row.
+#[allow(clippy::too_many_arguments)]
+fn run_board_dispatch(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    save_recovery: &mut SaveRecovery<DomainState>,
+    baseline: DomainState,
+    target: Option<uuid::Uuid>,
+    again: bool,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
+) {
+    model.clear_marks();
+    if model.bulk_dispatch_running() {
+        model.set_message(format!("{BULK_DISPATCH_RUNNING} · wait for it to finish"));
+        return;
+    }
+    let Some(target) = target else {
+        model.set_message(DispatchError::UnknownTask.to_string());
+        return;
+    };
+    // A launch into a worktree the running cleanup has yet to remove would lose it.
+    let cleaning = model.cleanup_run().is_some_and(|run| {
+        run.rows
+            .iter()
+            .any(|row| row.task_id == target && !row.state.landed())
+    });
+    if cleaning {
+        model.set_message(CLEANUP_BUSY);
+        return;
+    }
+    if let Err(error) = dispatch::ensure_platform_supported() {
+        model.set_message(error.to_string());
+        return;
+    }
+    let profiles = match AgentProfiles::load(store.path()) {
+        Ok(profiles) => profiles,
+        Err(error) => {
+            model.set_message(error.to_string());
+            return;
+        }
+    };
+    let previous = domain.get(target).map(|task| task.status);
+    match dispatch::run_with_host(domain, target, &profiles, again, in_herdr, host) {
+        Ok(result) => {
+            if let Some(previous) = previous.filter(|status| *status != HumanStatus::Started) {
+                if let Err(error) = domain.push_start_undo(target, previous) {
+                    model.set_message(error.to_string());
+                }
+            }
+            if let Err(error) = store.reload_merge_save(domain) {
+                fail_board_save(domain, model, save_recovery, baseline, error.to_string());
+                return;
+            }
+            if let Some(naming) = result.naming.clone() {
+                name_agent(naming);
+            }
+            model.sync_from_domain(domain);
+            let mut message = format!("dispatched T{} to @{}", result.number, result.assignee);
+            if let Some(warning) = result.warning {
+                message.push_str(" · ");
+                message.push_str(&warning);
+            }
+            model.set_message(message);
+            record_notice_dismissals_without_blocking_persist(store, domain);
+        }
+        Err(DispatchError::NoAssignee) => model.set_message(dispatch::BOARD_NO_ASSIGNEE),
+        Err(error) => model.set_message(error.to_string()),
+    }
+}
+
+/// Whether a start verb moves `task` to started: `ctrl+s` starts open and ready tasks, the
+/// palette's **set status: started** any task not started yet.
+fn start_moves(task: &crate::domain::Task, any_status: bool) -> bool {
+    if any_status {
+        task.status != HumanStatus::Started
+    } else {
+        matches!(task.status, HumanStatus::Open | HumanStatus::Ready)
+    }
+}
+
+/// Whether a start of `task` would launch its agent: assigned, never dispatched, not done, not
+/// archived, and dispatch can work here. A done task set back to started is a status
+/// correction and never launches.
+fn start_launches(task: &crate::domain::Task, in_herdr: bool) -> bool {
+    start_assigns_a_launch(task) && dispatch::launch_unavailable(task, in_herdr).is_none()
+}
+
+/// Assigned, never dispatched, not done, not archived: a start that would launch if it could.
+fn start_assigns_a_launch(task: &crate::domain::Task) -> bool {
+    task.assignee.is_some()
+        && task.dispatch.is_none()
+        && task.status != HumanStatus::Done
+        && !task.archived
+}
+
+/// Why a start of `task` launches nothing although it is assigned and never dispatched:
+/// outside Herdr, or a desk task. Such a start is plain and says why.
+fn start_no_launch(task: &crate::domain::Task, in_herdr: bool) -> Option<&'static str> {
+    start_assigns_a_launch(task)
+        .then(|| dispatch::launch_unavailable(task, in_herdr))
+        .flatten()
+}
+
+/// `started · no launch: <reason> (T3, T4)` for the rows of a set that could not launch,
+/// grouped by reason.
+fn no_launch_rows_message(rows: &[(String, &'static str)]) -> Option<String> {
+    let mut reasons: Vec<&'static str> = rows.iter().map(|(_, reason)| *reason).collect();
+    reasons.dedup();
+    reasons.sort_unstable();
+    reasons.dedup();
+    let parts = reasons
+        .iter()
+        .map(|reason| {
+            let ids = rows
+                .iter()
+                .filter(|(_, row)| row == reason)
+                .map(|(identifier, _)| identifier.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{reason} ({ids})")
+        })
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| dispatch::no_launch_message(&parts.join(" · ")))
+}
+
+/// Route a start (`ctrl+s`, palette **set status: started**) before the reducer sees it.
+/// Returns `true` when the start was handled here: it dispatched, opened the relaunch or bulk
+/// card, or refused. `false` leaves it to the reducer as a plain status change.
+///
+/// - Unassigned, a running agent, or a done task: plain.
+/// - Assigned and never dispatched: dispatch, which starts it.
+/// - Dispatched and the agent is gone: the relaunch card (`y` relaunch, `n` just start).
+/// - A marked set where any start would launch: the bulk card listing what launches and what
+///   only starts. Dispatched tasks in a set only start; relaunching stays cursor-only.
+#[allow(clippy::too_many_arguments)]
+fn route_board_start(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    save_recovery: &mut SaveRecovery<DomainState>,
+    baseline: &DomainState,
+    any_status: bool,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
+) -> bool {
+    // Decide against the durable record: an assignment made elsewhere must launch. The
+    // invoked targets are kept; if the refresh drops or reanchors them, the start is refused
+    // rather than handed to a reducer that would read the new cursor.
+    let mut targets = model.verb_target_ids();
+    targets.sort();
+    domain.merge_tasks_from_disk(baseline);
+    model.sync_from_domain(domain);
+    let mut refreshed = model.verb_target_ids();
+    refreshed.sort();
+    if refreshed != targets {
+        model.clear_marks();
+        model.set_message(START_TARGET_CHANGED);
+        return true;
+    }
+    let launches = |task: &crate::domain::Task| {
+        start_moves(task, any_status) && start_launches(task, in_herdr)
+    };
+    if model.bulk_verb_active() {
+        // A set where nothing would launch is the plain batch, with no card and no
+        // dispatch-only checks. Assigned rows that cannot launch here say why.
+        if !targets
+            .iter()
+            .filter_map(|id| domain.get(*id))
+            .any(launches)
+        {
+            let no_launch = targets
+                .iter()
+                .filter_map(|id| domain.get(*id))
+                .filter(|task| start_moves(task, any_status))
+                .filter_map(|task| {
+                    start_no_launch(task, in_herdr).map(|reason| {
+                        (
+                            task.board_identifier()
+                                .unwrap_or_else(|| "task".to_string()),
+                            reason,
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+            let Some(message) = no_launch_rows_message(&no_launch) else {
+                return false;
+            };
+            let corrections = targets
+                .iter()
+                .filter(|id| {
+                    any_status
+                        && domain
+                            .get(**id)
+                            .is_some_and(|task| task.status == HumanStatus::Done || task.archived)
+                })
+                .copied()
+                .collect::<Vec<_>>();
+            model.clear_marks();
+            if let Some(started) = start_plain_and_save(
+                store,
+                domain,
+                model,
+                save_recovery,
+                baseline.clone(),
+                &targets,
+                &corrections,
+                any_status,
+                false,
+                in_herdr,
+                host,
+            ) {
+                model.set_message(started.with_delivery(message));
+            }
+            return true;
+        }
+        return open_bulk_start_card(domain, model, store, &targets, any_status, in_herdr, host);
+    }
+    let Some(task) = targets.first().and_then(|id| domain.get(*id)) else {
+        return false;
+    };
+    if task.assignee.is_none()
+        || !start_moves(task, any_status)
+        || task.status == HumanStatus::Done
+        || task.archived
+    {
+        return false;
+    }
+    match dispatch::start_route(task, crate::domain::OWNER, in_herdr, host) {
+        dispatch::StartRoute::Plain => false,
+        dispatch::StartRoute::NoLaunch { reason } => {
+            let target = task.id;
+            if let Some(started) = start_plain_and_save(
+                store,
+                domain,
+                model,
+                save_recovery,
+                baseline.clone(),
+                &[target],
+                &[],
+                any_status,
+                false,
+                in_herdr,
+                host,
+            ) {
+                model.set_message(started.with_delivery(dispatch::no_launch_message(reason)));
+            }
+            true
+        }
+        dispatch::StartRoute::Dispatch => {
+            let target = task.id;
+            run_board_dispatch(
+                store,
+                domain,
+                model,
+                save_recovery,
+                baseline.clone(),
+                Some(target),
+                false,
+                in_herdr,
+                host,
+                name_agent,
+            );
+            true
+        }
+        dispatch::StartRoute::AgentGone { assignee } => {
+            let target = task.id;
+            open_relaunch_card(domain, model, target, assignee, any_status);
+            true
+        }
+    }
+}
+
+/// Open the start-anyway card when a start (`ctrl+s`, palette **set status: started**) would
+/// move a task that still waits on others: `T203 runs after T202 (started). Start anyway?`.
+/// The marks stay for the replay. `y` sets [`BoardModel::start_anyway`] for one pass.
+fn ask_before_starting_waiting(
+    domain: &DomainState,
+    model: &mut BoardModel,
+    intent: &BoardIntent,
+) -> bool {
+    if model.start_anyway {
+        return false;
+    }
+    let any_status = *intent != BoardIntent::PrimaryVerb;
+    let waiting: Vec<String> = model
+        .verb_target_ids()
+        .iter()
+        .filter_map(|id| domain.get(*id))
+        .filter(|task| !task.is_notice() && start_moves(task, any_status))
+        .filter_map(|task| domain.waiting_text(task))
+        .collect();
+    if waiting.is_empty() {
+        return false;
+    }
+    model.begin_dispatch_prompt(crate::ui::board::DispatchPrompt::start_anyway(
+        crate::ui::board::StartAnywayPrompt {
+            waiting,
+            intent: intent.clone(),
+        },
+    ));
+    true
+}
+
+/// The status row when a refresh before a start dropped or moved its target.
+const START_TARGET_CHANGED: &str = "that task changed elsewhere · nothing started";
+
+/// Ask before relaunching `target`'s gone agent: `y` relaunches, `n` only starts.
+fn open_relaunch_card(
+    domain: &DomainState,
+    model: &mut BoardModel,
+    target: uuid::Uuid,
+    assignee: String,
+    any_status: bool,
+) {
+    let Some(task) = domain.get(target) else {
+        return;
+    };
+    let prompt = crate::ui::board::RelaunchPrompt {
+        task_id: target,
+        number: task.number.unwrap_or_default(),
+        any_status,
+        assignee,
+        worktree: task
+            .dispatch
+            .as_ref()
+            .map(|record| record.worktree.clone())
+            .unwrap_or_default(),
+    };
+    model.clear_marks();
+    model.begin_dispatch_prompt(crate::ui::board::DispatchPrompt::relaunch(prompt));
+}
+
+/// The feedback box's `ctrl+d`: store any feedback (held until it lands, like `shift+enter`),
+/// close the box, then complete the task through the cleanup card when its dispatch is live.
+#[allow(clippy::too_many_arguments)]
+fn approve_review(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    save_recovery: &mut SaveRecovery<DomainState>,
+    id: uuid::Uuid,
+    quick_capture: bool,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
+) -> io::Result<()> {
+    if model.cleanup_running() {
+        model.set_message(CLEANUP_BUSY);
+        return Ok(());
+    }
+    // The box approves the round it was opened on, never a newer one merged in meanwhile.
+    if !model.reply_box_current(domain) {
+        return Ok(());
+    }
+    let has_feedback = model
+        .reply_draft()
+        .is_some_and(|draft| !draft.trim().is_empty());
+    if has_feedback {
+        handle_board_intent_with_host(
+            store,
+            domain,
+            model,
+            BoardIntent::ReplySave,
+            save_recovery,
+            quick_capture,
+            in_herdr,
+            host,
+            name_agent,
+        )?;
+        // A refused or failed save keeps the box and its draft; approve again after.
+        if save_recovery.is_pending() || model.reply_task_id().is_some() {
+            return Ok(());
+        }
+    } else {
+        model.close_reply_box();
+    }
+    match offer_cleanup_prompt_with_host(domain, model, id, in_herdr, host) {
+        Ok(CleanupOffer::Prompted) => {
+            adopt_merge_method(store, model);
+            return Ok(());
+        }
+        Ok(CleanupOffer::MissingConverged {
+            result,
+            close_workspace,
+        }) => {
+            let Some(baseline) = load_baseline(store, model)? else {
+                return Ok(());
+            };
+            let dispatch_running = model.bulk_dispatch_running();
+            let released = match save_releasing(store, domain, dispatch_running, in_herdr, host) {
+                Ok(released) => released,
+                Err(error) => {
+                    fail_board_save(domain, model, save_recovery, baseline, error.to_string());
+                    return Ok(());
+                }
+            };
+            model.sync_from_domain(domain);
+            let message = close_converged_workspace(&result, close_workspace, host);
+            model.set_message(with_released(
+                message,
+                report_released(&released, name_agent),
+            ));
+            record_notice_dismissals_without_blocking_persist(store, domain);
+            return Ok(());
+        }
+        Ok(CleanupOffer::Busy) => {
+            model.set_message(CLEANUP_BUSY);
+            return Ok(());
+        }
+        Ok(CleanupOffer::None) => {}
+        Err(error) => {
+            model.set_message(error.to_string());
+            return Ok(());
+        }
+    }
+    handle_board_intent_with_host(
+        store,
+        domain,
+        model,
+        BoardIntent::ApproveReview(id),
+        save_recovery,
+        quick_capture,
+        in_herdr,
+        host,
+        name_agent,
+    )?;
+    Ok(())
+}
+
+/// How the reply box's `ctrl+s` starts its task: `None` for an unassigned (or archived) task,
+/// which unblocks to ready as before.
+fn reply_unblock_route(
+    domain: &DomainState,
+    model: &BoardModel,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Option<(uuid::Uuid, dispatch::StartRoute, dispatch::AgentCheck)> {
+    let id = model.reply_task_id()?;
+    let task = domain.get(id)?;
+    if task.assignee.is_none() || task.archived {
+        return None;
+    }
+    let (route, check) = dispatch::start_route_checked(task, crate::domain::OWNER, in_herdr, host);
+    Some((id, route, check))
+}
+
+/// Send `id`'s dispatched agent what the record this `ctrl+s` closed owes it, once the start
+/// is durable: every reply (or feedback entry) you left on that block or review round, the
+/// one just saved included, then a round's failed checks. An empty record sends the unblock
+/// or send-back alone. Says on the status row how it went; nothing is sent when `check` found
+/// no live dispatch.
+fn deliver_reply_after_start(
+    domain: &DomainState,
+    model: &mut BoardModel,
+    id: uuid::Uuid,
+    check: &dispatch::AgentCheck,
+    host: &mut impl DispatchHost,
+) {
+    let Some(task) = domain.get(id) else {
+        return;
+    };
+    let Some(assignee) = task.assignee.as_deref() else {
+        return;
+    };
+    let message = dispatch::closing_message(task).unwrap_or(dispatch::ClosingMessage {
+        label: "unblocked",
+        noun: "reply".to_string(),
+        text: None,
+        entries: 0,
+    });
+    let text = message.text.as_deref();
+    if let Some(delivery) = dispatch::deliver_reply(task, check, message.label, text, host) {
+        model.set_message(dispatch::delivery_message(
+            "started",
+            assignee,
+            &message.noun,
+            &delivery,
+        ));
+    }
+}
+
+/// The tasks among `ids` that hold an open record and a dispatched agent, each with how many
+/// records it has closed so far, so a delivery after the save knows this change closed one.
+fn closing_candidates(
+    domain: &DomainState,
+    ids: impl IntoIterator<Item = uuid::Uuid>,
+) -> Vec<(uuid::Uuid, usize)> {
+    ids.into_iter()
+        .filter_map(|id| domain.get(id))
+        .filter(|task| task.block.is_some() && task.assignee.is_some() && task.dispatch.is_some())
+        .map(|task| (task.id, task.past_blocks.len()))
+        .collect()
+}
+
+/// After a status change outside the reply box lands: send each `candidates` task whose open
+/// record this change closed what that record owes its running agent
+/// ([`dispatch::closing_message`]). A block left for ready sends only when it holds replies;
+/// a start always sends, as the box's `ctrl+s` does. Returns the status-row line saying how
+/// it went, if anything was tried.
+fn deliver_closed_records(
+    domain: &DomainState,
+    candidates: &[(uuid::Uuid, usize)],
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Option<String> {
+    let mut lines = Vec::new();
+    let mut summary = crate::app::ClosingSummary::default();
+    for (id, closed_before) in candidates {
+        let Some(task) = domain.get(*id) else {
+            continue;
+        };
+        let closed_now = task.past_blocks.len() == closed_before + 1
+            && task
+                .past_blocks
+                .last()
+                .is_some_and(|record| record.closed_by.as_deref() == Some(crate::domain::OWNER));
+        let Some(message) = closed_now
+            .then(|| dispatch::closing_message(task))
+            .flatten()
+        else {
+            continue;
+        };
+        if task.status == HumanStatus::Ready && message.entries == 0 {
+            continue;
+        }
+        let Some(assignee) = task.assignee.as_deref() else {
+            continue;
+        };
+        let (_, check) = dispatch::start_route_checked(task, crate::domain::OWNER, in_herdr, host);
+        let text = message.text.as_deref();
+        if let Some(delivery) = dispatch::deliver_reply(task, &check, message.label, text, host) {
+            let status = if task.status == HumanStatus::Ready {
+                "ready"
+            } else {
+                "started"
+            };
+            summary.add(status, &message, &delivery);
+            lines.push(dispatch::delivery_message(
+                status,
+                assignee,
+                &message.noun,
+                &delivery,
+            ));
+        }
+    }
+    match lines.len() {
+        0 => None,
+        1 => lines.pop(),
+        _ => Some(summary.line()),
+    }
+}
+
+/// Several closing deliveries at once, counted for one status-row line.
+#[derive(Default)]
+struct ClosingSummary {
+    status: &'static str,
+    /// Agents a send-back reached, and the feedback entries it carried.
+    sent_back: (usize, usize),
+    /// Agents an unblock reached, and the replies it carried.
+    unblocked: (usize, usize),
+    not_sent: usize,
+}
+
+impl ClosingSummary {
+    fn add(
+        &mut self,
+        status: &'static str,
+        message: &dispatch::ClosingMessage,
+        delivery: &dispatch::Delivery,
+    ) {
+        if self.status.is_empty() {
+            self.status = status;
+        }
+        let kind = if message.label == "sent back" {
+            &mut self.sent_back
+        } else {
+            &mut self.unblocked
+        };
+        if *delivery == dispatch::Delivery::Sent {
+            kind.0 += 1;
+            kind.1 += message.entries;
+        } else {
+            self.not_sent += 1;
+        }
+    }
+
+    /// `started · sent back to 2 agents with 3 feedback entries · 2 replies sent to 1 agent ·
+    /// 1 not sent, kept on its task`.
+    fn line(&self) -> String {
+        let mut parts = vec![self.status.to_string()];
+        let (agents, entries) = self.sent_back;
+        if agents > 0 {
+            parts.push(match entries {
+                0 => format!("sent back to {}", plural(agents, "agent")),
+                1 => format!(
+                    "sent back to {} with 1 feedback entry",
+                    plural(agents, "agent")
+                ),
+                entries => format!(
+                    "sent back to {} with {entries} feedback entries",
+                    plural(agents, "agent")
+                ),
+            });
+        }
+        let (agents, entries) = self.unblocked;
+        if agents > 0 {
+            parts.push(match entries {
+                0 => format!("unblocked {}", plural(agents, "agent")),
+                1 => format!("1 reply sent to {}", plural(agents, "agent")),
+                entries => format!("{entries} replies sent to {}", plural(agents, "agent")),
+            });
+        }
+        match self.not_sent {
+            0 => {}
+            1 => parts.push("1 not sent, kept on its task".to_string()),
+            count => parts.push(format!("{count} not sent, kept on their tasks")),
+        }
+        parts.join(" · ")
+    }
+}
+
+/// Start `ids` as a plain status change in one save and one undo step: the relaunch card's
+/// `n`, a start that cannot launch here, and the start-only rows of the bulk card (`bulk_card`
+/// records them as start entries beside the card's launches, the rest as status changes). Each row is rechecked against the refreshed
+/// board with the rule the card was opened under: a row that no longer moves (started, done,
+/// archived, deleted, or out of `ctrl+s`'s open/ready) is left alone, and a row that now
+/// needs a launch the card did not show (assigned meanwhile) is refused on the status row.
+/// A block or review round a row leaves is delivered to its running agent once the save lands
+/// ([`deliver_closed_records`]), or held for save recovery's Retry.
+/// Returns the refusals and the delivery line, or `None` when the save failed into recovery.
+#[allow(clippy::too_many_arguments)]
+fn start_plain_and_save(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    save_recovery: &mut SaveRecovery<DomainState>,
+    baseline: DomainState,
+    ids: &[uuid::Uuid],
+    corrections: &[uuid::Uuid],
+    any_status: bool,
+    bulk_card: bool,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> Option<PlainStart> {
+    let mut moving = Vec::new();
+    let mut refused = Vec::new();
+    for id in ids {
+        let Some(task) = domain.get(*id) else {
+            continue;
+        };
+        // A done or archived row starts only when the card listed it as a correction; one
+        // that finished or was archived after the card opened is left alone.
+        let corrected = corrections.contains(id);
+        if task.soft_deleted
+            || ((task.archived || task.status == HumanStatus::Done) && !corrected)
+            || !start_moves(task, any_status)
+        {
+            continue;
+        }
+        if start_launches(task, in_herdr) {
+            refused.push(
+                task.board_identifier()
+                    .unwrap_or_else(|| "task".to_string()),
+            );
+            continue;
+        }
+        moving.push(*id);
+    }
+    if !refused.is_empty() {
+        model.set_message(format!(
+            "not started: {} assigned since the card opened · ctrl+s launches",
+            refused.join(", ")
+        ));
+    }
+    if moving.is_empty() {
+        return Some(PlainStart {
+            refused,
+            delivered: None,
+        });
+    }
+    let closing = closing_candidates(domain, moving.iter().copied());
+    let started = if bulk_card {
+        domain.start_batch(&moving)
+    } else {
+        domain.change_status(&moving, HumanStatus::Started, moving.len() > 1)
+    };
+    if let Err(error) = started {
+        model.set_message(board_rejection_message(&error));
+        return Some(PlainStart {
+            refused,
+            delivered: None,
+        });
+    }
+    if let Err(error) = store.reload_merge_save(domain) {
+        fail_board_save(domain, model, save_recovery, baseline, error.to_string());
+        model.pending_closing.extend(closing);
+        return None;
+    }
+    model.sync_from_domain(domain);
+    record_notice_dismissals_without_blocking_persist(store, domain);
+    let delivered = deliver_closed_records(domain, &closing, in_herdr, host);
+    if let Some(line) = &delivered {
+        model.set_message(line.clone());
+    }
+    Some(PlainStart { refused, delivered })
+}
+
+/// What [`start_plain_and_save`] did once its save landed.
+struct PlainStart {
+    /// Rows refused because they were assigned since the card opened.
+    refused: Vec<String>,
+    /// The status-row line for what went to running agents, if anything was tried.
+    delivered: Option<String>,
+}
+
+impl PlainStart {
+    /// `message`, followed by the delivery line when there is one.
+    fn with_delivery(&self, message: String) -> String {
+        match &self.delivered {
+            Some(line) => format!("{message} · {line}"),
+            None => message,
+        }
+    }
+}
+
+const BULK_DISPATCH_RUNNING: &str = "a bulk dispatch is still running";
+
+/// Why a marked task is skipped: the single-task refusal, in the card's short words.
+fn bulk_dispatch_skip_reason(error: &DispatchError) -> String {
+    match error {
+        DispatchError::NoAssignee => "unassigned".into(),
+        DispatchError::AlreadyDispatched(_) => "already dispatched (use dispatch again)".into(),
+        DispatchError::NeedsGitProject => "not a project in a git repo".into(),
+        DispatchError::DoneTask => "done".into(),
+        DispatchError::ArchivedTask => "archived".into(),
+        DispatchError::SoftDeletedTask => "deleted".into(),
+        error => error.to_string(),
+    }
+}
+
+/// Check every marked task with the single-task rules from task state alone (the git check runs
+/// off the event loop), then return the ones that pass, in board order, and the skipped ones
+/// with their reason.
+fn check_marked_dispatches(
+    domain: &DomainState,
+    ids: impl IntoIterator<Item = uuid::Uuid>,
+    profiles: &AgentProfiles,
+    in_herdr: bool,
+) -> (Vec<dispatch::EligibleDispatch>, Vec<(String, String)>) {
+    let mut ids = ids.into_iter().collect::<Vec<_>>();
+    ids.sort_by_key(|id| domain.get(*id).and_then(|task| task.number));
+    let mut launch = Vec::new();
+    let mut skipped = Vec::new();
+    for id in ids {
+        match dispatch::check_task(domain, id, profiles, in_herdr) {
+            Ok(eligible) => launch.push(eligible),
+            Err(error) => {
+                let identifier = domain
+                    .get(id)
+                    .and_then(|task| task.board_identifier())
+                    .unwrap_or_else(|| "task".to_string());
+                skipped.push((identifier, bulk_dispatch_skip_reason(&error)));
+            }
+        }
+    }
+    (launch, skipped)
+}
+
+/// `ctrl+s` on a marked set where a start would launch: one card listing what `y` launches,
+/// what it only starts, and what stays unstarted with the reason. It opens at once; the
+/// git-repository check runs off the event loop and its rows show `checking…` until it lands.
+/// Nothing changes and the marks stay until `y`. With nothing to launch or start there is no
+/// card, only the refusal. Returns `true` (the start was handled here).
+#[allow(clippy::too_many_arguments)]
+fn open_bulk_start_card(
+    domain: &DomainState,
+    model: &mut BoardModel,
+    store: &TaskStore,
+    targets: &[uuid::Uuid],
+    any_status: bool,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) -> bool {
+    if model.bulk_dispatch_running() {
+        model.set_message(format!("{BULK_DISPATCH_RUNNING} · wait for it to finish"));
+        return true;
+    }
+    if model.cleanup_running() {
+        model.set_message(CLEANUP_BUSY);
+        return true;
+    }
+    // The palette's absolute start corrects done and archived tasks to started, as its plain
+    // batch does: they are start-only rows, never launches. `ctrl+s` leaves them out.
+    let mut starting = targets
+        .iter()
+        .filter_map(|id| domain.get(*id))
+        .filter(|task| {
+            start_moves(task, any_status)
+                && (any_status || (task.status != HumanStatus::Done && !task.archived))
+        })
+        .collect::<Vec<_>>();
+    starting.sort_by_key(|task| task.number);
+    let corrections = starting
+        .iter()
+        .filter(|task| task.status == HumanStatus::Done || task.archived)
+        .map(|task| task.id)
+        .collect::<Vec<_>>();
+    let (launching, start_only): (Vec<_>, Vec<_>) = starting
+        .into_iter()
+        .partition(|task| start_launches(task, in_herdr));
+    let no_launch = start_only
+        .iter()
+        .filter_map(|task| start_no_launch(task, in_herdr).map(|reason| (task.id, reason)))
+        .collect::<Vec<_>>();
+    let start_only = start_only
+        .into_iter()
+        .map(|task| {
+            (
+                task.board_identifier()
+                    .unwrap_or_else(|| "task".to_string()),
+                task.id,
+            )
+        })
+        .collect::<Vec<_>>();
+    let launching = launching.iter().map(|task| task.id).collect::<Vec<_>>();
+    if let Err(error) = dispatch::ensure_platform_supported() {
+        model.set_message(error.to_string());
+        return true;
+    }
+    let profiles = match AgentProfiles::load(store.path()) {
+        Ok(profiles) => profiles,
+        Err(error) => {
+            model.set_message(error.to_string());
+            return true;
+        }
+    };
+    open_bulk_dispatch_card(
+        domain,
+        model,
+        launching,
+        start_only,
+        corrections,
+        no_launch,
+        any_status,
+        &profiles,
+        in_herdr,
+        host,
+    );
+    true
+}
+
+/// The bulk start card over `launching` (assigned, never dispatched) and `start_only`.
+#[allow(clippy::too_many_arguments)]
+pub fn open_bulk_dispatch_card(
+    domain: &DomainState,
+    model: &mut BoardModel,
+    launching: Vec<uuid::Uuid>,
+    start_only: Vec<(String, uuid::Uuid)>,
+    corrections: Vec<uuid::Uuid>,
+    no_launch: Vec<(uuid::Uuid, &'static str)>,
+    any_status: bool,
+    profiles: &AgentProfiles,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+) {
+    let (launch, skipped) = check_marked_dispatches(domain, launching, profiles, in_herdr);
+    if launch.is_empty() && start_only.is_empty() {
+        model.set_message(crate::ui::board::nothing_to_dispatch(&skipped));
+        return;
+    }
+    let mut projects = launch
+        .iter()
+        .map(|eligible| eligible.project().to_path_buf())
+        .collect::<Vec<_>>();
+    projects.sort();
+    projects.dedup();
+    let git_checks = (!projects.is_empty()).then(|| host.begin_git_checks(projects));
+    model.begin_dispatch_prompt(crate::ui::board::DispatchPrompt {
+        launch,
+        skipped,
+        start_only,
+        corrections,
+        no_launch,
+        any_status,
+        relaunch: None,
+        start_anyway: None,
+        git_checks,
+        scroll: 0,
+        follow: true,
+        selector: Default::default(),
+    });
+    // A host that checked inline has its answer now.
+    model.poll_dispatch_checks();
+}
+
+/// `y` on the start card. The relaunch card relaunches its one task. The bulk card starts its
+/// start-only rows in one save, then rechecks each listed launch against the refreshed board
+/// (another board or the CLI may have dispatched or changed it), clears the marks, and starts
+/// the launches through the host. Each launch confirms its repository before creating
+/// anything. Outcomes are recorded as they land ([`land_bulk_dispatch_with_host`]).
+#[allow(clippy::too_many_arguments)]
+fn start_bulk_dispatch(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    save_recovery: &mut SaveRecovery<DomainState>,
+    baseline: DomainState,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
+) -> io::Result<()> {
+    let Some(prompt) = model.take_dispatch_prompt() else {
+        return Ok(());
+    };
+    if let Some(relaunch) = prompt.relaunch {
+        run_board_dispatch(
+            store,
+            domain,
+            model,
+            save_recovery,
+            baseline,
+            Some(relaunch.task_id),
+            true,
+            in_herdr,
+            host,
+            name_agent,
+        );
+        return Ok(());
+    }
+    let mut start_refused = Vec::new();
+    // What the start-only rows sent their running agents, said after the launches report.
+    let mut delivered = None;
+    if !prompt.start_only.is_empty() {
+        let ids = prompt
+            .start_only
+            .iter()
+            .map(|(_, id)| *id)
+            .collect::<Vec<_>>();
+        model.clear_marks();
+        let before = domain.clone();
+        let Some(started) = start_plain_and_save(
+            store,
+            domain,
+            model,
+            save_recovery,
+            baseline,
+            &ids,
+            &prompt.corrections,
+            prompt.any_status,
+            true,
+            in_herdr,
+            host,
+        ) else {
+            return Ok(());
+        };
+        let refused = &started.refused;
+        if prompt.launch.is_empty() {
+            let moved = ids
+                .iter()
+                .filter(|id| {
+                    domain.get(**id).map(|task| task.status)
+                        != before.get(**id).map(|task| task.status)
+                })
+                .count();
+            let mut message = format!("started {}", plural(moved, "task"));
+            if !refused.is_empty() {
+                message.push_str(&format!(
+                    " · not started: {} assigned since the card opened",
+                    refused.join(", ")
+                ));
+            }
+            model.set_message(started.with_delivery(message));
+            return Ok(());
+        }
+        start_refused = started.refused.clone();
+        delivered = started.delivered;
+    }
+    let profiles = match AgentProfiles::load(store.path()) {
+        Ok(profiles) => profiles,
+        Err(error) => {
+            model.set_message(error.to_string());
+            return Ok(());
+        }
+    };
+    let total = prompt.launch.len();
+    let (jobs, failed) = check_marked_dispatches(
+        domain,
+        prompt.launch.iter().map(|eligible| eligible.id),
+        &profiles,
+        in_herdr,
+    );
+    model.clear_marks();
+    if jobs.is_empty() {
+        model.set_message(crate::ui::board::nothing_to_dispatch(&failed));
+        return Ok(());
+    }
+    let mut run = crate::ui::board::BulkDispatchRun::new(host.begin_launches(jobs), total);
+    run.failed = failed;
+    run.failed.extend(
+        start_refused
+            .into_iter()
+            .map(|identifier| (identifier, "assigned since the card opened".to_string())),
+    );
+    model.set_message(run.message());
+    model.begin_bulk_dispatch(run);
+    // A host that launched inline has every outcome ready now.
+    land_bulk_dispatch_with_host(store, domain, model, save_recovery, name_agent)?;
+    if let Some(line) = delivered {
+        let message = model.message().map(str::to_string);
+        model.set_message(match message {
+            Some(message) => format!("{message} · {line}"),
+            None => line,
+        });
+    }
+    Ok(())
+}
+
+/// A launch whose record is durable: count it and name its agent.
+fn settle_saved_launch(
+    run: &mut crate::ui::board::BulkDispatchRun,
+    pending: crate::ui::board::PendingLaunch,
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
+) {
+    if let Some(kept) = pending.kept_status {
+        run.kept_status.push((pending.identifier.clone(), kept));
+    }
+    run.launched.push((pending.identifier, pending.assignee));
+    if let Some(naming) = pending.naming {
+        name_agent(naming);
+    }
+}
+
+/// Record the bulk launches that landed, one save per poll, like a single dispatch: the record
+/// and `started`. Polled every board-loop iteration, wherever the batch was started: the outer
+/// board and its project preview share it, so navigation never drops it.
+///
+/// - A launch whose task vanished or was dispatched elsewhere meanwhile is reported, never
+///   recorded over. A task whose status the human changed after `y` (or archived or deleted)
+///   gets its record but keeps that status, and the outcome says so.
+/// - Outcomes stay on the batch while a save failure is unresolved. A failed read or save goes
+///   to save recovery holding the recorded launches; a later poll settles them: kept if Retry
+///   saved them, reported as launched but not recorded (with the workspace whose agent is
+///   running) if Cancel discarded them. Agents are named only once their record is saved.
+pub fn land_bulk_dispatch_with_host(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    save_recovery: &mut SaveRecovery<DomainState>,
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
+) -> io::Result<()> {
+    if save_recovery.is_pending() {
+        return Ok(());
+    }
+    let Some(mut run) = model.take_bulk_dispatch() else {
+        return Ok(());
+    };
+    let before = run.message();
+    // A failed save left these recorded; recovery has resolved it since.
+    for pending in std::mem::take(&mut run.pending) {
+        let saved = domain
+            .get(pending.task_id)
+            .and_then(|task| task.dispatch.as_ref())
+            == Some(&pending.record);
+        if saved {
+            settle_saved_launch(&mut run, pending, name_agent);
+        } else {
+            run.unrecorded
+                .push((pending.identifier, pending.record.herdr_workspace_id));
+        }
+    }
+    let landed = run.batch.take_landed();
+    if !landed.is_empty() {
+        // Best effort: a store that cannot be read fails the save below, into recovery.
+        if let Ok(disk) = store.load() {
+            domain.merge_tasks_from_disk(&disk);
+        }
+        let baseline = domain.clone();
+        for (job, outcome) in landed {
+            let identifier = format!("T{}", job.number);
+            let launched = match outcome {
+                Ok(launched) => launched,
+                Err(error) => {
+                    run.failed.push((identifier, error.to_string()));
+                    continue;
+                }
+            };
+            let worktree = launched.record.worktree.clone();
+            run.warnings.extend(launched.warning.clone());
+            let kept_status = match domain.get(job.id) {
+                None => {
+                    run.failed.push((
+                        identifier,
+                        format!("launched in {worktree}, but the task is gone"),
+                    ));
+                    continue;
+                }
+                Some(task) if task.dispatch.is_some() => {
+                    run.failed.push((
+                        identifier,
+                        format!(
+                            "launched in {worktree}, but it was dispatched elsewhere meanwhile"
+                        ),
+                    ));
+                    continue;
+                }
+                Some(task) if task.soft_deleted => Some("deleted"),
+                Some(task) if task.archived => Some("archived"),
+                Some(task) if job.status_touched_since(task) => {
+                    Some(crate::cli::presenter::status_name(task.status))
+                }
+                Some(_) => None,
+            };
+            let task_id = job.id;
+            match dispatch::commit_launch_with_status(domain, job, launched, kept_status.is_none())
+            {
+                Ok(result) => run.pending.push(crate::ui::board::PendingLaunch {
+                    task_id,
+                    identifier,
+                    assignee: result.assignee,
+                    record: result.record,
+                    naming: result.naming,
+                    kept_status: kept_status.map(str::to_string),
+                }),
+                Err(error) => run.failed.push((identifier, error.to_string())),
+            }
+        }
+        if !run.pending.is_empty() {
+            if let Err(error) = store.reload_merge_save(domain) {
+                let working = std::mem::take(domain);
+                save_recovery.fail(baseline, working, error.to_string());
+                // No board's form or draft caused this save, so none owns its recovery: the
+                // banner is a proxy on the outer board and the input target, and Retry or
+                // Cancel ends it without touching any open form.
+                let error = save_recovery.error().unwrap_or("save failed").to_string();
+                model.begin_proxy_save_recovery(&error);
+                model.present_save_recovery(Some(&error));
+                model.begin_bulk_dispatch(run);
+                return Ok(());
+            }
+            model.sync_from_domain(domain);
+            for pending in std::mem::take(&mut run.pending) {
+                settle_saved_launch(&mut run, pending, name_agent);
+            }
+            record_notice_dismissals_without_blocking_persist(store, domain);
+        }
+    }
+    let message = run.message();
+    let settled = run.settled();
+    if !settled {
+        model.begin_bulk_dispatch(run);
+    }
+    if message != before || settled {
+        model.input_target_mut().set_message(message);
+    }
+    Ok(())
+}
+
+/// Load the save baseline for a mutating intent. While a bulk dispatch is landing, a store that
+/// cannot be read refuses the intent on the status row (`None`, nothing changed) instead of
+/// ending the board: exiting would kill launches whose records are still to be saved.
+fn load_baseline(store: &TaskStore, model: &mut BoardModel) -> io::Result<Option<DomainState>> {
+    match store.load() {
+        Ok(baseline) => Ok(Some(baseline)),
+        Err(error) if model.bulk_dispatch_running() => {
+            model.set_message(format!(
+                "can't read the task store: {error} · nothing changed · {BULK_DISPATCH_RUNNING}"
+            ));
+            Ok(None)
+        }
+        Err(error) => Err(io::Error::other(error.to_string())),
+    }
+}
+
+/// The board loop's background work before each paint, on the board thread: landed branch
+/// lookups, queued cleanups, and bulk dispatch outcomes.
+#[allow(clippy::too_many_arguments)]
+fn board_background_step(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    save_recovery: &mut SaveRecovery<DomainState>,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
+) -> io::Result<()> {
+    model.poll_base_picker_results();
+    model.poll_dispatch_checks();
+    finish_queued_cleanup_with_host(store, domain, model, save_recovery, in_herdr, host)?;
+    land_cleanup_merges_with_host(
+        store,
+        domain,
+        model,
+        save_recovery,
+        in_herdr,
+        host,
+        name_agent,
+    );
+    land_bulk_dispatch_with_host(store, domain, model, save_recovery, name_agent)
+}
+
+/// The real dispatch host for a board: launchers live beside the board's own store.
+fn board_dispatch_host(store: &TaskStore) -> SystemDispatchHost {
+    SystemDispatchHost::in_state_dir(store.path())
+}
+
 /// Apply a board intent. Returns `true` when the board loop should quit.
 ///
 /// In the quick-capture popup (`quick_capture`), the loop also quits once the capture
@@ -1947,10 +4453,65 @@ fn handle_board_intent(
     save_recovery: &mut SaveRecovery<DomainState>,
     quick_capture: bool,
 ) -> io::Result<bool> {
+    handle_board_intent_with_host(
+        store,
+        domain,
+        model,
+        intent,
+        save_recovery,
+        quick_capture,
+        dispatch::running_inside_herdr(),
+        &mut board_dispatch_host(store),
+        // Detached: the board never waits on Herdr's agent detection.
+        &mut |naming| drop(dispatch::spawn_agent_naming(naming)),
+    )
+}
+
+/// A decision card's `Enter` or option click becomes the option it runs; a choice key the card
+/// does not offer does nothing. `None`: nothing to do. Other intents pass through.
+fn resolve_cleanup_choice(model: &mut BoardModel, intent: BoardIntent) -> Option<BoardIntent> {
+    model.resolve_card_choice(intent, Instant::now())
+}
+
+/// [`handle_board_intent`] over an explicit git/Herdr seam, so tests drive dispatch and
+/// cleanup through the real boundary with a fake host.
+#[allow(clippy::too_many_arguments)]
+fn handle_board_intent_with_host(
+    store: &TaskStore,
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+    intent: BoardIntent,
+    save_recovery: &mut SaveRecovery<DomainState>,
+    quick_capture: bool,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+    name_agent: &mut dyn FnMut(dispatch::AgentNaming),
+) -> io::Result<bool> {
+    let Some(intent) = resolve_board_command(model, intent) else {
+        return Ok(false);
+    };
+    let Some(intent) = resolve_cleanup_choice(model, intent) else {
+        return Ok(false);
+    };
     if let BoardIntent::CopyTaskNumber(id) = intent {
         copy_task_number(domain, model, id);
         return Ok(false);
     }
+    // `ctrl+s` on a page showing its BLOCKED or REVIEW section is the reply box's `ctrl+s` on an
+    // empty box: open the box, then save it the same way (a refusal stays in the box).
+    let intent = if intent == BoardIntent::PageReplyUnblock {
+        if save_recovery.is_pending() || !model.open_page_reply_box() {
+            return Ok(false);
+        }
+        BoardIntent::ReplySaveUnblock
+    } else {
+        intent
+    };
+    let dispatch_target = if intent == BoardIntent::DispatchAgain {
+        model.selected_id()
+    } else {
+        None
+    };
 
     let quit_requested = intent == BoardIntent::Quit
         || (intent == BoardIntent::CloseLayer && model.root_escape_requests_quit());
@@ -1963,11 +4524,22 @@ fn handle_board_intent(
     {
         return Ok(false);
     }
+    // Quitting mid-run would leave launched agents without their records.
+    if quit_requested && model.bulk_dispatch_running() {
+        model.set_message(format!("{BULK_DISPATCH_RUNNING} · quit when it finishes"));
+        return Ok(false);
+    }
+    // A running cleanup finishes its git and Herdr steps before the board exits (bounded), so
+    // no removed worktree is left without its cleaned marker. The run loop exits once due.
+    if quit_requested && (model.cleanup_running() || model.merge_running()) {
+        model.begin_quit_after_cleanup();
+        return Ok(false);
+    }
 
     // Quick capture: Esc on the expanded draft is the top-level cancel. The board's
     // collapse-to-line fallback would strand the popup on a retained one-line draft, so
     // the whole draft is discarded and the popup closes. Nested Escapes keep their own
-    // semantics: an open scope dropdown maps to CancelFormScopeDropdown, the inline step
+    // semantics: an open scope dropdown maps to CancelFormDropdown, the inline step
     // editor owns its CancelEdit, and an unresolved save routes Esc to CancelSave before
     // this dispatch.
     if quick_capture
@@ -1980,12 +4552,24 @@ fn handle_board_intent(
         return Ok(true);
     }
 
-    let baseline = if save_recovery.is_pending() || !board_intent_may_persist(&intent) {
+    // A running batch refuses another dispatch before anything reads the store.
+    if matches!(
+        intent,
+        BoardIntent::DispatchAgain | BoardIntent::ConfirmDispatch
+    ) && !save_recovery.is_pending()
+        && model.bulk_dispatch_running()
+    {
+        model.set_message(format!("{BULK_DISPATCH_RUNNING} · wait for it to finish"));
+        return Ok(false);
+    }
+
+    let baseline = if save_recovery.is_pending() || !board_intent_may_persist(model, &intent) {
         DomainState::new()
     } else {
-        store
-            .load()
-            .map_err(|error| io::Error::other(error.to_string()))?
+        match load_baseline(store, model)? {
+            Some(baseline) => baseline,
+            None => return Ok(false),
+        }
     };
 
     // Do not reload while a failed save is unresolved, because only navigation plus Retry/Cancel
@@ -1994,18 +4578,348 @@ fn handle_board_intent(
         refresh_before_mutation(&intent, &baseline, domain, model);
     }
 
+    // `ctrl+d` in the feedback box approves the review: the feedback is stored first, then the
+    // task completes the way `ctrl+d` completes it, cleanup card included. Nothing is sent.
+    if intent == BoardIntent::ReplyApprove && !save_recovery.is_pending() {
+        let target = model.reply_task_id().filter(|id| {
+            model.reply_is_feedback()
+                && domain
+                    .get(*id)
+                    .is_some_and(|task| task.status == HumanStatus::Review)
+        });
+        if let Some(id) = target {
+            // Approve against the durable record: a round replaced elsewhere must refuse.
+            domain.merge_tasks_from_disk(&baseline);
+            model.sync_from_domain(domain);
+            approve_review(
+                store,
+                domain,
+                model,
+                save_recovery,
+                id,
+                quick_capture,
+                in_herdr,
+                host,
+                name_agent,
+            )?;
+            return Ok(false);
+        }
+    }
+
+    // `ctrl+d` waits for a running cleanup, whatever it targets: a marked set, a task with or
+    // without a dispatch, here or in a project preview. Checked before any eligibility.
+    if intent == BoardIntent::Complete && !save_recovery.is_pending() && model.cleanup_running() {
+        model.set_message(CLEANUP_BUSY);
+        return Ok(false);
+    }
+
+    if intent == BoardIntent::Complete && !save_recovery.is_pending() && model.bulk_verb_active() {
+        match offer_bulk_cleanup_prompt_with_host(domain, model, in_herdr, host) {
+            Ok(BulkCleanupOffer::Prompted) => {
+                adopt_merge_method(store, model);
+                return Ok(false);
+            }
+            Ok(BulkCleanupOffer::MissingConverged {
+                done,
+                missing,
+                workspaces,
+            }) => {
+                let dispatch_running = model.bulk_dispatch_running();
+                let released = match save_releasing(store, domain, dispatch_running, in_herdr, host)
+                {
+                    Ok(released) => released,
+                    Err(error) => {
+                        fail_board_save(domain, model, save_recovery, baseline, error.to_string());
+                        return Ok(false);
+                    }
+                };
+                model.sync_from_domain(domain);
+                let (closed, warnings) = close_converged_workspaces(&workspaces, host);
+                let mut parts = vec![
+                    format!("done {done}"),
+                    format!("{} already gone", plural(missing, "worktree")),
+                ];
+                if closed > 0 {
+                    parts.push(format!("{} closed", plural(closed, "workspace")));
+                }
+                parts.extend(warnings);
+                model.set_message(with_released(
+                    parts.join(" · "),
+                    report_released(&released, name_agent),
+                ));
+                record_notice_dismissals_without_blocking_persist(store, domain);
+                return Ok(false);
+            }
+            Ok(BulkCleanupOffer::Busy) => {
+                model.set_message(CLEANUP_BUSY);
+                return Ok(false);
+            }
+            Ok(BulkCleanupOffer::None) => {}
+            Err(error) => {
+                model.set_message(board_rejection_message(&error));
+                return Ok(false);
+            }
+        }
+    }
+
+    if intent == BoardIntent::Complete && !save_recovery.is_pending() {
+        if let Some(target) = model.selected_id() {
+            match offer_cleanup_prompt_with_host(domain, model, target, in_herdr, host) {
+                Ok(CleanupOffer::Prompted) => {
+                    adopt_merge_method(store, model);
+                    return Ok(false);
+                }
+                Ok(CleanupOffer::MissingConverged {
+                    result,
+                    close_workspace,
+                }) => {
+                    let dispatch_running = model.bulk_dispatch_running();
+                    let released =
+                        match save_releasing(store, domain, dispatch_running, in_herdr, host) {
+                            Ok(released) => released,
+                            Err(error) => {
+                                fail_board_save(
+                                    domain,
+                                    model,
+                                    save_recovery,
+                                    baseline,
+                                    error.to_string(),
+                                );
+                                return Ok(false);
+                            }
+                        };
+                    model.sync_from_domain(domain);
+                    let message = close_converged_workspace(&result, close_workspace, host);
+                    model.set_message(with_released(
+                        message,
+                        report_released(&released, name_agent),
+                    ));
+                    record_notice_dismissals_without_blocking_persist(store, domain);
+                    return Ok(false);
+                }
+                Ok(CleanupOffer::Busy) => {
+                    model.set_message(CLEANUP_BUSY);
+                    return Ok(false);
+                }
+                Ok(CleanupOffer::None) => {}
+                Err(error) => model.set_message(error.to_string()),
+            }
+        }
+    }
+
+    if matches!(
+        intent,
+        BoardIntent::ConfirmCleanup | BoardIntent::KeepCleanup | BoardIntent::MergeCleanup
+    ) && !save_recovery.is_pending()
+    {
+        // The card already confirmed: it now reports the run, and only Esc acts on it. While
+        // `m` merges, the card waits for gh and takes no choice.
+        if model.cleanup_run().is_some()
+            || model.cleanup_prompt().is_some_and(CleanupPrompt::merging)
+        {
+            return Ok(false);
+        }
+        if intent == BoardIntent::MergeCleanup {
+            begin_cleanup_merges(store, domain, model, host);
+            return Ok(false);
+        }
+        let clean = intent == BoardIntent::ConfirmCleanup;
+        let merges = MergeReport::default();
+        confirm_cleanup_and_save(
+            store,
+            domain,
+            model,
+            save_recovery,
+            baseline,
+            CleanupChoice { clean, merges },
+            in_herdr,
+            host,
+            name_agent,
+        );
+        return Ok(false);
+    }
+
     // OpenCapture needs the invocation snapshot `load_board` seeded the board with
     // scope and provenance: the reducer stores it on `model.capture_snapshot` at
     // open and reads it back at ConfirmEdit, so a `None` here is what silently turned board
     // `a` into a no-op save that still reported success.
+    // `y` on the start-anyway card: replay the start that asked, past the after check once.
+    if intent == BoardIntent::ConfirmDispatch && !save_recovery.is_pending() {
+        if let Some(start) = model
+            .dispatch_prompt()
+            .and_then(|prompt| prompt.start_anyway.clone())
+        {
+            model.take_dispatch_prompt();
+            model.start_anyway = true;
+            let replayed = handle_board_intent_with_host(
+                store,
+                domain,
+                model,
+                start.intent,
+                save_recovery,
+                quick_capture,
+                in_herdr,
+                host,
+                name_agent,
+            );
+            model.start_anyway = false;
+            return replayed;
+        }
+    }
+    if intent == BoardIntent::ConfirmDispatch && !save_recovery.is_pending() {
+        start_bulk_dispatch(
+            store,
+            domain,
+            model,
+            save_recovery,
+            baseline,
+            in_herdr,
+            host,
+            name_agent,
+        )?;
+        return Ok(false);
+    }
+
+    // `n` on the relaunch card: start the task, leave its agent alone.
+    if intent == BoardIntent::StartWithoutRelaunch && !save_recovery.is_pending() {
+        if let Some(relaunch) = model
+            .dispatch_prompt()
+            .and_then(|prompt| prompt.relaunch.clone())
+        {
+            model.take_dispatch_prompt();
+            start_plain_and_save(
+                store,
+                domain,
+                model,
+                save_recovery,
+                baseline,
+                &[relaunch.task_id],
+                &[],
+                relaunch.any_status,
+                false,
+                in_herdr,
+                host,
+            );
+        }
+        return Ok(false);
+    }
+
+    if intent == BoardIntent::DispatchAgain && !save_recovery.is_pending() {
+        run_board_dispatch(
+            store,
+            domain,
+            model,
+            save_recovery,
+            baseline,
+            dispatch_target,
+            true,
+            in_herdr,
+            host,
+            name_agent,
+        );
+        return Ok(false);
+    }
+
+    // A start of a task that still waits on others asks first.
+    if matches!(
+        intent,
+        BoardIntent::PrimaryVerb | BoardIntent::SetStatus(HumanStatus::Started)
+    ) && !save_recovery.is_pending()
+        && !model.focus_is_archived()
+        && ask_before_starting_waiting(domain, model, &intent)
+    {
+        return Ok(false);
+    }
+
+    // A start on an assigned task dispatches it, asks before relaunching a gone agent, or
+    // opens the bulk start card; everything else is the reducer's plain status change.
+    if matches!(
+        intent,
+        BoardIntent::PrimaryVerb | BoardIntent::SetStatus(HumanStatus::Started)
+    ) && !save_recovery.is_pending()
+        && !model.focus_is_archived()
+        && route_board_start(
+            store,
+            domain,
+            model,
+            save_recovery,
+            &baseline,
+            intent != BoardIntent::PrimaryVerb,
+            in_herdr,
+            host,
+            name_agent,
+        )
+    {
+        return Ok(false);
+    }
+
+    // The reply box's `ctrl+s` on a task with an agent unblocks to started, not ready: a
+    // running agent gets a plain start; otherwise the reply is stored first and the task
+    // then dispatches, or asks before relaunching a gone agent.
+    let mut after_reply = None;
+    let mut reply_no_launch = None;
+    // A plain start because the agent still runs: the record's replies go to it once the
+    // start is durable. Shift+Enter (save only) never sends; the record's close sends them all.
+    let mut deliver_to = None;
+    let intent = if intent == BoardIntent::ReplySaveUnblock && !save_recovery.is_pending() {
+        // Route against the durable record: an assignment made elsewhere must launch.
+        domain.merge_tasks_from_disk(&baseline);
+        model.sync_from_domain(domain);
+        match reply_unblock_route(domain, model, in_herdr, host) {
+            None => intent,
+            Some((id, dispatch::StartRoute::Plain, check)) => {
+                deliver_to = Some((id, check));
+                BoardIntent::ReplySaveStart
+            }
+            Some((_, dispatch::StartRoute::NoLaunch { reason }, _)) => {
+                reply_no_launch = Some(reason);
+                BoardIntent::ReplySaveStart
+            }
+            Some((id, route, _)) => {
+                after_reply = Some((id, route));
+                // A review keeps its send-back through this save: an empty box with a failed
+                // check still launches.
+                if model.reply_is_feedback() {
+                    BoardIntent::ReplySaveBeforeLaunch
+                } else {
+                    BoardIntent::ReplySave
+                }
+            }
+        }
+    } else {
+        intent
+    };
+
+    // Leaving a block outside the reply box (`ctrl+b`, palette set status) sends the agent the
+    // block's replies once the change is durable, like the box's `ctrl+s`.
+    let mut closing = if !save_recovery.is_pending()
+        && matches!(
+            intent,
+            BoardIntent::ToggleBlock
+                | BoardIntent::SetStatus(HumanStatus::Ready | HumanStatus::Started)
+        ) {
+        closing_candidates(domain, model.verb_target_ids())
+    } else {
+        Vec::new()
+    };
+
+    let resolves_recovery = match intent {
+        BoardIntent::RetrySave => Some(true),
+        BoardIntent::CancelSave => Some(false),
+        _ => None,
+    };
+
     let loaded_snapshot;
     let snapshot_for_intent = if !save_recovery.is_pending() && intent == BoardIntent::OpenCapture {
-        loaded_snapshot = load_snapshot();
+        loaded_snapshot = load_snapshot(domain);
         Some(&loaded_snapshot)
     } else {
         None
     };
 
+    // A completion the reducer made starts what it released, decided in the save.
+    let mut released = Vec::new();
+    let dispatch_running = model.bulk_dispatch_running();
     let outcome = apply_board_intent_presenting_rejection(
         domain,
         model,
@@ -2016,13 +4930,120 @@ fn handle_board_intent(
             snapshot: snapshot_for_intent,
         },
         |state| {
-            store
-                .reload_merge_save(state)
-                .map_err(|error| error.to_string())
+            released.extend(
+                save_releasing(store, state, dispatch_running, in_herdr, host)
+                    .map_err(|error| error.to_string())?,
+            );
+            Ok(())
         },
     );
     if outcome == IntentOutcome::Persisted {
+        if let Some(note) = report_released(&released, name_agent) {
+            model.set_message(note);
+        }
+    }
+    // A reply whose save failed keeps its start for save recovery: Retry resumes it, Cancel
+    // drops it with the rolled-back reply.
+    // A delivery waits on the same recovery: Retry sends it once, against a fresh check.
+    // So does a status change outside the box that closed a record.
+    match resolves_recovery {
+        Some(false) => {
+            model.pending_reply_start = None;
+            model.pending_reply_delivery = None;
+            model.pending_closing.clear();
+        }
+        Some(true) if outcome == IntentOutcome::Persisted && !save_recovery.is_pending() => {
+            closing.append(&mut model.pending_closing);
+            if let Some(target) = model.pending_reply_start.take() {
+                after_reply = domain
+                    .get(target)
+                    .filter(|task| task.assignee.is_some() && !task.archived)
+                    .map(|task| {
+                        let route =
+                            dispatch::start_route(task, crate::domain::OWNER, in_herdr, host);
+                        (target, route)
+                    });
+            }
+            if let Some(target) = model.pending_reply_delivery.take() {
+                deliver_to = domain.get(target).map(|task| {
+                    let (_, check) =
+                        dispatch::start_route_checked(task, crate::domain::OWNER, in_herdr, host);
+                    (target, check)
+                });
+            }
+        }
+        _ => {}
+    }
+    if save_recovery.is_pending() {
+        if let Some((target, _)) = after_reply.take() {
+            model.pending_reply_start = Some(target);
+        }
+        if let Some((target, _)) = deliver_to.take() {
+            model.pending_reply_delivery = Some(target);
+        }
+        model.pending_closing.append(&mut closing);
+    }
+    if outcome == IntentOutcome::Persisted {
         record_notice_dismissals_without_blocking_persist(store, domain);
+        if let Some(reason) = reply_no_launch {
+            model.set_message(dispatch::no_launch_message(reason));
+        }
+        if let Some((target, check)) = deliver_to.take() {
+            deliver_reply_after_start(domain, model, target, &check, host);
+        }
+        if !save_recovery.is_pending() {
+            if let Some(line) = deliver_closed_records(domain, &closing, in_herdr, host) {
+                model.set_message(line);
+            }
+        }
+        if let Some((target, route)) = after_reply.filter(|_| !save_recovery.is_pending()) {
+            match route {
+                dispatch::StartRoute::AgentGone { assignee } => {
+                    // The reply box unblocks: any status but started moves.
+                    open_relaunch_card(domain, model, target, assignee, true);
+                }
+                // Only a resumed start lands here: its agent turned out to be running, or
+                // dispatch cannot work here. The start sends the closed record's replies.
+                dispatch::StartRoute::Plain | dispatch::StartRoute::NoLaunch { .. } => {
+                    let Some(baseline) = load_baseline(store, model)? else {
+                        return Ok(false);
+                    };
+                    let started = start_plain_and_save(
+                        store,
+                        domain,
+                        model,
+                        save_recovery,
+                        baseline,
+                        &[target],
+                        &[],
+                        true,
+                        false,
+                        in_herdr,
+                        host,
+                    );
+                    if let (Some(_), dispatch::StartRoute::NoLaunch { reason }) = (started, route) {
+                        model.set_message(dispatch::no_launch_message(reason));
+                    }
+                }
+                dispatch::StartRoute::Dispatch => {
+                    let Some(baseline) = load_baseline(store, model)? else {
+                        return Ok(false);
+                    };
+                    run_board_dispatch(
+                        store,
+                        domain,
+                        model,
+                        save_recovery,
+                        baseline,
+                        Some(target),
+                        false,
+                        in_herdr,
+                        host,
+                        name_agent,
+                    );
+                }
+            }
+        }
     }
     match outcome {
         IntentOutcome::Quit => Ok(true),
@@ -3001,6 +6022,39 @@ mod tests {
     }
 
     #[test]
+    fn projects_preview_starts_from_the_configured_project_layout() {
+        let mut domain = DomainState::new();
+        domain
+            .create(
+                "preview task",
+                None,
+                TaskScope::Project {
+                    path: "/repos/preview".into(),
+                },
+                ProvenanceOrigin::Manual,
+                Some("ship".into()),
+            )
+            .expect("create preview task");
+        let mut model = BoardModel::from_domain(&domain, None);
+        model.set_layout_defaults(crate::agents::BoardDefaults {
+            project_group: crate::ui::queue::GroupBy::Assignee,
+            project_sort: crate::ui::queue::SortBy::Title,
+            ..Default::default()
+        });
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("open projects overview");
+        stage_right(&mut domain, &mut model, 2);
+        let right = model.right_seat().expect("preview seat");
+        assert_eq!(right.layout().group, crate::ui::queue::GroupBy::Assignee);
+        assert_eq!(right.layout().sort, crate::ui::queue::SortBy::Title);
+    }
+
+    #[test]
     fn projects_preview_keeps_its_own_group_state() {
         let (mut domain, mut model, _id) = projects_preview_fixture();
         let area = Rect::new(0, 0, 110, 30);
@@ -3212,6 +6266,69 @@ mod tests {
     }
 
     #[test]
+    fn projects_preview_right_seat_inherits_agent_profiles_when_it_is_created() {
+        let temp = TempStore::new("projects-preview-agents");
+        std::fs::write(
+            temp.dir.join("config.toml"),
+            "[agent.reviewer]\ncommand = [\"true\"]\n",
+        )
+        .expect("write profiles");
+        let profiles = crate::agents::AgentProfiles::load(&temp.dir).expect("load profiles");
+        let mut domain = DomainState::new();
+        let id = domain
+            .create(
+                "preview assignment",
+                None,
+                TaskScope::Project {
+                    path: "/repos/preview".into(),
+                },
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create preview task");
+        let mut model = BoardModel::from_domain(&domain, None);
+        model.set_agent_profiles(&profiles);
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("open projects overview");
+        stage_right(&mut domain, &mut model, 2);
+
+        apply_intent(
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::OpenAssigneePicker,
+            None,
+        )
+        .expect("open right-seat assignee picker");
+        assert_eq!(
+            model
+                .input_target_mut()
+                .selected_list_picker_option()
+                .map(|(_, option)| option.label),
+            Some("@reviewer".to_string()),
+            "the inherited profile is offered"
+        );
+        assert_eq!(
+            apply_intent(
+                &mut domain,
+                model.input_target_mut(),
+                BoardIntent::ConfirmListPicker,
+                None,
+            )
+            .expect("assign in right seat"),
+            IntentOutcome::Persist
+        );
+        assert_eq!(
+            domain.get(id).expect("preview task").assignee.as_deref(),
+            Some("reviewer")
+        );
+    }
+
+    #[test]
     fn projects_preview_right_seat_builds_and_spends_its_own_marked_set() {
         let (mut domain, mut model) = projects_preview_open_tasks_fixture();
         let area = Rect::new(0, 0, 110, 30);
@@ -3413,6 +6530,68 @@ mod tests {
             "right-seat selection must remain on a painted row"
         );
         assert_ne!(selected_row(right), Some(header));
+    }
+
+    #[test]
+    fn projects_preview_inert_click_disarms_the_right_seat_cleanup_card_double_click() {
+        let area = Rect::new(0, 0, 110, 30);
+        let (_domain, mut model) = projects_preview_open_tasks_fixture();
+        sync_frame_presentation(area, &model);
+        assert!(model.project_right_seat_focused());
+        let task = model
+            .right_seat()
+            .and_then(BoardModel::selected_id)
+            .expect("right seat task");
+        let row = CleanupRow {
+            merge_check: None,
+            check_failed: false,
+            pr: crate::ui::board::CleanupPr::default(),
+            unreachable_remote: None,
+            inspected: None,
+            task_id: task,
+            number: 1,
+            worktree: "/tmp/tsk-t1-preview".into(),
+            branch: "tsk/t1-preview".into(),
+            base: "main".into(),
+            dirty: false,
+            dirty_files: Vec::new(),
+            checked_out_elsewhere: false,
+            branch_merged: true,
+            base_available: true,
+            warning: None,
+            workspace_exists: true,
+        };
+        let seat = model.input_target_mut();
+        seat.begin_cleanup_prompt(crate::ui::board::CleanupPrompt::single(row));
+        seat.cleanup_prompt_mut()
+            .expect("card")
+            .selector
+            .option_click = Some((
+            std::time::Instant::now(),
+            crate::ui::board::CleanupChoice::Clean,
+        ));
+        // A press on the card's verdict line, above its first option, through the real mouse
+        // boundary.
+        let option = board_hit_map(area, &model)
+            .regions
+            .iter()
+            .find(|hit| hit.target == crate::ui::render::QueueHitTarget::CleanupOption(0))
+            .expect("first option painted")
+            .area;
+        assert_eq!(
+            board_mouse_intent(area, &mut model, left_click(option.x, option.y - 1)),
+            None
+        );
+        assert_eq!(
+            model
+                .right_seat()
+                .and_then(BoardModel::cleanup_prompt)
+                .expect("card stays open")
+                .selector
+                .option_click,
+            None,
+            "the preview's card must lose its pending double click"
+        );
     }
 
     #[test]
@@ -3964,6 +7143,57 @@ mod tests {
         assert_refused(&mut domain, &mut model, BoardIntent::ConfirmListPicker);
     }
 
+    /// Number keys pick a block option on the page, including the wide task column while it
+    /// owns focus. While the board owns focus (stage 0 and the split) they stay its tab keys.
+    #[test]
+    fn number_keys_pick_an_option_in_the_focused_wide_task_column() {
+        use crate::ui::queue::NavTab;
+        let (mut domain, mut model) = board_fixture("digits wide", None);
+        let id = model.selected_id().expect("selection");
+        domain
+            .block(
+                id,
+                crate::domain::BlockDraft::from_input(
+                    Some("which one?"),
+                    None,
+                    &["one".into(), "two".into()],
+                    Default::default(),
+                )
+                .expect("draft"),
+                "builder",
+            )
+            .expect("block");
+        model.sync_from_domain(&domain);
+        let wide = Rect::new(0, 0, 130, 30);
+        let route = |model: &mut BoardModel, code| {
+            let mode = resolve_board_surface(wide, model);
+            board_keyboard_intent_for_area(
+                model,
+                wide,
+                mode,
+                KeyEvent::new(code, KeyModifiers::NONE),
+            )
+        };
+        assert_eq!(
+            route(&mut model, KeyCode::Char('2')),
+            Some(BoardIntent::SelectNavTab(NavTab::ProjectBoard))
+        );
+        stage_right(&mut domain, &mut model, 1);
+        assert_eq!(model.wide_stage(), crate::ui::tier::WideStage::Split);
+        assert_eq!(
+            route(&mut model, KeyCode::Char('2')),
+            Some(BoardIntent::SelectNavTab(NavTab::ProjectBoard)),
+            "the board column keeps its tab keys"
+        );
+        stage_right(&mut domain, &mut model, 1);
+        assert_eq!(model.wide_stage(), crate::ui::tier::WideStage::Rail);
+        let pick = route(&mut model, KeyCode::Char('2')).expect("mapped");
+        assert_eq!(pick, BoardIntent::PickOption(1));
+        apply_intent(&mut domain, &mut model, pick, None).expect("pick");
+        assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+        assert_eq!(model.reply_draft(), Some("two"));
+    }
+
     fn grouped_header_fixture(scope: TaskScope) -> (DomainState, BoardModel, uuid::Uuid) {
         let mut domain = DomainState::new();
         let mut row = None;
@@ -4240,7 +7470,7 @@ mod tests {
             Some(BoardIntent::FormFocusNext),
             "Tab keeps its task-page meaning"
         );
-        // Narrow task page: ← stays inert, Esc closes, exactly as before the slider.
+        // Narrow task page: ← stays inert, Esc closes.
         assert_eq!(route(&mut model, single, KeyCode::Left), None);
         assert_eq!(route(&mut model, single, KeyCode::Char('h')), None);
         assert_eq!(route(&mut model, single, KeyCode::Char('l')), None);
@@ -5475,6 +8705,7 @@ mod tests {
 
     #[test]
     fn every_board_mutation_uses_a_real_persisted_baseline() {
+        let model = BoardModel::from_domain(&DomainState::new(), None);
         for intent in [
             BoardIntent::ConfirmEdit,
             BoardIntent::ConfirmEditNext,
@@ -5489,11 +8720,11 @@ mod tests {
             BoardIntent::ToggleStep,
         ] {
             assert!(
-                board_intent_may_persist(&intent),
+                board_intent_may_persist(&model, &intent),
                 "{intent:?} must load the persisted baseline before save recovery"
             );
         }
-        assert!(!board_intent_may_persist(&BoardIntent::SelectNext));
+        assert!(!board_intent_may_persist(&model, &BoardIntent::SelectNext));
 
         // Editing moves a draft, never the store: only ConfirmEdit above writes.
         for intent in [
@@ -5519,7 +8750,7 @@ mod tests {
             BoardIntent::CancelEdit,
         ] {
             assert!(
-                !board_intent_may_persist(&intent),
+                !board_intent_may_persist(&model, &intent),
                 "{intent:?} must not reload a persisted baseline"
             );
         }
@@ -5719,11 +8950,11 @@ mod tests {
         apply_intent(
             &mut domain,
             &mut model,
-            BoardIntent::OpenFormScopeDropdown,
+            BoardIntent::OpenFormDropdown(CaptureField::Scope),
             None,
         )
         .expect("open scope picker");
-        assert_eq!(model.input_mode(), BoardInputMode::FormScopeDropdown);
+        assert_eq!(model.input_mode(), BoardInputMode::FormDropdown);
         assert_eq!(
             board_keyboard_intent(&model, model.input_mode(), ctrl_q),
             Some(BoardIntent::Quit)
@@ -5732,7 +8963,7 @@ mod tests {
         apply_intent(
             &mut domain,
             &mut model,
-            BoardIntent::CancelFormScopeDropdown,
+            BoardIntent::CancelFormDropdown,
             None,
         )
         .expect("close scope picker");
@@ -6802,6 +10033,54 @@ mod tests {
         assert_eq!(model.step_cursor(), Some(1));
     }
 
+    /// T241: alt+↑/↓ is a ctrl+u step like every other step change: undo puts the last move
+    /// back, names the task, and the moved step keeps its id and done flag.
+    #[test]
+    fn undo_reverses_the_last_step_move() {
+        let (temp, mut domain, mut model, id) = step_order_fixture("move-undo", &["a", "b", "c"]);
+        let a = domain.get(id).expect("task").steps[0].id;
+        domain.toggle_step(id, a).expect("check a");
+        temp.store.save(&domain).expect("save check");
+        let mut recovery = SaveRecovery::new();
+        drive(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            [
+                BoardIntent::SelectStep(0),
+                BoardIntent::MoveStepDown,
+                BoardIntent::MoveStepDown,
+            ],
+        );
+        assert_eq!(stored_step_texts(&temp, id), vec!["b", "c", "a"]);
+        let number = temp
+            .store
+            .load()
+            .expect("reload")
+            .get(id)
+            .expect("task")
+            .number
+            .expect("numbered");
+
+        drive(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            [BoardIntent::Undo],
+        );
+        assert_eq!(stored_step_texts(&temp, id), vec!["b", "a", "c"]);
+        assert_eq!(
+            model.message(),
+            Some(format!("steps undone · T{number}").as_str())
+        );
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+        let stored = temp.store.load().expect("reload");
+        let restored = &stored.get(id).expect("task").steps[1];
+        assert_eq!((restored.id, restored.done), (a, true));
+    }
+
     /// #159: `:` opens the palette over the task page, which offers the step moves only
     /// while a step is selected; running one moves and saves exactly like alt+↓.
     #[test]
@@ -6816,11 +10095,11 @@ mod tests {
             model
                 .available_commands()
                 .iter()
-                .map(|command| command.label)
+                .map(|command| command.label.clone())
                 .collect::<Vec<_>>()
         };
         assert!(
-            !labels(&model).contains(&"move step down"),
+            !labels(&model).iter().any(|label| label == "move step down"),
             "no step selected yet"
         );
         let mut recovery = SaveRecovery::new();
@@ -6833,7 +10112,7 @@ mod tests {
         drive(&temp, &mut domain, &mut model, &mut recovery, intents);
         assert_eq!(
             model.selected_command().map(|command| command.label),
-            Some("move step down")
+            Some("move step down".to_string())
         );
         drive(
             &temp,
@@ -6847,7 +10126,7 @@ mod tests {
         assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
     }
 
-    /// #159 review F-2: `:` reaches the palette's "new task" from a task page. It must refuse
+    /// #159 review F-2: `:` reaches the palette's "add task" from a task page. It must refuse
     /// while the task session holds staged step changes instead of dropping them.
     #[test]
     fn palette_new_task_refuses_over_a_dirty_task_session() {
@@ -6860,11 +10139,11 @@ mod tests {
             BoardIntent::SoftDelete,
             BoardIntent::OpenCommandPalette,
         ];
-        intents.extend("new task".chars().map(BoardIntent::CommandQueryInsert));
+        intents.extend("add task".chars().map(BoardIntent::CommandQueryInsert));
         drive(&temp, &mut domain, &mut model, &mut recovery, intents);
         assert_eq!(
             model.selected_command().map(|command| command.label),
-            Some("new task")
+            Some("add task".to_string())
         );
         drive(
             &temp,
@@ -7761,30 +11040,84 @@ mod tests {
     }
 
     #[test]
-    fn expanded_quick_add_tabs_past_the_selected_step_target() {
+    fn task_and_expanded_capture_edit_rings_follow_footer_order_in_both_directions() {
         let mut domain = DomainState::new();
-        let mut model = BoardModel::from_domain(&domain, None);
-        apply_intent(&mut domain, &mut model, BoardIntent::OpenCapture, None)
-            .expect("open quick add");
-        apply_intent(&mut domain, &mut model, BoardIntent::ExpandQuickAdd, None)
-            .expect("expand quick add");
-        apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
-            .expect("Tab from Notes selects + step");
-        assert_eq!(model.input_mode(), BoardInputMode::CapturePage);
+        domain
+            .create(
+                "ring task",
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("task");
+        let mut task = BoardModel::from_domain(&domain, None);
+        apply_intent(&mut domain, &mut task, BoardIntent::OpenTaskPage, None).expect("page");
+        apply_intent(&mut domain, &mut task, BoardIntent::BeginEditTitle, None).expect("edit");
+        assert_eq!(task.input_mode(), BoardInputMode::EditTitle);
+        for expected in [
+            BoardInputMode::EditNotes,
+            BoardInputMode::TaskPage,
+            BoardInputMode::EditAssignee,
+            BoardInputMode::SelectBase,
+            BoardInputMode::SelectAfter,
+            BoardInputMode::SelectThread,
+            BoardInputMode::EditScope,
+            BoardInputMode::EditTitle,
+        ] {
+            apply_intent(&mut domain, &mut task, BoardIntent::FormFocusNext, None).expect("tab");
+            assert_eq!(task.input_mode(), expected);
+        }
+        for expected in [
+            BoardInputMode::EditScope,
+            BoardInputMode::SelectThread,
+            BoardInputMode::SelectAfter,
+            BoardInputMode::SelectBase,
+            BoardInputMode::EditAssignee,
+            BoardInputMode::TaskPage,
+            BoardInputMode::EditNotes,
+            BoardInputMode::EditTitle,
+        ] {
+            apply_intent(&mut domain, &mut task, BoardIntent::FormFocusPrev, None)
+                .expect("shift tab");
+            assert_eq!(task.input_mode(), expected);
+        }
 
-        let intent = board_keyboard_intent(
-            &model,
-            model.input_mode(),
-            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-        );
-        assert_eq!(
-            intent,
-            Some(BoardIntent::FormFocusNext),
-            "Tab on expanded capture's + step must reach Thread"
-        );
-        apply_intent(&mut domain, &mut model, intent.expect("Tab intent"), None)
-            .expect("advance past + step");
-        assert_eq!(model.input_mode(), BoardInputMode::EditThread);
+        let mut capture_domain = DomainState::new();
+        let mut capture = BoardModel::from_domain(&capture_domain, None);
+        apply_intent(
+            &mut capture_domain,
+            &mut capture,
+            BoardIntent::OpenCapture,
+            None,
+        )
+        .expect("open quick add");
+        apply_intent(
+            &mut capture_domain,
+            &mut capture,
+            BoardIntent::ExpandQuickAdd,
+            None,
+        )
+        .expect("expand quick add");
+        assert_eq!(capture.input_mode(), BoardInputMode::EditNotes);
+        for expected in [
+            BoardInputMode::CapturePage,
+            BoardInputMode::EditAssignee,
+            BoardInputMode::SelectBase,
+            BoardInputMode::SelectAfter,
+            BoardInputMode::EditThread,
+            BoardInputMode::EditScope,
+            BoardInputMode::EditTitle,
+        ] {
+            apply_intent(
+                &mut capture_domain,
+                &mut capture,
+                BoardIntent::FormFocusNext,
+                None,
+            )
+            .expect("capture tab");
+            assert_eq!(capture.input_mode(), expected);
+        }
     }
 
     #[test]
@@ -7892,10 +11225,10 @@ mod tests {
         assert_eq!(
             board_keyboard_intent(
                 &model,
-                BoardInputMode::FormScopeDropdown,
+                BoardInputMode::FormDropdown,
                 KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)
             ),
-            Some(BoardIntent::FormScopeNext),
+            Some(BoardIntent::FormDropdownNext),
             "the form scope dropdown must route through the shared form mapper"
         );
 
@@ -7903,7 +11236,11 @@ mod tests {
         // form mapper would handle differently, so this is an allowlist regression guard rather
         // than a test of identical fallthroughs.
         for (mode, code, expected) in [
-            (BoardInputMode::Normal, KeyCode::Char('r'), None),
+            (
+                BoardInputMode::Normal,
+                KeyCode::Char('r'),
+                Some(BoardIntent::BeginReply),
+            ),
             (
                 BoardInputMode::TaskPage,
                 KeyCode::Char('e'),
@@ -8009,6 +11346,99 @@ mod tests {
         }
     }
 
+    /// Bare Enter on a selected block option opens the prefilled reply box, which then types
+    /// letters such as a capital M.
+    #[test]
+    fn enter_on_a_block_option_resolves_to_reply_with_option_at_the_keyboard_boundary() {
+        use crate::ui::board::apply_intent;
+
+        let (mut domain, mut model) = board_fixture("Asked", None);
+        let id = model.selected_id().expect("task");
+        domain
+            .block(
+                id,
+                crate::domain::BlockDraft {
+                    options: vec!["yes".into()],
+                    ..Default::default()
+                },
+                "claude",
+            )
+            .expect("block");
+        model.sync_from_domain(&domain);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open");
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("tab");
+        assert_eq!(
+            board_keyboard_intent(&model, BoardInputMode::TaskPage, enter),
+            Some(BoardIntent::OpenTaskPage),
+            "the heading keeps Enter's page route"
+        );
+        apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("tab");
+        let intent = board_keyboard_intent(&model, BoardInputMode::TaskPage, enter)
+            .expect("enter on an option");
+        assert_eq!(intent, BoardIntent::ReplyWithOption);
+        apply_intent(&mut domain, &mut model, intent, None).expect("reply");
+        assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+        assert_eq!(model.reply_draft(), Some("yes"));
+        let capital_m = KeyEvent::new(KeyCode::Char('M'), KeyModifiers::SHIFT);
+        assert_eq!(
+            board_keyboard_intent(&model, BoardInputMode::EditReply, capital_m),
+            Some(BoardIntent::EditInsert('M')),
+            "the reply box types a capital M"
+        );
+    }
+
+    /// With mark mode on, the block card and the reply box own capital M and Esc: typing
+    /// `Meeting…` never toggles mark mode, and Esc cancels the surface, never the marked set
+    /// the card captured.
+    #[test]
+    fn mark_mode_keys_belong_to_the_block_card_and_the_reply_box() {
+        use crate::ui::board::apply_intent;
+
+        let (mut domain, mut model) = board_fixture("Asked", None);
+        let id = model.selected_id().expect("task");
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None).expect("mark");
+        apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark one");
+        assert_eq!(model.marked_count(), 1);
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None).expect("card");
+        assert_eq!(model.input_mode(), BoardInputMode::BlockCard);
+        let capital_m = KeyEvent::new(KeyCode::Char('M'), KeyModifiers::SHIFT);
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(
+            board_keyboard_intent(&model, BoardInputMode::BlockCard, capital_m),
+            Some(BoardIntent::EditInsert('M')),
+            "the card's why types a capital M"
+        );
+        let cancel = board_keyboard_intent(&model, BoardInputMode::BlockCard, esc);
+        assert_eq!(cancel, Some(BoardIntent::BlockCardCancel));
+        apply_intent(&mut domain, &mut model, BoardIntent::BlockCardCancel, None).expect("esc");
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+        assert!(
+            model.mark_mode_active() && model.marked_count() == 1,
+            "Esc kept the marks"
+        );
+
+        domain
+            .block(id, crate::domain::BlockDraft::default(), "claude")
+            .expect("block");
+        model.sync_from_domain(&domain);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open");
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("reply");
+        assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+        assert!(model.mark_mode_active(), "the marks are still armed");
+        assert_eq!(
+            board_keyboard_intent(&model, BoardInputMode::EditReply, capital_m),
+            Some(BoardIntent::EditInsert('M'))
+        );
+        let reply_esc = board_keyboard_intent(&model, BoardInputMode::EditReply, esc);
+        assert_ne!(reply_esc, Some(BoardIntent::MarkClear));
+        assert_eq!(
+            reply_esc,
+            crate::ui::input::map_key(BoardInputMode::EditReply, esc),
+            "Esc is the reply box's own cancel"
+        );
+    }
+
     /// Bare Enter on the task page becomes `ToggleStep` only while a stored step is
     /// selected. Resolved here, at the keyboard boundary, so the persisting intent is
     /// classified before the save baseline loads; everywhere else Enter keeps its route.
@@ -8044,7 +11474,7 @@ mod tests {
         let intent = board_keyboard_intent(&model, BoardInputMode::TaskPage, enter)
             .expect("enter on a step");
         assert_eq!(intent, BoardIntent::ToggleStep);
-        assert!(board_intent_may_persist(&intent));
+        assert!(board_intent_may_persist(&model, &intent));
         apply_intent(&mut domain, &mut model, intent, None).expect("toggle");
         assert!(domain.get(id).expect("task").steps[0].done, "alpha toggled");
         assert_eq!(
@@ -8062,6 +11492,12 @@ mod tests {
             Some(BoardIntent::OpenTaskPage)
         );
 
+        // Past `+ step` the collapsed PAPER TRAIL heading takes Enter, then Tab wraps.
+        apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("trail");
+        assert_eq!(
+            board_keyboard_intent(&model, BoardInputMode::TaskPage, enter),
+            Some(BoardIntent::ToggleTrail)
+        );
         // Shift+Enter never becomes a toggle.
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("wrap");
         assert!(model.stored_step_selected());
@@ -8522,12 +11958,12 @@ mod tests {
             pasted
                 .visible_commands()
                 .iter()
-                .map(|command| command.label)
+                .map(|command| command.label.clone())
                 .collect::<Vec<_>>(),
             typed
                 .visible_commands()
                 .iter()
-                .map(|command| command.label)
+                .map(|command| command.label.clone())
                 .collect::<Vec<_>>(),
             "a paste must narrow the palette exactly as typing the same run does"
         );
@@ -8583,7 +12019,7 @@ mod tests {
             .expect("insert the paste");
         assert_eq!(model.scope_path_edit(), Some("/repos/app more"));
 
-        // Scope focus without an active path editor is not a text field: inert, as before.
+        // Scope focus without an active path editor is not a text field: inert.
         apply_capture_intent(
             &mut domain,
             None,
@@ -8898,5 +12334,11716 @@ mod projects_view_tests {
             "no thread/project nesting"
         );
         let _ = SectionKind::NeedsYou;
+    }
+}
+
+#[cfg(test)]
+mod quick_assign_tests {
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+    use std::rc::Rc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::layout::Rect;
+
+    use super::{
+        apply_board_intent_with_save_recovery, apply_intent, board_keyboard_intent,
+        handle_board_intent_with_host, BoardIntent, BoardSaveContext, DomainState,
+    };
+    use crate::agents::AgentProfiles;
+    use crate::dispatch::{self, CreatedWorktree, DispatchHost};
+    use crate::domain::{HumanStatus, ProvenanceOrigin, TaskScope, UndoEntry};
+    use crate::save_recovery::SaveRecovery;
+    use crate::store::TaskStore;
+    use crate::ui::board::IntentOutcome;
+    use crate::ui::board::{board_hit_map, BoardInputMode, BoardModel, ListPickerKind};
+    use crate::ui::input::map_key;
+    use crate::ui::mouse::{left_click, map_board_mouse};
+    use crate::ui::render::QueueHitTarget;
+
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+    const PROJECT: &str = "/repos/app";
+
+    struct Temp {
+        dir: PathBuf,
+        store: TaskStore,
+    }
+
+    impl Temp {
+        fn new(label: &str, profiles: &[&str]) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos();
+            let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!("tsk-quick-assign-{label}-{nanos}-{seq}"));
+            std::fs::create_dir_all(&dir).expect("state dir");
+            let content = profiles
+                .iter()
+                .map(|name| format!("[agent.{name}]\ncommand = [\"true\"]\n"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            std::fs::write(dir.join("config.toml"), content).expect("write profiles");
+            let store = TaskStore::new(&dir);
+            Temp { dir, store }
+        }
+
+        fn profiles(&self) -> AgentProfiles {
+            AgentProfiles::load(&self.dir).expect("load profiles")
+        }
+    }
+
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Saved project tasks (so each carries a number), and a board with the profiles loaded.
+    fn board(temp: &Temp, titles: &[&str]) -> (DomainState, BoardModel, Vec<uuid::Uuid>) {
+        let mut domain = DomainState::new();
+        let ids = titles
+            .iter()
+            .map(|title| {
+                domain
+                    .create(
+                        title,
+                        None,
+                        TaskScope::Project {
+                            path: PROJECT.into(),
+                        },
+                        ProvenanceOrigin::Manual,
+                        None,
+                    )
+                    .expect("create task")
+            })
+            .collect();
+        temp.store
+            .reload_merge_save(&mut domain)
+            .expect("save tasks");
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(PROJECT)));
+        model.set_selected_project(Some(PathBuf::from(PROJECT)));
+        model.set_agent_profiles(&temp.profiles());
+        (domain, model, ids)
+    }
+
+    fn select(domain: &mut DomainState, model: &mut BoardModel, id: uuid::Uuid) {
+        let index = model
+            .visible_ids()
+            .iter()
+            .position(|visible| *visible == id)
+            .expect("task visible");
+        apply_intent(domain, model, BoardIntent::SelectIndex(index), None).expect("select");
+    }
+
+    fn key(model: &BoardModel, code: KeyCode, modifiers: KeyModifiers) -> BoardIntent {
+        map_key(model.input_mode(), KeyEvent::new(code, modifiers)).expect("mapped key")
+    }
+
+    /// Records what the store held when the launch began, proving the assignment was durable
+    /// before any host work.
+    struct FakeHost {
+        store: TaskStore,
+        assignee_on_disk_at_launch: Rc<RefCell<Vec<Option<String>>>>,
+        launched: usize,
+        fail_launch: Option<String>,
+        /// Fail only the launch whose branch contains this text.
+        fail_branch: Option<String>,
+        /// Every command typed into a pane: one per launch, a relaunch included.
+        ran: usize,
+        /// Herdr's answer to "is an agent in this pane": `None` cannot say.
+        agent: Option<bool>,
+        /// Herdr no longer has the recorded workspace.
+        workspace_gone: bool,
+        /// Herdr cannot answer the root-pane query at all.
+        root_failed: bool,
+        /// The last reply of each task as saved when a launch began.
+        replies_on_disk_at_launch: Vec<String>,
+        /// Workspaces opened on a kept worktree (a relaunch after the workspace closed).
+        reopened: usize,
+        /// Every prompt submitted to an agent: (pane, text).
+        prompts: Vec<(String, String)>,
+        /// How Herdr answers a prompt: `None` accepts it.
+        prompt_error: Option<crate::dispatch::PromptError>,
+        /// Live agent names by pane; a pane missing here holds an unnamed agent.
+        names: std::collections::HashMap<String, String>,
+        /// Names the next agent lookups report, ahead of `names` (a pane changing hands).
+        next_names: std::collections::VecDeque<Option<String>>,
+        /// Every workspace whose root pane was asked for, and every pane asked about.
+        root_queries: Vec<String>,
+        agent_queries: Vec<String>,
+        /// Answer cleanup inspections with a clean, merged worktree.
+        cleanup: bool,
+        /// The task's durable status and last reply on disk when each prompt was submitted.
+        disk_at_prompt: Vec<(HumanStatus, Option<String>)>,
+        /// The store as saved when each worktree was created.
+        disk_at_launch: Vec<DomainState>,
+        /// Fail the next save of this store handle once a launch begins.
+        fail_save_at_launch: Option<TaskStore>,
+    }
+
+    impl DispatchHost for FakeHost {
+        fn inspect_cleanup_cached(
+            &mut self,
+            _: &Path,
+            _: &crate::domain::Dispatch,
+            _: bool,
+        ) -> Result<crate::dispatch::CleanupInspection, String> {
+            if !self.cleanup {
+                return Err("cleanup inspection is not supported".into());
+            }
+            Ok(crate::dispatch::CleanupInspection {
+                unreachable_remote: None,
+                worktree_exists: true,
+                dirty: false,
+                dirty_files: Vec::new(),
+                checked_out_elsewhere: false,
+                branch_merged: true,
+                workspace_exists: true,
+                target_matches: true,
+                warning: None,
+                base_available: true,
+            })
+        }
+        fn is_git_repo(&mut self, _: &Path) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        fn resolve_base(&mut self, _: &Path) -> Result<String, String> {
+            Ok("main".into())
+        }
+
+        fn create_worktree(
+            &mut self,
+            _: &Path,
+            branch: &str,
+            _: Option<&str>,
+            _: &str,
+        ) -> Result<CreatedWorktree, String> {
+            let disk = self.store.load().expect("load during launch");
+            self.disk_at_launch.push(disk.clone());
+            if let Some(store) = self.fail_save_at_launch.take() {
+                store.fail_next_save();
+            }
+            self.replies_on_disk_at_launch
+                .extend(disk.tasks().iter().filter_map(|task| {
+                    let block = task.block.as_ref().or(task.past_blocks.last())?;
+                    block.replies.last().map(|reply| reply.text.clone())
+                }));
+            self.assignee_on_disk_at_launch.borrow_mut().extend(
+                disk.tasks()
+                    .iter()
+                    .filter(|task| !task.is_notice())
+                    .map(|task| task.assignee.clone()),
+            );
+            self.launched += 1;
+            if let Some(error) = self.fail_launch.clone() {
+                return Err(error);
+            }
+            if self
+                .fail_branch
+                .as_deref()
+                .is_some_and(|text| branch.contains(text))
+            {
+                return Err(format!("herdr refused {branch}"));
+            }
+            Ok(CreatedWorktree {
+                path: "/tmp/tsk-quick-assign-worktree".into(),
+                branch: branch.into(),
+                workspace_id: "w1".into(),
+                root_pane_id: "w1:p1".into(),
+            })
+        }
+
+        fn root_pane(&mut self, workspace: &str) -> Result<String, crate::dispatch::RootPaneError> {
+            self.root_queries.push(workspace.into());
+            if self.workspace_gone {
+                return Err(crate::dispatch::RootPaneError::WorkspaceGone(
+                    "workspace not found".into(),
+                ));
+            }
+            if self.root_failed {
+                return Err("could not run herdr".into());
+            }
+            Ok(format!("{workspace}:p1"))
+        }
+
+        fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
+            self.ran += 1;
+            Ok(())
+        }
+
+        fn pane_has_agent(&mut self, _: &str) -> Result<bool, String> {
+            self.agent.ok_or_else(|| "herdr did not answer".to_string())
+        }
+
+        fn pane_agent(&mut self, pane: &str) -> Result<crate::dispatch::PaneAgent, String> {
+            self.agent_queries.push(pane.into());
+            match self.agent {
+                None => Err("herdr did not answer".into()),
+                Some(false) => Ok(crate::dispatch::PaneAgent::Absent),
+                Some(true) => Ok(crate::dispatch::PaneAgent::Present {
+                    name: self
+                        .next_names
+                        .pop_front()
+                        .unwrap_or_else(|| self.names.get(pane).cloned()),
+                }),
+            }
+        }
+
+        fn prompt_agent(
+            &mut self,
+            pane: &str,
+            text: &str,
+        ) -> Result<(), crate::dispatch::PromptError> {
+            // What an agent acting on this prompt would read from the board right now.
+            let number: Option<u64> = text
+                .strip_prefix("[tsk T")
+                .and_then(|rest| rest.split(' ').next())
+                .and_then(|digits| digits.trim_end_matches(']').parse().ok());
+            let disk = self.store.load().expect("load at prompt");
+            if let Some(task) = disk.tasks().iter().find(|task| task.number == number) {
+                let block = task.block.as_ref().or(task.past_blocks.last());
+                self.disk_at_prompt.push((
+                    task.status,
+                    block.and_then(|block| block.replies.last().map(|reply| reply.text.clone())),
+                ));
+            }
+            self.prompts.push((pane.into(), text.into()));
+            self.prompt_error.clone().map_or(Ok(()), Err)
+        }
+
+        fn open_worktree(
+            &mut self,
+            _: &Path,
+            worktree: &Path,
+            _: &str,
+        ) -> Result<CreatedWorktree, String> {
+            self.reopened += 1;
+            Ok(CreatedWorktree {
+                path: worktree.to_path_buf(),
+                branch: "ignored".into(),
+                workspace_id: "w2".into(),
+                root_pane_id: "w2:p1".into(),
+            })
+        }
+    }
+
+    fn fake_host(temp: &Temp) -> FakeHost {
+        FakeHost {
+            store: TaskStore::new(&temp.dir),
+            assignee_on_disk_at_launch: Rc::default(),
+            launched: 0,
+            fail_launch: None,
+            fail_branch: None,
+            ran: 0,
+            agent: None,
+            workspace_gone: false,
+            root_failed: false,
+            replies_on_disk_at_launch: Vec::new(),
+            reopened: 0,
+            prompts: Vec::new(),
+            prompt_error: None,
+            names: Default::default(),
+            next_names: Default::default(),
+            root_queries: Vec::new(),
+            agent_queries: Vec::new(),
+            disk_at_prompt: Vec::new(),
+            disk_at_launch: Vec::new(),
+            fail_save_at_launch: None,
+            cleanup: false,
+        }
+    }
+
+    /// The dispatched agent of task `id` runs, under its dispatch name, in workspace `w0`'s
+    /// root pane (the one `dispatched_before` records).
+    fn agent_running(domain: &DomainState, host: &mut FakeHost, id: uuid::Uuid) -> String {
+        let number = domain.get(id).and_then(|task| task.number).expect("number");
+        host.agent = Some(true);
+        host.names.insert(
+            "w0:p1".into(),
+            crate::dispatch::agent_name(number, "builder"),
+        );
+        format!("[tsk T{number} unblocked]")
+    }
+
+    fn handle(
+        temp: &Temp,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        intent: BoardIntent,
+        host: &mut FakeHost,
+    ) {
+        let mut recovery = SaveRecovery::new();
+        handle_board_intent_with_host(
+            &temp.store,
+            domain,
+            model,
+            intent,
+            &mut recovery,
+            false,
+            true,
+            host,
+            &mut |_| {},
+        )
+        .expect("board intent");
+        assert!(
+            !recovery.is_pending(),
+            "no save failure expected: {:?}",
+            model.message()
+        );
+    }
+
+    /// A saved earlier launch on `id`, with the task left at `status`.
+    fn dispatched_before(
+        temp: &Temp,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        id: uuid::Uuid,
+        status: HumanStatus,
+    ) {
+        dispatched_in(temp, domain, model, id, status, "w0");
+    }
+
+    /// [`dispatched_before`] into Herdr workspace `workspace`, so several dispatched tasks
+    /// each have their own root pane (`<workspace>:p1`).
+    fn dispatched_in(
+        temp: &Temp,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        id: uuid::Uuid,
+        status: HumanStatus,
+        workspace: &str,
+    ) {
+        domain
+            .assign(id, Some("builder".into()))
+            .expect("assign builder");
+        temp.store.reload_merge_save(domain).expect("save");
+        domain
+            .record_dispatch(
+                id,
+                crate::domain::Dispatch {
+                    argv: vec!["true".into()],
+                    worktree: "/tmp/tsk-start-earlier".into(),
+                    branch: "tsk/earlier".into(),
+                    base: Some("main".into()),
+                    base_ref: None,
+                    base_commit: None,
+                    base_remote: None,
+                    herdr_workspace_id: workspace.into(),
+                    at: std::time::SystemTime::now(),
+                    cleaned: false,
+                },
+            )
+            .expect("record earlier launch");
+        temp.store.reload_merge_save(domain).expect("save");
+        domain.set_status(id, status).expect("status");
+        temp.store.reload_merge_save(domain).expect("save");
+        model.sync_from_domain(domain);
+    }
+
+    /// Unblocking with the reply box's `ctrl+s` sends every reply you left on the block,
+    /// oldest first: one saved earlier with `Shift+Enter`, then the box's. A deleted reply is
+    /// skipped and an edited one sends its current text.
+    #[test]
+    fn unblocking_sends_every_reply_of_the_block() {
+        let temp = Temp::new("unblock-all-replies", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["agent asks"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        blocked_row(&temp, &mut domain, &mut model, ids[0]);
+        let first = domain
+            .reply(ids[0], "mysql?", crate::domain::OWNER)
+            .expect("reply");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        domain
+            .edit_reply(ids[0], first, "sqlite?")
+            .expect("edit reply");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        let dropped = domain
+            .reply(ids[0], "never mind", crate::domain::OWNER)
+            .expect("reply");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        domain.delete_reply(ids[0], dropped).expect("delete");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        let mut host = fake_host(&temp);
+        agent_running(&domain, &mut host, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("r");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText("postgres".into()),
+            None,
+        )
+        .expect("type");
+        let save = key(&model, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert_eq!(save, BoardIntent::ReplySaveUnblock);
+        handle(&temp, &mut domain, &mut model, save, &mut host);
+        assert_eq!(
+            host.prompts,
+            [(
+                "w0:p1".to_string(),
+                "[tsk T1 unblocked] 1. sqlite?\n2. postgres".to_string()
+            )]
+        );
+        assert_eq!(
+            model.message(),
+            Some("started · 2 replies sent to @builder")
+        );
+    }
+
+    /// `ctrl+b` returns a blocked task to ready and sends its running agent the block's
+    /// replies, saved earlier with `Shift+Enter`. A block with no reply of yours sends nothing.
+    #[test]
+    fn ctrl_b_unblock_sends_the_blocks_replies() {
+        for replied in [true, false] {
+            let temp = Temp::new("ctrl-b-unblock-replies", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["agent asks"]);
+            dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+            blocked_row(&temp, &mut domain, &mut model, ids[0]);
+            if replied {
+                domain
+                    .reply(ids[0], "use postgres", crate::domain::OWNER)
+                    .expect("reply");
+                temp.store.reload_merge_save(&mut domain).expect("save");
+                model.sync_from_domain(&domain);
+            }
+            let mut host = fake_host(&temp);
+            agent_running(&domain, &mut host, ids[0]);
+            let unblock = key(&model, KeyCode::Char('b'), KeyModifiers::CONTROL);
+            assert_eq!(unblock, BoardIntent::ToggleBlock);
+            handle(&temp, &mut domain, &mut model, unblock, &mut host);
+            let saved = temp.store.load().expect("reload");
+            assert_eq!(saved.get(ids[0]).expect("task").status, HumanStatus::Ready);
+            if replied {
+                assert_eq!(
+                    host.prompts,
+                    [(
+                        "w0:p1".to_string(),
+                        "[tsk T1 unblocked] use postgres".to_string()
+                    )]
+                );
+                assert_eq!(model.message(), Some("ready · reply sent to @builder"));
+            } else {
+                assert_eq!(host.prompts, [], "nothing to send");
+            }
+        }
+    }
+
+    /// Your `entries` on `id`'s open record, one save each, then one more you deleted.
+    fn saved_entries(
+        temp: &Temp,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        id: uuid::Uuid,
+        entries: &[&str],
+    ) {
+        for entry in entries {
+            domain
+                .reply(id, entry, crate::domain::OWNER)
+                .expect("entry");
+            temp.store.reload_merge_save(domain).expect("save");
+        }
+        let dropped = domain
+            .reply(id, "scratch that", crate::domain::OWNER)
+            .expect("entry");
+        temp.store.reload_merge_save(domain).expect("save");
+        domain.delete_reply(id, dropped).expect("delete");
+        temp.store.reload_merge_save(domain).expect("save");
+        model.sync_from_domain(domain);
+    }
+
+    /// Put `id` in review with one failed check, `no flicker`.
+    fn in_review_with_a_failed_check(
+        temp: &Temp,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        id: uuid::Uuid,
+    ) {
+        domain
+            .review(
+                id,
+                crate::domain::ReviewDraft::from_input(
+                    Some("built it"),
+                    &["no flicker".to_string()],
+                    None,
+                    Default::default(),
+                )
+                .expect("draft"),
+                "builder",
+            )
+            .expect("review");
+        temp.store.reload_merge_save(domain).expect("save");
+        domain
+            .set_check(id, 0, crate::domain::CheckState::Failed)
+            .expect("fail");
+        temp.store.reload_merge_save(domain).expect("save");
+        model.sync_from_domain(domain);
+    }
+
+    /// The dispatched agent of task `id` runs, under its dispatch name, in `workspace`'s root
+    /// pane.
+    fn agent_running_in(
+        domain: &DomainState,
+        host: &mut FakeHost,
+        id: uuid::Uuid,
+        workspace: &str,
+    ) {
+        let number = domain.get(id).and_then(|task| task.number).expect("number");
+        host.agent = Some(true);
+        host.names.insert(
+            format!("{workspace}:p1"),
+            crate::dispatch::agent_name(number, "builder"),
+        );
+    }
+
+    /// The brief's proof: a send-back carries two entries saved earlier with `Shift+Enter` and
+    /// the box's text, in order, skipping one you deleted, then the failed checks.
+    #[test]
+    fn a_send_back_delivers_two_saved_entries_and_the_box_skipping_a_deleted_one() {
+        let temp = Temp::new("send-back-proof", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        review_page(&temp, &mut domain, &mut model, ids[0], &["no flicker"]);
+        domain
+            .set_check(ids[0], 0, crate::domain::CheckState::Failed)
+            .expect("fail");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        saved_entries(&temp, &mut domain, &mut model, ids[0], &["first", "second"]);
+        let mut host = fake_host(&temp);
+        agent_running(&domain, &mut host, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("r");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText("third".into()),
+            None,
+        )
+        .expect("type");
+        let send = page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Char('s'),
+            KeyModifiers::CONTROL,
+        );
+        assert_eq!(send, BoardIntent::ReplySaveUnblock);
+        assert_eq!(
+            host.prompts,
+            [(
+                "w0:p1".to_string(),
+                "[tsk T1 sent back] 1. first\n2. second\n3. third\nFailed checks: no flicker"
+                    .to_string()
+            )]
+        );
+        assert_eq!(
+            model.message(),
+            Some("started · 3 feedback entries sent to @builder")
+        );
+    }
+
+    /// Palette **set status: ready** or **started** on a blocked task, and **started** on a
+    /// review, send the closed record to the running agent, as the reply box's `ctrl+s` does.
+    #[test]
+    fn palette_status_changes_deliver_the_closed_record() {
+        for (status, word) in [
+            (HumanStatus::Ready, "ready"),
+            (HumanStatus::Started, "started"),
+        ] {
+            let temp = Temp::new("palette-unblock", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["agent asks"]);
+            dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+            blocked_row(&temp, &mut domain, &mut model, ids[0]);
+            saved_entries(
+                &temp,
+                &mut domain,
+                &mut model,
+                ids[0],
+                &["use postgres", "add an index"],
+            );
+            select(&mut domain, &mut model, ids[0]);
+            let mut host = fake_host(&temp);
+            agent_running(&domain, &mut host, ids[0]);
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::SetStatus(status),
+                &mut host,
+            );
+            assert_eq!(
+                temp.store
+                    .load()
+                    .expect("load")
+                    .get(ids[0])
+                    .expect("task")
+                    .status,
+                status
+            );
+            assert_eq!(
+                host.prompts,
+                [(
+                    "w0:p1".to_string(),
+                    "[tsk T1 unblocked] 1. use postgres\n2. add an index".to_string()
+                )],
+                "{word}"
+            );
+            assert_eq!(
+                model.message().map(str::to_string),
+                Some(format!("{word} · 2 replies sent to @builder"))
+            );
+        }
+
+        let temp = Temp::new("palette-send-back", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        in_review_with_a_failed_check(&temp, &mut domain, &mut model, ids[0]);
+        saved_entries(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[0],
+            &["fix the peak", "and the dip"],
+        );
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        agent_running(&domain, &mut host, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::SetStatus(HumanStatus::Started),
+            &mut host,
+        );
+        assert_eq!(
+            host.prompts,
+            [(
+                "w0:p1".to_string(),
+                "[tsk T1 sent back] 1. fix the peak\n2. and the dip\nFailed checks: no flicker"
+                    .to_string()
+            )]
+        );
+        assert_eq!(
+            model.message(),
+            Some("started · 2 feedback entries sent to @builder")
+        );
+    }
+
+    /// A marked start that opens the bulk card: its start-only rows (a review and a block,
+    /// each with a running agent) send their closed records once the start is saved, next to
+    /// the launch of the never-dispatched row. The status row counts what went out.
+    #[test]
+    fn a_marked_start_through_the_card_delivers_each_closed_record() {
+        let temp = Temp::new("closing-bulk-card", &["builder"]);
+        let (mut domain, mut model, ids) =
+            board(&temp, &["in review", "blocked", "never launched"]);
+        dispatched_in(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[0],
+            HumanStatus::Started,
+            "w5",
+        );
+        in_review_with_a_failed_check(&temp, &mut domain, &mut model, ids[0]);
+        saved_entries(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[0],
+            &["fix the peak", "and the dip"],
+        );
+        dispatched_in(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            HumanStatus::Started,
+            "w6",
+        );
+        blocked_row(&temp, &mut domain, &mut model, ids[1]);
+        saved_entries(&temp, &mut domain, &mut model, ids[1], &["use postgres"]);
+        domain
+            .assign(ids[2], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        let mut host = fake_host(&temp);
+        agent_running_in(&domain, &mut host, ids[0], "w5");
+        agent_running_in(&domain, &mut host, ids[1], "w6");
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None).expect("mark");
+        for id in &ids {
+            select(&mut domain, &mut model, *id);
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        }
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::SetStatus(HumanStatus::Started),
+            &mut host,
+        );
+        let prompt = model.dispatch_prompt().expect("bulk card").clone();
+        assert_eq!(prompt.launch.len(), 1);
+        assert_eq!(prompt.start_only.len(), 2);
+        assert!(
+            host.prompts.is_empty(),
+            "nothing before the card is confirmed"
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmDispatch,
+            &mut host,
+        );
+        assert_eq!(host.ran, 1, "the never-dispatched row launches");
+        let mut prompts = host.prompts.clone();
+        prompts.sort();
+        assert_eq!(
+            prompts,
+            [
+                (
+                    "w5:p1".to_string(),
+                    "[tsk T1 sent back] 1. fix the peak\n2. and the dip\nFailed checks: no flicker"
+                        .to_string()
+                ),
+                (
+                    "w6:p1".to_string(),
+                    "[tsk T2 unblocked] use postgres".to_string()
+                ),
+            ]
+        );
+        let message = model.message().expect("status row");
+        assert!(
+            message.ends_with(
+                "started · sent back to 1 agent with 2 feedback entries · 1 reply sent to 1 agent"
+            ),
+            "{message}"
+        );
+    }
+
+    /// A marked start where nothing launches but a row says why (a desk task): the plain batch
+    /// sends the review's closed round to its running agent, after the no-launch note.
+    #[test]
+    fn a_marked_no_launch_start_delivers_the_closed_record() {
+        let temp = Temp::new("closing-no-launch-batch", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["in review"]);
+        dispatched_in(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[0],
+            HumanStatus::Started,
+            "w5",
+        );
+        in_review_with_a_failed_check(&temp, &mut domain, &mut model, ids[0]);
+        saved_entries(&temp, &mut domain, &mut model, ids[0], &["fix the peak"]);
+        let desk = domain
+            .create_assigned(
+                "desk errand",
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+                Some("builder".into()),
+            )
+            .expect("desk task");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        let mut model = BoardModel::from_domain(&domain, None);
+        model.set_agent_profiles(&temp.profiles());
+        let mut host = fake_host(&temp);
+        agent_running_in(&domain, &mut host, ids[0], "w5");
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None).expect("mark");
+        for id in [ids[0], desk] {
+            select(&mut domain, &mut model, id);
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        }
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::SetStatus(HumanStatus::Started),
+            &mut host,
+        );
+        assert_eq!(model.dispatch_prompt(), None, "no card: nothing launches");
+        let saved = temp.store.load().expect("load");
+        assert_eq!(saved.get(desk).expect("desk").status, HumanStatus::Started);
+        assert_eq!(
+            host.prompts,
+            [(
+                "w5:p1".to_string(),
+                "[tsk T1 sent back] fix the peak Failed checks: no flicker".to_string()
+            )]
+        );
+        let message = model.message().expect("status row");
+        assert!(message.contains("no launch"), "{message}");
+        assert!(
+            message.ends_with(" · started · feedback sent to @builder"),
+            "{message}"
+        );
+    }
+
+    /// `n` on the relaunch card starts the task without relaunching. If the agent turns up
+    /// running by then (Herdr's detection lagged), it gets the block's replies.
+    #[test]
+    fn start_without_relaunch_delivers_to_an_agent_found_running() {
+        let temp = Temp::new("closing-start-without-relaunch", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["agent asks"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        blocked_row(&temp, &mut domain, &mut model, ids[0]);
+        saved_entries(&temp, &mut domain, &mut model, ids[0], &["use postgres"]);
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        host.agent = Some(false);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::SetStatus(HumanStatus::Started),
+            &mut host,
+        );
+        assert!(model
+            .dispatch_prompt()
+            .is_some_and(|prompt| prompt.relaunch.is_some()));
+        agent_running(&domain, &mut host, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::StartWithoutRelaunch,
+            &mut host,
+        );
+        assert_eq!(host.ran, 0, "nothing relaunched");
+        assert_eq!(
+            temp.store
+                .load()
+                .expect("load")
+                .get(ids[0])
+                .expect("task")
+                .status,
+            HumanStatus::Started
+        );
+        assert_eq!(
+            host.prompts,
+            [(
+                "w0:p1".to_string(),
+                "[tsk T1 unblocked] use postgres".to_string()
+            )]
+        );
+        assert_eq!(model.message(), Some("started · reply sent to @builder"));
+    }
+
+    /// A single assigned task that cannot launch here (a desk task) starts plainly and says
+    /// why. It was never dispatched, so it has no agent to send its replies to.
+    #[test]
+    fn a_single_no_launch_start_sends_nothing() {
+        let temp = Temp::new("closing-single-no-launch", &["builder"]);
+        let mut domain = DomainState::new();
+        let desk = domain
+            .create_assigned(
+                "desk errand",
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+                Some("builder".into()),
+            )
+            .expect("desk task");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        let mut model = BoardModel::from_domain(&domain, None);
+        model.set_agent_profiles(&temp.profiles());
+        blocked_row(&temp, &mut domain, &mut model, desk);
+        saved_entries(&temp, &mut domain, &mut model, desk, &["use postgres"]);
+        select(&mut domain, &mut model, desk);
+        let mut host = fake_host(&temp);
+        host.agent = Some(true);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::SetStatus(HumanStatus::Started),
+            &mut host,
+        );
+        assert_eq!(
+            temp.store
+                .load()
+                .expect("load")
+                .get(desk)
+                .expect("task")
+                .status,
+            HumanStatus::Started
+        );
+        assert!(host.prompts.is_empty());
+        assert_eq!(
+            model.message().map(str::to_string),
+            Some(dispatch::no_launch_message(dispatch::NO_LAUNCH_DESK))
+        );
+    }
+
+    /// Several deliveries at once count their entries and keep send-backs apart from unblocks.
+    #[test]
+    fn the_closing_summary_counts_entries_by_kind() {
+        let message = |label: &'static str, entries: usize| dispatch::ClosingMessage {
+            label,
+            noun: String::new(),
+            text: None,
+            entries,
+        };
+        let mut summary = crate::app::ClosingSummary::default();
+        summary.add(
+            "started",
+            &message("sent back", 2),
+            &dispatch::Delivery::Sent,
+        );
+        summary.add(
+            "started",
+            &message("sent back", 1),
+            &dispatch::Delivery::Sent,
+        );
+        summary.add(
+            "started",
+            &message("unblocked", 2),
+            &dispatch::Delivery::Sent,
+        );
+        summary.add(
+            "started",
+            &message("unblocked", 1),
+            &dispatch::Delivery::NotInPane,
+        );
+        assert_eq!(
+            summary.line(),
+            "started · sent back to 2 agents with 3 feedback entries · 2 replies sent to 1 agent \
+             · 1 not sent, kept on its task"
+        );
+        let mut summary = crate::app::ClosingSummary::default();
+        summary.add("ready", &message("unblocked", 0), &dispatch::Delivery::Sent);
+        summary.add(
+            "ready",
+            &message("unblocked", 1),
+            &dispatch::Delivery::AgentWaiting,
+        );
+        summary.add(
+            "ready",
+            &message("unblocked", 1),
+            &dispatch::Delivery::NotInHerdr,
+        );
+        assert_eq!(
+            summary.line(),
+            "ready · unblocked 1 agent · 2 not sent, kept on their tasks"
+        );
+    }
+
+    fn ctrl_s(model: &BoardModel) -> BoardIntent {
+        let intent = key(model, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert_eq!(intent, BoardIntent::PrimaryVerb);
+        intent
+    }
+
+    /// Block `id` on you, save, open its page, and type `reply` in the reply box.
+    fn reply_on_blocked(
+        temp: &Temp,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        id: uuid::Uuid,
+        reply: &str,
+    ) {
+        domain
+            .block(
+                id,
+                crate::domain::BlockDraft::from_input(
+                    Some("which db?"),
+                    None,
+                    &[],
+                    Default::default(),
+                )
+                .expect("draft"),
+                "builder",
+            )
+            .expect("block");
+        temp.store.reload_merge_save(domain).expect("save");
+        model.sync_from_domain(domain);
+        select(domain, model, id);
+        apply_intent(domain, model, BoardIntent::OpenTaskPage, None).expect("page");
+        apply_intent(domain, model, BoardIntent::BeginReply, None).expect("reply box");
+        apply_intent(
+            domain,
+            model,
+            BoardIntent::EditInsertText(reply.into()),
+            None,
+        )
+        .expect("type");
+        assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+    }
+
+    /// Block `id` on you with a why and needs, save, and select its board row.
+    fn blocked_row(temp: &Temp, domain: &mut DomainState, model: &mut BoardModel, id: uuid::Uuid) {
+        domain
+            .block(
+                id,
+                crate::domain::BlockDraft::from_input(
+                    Some("which db?"),
+                    Some("a decision"),
+                    &[],
+                    Default::default(),
+                )
+                .expect("draft"),
+                "builder",
+            )
+            .expect("block");
+        temp.store.reload_merge_save(domain).expect("save");
+        model.sync_from_domain(domain);
+        select(domain, model, id);
+    }
+
+    fn board_screen(model: &BoardModel, width: u16, height: u16) -> (String, Option<(u16, u16)>) {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                crate::ui::board::draw_board(frame, model);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let text = (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let cursor = terminal
+            .get_cursor_position()
+            .ok()
+            .map(|position| (position.x, position.y));
+        (text, cursor)
+    }
+
+    /// `r` on a blocked board row opens the reply box under the row, with why and needs
+    /// above it; `ctrl+s` stores the reply, starts the task and sends it to the running agent,
+    /// then hands the keys back to the board.
+    #[test]
+    fn r_on_a_blocked_row_replies_inline_and_delivers() {
+        for width in [80, 140] {
+            let temp = Temp::new("row-reply", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["agent asks", "other work"]);
+            dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+            blocked_row(&temp, &mut domain, &mut model, ids[0]);
+            assert_eq!(model.input_mode(), BoardInputMode::Normal);
+            let intent = key(&model, KeyCode::Char('r'), KeyModifiers::NONE);
+            assert_eq!(intent, BoardIntent::BeginReply);
+            apply_intent(&mut domain, &mut model, intent, None).expect("open");
+            assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+            assert_eq!(model.row_reply_task(), Some(ids[0]));
+            apply_intent(
+                &mut domain,
+                &mut model,
+                BoardIntent::EditInsertText("postgres".into()),
+                None,
+            )
+            .expect("type");
+            let (screen, cursor) = board_screen(&model, width, 30);
+            let row = screen
+                .lines()
+                .position(|line| line.contains("agent asks"))
+                .expect("row painted");
+            let lines: Vec<&str> = screen.lines().collect();
+            // The live line stays with its row and the reply box opens under it; an open
+            // peek replaces the live line and paints below the box.
+            let live = usize::from(lines[row + 1].contains("└─ @builder blocked on you · "));
+            assert_eq!(live == 1, !screen.contains("│ which db?"), "{screen}");
+            let row = row + live;
+            assert!(lines[row + 1].contains("why    which db?"), "{screen}");
+            assert!(lines[row + 2].contains("needs  a decision"), "{screen}");
+            assert!(lines[row + 3].contains("└ you  postgres"), "{screen}");
+            let (_, y) = cursor.expect("caret placed");
+            assert_eq!(usize::from(y), row + 3, "the caret sits in the draft");
+
+            let mut host = fake_host(&temp);
+            agent_running(&domain, &mut host, ids[0]);
+            let save = key(&model, KeyCode::Char('s'), KeyModifiers::CONTROL);
+            assert_eq!(save, BoardIntent::ReplySaveUnblock);
+            handle(&temp, &mut domain, &mut model, save, &mut host);
+            assert_eq!(host.prompts.len(), 1);
+            assert!(host.prompts[0].1.ends_with("unblocked] postgres"));
+            assert_eq!(model.message(), Some("started · reply sent to @builder"));
+            assert_eq!(model.input_mode(), BoardInputMode::Normal);
+            assert_eq!(model.row_reply_task(), None, "the box closed on landing");
+            let saved = temp.store.load().expect("reload");
+            assert_eq!(
+                saved.get(ids[0]).expect("task").status,
+                HumanStatus::Started
+            );
+            assert_eq!(last_reply(&saved, ids[0]).as_deref(), Some("postgres"));
+        }
+    }
+
+    /// A long multi-line draft scrolls the list so the caret stays on screen, even after
+    /// moving back to its first line.
+    #[test]
+    fn the_row_reply_caret_stays_visible_in_a_long_draft() {
+        let temp = Temp::new("row-reply-caret", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["agent asks"]);
+        blocked_row(&temp, &mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("r");
+        let draft = (1..=40)
+            .map(|line| format!("line {line:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText(draft),
+            None,
+        )
+        .expect("type");
+        let caret_line = |model: &BoardModel| {
+            let (screen, cursor) = board_screen(model, 80, 18);
+            let (_, y) = cursor.expect("caret placed");
+            screen
+                .lines()
+                .nth(usize::from(y))
+                .expect("caret row on screen")
+                .to_string()
+        };
+        assert!(caret_line(&model).contains("line 40"), "the end is in view");
+        for _ in 0..45 {
+            apply_intent(&mut domain, &mut model, BoardIntent::EditMoveUp, None).expect("up");
+        }
+        assert!(
+            caret_line(&model).contains("line 01"),
+            "the first line scrolled into view"
+        );
+    }
+
+    /// A refresh that takes the row off the list (finished elsewhere) keeps the draft on
+    /// screen with the changed-block refusal, and the box still owns input.
+    #[test]
+    fn the_row_reply_box_survives_its_row_leaving_the_list() {
+        let temp = Temp::new("row-reply-orphan", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["finished elsewhere"]);
+        blocked_row(&temp, &mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("r");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText("my draft".into()),
+            None,
+        )
+        .expect("type");
+        elsewhere(&temp, |other| other.complete(ids[0]).expect("done"));
+        let disk = temp.store.load().expect("load");
+        domain.merge_tasks_from_disk(&disk);
+        model.sync_from_domain(&domain);
+        assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+        assert_eq!(model.reply_draft(), Some("my draft"));
+        let (screen, cursor) = board_screen(&model, 80, 24);
+        assert!(screen.contains("not on this list"), "{screen}");
+        assert!(screen.contains("└ you  my draft"), "{screen}");
+        assert!(
+            screen.contains("this block was closed or replaced elsewhere"),
+            "{screen}"
+        );
+        let (_, y) = cursor.expect("caret placed");
+        assert!(screen
+            .lines()
+            .nth(usize::from(y))
+            .is_some_and(|line| line.contains("my draft")));
+        // Typing keeps the refusal; Esc closes the box back to the board.
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText("!".into()),
+            None,
+        )
+        .expect("type");
+        assert!(board_screen(&model, 80, 24)
+            .0
+            .contains("this block was closed or replaced elsewhere"));
+        apply_intent(&mut domain, &mut model, BoardIntent::CancelEdit, None).expect("esc");
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+    }
+
+    /// Shift+Enter on the row's box stores the reply only; Esc discards a draft. Both return
+    /// the keys to the board.
+    #[test]
+    fn the_row_reply_box_saves_without_sending_and_cancels() {
+        let temp = Temp::new("row-reply-save", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["agent asks"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        blocked_row(&temp, &mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("open");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText("later".into()),
+            None,
+        )
+        .expect("type");
+        apply_intent(&mut domain, &mut model, BoardIntent::CancelEdit, None).expect("esc");
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+        assert_eq!(model.row_reply_task(), None);
+
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("open");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText("postgres".into()),
+            None,
+        )
+        .expect("type");
+        let mut host = fake_host(&temp);
+        host.agent = Some(true);
+        let save = key(&model, KeyCode::Enter, KeyModifiers::SHIFT);
+        assert_eq!(save, BoardIntent::ReplySave);
+        handle(&temp, &mut domain, &mut model, save, &mut host);
+        assert!(host.prompts.is_empty());
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Blocked);
+        assert_eq!(last_reply(&saved, ids[0]).as_deref(), Some("postgres"));
+    }
+
+    /// The row's box outlives a failed save: Cancel keeps the draft open, Retry lands it.
+    #[cfg(unix)]
+    #[test]
+    fn the_row_reply_box_outlives_a_failed_save() {
+        use std::os::unix::fs::PermissionsExt;
+        for retry in [true, false] {
+            let temp = Temp::new("row-reply-recovery", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["agent asks"]);
+            blocked_row(&temp, &mut domain, &mut model, ids[0]);
+            apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("r");
+            apply_intent(
+                &mut domain,
+                &mut model,
+                BoardIntent::EditInsertText("postgres".into()),
+                None,
+            )
+            .expect("type");
+            let mut host = fake_host(&temp);
+            let mut recovery = SaveRecovery::new();
+            let mut step = |domain: &mut DomainState,
+                            model: &mut BoardModel,
+                            recovery: &mut SaveRecovery<DomainState>,
+                            intent: BoardIntent| {
+                handle_board_intent_with_host(
+                    &temp.store,
+                    domain,
+                    model,
+                    intent,
+                    recovery,
+                    false,
+                    true,
+                    &mut host,
+                    &mut |_| {},
+                )
+                .expect("intent");
+            };
+            std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o555))
+                .expect("lock the state dir");
+            step(
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                BoardIntent::ReplySave,
+            );
+            std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o700))
+                .expect("unlock");
+            assert!(recovery.is_pending());
+            assert_eq!(model.reply_draft(), Some("postgres"), "the box is held");
+            let answer = if retry {
+                BoardIntent::RetrySave
+            } else {
+                BoardIntent::CancelSave
+            };
+            step(&mut domain, &mut model, &mut recovery, answer);
+            assert!(!recovery.is_pending());
+            if retry {
+                assert_eq!(model.row_reply_task(), None, "the reply landed");
+                assert_eq!(model.input_mode(), BoardInputMode::Normal);
+            } else {
+                assert_eq!(model.reply_draft(), Some("postgres"), "the draft stays");
+                assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+            }
+        }
+    }
+
+    /// `r` on a row that is not blocked says so; with marks it answers the cursor row only.
+    #[test]
+    fn r_answers_the_cursor_row_only_and_refuses_unblocked_rows() {
+        let temp = Temp::new("row-reply-refuse", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["blocked one", "plain one"]);
+        blocked_row(&temp, &mut domain, &mut model, ids[0]);
+        select(&mut domain, &mut model, ids[1]);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("r");
+        assert_eq!(model.message(), Some("not blocked or in review"));
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None).expect("M");
+        apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        assert!(!model.marked_ids().is_empty());
+        select(&mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("r");
+        assert_eq!(model.row_reply_task(), Some(ids[0]));
+        assert!(
+            !model.marked_ids().is_empty(),
+            "marks stay; the box ignores them"
+        );
+    }
+
+    fn last_reply(domain: &DomainState, id: uuid::Uuid) -> Option<String> {
+        let task = domain.get(id)?;
+        let block = task.block.as_ref().or(task.past_blocks.last())?;
+        block.replies.last().map(|reply| reply.text.clone())
+    }
+
+    /// Put `id` up for review by `builder` with `checks`, save, select its row and open its page.
+    fn review_page(
+        temp: &Temp,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        id: uuid::Uuid,
+        checks: &[&str],
+    ) {
+        let checks: Vec<String> = checks.iter().map(|check| check.to_string()).collect();
+        domain
+            .review(
+                id,
+                crate::domain::ReviewDraft::from_input(
+                    Some("built the card"),
+                    &checks,
+                    Some("docs"),
+                    Default::default(),
+                )
+                .expect("draft"),
+                "builder",
+            )
+            .expect("review");
+        temp.store.reload_merge_save(domain).expect("save");
+        model.sync_from_domain(domain);
+        select(domain, model, id);
+        apply_intent(domain, model, BoardIntent::OpenTaskPage, None).expect("page");
+    }
+
+    /// One key on the task page, resolved at the keyboard boundary and applied like the loop.
+    fn page_key(
+        temp: &Temp,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        host: &mut FakeHost,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> BoardIntent {
+        let intent =
+            board_keyboard_intent(model, model.input_mode(), KeyEvent::new(code, modifiers))
+                .expect("mapped key");
+        handle(temp, domain, model, intent.clone(), host);
+        intent
+    }
+
+    fn checks_of(domain: &DomainState, id: uuid::Uuid) -> Vec<crate::domain::CheckState> {
+        domain
+            .get(id)
+            .and_then(|task| task.block.as_ref())
+            .map(|block| block.checks.iter().map(|check| check.state).collect())
+            .unwrap_or_default()
+    }
+
+    /// A sent-back review round lands on the PAPER TRAIL: Tab past `+ step` reaches the collapsed
+    /// heading, Enter (resolved at the keyboard boundary) expands the trail, Tab selects the
+    /// round and Enter expands it in place and folds it again; bare `g` collapses the trail
+    /// without touching the store.
+    #[test]
+    fn enter_on_a_paper_trail_record_expands_it_in_place() {
+        let temp = Temp::new("paper-trail", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["trail me"]);
+        review_page(&temp, &mut domain, &mut model, ids[0], &["tests pass"]);
+        domain
+            .set_status(ids[0], HumanStatus::Started)
+            .expect("send back");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        let mut host = fake_host(&temp);
+        let none = KeyModifiers::NONE;
+        // `+ step`, then the collapsed heading.
+        for _ in 0..2 {
+            page_key(
+                &temp,
+                &mut domain,
+                &mut model,
+                &mut host,
+                KeyCode::Tab,
+                none,
+            );
+        }
+        assert_eq!(
+            model.block_target(),
+            Some(crate::ui::board::BlockTarget::TrailHeading)
+        );
+        let (screen, _) = board_screen(&model, 90, 40);
+        assert!(!screen.contains("review round 1"), "collapsed: {screen}");
+        let expand = page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Enter,
+            none,
+        );
+        assert_eq!(expand, BoardIntent::ToggleTrail);
+        page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Tab,
+            none,
+        );
+        assert_eq!(
+            model.block_target(),
+            Some(crate::ui::board::BlockTarget::Trail(0))
+        );
+        let enter = page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Enter,
+            none,
+        );
+        assert_eq!(enter, BoardIntent::ToggleTrailRecord(None));
+        let (screen, _) = board_screen(&model, 90, 40);
+        assert!(
+            screen.contains("review round 1 · sent back · you"),
+            "{screen}"
+        );
+        assert!(screen.contains("○ tests pass"), "{screen}");
+        assert!(screen.contains("done   built the card"), "{screen}");
+        page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Enter,
+            none,
+        );
+        let (screen, _) = board_screen(&model, 90, 40);
+        assert!(!screen.contains("done   built the card"), "{screen}");
+        assert_eq!(
+            model.input_mode(),
+            BoardInputMode::TaskPage,
+            "the page stays open"
+        );
+
+        let before = temp.store.load().expect("load");
+        let g = page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Char('g'),
+            none,
+        );
+        assert_eq!(g, BoardIntent::ToggleTrail);
+        assert!(!crate::ui::board::board_intent_may_persist(&model, &g));
+        assert_eq!(temp.store.load().expect("reload").tasks(), before.tasks());
+        let (screen, _) = board_screen(&model, 90, 40);
+        assert!(!screen.contains("review round 1"), "collapsed: {screen}");
+        assert_eq!(
+            model.block_target(),
+            Some(crate::ui::board::BlockTarget::TrailHeading),
+            "the hidden record hands its selection to the heading"
+        );
+        assert_eq!(
+            board_keyboard_intent(
+                &model,
+                BoardInputMode::TaskPage,
+                KeyEvent::new(KeyCode::Char('a'), none)
+            ),
+            None,
+            "bare a is free again"
+        );
+    }
+
+    /// Enter on a check cycles it open → passed → failed → open in its own row, and the cursor
+    /// never moves. Passed checks fold into the `N passed ▸` line only when the page is next
+    /// painted fresh; Enter on that line unfolds it (`▾`) so a folded check can be cycled again.
+    #[test]
+    fn enter_cycles_checks_in_place_and_passed_checks_fold_on_return() {
+        use crate::domain::CheckState::{Failed, Open, Passed};
+        use crate::ui::board::BlockTarget::{Check, Heading, PassedFold};
+        let temp = Temp::new("review-checks", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        review_page(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[0],
+            &["tests pass", "no flicker"],
+        );
+        let mut host = fake_host(&temp);
+        let none = KeyModifiers::NONE;
+        let key =
+            |domain: &mut DomainState,
+             model: &mut BoardModel,
+             host: &mut FakeHost,
+             code: KeyCode| { page_key(&temp, domain, model, host, code, none) };
+        // The page opens on the first unmarked check; Shift+Tab before it reaches the top line.
+        assert_eq!(model.block_target(), Some(Check(0)));
+        key(&mut domain, &mut model, &mut host, KeyCode::BackTab);
+        assert_eq!(model.block_target(), Some(Heading));
+        key(&mut domain, &mut model, &mut host, KeyCode::Tab);
+        assert_eq!(model.block_target(), Some(Check(0)));
+
+        let enter = key(&mut domain, &mut model, &mut host, KeyCode::Enter);
+        assert_eq!(enter, BoardIntent::CycleCheck);
+        assert_eq!(checks_of(&domain, ids[0]), [Passed, Open]);
+        assert_eq!(
+            checks_of(&temp.store.load().expect("reload"), ids[0]),
+            [Passed, Open],
+            "the check is durable"
+        );
+        assert_eq!(model.block_target(), Some(Check(0)), "the cursor stays");
+        let (screen, _) = board_screen(&model, 90, 30);
+        assert!(
+            screen.contains("✓ tests pass"),
+            "passed in place:\n{screen}"
+        );
+        assert!(!screen.contains("passed ▸"), "{screen}");
+        let at = |screen: &str, text: &str| {
+            screen
+                .find(text)
+                .unwrap_or_else(|| panic!("{text}:\n{screen}"))
+        };
+        assert!(at(&screen, "✓ tests pass") < at(&screen, "○ no flicker"));
+
+        key(&mut domain, &mut model, &mut host, KeyCode::Enter);
+        assert_eq!(checks_of(&domain, ids[0]), [Failed, Open]);
+        assert_eq!(model.block_target(), Some(Check(0)), "the cursor stays");
+        let (screen, _) = board_screen(&model, 90, 30);
+        assert!(at(&screen, "✗ tests pass") < at(&screen, "○ no flicker"));
+        key(&mut domain, &mut model, &mut host, KeyCode::Enter);
+        assert_eq!(checks_of(&domain, ids[0]), [Open, Open], "failed → open");
+        assert_eq!(model.block_target(), Some(Check(0)));
+        key(&mut domain, &mut model, &mut host, KeyCode::Enter);
+        assert_eq!(checks_of(&domain, ids[0]), [Passed, Open]);
+        key(&mut domain, &mut model, &mut host, KeyCode::Tab);
+        assert_eq!(
+            model.block_target(),
+            Some(Check(1)),
+            "the ring keeps page order"
+        );
+
+        // Leave the page and come back: the passed check is folded now.
+        key(&mut domain, &mut model, &mut host, KeyCode::Esc);
+        assert_ne!(
+            model.input_mode(),
+            BoardInputMode::TaskPage,
+            "left the page"
+        );
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        let (screen, _) = board_screen(&model, 90, 30);
+        assert!(screen.contains("1 passed ▸"), "{screen}");
+        assert!(!screen.contains("tests pass"), "{screen}");
+        assert!(at(&screen, "○ no flicker") < at(&screen, "1 passed ▸"));
+        assert_eq!(
+            model.block_target(),
+            Some(Check(1)),
+            "the page reopens on the first unmarked check"
+        );
+        key(&mut domain, &mut model, &mut host, KeyCode::Tab);
+        assert_eq!(model.block_target(), Some(PassedFold));
+
+        let enter = key(&mut domain, &mut model, &mut host, KeyCode::Enter);
+        assert_eq!(enter, BoardIntent::TogglePassedChecks);
+        assert_eq!(model.block_target(), Some(PassedFold));
+        let (screen, _) = board_screen(&model, 90, 30);
+        assert!(screen.contains("1 passed ▾"), "{screen}");
+        assert!(screen.contains("✓ tests pass"), "{screen}");
+        key(&mut domain, &mut model, &mut host, KeyCode::Tab);
+        assert_eq!(model.block_target(), Some(Check(0)));
+        key(&mut domain, &mut model, &mut host, KeyCode::Enter);
+        assert_eq!(checks_of(&domain, ids[0]), [Failed, Open]);
+        assert_eq!(model.block_target(), Some(Check(0)), "the cursor stays");
+        let (screen, _) = board_screen(&model, 90, 30);
+        assert!(
+            at(&screen, "1 passed ▾") < at(&screen, "✗ tests pass"),
+            "failed under the open fold, in place:\n{screen}"
+        );
+
+        // Folding paints the fold fresh: the failed check leaves it.
+        key(&mut domain, &mut model, &mut host, KeyCode::BackTab);
+        assert_eq!(model.block_target(), Some(PassedFold));
+        key(&mut domain, &mut model, &mut host, KeyCode::Enter);
+        let (screen, _) = board_screen(&model, 90, 30);
+        assert!(screen.contains("✗ tests pass"), "{screen}");
+        assert!(!screen.contains("passed ▸"), "{screen}");
+        assert_eq!(
+            model.block_target(),
+            Some(Check(0)),
+            "the fold line went away; the cursor rests on the check that left it"
+        );
+        let (screen, _) = board_screen(&model, 90, 30);
+        let selected = screen
+            .lines()
+            .find(|line| line.starts_with('▸'))
+            .unwrap_or_else(|| panic!("a painted selection:\n{screen}"));
+        assert!(selected.contains("✗ tests pass"), "{selected}");
+        key(&mut domain, &mut model, &mut host, KeyCode::Tab);
+        assert_eq!(
+            model.block_target(),
+            Some(Check(1)),
+            "Tab walks on in order"
+        );
+        assert_eq!(host.prompts, [], "checks never send anything");
+    }
+
+    /// A review round that arrives on an open page takes its fold then; a refresh that marks the
+    /// selected check passed elsewhere keeps its row and the selection until the page is left.
+    #[test]
+    fn a_review_arriving_on_an_open_page_freezes_its_fold() {
+        use crate::domain::CheckState::{Open, Passed};
+        use crate::ui::board::BlockTarget::{Check, Heading};
+        let temp = Temp::new("review-arrives", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        select(&mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        let mut other = temp.store.load().expect("load");
+        let checks = vec!["tests pass".to_string(), "no flicker".to_string()];
+        other
+            .review(
+                ids[0],
+                crate::domain::ReviewDraft::from_input(
+                    Some("built the card"),
+                    &checks,
+                    Some("docs"),
+                    Default::default(),
+                )
+                .expect("draft"),
+                "builder",
+            )
+            .expect("review");
+        temp.store.reload_merge_save(&mut other).expect("save");
+        domain = temp.store.load().expect("reload");
+        model.sync_from_domain(&domain);
+        let mut host = fake_host(&temp);
+        let none = KeyModifiers::NONE;
+        page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Tab,
+            none,
+        );
+        assert_eq!(model.block_target(), Some(Heading));
+        page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Tab,
+            none,
+        );
+        assert_eq!(model.block_target(), Some(Check(0)));
+
+        other.set_check(ids[0], 0, Passed).expect("pass");
+        temp.store.reload_merge_save(&mut other).expect("save");
+        domain = temp.store.load().expect("reload");
+        model.sync_from_domain(&domain);
+        assert_eq!(checks_of(&domain, ids[0]), [Passed, Open]);
+        assert_eq!(model.block_target(), Some(Check(0)), "the selection holds");
+        let (screen, _) = board_screen(&model, 90, 30);
+        let selected = screen
+            .lines()
+            .find(|line| line.starts_with('▸'))
+            .unwrap_or_else(|| panic!("a painted selection:\n{screen}"));
+        assert!(selected.contains("✓ tests pass"), "{selected}\n{screen}");
+        assert!(!screen.contains("passed ▸"), "{screen}");
+
+        apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close");
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        let (screen, _) = board_screen(&model, 90, 30);
+        assert!(screen.contains("1 passed ▸"), "{screen}");
+        assert!(!screen.contains("tests pass"), "{screen}");
+    }
+
+    /// The REVIEW section leads the page: the row's live line on top, done and next as plain
+    /// text, the `Check` list, then the dim action line above the rule and the notes. No round
+    /// number and no field labels anywhere.
+    #[test]
+    fn the_review_section_leads_the_task_page() {
+        let temp = Temp::new("review-page", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        domain
+            .edit(
+                ids[0],
+                "review me",
+                Some("see PR #41 for the diff".into()),
+                TaskScope::Project {
+                    path: PROJECT.into(),
+                },
+                None,
+            )
+            .expect("notes");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        review_page(&temp, &mut domain, &mut model, ids[0], &["tests pass"]);
+        let (screen, _) = board_screen(&model, 100, 30);
+        let live = crate::ui::render::live_line(
+            domain.get(ids[0]).expect("task"),
+            domain.tasks(),
+            model.now(),
+        )
+        .expect("live line");
+        assert!(live.starts_with("@builder needs your review"), "{live}");
+        let at = |text: &str| {
+            screen
+                .find(text)
+                .unwrap_or_else(|| panic!("{text}:\n{screen}"))
+        };
+        assert!(at(&live) < at("built the card"));
+        assert!(at("built the card") < at("docs"));
+        assert!(at("docs") < at("Check"));
+        assert!(at("Check") < at("○ tests pass"));
+        assert!(
+            screen
+                .lines()
+                .any(|line| line.starts_with("▸  ○ tests pass")),
+            "the first unmarked check is selected:\n{screen}"
+        );
+        assert!(
+            at("○ tests pass")
+                < at("tab next field · enter cycle check · r feedback · ctrl+s send back")
+        );
+        assert!(at("ctrl+d approve") < at("see PR #41 for the diff"));
+        for gone in ["REVIEW", "round", "done   ", "next   "] {
+            assert!(!screen.contains(gone), "{gone}:\n{screen}");
+        }
+    }
+
+    /// The REVIEW section paints at 40 and 120 columns: the heading and the fold line stay,
+    /// long text wraps instead of truncating.
+    #[test]
+    fn the_review_section_paints_narrow_and_wide() {
+        use crate::domain::CheckState::Passed;
+        let temp = Temp::new("review-widths", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        review_page(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[0],
+            &["a check long enough to wrap at forty columns for sure", "b"],
+        );
+        domain.set_check(ids[0], 1, Passed).expect("pass");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        let (screen, _) = board_screen(&model, 120, 30);
+        assert!(
+            screen.contains("✓ b") && !screen.contains("passed ▸"),
+            "a check passed while the page is open keeps its row:\n{screen}"
+        );
+        apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close");
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        for width in [40, 120] {
+            let (screen, _) = board_screen(&model, width, 30);
+            assert!(screen.contains("needs your review"), "{width}:\n{screen}");
+            assert!(screen.contains("1 passed ▸"), "{width}:\n{screen}");
+            assert!(screen.contains("wrap"), "{width}:\n{screen}");
+            assert!(
+                screen.contains("for sure"),
+                "wrapped, not cut ({width}):\n{screen}"
+            );
+        }
+    }
+
+    /// The REVIEW section at 40 and 110 columns with every check state, the fold and a thread:
+    /// `✓`/`✗`/`○` under a small `Check` heading, `N passed ▸`, feedback as `name · age` in a
+    /// fixed column, the action line last. Text wraps, never truncates.
+    #[test]
+    fn the_review_section_paints_every_check_state_the_fold_and_feedback() {
+        use crate::domain::CheckState::{Failed, Passed};
+        let temp = Temp::new("review-states", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        review_page(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[0],
+            &[
+                "A works",
+                "B works on an empty input string",
+                "C works",
+                "D works",
+            ],
+        );
+        for (index, state) in [(0, Passed), (1, Failed), (3, Passed)] {
+            domain.set_check(ids[0], index, state).expect("mark");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+        }
+        crate::domain::acting_as("builder", || {
+            domain
+                .reply(
+                    ids[0],
+                    "B is fixed on my side, have another look.",
+                    "builder",
+                )
+                .expect("agent note");
+        });
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        domain
+            .reply(
+                ids[0],
+                "B still fails on an empty string.",
+                crate::domain::OWNER,
+            )
+            .expect("feedback");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close");
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        assert_eq!(
+            model.block_target(),
+            Some(crate::ui::board::BlockTarget::Check(2)),
+            "the first unmarked check"
+        );
+        for width in [40u16, 110] {
+            let (screen, _) = board_screen(&model, width, 50);
+            let section: Vec<&str> = screen
+                .lines()
+                .take_while(|line| !line.contains("no notes yet"))
+                .map(|line| line.trim_end_matches(['▌', ' ']))
+                .collect();
+            let joined = section.join("\n");
+            assert!(!joined.contains('…'), "{width}:\n{joined}");
+            let at = |text: &str| {
+                joined
+                    .find(text)
+                    .unwrap_or_else(|| panic!("{text} ({width}):\n{joined}"))
+            };
+            assert!(at("needs your review") < at("built the card"));
+            assert!(at("  Check\n") < at("   ✗ B works"));
+            assert!(at("   ✗ B works") < at("▸  ○ C works"));
+            assert!(at("▸  ○ C works") < at("   2 passed ▸"));
+            assert!(at("   2 passed ▸") < at("builder · "));
+            assert!(at("builder · ") < at("you · "));
+            assert!(at("you · ") < at("tab next field · enter cycle check"));
+            assert!(at("ctrl+d approve\n  ───") > at("tab next"));
+            assert!(!joined.contains("A works"), "folded: {joined}");
+            let builder = section
+                .iter()
+                .find(|line| line.starts_with("  builder · "))
+                .expect("builder row");
+            let you = section
+                .iter()
+                .find(|line| line.starts_with("  you · "))
+                .expect("your row");
+            assert_eq!(
+                builder.find("B is"),
+                you.find("B still"),
+                "{width}:\n{joined}"
+            );
+            let words: Vec<&str> = joined.split_whitespace().collect();
+            for tail in [
+                ["another", "look."],
+                ["empty", "string."],
+                ["input", "string"],
+            ] {
+                assert!(
+                    words.windows(2).any(|pair| pair == tail),
+                    "{tail:?} ({width}):\n{joined}"
+                );
+            }
+        }
+    }
+
+    /// A review page opens on its first unmarked check. All marked: on the first check shown (a
+    /// failed one); all passed and folded: on the `N passed` line, never a hidden check.
+    #[test]
+    fn a_review_page_opens_on_its_first_unmarked_check() {
+        use crate::domain::CheckState::{Failed, Passed};
+        use crate::ui::board::BlockTarget::{Check, PassedFold};
+        let temp = Temp::new("review-initial", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        review_page(&temp, &mut domain, &mut model, ids[0], &["a", "b", "c"]);
+        assert_eq!(model.block_target(), Some(Check(0)));
+        let reopen = |domain: &mut DomainState, model: &mut BoardModel| {
+            temp.store.reload_merge_save(domain).expect("save");
+            model.sync_from_domain(domain);
+            apply_intent(domain, model, BoardIntent::CloseLayer, None).expect("close");
+            apply_intent(domain, model, BoardIntent::OpenTaskPage, None).expect("page");
+        };
+        for (index, state) in [(0, Passed), (1, Passed)] {
+            domain.set_check(ids[0], index, state).expect("mark");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+        }
+        domain.set_check(ids[0], 2, Failed).expect("c");
+        reopen(&mut domain, &mut model);
+        assert_eq!(
+            model.block_target(),
+            Some(Check(2)),
+            "all marked: the failed one"
+        );
+        domain.set_check(ids[0], 2, Passed).expect("c");
+        reopen(&mut domain, &mut model);
+        assert_eq!(
+            model.block_target(),
+            Some(PassedFold),
+            "all passed: the fold line"
+        );
+        let (screen, _) = board_screen(&model, 90, 30);
+        assert!(
+            screen.lines().any(|line| line.starts_with("▸  3 passed ▸")),
+            "{screen}"
+        );
+        // A blocked page opens with nothing selected.
+        let temp = Temp::new("blocked-initial", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["blocked"]);
+        blocked_row(&temp, &mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        assert_eq!(model.block_target(), None);
+    }
+
+    /// `ctrl+s` on a blocked page is the reply box's `ctrl+s` on an empty box: it unblocks. On
+    /// a review page it sends the round back, which needs a failed check: without one the box
+    /// opens and says so; with one the task goes back to work.
+    #[test]
+    fn ctrl_s_on_the_page_unblocks_or_sends_the_review_back() {
+        let temp = Temp::new("page-ctrl-s", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["blocked", "in review"]);
+        let mut host = fake_host(&temp);
+        blocked_row(&temp, &mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        let intent = page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Char('s'),
+            KeyModifiers::CONTROL,
+        );
+        assert_eq!(intent, BoardIntent::PageReplyUnblock);
+        let saved = temp.store.load().expect("load");
+        assert_eq!(saved.get(ids[0]).expect("task").status, HumanStatus::Ready);
+        assert!(saved.get(ids[0]).expect("task").block.is_none());
+        assert_eq!(
+            model.input_mode(),
+            BoardInputMode::TaskPage,
+            "no box left open"
+        );
+
+        apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close");
+        review_page(&temp, &mut domain, &mut model, ids[1], &["tests pass"]);
+        page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Char('s'),
+            KeyModifiers::CONTROL,
+        );
+        assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+        let (screen, _) = board_screen(&model, 100, 30);
+        assert!(
+            screen.contains("type feedback or fail a check first"),
+            "{screen}"
+        );
+        assert_eq!(
+            temp.store
+                .load()
+                .expect("load")
+                .get(ids[1])
+                .expect("task")
+                .status,
+            HumanStatus::Review
+        );
+        page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        );
+        // Fail the selected check, then ctrl+s sends the round back.
+        page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        );
+        page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        );
+        assert_eq!(
+            checks_of(&domain, ids[1]),
+            [crate::domain::CheckState::Failed]
+        );
+        page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Char('s'),
+            KeyModifiers::CONTROL,
+        );
+        assert_eq!(
+            temp.store
+                .load()
+                .expect("load")
+                .get(ids[1])
+                .expect("task")
+                .status,
+            HumanStatus::Started
+        );
+        // Off the section (no block or review) ctrl+s stays the task's primary verb.
+        assert_eq!(
+            board_keyboard_intent(
+                &model,
+                BoardInputMode::TaskPage,
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)
+            ),
+            Some(BoardIntent::PrimaryVerb)
+        );
+    }
+
+    /// A click on a check selects and cycles it; a click on the `N passed` line unfolds it. On
+    /// a review page number keys are inert.
+    #[test]
+    fn a_click_cycles_a_check_and_number_keys_are_inert_on_a_review_page() {
+        use crate::domain::CheckState::{Open, Passed};
+        let temp = Temp::new("review-click", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        review_page(&temp, &mut domain, &mut model, ids[0], &["a", "b"]);
+        let mut host = fake_host(&temp);
+        let area = ratatui::layout::Rect::new(0, 0, 90, 30);
+        let _ = board_screen(&model, 90, 30);
+        let hits = crate::ui::board::board_hit_map(area, &model);
+        let second = hits
+            .regions
+            .iter()
+            .find(|hit| hit.target == crate::ui::render::QueueHitTarget::PageCheck(1))
+            .expect("check b is clickable");
+        let click = crate::ui::mouse::left_click(second.area.x + 4, second.area.y);
+        let intent = crate::ui::mouse::map_board_mouse(&model, &hits, click).expect("click");
+        assert_eq!(intent, BoardIntent::ClickCheck(1));
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        assert_eq!(checks_of(&domain, ids[0]), [Open, Passed]);
+        assert_eq!(
+            checks_of(&temp.store.load().expect("load"), ids[0]),
+            [Open, Passed]
+        );
+        assert_eq!(
+            model.block_target(),
+            Some(crate::ui::board::BlockTarget::Check(1))
+        );
+
+        let digit = page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Char('1'),
+            KeyModifiers::NONE,
+        );
+        assert_eq!(digit, BoardIntent::PickOption(0));
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage, "no box opens");
+    }
+
+    /// At 40 columns a wide thread column (an edited reply) leaves the feedback box narrower
+    /// than its empty hint: the hint wraps beside the column instead of being cut.
+    #[test]
+    fn the_empty_feedback_hint_wraps_at_40_columns() {
+        let temp = Temp::new("review-hint", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        domain
+            .assign(ids[0], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        review_page(&temp, &mut domain, &mut model, ids[0], &["a"]);
+        domain
+            .reply(ids[0], "first", crate::domain::OWNER)
+            .expect("feedback");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        domain.edit_reply(ids[0], 0, "first, edited").expect("edit");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        let mut host = fake_host(&temp);
+        page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Char('r'),
+            KeyModifiers::NONE,
+        );
+        assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+        let (screen, _) = board_screen(&model, 40, 40);
+        let rows: Vec<&str> = screen
+            .lines()
+            .skip_while(|line| !line.contains("you · ") || !line.contains("edited"))
+            .skip(1)
+            .take_while(|line| !line.trim().is_empty())
+            .collect();
+        let column = rows
+            .first()
+            .and_then(|row| row.find("feedback"))
+            .unwrap_or_else(|| panic!("the hint beside the column:\n{screen}"));
+        assert!(rows.len() > 1, "the hint wraps:\n{screen}");
+        let hint: Vec<&str> = rows.iter().map(|row| row[column..].trim_end()).collect();
+        assert_eq!(hint.join(" "), "feedback to @builder…", "{screen}");
+        assert!(!screen.contains("feedback to @buil\n"), "{screen}");
+    }
+
+    /// The page's Tab ring wraps both ways and never passes through no selection or into the
+    /// task edit: Shift+Tab before the top line lands on the PAPER TRAIL heading (or its last
+    /// record while expanded), and Tab past that comes back to the top line. A blocked page,
+    /// which opens with nothing selected, wraps the same way.
+    #[test]
+    fn shift_tab_on_the_top_line_wraps_to_the_last_stop() {
+        use crate::ui::board::BlockTarget::{Check, Heading, Trail, TrailHeading};
+        let temp = Temp::new("ring-wrap", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me", "blocked"]);
+        let mut host = fake_host(&temp);
+        let mut key = |domain: &mut DomainState, model: &mut BoardModel, code: KeyCode| {
+            let modifiers = if code == KeyCode::BackTab {
+                KeyModifiers::SHIFT
+            } else {
+                KeyModifiers::NONE
+            };
+            page_key(&temp, domain, model, &mut host, code, modifiers);
+            assert!(!model.task_editing(), "the ring never starts an edit");
+            assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+        };
+        let add_selected =
+            |model: &BoardModel| model.block_target().is_none() && !model.stored_step_selected();
+        // Review: top line · check · + step · trail heading, round and round.
+        review_page(&temp, &mut domain, &mut model, ids[0], &["a"]);
+        assert_eq!(model.block_target(), Some(Check(0)));
+        key(&mut domain, &mut model, KeyCode::BackTab);
+        assert_eq!(model.block_target(), Some(Heading));
+        key(&mut domain, &mut model, KeyCode::BackTab);
+        assert_eq!(
+            model.block_target(),
+            Some(TrailHeading),
+            "wraps to the last stop"
+        );
+        key(&mut domain, &mut model, KeyCode::BackTab);
+        assert!(add_selected(&model), "then + step");
+        key(&mut domain, &mut model, KeyCode::BackTab);
+        assert_eq!(model.block_target(), Some(Check(0)));
+        key(&mut domain, &mut model, KeyCode::BackTab);
+        assert_eq!(model.block_target(), Some(Heading));
+        key(&mut domain, &mut model, KeyCode::BackTab);
+        key(&mut domain, &mut model, KeyCode::Tab);
+        assert_eq!(
+            model.block_target(),
+            Some(Heading),
+            "Tab on the last stop wraps"
+        );
+        apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close");
+
+        // Blocked, with a closed block on the trail; the page opens with nothing selected.
+        blocked_row(&temp, &mut domain, &mut model, ids[1]);
+        domain
+            .set_status(ids[1], HumanStatus::Started)
+            .expect("unblock");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        blocked_row(&temp, &mut domain, &mut model, ids[1]);
+        // `blocked_row` selects the row twice within the double-click window, which opens it.
+        if model.input_mode() != BoardInputMode::TaskPage {
+            apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        }
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+        assert_eq!(model.block_target(), None);
+        key(&mut domain, &mut model, KeyCode::BackTab);
+        assert_eq!(model.block_target(), Some(TrailHeading));
+        key(&mut domain, &mut model, KeyCode::Enter);
+        key(&mut domain, &mut model, KeyCode::Tab);
+        assert_eq!(model.block_target(), Some(Trail(0)));
+        key(&mut domain, &mut model, KeyCode::Tab);
+        assert_eq!(
+            model.block_target(),
+            Some(Heading),
+            "Tab past the last record wraps"
+        );
+        key(&mut domain, &mut model, KeyCode::BackTab);
+        assert_eq!(
+            model.block_target(),
+            Some(Trail(0)),
+            "Shift+Tab wraps to the expanded trail's last record"
+        );
+    }
+
+    /// The feedback box's keys: Esc discards, Shift+Enter stores and stays in review, and
+    /// neither sends anything.
+    #[test]
+    fn the_feedback_box_saves_without_sending_and_cancels() {
+        let temp = Temp::new("review-feedback-save", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        review_page(&temp, &mut domain, &mut model, ids[0], &["tests pass"]);
+        let mut host = fake_host(&temp);
+        agent_running(&domain, &mut host, ids[0]);
+        let r = page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Char('r'),
+            KeyModifiers::NONE,
+        );
+        assert_eq!(r, BoardIntent::BeginReply);
+        assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+        assert!(model.reply_is_feedback());
+        let (screen, _) = board_screen(&model, 100, 30);
+        assert!(screen.contains("feedback to @builder…"), "{screen}");
+        assert!(
+            screen.contains("ctrl+s send back") && screen.contains("ctrl+d approve"),
+            "{screen}"
+        );
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText("drop me".into()),
+            None,
+        )
+        .expect("type");
+        let esc = page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        );
+        assert_eq!(esc, BoardIntent::CancelEdit);
+        assert_eq!(model.reply_draft(), None);
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("r");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText("looks close".into()),
+            None,
+        )
+        .expect("type");
+        let save = page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Enter,
+            KeyModifiers::SHIFT,
+        );
+        assert_eq!(save, BoardIntent::ReplySave);
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(
+            task.status,
+            HumanStatus::Review,
+            "shift+enter stays in review"
+        );
+        assert_eq!(last_reply(&saved, ids[0]).as_deref(), Some("looks close"));
+        assert_eq!(model.reply_draft(), None, "the box closed on landing");
+        assert_eq!(host.prompts, [], "shift+enter never sends");
+        // The round is still yours to decide: the live line keeps saying so after you reply.
+        let live = crate::ui::render::live_line(task, saved.tasks(), std::time::SystemTime::now())
+            .expect("live line");
+        assert!(live.contains("needs your review"), "{live}");
+    }
+
+    /// `ctrl+s` sends the review back: the round closes as sent back, the task starts, and the
+    /// running agent gets every feedback entry of the round, oldest first (one saved earlier
+    /// with `Shift+Enter`, then the box's), plus the failed checks, once. A deleted entry is
+    /// skipped.
+    #[test]
+    fn ctrl_s_sends_back_with_the_failed_checks_to_the_running_agent() {
+        use crate::domain::CheckState::{Failed, Passed};
+        let temp = Temp::new("review-send-back", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        review_page(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[0],
+            &["tests pass", "no flicker", "docs build"],
+        );
+        for (index, state) in [(0, Passed), (1, Failed), (2, Failed)] {
+            domain.set_check(ids[0], index, state).expect("check");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+        }
+        model.sync_from_domain(&domain);
+        // Feedback saved earlier in the round goes out with the send-back; a deleted one and
+        // an agent's own reply do not.
+        domain
+            .reply(ids[0], "earlier note", crate::domain::OWNER)
+            .expect("note");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        let dropped = domain
+            .reply(ids[0], "dropped note", crate::domain::OWNER)
+            .expect("note");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        domain.delete_reply(ids[0], dropped).expect("delete");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        domain
+            .reply(ids[0], "agent aside", "builder")
+            .expect("agent");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        let mut host = fake_host(&temp);
+        agent_running(&domain, &mut host, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("r");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText("fix the flicker".into()),
+            None,
+        )
+        .expect("type");
+        let send = page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Char('s'),
+            KeyModifiers::CONTROL,
+        );
+        assert_eq!(send, BoardIntent::ReplySaveUnblock);
+        assert_eq!(host.ran, 0, "a running agent is not relaunched");
+        assert_eq!(
+            host.prompts,
+            [(
+                "w0:p1".to_string(),
+                "[tsk T1 sent back] 1. earlier note\n2. fix the flicker\n\
+                 Failed checks: no flicker; docs build"
+                    .to_string()
+            )]
+        );
+        assert_eq!(
+            model.message(),
+            Some("started · 2 feedback entries sent to @builder")
+        );
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        assert_eq!(task.block, None);
+        let closed = task.past_blocks.last().expect("closed round");
+        assert_eq!(closed.round, 1);
+        assert_eq!(closed.resolution, Some(crate::domain::Resolution::SentBack));
+        assert_eq!(
+            closed.replies.last().map(|reply| reply.text.as_str()),
+            Some("fix the flicker")
+        );
+
+        // The agent sets review again: round 2 opens, round 1 stays in history.
+        domain = temp.store.load().expect("reload");
+        domain
+            .set_status_by(ids[0], HumanStatus::Review, "builder")
+            .expect("review again");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.block.as_ref().map(|round| round.round), Some(2));
+        assert_eq!(task.past_blocks.len(), 1);
+    }
+
+    /// `ctrl+s` on an unassigned review still sends it back to started, with nothing to send.
+    #[test]
+    fn sending_back_an_unassigned_review_starts_it() {
+        let temp = Temp::new("review-send-back-plain", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        failed_check_feedback_box(&temp, &mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut host,
+        );
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        assert_eq!(
+            task.past_blocks.last().and_then(|round| round.resolution),
+            Some(crate::domain::Resolution::SentBack)
+        );
+        assert_eq!(host.prompts, []);
+    }
+
+    /// `ctrl+d` approves: the feedback is stored, the task is done, the round closes as
+    /// approved, and nothing is sent to the running agent.
+    #[test]
+    fn ctrl_d_in_the_feedback_box_approves_without_sending() {
+        let temp = Temp::new("review-approve", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        review_page(&temp, &mut domain, &mut model, ids[0], &["tests pass"]);
+        let mut host = fake_host(&temp);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("r");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText("ship it".into()),
+            None,
+        )
+        .expect("type");
+        let approve = page_key(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut host,
+            KeyCode::Char('d'),
+            KeyModifiers::CONTROL,
+        );
+        assert_eq!(approve, BoardIntent::ReplyApprove);
+        assert_eq!(model.reply_draft(), None, "the box closed");
+        assert_ne!(model.input_mode(), BoardInputMode::EditReply);
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Done);
+        let closed = task.past_blocks.last().expect("closed round");
+        assert_eq!(closed.resolution, Some(crate::domain::Resolution::Approved));
+        assert_eq!(
+            closed.replies.last().map(|reply| reply.text.as_str()),
+            Some("ship it")
+        );
+        assert_eq!(host.prompts, []);
+
+        // On a blocked task's reply box the chord approves nothing.
+        let temp = Temp::new("review-approve-blocked", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["blocked"]);
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "x");
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplyApprove,
+            &mut host,
+        );
+        assert_eq!(
+            model.message(),
+            Some("only a task in review can be approved")
+        );
+        assert_eq!(
+            temp.store
+                .load()
+                .expect("reload")
+                .get(ids[0])
+                .expect("task")
+                .status,
+            HumanStatus::Blocked
+        );
+    }
+
+    /// The feedback box opens inline under a review row too, with done and next above it.
+    #[test]
+    fn r_on_a_review_row_opens_the_feedback_box_inline() {
+        let temp = Temp::new("review-row", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        review_page(&temp, &mut domain, &mut model, ids[0], &["tests pass"]);
+        apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close");
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+        let intent = key(&model, KeyCode::Char('r'), KeyModifiers::NONE);
+        apply_intent(&mut domain, &mut model, intent, None).expect("r");
+        assert_eq!(model.row_reply_task(), Some(ids[0]));
+        let (screen, _) = board_screen(&model, 100, 24);
+        assert!(screen.contains("done   built the card"), "{screen}");
+        assert!(screen.contains("feedback to @builder…"), "{screen}");
+    }
+
+    /// A review handed to another agent rides IN MOTION with `△` and `@pi reviewing` under it;
+    /// on you it is `▲` in NEEDS YOU with `@claude needs your review`. The right edge is empty.
+    #[test]
+    fn a_review_on_another_agent_rides_in_motion() {
+        let temp = Temp::new("review-elsewhere", &["builder", "pi"]);
+        let (mut domain, mut model, ids) = board(&temp, &["mine", "theirs"]);
+        for (id, on) in [
+            (ids[0], crate::domain::BlockOn::You),
+            (ids[1], crate::domain::BlockOn::Agent("pi".into())),
+        ] {
+            domain
+                .review(
+                    id,
+                    crate::domain::ReviewDraft::from_input(
+                        Some("done"),
+                        &["a".into(), "b".into()],
+                        None,
+                        on,
+                    )
+                    .expect("draft"),
+                    "claude",
+                )
+                .expect("review");
+        }
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        domain
+            .set_check(ids[0], 0, crate::domain::CheckState::Passed)
+            .expect("pass");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        let (screen, _) = board_screen(&model, 100, 24);
+        let needs = screen.find("NEEDS YOU").expect("needs you");
+        let motion = screen.find("IN MOTION").expect("in motion");
+        let lines = screen.lines().collect::<Vec<_>>();
+        let row = |title: &str| {
+            lines
+                .iter()
+                .position(|line| line.contains(title))
+                .expect("row")
+        };
+        let (mine_at, theirs_at) = (row("T1 mine"), row("T2 theirs"));
+        let (mine, theirs) = (lines[mine_at], lines[theirs_at]);
+        assert!(
+            mine.contains("▲") && mine.trim_end().ends_with("mine"),
+            "{mine}"
+        );
+        assert!(
+            lines[mine_at + 1].starts_with("    └─ @claude needs your review · "),
+            "{screen}"
+        );
+        assert!(
+            theirs.contains("△") && theirs.trim_end().ends_with("theirs"),
+            "{theirs}"
+        );
+        assert_eq!(lines[theirs_at + 1].trim_end(), "    └─ @pi reviewing");
+        let at = |line: &str| screen.find(line).expect("row");
+        assert!(needs < at(mine) && at(mine) < motion, "{screen}");
+        assert!(motion < at(theirs), "{screen}");
+    }
+
+    /// A marked set's `ctrl+r` card puts every task up for review with one draft in one save,
+    /// and one `ctrl+u` reverses the whole set.
+    #[test]
+    fn a_marked_set_review_card_is_one_batch_and_one_undo() {
+        let temp = Temp::new("review-batch", &["builder", "pi"]);
+        let (mut domain, mut model, ids) = board(&temp, &["one", "two"]);
+        domain
+            .set_status(ids[0], HumanStatus::Ready)
+            .expect("ready");
+        domain
+            .set_status(ids[1], HumanStatus::Started)
+            .expect("started");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        let mut host = fake_host(&temp);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ToggleMarkMode,
+            &mut host,
+        );
+        for id in &ids {
+            select(&mut domain, &mut model, *id);
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::MarkToggle,
+                &mut host,
+            );
+        }
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ToggleReview,
+            &mut host,
+        );
+        assert_eq!(model.input_mode(), BoardInputMode::BlockCard);
+        let (screen, _) = board_screen(&model, 100, 24);
+        assert!(screen.contains("review 2 tasks"), "{screen}");
+        for text in ["shared work", "\n", "x"] {
+            if text == "\n" {
+                handle(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    BoardIntent::BlockCardNextField,
+                    &mut host,
+                );
+                continue;
+            }
+            apply_intent(
+                &mut domain,
+                &mut model,
+                BoardIntent::EditInsertText(text.into()),
+                None,
+            )
+            .expect("type");
+        }
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::BlockCardNewline,
+            &mut host,
+        );
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText("y".into()),
+            None,
+        )
+        .expect("type");
+        // on: agent pi.
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::BlockCardNextField,
+            &mut host,
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::BlockCardNextField,
+            &mut host,
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::BlockCardRight,
+            &mut host,
+        );
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText("pi".into()),
+            None,
+        )
+        .expect("type");
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::BlockCardConfirm,
+            &mut host,
+        );
+        assert_ne!(
+            model.input_mode(),
+            BoardInputMode::BlockCard,
+            "the card closed"
+        );
+        assert_eq!(model.marked_count(), 0, "the marks cleared");
+        let saved = temp.store.load().expect("reload");
+        for id in &ids {
+            let task = saved.get(*id).expect("task");
+            assert_eq!(task.status, HumanStatus::Review);
+            let round = task.block.as_ref().expect("round");
+            assert_eq!(round.done.as_deref(), Some("shared work"));
+            assert_eq!(
+                round
+                    .checks
+                    .iter()
+                    .map(|check| check.text.as_str())
+                    .collect::<Vec<_>>(),
+                ["x", "y"]
+            );
+            assert_eq!(round.on, crate::domain::BlockOn::Agent("pi".into()));
+        }
+        assert!(matches!(
+            saved.last_undo(),
+            Some(crate::domain::UndoEntry::Batch { entries }) if entries.len() == 2
+        ));
+
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(saved.get(ids[0]).expect("one").status, HumanStatus::Ready);
+        assert_eq!(saved.get(ids[1]).expect("two").status, HumanStatus::Started);
+        assert!(ids
+            .iter()
+            .all(|id| saved.get(*id).expect("task").block.is_none()));
+    }
+
+    /// The agent-visible `tsk list <n> --json` row of task `id`.
+    fn agent_json(temp: &Temp, domain: &DomainState, id: uuid::Uuid) -> serde_json::Value {
+        let number = domain.get(id).and_then(|task| task.number).expect("number");
+        let output = crate::cli::run_with(
+            [
+                "tsk".to_string(),
+                "list".into(),
+                number.to_string(),
+                "--json".into(),
+                "--state-dir".into(),
+                temp.dir.to_string_lossy().into_owned(),
+            ],
+            std::io::Cursor::new(Vec::<u8>::new()),
+            true,
+        );
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        serde_json::from_str::<serde_json::Value>(&output.stdout).expect("json")[0].clone()
+    }
+
+    /// What a launched agent is told and can read after a send-back that launched it: the
+    /// prompt points at `past_reviews`, whose last entry holds this feedback and the failed
+    /// checks, and `past_blocks` holds no review round.
+    fn assert_send_back_visible(
+        temp: &Temp,
+        domain: &DomainState,
+        id: uuid::Uuid,
+        feedback: Option<&str>,
+    ) {
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(id).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        let prompt = task
+            .dispatch
+            .as_ref()
+            .and_then(|record| record.argv.last())
+            .expect("launch prompt");
+        assert!(prompt.contains("past_reviews"), "{prompt}");
+        let json = agent_json(temp, domain, id);
+        assert!(json.get("past_blocks").is_none(), "{json}");
+        let round = json["past_reviews"]
+            .as_array()
+            .and_then(|rounds| rounds.last())
+            .cloned()
+            .expect("closed round");
+        assert_eq!(round["resolution"], "sent_back");
+        assert_eq!(
+            round["checks"],
+            serde_json::json!([
+                {"text": "tests pass", "state": "open"},
+                {"text": "no flicker", "state": "failed"}
+            ])
+        );
+        match feedback {
+            Some(text) => assert_eq!(round["feedback"][0]["text"], text),
+            None => assert_eq!(round["feedback"], serde_json::json!([])),
+        }
+    }
+
+    /// Review `id` with two checks, fail the second, save, and open the empty feedback box.
+    fn failed_check_feedback_box(
+        temp: &Temp,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        id: uuid::Uuid,
+    ) {
+        review_page(temp, domain, model, id, &["tests pass", "no flicker"]);
+        domain
+            .set_check(id, 1, crate::domain::CheckState::Failed)
+            .expect("fail");
+        temp.store.reload_merge_save(domain).expect("save");
+        model.sync_from_domain(domain);
+        apply_intent(domain, model, BoardIntent::BeginReply, None).expect("r");
+    }
+
+    /// `ctrl+s` with an empty box on a review never dispatched: the failed check is enough, the
+    /// round closes as sent back and the dispatched agent is pointed at it.
+    #[test]
+    fn an_empty_send_back_with_a_failed_check_dispatches_the_agent() {
+        let temp = Temp::new("review-send-back-dispatch", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        domain
+            .assign(ids[0], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        failed_check_feedback_box(&temp, &mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut host,
+        );
+        assert_eq!(host.ran, 1, "one launch");
+        assert_eq!(
+            host.prompts,
+            [],
+            "a fresh launch is pointed at the record instead"
+        );
+        assert_eq!(model.reply_draft(), None, "the box closed");
+        assert_send_back_visible(&temp, &domain, ids[0], None);
+    }
+
+    /// `ctrl+s` on a review whose agent is gone saves the feedback, asks, and the relaunched
+    /// agent is pointed at the round with that feedback and the failed check.
+    #[test]
+    fn a_send_back_to_a_gone_agent_relaunches_it_onto_the_feedback() {
+        let temp = Temp::new("review-send-back-gone", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        failed_check_feedback_box(&temp, &mut domain, &mut model, ids[0]);
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText("fix the flicker".into()),
+            None,
+        )
+        .expect("type");
+        let mut host = fake_host(&temp);
+        host.agent = Some(false);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut host,
+        );
+        assert!(model
+            .dispatch_prompt()
+            .is_some_and(|prompt| prompt.relaunch.is_some()));
+        assert_eq!(
+            temp.store
+                .load()
+                .expect("reload")
+                .get(ids[0])
+                .expect("task")
+                .status,
+            HumanStatus::Review,
+            "nothing starts before the relaunch is confirmed"
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmDispatch,
+            &mut host,
+        );
+        assert_eq!(host.ran, 1);
+        assert_eq!(host.prompts, []);
+        assert_send_back_visible(&temp, &domain, ids[0], Some("fix the flicker"));
+    }
+
+    /// An empty send-back with no failed check says what is missing and keeps the box, on
+    /// every route; Shift+Enter keeps its own empty-reply refusal.
+    #[test]
+    fn an_empty_send_back_without_a_failed_check_is_refused() {
+        let temp = Temp::new("review-send-back-empty", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["plain", "assigned"]);
+        domain
+            .assign(ids[1], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        let mut host = fake_host(&temp);
+        for id in ids.clone() {
+            review_page(&temp, &mut domain, &mut model, id, &["tests pass"]);
+            apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("r");
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::ReplySaveUnblock,
+                &mut host,
+            );
+            assert_eq!(model.reply_draft(), Some(""), "the box stays");
+            let (screen, _) = board_screen(&model, 100, 30);
+            assert!(
+                screen.contains(crate::ui::board::NOTHING_TO_SEND_BACK),
+                "{screen}"
+            );
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::ReplySave,
+                &mut host,
+            );
+            let (screen, _) = board_screen(&model, 100, 30);
+            assert!(screen.contains("type a reply first"), "{screen}");
+            assert_eq!(
+                temp.store
+                    .load()
+                    .expect("reload")
+                    .get(id)
+                    .expect("task")
+                    .status,
+                HumanStatus::Review
+            );
+            apply_intent(&mut domain, &mut model, BoardIntent::CancelEdit, None).expect("esc");
+            apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close");
+        }
+        assert_eq!(host.ran, 0, "nothing launched");
+    }
+
+    /// `ctrl+d` with an empty box approves only the round the box was opened on: a newer round
+    /// merged in meanwhile is refused and the box stays.
+    #[test]
+    fn approving_an_empty_box_refuses_a_round_replaced_meanwhile() {
+        let temp = Temp::new("review-approve-stale", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        review_page(&temp, &mut domain, &mut model, ids[0], &["tests pass"]);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginReply, None).expect("r");
+        elsewhere(&temp, |other| {
+            other
+                .set_status_by(ids[0], HumanStatus::Started, "builder")
+                .expect("started elsewhere");
+        });
+        elsewhere(&temp, |other| {
+            other
+                .set_status_by(ids[0], HumanStatus::Review, "builder")
+                .expect("round 2 elsewhere");
+        });
+        let mut host = fake_host(&temp);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplyApprove,
+            &mut host,
+        );
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Review, "round 2 is not approved");
+        assert_eq!(task.block.as_ref().map(|round| round.round), Some(2));
+        assert_eq!(model.reply_draft(), Some(""), "the box stays");
+        assert_eq!(model.message(), Some(crate::ui::board::BLOCK_REPLACED));
+    }
+
+    /// `ctrl+d` on a dispatched review with its agent running: the feedback is stored, the
+    /// cleanup card asks, Esc approves nothing, and confirming closes the round as approved.
+    /// Nothing is ever sent to the agent.
+    #[test]
+    fn approving_a_dispatched_review_goes_through_the_cleanup_card() {
+        let temp = Temp::new("review-approve-dispatched", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["review me"]);
+        let worktree = temp.dir.join("worktree");
+        std::fs::create_dir_all(&worktree).expect("worktree");
+        domain
+            .assign(ids[0], Some("builder".into()))
+            .expect("assign builder");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        domain
+            .record_dispatch(
+                ids[0],
+                crate::domain::Dispatch {
+                    argv: vec!["true".into()],
+                    worktree: worktree.to_string_lossy().into_owned(),
+                    branch: "tsk/earlier".into(),
+                    base: Some("main".into()),
+                    base_ref: None,
+                    base_commit: None,
+                    base_remote: None,
+                    herdr_workspace_id: "w0".into(),
+                    at: std::time::SystemTime::now(),
+                    cleaned: false,
+                },
+            )
+            .expect("record the launch");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        review_page(&temp, &mut domain, &mut model, ids[0], &["tests pass"]);
+        let mut host = fake_host(&temp);
+        host.cleanup = true;
+        agent_running(&domain, &mut host, ids[0]);
+        let approve = |domain: &mut DomainState, model: &mut BoardModel, host: &mut FakeHost| {
+            apply_intent(domain, model, BoardIntent::BeginReply, None).expect("r");
+            apply_intent(
+                domain,
+                model,
+                BoardIntent::EditInsertText("ship it".into()),
+                None,
+            )
+            .expect("type");
+            handle(&temp, domain, model, BoardIntent::ReplyApprove, host);
+        };
+        approve(&mut domain, &mut model, &mut host);
+        assert!(
+            model.cleanup_prompt().is_some(),
+            "the cleanup card asks: {:?}",
+            model.message()
+        );
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(
+            task.status,
+            HumanStatus::Review,
+            "nothing changes before confirm"
+        );
+        assert_eq!(last_reply(&saved, ids[0]).as_deref(), Some("ship it"));
+
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::CancelCleanup,
+            &mut host,
+        );
+        assert!(model.cleanup_prompt().is_none());
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(
+            saved.get(ids[0]).expect("task").status,
+            HumanStatus::Review,
+            "cancel approves nothing"
+        );
+
+        approve(&mut domain, &mut model, &mut host);
+        assert!(model.cleanup_prompt().is_some());
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::KeepCleanup,
+            &mut host,
+        );
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Done);
+        let round = task.past_blocks.last().expect("closed round");
+        assert_eq!(round.resolution, Some(crate::domain::Resolution::Approved));
+        assert_eq!(host.prompts, [], "approving never sends");
+    }
+
+    #[test]
+    fn reply_and_unblock_on_an_unassigned_task_still_goes_to_ready() {
+        let temp = Temp::new("reply-unassigned", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["mine"]);
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+        let mut host = fake_host(&temp);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut host,
+        );
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(saved.get(ids[0]).expect("task").status, HumanStatus::Ready);
+        assert_eq!(last_reply(&saved, ids[0]).as_deref(), Some("postgres"));
+        assert_eq!(host.ran, 0);
+    }
+
+    /// The reply box's unblock is a status change like any other: one `ctrl+u` puts the task
+    /// back to blocked with its block, reply and all (#173 finding 4).
+    #[test]
+    fn undo_after_reply_and_unblock_reopens_the_block_with_its_reply() {
+        let temp = Temp::new("reply-undo", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["mine"]);
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+        let mut host = fake_host(&temp);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut host,
+        );
+        assert_eq!(
+            temp.store
+                .load()
+                .expect("reload")
+                .get(ids[0])
+                .expect("task")
+                .status,
+            HumanStatus::Ready
+        );
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Blocked);
+        assert!(task.block.is_some(), "the block is open again");
+        assert_eq!(last_reply(&saved, ids[0]).as_deref(), Some("postgres"));
+    }
+
+    /// An undo that never takes a task out of started claims no running agent, even with a
+    /// dispatch record still uncleaned (review K2): done or ready from review, then undo.
+    #[test]
+    fn undo_from_review_back_to_review_claims_no_running_agent() {
+        let temp = Temp::new("undo-review-no-agent", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["reviewed"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Review);
+        let mut host = fake_host(&temp);
+        let number = domain
+            .get(ids[0])
+            .and_then(|task| task.number)
+            .expect("number");
+
+        domain.complete(ids[0]).expect("done without cleanup");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        assert_eq!(
+            model.message(),
+            Some(format!("done undone · T{number} back to review").as_str())
+        );
+
+        domain
+            .change_status(&[ids[0]], HumanStatus::Ready, false)
+            .expect("ready");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        assert_eq!(
+            model.message(),
+            Some(format!("status undone · T{number} back to review").as_str())
+        );
+    }
+
+    /// A reply-box unblock with the agent still running is a plain start: undo restores
+    /// blocked and launches nothing.
+    #[test]
+    fn undo_after_reply_and_unblock_with_a_running_agent_goes_back_to_blocked() {
+        let temp = Temp::new("reply-running-undo", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["agent waits"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+        let mut host = fake_host(&temp);
+        agent_running(&domain, &mut host, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut host,
+        );
+        assert_eq!(
+            temp.store
+                .load()
+                .expect("reload")
+                .get(ids[0])
+                .expect("task")
+                .status,
+            HumanStatus::Started
+        );
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(
+            saved.get(ids[0]).expect("task").status,
+            HumanStatus::Blocked
+        );
+        assert_eq!(host.ran, 0, "undo launches nothing");
+        assert_eq!(
+            model.message(),
+            Some("status undone · T1 back to blocked · @builder kept running")
+        );
+    }
+
+    #[test]
+    fn reply_and_unblock_on_an_assigned_task_saves_the_reply_then_dispatches() {
+        let temp = Temp::new("reply-dispatch", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["send after answer"]);
+        domain
+            .assign(ids[0], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+        let mut host = fake_host(&temp);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut host,
+        );
+        assert_eq!(host.ran, 1, "one launch");
+        assert_eq!(
+            host.replies_on_disk_at_launch,
+            ["postgres"],
+            "the reply was saved before the launch began"
+        );
+        assert!(host.prompts.is_empty(), "a fresh launch reads past_blocks");
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        assert!(task.dispatch.is_some());
+        assert!(task.block.is_none(), "the start closed the block");
+        assert_eq!(last_reply(&saved, ids[0]).as_deref(), Some("postgres"));
+    }
+
+    #[test]
+    fn reply_and_unblock_with_a_failed_launch_keeps_the_reply_and_the_block() {
+        let temp = Temp::new("reply-fails", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["launch fails"]);
+        domain
+            .assign(ids[0], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+        let mut host = fake_host(&temp);
+        host.fail_launch = Some("herdr is down".into());
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut host,
+        );
+        assert_eq!(model.message(), Some("herdr is down"));
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Blocked);
+        assert!(task.dispatch.is_none());
+        assert_eq!(last_reply(&saved, ids[0]).as_deref(), Some("postgres"));
+    }
+
+    #[test]
+    fn reply_and_unblock_with_a_running_agent_starts_without_a_launch() {
+        let temp = Temp::new("reply-running", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["agent waits"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+        let mut host = fake_host(&temp);
+        let tag = agent_running(&domain, &mut host, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut host,
+        );
+        assert_eq!(host.ran, 0);
+        assert_eq!(model.dispatch_prompt(), None);
+        assert_eq!(
+            host.prompts,
+            [("w0:p1".to_string(), format!("{tag} postgres"))],
+            "the reply went to the recorded workspace's agent once"
+        );
+        assert_eq!(
+            host.root_queries,
+            ["w0"],
+            "the recorded workspace was asked"
+        );
+        assert_eq!(
+            host.disk_at_prompt,
+            [(HumanStatus::Started, Some("postgres".to_string()))],
+            "the reply and the start were durable before the prompt"
+        );
+        assert_eq!(model.message(), Some("started · reply sent to @builder"));
+    }
+
+    /// `ctrl+s` on an empty box only unblocks, and tells the agent so with the bare tag.
+    #[test]
+    fn an_empty_reply_box_unblocks_and_sends_the_bare_tag() {
+        let temp = Temp::new("reply-empty", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["agent waits"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "");
+        let mut host = fake_host(&temp);
+        let tag = agent_running(&domain, &mut host, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut host,
+        );
+        assert_eq!(host.prompts, [("w0:p1".to_string(), tag)]);
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        assert!(task.past_blocks.last().expect("closed").replies.is_empty());
+        assert_eq!(model.reply_draft(), None, "the box closed on landing");
+    }
+
+    /// Each send carries only the reply that action stored: an earlier answer is never sent
+    /// again, even with no agent reply in between.
+    #[test]
+    fn two_sends_in_a_row_never_repeat_a_reply() {
+        let temp = Temp::new("reply-twice", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["agent asks twice"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "use postgres");
+        let mut host = fake_host(&temp);
+        let tag = agent_running(&domain, &mut host, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut host,
+        );
+        // Blocked again; the owner's earlier reply sits on the closed block and a new one
+        // is typed with a line break.
+        reply_on_blocked(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[0],
+            "add an index\n\"quoted\" too",
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut host,
+        );
+        let texts: Vec<&str> = host.prompts.iter().map(|(_, text)| text.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                format!("{tag} use postgres"),
+                format!("{tag} add an index\n\"quoted\" too")
+            ]
+        );
+    }
+
+    /// The agent waits on a permission prompt, Herdr fails, Herdr cannot list the panes, or
+    /// cannot say who runs: the task stays started, the reply stays on the task, and nothing
+    /// is tried twice.
+    #[test]
+    fn a_refused_or_failed_delivery_keeps_the_task_started() {
+        use crate::dispatch::PromptError;
+        // (agent, root pane fails, prompt error, sends, message)
+        let cases = [
+            (
+                Some(true),
+                false,
+                Some(PromptError::AgentBlocked),
+                1,
+                "started · @builder is waiting on a prompt; reply kept on the task",
+            ),
+            (
+                Some(true),
+                false,
+                Some(PromptError::Failed("herdr: boom".into())),
+                1,
+                "started · could not reach @builder; reply kept on the task",
+            ),
+            (
+                None,
+                false,
+                None,
+                0,
+                "started · could not reach @builder; reply kept on the task",
+            ),
+            (
+                Some(true),
+                true,
+                None,
+                0,
+                "started · could not reach @builder; reply kept on the task",
+            ),
+        ];
+        for (agent, root_failed, error, sends, message) in cases {
+            let temp = Temp::new("reply-delivery-fails", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["agent busy"]);
+            dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+            reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+            let mut host = fake_host(&temp);
+            agent_running(&domain, &mut host, ids[0]);
+            host.agent = agent;
+            host.root_failed = root_failed;
+            host.prompt_error = error;
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::ReplySaveUnblock,
+                &mut host,
+            );
+            assert_eq!(host.prompts.len(), sends, "{message}");
+            assert_eq!(host.ran, 0, "never relaunches");
+            assert_eq!(model.dispatch_prompt(), None);
+            assert_eq!(model.message(), Some(message));
+            let saved = temp.store.load().expect("reload");
+            assert_eq!(
+                saved.get(ids[0]).expect("task").status,
+                HumanStatus::Started
+            );
+            assert_eq!(last_reply(&saved, ids[0]).as_deref(), Some("postgres"));
+        }
+    }
+
+    /// Another agent in the recorded pane, an unnamed one (naming failed), or a pane that
+    /// changes hands between the check and the send: nothing is sent, and the start stays.
+    #[test]
+    fn a_reply_never_reaches_an_agent_tsk_did_not_dispatch() {
+        let not_in_pane =
+            "started · reply not sent: @builder is not in its pane; reply kept on the task";
+        for case in ["other", "unnamed", "swapped"] {
+            let temp = Temp::new("reply-wrong-agent", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["pane reused"]);
+            dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+            reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "secret");
+            let mut host = fake_host(&temp);
+            let number = domain.get(ids[0]).and_then(|task| task.number).expect("n");
+            let expected = crate::dispatch::agent_name(number, "builder");
+            host.agent = Some(true);
+            match case {
+                "other" => {
+                    host.names.insert("w0:p1".into(), "reviewer".into());
+                }
+                "unnamed" => {}
+                _ => {
+                    host.next_names = [Some(expected.clone()), Some("t99-other".into())].into();
+                }
+            }
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::ReplySaveUnblock,
+                &mut host,
+            );
+            assert!(host.prompts.is_empty(), "{case}: nothing sent");
+            assert!(
+                host.agent_queries.iter().all(|pane| pane == "w0:p1"),
+                "{case}: only the recorded pane was asked"
+            );
+            assert_eq!(model.message(), Some(not_in_pane), "{case}");
+            assert_eq!(model.dispatch_prompt(), None, "{case}: the start stays");
+            let saved = temp.store.load().expect("reload");
+            assert_eq!(
+                saved.get(ids[0]).expect("task").status,
+                HumanStatus::Started,
+                "{case}"
+            );
+        }
+    }
+
+    /// Outside Herdr a dispatched task still starts, and the status row says the reply did
+    /// not go anywhere.
+    #[test]
+    fn a_reply_outside_herdr_starts_and_says_it_was_not_sent() {
+        let temp = Temp::new("reply-outside-herdr", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["plain terminal"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+        let mut host = fake_host(&temp);
+        agent_running(&domain, &mut host, ids[0]);
+        let mut recovery = SaveRecovery::new();
+        handle_board_intent_with_host(
+            &temp.store,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut recovery,
+            false,
+            false,
+            &mut host,
+            &mut |_| {},
+        )
+        .expect("intent");
+        assert!(host.prompts.is_empty());
+        assert!(host.root_queries.is_empty(), "Herdr is never asked");
+        assert_eq!(
+            model.message(),
+            Some("started · reply not sent: not in Herdr")
+        );
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(
+            saved.get(ids[0]).expect("task").status,
+            HumanStatus::Started
+        );
+    }
+
+    /// Shift+Enter stores the reply only: nothing is sent, even to a running agent.
+    #[test]
+    fn a_reply_saved_without_unblocking_sends_nothing() {
+        let temp = Temp::new("reply-save-only", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["agent waits"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+        let mut host = fake_host(&temp);
+        agent_running(&domain, &mut host, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySave,
+            &mut host,
+        );
+        assert!(host.prompts.is_empty());
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(
+            saved.get(ids[0]).expect("task").status,
+            HumanStatus::Blocked
+        );
+        assert_eq!(last_reply(&saved, ids[0]).as_deref(), Some("postgres"));
+    }
+
+    #[test]
+    fn reply_and_unblock_with_the_agent_gone_saves_the_reply_and_asks() {
+        let temp = Temp::new("reply-gone", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["agent left"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+        let mut host = fake_host(&temp);
+        host.agent = Some(false);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut host,
+        );
+        assert!(model
+            .dispatch_prompt()
+            .is_some_and(|prompt| prompt.relaunch.is_some()));
+        assert_eq!(host.ran, 0);
+        assert!(host.prompts.is_empty(), "a gone agent gets nothing");
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(
+            saved.get(ids[0]).expect("task").status,
+            HumanStatus::Blocked
+        );
+        assert_eq!(last_reply(&saved, ids[0]).as_deref(), Some("postgres"));
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmDispatch,
+            &mut host,
+        );
+        assert_eq!(host.ran, 1);
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(
+            saved.get(ids[0]).expect("task").status,
+            HumanStatus::Started
+        );
+    }
+
+    #[test]
+    fn ctrl_s_on_the_task_page_dispatches_the_page_task() {
+        let temp = Temp::new("page-start", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["other", "on the page"]);
+        domain
+            .assign(ids[1], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        select(&mut domain, &mut model, ids[1]);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+        let mut host = fake_host(&temp);
+        let intent = key(&model, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        assert_eq!(host.ran, 1);
+        let saved = temp.store.load().expect("reload");
+        assert!(saved.get(ids[1]).expect("task").dispatch.is_some());
+        assert!(saved.get(ids[0]).expect("task").dispatch.is_none());
+    }
+
+    /// Another writer's change on disk, saved through a fresh copy of the store.
+    fn elsewhere(temp: &Temp, change: impl FnOnce(&mut DomainState)) {
+        let mut other = temp.store.load().expect("load");
+        change(&mut other);
+        temp.store
+            .reload_merge_save(&mut other)
+            .expect("save elsewhere");
+    }
+
+    fn assigned_board(temp: &Temp, titles: &[&str]) -> (DomainState, BoardModel, Vec<uuid::Uuid>) {
+        let (mut domain, mut model, ids) = board(temp, titles);
+        for id in &ids {
+            domain.assign(*id, Some("builder".into())).expect("assign");
+        }
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        (domain, model, ids)
+    }
+
+    /// F-9: a refresh that drops the invoked task never starts the cursor's new task.
+    #[test]
+    fn a_start_whose_target_was_archived_elsewhere_starts_nothing() {
+        let temp = Temp::new("start-target-gone", &["builder"]);
+        let (mut domain, mut model, ids) = assigned_board(&temp, &["archived elsewhere", "next"]);
+        select(&mut domain, &mut model, ids[0]);
+        elsewhere(&temp, |other| {
+            other.archive_task(ids[0]).expect("archive");
+        });
+        let mut host = fake_host(&temp);
+        let intent = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        assert_eq!(model.message(), Some(super::START_TARGET_CHANGED));
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(saved.get(ids[1]).expect("task").status, HumanStatus::Open);
+        assert_eq!(saved.get(ids[0]).expect("task").status, HumanStatus::Open);
+        assert_eq!(host.ran, 0);
+    }
+
+    /// F-12: an assignment made elsewhere launches, though this board has not refreshed.
+    #[test]
+    fn a_start_on_a_task_assigned_elsewhere_launches() {
+        let temp = Temp::new("start-assigned-elsewhere", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["assigned by the cli"]);
+        select(&mut domain, &mut model, ids[0]);
+        elsewhere(&temp, |other| {
+            other
+                .assign(ids[0], Some("builder".into()))
+                .expect("assign");
+        });
+        let mut host = fake_host(&temp);
+        let intent = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        assert_eq!(host.ran, 1);
+        let saved = temp.store.load().expect("reload");
+        assert!(saved.get(ids[0]).expect("task").dispatch.is_some());
+    }
+
+    #[test]
+    fn a_reply_on_a_task_assigned_elsewhere_dispatches() {
+        let temp = Temp::new("reply-assigned-elsewhere", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["assigned by the cli"]);
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+        elsewhere(&temp, |other| {
+            other
+                .assign(ids[0], Some("builder".into()))
+                .expect("assign");
+        });
+        let mut host = fake_host(&temp);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut host,
+        );
+        assert_eq!(host.ran, 1);
+        assert_eq!(host.replies_on_disk_at_launch, ["postgres"]);
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(
+            saved.get(ids[0]).expect("task").status,
+            HumanStatus::Started
+        );
+    }
+
+    /// F-3/F-4/F-8: only Herdr's `workspace_not_found` means gone; any other root-pane failure
+    /// is a plain start, and an explicit relaunch refuses instead of opening a second workspace.
+    #[test]
+    fn a_failed_root_pane_query_is_a_plain_start_and_never_reopens() {
+        let temp = Temp::new("root-failed", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["herdr is busy"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Ready);
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        host.root_failed = true;
+        host.agent = Some(false);
+        let intent = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        assert_eq!(model.dispatch_prompt(), None, "no relaunch card");
+        assert_eq!(
+            domain.get(ids[0]).expect("task").status,
+            HumanStatus::Started
+        );
+
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::DispatchAgain,
+            &mut host,
+        );
+        assert_eq!(model.message(), Some("could not run herdr"));
+        assert_eq!((host.reopened, host.ran, host.launched), (0, 0, 0));
+    }
+
+    /// F-16: outside Herdr a dispatched task's start is plain; nothing is asked or launched.
+    #[test]
+    fn a_dispatched_start_outside_herdr_is_plain() {
+        let temp = Temp::new("dispatched-no-herdr", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["no herdr"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Ready);
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        host.agent = Some(false);
+        host.workspace_gone = true;
+        let mut recovery = SaveRecovery::new();
+        let intent = ctrl_s(&model);
+        handle_board_intent_with_host(
+            &temp.store,
+            &mut domain,
+            &mut model,
+            intent,
+            &mut recovery,
+            false,
+            false,
+            &mut host,
+            &mut |_| {},
+        )
+        .expect("start");
+        assert_eq!(model.dispatch_prompt(), None);
+        assert_eq!(host.ran, 0);
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(
+            saved.get(ids[0]).expect("task").status,
+            HumanStatus::Started
+        );
+    }
+
+    /// F-19: palette start on an assigned, never-dispatched done task is a plain correction.
+    #[test]
+    fn an_assigned_done_task_starts_without_a_launch() {
+        let temp = Temp::new("done-start", &["builder"]);
+        let (mut domain, mut model, ids) = assigned_board(&temp, &["finished"]);
+        domain.complete(ids[0]).expect("done");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer, None).expect("drawer");
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::SetStatus(HumanStatus::Started),
+            &mut host,
+        );
+        assert_eq!(host.ran, 0);
+        assert_eq!(model.dispatch_prompt(), None);
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        assert!(task.dispatch.is_none());
+    }
+
+    /// F-11: the relaunch card's `n` rechecks the task; one finished meanwhile stays done.
+    #[test]
+    fn n_on_the_relaunch_card_leaves_a_task_finished_meanwhile() {
+        let temp = Temp::new("relaunch-n-done", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["finished meanwhile"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Ready);
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        host.agent = Some(false);
+        let intent = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        assert!(model.dispatch_prompt().is_some());
+        elsewhere(&temp, |other| other.complete(ids[0]).expect("done"));
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::StartWithoutRelaunch,
+            &mut host,
+        );
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(saved.get(ids[0]).expect("task").status, HumanStatus::Done);
+    }
+
+    /// F-18 and F-1/F-6: a failed reply save launches nothing and keeps the box; Retry saves
+    /// the reply and then dispatches; Cancel drops the start.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_reply_save_launches_nothing_and_retry_resumes_the_start() {
+        use std::os::unix::fs::PermissionsExt;
+        for retry in [true, false] {
+            let temp = Temp::new("reply-save-fails", &["builder"]);
+            let (mut domain, mut model, ids) = assigned_board(&temp, &["answer then go"]);
+            reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+            let mut host = fake_host(&temp);
+            let mut recovery = SaveRecovery::new();
+            let step = |domain: &mut DomainState,
+                        model: &mut BoardModel,
+                        recovery: &mut SaveRecovery<DomainState>,
+                        host: &mut FakeHost,
+                        intent: BoardIntent| {
+                handle_board_intent_with_host(
+                    &temp.store,
+                    domain,
+                    model,
+                    intent,
+                    recovery,
+                    false,
+                    true,
+                    host,
+                    &mut |_| {},
+                )
+                .expect("intent");
+            };
+            std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o555))
+                .expect("lock the state dir");
+            step(
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                &mut host,
+                BoardIntent::ReplySaveUnblock,
+            );
+            std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o700))
+                .expect("unlock");
+            assert!(recovery.is_pending(), "the save failed into recovery");
+            assert_eq!(host.ran, 0, "nothing launches before the reply is saved");
+            assert_eq!(model.reply_draft(), Some("postgres"));
+
+            let answer = if retry {
+                BoardIntent::RetrySave
+            } else {
+                BoardIntent::CancelSave
+            };
+            step(&mut domain, &mut model, &mut recovery, &mut host, answer);
+            assert!(!recovery.is_pending());
+            assert_eq!(model.pending_reply_start, None);
+            let saved = temp.store.load().expect("reload");
+            let task = saved.get(ids[0]).expect("task");
+            if retry {
+                assert_eq!(host.ran, 1, "retry resumed the start");
+                assert_eq!(host.replies_on_disk_at_launch, ["postgres"]);
+                assert_eq!(task.status, HumanStatus::Started);
+            } else {
+                assert_eq!(host.ran, 0, "cancel dropped the start");
+                assert_eq!(task.status, HumanStatus::Blocked);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn recovering_step(
+        temp: &Temp,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        recovery: &mut SaveRecovery<DomainState>,
+        host: &mut FakeHost,
+        intent: BoardIntent,
+    ) {
+        handle_board_intent_with_host(
+            &temp.store,
+            domain,
+            model,
+            intent,
+            recovery,
+            false,
+            true,
+            host,
+            &mut |_| {},
+        )
+        .expect("intent");
+    }
+
+    /// Run `intent` with the state dir read-only, so its save fails into recovery.
+    #[cfg(unix)]
+    fn failing_step(
+        temp: &Temp,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        recovery: &mut SaveRecovery<DomainState>,
+        host: &mut FakeHost,
+        intent: BoardIntent,
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o555))
+            .expect("lock the state dir");
+        recovering_step(temp, domain, model, recovery, host, intent);
+        std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o700))
+            .expect("unlock");
+        assert!(recovery.is_pending(), "the save failed into recovery");
+    }
+
+    /// A failed reply save to a running agent sends nothing; Retry sends it exactly once,
+    /// after the save, and Cancel never.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_reply_save_sends_nothing_until_retry_saves_it() {
+        for retry in [true, false] {
+            let temp = Temp::new("reply-deliver-recovery", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["agent waits"]);
+            dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+            reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+            let mut host = fake_host(&temp);
+            let tag = agent_running(&domain, &mut host, ids[0]);
+            let mut recovery = SaveRecovery::new();
+            failing_step(
+                &temp,
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                &mut host,
+                BoardIntent::ReplySaveUnblock,
+            );
+            assert!(host.prompts.is_empty(), "nothing before the save lands");
+            let answer = if retry {
+                BoardIntent::RetrySave
+            } else {
+                BoardIntent::CancelSave
+            };
+            recovering_step(
+                &temp,
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                &mut host,
+                answer,
+            );
+            assert!(!recovery.is_pending());
+            // A later save must not send again.
+            recovering_step(
+                &temp,
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                &mut host,
+                BoardIntent::SelectNext,
+            );
+            assert_eq!(model.pending_reply_delivery, None);
+            let saved = temp.store.load().expect("reload");
+            let task = saved.get(ids[0]).expect("task");
+            if retry {
+                assert_eq!(
+                    host.prompts,
+                    [("w0:p1".to_string(), format!("{tag} postgres"))]
+                );
+                assert_eq!(
+                    host.disk_at_prompt,
+                    [(HumanStatus::Started, Some("postgres".to_string()))]
+                );
+                assert_eq!(task.status, HumanStatus::Started);
+            } else {
+                assert!(host.prompts.is_empty(), "cancel sent nothing");
+                assert_eq!(task.status, HumanStatus::Blocked);
+            }
+        }
+    }
+
+    /// `ctrl+b` or palette set status ready/started on a blocked task whose save fails sends
+    /// nothing; Retry sends the block's replies exactly once, after the save, and Cancel never.
+    #[cfg(unix)]
+    #[test]
+    fn an_unblock_outside_the_box_whose_save_fails_delivers_on_retry_only() {
+        for intent in [
+            BoardIntent::ToggleBlock,
+            BoardIntent::SetStatus(HumanStatus::Ready),
+            BoardIntent::SetStatus(HumanStatus::Started),
+        ] {
+            for retry in [true, false] {
+                let temp = Temp::new("closing-recovery", &["builder"]);
+                let (mut domain, mut model, ids) = board(&temp, &["agent asks"]);
+                dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+                blocked_row(&temp, &mut domain, &mut model, ids[0]);
+                saved_entries(&temp, &mut domain, &mut model, ids[0], &["use postgres"]);
+                select(&mut domain, &mut model, ids[0]);
+                let mut host = fake_host(&temp);
+                let tag = agent_running(&domain, &mut host, ids[0]);
+                let mut recovery = SaveRecovery::new();
+                failing_step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    &mut recovery,
+                    &mut host,
+                    intent.clone(),
+                );
+                assert!(
+                    host.prompts.is_empty(),
+                    "{intent:?}: nothing before the save"
+                );
+                let answer = if retry {
+                    BoardIntent::RetrySave
+                } else {
+                    BoardIntent::CancelSave
+                };
+                recovering_step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    &mut recovery,
+                    &mut host,
+                    answer,
+                );
+                assert!(!recovery.is_pending());
+                // A later save must not send again.
+                recovering_step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    &mut recovery,
+                    &mut host,
+                    BoardIntent::SelectNext,
+                );
+                assert!(model.pending_closing.is_empty(), "{intent:?}");
+                let status = temp
+                    .store
+                    .load()
+                    .expect("reload")
+                    .get(ids[0])
+                    .expect("task")
+                    .status;
+                if retry {
+                    assert_eq!(
+                        host.prompts,
+                        [("w0:p1".to_string(), format!("{tag} use postgres"))],
+                        "{intent:?}"
+                    );
+                    let expected = if intent == BoardIntent::SetStatus(HumanStatus::Started) {
+                        HumanStatus::Started
+                    } else {
+                        HumanStatus::Ready
+                    };
+                    assert_eq!(status, expected, "{intent:?}");
+                } else {
+                    assert!(host.prompts.is_empty(), "{intent:?}: cancel sent nothing");
+                    assert_eq!(status, HumanStatus::Blocked, "{intent:?}");
+                }
+            }
+        }
+    }
+
+    /// A marked start through the bulk card whose save fails sends nothing; Retry sends each
+    /// closed record once, Cancel never.
+    #[cfg(unix)]
+    #[test]
+    fn a_marked_start_whose_save_fails_delivers_on_retry_only() {
+        for retry in [true, false] {
+            let temp = Temp::new("closing-bulk-recovery", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["in review", "never launched"]);
+            dispatched_in(
+                &temp,
+                &mut domain,
+                &mut model,
+                ids[0],
+                HumanStatus::Started,
+                "w5",
+            );
+            in_review_with_a_failed_check(&temp, &mut domain, &mut model, ids[0]);
+            saved_entries(&temp, &mut domain, &mut model, ids[0], &["fix the peak"]);
+            domain
+                .assign(ids[1], Some("builder".into()))
+                .expect("assign");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            model.sync_from_domain(&domain);
+            let mut host = fake_host(&temp);
+            agent_running_in(&domain, &mut host, ids[0], "w5");
+            apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None).expect("mark");
+            for id in &ids {
+                select(&mut domain, &mut model, *id);
+                apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+            }
+            let mut recovery = SaveRecovery::new();
+            recovering_step(
+                &temp,
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                &mut host,
+                BoardIntent::SetStatus(HumanStatus::Started),
+            );
+            assert!(model.dispatch_prompt().is_some(), "bulk card");
+            failing_step(
+                &temp,
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                &mut host,
+                BoardIntent::ConfirmDispatch,
+            );
+            assert!(host.prompts.is_empty(), "nothing before the save");
+            let answer = if retry {
+                BoardIntent::RetrySave
+            } else {
+                BoardIntent::CancelSave
+            };
+            recovering_step(
+                &temp,
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                &mut host,
+                answer,
+            );
+            assert!(!recovery.is_pending());
+            assert!(model.pending_closing.is_empty());
+            if retry {
+                assert_eq!(
+                    host.prompts,
+                    [(
+                        "w5:p1".to_string(),
+                        "[tsk T1 sent back] fix the peak Failed checks: no flicker".to_string()
+                    )]
+                );
+            } else {
+                assert!(host.prompts.is_empty(), "cancel sent nothing");
+            }
+        }
+    }
+
+    /// The agent looked gone at `ctrl+s` (Herdr's detection lagged) and the save failed; on
+    /// Retry it is found running: the resumed start sends the reply exactly once.
+    #[cfg(unix)]
+    #[test]
+    fn a_resumed_start_delivers_to_an_agent_found_on_retry() {
+        let temp = Temp::new("reply-resumed", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["detection lags"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+        let mut host = fake_host(&temp);
+        let tag = agent_running(&domain, &mut host, ids[0]);
+        host.agent = Some(false);
+        let mut recovery = SaveRecovery::new();
+        failing_step(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            &mut host,
+            BoardIntent::ReplySaveUnblock,
+        );
+        assert!(model.pending_reply_start.is_some());
+        assert!(host.prompts.is_empty());
+        host.agent = Some(true);
+        recovering_step(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            &mut host,
+            BoardIntent::RetrySave,
+        );
+        recovering_step(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            &mut host,
+            BoardIntent::SelectNext,
+        );
+        assert_eq!(host.ran, 0, "no launch");
+        assert_eq!(model.dispatch_prompt(), None);
+        assert_eq!(
+            host.prompts,
+            [("w0:p1".to_string(), format!("{tag} postgres"))]
+        );
+        assert_eq!(
+            host.disk_at_prompt,
+            [(HumanStatus::Started, Some("postgres".to_string()))]
+        );
+        assert_eq!(model.message(), Some("started · reply sent to @builder"));
+    }
+
+    /// The dispatch record changed (a relaunch elsewhere) while the save waited on Retry:
+    /// the old workspace's pane, now someone else's, is never asked or sent to. The changed
+    /// task refuses the held save, and Cancel drops the delivery.
+    #[cfg(unix)]
+    #[test]
+    fn a_dispatch_record_changed_before_retry_sends_nothing_to_the_old_pane() {
+        let temp = Temp::new("reply-record-moved", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["relaunched meanwhile"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+        let mut host = fake_host(&temp);
+        agent_running(&domain, &mut host, ids[0]);
+        let mut recovery = SaveRecovery::new();
+        failing_step(
+            &temp,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            &mut host,
+            BoardIntent::ReplySaveUnblock,
+        );
+        elsewhere(&temp, |other| {
+            let mut record = other
+                .get(ids[0])
+                .and_then(|task| task.dispatch.clone())
+                .expect("record");
+            record.herdr_workspace_id = "w5".into();
+            other.record_dispatch(ids[0], record).expect("relaunch");
+        });
+        let name = host.names.remove("w0:p1").expect("old agent");
+        host.names.insert("w0:p1".into(), "someone-else".into());
+        host.names.insert("w5:p1".into(), name);
+        host.root_queries.clear();
+        host.agent_queries.clear();
+        for answer in [BoardIntent::RetrySave, BoardIntent::CancelSave] {
+            recovering_step(
+                &temp,
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                &mut host,
+                answer,
+            );
+        }
+        assert!(!recovery.is_pending());
+        assert!(host.prompts.is_empty(), "nothing sent anywhere");
+        assert!(
+            !host.root_queries.iter().any(|workspace| workspace == "w0")
+                && !host.agent_queries.iter().any(|pane| pane == "w0:p1"),
+            "the old record was never used: {:?} {:?}",
+            host.root_queries,
+            host.agent_queries
+        );
+        assert_eq!(model.pending_reply_delivery, None);
+    }
+
+    #[test]
+    fn ctrl_g_no_longer_dispatches() {
+        let temp = Temp::new("no-ctrl-g", &["builder"]);
+        let (_, model, _) = board(&temp, &["assigned"]);
+        assert_eq!(
+            map_key(
+                model.input_mode(),
+                KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn ctrl_s_on_an_unassigned_task_only_starts() {
+        let temp = Temp::new("start-unassigned", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["do it myself"]);
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        let intent = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        assert!(task.dispatch.is_none());
+        assert_eq!((host.launched, host.ran), (0, 0), "nothing launched");
+    }
+
+    #[test]
+    fn ctrl_s_on_an_assigned_task_dispatches_it() {
+        let temp = Temp::new("start-assigned", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["send it"]);
+        domain
+            .assign(ids[0], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        let mut names = Vec::new();
+        let mut recovery = SaveRecovery::new();
+        let intent = ctrl_s(&model);
+        handle_board_intent_with_host(
+            &temp.store,
+            &mut domain,
+            &mut model,
+            intent,
+            &mut recovery,
+            false,
+            true,
+            &mut host,
+            &mut |naming| names.push(naming.name),
+        )
+        .expect("start");
+        assert_eq!((host.launched, host.ran), (1, 1), "one launch");
+        let number = domain
+            .get(ids[0])
+            .and_then(|task| task.number)
+            .expect("number");
+        assert_eq!(names, [format!("t{number}-builder")]);
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        assert!(
+            task.dispatch.is_some(),
+            "the record is saved with the start"
+        );
+        assert_eq!(
+            model.message().map(str::to_string),
+            Some(format!("dispatched T{number} to @builder"))
+        );
+    }
+
+    #[test]
+    fn a_failed_dispatch_leaves_the_task_unstarted_with_the_reason() {
+        let temp = Temp::new("start-fails", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["will not launch"]);
+        domain
+            .assign(ids[0], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        domain
+            .set_status(ids[0], HumanStatus::Ready)
+            .expect("ready");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        host.fail_launch = Some("herdr is down".into());
+        let intent = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        assert_eq!(model.message(), Some("herdr is down"));
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Ready);
+        assert!(task.dispatch.is_none());
+    }
+
+    #[test]
+    fn ctrl_s_outside_herdr_starts_an_assigned_task_and_says_why() {
+        let temp = Temp::new("start-no-herdr", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["needs herdr"]);
+        domain
+            .assign(ids[0], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        let mut recovery = SaveRecovery::new();
+        let intent = ctrl_s(&model);
+        handle_board_intent_with_host(
+            &temp.store,
+            &mut domain,
+            &mut model,
+            intent,
+            &mut recovery,
+            false,
+            false,
+            &mut host,
+            &mut |_| {},
+        )
+        .expect("start");
+        assert_eq!(model.message(), Some("started · no launch: not in Herdr"));
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        assert!(task.dispatch.is_none());
+        assert_eq!((host.ran, host.launched), (0, 0));
+    }
+
+    /// Outside Herdr a marked set starts plainly with no card and names what could not launch.
+    #[test]
+    fn a_marked_set_outside_herdr_starts_and_names_the_rows_that_could_not_launch() {
+        let temp = Temp::new("set-no-herdr", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["assigned", "mine"]);
+        domain
+            .assign(ids[0], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None).expect("mark");
+        for id in &ids {
+            select(&mut domain, &mut model, *id);
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        }
+        let mut host = fake_host(&temp);
+        let mut recovery = SaveRecovery::new();
+        handle_board_intent_with_host(
+            &temp.store,
+            &mut domain,
+            &mut model,
+            BoardIntent::PrimaryVerb,
+            &mut recovery,
+            false,
+            false,
+            &mut host,
+            &mut |_| {},
+        )
+        .expect("start");
+        assert_eq!(model.dispatch_prompt(), None);
+        let number = domain
+            .get(ids[0])
+            .and_then(|task| task.number)
+            .expect("number");
+        assert_eq!(
+            model.message().map(str::to_string),
+            Some(format!("started · no launch: not in Herdr (T{number})"))
+        );
+        let saved = temp.store.load().expect("reload");
+        for id in &ids {
+            assert_eq!(saved.get(*id).expect("task").status, HumanStatus::Started);
+        }
+        assert_eq!(host.ran, 0);
+    }
+
+    /// The reply box outside Herdr unblocks an assigned task to started and says why.
+    #[test]
+    fn reply_and_unblock_outside_herdr_starts_and_says_why() {
+        let temp = Temp::new("reply-no-herdr", &["builder"]);
+        let (mut domain, mut model, ids) = assigned_board(&temp, &["answer"]);
+        reply_on_blocked(&temp, &mut domain, &mut model, ids[0], "postgres");
+        let mut host = fake_host(&temp);
+        let mut recovery = SaveRecovery::new();
+        handle_board_intent_with_host(
+            &temp.store,
+            &mut domain,
+            &mut model,
+            BoardIntent::ReplySaveUnblock,
+            &mut recovery,
+            false,
+            false,
+            &mut host,
+            &mut |_| {},
+        )
+        .expect("reply");
+        assert_eq!(model.message(), Some("started · no launch: not in Herdr"));
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(
+            saved.get(ids[0]).expect("task").status,
+            HumanStatus::Started
+        );
+        assert_eq!(last_reply(&saved, ids[0]).as_deref(), Some("postgres"));
+        assert_eq!(host.ran, 0);
+    }
+
+    /// On the desk tab, the palette start on a set with a project launch lists an assigned
+    /// desk task under start only with why it cannot launch, and starts it on `y`.
+    #[test]
+    fn a_desk_task_in_a_launching_set_is_start_only_with_the_reason() {
+        let temp = Temp::new("set-desk", &["builder"]);
+        let mut domain = DomainState::new();
+        let project = domain
+            .create_assigned(
+                "project review",
+                None,
+                TaskScope::Project {
+                    path: PROJECT.into(),
+                },
+                ProvenanceOrigin::Manual,
+                None,
+                Some("builder".into()),
+            )
+            .expect("project task");
+        let desk = domain
+            .create_assigned(
+                "desk errand",
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+                Some("builder".into()),
+            )
+            .expect("desk task");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        domain
+            .set_status(project, HumanStatus::Review)
+            .expect("review");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        let mut model = BoardModel::from_domain(&domain, None);
+        model.set_agent_profiles(&temp.profiles());
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None).expect("mark");
+        for id in [project, desk] {
+            select(&mut domain, &mut model, id);
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        }
+        let mut host = fake_host(&temp);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::SetStatus(HumanStatus::Started),
+            &mut host,
+        );
+        let prompt = model.dispatch_prompt().expect("card").clone();
+        assert_eq!(prompt.launch.len(), 1);
+        assert_eq!(prompt.no_launch, [(desk, dispatch::NO_LAUNCH_DESK)]);
+        let painted = frame_text(&model, Rect::new(0, 0, 90, 30));
+        assert!(
+            painted.contains("started · no launch: desk task has no repository"),
+            "{painted}"
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmDispatch,
+            &mut host,
+        );
+        assert_eq!(host.ran, 1, "only the project task launches");
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(saved.get(desk).expect("task").status, HumanStatus::Started);
+        assert!(saved.get(desk).expect("task").dispatch.is_none());
+        assert!(saved.get(project).expect("task").dispatch.is_some());
+    }
+
+    #[test]
+    fn ctrl_s_with_the_agent_still_running_is_a_plain_start() {
+        let temp = Temp::new("start-running", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["agent still here"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Ready);
+        select(&mut domain, &mut model, ids[0]);
+        for agent in [Some(true), None] {
+            let mut host = fake_host(&temp);
+            host.agent = agent;
+            domain
+                .set_status(ids[0], HumanStatus::Ready)
+                .expect("ready");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            model.sync_from_domain(&domain);
+            let intent = ctrl_s(&model);
+            handle(&temp, &mut domain, &mut model, intent, &mut host);
+            assert_eq!(
+                domain.get(ids[0]).expect("task").status,
+                HumanStatus::Started,
+                "{agent:?}"
+            );
+            assert_eq!((host.launched, host.ran), (0, 0), "{agent:?}: no launch");
+            assert_eq!(model.dispatch_prompt(), None, "{agent:?}: no card");
+        }
+    }
+
+    #[test]
+    fn ctrl_s_with_the_agent_gone_asks_before_relaunching() {
+        let temp = Temp::new("start-gone", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["agent left"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Ready);
+        select(&mut domain, &mut model, ids[0]);
+
+        // Esc changes nothing.
+        let mut host = fake_host(&temp);
+        host.agent = Some(false);
+        let intent = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        let prompt = model.dispatch_prompt().expect("relaunch card").clone();
+        let relaunch = prompt.relaunch.expect("relaunch prompt");
+        assert_eq!(relaunch.assignee, "builder");
+        assert_eq!(model.input_mode(), BoardInputMode::DispatchConfirm);
+        let esc = key(&model, KeyCode::Esc, KeyModifiers::NONE);
+        handle(&temp, &mut domain, &mut model, esc, &mut host);
+        assert_eq!(model.dispatch_prompt(), None);
+        assert_eq!(domain.get(ids[0]).expect("task").status, HumanStatus::Ready);
+
+        // `n` only starts.
+        let intent = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        let n = key(&model, KeyCode::Char('n'), KeyModifiers::NONE);
+        assert_eq!(n, BoardIntent::StartWithoutRelaunch);
+        handle(&temp, &mut domain, &mut model, n, &mut host);
+        assert_eq!(model.dispatch_prompt(), None);
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(
+            saved.get(ids[0]).expect("task").status,
+            HumanStatus::Started
+        );
+        assert_eq!(host.ran, 0, "n never launches");
+
+        // `y` relaunches in the recorded workspace.
+        domain
+            .set_status(ids[0], HumanStatus::Ready)
+            .expect("ready");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        let intent = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        let y = key(&model, KeyCode::Char('y'), KeyModifiers::NONE);
+        handle(&temp, &mut domain, &mut model, y, &mut host);
+        assert_eq!(
+            (host.launched, host.ran),
+            (0, 1),
+            "relaunched in the kept worktree"
+        );
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(
+            saved.get(ids[0]).expect("task").status,
+            HumanStatus::Started
+        );
+    }
+
+    #[test]
+    fn a_gone_workspace_or_cleaned_record_counts_as_the_agent_gone() {
+        let temp = Temp::new("start-workspace-gone", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["workspace closed"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Review);
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        host.workspace_gone = true;
+        host.agent = Some(true);
+        // The palette's absolute status takes the same route as ctrl+s.
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::SetStatus(HumanStatus::Started),
+            &mut host,
+        );
+        assert!(model
+            .dispatch_prompt()
+            .is_some_and(|prompt| prompt.relaunch.is_some()));
+        assert_eq!(
+            domain.get(ids[0]).expect("task").status,
+            HumanStatus::Review
+        );
+        // `y` opens a new workspace on the kept worktree and launches there.
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmDispatch,
+            &mut host,
+        );
+        assert_eq!((host.reopened, host.ran, host.launched), (1, 1, 0));
+        let saved = temp.store.load().expect("reload");
+        let record = saved
+            .get(ids[0])
+            .and_then(|task| task.dispatch.clone())
+            .expect("record");
+        assert_eq!(record.herdr_workspace_id, "w2");
+        assert_eq!(record.worktree, "/tmp/tsk-start-earlier");
+        assert_eq!(record.branch, "tsk/earlier");
+        assert_eq!(
+            saved.get(ids[0]).expect("task").status,
+            HumanStatus::Started
+        );
+        let mut domain = saved;
+        domain
+            .set_status(ids[0], HumanStatus::Review)
+            .expect("review");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+
+        domain
+            .record_dispatch_cleaned(ids[0], crate::domain::CleanupOutcome::Removed)
+            .expect("cleaned");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        host.workspace_gone = false;
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::SetStatus(HumanStatus::Started),
+            &mut host,
+        );
+        assert!(model
+            .dispatch_prompt()
+            .is_some_and(|prompt| prompt.relaunch.is_some()));
+    }
+
+    #[test]
+    fn undo_after_a_start_that_dispatched_restores_the_status_and_keeps_the_agent() {
+        let temp = Temp::new("start-undo", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["undo me"]);
+        domain
+            .assign(ids[0], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        domain
+            .set_status(ids[0], HumanStatus::Ready)
+            .expect("ready");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        let intent = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        assert!(matches!(domain.last_undo(), Some(UndoEntry::Start { .. })));
+
+        let undo = key(&model, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        handle(&temp, &mut domain, &mut model, undo, &mut host);
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Ready);
+        assert!(
+            task.dispatch.as_ref().is_some_and(|record| !record.cleaned),
+            "the record and its worktree stay"
+        );
+        assert_eq!(
+            model.message(),
+            Some("start undone · T1 back to ready · @builder kept running")
+        );
+    }
+
+    #[test]
+    fn undoing_a_dispatched_start_out_of_blocked_reopens_the_block() {
+        let temp = Temp::new("start-undo-blocked", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["blocked then started"]);
+        domain
+            .assign(ids[0], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        domain
+            .block(
+                ids[0],
+                crate::domain::BlockDraft::from_input(
+                    Some("which db?"),
+                    None,
+                    &[],
+                    Default::default(),
+                )
+                .expect("draft"),
+                crate::domain::OWNER,
+            )
+            .expect("block");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        select(&mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::SetStatus(HumanStatus::Started),
+            &mut host,
+        );
+        assert_eq!(
+            domain.get(ids[0]).expect("task").status,
+            HumanStatus::Started
+        );
+        assert!(domain.get(ids[0]).expect("task").block.is_none());
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let task = domain.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Blocked);
+        assert_eq!(
+            task.block.as_ref().and_then(|block| block.why.as_deref()),
+            Some("which db?")
+        );
+    }
+
+    #[test]
+    fn at_opens_the_picker_and_enter_assigns_with_one_undo_entry() {
+        let temp = Temp::new("at", &["builder", "reviewer"]);
+        let (mut domain, mut model, ids) = board(&temp, &["pick an agent"]);
+        select(&mut domain, &mut model, ids[0]);
+
+        let open = key(&model, KeyCode::Char('@'), KeyModifiers::NONE);
+        assert_eq!(open, BoardIntent::OpenAssigneePicker);
+        apply_intent(&mut domain, &mut model, open, None).expect("open picker");
+        assert_eq!(model.input_mode(), BoardInputMode::ListPicker);
+        assert_eq!(model.list_picker_kind(), Some(ListPickerKind::Assignee));
+        let labels: Vec<_> = model
+            .visible_list_picker_options()
+            .into_iter()
+            .map(|(_, option)| option.label)
+            .collect();
+        assert_eq!(labels, ["@builder", "@reviewer", "none"]);
+        assert_eq!(
+            domain.get(ids[0]).expect("task").assignee,
+            None,
+            "nothing changes before Enter"
+        );
+
+        let down = key(&model, KeyCode::Down, KeyModifiers::NONE);
+        apply_intent(&mut domain, &mut model, down, None).expect("move");
+        let enter = key(&model, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(super::board_intent_may_persist(&model, &enter));
+        let outcome = apply_intent(&mut domain, &mut model, enter, None).expect("assign");
+        assert_eq!(outcome, crate::ui::board::IntentOutcome::Persist);
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+        assert_eq!(
+            domain.get(ids[0]).expect("task").assignee.as_deref(),
+            Some("reviewer")
+        );
+        assert!(matches!(
+            domain.last_undo(),
+            Some(UndoEntry::Assign { id, previous: None, .. }) if *id == ids[0]
+        ));
+
+        // Reopening preselects the current assignee.
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAssigneePicker,
+            None,
+        )
+        .expect("reopen");
+        assert_eq!(
+            model
+                .selected_list_picker_option()
+                .map(|(_, option)| option.label),
+            Some("@reviewer".to_string())
+        );
+    }
+
+    #[test]
+    fn esc_in_the_at_picker_changes_nothing() {
+        let temp = Temp::new("esc", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["leave me"]);
+        select(&mut domain, &mut model, ids[0]);
+        let before = domain.get(ids[0]).expect("task").revision;
+
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAssigneePicker,
+            None,
+        )
+        .expect("open");
+        let esc = key(&model, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(
+            apply_intent(&mut domain, &mut model, esc, None).expect("cancel"),
+            crate::ui::board::IntentOutcome::None
+        );
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+        assert!(!model.list_picker_open());
+        let task = domain.get(ids[0]).expect("task");
+        assert_eq!(task.assignee, None);
+        assert_eq!(task.revision, before);
+    }
+
+    #[test]
+    fn the_boards_dispatch_host_writes_launchers_beside_its_own_store() {
+        use crate::dispatch::DispatchHost;
+        let temp = Temp::new("launchers", &["builder"]);
+        let launcher = super::board_dispatch_host(&temp.store)
+            .launcher_path("w1")
+            .expect("launcher path");
+        assert!(launcher.starts_with(&temp.dir), "{}", launcher.display());
+        assert_eq!(launcher.file_name(), Some("dispatch-w1.ps1".as_ref()));
+    }
+
+    #[test]
+    fn at_without_profiles_says_why() {
+        let temp = Temp::new("at-no-profiles", &[]);
+        let (mut domain, mut model, ids) = board(&temp, &["nobody to pick"]);
+        select(&mut domain, &mut model, ids[0]);
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAssigneePicker,
+            None,
+        )
+        .expect("at without profiles");
+        assert!(!model.list_picker_open());
+        assert_eq!(model.message(), Some(crate::ui::board::NO_AGENT_PROFILES));
+    }
+
+    #[test]
+    fn at_on_a_marked_set_assigns_every_task_with_one_undo() {
+        let temp = Temp::new("marks", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None)
+            .expect("mark mode");
+        for id in &ids {
+            select(&mut domain, &mut model, *id);
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        }
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAssigneePicker,
+            None,
+        )
+        .expect("open");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            None,
+        )
+        .expect("assign set");
+        for id in &ids {
+            assert_eq!(
+                domain.get(*id).expect("task").assignee.as_deref(),
+                Some("builder")
+            );
+        }
+        assert!(matches!(domain.last_undo(), Some(UndoEntry::Batch { .. })));
+        assert!(model.marked_ids().is_empty(), "marks clear after the verb");
+        assert_eq!(model.message(), Some("assigned 2 tasks to @builder"));
+
+        apply_intent(&mut domain, &mut model, BoardIntent::Undo, None).expect("undo");
+        for id in &ids {
+            assert_eq!(domain.get(*id).expect("task").assignee, None);
+        }
+    }
+
+    /// A marked-set assignment whose save fails enters recovery, and Retry lands the whole set
+    /// as one undo entry.
+    #[test]
+    fn a_failed_marked_set_assignment_retries_as_one_batch() {
+        let temp = Temp::new("marks-retry", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None)
+            .expect("mark mode");
+        for id in &ids {
+            select(&mut domain, &mut model, *id);
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        }
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAssigneePicker,
+            None,
+        )
+        .expect("open");
+        let mut recovery = SaveRecovery::new();
+        assert!(super::board_intent_may_persist(
+            &model,
+            &BoardIntent::ConfirmListPicker
+        ));
+        save(
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardIntent::ConfirmListPicker,
+            false,
+        );
+        assert!(recovery.is_pending());
+        assert_eq!(model.input_mode(), BoardInputMode::SaveRecovery);
+        save(
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardIntent::RetrySave,
+            true,
+        );
+        assert!(!recovery.is_pending());
+        for id in &ids {
+            assert_eq!(
+                domain.get(*id).expect("task").assignee.as_deref(),
+                Some("builder")
+            );
+        }
+        assert!(matches!(domain.last_undo(), Some(UndoEntry::Batch { .. })));
+    }
+
+    fn frame_text(model: &BoardModel, area: Rect) -> String {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))
+                .expect("terminal");
+        terminal
+            .draw(|frame| {
+                crate::ui::board::draw_board(frame, model);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buffer.cell((x, y)).expect("cell").symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn task_view_paints_plus_assign_only_when_unassigned_with_profiles_and_click_opens_picker() {
+        let area = Rect::new(0, 0, 80, 24);
+        let temp = Temp::new("footer", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["footer task"]);
+        select(&mut domain, &mut model, ids[0]);
+
+        // The peek keeps omitting an unset assignee.
+        apply_intent(&mut domain, &mut model, BoardIntent::PeekDetail, None).expect("peek");
+        assert!(!frame_text(&model, area).contains("+ assign"));
+        apply_intent(&mut domain, &mut model, BoardIntent::CollapseDetail, None)
+            .expect("close peek");
+
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+        assert!(frame_text(&model, area).contains("+ assign"));
+
+        let hits = board_hit_map(area, &model);
+        let hit = hits
+            .regions
+            .iter()
+            .find(|hit| hit.target == QueueHitTarget::FormAssignee)
+            .expect("+ assign is a click target");
+        let click = map_board_mouse(&model, &hits, left_click(hit.area.x, hit.area.y));
+        assert_eq!(click, Some(BoardIntent::OpenAssigneePicker));
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAssigneePicker,
+            None,
+        )
+        .expect("open from footer");
+        assert_eq!(model.list_picker_kind(), Some(ListPickerKind::Assignee));
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            None,
+        )
+        .expect("assign from footer");
+        model.sync_from_domain(&domain);
+        assert_eq!(
+            model.input_mode(),
+            BoardInputMode::TaskPage,
+            "the page survives the picker"
+        );
+        let text = frame_text(&model, area);
+        assert!(text.contains("@builder") && !text.contains("+ assign"));
+
+        // `@` on the page reopens the picker; Esc returns to the page.
+        let at = key(&model, KeyCode::Char('@'), KeyModifiers::NONE);
+        apply_intent(&mut domain, &mut model, at, None).expect("page @");
+        assert_eq!(model.list_picker_kind(), Some(ListPickerKind::Assignee));
+        apply_intent(&mut domain, &mut model, BoardIntent::CancelListPicker, None).expect("cancel");
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+
+        // No profiles: an unassigned page paints nothing in the slot.
+        let bare = Temp::new("footer-bare", &[]);
+        let (mut domain, mut model, ids) = board(&bare, &["no profiles"]);
+        select(&mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        assert!(!frame_text(&model, area).contains("+ assign"));
+    }
+
+    /// One intent through the real save boundary; `ok` decides whether the write lands.
+    fn save(
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        recovery: &mut SaveRecovery<DomainState>,
+        intent: BoardIntent,
+        ok: bool,
+    ) -> IntentOutcome {
+        let baseline = domain.clone();
+        apply_board_intent_with_save_recovery(
+            domain,
+            model,
+            recovery,
+            BoardSaveContext {
+                baseline,
+                intent,
+                snapshot: None,
+            },
+            |_| {
+                if ok {
+                    Ok(())
+                } else {
+                    Err("injected save failure".into())
+                }
+            },
+        )
+        .expect("board save")
+    }
+
+    /// Open the task page, assign through `@` (first profile) at the save boundary, then edit
+    /// the title and save the whole session with Shift+Enter.
+    fn assign_on_page_then_edit_title(assign_saves: bool) -> (DomainState, uuid::Uuid, Temp) {
+        let temp = Temp::new("page-edit", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["page task"]);
+        select(&mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        let mut recovery = SaveRecovery::new();
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAssigneePicker,
+            None,
+        )
+        .expect("open picker");
+        save(
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardIntent::ConfirmListPicker,
+            assign_saves,
+        );
+        if !assign_saves {
+            assert!(recovery.is_pending());
+            save(
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                BoardIntent::CancelSave,
+                true,
+            );
+            assert_eq!(domain.get(ids[0]).expect("task").assignee, None);
+        }
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None)
+            .expect("edit title");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText(" edited".into()),
+            None,
+        )
+        .expect("type");
+        save(
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardIntent::ConfirmEditNext,
+            true,
+        );
+        assert!(!recovery.is_pending());
+        assert_eq!(
+            domain.get(ids[0]).expect("task").title,
+            "page task edited",
+            "the title edit saved"
+        );
+        (domain, ids[0], temp)
+    }
+
+    #[test]
+    fn a_page_assignment_survives_a_later_title_edit() {
+        let (domain, id, _temp) = assign_on_page_then_edit_title(true);
+        assert_eq!(
+            domain.get(id).expect("task").assignee.as_deref(),
+            Some("builder")
+        );
+    }
+
+    #[test]
+    fn a_cancelled_assignment_save_is_not_reapplied_by_a_later_edit() {
+        let (domain, id, _temp) = assign_on_page_then_edit_title(false);
+        assert_eq!(domain.get(id).expect("task").assignee, None);
+    }
+
+    #[test]
+    fn esc_closes_the_picker_with_marks_active_and_changes_nothing() {
+        let temp = Temp::new("marks-esc", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None)
+            .expect("mark mode");
+        for id in &ids {
+            select(&mut domain, &mut model, *id);
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        }
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAssigneePicker,
+            None,
+        )
+        .expect("open");
+        let esc = board_keyboard_intent(
+            &model,
+            model.input_mode(),
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        )
+        .expect("Esc maps");
+        assert_eq!(esc, BoardIntent::CancelListPicker);
+        apply_intent(&mut domain, &mut model, esc, None).expect("cancel");
+        assert!(!model.list_picker_open());
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+        assert_eq!(
+            model.marked_ids().len(),
+            2,
+            "cancel leaves the set as it was"
+        );
+        let enter = board_keyboard_intent(
+            &model,
+            model.input_mode(),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        assert_ne!(enter, Some(BoardIntent::ConfirmListPicker));
+        for id in &ids {
+            assert_eq!(domain.get(*id).expect("task").assignee, None);
+        }
+    }
+
+    #[test]
+    fn palette_set_assignee_opens_the_picker_without_changing_anything() {
+        let temp = Temp::new("palette", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["palette task"]);
+        select(&mut domain, &mut model, ids[0]);
+        let before = domain.get(ids[0]).expect("task").clone();
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenCommandPalette,
+            None,
+        )
+        .expect("palette");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::CommandQueryInsertText("set assignee".into()),
+            None,
+        )
+        .expect("filter");
+        assert_eq!(
+            model
+                .visible_commands()
+                .first()
+                .map(|command| command.label.as_str()),
+            Some("set assignee")
+        );
+        apply_intent(&mut domain, &mut model, BoardIntent::ConfirmCommand, None)
+            .expect("run command");
+        assert_eq!(model.list_picker_kind(), Some(ListPickerKind::Assignee));
+        assert_eq!(model.input_mode(), BoardInputMode::ListPicker);
+        assert!(!model.board_form_open(), "no edit form opens");
+        assert_eq!(domain.get(ids[0]).expect("task"), &before);
+    }
+
+    #[test]
+    fn plus_assign_is_a_click_target_in_the_wide_split() {
+        let area = Rect::new(0, 0, 120, 30);
+        let temp = Temp::new("wide", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["wide task"]);
+        select(&mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+        let text = frame_text(&model, area);
+        assert!(text.contains("+ assign"), "{text}");
+        let hits = board_hit_map(area, &model);
+        let hit = hits
+            .regions
+            .iter()
+            .find(|hit| hit.target == QueueHitTarget::FormAssignee)
+            .expect("+ assign is a click target in the split");
+        let row: String = text
+            .lines()
+            .nth(usize::from(hit.area.y))
+            .expect("hit row")
+            .chars()
+            .skip(usize::from(hit.area.x))
+            .take(usize::from(hit.area.width))
+            .collect();
+        assert_eq!(row, "+ assign", "the hit covers the painted control");
+        assert_eq!(
+            map_board_mouse(&model, &hits, left_click(hit.area.x, hit.area.y)),
+            Some(BoardIntent::OpenAssigneePicker)
+        );
+    }
+
+    /// The bulk start card (`ctrl+s` on a marked set where a start would launch).
+    mod bulk_dispatch {
+        use super::*;
+        use crate::dispatch::{AgentNaming, EligibleDispatch, GitChecks, LaunchBatch};
+        use crate::domain::Dispatch;
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
+        /// Mark `ids` on the board after saving them.
+        fn marked(
+            domain: &mut DomainState,
+            model: &mut BoardModel,
+            temp: &Temp,
+            ids: &[uuid::Uuid],
+        ) {
+            temp.store.reload_merge_save(domain).expect("save");
+            model.sync_from_domain(domain);
+            apply_intent(domain, model, BoardIntent::ToggleMarkMode, None).expect("mark mode");
+            for id in ids {
+                select(domain, model, *id);
+                apply_intent(domain, model, BoardIntent::MarkToggle, None).expect("mark");
+            }
+        }
+
+        fn assign(domain: &mut DomainState, id: uuid::Uuid) {
+            domain
+                .assign(id, Some("builder".into()))
+                .expect("assign builder");
+        }
+
+        fn number(domain: &DomainState, id: uuid::Uuid) -> String {
+            format!(
+                "T{}",
+                domain.get(id).and_then(|task| task.number).expect("number")
+            )
+        }
+
+        fn earlier_dispatch() -> Dispatch {
+            Dispatch {
+                argv: vec!["true".into()],
+                worktree: "/tmp/tsk-bulk-dispatch-earlier".into(),
+                branch: "tsk/earlier".into(),
+                base: Some("main".into()),
+                base_ref: None,
+                base_commit: None,
+                base_remote: None,
+                herdr_workspace_id: "w0".into(),
+                at: std::time::SystemTime::now(),
+                cleaned: false,
+            }
+        }
+
+        /// Two assigned tasks, marked, on a saved board.
+        fn two_marked(label: &str) -> (Temp, DomainState, BoardModel, Vec<uuid::Uuid>) {
+            let temp = Temp::new(label, &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["first job", "second job"]);
+            assign(&mut domain, ids[0]);
+            assign(&mut domain, ids[1]);
+            marked(&mut domain, &mut model, &temp, &ids);
+            (temp, domain, model, ids)
+        }
+
+        fn step(
+            temp: &Temp,
+            domain: &mut DomainState,
+            model: &mut BoardModel,
+            intent: BoardIntent,
+            recovery: &mut SaveRecovery<DomainState>,
+            host: &mut impl DispatchHost,
+            names: &mut Vec<AgentNaming>,
+        ) -> bool {
+            handle_board_intent_with_host(
+                &temp.store,
+                domain,
+                model,
+                intent,
+                recovery,
+                false,
+                true,
+                host,
+                &mut |naming| names.push(naming),
+            )
+            .expect("board intent")
+        }
+
+        fn land(
+            temp: &Temp,
+            domain: &mut DomainState,
+            model: &mut BoardModel,
+            recovery: &mut SaveRecovery<DomainState>,
+            names: &mut Vec<AgentNaming>,
+        ) {
+            super::super::land_bulk_dispatch_with_host(
+                &temp.store,
+                domain,
+                model,
+                recovery,
+                &mut |naming| names.push(naming),
+            )
+            .expect("landing never fails the board loop");
+        }
+
+        fn saved(temp: &Temp, id: uuid::Uuid) -> crate::domain::Task {
+            temp.store
+                .load()
+                .expect("load")
+                .get(id)
+                .expect("saved task")
+                .clone()
+        }
+
+        /// A host that leaves launches and git checks pending until the test lands them, like
+        /// the system host's background threads. It counts git checks made on the board thread.
+        struct DeferredHost {
+            inner: FakeHost,
+            batch: Option<(LaunchBatch, Vec<EligibleDispatch>)>,
+            checks: Option<(GitChecks, Vec<std::path::PathBuf>)>,
+            git_calls: usize,
+        }
+
+        fn deferred(temp: &Temp) -> DeferredHost {
+            DeferredHost {
+                inner: fake_host(temp),
+                batch: None,
+                checks: None,
+                git_calls: 0,
+            }
+        }
+
+        impl DispatchHost for DeferredHost {
+            fn is_git_repo(&mut self, project: &Path) -> Result<bool, String> {
+                self.git_calls += 1;
+                self.inner.is_git_repo(project)
+            }
+            fn resolve_base(&mut self, project: &Path) -> Result<String, String> {
+                self.inner.resolve_base(project)
+            }
+            fn create_worktree(
+                &mut self,
+                project: &Path,
+                branch: &str,
+                base: Option<&str>,
+                label: &str,
+            ) -> Result<CreatedWorktree, String> {
+                self.inner.create_worktree(project, branch, base, label)
+            }
+            fn root_pane(
+                &mut self,
+                workspace: &str,
+            ) -> Result<String, crate::dispatch::RootPaneError> {
+                self.inner.root_pane(workspace)
+            }
+            fn run_in_pane(&mut self, pane: &str, command: &str) -> Result<(), String> {
+                self.inner.run_in_pane(pane, command)
+            }
+            fn begin_launches(&mut self, jobs: Vec<EligibleDispatch>) -> LaunchBatch {
+                let batch = LaunchBatch::new(jobs.len());
+                self.batch = Some((batch.clone(), jobs));
+                batch
+            }
+            fn begin_git_checks(&mut self, projects: Vec<std::path::PathBuf>) -> GitChecks {
+                let checks = GitChecks::default();
+                self.checks = Some((checks.clone(), projects));
+                checks
+            }
+        }
+
+        impl DeferredHost {
+            /// Launch the next pending job through the real launch path and land its outcome.
+            fn land_next(&mut self) {
+                let (batch, jobs) = self.batch.as_mut().expect("launches started");
+                let job = jobs.remove(0);
+                let outcome = crate::dispatch::launch_bulk_job(&job, &mut self.inner);
+                batch.land(job, outcome);
+            }
+
+            #[cfg(unix)]
+            fn batch(&self) -> &LaunchBatch {
+                &self.batch.as_ref().expect("launches started").0
+            }
+        }
+
+        /// Assigned, unassigned, already dispatched, and a desk task: `ctrl+s` opens one card
+        /// that launches only the first and only starts the unassigned and dispatched ones.
+        /// Nothing changes and the marks stay while it is up; `y` starts and launches.
+        #[test]
+        fn ctrl_s_on_a_mixed_marked_set_opens_one_card_listing_launches_and_starts() {
+            let temp = Temp::new("bulk-card", &["builder"]);
+            let (mut domain, mut model, ids) =
+                board(&temp, &["ready to go", "nobody yet", "launched before"]);
+            assign(&mut domain, ids[0]);
+            assign(&mut domain, ids[2]);
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            domain
+                .record_dispatch(ids[2], earlier_dispatch())
+                .expect("earlier dispatch");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            domain
+                .set_status(ids[2], HumanStatus::Ready)
+                .expect("back to ready");
+            let desk = domain
+                .create(
+                    "desk errand",
+                    None,
+                    TaskScope::Global,
+                    ProvenanceOrigin::Manual,
+                    None,
+                )
+                .expect("desk task");
+            assign(&mut domain, desk);
+            marked(&mut domain, &mut model, &temp, &ids);
+            // The desk task is not painted in this project's lens, so it cannot be marked here;
+            // the card's check skips it with the single-task refusal wherever it is marked.
+            let (launch, skipped) =
+                super::super::check_marked_dispatches(&domain, [desk], &temp.profiles(), true);
+            assert!(launch.is_empty());
+            assert_eq!(
+                skipped,
+                [(
+                    number(&domain, desk),
+                    "not a project in a git repo".to_string()
+                )]
+            );
+            let mut host = fake_host(&temp);
+
+            let ctrl_s = key(&model, KeyCode::Char('s'), KeyModifiers::CONTROL);
+            handle(&temp, &mut domain, &mut model, ctrl_s, &mut host);
+
+            assert_eq!(host.launched, 0, "nothing launches before y");
+            assert_eq!(model.input_mode(), BoardInputMode::DispatchConfirm);
+            assert_eq!(model.marked_count(), 3, "the card keeps the marks");
+            let prompt = model.dispatch_prompt().expect("bulk card");
+            assert_eq!(
+                prompt
+                    .launch
+                    .iter()
+                    .map(|eligible| eligible.id)
+                    .collect::<Vec<_>>(),
+                [ids[0]]
+            );
+            assert!(prompt.skipped.is_empty(), "{:?}", prompt.skipped);
+            // Unassigned and already-dispatched tasks only start: relaunch stays cursor-only.
+            assert_eq!(
+                prompt.start_only,
+                [
+                    (number(&domain, ids[1]), ids[1]),
+                    (number(&domain, ids[2]), ids[2]),
+                ]
+            );
+
+            let first = number(&domain, ids[0]);
+            let painted = frame_text(&model, Rect::new(0, 0, 80, 30));
+            for text in [
+                "Dispatch 1 task?".to_string(),
+                format!("{first}  @builder  from default"),
+                "start only".to_string(),
+                "started, no launch".to_string(),
+                format!("▸ y  dispatch {first} · start"),
+                "esc cancel".to_string(),
+            ] {
+                assert!(painted.contains(&text), "missing {text:?}:\n{painted}");
+            }
+            assert!(!painted.contains("checking…"), "{painted}");
+            let narrow = frame_text(&model, Rect::new(0, 0, 40, 30));
+            for text in ["@builder", "from default", "start only", "y  dispatch"] {
+                assert!(narrow.contains(text), "40 columns lost {text:?}:\n{narrow}");
+            }
+
+            // `y` starts the start-only rows in one save and launches the rest.
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::ConfirmDispatch,
+                &mut host,
+            );
+            assert_eq!((host.launched, host.ran), (1, 1), "only the first launches");
+            for id in &ids {
+                assert_eq!(saved(&temp, *id).status, HumanStatus::Started);
+            }
+            assert!(saved(&temp, ids[0]).dispatch.is_some());
+            assert!(saved(&temp, ids[1]).dispatch.is_none());
+            assert_eq!(
+                saved(&temp, ids[2]).dispatch,
+                domain.get(ids[2]).and_then(|task| task.dispatch.clone())
+            );
+        }
+
+        /// F-2/F-10/F-11: `y` rechecks the start-only rows against the refreshed board. A row
+        /// assigned meanwhile is refused (its launch was never shown); a row finished meanwhile
+        /// stays done.
+        #[test]
+        fn y_rechecks_start_only_rows_changed_since_the_card_opened() {
+            let temp = Temp::new("bulk-recheck", &["builder"]);
+            let (mut domain, mut model, ids) = board(
+                &temp,
+                &["launches", "assigned meanwhile", "finished meanwhile"],
+            );
+            assign(&mut domain, ids[0]);
+            marked(&mut domain, &mut model, &temp, &ids);
+            let mut host = fake_host(&temp);
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::PrimaryVerb,
+                &mut host,
+            );
+            let prompt = model.dispatch_prompt().expect("card").clone();
+            assert_eq!(prompt.start_only.len(), 2);
+
+            let mut other = temp.store.load().expect("load");
+            other
+                .assign(ids[1], Some("builder".into()))
+                .expect("assign elsewhere");
+            other.complete(ids[2]).expect("done elsewhere");
+            temp.store
+                .reload_merge_save(&mut other)
+                .expect("save elsewhere");
+
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::ConfirmDispatch,
+                &mut host,
+            );
+            assert_eq!(host.ran, 1, "only the shown launch runs");
+            assert_eq!(saved(&temp, ids[0]).status, HumanStatus::Started);
+            assert_eq!(saved(&temp, ids[1]).status, HumanStatus::Open, "refused");
+            assert!(saved(&temp, ids[1]).dispatch.is_none());
+            assert_eq!(saved(&temp, ids[2]).status, HumanStatus::Done);
+            let message = model.message().unwrap_or_default().to_string();
+            assert!(
+                message.contains(&number(&domain, ids[1]))
+                    && message.contains("assigned since the card opened"),
+                "{message}"
+            );
+        }
+
+        /// F-7: a set where nothing would launch (unassigned, already dispatched) is the plain
+        /// batch: no card, and a broken config.toml is never read.
+        #[test]
+        fn a_set_with_nothing_to_launch_never_reads_config() {
+            let temp = Temp::new("bulk-no-launch", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["dispatched", "unassigned"]);
+            assign(&mut domain, ids[0]);
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            domain
+                .record_dispatch(ids[0], earlier_dispatch())
+                .expect("earlier dispatch");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            domain
+                .set_status(ids[0], HumanStatus::Ready)
+                .expect("ready");
+            marked(&mut domain, &mut model, &temp, &ids);
+            std::fs::write(temp.dir.join("config.toml"), "not toml [").expect("break config");
+            let mut host = fake_host(&temp);
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::PrimaryVerb,
+                &mut host,
+            );
+            assert_eq!(model.dispatch_prompt(), None);
+            assert_eq!(host.ran, 0);
+            for id in &ids {
+                assert_eq!(saved(&temp, *id).status, HumanStatus::Started);
+            }
+        }
+
+        /// The palette's absolute start on a set with a launch lists a done task as a status
+        /// correction and starts it on `y`, in the same undo batch, as its plain batch would.
+        #[test]
+        fn palette_start_on_a_launching_set_corrects_a_done_task() {
+            let temp = Temp::new("bulk-done-correction", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["launches", "was done"]);
+            assign(&mut domain, ids[0]);
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            domain.complete(ids[1]).expect("done");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            model.sync_from_domain(&domain);
+            apply_intent(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer, None)
+                .expect("drawer");
+            apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None)
+                .expect("mark mode");
+            for id in &ids {
+                select(&mut domain, &mut model, *id);
+                apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+            }
+            assert_eq!(model.marked_count(), 2);
+            let mut host = fake_host(&temp);
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::SetStatus(HumanStatus::Started),
+                &mut host,
+            );
+            let prompt = model.dispatch_prompt().expect("card").clone();
+            assert_eq!(prompt.launch.len(), 1);
+            assert_eq!(prompt.start_only, [(number(&domain, ids[1]), ids[1])]);
+            let painted = frame_text(&model, Rect::new(0, 0, 80, 30));
+            assert!(
+                painted.contains("status correction, no launch"),
+                "{painted}"
+            );
+            let undo_before = domain.undo_len();
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::ConfirmDispatch,
+                &mut host,
+            );
+            assert_eq!(host.ran, 1, "only the assigned task launches");
+            assert_eq!(saved(&temp, ids[0]).status, HumanStatus::Started);
+            assert_eq!(saved(&temp, ids[1]).status, HumanStatus::Started);
+            assert!(saved(&temp, ids[1]).dispatch.is_none());
+            assert_eq!(domain.undo_len(), undo_before + 1);
+            handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+            assert_eq!(saved(&temp, ids[1]).status, HumanStatus::Done);
+        }
+
+        /// F-15: the card's start-only rows are one undo step; launches add none.
+        #[test]
+        fn the_start_only_rows_undo_as_one_batch() {
+            let temp = Temp::new("bulk-undo", &["builder"]);
+            let (mut domain, mut model, ids) =
+                board(&temp, &["launches", "start only", "start only too"]);
+            assign(&mut domain, ids[0]);
+            domain
+                .set_status(ids[2], HumanStatus::Ready)
+                .expect("ready");
+            marked(&mut domain, &mut model, &temp, &ids);
+            let undo_before = domain.undo_len();
+            let mut host = fake_host(&temp);
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::PrimaryVerb,
+                &mut host,
+            );
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::ConfirmDispatch,
+                &mut host,
+            );
+            assert_eq!(host.ran, 1);
+            assert_eq!(
+                domain.undo_len(),
+                undo_before + 1,
+                "one entry for the whole card"
+            );
+            assert!(matches!(
+                domain.last_undo(),
+                Some(UndoEntry::Batch { entries }) if entries.len() == 2
+            ));
+            handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+            assert_eq!(
+                saved(&temp, ids[0]).status,
+                HumanStatus::Started,
+                "launch stays"
+            );
+            assert_eq!(saved(&temp, ids[1]).status, HumanStatus::Open);
+            assert_eq!(saved(&temp, ids[2]).status, HumanStatus::Ready);
+        }
+
+        /// The card opens at once without a git call on the board thread, and its rows say
+        /// `checking…` until the off-loop check lands.
+        #[test]
+        fn the_bulk_card_checks_git_off_the_event_loop() {
+            let (temp, mut domain, mut model, ids) = two_marked("bulk-git");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::PrimaryVerb,
+                &mut recovery,
+                &mut host,
+                &mut Vec::new(),
+            );
+            assert!(model
+                .dispatch_prompt()
+                .expect("card opens at once")
+                .checking());
+            assert_eq!(host.git_calls, 0, "no git call on the board thread");
+            let painted = frame_text(&model, Rect::new(0, 0, 80, 30));
+            assert!(painted.contains("from default  checking…"), "{painted}");
+
+            let (checks, projects) = host.checks.take().expect("checks started");
+            assert_eq!(
+                projects,
+                [std::path::PathBuf::from(PROJECT)],
+                "one check per repo"
+            );
+            checks.finish(
+                [(std::path::PathBuf::from(PROJECT), true)]
+                    .into_iter()
+                    .collect(),
+            );
+            assert!(model.poll_dispatch_checks());
+            let prompt = model.dispatch_prompt().expect("card stays");
+            assert!(!prompt.checking());
+            assert_eq!(
+                prompt
+                    .launch
+                    .iter()
+                    .map(|eligible| eligible.id)
+                    .collect::<Vec<_>>(),
+                ids
+            );
+            let painted = frame_text(&model, Rect::new(0, 0, 80, 30));
+            assert!(!painted.contains("checking…"), "{painted}");
+        }
+
+        /// When the git check leaves nothing to launch, the card closes with the refusal and
+        /// keeps the marks.
+        #[test]
+        fn a_bulk_card_whose_repos_are_not_git_closes_with_the_refusal() {
+            let (temp, mut domain, mut model, _ids) = two_marked("bulk-git-none");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::PrimaryVerb,
+                &mut recovery,
+                &mut host,
+                &mut Vec::new(),
+            );
+            let (checks, _) = host.checks.take().expect("checks started");
+            checks.finish(
+                [(std::path::PathBuf::from(PROJECT), false)]
+                    .into_iter()
+                    .collect(),
+            );
+            model.poll_dispatch_checks();
+            assert!(model.dispatch_prompt().is_none());
+            assert_eq!(model.input_mode(), BoardInputMode::Normal);
+            assert_eq!(
+                model.message(),
+                Some("nothing to dispatch: not a project in a git repo")
+            );
+            assert_eq!(model.marked_count(), 2);
+        }
+
+        /// `y` launches each eligible task through the single-task path, saves each record with
+        /// `started`, names each agent only after its record is saved, and clears the marks;
+        /// `[x]` and the footer are clickable like the keys.
+        #[test]
+        fn y_on_the_bulk_card_launches_only_the_eligible_tasks() {
+            let temp = Temp::new("bulk-y", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["first job", "second job", "idle"]);
+            assign(&mut domain, ids[0]);
+            assign(&mut domain, ids[1]);
+            marked(&mut domain, &mut model, &temp, &ids);
+            let mut host = fake_host(&temp);
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::PrimaryVerb,
+                &mut host,
+            );
+
+            let hits = board_hit_map(Rect::new(0, 0, 80, 30), &model);
+            let footer = |index: usize| {
+                let hit = hits
+                    .regions
+                    .iter()
+                    .find(|hit| hit.target == QueueHitTarget::CleanupOption(index))
+                    .expect("the option line is clickable");
+                map_board_mouse(&model, &hits, left_click(hit.area.x, hit.area.y))
+            };
+            // The one option line selects (a double click runs it); there is no second.
+            assert_eq!(footer(0), Some(BoardIntent::CleanupClickOption(0)));
+            assert!(!hits
+                .regions
+                .iter()
+                .any(|hit| hit.target == QueueHitTarget::CleanupOption(1)));
+            let close = hits
+                .regions
+                .iter()
+                .find(|hit| hit.target == QueueHitTarget::ModalClose)
+                .expect("[x]");
+            assert_eq!(
+                map_board_mouse(&model, &hits, left_click(close.area.x, close.area.y)),
+                Some(BoardIntent::CancelDispatch)
+            );
+
+            let y = key(&model, KeyCode::Char('y'), KeyModifiers::NONE);
+            assert_eq!(y, BoardIntent::ConfirmDispatch);
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            step(
+                &temp,
+                &mut domain,
+                &mut model,
+                y,
+                &mut recovery,
+                &mut host,
+                &mut names,
+            );
+
+            assert_eq!(host.launched, 2, "only the eligible tasks launch");
+            for id in &ids[..2] {
+                let saved = saved(&temp, *id);
+                assert!(saved.dispatch.is_some(), "each launch is recorded");
+                assert_eq!(saved.status, HumanStatus::Started);
+            }
+            assert!(saved(&temp, ids[2]).dispatch.is_none());
+            let (first, second) = (number(&domain, ids[0]), number(&domain, ids[1]));
+            assert_eq!(
+                names
+                    .iter()
+                    .map(|naming| naming.name.as_str())
+                    .collect::<Vec<_>>(),
+                [
+                    format!("{}-builder", first.to_lowercase()),
+                    format!("{}-builder", second.to_lowercase())
+                ],
+                "each saved launch names its agent"
+            );
+            assert_eq!(model.marked_count(), 0, "marks clear once the run starts");
+            assert_eq!(model.input_mode(), BoardInputMode::Normal);
+            assert!(!model.bulk_dispatch_running(), "the run is finished");
+            assert_eq!(
+                model.message(),
+                Some(format!("dispatched {first} to @builder, {second} to @builder").as_str())
+            );
+        }
+
+        /// A launch that fails is reported, names no agent, and does not stop the others.
+        #[test]
+        fn one_failed_launch_in_a_bulk_dispatch_does_not_stop_the_others() {
+            let temp = Temp::new("bulk-fail", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["breaks here", "goes fine"]);
+            assign(&mut domain, ids[0]);
+            assign(&mut domain, ids[1]);
+            marked(&mut domain, &mut model, &temp, &ids);
+            let mut host = fake_host(&temp);
+            host.fail_branch = Some("breaks".into());
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            for intent in [BoardIntent::PrimaryVerb, BoardIntent::ConfirmDispatch] {
+                step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    intent,
+                    &mut recovery,
+                    &mut host,
+                    &mut names,
+                );
+            }
+
+            assert_eq!(host.launched, 2);
+            assert!(saved(&temp, ids[0]).dispatch.is_none());
+            assert!(saved(&temp, ids[1]).dispatch.is_some());
+            let (failed, launched) = (number(&domain, ids[0]), number(&domain, ids[1]));
+            assert_eq!(names.len(), 1, "no name for the failed launch");
+            assert_eq!(
+                names[0].name,
+                format!("{}-builder", launched.to_lowercase())
+            );
+            let message = model.message().expect("outcome");
+            assert!(
+                message.contains(&format!("dispatched {launched} to @builder"))
+                    && message.contains(&format!("{failed} failed: herdr refused")),
+                "{message}"
+            );
+        }
+
+        /// Esc closes the card, launches nothing, and keeps the marked set.
+        #[test]
+        fn esc_on_the_bulk_dispatch_card_changes_nothing_and_keeps_marks() {
+            let (temp, mut domain, mut model, _ids) = two_marked("bulk-esc");
+            let before = temp.store.load().expect("load");
+            let mut host = fake_host(&temp);
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::PrimaryVerb,
+                &mut host,
+            );
+            let esc = super::super::board_keyboard_intent(
+                &model,
+                model.input_mode(),
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            );
+            assert_eq!(esc, Some(BoardIntent::CancelDispatch));
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::CancelDispatch,
+                &mut host,
+            );
+
+            assert_eq!(host.launched, 0);
+            assert!(model.dispatch_prompt().is_none());
+            assert_eq!(model.input_mode(), BoardInputMode::Normal);
+            assert_eq!(model.marked_count(), 2, "Esc keeps the marked set");
+            assert_eq!(temp.store.load().expect("load").tasks(), before.tasks());
+        }
+
+        /// A set where no start would launch starts as before: one batch, no card.
+        #[test]
+        fn a_marked_set_with_nothing_to_launch_starts_without_a_card() {
+            let temp = Temp::new("bulk-none", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["nobody", "nobody either"]);
+            marked(&mut domain, &mut model, &temp, &ids);
+            let mut host = fake_host(&temp);
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::PrimaryVerb,
+                &mut host,
+            );
+
+            assert_eq!((host.launched, host.ran), (0, 0));
+            assert!(model.dispatch_prompt().is_none());
+            assert_eq!(model.input_mode(), BoardInputMode::Normal);
+            for id in &ids {
+                assert_eq!(saved(&temp, *id).status, HumanStatus::Started);
+            }
+        }
+
+        /// A set whose only launch is refused still starts the rest from the card; the refused
+        /// task stays unstarted.
+        #[test]
+        fn a_refused_launch_in_a_marked_set_stays_unstarted() {
+            let temp = Temp::new("bulk-refused", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["unknown agent", "mine"]);
+            domain
+                .assign(ids[0], Some("builder".into()))
+                .expect("assign");
+            marked(&mut domain, &mut model, &temp, &ids);
+            std::fs::write(
+                temp.dir.join("config.toml"),
+                "[agent.other]\ncommand = [\"true\"]\n",
+            )
+            .expect("drop the builder profile");
+            let mut host = fake_host(&temp);
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::PrimaryVerb,
+                &mut host,
+            );
+            let prompt = model.dispatch_prompt().expect("card").clone();
+            assert!(prompt.launch.is_empty());
+            assert_eq!(prompt.start_only, [(number(&domain, ids[1]), ids[1])]);
+            assert_eq!(
+                prompt.skipped,
+                [(number(&domain, ids[0]), "unknown agent builder".to_string())]
+            );
+            let painted = frame_text(&model, Rect::new(0, 0, 80, 30));
+            for text in ["Start 1 task?", "not started", "▸ y  start", "esc cancel"] {
+                assert!(painted.contains(text), "missing {text:?}:\n{painted}");
+            }
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::ConfirmDispatch,
+                &mut host,
+            );
+            assert_eq!(saved(&temp, ids[0]).status, HumanStatus::Open);
+            assert_eq!(saved(&temp, ids[1]).status, HumanStatus::Started);
+            assert_eq!(host.ran, 0);
+        }
+
+        /// The palette's start targets the marked set too and opens the same card; it lists no
+        /// dispatch entries (dispatch again stays cursor-only).
+        #[test]
+        fn the_palette_start_opens_the_card_for_the_marked_set() {
+            let (temp, mut domain, mut model, _ids) = two_marked("bulk-palette");
+            let labels = model
+                .available_commands()
+                .into_iter()
+                .map(|command| (command.label, command.intent))
+                .collect::<Vec<_>>();
+            assert!(labels.contains(&(
+                "set status: started".to_string(),
+                BoardIntent::SetStatus(HumanStatus::Started)
+            )));
+            assert!(!labels
+                .iter()
+                .any(|(label, _)| label.starts_with("dispatch")));
+            let mut host = fake_host(&temp);
+            apply_intent(
+                &mut domain,
+                &mut model,
+                BoardIntent::OpenCommandPalette,
+                None,
+            )
+            .expect("palette");
+            let index = model
+                .visible_commands()
+                .iter()
+                .position(|command| command.label == "set status: started")
+                .expect("listed");
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::SelectCommand(index),
+                &mut host,
+            );
+            assert_eq!(model.input_mode(), BoardInputMode::DispatchConfirm);
+            assert_eq!(model.dispatch_prompt().expect("card").launch.len(), 2);
+        }
+
+        /// While launches land off the event loop the status row counts them, a second dispatch
+        /// and quit refuse (a quit would orphan launched agents), and each landing is saved on
+        /// its own.
+        #[test]
+        fn a_running_bulk_dispatch_reports_progress_and_holds_quit_until_it_lands() {
+            let (temp, mut domain, mut model, ids) = two_marked("bulk-deferred");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            for intent in [BoardIntent::PrimaryVerb, BoardIntent::ConfirmDispatch] {
+                step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    intent,
+                    &mut recovery,
+                    &mut host,
+                    &mut names,
+                );
+            }
+            assert_eq!(model.message(), Some("dispatching 1/2…"));
+            assert!(model.bulk_dispatch_running());
+
+            assert!(!step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::Quit,
+                &mut recovery,
+                &mut host,
+                &mut names,
+            ));
+            assert!(model
+                .message()
+                .is_some_and(|message| message.contains("quit when it finishes")));
+            step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::PrimaryVerb,
+                &mut recovery,
+                &mut host,
+                &mut names,
+            );
+            assert!(model
+                .message()
+                .is_some_and(|message| message.contains("wait for it to finish")));
+
+            host.land_next();
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+            let (one, two) = (number(&domain, ids[0]), number(&domain, ids[1]));
+            assert_eq!(
+                model.message(),
+                Some(format!("dispatching 2/2… · dispatched {one} to @builder").as_str())
+            );
+            assert!(
+                saved(&temp, ids[0]).dispatch.is_some(),
+                "the first landing is saved before the second lands"
+            );
+
+            host.land_next();
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+            assert!(!model.bulk_dispatch_running());
+            assert_eq!(
+                model.message(),
+                Some(format!("dispatched {one} to @builder, {two} to @builder").as_str())
+            );
+        }
+
+        /// The production handoff: the launch runs on its own thread (`spawn_launches`, which
+        /// the system host uses), `y` returns while it is held, and the board loop's background
+        /// step records it once it lands, with no direct call to the landing helper.
+        #[test]
+        fn the_board_loop_records_launches_from_the_launch_thread() {
+            struct HeldHost {
+                release: std::sync::mpsc::Receiver<()>,
+            }
+            impl DispatchHost for HeldHost {
+                fn is_git_repo(&mut self, _: &Path) -> Result<bool, String> {
+                    Ok(true)
+                }
+                fn resolve_base(&mut self, _: &Path) -> Result<String, String> {
+                    Ok("main".into())
+                }
+                fn create_worktree(
+                    &mut self,
+                    _: &Path,
+                    branch: &str,
+                    _: Option<&str>,
+                    _: &str,
+                ) -> Result<CreatedWorktree, String> {
+                    self.release.recv().expect("released");
+                    Ok(CreatedWorktree {
+                        path: format!("/tmp/{branch}").into(),
+                        branch: branch.into(),
+                        workspace_id: "w9".into(),
+                        root_pane_id: "w9:p1".into(),
+                    })
+                }
+                fn root_pane(&mut self, _: &str) -> Result<String, crate::dispatch::RootPaneError> {
+                    Ok("w9:p1".into())
+                }
+                fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
+                    Ok(())
+                }
+            }
+            /// Board-thread host whose launches go to the thread like the system host's.
+            struct ThreadedHost {
+                release: Option<std::sync::mpsc::Receiver<()>>,
+            }
+            impl DispatchHost for ThreadedHost {
+                fn is_git_repo(&mut self, _: &Path) -> Result<bool, String> {
+                    Ok(true)
+                }
+                fn create_worktree(
+                    &mut self,
+                    _: &Path,
+                    _: &str,
+                    _: Option<&str>,
+                    _: &str,
+                ) -> Result<CreatedWorktree, String> {
+                    panic!("launches never run on the board thread")
+                }
+                fn root_pane(&mut self, _: &str) -> Result<String, crate::dispatch::RootPaneError> {
+                    unreachable!()
+                }
+                fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
+                    unreachable!()
+                }
+                fn begin_launches(&mut self, jobs: Vec<EligibleDispatch>) -> LaunchBatch {
+                    let release = self.release.take().expect("one batch");
+                    crate::dispatch::spawn_launches(jobs, move || HeldHost { release })
+                }
+            }
+
+            let (temp, mut domain, mut model, ids) = two_marked("bulk-thread");
+            let (release, held) = std::sync::mpsc::channel();
+            let mut host = ThreadedHost {
+                release: Some(held),
+            };
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            for intent in [BoardIntent::PrimaryVerb, BoardIntent::ConfirmDispatch] {
+                step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    intent,
+                    &mut recovery,
+                    &mut host,
+                    &mut names,
+                );
+            }
+            assert_eq!(model.message(), Some("dispatching 1/2…"), "y returned");
+            release.send(()).expect("release first");
+            release.send(()).expect("release second");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while model.bulk_dispatch_running() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "launches never landed"
+                );
+                super::super::board_background_step(
+                    &temp.store,
+                    &mut domain,
+                    &mut model,
+                    &mut recovery,
+                    true,
+                    &mut host,
+                    &mut |naming| names.push(naming),
+                )
+                .expect("background step");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            for id in &ids {
+                assert_eq!(saved(&temp, *id).status, HumanStatus::Started);
+            }
+            assert_eq!(names.len(), 2);
+        }
+
+        /// The store cannot be read when a launch lands: the board stays up, the launch goes to
+        /// save recovery, a later landing waits on the batch, and Retry saves both and shows the
+        /// batch outcome.
+        // A read-only store needs Unix permissions.
+        #[cfg(unix)]
+        #[test]
+        fn a_store_failure_while_launches_land_goes_to_recovery_and_retry_keeps_them() {
+            let (temp, mut domain, mut model, ids) = two_marked("bulk-read-fail");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            for intent in [BoardIntent::PrimaryVerb, BoardIntent::ConfirmDispatch] {
+                step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    intent,
+                    &mut recovery,
+                    &mut host,
+                    &mut names,
+                );
+            }
+            host.land_next();
+            let file = temp.dir.join("tsk.json");
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000))
+                .expect("make the store unreadable");
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+            assert!(recovery.is_pending(), "the failure goes to save recovery");
+            assert_eq!(model.input_mode(), BoardInputMode::SaveRecovery);
+            assert!(
+                names.is_empty(),
+                "no agent is named before its record is saved"
+            );
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))
+                .expect("restore the store");
+
+            // The second landing waits on the batch while recovery is unresolved.
+            host.land_next();
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+            assert_eq!(host.batch().taken(), 1, "the second outcome stays queued");
+
+            step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::RetrySave,
+                &mut recovery,
+                &mut host,
+                &mut names,
+            );
+            assert!(!recovery.is_pending());
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+            for id in &ids {
+                let saved = saved(&temp, *id);
+                assert!(saved.dispatch.is_some());
+                assert_eq!(saved.status, HumanStatus::Started);
+            }
+            assert_eq!(names.len(), 2);
+            let (one, two) = (number(&domain, ids[0]), number(&domain, ids[1]));
+            assert!(!model.bulk_dispatch_running());
+            assert_eq!(
+                model.message(),
+                Some(format!("dispatched {one} to @builder, {two} to @builder").as_str()),
+                "the batch outcome survives Retry"
+            );
+        }
+
+        /// Cancel on a failed landing save discards the record, so the outcome says the agent
+        /// launched without one and where it runs, never that it was dispatched.
+        // A read-only store needs Unix permissions.
+        #[cfg(unix)]
+        #[test]
+        fn cancelling_a_failed_landing_save_reports_the_launch_as_not_recorded() {
+            let (temp, mut domain, mut model, ids) = two_marked("bulk-cancel");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            for intent in [BoardIntent::PrimaryVerb, BoardIntent::ConfirmDispatch] {
+                step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    intent,
+                    &mut recovery,
+                    &mut host,
+                    &mut names,
+                );
+            }
+            host.land_next();
+            std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o555))
+                .expect("make the state dir read-only");
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+            std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o755))
+                .expect("restore the state dir");
+            assert!(recovery.is_pending());
+            step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::CancelSave,
+                &mut recovery,
+                &mut host,
+                &mut names,
+            );
+            assert!(!recovery.is_pending());
+
+            host.land_next();
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+            let (one, two) = (number(&domain, ids[0]), number(&domain, ids[1]));
+            assert!(
+                saved(&temp, ids[0]).dispatch.is_none(),
+                "the record was discarded"
+            );
+            assert!(saved(&temp, ids[1]).dispatch.is_some());
+            assert_eq!(
+                model.message(),
+                Some(
+                    format!(
+                        "dispatched {two} to @builder · launched but not recorded: {one} \
+                         (agent running in workspace w1)"
+                    )
+                    .as_str()
+                )
+            );
+            assert_eq!(names.len(), 1, "only the recorded launch names its agent");
+        }
+
+        /// A task dispatched elsewhere between `y` and its landing keeps that record; a task
+        /// dispatched elsewhere while the card was open is not launched again.
+        #[test]
+        fn launches_never_overwrite_a_dispatch_made_meanwhile() {
+            let (temp, mut domain, mut model, ids) = two_marked("bulk-meanwhile");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::PrimaryVerb,
+                &mut recovery,
+                &mut host,
+                &mut names,
+            );
+            // Another board dispatches the second task while the card is open.
+            let mut other = temp.store.load().expect("load");
+            other
+                .record_dispatch(ids[1], earlier_dispatch())
+                .expect("dispatch elsewhere");
+            temp.store
+                .reload_merge_save(&mut other)
+                .expect("save elsewhere");
+            step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::ConfirmDispatch,
+                &mut recovery,
+                &mut host,
+                &mut names,
+            );
+            assert_eq!(
+                host.batch.as_ref().expect("started").1.len(),
+                1,
+                "the recheck at y drops it"
+            );
+            // And the first one while its launch is in flight.
+            let mut other = temp.store.load().expect("load");
+            other
+                .record_dispatch(ids[0], earlier_dispatch())
+                .expect("dispatch elsewhere");
+            temp.store
+                .reload_merge_save(&mut other)
+                .expect("save elsewhere");
+            host.land_next();
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+
+            for id in &ids {
+                assert_eq!(
+                    saved(&temp, *id).dispatch.expect("record").worktree,
+                    "/tmp/tsk-bulk-dispatch-earlier",
+                    "the earlier record stays"
+                );
+            }
+            let (one, two) = (number(&domain, ids[0]), number(&domain, ids[1]));
+            let message = model.message().expect("outcome");
+            assert!(
+                message.contains(&format!("{one} failed: launched in"))
+                    && message.contains("dispatched elsewhere meanwhile")
+                    && message.contains(&format!(
+                        "{two} failed: already dispatched (use dispatch again)"
+                    )),
+                "{message}"
+            );
+            assert!(names.is_empty());
+        }
+
+        /// A task the human marked done while its launch was in flight gets the record but
+        /// keeps done, and the outcome says so.
+        #[test]
+        fn a_landing_keeps_a_status_the_human_changed_meanwhile() {
+            let (temp, mut domain, mut model, ids) = two_marked("bulk-done-meanwhile");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            for intent in [BoardIntent::PrimaryVerb, BoardIntent::ConfirmDispatch] {
+                step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    intent,
+                    &mut recovery,
+                    &mut host,
+                    &mut names,
+                );
+            }
+            let mut other = temp.store.load().expect("load");
+            other
+                .set_status(ids[0], HumanStatus::Done)
+                .expect("done elsewhere");
+            temp.store
+                .reload_merge_save(&mut other)
+                .expect("save elsewhere");
+            host.land_next();
+            host.land_next();
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+
+            let first = saved(&temp, ids[0]);
+            assert_eq!(first.status, HumanStatus::Done, "the human's status wins");
+            assert!(
+                first.dispatch.is_some(),
+                "the running agent is still recorded"
+            );
+            assert_eq!(saved(&temp, ids[1]).status, HumanStatus::Started);
+            let one = number(&domain, ids[0]);
+            assert!(
+                model.message().is_some_and(
+                    |message| message.contains(&format!("{one} kept done (changed meanwhile)"))
+                ),
+                "{:?}",
+                model.message()
+            );
+        }
+
+        /// A Projects overview whose preview seat (on `/repos/app`) has two assigned tasks marked.
+        fn preview_board(label: &str) -> (Temp, DomainState, BoardModel, [uuid::Uuid; 2]) {
+            let temp = Temp::new(label, &["builder"]);
+            let mut domain = DomainState::new();
+            let mut create = |title: &str, path: &str| {
+                let id = domain
+                    .create(
+                        title,
+                        None,
+                        TaskScope::Project { path: path.into() },
+                        ProvenanceOrigin::Manual,
+                        None,
+                    )
+                    .expect("create");
+                domain.assign(id, Some("builder".into())).expect("assign");
+                id
+            };
+            let ids = [
+                create("preview one", "/repos/app"),
+                create("preview two", "/repos/app"),
+            ];
+            create("elsewhere", "/repos/zzz");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            let mut model = BoardModel::from_domain(&domain, None);
+            model.set_agent_profiles(&temp.profiles());
+            apply_intent(
+                &mut domain,
+                &mut model,
+                BoardIntent::SelectNavTab(crate::ui::queue::NavTab::Projects),
+                None,
+            )
+            .expect("projects");
+            for _ in 0..2 {
+                apply_intent(&mut domain, &mut model, BoardIntent::StageRight, None)
+                    .expect("stage right");
+            }
+            let seat = model.preview_seat_mut().expect("preview seat");
+            assert_eq!(
+                seat.active_project().map(|path| path.to_path_buf()),
+                Some(std::path::PathBuf::from("/repos/app"))
+            );
+            seat.set_agent_profiles(&temp.profiles());
+            marked(&mut domain, seat, &temp, &ids);
+            (temp, domain, model, ids)
+        }
+
+        /// A batch started in the Projects preview outlives that preview: rebinding it to
+        /// another project or dropping it leaves the batch landing on the outer board.
+        #[test]
+        fn a_bulk_dispatch_started_in_the_project_preview_outlives_it() {
+            let (temp, mut domain, mut model, ids) = preview_board("bulk-preview");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            for intent in [BoardIntent::PrimaryVerb, BoardIntent::ConfirmDispatch] {
+                step(
+                    &temp,
+                    &mut domain,
+                    model.preview_seat_mut().expect("seat"),
+                    intent,
+                    &mut recovery,
+                    &mut host,
+                    &mut names,
+                );
+            }
+            assert!(model.bulk_dispatch_running());
+
+            // Back to the index, onto the other project: the preview is rebound, then dropped.
+            apply_intent(&mut domain, &mut model, BoardIntent::StageLeft, None)
+                .expect("stage left");
+            apply_intent(&mut domain, &mut model, BoardIntent::SelectNext, None)
+                .expect("next project");
+            model.bind_project_preview();
+            model.drop_project_preview();
+            assert!(model.right_seat().is_none());
+            assert!(
+                model.bulk_dispatch_running(),
+                "the outer board keeps the batch"
+            );
+
+            host.land_next();
+            host.land_next();
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+            for id in ids {
+                assert!(saved(&temp, id).dispatch.is_some());
+            }
+            assert!(!model.bulk_dispatch_running());
+            assert!(model
+                .message()
+                .is_some_and(|message| message.starts_with("dispatched")));
+        }
+        /// Wait for a background result, failing rather than hanging.
+        fn eventually<T>(mut poll: impl FnMut() -> Option<T>) -> T {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                if let Some(value) = poll() {
+                    return value;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "background work never landed"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+
+        /// A landing whose save fails while the human has a task edit open (a typed title,
+        /// then the assignee field) never takes that form over: Retry and Cancel both leave the
+        /// form, its focus, and its draft exactly as they were.
+        // A read-only store needs Unix permissions.
+        #[cfg(unix)]
+        #[test]
+        fn a_landing_save_failure_never_closes_an_open_task_edit() {
+            for retry in [true, false] {
+                let (temp, mut domain, mut model, ids) = two_marked("bulk-open-form");
+                let mut host = deferred(&temp);
+                let mut recovery = SaveRecovery::new();
+                let mut names = Vec::new();
+                for intent in [BoardIntent::PrimaryVerb, BoardIntent::ConfirmDispatch] {
+                    step(
+                        &temp,
+                        &mut domain,
+                        &mut model,
+                        intent,
+                        &mut recovery,
+                        &mut host,
+                        &mut names,
+                    );
+                }
+                select(&mut domain, &mut model, ids[1]);
+                for intent in [
+                    BoardIntent::OpenTaskPage,
+                    BoardIntent::BeginEditTitle,
+                    BoardIntent::EditInsertText(" draft".into()),
+                    BoardIntent::FocusFormField(crate::ui::capture::CaptureField::Assignee),
+                ] {
+                    apply_intent(&mut domain, &mut model, intent, None).expect("edit");
+                }
+                let mode = model.input_mode();
+                assert_eq!(
+                    model.form_focus(),
+                    Some(crate::ui::capture::CaptureField::Assignee)
+                );
+                assert!(model.task_session_dirty());
+
+                host.land_next();
+                std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o555))
+                    .expect("make the state dir read-only");
+                land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+                std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o755))
+                    .expect("restore the state dir");
+                assert!(recovery.is_pending());
+                assert_eq!(model.input_mode(), BoardInputMode::SaveRecovery);
+                let answer = if retry {
+                    BoardIntent::RetrySave
+                } else {
+                    BoardIntent::CancelSave
+                };
+                step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    answer,
+                    &mut recovery,
+                    &mut host,
+                    &mut names,
+                );
+                assert!(!recovery.is_pending());
+
+                assert_eq!(
+                    model.input_mode(),
+                    mode,
+                    "retry {retry}: the field stays open"
+                );
+                assert_eq!(
+                    model.form_focus(),
+                    Some(crate::ui::capture::CaptureField::Assignee),
+                    "retry {retry}"
+                );
+                assert!(
+                    model.task_session_dirty(),
+                    "retry {retry}: the draft survives"
+                );
+                apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None)
+                    .expect("back to the title");
+                assert_eq!(model.edit_buffer(), "second job draft", "retry {retry}");
+                assert_eq!(
+                    saved(&temp, ids[0]).dispatch.is_some(),
+                    retry,
+                    "retry {retry}: the landing's record follows the answer"
+                );
+            }
+        }
+
+        /// With launches outstanding, a store that cannot be read refuses a mutating key on the
+        /// status row and a second dispatch is refused before any read: the board never exits,
+        /// and the launches still land once the store is back.
+        // A read-only store needs Unix permissions.
+        #[cfg(unix)]
+        #[test]
+        fn an_unreadable_store_during_a_batch_never_exits_the_board() {
+            let (temp, mut domain, mut model, ids) = two_marked("bulk-unreadable");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            for intent in [BoardIntent::PrimaryVerb, BoardIntent::ConfirmDispatch] {
+                step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    intent,
+                    &mut recovery,
+                    &mut host,
+                    &mut names,
+                );
+            }
+            select(&mut domain, &mut model, ids[0]);
+            let file = temp.dir.join("tsk.json");
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000))
+                .expect("make the store unreadable");
+            assert!(!step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::SetStatus(HumanStatus::Blocked),
+                &mut recovery,
+                &mut host,
+                &mut names,
+            ));
+            assert!(
+                model
+                    .message()
+                    .is_some_and(|message| message.starts_with("can't read the task store")
+                        && message.contains("nothing changed")),
+                "{:?}",
+                model.message()
+            );
+            assert!(!step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::DispatchAgain,
+                &mut recovery,
+                &mut host,
+                &mut names,
+            ));
+            assert!(model
+                .message()
+                .is_some_and(|message| message.contains("wait for it to finish")));
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))
+                .expect("restore the store");
+
+            host.land_next();
+            host.land_next();
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+            for id in &ids {
+                assert_eq!(saved(&temp, *id).status, HumanStatus::Started);
+            }
+        }
+
+        /// Blocking and unblocking a task while its launch is in flight leaves the value where
+        /// it was, but it is still a newer human decision: the landing records the agent and
+        /// keeps ready.
+        #[test]
+        fn a_status_round_trip_during_the_launch_still_keeps_the_humans_status() {
+            let (temp, mut domain, mut model, ids) = two_marked("bulk-aba");
+            let mut other = temp.store.load().expect("load");
+            other.set_status(ids[0], HumanStatus::Ready).expect("ready");
+            temp.store.reload_merge_save(&mut other).expect("save");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            let mut names = Vec::new();
+            for intent in [BoardIntent::PrimaryVerb, BoardIntent::ConfirmDispatch] {
+                step(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    intent,
+                    &mut recovery,
+                    &mut host,
+                    &mut names,
+                );
+            }
+            for status in [HumanStatus::Blocked, HumanStatus::Ready] {
+                let mut other = temp.store.load().expect("load");
+                other.set_status(ids[0], status).expect("status");
+                temp.store.reload_merge_save(&mut other).expect("save");
+            }
+            host.land_next();
+            host.land_next();
+            land(&temp, &mut domain, &mut model, &mut recovery, &mut names);
+
+            let first = saved(&temp, ids[0]);
+            assert_eq!(
+                first.status,
+                HumanStatus::Ready,
+                "the round trip is respected"
+            );
+            assert!(first.dispatch.is_some());
+            assert_eq!(saved(&temp, ids[1]).status, HumanStatus::Started);
+            let one = number(&domain, ids[0]);
+            assert!(
+                model
+                    .message()
+                    .is_some_and(|message| message
+                        .contains(&format!("{one} kept ready (changed meanwhile)"))),
+                "{:?}",
+                model.message()
+            );
+        }
+
+        /// The system host's git checks and launches run on a thread of their own, never the
+        /// board thread (they would freeze the board on slow git or Herdr).
+        #[test]
+        fn the_system_host_checks_and_launches_off_the_board_thread() {
+            use crate::dispatch::{thread_probe, DispatchError, SystemDispatchHost};
+            let temp = Temp::new("bulk-system", &["builder"]);
+            let project = temp.dir.join("not-a-repo");
+            std::fs::create_dir_all(&project).expect("project dir");
+            let mut domain = DomainState::new();
+            let id = domain
+                .create(
+                    "system host",
+                    None,
+                    TaskScope::Project {
+                        path: project.to_string_lossy().into(),
+                    },
+                    ProvenanceOrigin::Manual,
+                    None,
+                )
+                .expect("task");
+            domain.assign(id, Some("builder".into())).expect("assign");
+            temp.store
+                .reload_merge_save(&mut domain)
+                .expect("number the task");
+            let eligible = crate::dispatch::check_task(&domain, id, &temp.profiles(), true)
+                .expect("eligible before the git check");
+            let board_thread = std::thread::current().id();
+            let mut host = SystemDispatchHost::in_state_dir(temp.dir.join("host-state"));
+
+            let checks = host.begin_git_checks(vec![project.clone()]);
+            let results = eventually(|| checks.take());
+            assert_eq!(results.get(&project), Some(&false));
+
+            let batch = host.begin_launches(vec![eligible]);
+            let landed = eventually(|| {
+                let landed = batch.take_landed();
+                (!landed.is_empty()).then_some(landed)
+            });
+            assert!(matches!(landed[0].1, Err(DispatchError::NeedsGitProject)));
+
+            let threads = thread_probe::threads(&project);
+            assert_eq!(threads.len(), 2, "one git check and one launch ran");
+            assert!(
+                threads.iter().all(|thread| *thread != board_thread),
+                "the system host ran bulk work on the board thread"
+            );
+        }
+
+        /// The board frame delivers a landed git check to the card: a set outside any git
+        /// repository closes with the refusal, with no direct poll by the test.
+        #[test]
+        fn the_board_frame_delivers_the_cards_git_check() {
+            let (temp, mut domain, mut model, _ids) = two_marked("bulk-frame");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            step(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::PrimaryVerb,
+                &mut recovery,
+                &mut host,
+                &mut Vec::new(),
+            );
+            let (checks, _) = host.checks.take().expect("checks started");
+            checks.finish(
+                [(std::path::PathBuf::from(PROJECT), false)]
+                    .into_iter()
+                    .collect(),
+            );
+            super::super::board_frame(&mut model, |_| Ok(()), |_| Ok(false), false).expect("frame");
+            assert!(model.dispatch_prompt().is_none());
+            assert_eq!(
+                model.message(),
+                Some("nothing to dispatch: not a project in a git repo")
+            );
+        }
+
+        /// The board loop's background step delivers the git check to a card opened in the
+        /// Projects preview, from the outer board.
+        #[test]
+        fn the_background_step_delivers_a_preview_cards_git_check() {
+            let (temp, mut domain, mut model, ids) = preview_board("bulk-preview-check");
+            let mut host = deferred(&temp);
+            let mut recovery = SaveRecovery::new();
+            step(
+                &temp,
+                &mut domain,
+                model.preview_seat_mut().expect("seat"),
+                BoardIntent::PrimaryVerb,
+                &mut recovery,
+                &mut host,
+                &mut Vec::new(),
+            );
+            let seat_prompt = |model: &mut BoardModel| {
+                model
+                    .preview_seat_mut()
+                    .expect("seat")
+                    .dispatch_prompt()
+                    .cloned()
+                    .expect("card")
+            };
+            assert!(seat_prompt(&mut model).checking());
+            let (checks, _) = host.checks.take().expect("checks started");
+            checks.finish(
+                [(std::path::PathBuf::from("/repos/app"), true)]
+                    .into_iter()
+                    .collect(),
+            );
+            super::super::board_background_step(
+                &temp.store,
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                true,
+                &mut host,
+                &mut |_| {},
+            )
+            .expect("background step");
+            let prompt = seat_prompt(&mut model);
+            assert!(!prompt.checking(), "the check reached the preview's card");
+            assert_eq!(
+                prompt
+                    .launch
+                    .iter()
+                    .map(|eligible| eligible.id)
+                    .collect::<Vec<_>>(),
+                ids
+            );
+        }
+    }
+
+    // ---- after: task dependencies (T207) ----
+
+    fn number_of(domain: &DomainState, id: uuid::Uuid) -> u64 {
+        domain.get(id).and_then(|task| task.number).expect("number")
+    }
+
+    fn status_of(domain: &DomainState, id: uuid::Uuid) -> HumanStatus {
+        domain.get(id).expect("task").status
+    }
+
+    /// `second` runs after `first`, saved, and is set to `status`.
+    fn link(
+        temp: &Temp,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        waiting: uuid::Uuid,
+        after: &[uuid::Uuid],
+        status: HumanStatus,
+    ) {
+        let numbers: Vec<u64> = after.iter().map(|id| number_of(domain, *id)).collect();
+        domain.set_after(waiting, &numbers).expect("after");
+        temp.store.reload_merge_save(domain).expect("save");
+        if status != HumanStatus::Open {
+            domain.set_status(waiting, status).expect("status");
+            temp.store.reload_merge_save(domain).expect("save");
+        }
+        model.sync_from_domain(domain);
+    }
+
+    #[test]
+    fn a_done_on_the_board_starts_the_ready_task_it_released_and_undo_reverts_both() {
+        let temp = Temp::new("after-done", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second", "third"]);
+        let mut host = fake_host(&temp);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[2],
+            &[ids[0]],
+            HumanStatus::Open,
+        );
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Started, "same save");
+        assert_eq!(
+            status_of(&disk, ids[2]),
+            HumanStatus::Open,
+            "open does not move"
+        );
+        assert_eq!(
+            model.message(),
+            Some(format!("T{second} started · T{first} done").as_str())
+        );
+        let trail = crate::activity::paper_trail(disk.get(ids[1]).expect("task"));
+        assert_eq!(trail[0].text, format!("started · after T{first}"));
+        assert_eq!(host.ran, 0, "unassigned: no launch");
+
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Open);
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Ready);
+        assert_eq!(
+            model.message(),
+            Some(format!("done undone · T{first} back to open · T{second} back to ready").as_str())
+        );
+    }
+
+    #[test]
+    fn a_done_dispatches_an_assigned_released_task_and_undo_keeps_its_agent() {
+        let temp = Temp::new("after-dispatch", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        domain
+            .assign(ids[1], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        assert_eq!(host.ran, 1, "the released task's agent launched");
+        let disk = temp.store.load().expect("load");
+        let task = disk.get(ids[1]).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        assert!(
+            task.dispatch.is_some(),
+            "dispatch recorded right after the done"
+        );
+        assert_eq!(
+            model.message(),
+            Some(format!("T{second} dispatched to @builder · T{first} done").as_str())
+        );
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Ready);
+        assert!(disk.get(ids[1]).expect("task").dispatch.is_some());
+        assert_eq!(
+            model.message(),
+            Some(
+                format!(
+                    "done undone · T{first} back to open · T{second} back to ready · @builder kept running"
+                )
+                .as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn a_failed_released_launch_keeps_the_task_ready_and_the_done() {
+        let temp = Temp::new("after-failed", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        host.fail_launch = Some("herdr refused".into());
+        domain
+            .assign(ids[1], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let second = number_of(&domain, ids[1]);
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Ready);
+        assert!(
+            model
+                .message()
+                .is_some_and(|message| message.starts_with(&format!("T{second} back to ready: "))),
+            "{:?}",
+            model.message()
+        );
+    }
+
+    /// Another writer completed one prerequisite after the board last read the store: the
+    /// release is decided against the merged state, so the board's done of the other one still
+    /// starts the waiting task.
+    #[test]
+    fn a_done_releases_against_a_prerequisite_another_writer_completed() {
+        let temp = Temp::new("after-merged", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second", "third"]);
+        let mut host = fake_host(&temp);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[2],
+            &[ids[0], ids[1]],
+            HumanStatus::Ready,
+        );
+        let mut other = temp.store.load().expect("load");
+        other
+            .set_status(ids[1], HumanStatus::Done)
+            .expect("done elsewhere");
+        temp.store
+            .reload_merge_save(&mut other)
+            .expect("save elsewhere");
+        assert_eq!(
+            status_of(&domain, ids[1]),
+            HumanStatus::Open,
+            "the board has not read it"
+        );
+
+        let (first, third) = (number_of(&domain, ids[0]), number_of(&domain, ids[2]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Done);
+        assert_eq!(status_of(&disk, ids[2]), HumanStatus::Started);
+        assert_eq!(
+            model.message(),
+            Some(format!("T{third} started · T{first} done").as_str())
+        );
+    }
+
+    /// While a marked-set dispatch is still landing (it may be launching this very task), a
+    /// released assigned task stays ready and says how to start it.
+    #[test]
+    fn a_released_task_never_launches_while_a_bulk_dispatch_runs() {
+        let temp = Temp::new("after-bulk-running", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        domain
+            .assign(ids[1], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        model.begin_bulk_dispatch(crate::ui::board::BulkDispatchRun::new(
+            dispatch::LaunchBatch::new(1),
+            1,
+        ));
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        assert_eq!(host.ran, 0, "no second launch beside the running batch");
+        let disk = temp.store.load().expect("load");
+        let task = disk.get(ids[1]).expect("task");
+        assert_eq!(task.status, HumanStatus::Ready, "it waits for a start");
+        assert!(task.dispatch.is_none());
+        assert_eq!(
+            model.message(),
+            Some(
+                format!("T{second} waits: a dispatch is running; ctrl+s starts it · T{first} done")
+                    .as_str()
+            )
+        );
+    }
+
+    /// Two marked prerequisites of one assigned ready task, completed together: one launch, one
+    /// released row, and one undo puts all three back.
+    #[test]
+    fn a_marked_done_of_two_prerequisites_launches_their_dependent_once() {
+        let temp = Temp::new("after-marked-done", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second", "third"]);
+        let mut host = fake_host(&temp);
+        domain
+            .assign(ids[2], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[2],
+            &[ids[0], ids[1]],
+            HumanStatus::Ready,
+        );
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None).expect("marks");
+        for id in [ids[0], ids[1]] {
+            select(&mut domain, &mut model, id);
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        }
+        let (first, second, third) = (
+            number_of(&domain, ids[0]),
+            number_of(&domain, ids[1]),
+            number_of(&domain, ids[2]),
+        );
+        let saves = temp.store.durable_saves();
+        let undo = temp.store.load().expect("load").undo_len();
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        assert_eq!(host.ran, 1, "one launch for the shared dependent");
+        assert_eq!(
+            temp.store.durable_saves() - saves,
+            2,
+            "the dones and the start, then the dispatch record"
+        );
+        let first_save = &host.disk_at_launch[0];
+        assert_eq!(status_of(first_save, ids[0]), HumanStatus::Done);
+        assert_eq!(status_of(first_save, ids[1]), HumanStatus::Done);
+        assert_eq!(status_of(first_save, ids[2]), HumanStatus::Started);
+        assert!(first_save.get(ids[2]).expect("task").dispatch.is_none());
+        let disk = temp.store.load().expect("load");
+        assert!(disk.get(ids[2]).expect("task").dispatch.is_some());
+        assert_eq!(disk.undo_len(), undo + 1, "one undo entry");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Done);
+        assert_eq!(status_of(&disk, ids[2]), HumanStatus::Started);
+        let message = model.message().expect("message").to_string();
+        assert_eq!(
+            message.matches(&format!("T{third} dispatched")).count(),
+            1,
+            "{message}"
+        );
+        assert!(
+            message.ends_with(&format!("T{second} done"))
+                || message.ends_with(&format!("T{first} done")),
+            "{message}"
+        );
+
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Open);
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Open);
+        assert_eq!(status_of(&disk, ids[2]), HumanStatus::Ready);
+        assert_eq!(host.ran, 1, "undo launches nothing");
+    }
+
+    /// The done's first save fails after the merge decided the release: Retry decides again and
+    /// launches the assigned dependent exactly once; Cancel drops the done and launches nothing.
+    #[test]
+    fn a_failed_first_save_retries_the_release_and_launches_once() {
+        for retry in [true, false] {
+            let temp = Temp::new("after-first-save", &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+            let mut host = fake_host(&temp);
+            domain
+                .assign(ids[1], Some("builder".into()))
+                .expect("assign");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            link(
+                &temp,
+                &mut domain,
+                &mut model,
+                ids[1],
+                &[ids[0]],
+                HumanStatus::Ready,
+            );
+            select(&mut domain, &mut model, ids[0]);
+            let mut recovery = SaveRecovery::new();
+            let step = |domain: &mut DomainState,
+                        model: &mut BoardModel,
+                        recovery: &mut SaveRecovery<DomainState>,
+                        host: &mut FakeHost,
+                        intent: BoardIntent| {
+                handle_board_intent_with_host(
+                    &temp.store,
+                    domain,
+                    model,
+                    intent,
+                    recovery,
+                    false,
+                    true,
+                    host,
+                    &mut |_| {},
+                )
+                .expect("board intent");
+            };
+            temp.store.fail_next_save();
+            step(
+                &mut domain,
+                &mut model,
+                &mut recovery,
+                &mut host,
+                BoardIntent::Complete,
+            );
+            assert!(recovery.is_pending(), "the first save failed");
+            assert_eq!(host.ran, 0, "nothing launches before the done is durable");
+            let resolve = if retry {
+                BoardIntent::RetrySave
+            } else {
+                BoardIntent::CancelSave
+            };
+            step(&mut domain, &mut model, &mut recovery, &mut host, resolve);
+            assert!(!recovery.is_pending());
+            let disk = temp.store.load().expect("load");
+            if retry {
+                assert_eq!(host.ran, 1, "Retry launches exactly once");
+                assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
+                let task = disk.get(ids[1]).expect("task");
+                assert_eq!(task.status, HumanStatus::Started);
+                assert!(task.dispatch.is_some());
+            } else {
+                assert_eq!(host.ran, 0, "Cancel launches nothing");
+                assert_eq!(status_of(&disk, ids[0]), HumanStatus::Open);
+                assert_eq!(status_of(&disk, ids[1]), HumanStatus::Ready);
+                step(
+                    &mut domain,
+                    &mut model,
+                    &mut recovery,
+                    &mut host,
+                    BoardIntent::SelectNext,
+                );
+                assert!(domain.take_pending_launches().is_empty());
+            }
+        }
+    }
+
+    /// The launch succeeded but the save recording it failed: the done and the start are already
+    /// durable, so the board does not enter save recovery; it says the agent runs unrecorded.
+    #[test]
+    fn a_failed_record_save_reports_the_running_agent_without_recovery() {
+        let temp = Temp::new("after-record-save", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        domain
+            .assign(ids[1], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        host.fail_save_at_launch = Some(temp.store.clone());
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        assert_eq!(host.ran, 1);
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
+        let task = disk.get(ids[1]).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        assert!(task.dispatch.is_none(), "the record did not save");
+        let message = model.message().expect("message").to_string();
+        assert!(
+            message.starts_with(&format!(
+                "T{second} started · @builder is running but its record did not save · worktree "
+            )) && message.ends_with(&format!("T{first} done")),
+            "{message}"
+        );
+    }
+
+    /// The launch fails and the save putting the task back to ready fails too: the done stands,
+    /// the task is started on disk with no agent, and the status row says so.
+    #[test]
+    fn a_failed_launch_whose_rollback_cannot_save_says_it_is_started() {
+        let temp = Temp::new("after-rollback-save", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        host.fail_launch = Some("herdr refused".into());
+        host.fail_save_at_launch = Some(temp.store.clone());
+        domain
+            .assign(ids[1], Some("builder".into()))
+            .expect("assign");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Started);
+        assert_eq!(
+            model.message(),
+            Some(
+                format!(
+                    "T{second} is started but no agent launched; couldn't save it back to ready: \
+                     store I/O error: injected save failure · T{first} done"
+                )
+                .as_str()
+            )
+        );
+    }
+
+    /// A released task dispatched before: a gone agent starts it without a relaunch, and Herdr
+    /// that cannot answer starts it plainly. Neither launches.
+    #[test]
+    fn a_released_task_with_an_earlier_dispatch_never_relaunches() {
+        for (gone, label) in [(true, "after-gone"), (false, "after-unreachable")] {
+            let temp = Temp::new(label, &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+            let mut host = fake_host(&temp);
+            dispatched_before(&temp, &mut domain, &mut model, ids[1], HumanStatus::Ready);
+            link(
+                &temp,
+                &mut domain,
+                &mut model,
+                ids[1],
+                &[ids[0]],
+                HumanStatus::Ready,
+            );
+            host.workspace_gone = gone;
+            host.root_failed = !gone;
+            let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+            select(&mut domain, &mut model, ids[0]);
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::Complete,
+                &mut host,
+            );
+            assert_eq!(host.ran, 0, "{label}: no launch");
+            assert_eq!(host.launched, 0, "{label}: no worktree");
+            let disk = temp.store.load().expect("load");
+            assert_eq!(status_of(&disk, ids[1]), HumanStatus::Started, "{label}");
+            let expected = if gone {
+                format!("T{second} started · @builder gone, not relaunched · T{first} done")
+            } else {
+                format!("T{second} started · T{first} done")
+            };
+            assert_eq!(model.message(), Some(expected.as_str()), "{label}");
+        }
+    }
+
+    #[test]
+    fn ctrl_s_on_a_waiting_task_asks_first_and_y_starts_it_esc_does_not() {
+        let temp = Temp::new("after-ask", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[1]);
+        let start = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, start.clone(), &mut host);
+        let waiting = model
+            .dispatch_prompt()
+            .and_then(|prompt| prompt.start_anyway.clone())
+            .expect("the start-anyway card")
+            .waiting;
+        assert_eq!(
+            waiting,
+            vec![format!("T{second} runs after T{first} (open)")]
+        );
+        assert_eq!(status_of(&domain, ids[1]), HumanStatus::Ready);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::CancelDispatch,
+            &mut host,
+        );
+        assert!(model.dispatch_prompt().is_none());
+        assert_eq!(
+            status_of(&temp.store.load().expect("load"), ids[1]),
+            HumanStatus::Ready
+        );
+
+        handle(&temp, &mut domain, &mut model, start, &mut host);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmDispatch,
+            &mut host,
+        );
+        assert_eq!(
+            status_of(&temp.store.load().expect("load"), ids[1]),
+            HumanStatus::Started
+        );
+        assert!(!model.start_anyway, "the pass is one start only");
+    }
+
+    #[test]
+    fn deleting_a_prerequisite_unlinks_says_so_and_undo_restores_the_link() {
+        let temp = Temp::new("after-delete", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::SoftDelete,
+            &mut host,
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::SoftDelete,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert!(disk.get(ids[0]).expect("task").soft_deleted);
+        assert!(disk.get(ids[1]).expect("task").after.is_empty());
+        assert_eq!(
+            status_of(&disk, ids[1]),
+            HumanStatus::Ready,
+            "no auto-start"
+        );
+        assert_eq!(
+            model.message(),
+            Some(format!("T{second} no longer waits (T{first} deleted)").as_str())
+        );
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let disk = temp.store.load().expect("load");
+        assert!(!disk.get(ids[0]).expect("task").soft_deleted);
+        assert_eq!(disk.get(ids[1]).expect("task").after, vec![first]);
+    }
+
+    #[test]
+    fn the_cleanup_card_starts_what_its_done_released() {
+        let temp = Temp::new("after-cleanup", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        host.cleanup = true;
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Review);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        assert!(model.cleanup_prompt().is_some(), "the cleanup card opens");
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::KeepCleanup,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert_eq!(status_of(&disk, ids[0]), HumanStatus::Done);
+        assert_eq!(status_of(&disk, ids[1]), HumanStatus::Started);
+        assert_eq!(
+            model.message(),
+            Some(
+                format!("done T{first} · worktree kept · T{second} started · T{first} done")
+                    .as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn chain_in_order_follows_the_mark_order_as_one_undo() {
+        let temp = Temp::new("after-chain", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second", "third"]);
+        let mut host = fake_host(&temp);
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None).expect("marks");
+        for id in [ids[2], ids[0], ids[1]] {
+            select(&mut domain, &mut model, id);
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        }
+        // Through the palette, which owns input while it lists the command.
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenCommandPalette,
+            None,
+        )
+        .expect("palette");
+        let index = model
+            .visible_commands()
+            .iter()
+            .position(|command| command.label == "chain marked tasks in order")
+            .expect("the open palette offers chain in order");
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectCommand(index),
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        let n = |id| number_of(&disk, id);
+        assert_eq!(disk.get(ids[0]).expect("task").after, vec![n(ids[2])]);
+        assert_eq!(disk.get(ids[1]).expect("task").after, vec![n(ids[0])]);
+        assert!(disk.get(ids[2]).expect("task").after.is_empty());
+        assert_eq!(
+            model.message(),
+            Some(format!("chained T{} → T{} → T{}", n(ids[2]), n(ids[0]), n(ids[1])).as_str())
+        );
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let disk = temp.store.load().expect("load");
+        assert!(ids
+            .iter()
+            .all(|id| disk.get(*id).expect("task").after.is_empty()));
+    }
+
+    #[test]
+    fn the_task_picker_ticks_several_and_refuses_a_loop() {
+        let temp = Temp::new("after-picker", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second", "third"]);
+        let mut host = fake_host(&temp);
+        let n = |domain: &DomainState, index: usize| number_of(domain, ids[index]);
+        select(&mut domain, &mut model, ids[1]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAfterPicker,
+            &mut host,
+        );
+        assert_eq!(model.list_picker_kind(), Some(ListPickerKind::After));
+        let labels: Vec<String> = model
+            .visible_list_picker_options()
+            .into_iter()
+            .map(|(_, option)| option.label)
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                format!("  T{} first", n(&domain, 0)),
+                format!("  T{} third", n(&domain, 2)),
+                "none".to_string()
+            ],
+            "the task itself is not offered"
+        );
+        for intent in [
+            BoardIntent::ListPickerQueryInsert(' '),
+            BoardIntent::ListPickerNext,
+            BoardIntent::ListPickerQueryInsert(' '),
+        ] {
+            handle(&temp, &mut domain, &mut model, intent, &mut host);
+        }
+        assert!(model
+            .visible_list_picker_options()
+            .iter()
+            .all(|(_, option)| option.label.starts_with("✓ ") || option.label == "none"));
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert_eq!(
+            disk.get(ids[1]).expect("task").after,
+            vec![n(&disk, 0), n(&disk, 2)]
+        );
+
+        // T1 after T2 would close a loop: refused, the picker stays open.
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAfterPicker,
+            &mut host,
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            &mut host,
+        );
+        assert_eq!(
+            model.message(),
+            Some(format!("T{} already runs after T{}", n(&domain, 1), n(&domain, 0)).as_str())
+        );
+        assert_eq!(model.list_picker_kind(), Some(ListPickerKind::After));
+        assert!(temp
+            .store
+            .load()
+            .expect("load")
+            .get(ids[0])
+            .expect("task")
+            .after
+            .is_empty());
+    }
+
+    #[test]
+    fn the_page_after_field_saves_with_the_edit() {
+        let temp = Temp::new("after-page", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        select(&mut domain, &mut model, ids[1]);
+        for intent in [
+            BoardIntent::OpenTaskPage,
+            BoardIntent::BeginEditTitle,
+            BoardIntent::FocusFormField(crate::ui::capture::CaptureField::After),
+        ] {
+            handle(&temp, &mut domain, &mut model, intent, &mut host);
+        }
+        assert_eq!(model.input_mode(), BoardInputMode::SelectAfter);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAfterPicker,
+            &mut host,
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            &mut host,
+        );
+        assert_eq!(
+            model.input_mode(),
+            BoardInputMode::SelectAfter,
+            "back on the field"
+        );
+        assert!(
+            temp.store
+                .load()
+                .expect("load")
+                .get(ids[1])
+                .expect("task")
+                .after
+                .is_empty(),
+            "a draft until the edit saves"
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmEdit,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        let task = disk.get(ids[1]).expect("task");
+        assert_eq!(task.after, vec![number_of(&disk, ids[0])]);
+        assert_eq!(
+            crate::activity::paper_trail(task)[0].text,
+            "after edited",
+            "one edit event names the field"
+        );
+    }
+
+    /// A task-picker change from the open task page whose save failed and was retried reaches
+    /// the page's form, so a later page save keeps the link instead of reverting it.
+    #[test]
+    fn a_retried_picker_save_syncs_the_page_form_after() {
+        let temp = Temp::new("after-retry", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        let first = number_of(&domain, ids[0]);
+        select(&mut domain, &mut model, ids[1]);
+        for intent in [BoardIntent::OpenTaskPage, BoardIntent::OpenAfterPicker] {
+            handle(&temp, &mut domain, &mut model, intent, &mut host);
+        }
+        let mut recovery = SaveRecovery::new();
+        let baseline = domain.clone();
+        apply_board_intent_with_save_recovery(
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardSaveContext {
+                baseline,
+                intent: BoardIntent::ConfirmListPicker,
+                snapshot: None,
+            },
+            |_| Err("disk full".into()),
+        )
+        .expect("failed save enters recovery");
+        assert!(recovery.is_pending());
+        apply_board_intent_with_save_recovery(
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardSaveContext {
+                baseline: DomainState::new(),
+                intent: BoardIntent::RetrySave,
+                snapshot: None,
+            },
+            |state| {
+                temp.store
+                    .reload_merge_save(state)
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .expect("retry");
+        assert!(!recovery.is_pending());
+        for intent in [
+            BoardIntent::BeginEditTitle,
+            BoardIntent::EditInsertText(" renamed".into()),
+            BoardIntent::ConfirmEdit,
+        ] {
+            handle(&temp, &mut domain, &mut model, intent, &mut host);
+        }
+        let disk = temp.store.load().expect("load");
+        let task = disk.get(ids[1]).expect("task");
+        assert_eq!(task.title, "second renamed");
+        assert_eq!(task.after, vec![first], "the page save kept the link");
+    }
+
+    #[test]
+    fn quick_add_w_runs_after_a_task_and_refuses_unknown_or_done_keeping_the_draft() {
+        let temp = Temp::new("after-quick-add", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first"]);
+        let mut host = fake_host(&temp);
+        let first = number_of(&domain, ids[0]);
+        let type_line =
+            |domain: &mut DomainState, model: &mut BoardModel, host: &mut FakeHost, text: &str| {
+                handle(&temp, domain, model, BoardIntent::OpenCapture, host);
+                let text = BoardIntent::QuickAddInsertText(text.to_string());
+                handle(&temp, domain, model, text, host);
+                handle(&temp, domain, model, BoardIntent::QuickAddSave, host);
+            };
+        let done = {
+            let id = domain
+                .create(
+                    "already done",
+                    None,
+                    TaskScope::Project {
+                        path: PROJECT.into(),
+                    },
+                    ProvenanceOrigin::Manual,
+                    None,
+                )
+                .expect("create");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            domain.set_status(id, HumanStatus::Done).expect("done");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            model.sync_from_domain(&domain);
+            number_of(&domain, id)
+        };
+        for (line, refusal) in [
+            (
+                "Waits !w T99".to_string(),
+                "T99 is not on the board".to_string(),
+            ),
+            (
+                format!("Waits !w T{done}"),
+                format!("T{done} is already done"),
+            ),
+        ] {
+            type_line(&mut domain, &mut model, &mut host, &line);
+            assert_eq!(model.message(), Some(refusal.as_str()));
+            assert_eq!(
+                model.input_mode(),
+                BoardInputMode::QuickAdd,
+                "the draft stays"
+            );
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::CancelQuickAdd,
+                &mut host,
+            );
+        }
+        type_line(
+            &mut domain,
+            &mut model,
+            &mut host,
+            &format!("Waits !w {first}"),
+        );
+        let disk = temp.store.load().expect("load");
+        let created = disk
+            .tasks()
+            .iter()
+            .find(|task| task.title == "Waits")
+            .expect("created");
+        assert_eq!(created.after, vec![first]);
+    }
+
+    /// `!w` carried onto the expanded quick-add page saves with the form; a prerequisite done
+    /// before that save refuses it and keeps the page open.
+    #[test]
+    fn quick_add_w_survives_expanding_and_saves_from_the_page() {
+        let temp = Temp::new("after-expand", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        let (first, second) = (number_of(&domain, ids[0]), number_of(&domain, ids[1]));
+        let expand =
+            |domain: &mut DomainState, model: &mut BoardModel, host: &mut FakeHost, text: &str| {
+                handle(&temp, domain, model, BoardIntent::OpenCapture, host);
+                let text = BoardIntent::QuickAddInsertText(text.to_string());
+                handle(&temp, domain, model, text, host);
+                handle(&temp, domain, model, BoardIntent::ExpandQuickAdd, host);
+            };
+        expand(
+            &mut domain,
+            &mut model,
+            &mut host,
+            &format!("Expanded !w T{first}"),
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmEdit,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        let created = disk
+            .tasks()
+            .iter()
+            .find(|task| task.title == "Expanded")
+            .expect("created from the page");
+        assert_eq!(created.after, vec![first]);
+
+        expand(
+            &mut domain,
+            &mut model,
+            &mut host,
+            &format!("Late !w T{second}"),
+        );
+        domain.set_status(ids[1], HumanStatus::Done).expect("done");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        let mode = model.input_mode();
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmEdit,
+            &mut host,
+        );
+        assert_eq!(
+            model.message(),
+            Some(format!("T{second} is already done").as_str())
+        );
+        assert_eq!(model.input_mode(), mode, "the page stays open");
+        assert!(temp
+            .store
+            .load()
+            .expect("load")
+            .tasks()
+            .iter()
+            .all(|task| task.title != "Late"));
+    }
+
+    #[test]
+    fn a_waiting_row_shows_after_and_its_peek_shows_status_and_before() {
+        let temp = Temp::new("after-row", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Ready,
+        );
+        let first = number_of(&domain, ids[0]);
+        let (screen, _) = board_screen(&model, 80, 24);
+        assert!(screen.contains(&format!("after T{first}")), "{screen}");
+        select(&mut domain, &mut model, ids[1]);
+        apply_intent(&mut domain, &mut model, BoardIntent::PeekDetail, None).expect("peek");
+        let (screen, _) = board_screen(&model, 80, 24);
+        assert!(
+            screen.contains(&format!("after T{first} · open")),
+            "{screen}"
+        );
+        domain.set_status(ids[0], HumanStatus::Done).expect("done");
+        model.sync_from_domain(&domain);
+        let (screen, _) = board_screen(&model, 80, 24);
+        assert!(
+            !screen
+                .lines()
+                .any(|line| line.contains("second") && line.contains("after T")),
+            "gone once every prerequisite is done: {screen}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod queued_cleanup_tests {
+    use std::cell::Cell;
+    use std::path::Path;
+    use std::rc::Rc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Instant, SystemTime};
+
+    use super::{
+        finish_queued_cleanup_with_host, handle_board_intent_with_host,
+        offer_cleanup_prompt_with_host, CleanupOffer,
+    };
+    use crate::dispatch::{
+        CleanupInspection, CreatedWorktree, DispatchHost, MergeCheck, MergeVerdict,
+    };
+    use crate::domain::{Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope};
+    use crate::save_recovery::SaveRecovery;
+    use crate::store::TaskStore;
+    use crate::ui::board::{apply_intent, BoardModel, CleanupRowState};
+    use crate::ui::input::BoardIntent;
+    use crate::ui::queue::NavTab;
+
+    /// The board's cleanup path must never take the fetching inspection: that is the network
+    /// wait the event loop may not block on.
+    struct CheckHost {
+        check: MergeCheck,
+        cached_merged: bool,
+        /// Whether a fetch counts as fresh; the snapshot may flip it (a fetch landing mid-read).
+        fresh: Rc<Cell<bool>>,
+        fetch_lands_during_snapshot: bool,
+        removed: usize,
+        deleted: usize,
+    }
+
+    impl CheckHost {
+        fn new(cached_merged: bool) -> Self {
+            Self {
+                check: MergeCheck::default(),
+                cached_merged,
+                fresh: Rc::default(),
+                fetch_lands_during_snapshot: false,
+                removed: 0,
+                deleted: 0,
+            }
+        }
+    }
+
+    impl DispatchHost for CheckHost {
+        fn is_git_repo(&mut self, _: &Path) -> Result<bool, String> {
+            Ok(true)
+        }
+        fn create_worktree(
+            &mut self,
+            _: &Path,
+            _: &str,
+            _: Option<&str>,
+            _: &str,
+        ) -> Result<CreatedWorktree, String> {
+            Err("not used".into())
+        }
+        fn inspect_cleanup(
+            &mut self,
+            _: &Path,
+            _: &Dispatch,
+            _: bool,
+        ) -> Result<CleanupInspection, String> {
+            panic!("the board must not fetch on its own thread")
+        }
+        fn inspect_cleanup_cached(
+            &mut self,
+            _: &Path,
+            _: &Dispatch,
+            _: bool,
+        ) -> Result<CleanupInspection, String> {
+            if self.fetch_lands_during_snapshot {
+                self.fresh.set(true);
+            }
+            Ok(CleanupInspection {
+                unreachable_remote: None,
+                worktree_exists: true,
+                dirty: false,
+                dirty_files: Vec::new(),
+                checked_out_elsewhere: false,
+                branch_merged: self.cached_merged,
+                workspace_exists: true,
+                target_matches: true,
+                warning: None,
+                base_available: true,
+            })
+        }
+        fn begin_merge_check(&mut self, _: &Path, _: &Dispatch) -> Option<MergeCheck> {
+            (!self.fresh.get()).then(|| self.check.clone())
+        }
+        fn remove_herdr_worktree(&mut self, _: &str) -> Result<(), String> {
+            self.removed += 1;
+            Ok(())
+        }
+        fn delete_branch(&mut self, _: &Path, _: &str) -> Result<(), String> {
+            self.deleted += 1;
+            Ok(())
+        }
+        fn root_pane(&mut self, _: &str) -> Result<String, crate::dispatch::RootPaneError> {
+            Err("not used".into())
+        }
+        fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
+            Err("not used".into())
+        }
+    }
+
+    const PROJECT: &str = "/repos/queued";
+
+    fn setup(label: &str) -> (std::path::PathBuf, TaskStore, DomainState, uuid::Uuid) {
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "tsk-queued-cleanup-{label}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("state dir");
+        let store = TaskStore::new(&dir);
+        let mut domain = DomainState::new();
+        let id = domain
+            .create(
+                "queued",
+                None,
+                TaskScope::Project {
+                    path: PROJECT.into(),
+                },
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create");
+        domain.set_status(id, HumanStatus::Started).expect("start");
+        domain
+            .record_dispatch(
+                id,
+                Dispatch {
+                    argv: vec!["agent".into()],
+                    worktree: "/tmp/tsk-queued".into(),
+                    branch: "tsk/t1-queued".into(),
+                    base: Some("origin/main".into()),
+                    base_commit: None,
+                    base_remote: Some("origin".into()),
+                    base_ref: Some("refs/remotes/origin/main".into()),
+                    herdr_workspace_id: "w1".into(),
+                    at: SystemTime::now(),
+                    cleaned: false,
+                },
+            )
+            .expect("dispatch");
+        store.reload_merge_save(&mut domain).expect("save");
+        (dir, store, domain, id)
+    }
+
+    fn press(
+        store: &TaskStore,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        intent: BoardIntent,
+        host: &mut CheckHost,
+    ) {
+        let mut recovery = SaveRecovery::new();
+        handle_board_intent_with_host(
+            store,
+            domain,
+            model,
+            intent,
+            &mut recovery,
+            false,
+            true,
+            host,
+            &mut |_| {},
+        )
+        .expect("intent");
+        assert!(!recovery.is_pending());
+    }
+
+    /// One iteration of the board loop's cleanup step; nothing else confirms.
+    fn tick(
+        store: &TaskStore,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        host: &mut CheckHost,
+    ) {
+        let mut recovery = SaveRecovery::new();
+        finish_queued_cleanup_with_host(store, domain, model, &mut recovery, true, host)
+            .expect("loop step");
+        assert!(!recovery.is_pending());
+    }
+
+    fn verdict(merged: bool) -> MergeVerdict {
+        MergeVerdict {
+            unreachable_remote: None,
+            branch_merged: merged,
+            base_available: true,
+            warning: None,
+            confirmed: true,
+        }
+    }
+
+    #[test]
+    fn y_during_the_merged_check_saves_completion_at_once_and_cleans_when_the_verdict_lands() {
+        let (dir, store, mut domain, id) = setup("lands");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut host = CheckHost::new(false);
+        assert_eq!(
+            offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+                .expect("offer"),
+            CleanupOffer::Prompted
+        );
+        let pressed = Instant::now();
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        assert!(pressed.elapsed() < std::time::Duration::from_millis(500));
+        // Completion never waits on the network: it is durable before the check lands.
+        assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
+        let disk = store.load().expect("load");
+        assert_eq!(disk.get(id).unwrap().status, HumanStatus::Done);
+        assert_eq!(
+            model.cleanup_run().unwrap().rows[0].state,
+            CleanupRowState::Checking
+        );
+        // A second y on the confirmed card changes nothing.
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert!(!model.cleanup_run().unwrap().started, "no verdict yet");
+        assert_eq!(host.removed, 0);
+
+        host.check.complete(verdict(true));
+        host.cached_merged = true; // the refs the check fetched
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert!(model.cleanup_prompt().is_none());
+        assert!(model.cleanup_run().is_none());
+        assert_eq!((host.removed, host.deleted), (1, 1));
+        assert_eq!(model.message(), Some("done T1 · cleaned"));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn a_check_that_never_lands_starts_the_cleanup_at_its_bound_keeping_the_branch() {
+        let (dir, store, mut domain, id) = setup("bound");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut host = CheckHost::new(true);
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            .expect("offer");
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert_eq!(host.removed, 0);
+        model.cleanup_run_mut().unwrap().start_deadline = Instant::now();
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
+        assert_eq!(host.removed, 1, "the clean worktree is still removed");
+        assert_eq!(
+            host.deleted, 0,
+            "cached ancestry says merged, but no check confirmed it"
+        );
+        // A kept branch is not missed: the card stays on its outcome until Esc.
+        assert!(model.cleanup_run().is_some_and(|run| run.finished()));
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::CancelCleanup,
+            &mut host,
+        );
+        assert!(model
+            .message()
+            .is_some_and(|message| message.contains("branch kept (merge unconfirmed)")));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn esc_after_y_hides_the_card_keeps_the_completion_and_cleans_when_the_verdict_lands() {
+        let (dir, store, mut domain, id) = setup("cancel");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut host = CheckHost::new(true);
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            .expect("offer");
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::CancelCleanup,
+            &mut host,
+        );
+        assert!(model.cleanup_prompt().is_none());
+        assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert_eq!(model.message(), Some("cleanup waits for merge checks…"));
+        host.check.complete(verdict(true));
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert_eq!((host.removed, host.deleted), (1, 1));
+        assert!(domain.get(id).unwrap().dispatch.as_ref().unwrap().cleaned);
+        assert_eq!(model.message(), Some("done T1 · cleaned"));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn y_in_the_focused_project_preview_is_finished_by_the_outer_loop() {
+        let (dir, store, mut domain, id) = setup("preview");
+        let mut model = BoardModel::from_domain(&domain, None);
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("projects overview");
+        for _ in 0..2 {
+            apply_intent(&mut domain, &mut model, BoardIntent::StageRight, None)
+                .expect("stage right");
+        }
+        assert!(model.project_right_seat_focused());
+        let mut host = CheckHost::new(false);
+        assert_eq!(
+            offer_cleanup_prompt_with_host(
+                &mut domain,
+                model.input_target_mut(),
+                id,
+                true,
+                &mut host
+            )
+            .expect("offer"),
+            CleanupOffer::Prompted
+        );
+        press(
+            &store,
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        assert!(
+            model.cleanup_prompt().is_none(),
+            "the card lives in the preview"
+        );
+        assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert!(model.input_target_mut().cleanup_card_open());
+
+        host.check.complete(verdict(true));
+        host.cached_merged = true;
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert!(model.input_target_mut().cleanup_prompt().is_none());
+        assert_eq!((host.removed, host.deleted), (1, 1));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    fn focus_project_preview(domain: &mut DomainState, model: &mut BoardModel) {
+        apply_intent(
+            domain,
+            model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("projects overview");
+        for _ in 0..2 {
+            apply_intent(domain, model, BoardIntent::StageRight, None).expect("stage right");
+        }
+        assert!(model.project_right_seat_focused());
+    }
+
+    #[test]
+    fn a_cleanup_confirmed_in_the_project_preview_outlives_dropping_and_rebinding_it() {
+        let (dir, store, mut domain, id) = setup("preview-drop");
+        let mut model = BoardModel::from_domain(&domain, None);
+        focus_project_preview(&mut domain, &mut model);
+        let mut host = CheckHost::new(false);
+        offer_cleanup_prompt_with_host(&mut domain, model.input_target_mut(), id, true, &mut host)
+            .expect("offer");
+        press(
+            &store,
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        press(
+            &store,
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::CancelCleanup,
+            &mut host,
+        );
+        // Leave the overview (the preview is dropped), then come back (a new preview binds).
+        model.drop_project_preview();
+        assert!(model.right_seat().is_none());
+        assert!(
+            model.cleanup_running(),
+            "the run is not the preview's to lose"
+        );
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Desk),
+            None,
+        )
+        .expect("tasks");
+        focus_project_preview(&mut domain, &mut model);
+        assert!(model.input_target_mut().cleanup_running());
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert_eq!(model.message(), Some("cleanup waits for merge checks…"));
+
+        host.check.complete(verdict(true));
+        host.cached_merged = true;
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert_eq!((host.removed, host.deleted), (1, 1));
+        let disk = store.load().expect("load");
+        assert!(
+            disk.get(id).unwrap().dispatch.as_ref().unwrap().cleaned,
+            "the cleaned marker still lands"
+        );
+        assert!(!model.cleanup_running());
+        assert_eq!(model.message(), Some("done T1 · cleaned"));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn quit_waits_for_a_cleanup_whose_preview_was_dropped() {
+        let (dir, store, mut domain, id) = setup("preview-quit");
+        let mut model = BoardModel::from_domain(&domain, None);
+        focus_project_preview(&mut domain, &mut model);
+        let mut host = CheckHost::new(false);
+        offer_cleanup_prompt_with_host(&mut domain, model.input_target_mut(), id, true, &mut host)
+            .expect("offer");
+        press(
+            &store,
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        model.drop_project_preview();
+        let mut recovery = SaveRecovery::new();
+        let quit = handle_board_intent_with_host(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::Quit,
+            &mut recovery,
+            false,
+            true,
+            &mut host,
+            &mut |_| {},
+        )
+        .expect("quit");
+        assert!(!quit);
+        assert!(!model.quit_after_cleanup_due());
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn a_cleanup_whose_preview_card_parks_reports_and_releases_on_the_visible_board() {
+        let (dir, store, mut domain, id) = setup("parked-kept");
+        let mut model = BoardModel::from_domain(&domain, None);
+        focus_project_preview(&mut domain, &mut model);
+        // Cached refs say merged, but the check never lands: the branch will be kept.
+        let mut host = CheckHost::new(true);
+        offer_cleanup_prompt_with_host(&mut domain, model.input_target_mut(), id, true, &mut host)
+            .expect("offer");
+        press(
+            &store,
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        // The frame narrows: the preview and its card park, unpainted and unreachable.
+        super::sync_frame_presentation(ratatui::layout::Rect::new(0, 0, 60, 24), &model);
+        assert!(!model.project_right_seat_focused());
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert_eq!(
+            model.message(),
+            Some("cleanup waits for merge checks…"),
+            "progress shows on the visible board"
+        );
+        model.cleanup_run_mut().unwrap().start_deadline = Instant::now();
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert_eq!(host.removed, 1);
+        assert!(
+            !model.cleanup_running(),
+            "a finished run never stays busy behind a parked card"
+        );
+        assert!(model
+            .message()
+            .is_some_and(|message| message.contains("branch kept (merge unconfirmed)")));
+        assert!(model
+            .preview_seat_mut()
+            .is_some_and(|seat| seat.cleanup_prompt().is_none()));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn a_busy_refusal_on_the_outer_board_clears_when_the_preview_closes_the_finished_card() {
+        let (dir, store, mut domain, id) = setup("outer-refusal");
+        let mut model = BoardModel::from_domain(&domain, None);
+        focus_project_preview(&mut domain, &mut model);
+        // Cached refs say merged, but the check never lands: the branch is kept, so the
+        // finished card stays open until Esc.
+        let mut host = CheckHost::new(true);
+        offer_cleanup_prompt_with_host(&mut domain, model.input_target_mut(), id, true, &mut host)
+            .expect("offer");
+        press(
+            &store,
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        let narrow = ratatui::layout::Rect::new(0, 0, 60, 24);
+        let wide = ratatui::layout::Rect::new(0, 0, 160, 40);
+        super::sync_frame_presentation(narrow, &model);
+        assert!(!model.project_right_seat_focused());
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::Complete,
+            &mut host,
+        );
+        assert_eq!(model.message(), Some(super::CLEANUP_BUSY));
+
+        super::sync_frame_presentation(wide, &model);
+        assert!(model.project_right_seat_focused());
+        model.cleanup_run_mut().unwrap().start_deadline = Instant::now();
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert!(model.cleanup_run().is_some_and(|run| run.finished()));
+        assert!(model.input_target_mut().cleanup_card_open());
+        press(
+            &store,
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::CancelCleanup,
+            &mut host,
+        );
+        tick(&store, &mut domain, &mut model, &mut host);
+
+        super::sync_frame_presentation(narrow, &model);
+        assert_ne!(
+            model.message(),
+            Some(super::CLEANUP_BUSY),
+            "the outer board's refusal does not outlive the run"
+        );
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    /// A preview task-page edit whose save fails, then the frame narrows so the preview parks.
+    /// Returns the persistent recovery, with the visible board showing it.
+    #[cfg(unix)]
+    fn parked_preview_with_a_failed_task_edit(
+        dir: &Path,
+        store: &TaskStore,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+    ) -> SaveRecovery<DomainState> {
+        use std::os::unix::fs::PermissionsExt;
+        apply_intent(
+            domain,
+            model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("projects overview");
+        for _ in 0..2 {
+            apply_intent(domain, model, BoardIntent::StageRight, None).expect("stage right");
+        }
+        assert!(model.project_right_seat_focused());
+        let seat = model.input_target_mut();
+        apply_intent(domain, seat, BoardIntent::OpenTaskPage, None).expect("task page");
+        apply_intent(domain, seat, BoardIntent::BeginEditTitle, None).expect("edit title");
+        apply_intent(
+            domain,
+            seat,
+            BoardIntent::EditInsertText(" edited".into()),
+            None,
+        )
+        .expect("type");
+        let mut recovery = SaveRecovery::new();
+        let mut host = CheckHost::new(false);
+        let permissions = std::fs::Permissions::from_mode;
+        std::fs::set_permissions(dir, permissions(0o555)).expect("read-only state dir");
+        let saved = handle_board_intent_with_host(
+            store,
+            domain,
+            model.input_target_mut(),
+            BoardIntent::ConfirmEdit,
+            &mut recovery,
+            false,
+            true,
+            &mut host,
+            &mut |_| {},
+        );
+        std::fs::set_permissions(dir, permissions(0o755)).expect("writable again");
+        saved.expect("confirm");
+        assert!(recovery.is_pending(), "the preview's save failed");
+        let seat = model.right_seat().expect("seat");
+        assert!(seat.owns_save_recovery() && seat.task_edit_save_held());
+
+        super::sync_frame_presentation(ratatui::layout::Rect::new(0, 0, 60, 24), model);
+        assert!(!model.project_right_seat_focused());
+        finish_queued_cleanup_with_host(store, domain, model, &mut recovery, true, &mut host)
+            .expect("loop step");
+        assert_eq!(
+            model.input_mode(),
+            crate::ui::board::BoardInputMode::SaveRecovery
+        );
+        recovery
+    }
+
+    /// Answer from the visible board through the event loop's own dispatch boundary.
+    #[cfg(unix)]
+    fn answer_recovery(
+        store: &TaskStore,
+        domain: &mut DomainState,
+        model: &mut BoardModel,
+        recovery: &mut SaveRecovery<DomainState>,
+        intent: BoardIntent,
+    ) {
+        super::dispatch_board_intent(
+            store,
+            domain,
+            model,
+            super::BoardDispatchRoute {
+                area: ratatui::layout::Rect::new(0, 0, 60, 24),
+                target: super::BoardIntentTarget::Focused,
+            },
+            intent,
+            recovery,
+            false,
+        )
+        .expect("answer");
+        let mut host = CheckHost::new(false);
+        finish_queued_cleanup_with_host(store, domain, model, recovery, true, &mut host)
+            .expect("loop step");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancel_on_the_visible_board_unwinds_a_parked_previews_failed_task_edit() {
+        let (dir, store, mut domain, id) = setup("parked-cancel");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut recovery =
+            parked_preview_with_a_failed_task_edit(&dir, &store, &mut domain, &mut model);
+        answer_recovery(
+            &store,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardIntent::CancelSave,
+        );
+        assert!(!recovery.is_pending());
+        assert_eq!(model.input_mode(), crate::ui::board::BoardInputMode::Normal);
+        assert_eq!(model.message(), Some("save cancelled"));
+        let seat = model.right_seat().expect("seat");
+        assert!(!seat.task_edit_save_held(), "the hold is released");
+        assert!(!seat.owns_save_recovery() && !seat.shows_save_recovery_proxy());
+        assert_eq!(
+            seat.task_form_title(),
+            Some("queued"),
+            "the cancelled draft is gone"
+        );
+        assert_eq!(store.load().unwrap().get(id).unwrap().title, "queued");
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retry_on_the_visible_board_lands_and_releases_a_parked_previews_failed_task_edit() {
+        let (dir, store, mut domain, id) = setup("parked-retry");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut recovery =
+            parked_preview_with_a_failed_task_edit(&dir, &store, &mut domain, &mut model);
+        answer_recovery(
+            &store,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            BoardIntent::RetrySave,
+        );
+        assert!(!recovery.is_pending());
+        assert_eq!(model.input_mode(), crate::ui::board::BoardInputMode::Normal);
+        assert_eq!(
+            store.load().unwrap().get(id).unwrap().title,
+            "queued edited"
+        );
+        let seat = model.right_seat().expect("seat");
+        assert!(!seat.task_edit_save_held(), "the hold is released");
+        assert!(!seat.owns_save_recovery() && !seat.shows_save_recovery_proxy());
+        assert_eq!(seat.task_form_title(), Some("queued edited"));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    /// The outer board's save failed while the pane was narrow, then the pane widened so the
+    /// focused preview shows a proxy of the banner. Answer from that preview's palette.
+    fn palette_answer_reaches_the_outer_owner(answer: BoardIntent, expected: &str) {
+        let (dir, store, mut domain, _id) = setup("palette-recovery");
+        let mut model = BoardModel::from_domain(&domain, None);
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("projects overview");
+        for _ in 0..2 {
+            apply_intent(&mut domain, &mut model, BoardIntent::StageRight, None)
+                .expect("stage right");
+        }
+        let narrow = ratatui::layout::Rect::new(0, 0, 60, 24);
+        let wide = ratatui::layout::Rect::new(0, 0, 160, 40);
+        super::sync_frame_presentation(narrow, &model);
+        assert!(!model.project_right_seat_focused());
+        let mut recovery = SaveRecovery::new();
+        recovery.fail(domain.clone(), domain.clone(), "disk full");
+        model.begin_save_recovery("disk full");
+        assert!(model.owns_save_recovery());
+
+        super::sync_frame_presentation(wide, &model);
+        assert!(model.project_right_seat_focused());
+        let mut host = CheckHost::new(false);
+        finish_queued_cleanup_with_host(
+            &store,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            true,
+            &mut host,
+        )
+        .expect("loop step");
+        assert!(model.right_seat().unwrap().shows_save_recovery_proxy());
+
+        let seat = model.input_target_mut();
+        apply_intent(&mut domain, seat, BoardIntent::OpenCommandPalette, None).expect("palette");
+        let index = seat
+            .visible_commands()
+            .iter()
+            .position(|command| command.intent == answer)
+            .expect("recovery command offered");
+        let intent = if answer == BoardIntent::RetrySave {
+            for _ in 0..index {
+                apply_intent(&mut domain, seat, BoardIntent::CommandNext, None).expect("move");
+            }
+            BoardIntent::ConfirmCommand
+        } else {
+            BoardIntent::SelectCommand(index)
+        };
+        super::dispatch_board_intent(
+            &store,
+            &mut domain,
+            &mut model,
+            super::BoardDispatchRoute {
+                area: wide,
+                target: super::BoardIntentTarget::Focused,
+            },
+            intent,
+            &mut recovery,
+            false,
+        )
+        .expect("answer");
+        assert!(!recovery.is_pending());
+        assert!(
+            !model.owns_save_recovery(),
+            "the outer owner is resolved, not left for a stale-banner sweep"
+        );
+        assert_eq!(model.message(), Some(expected));
+        assert!(!model.right_seat().unwrap().shows_save_recovery_proxy());
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn palette_retry_on_a_focused_proxy_resolves_the_outer_owner() {
+        palette_answer_reaches_the_outer_owner(BoardIntent::RetrySave, "saved");
+    }
+
+    #[test]
+    fn palette_cancel_on_a_focused_proxy_resolves_the_outer_owner() {
+        palette_answer_reaches_the_outer_owner(BoardIntent::CancelSave, "save cancelled");
+    }
+
+    #[test]
+    fn a_check_that_failed_keeps_the_branch_even_when_cached_refs_later_read_merged() {
+        let (dir, store, mut domain, id) = setup("failed-check");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut host = CheckHost::new(false);
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            .expect("offer");
+        // The ancestry query timed out: the check lands, but it confirmed nothing.
+        host.check.complete(MergeVerdict {
+            unreachable_remote: None,
+            branch_merged: false,
+            base_available: false,
+            warning: Some("ancestry check timed out".into()),
+            confirmed: false,
+        });
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert!(!model.cleanup_prompt().unwrap().checking());
+        // The transient failure clears: the refs on disk now read as merged.
+        host.cached_merged = true;
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
+        assert_eq!((host.removed, host.deleted), (1, 0), "branch kept");
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn an_offline_check_keeps_the_branch_although_cached_refs_read_merged() {
+        let (dir, store, mut domain, id) = setup("offline-check");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut host = CheckHost::new(true);
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            .expect("offer");
+        // The fetch failed: the refs on disk read as merged, but the remote may have been
+        // force-pushed since.
+        host.check.complete(MergeVerdict {
+            unreachable_remote: Some("origin".into()),
+            branch_merged: true,
+            base_available: true,
+            warning: Some("fetch failed: offline; merged status not confirmed".into()),
+            confirmed: true,
+        });
+        tick(&store, &mut domain, &mut model, &mut host);
+        let row = &model.cleanup_prompt().unwrap().rows[0];
+        assert!(!row.checking() && !row.branch_deletable());
+        assert_eq!(row.cleanup_refs(), crate::dispatch::CleanupRefs::Offline);
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
+        assert_eq!((host.removed, host.deleted), (1, 0), "branch kept");
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::CancelCleanup,
+            &mut host,
+        );
+        assert!(model
+            .message()
+            .is_some_and(|message| message.contains("branch kept (offline)")));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn y_on_a_card_whose_dispatch_was_relaunched_meanwhile_leaves_the_new_one_alone() {
+        let (dir, store, mut domain, id) = setup("relaunched");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut host = CheckHost::new(true);
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            .expect("offer");
+        host.check.complete(verdict(true));
+        tick(&store, &mut domain, &mut model, &mut host);
+
+        // The CLI cleans and relaunches the task while the card is open.
+        let mut other = store.load().expect("load");
+        other
+            .record_dispatch_cleaned(id, crate::domain::CleanupOutcome::Removed)
+            .expect("cleaned");
+        store.reload_merge_save(&mut other).expect("save cleaned");
+        let mut other = store.load().expect("load");
+        let mut relaunched = other.get(id).unwrap().dispatch.clone().unwrap();
+        relaunched.cleaned = false;
+        relaunched.herdr_workspace_id = "w2".into();
+        relaunched.at = SystemTime::now() + std::time::Duration::from_secs(1);
+        other
+            .record_dispatch(id, relaunched.clone())
+            .expect("relaunch");
+        store.reload_merge_save(&mut other).expect("save");
+
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        assert_eq!(
+            (host.removed, host.deleted),
+            (0, 0),
+            "the new launch is untouched"
+        );
+        assert_eq!(domain.get(id).unwrap().dispatch.as_ref(), Some(&relaunched));
+        press(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::CancelCleanup,
+            &mut host,
+        );
+        assert!(model
+            .message()
+            .is_some_and(|message| message.contains("kept (dispatch changed)")));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn a_queued_y_in_a_preview_parked_by_a_narrowing_frame_still_finishes_on_time() {
+        let (dir, store, mut domain, id) = setup("parked");
+        let mut model = BoardModel::from_domain(&domain, None);
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("projects overview");
+        for _ in 0..2 {
+            apply_intent(&mut domain, &mut model, BoardIntent::StageRight, None)
+                .expect("stage right");
+        }
+        assert!(model.project_right_seat_focused());
+        let mut host = CheckHost::new(false);
+        offer_cleanup_prompt_with_host(&mut domain, model.input_target_mut(), id, true, &mut host)
+            .expect("offer");
+        press(
+            &store,
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        // The terminal narrows before the check lands: the preview parks and input returns
+        // to the outer index, but the queued `y` still belongs to the preview's card.
+        super::sync_frame_presentation(ratatui::layout::Rect::new(0, 0, 60, 24), &model);
+        assert!(!model.project_right_seat_focused());
+        host.check.complete(verdict(true));
+        host.cached_merged = true;
+        tick(&store, &mut domain, &mut model, &mut host);
+        assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
+        assert_eq!((host.removed, host.deleted), (1, 1));
+        assert!(model
+            .preview_seat_mut()
+            .is_none_or(|seat| seat.cleanup_prompt().is_none()));
+        assert!(
+            model
+                .message()
+                .is_some_and(|message| message.starts_with("done T")),
+            "the outcome shows on the visible board: {:?}",
+            model.message()
+        );
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_parked_preview_whose_queued_cleanup_fails_to_save_shows_recovery_on_the_visible_board() {
+        use crate::ui::board::BoardInputMode;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, store, mut domain, id) = setup("parked-save");
+        let mut model = BoardModel::from_domain(&domain, None);
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::SelectNavTab(NavTab::Projects),
+            None,
+        )
+        .expect("projects overview");
+        for _ in 0..2 {
+            apply_intent(&mut domain, &mut model, BoardIntent::StageRight, None)
+                .expect("stage right");
+        }
+        let mut host = CheckHost::new(false);
+        offer_cleanup_prompt_with_host(&mut domain, model.input_target_mut(), id, true, &mut host)
+            .expect("offer");
+        press(
+            &store,
+            &mut domain,
+            model.input_target_mut(),
+            BoardIntent::ConfirmCleanup,
+            &mut host,
+        );
+        super::sync_frame_presentation(ratatui::layout::Rect::new(0, 0, 60, 24), &model);
+        assert!(!model.project_right_seat_focused());
+
+        // The save under the parked preview fails.
+        let permissions = |mode| std::fs::Permissions::from_mode(mode);
+        std::fs::set_permissions(&dir, permissions(0o555)).expect("read-only state dir");
+        host.check.complete(verdict(true));
+        host.cached_merged = true;
+        let mut recovery = SaveRecovery::new();
+        let finished = finish_queued_cleanup_with_host(
+            &store,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            true,
+            &mut host,
+        );
+        std::fs::set_permissions(&dir, permissions(0o755)).expect("writable again");
+        finished.expect("loop step");
+        assert!(recovery.is_pending(), "the save failed");
+        assert_eq!(model.input_mode(), BoardInputMode::SaveRecovery);
+        assert!(model
+            .message()
+            .is_some_and(|message| message.contains("save failed")));
+        assert_eq!(
+            super::board_keyboard_intent(
+                &model,
+                model.input_mode(),
+                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)
+            ),
+            Some(BoardIntent::RetrySave)
+        );
+
+        handle_board_intent_with_host(
+            &store,
+            &mut domain,
+            &mut model,
+            BoardIntent::RetrySave,
+            &mut recovery,
+            false,
+            true,
+            &mut host,
+            &mut |_| {},
+        )
+        .expect("retry");
+        assert!(!recovery.is_pending());
+        finish_queued_cleanup_with_host(
+            &store,
+            &mut domain,
+            &mut model,
+            &mut recovery,
+            true,
+            &mut host,
+        )
+        .expect("loop step");
+        assert_eq!(model.input_mode(), BoardInputMode::Normal);
+        assert!(model
+            .right_seat()
+            .is_some_and(|seat| seat.popup() != crate::ui::mouse::BoardPopup::SaveRecovery));
+        let disk = store.load().expect("load");
+        assert_eq!(disk.get(id).unwrap().status, HumanStatus::Done);
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn a_fetch_landing_during_the_card_snapshot_still_leaves_a_check_to_refresh_it() {
+        let (dir, _store, mut domain, id) = setup("interleave");
+        let mut model = BoardModel::from_domain(&domain, None);
+        let mut host = CheckHost::new(false);
+        host.fetch_lands_during_snapshot = true;
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            .expect("offer");
+        assert!(
+            model.cleanup_prompt().unwrap().checking(),
+            "pre-fetch ancestry is never shown as a final verdict"
+        );
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+}
+
+#[cfg(test)]
+mod bulk_cleanup_tests {
+    use std::collections::{HashMap, HashSet};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Instant, SystemTime};
+
+    use super::{
+        finish_queued_cleanup_with_host, handle_board_intent_with_host,
+        offer_bulk_cleanup_prompt_with_host, BulkCleanupOffer,
+    };
+    use crate::dispatch::{
+        run_cleanup_job, run_cleanup_row, CleanupError, CleanupInspection, CleanupJob,
+        CleanupPlanRow, CreatedWorktree, DispatchHost, MergeCheck, MergeVerdict,
+    };
+    use crate::domain::{
+        Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope, UndoEntry,
+    };
+    use crate::save_recovery::SaveRecovery;
+    use crate::store::TaskStore;
+    use crate::ui::board::{apply_intent, BoardInputMode, BoardModel, CleanupRowState};
+    use crate::ui::input::BoardIntent;
+    use crate::ui::mouse::BoardPopup;
+
+    const PROJECT: &str = "/repos/bulk";
+
+    /// Per-worktree fake: which are dirty or gone, one merged check per worktree, and a log of
+    /// what was removed. The fetching inspection is never allowed on the board's thread.
+    #[derive(Default)]
+    struct BulkHost {
+        dirty: HashSet<String>,
+        missing: HashSet<String>,
+        cached_merged: bool,
+        checks: HashMap<String, MergeCheck>,
+        removed: Vec<String>,
+        deleted: Vec<String>,
+        /// Workspaces whose removal fails.
+        fail: HashSet<String>,
+        /// A slow host: `y` hands the plan over and the test lands each row by hand.
+        hold: bool,
+        held: Option<(CleanupJob, Vec<CleanupPlanRow>)>,
+        /// Workspaces already closed when cleanup looks.
+        gone_workspaces: HashSet<String>,
+        /// Workspaces closed by id, in order.
+        closed: Vec<String>,
+        /// What a workspace close returns instead of closing.
+        close_error: Option<String>,
+    }
+
+    impl DispatchHost for BulkHost {
+        fn is_git_repo(&mut self, _: &Path) -> Result<bool, String> {
+            Ok(true)
+        }
+        fn create_worktree(
+            &mut self,
+            _: &Path,
+            _: &str,
+            _: Option<&str>,
+            _: &str,
+        ) -> Result<CreatedWorktree, String> {
+            Err("not used".into())
+        }
+        fn inspect_cleanup(
+            &mut self,
+            _: &Path,
+            _: &Dispatch,
+            _: bool,
+        ) -> Result<CleanupInspection, String> {
+            panic!("the board must not fetch on its own thread")
+        }
+        fn inspect_cleanup_cached(
+            &mut self,
+            _: &Path,
+            record: &Dispatch,
+            _: bool,
+        ) -> Result<CleanupInspection, String> {
+            Ok(CleanupInspection {
+                unreachable_remote: None,
+                worktree_exists: !self.missing.contains(&record.worktree),
+                dirty: self.dirty.contains(&record.worktree),
+                dirty_files: Vec::new(),
+                checked_out_elsewhere: false,
+                branch_merged: self.cached_merged,
+                workspace_exists: !self.gone_workspaces.contains(&record.herdr_workspace_id),
+                target_matches: true,
+                warning: None,
+                base_available: true,
+            })
+        }
+        fn begin_merge_check(&mut self, _: &Path, record: &Dispatch) -> Option<MergeCheck> {
+            Some(
+                self.checks
+                    .entry(record.worktree.clone())
+                    .or_default()
+                    .clone(),
+            )
+        }
+        fn remove_herdr_worktree(&mut self, workspace_id: &str) -> Result<(), String> {
+            if self.fail.contains(workspace_id) {
+                return Err(format!("herdr could not remove {workspace_id}"));
+            }
+            self.removed.push(workspace_id.to_string());
+            Ok(())
+        }
+        fn close_herdr_workspace(&mut self, workspace_id: &str) -> Result<(), String> {
+            if let Some(error) = self.close_error.clone() {
+                return Err(error);
+            }
+            self.closed.push(workspace_id.to_string());
+            Ok(())
+        }
+        fn delete_branch(&mut self, _: &Path, branch: &str) -> Result<(), String> {
+            self.deleted.push(branch.to_string());
+            Ok(())
+        }
+        fn begin_cleanup(&mut self, job: CleanupJob, plan: Vec<CleanupPlanRow>, in_herdr: bool) {
+            if self.hold {
+                self.held = Some((job, plan));
+            } else {
+                run_cleanup_job(&job, &plan, in_herdr, self);
+            }
+        }
+        fn root_pane(&mut self, _: &str) -> Result<String, crate::dispatch::RootPaneError> {
+            Err("not used".into())
+        }
+        fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
+            Err("not used".into())
+        }
+    }
+
+    impl BulkHost {
+        /// The worker picks up row `index` without finishing it.
+        fn start(&self, index: usize) {
+            self.held.as_ref().expect("held job").0.start(index);
+        }
+
+        /// The worker finishes row `index`; the job settles once every row is done.
+        fn release(&mut self, index: usize) {
+            let (job, plan) = self.held.clone().expect("held job");
+            run_cleanup_row(&job, index, &plan[index], true, self);
+            let (slots, _) = job.snapshot().expect("job idle");
+            if slots
+                .iter()
+                .all(|slot| matches!(slot, crate::dispatch::CleanupSlot::Done(_)))
+            {
+                job.settle();
+            }
+        }
+
+        fn land_all(&mut self, merged: bool) {
+            for check in self.checks.values() {
+                check.complete(MergeVerdict {
+                    unreachable_remote: None,
+                    branch_merged: merged,
+                    base_available: true,
+                    warning: None,
+                    confirmed: true,
+                });
+            }
+            self.cached_merged = merged;
+        }
+    }
+
+    struct Board {
+        dir: PathBuf,
+        store: TaskStore,
+        domain: DomainState,
+        model: BoardModel,
+        /// clean (dispatched), dirty (dispatched), plain (no dispatch)
+        ids: [uuid::Uuid; 3],
+    }
+
+    impl Drop for Board {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn dispatched(label: &str) -> Dispatch {
+        Dispatch {
+            argv: vec!["agent".into()],
+            worktree: format!("/tmp/tsk-bulk-{label}"),
+            branch: format!("tsk/{label}"),
+            base: Some("origin/main".into()),
+            base_commit: None,
+            base_remote: Some("origin".into()),
+            base_ref: Some("refs/remotes/origin/main".into()),
+            herdr_workspace_id: format!("w-{label}"),
+            at: SystemTime::now(),
+            cleaned: false,
+        }
+    }
+
+    /// A marked set of three: a clean dispatch, a dirty dispatch, and an undispatched task.
+    fn marked_board(label: &str) -> Board {
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "tsk-bulk-cleanup-{label}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("state dir");
+        let store = TaskStore::new(&dir);
+        let mut domain = DomainState::new();
+        let mut create = |title: &str| {
+            let id = domain
+                .create(
+                    title,
+                    None,
+                    TaskScope::Project {
+                        path: PROJECT.into(),
+                    },
+                    ProvenanceOrigin::Manual,
+                    None,
+                )
+                .expect("create");
+            domain.set_status(id, HumanStatus::Started).expect("start");
+            id
+        };
+        let ids = [create("clean"), create("dirty"), create("plain")];
+        domain
+            .record_dispatch(ids[0], dispatched("clean"))
+            .expect("dispatch");
+        domain
+            .record_dispatch(ids[1], dispatched("dirty"))
+            .expect("dispatch");
+        store.reload_merge_save(&mut domain).expect("save");
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(PROJECT)));
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None)
+            .expect("mark mode");
+        for id in ids {
+            let index = model
+                .visible_ids()
+                .iter()
+                .position(|visible| *visible == id)
+                .expect("visible");
+            apply_intent(
+                &mut domain,
+                &mut model,
+                BoardIntent::SelectIndex(index),
+                None,
+            )
+            .expect("select");
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        }
+        assert!(model.bulk_verb_active());
+        Board {
+            dir,
+            store,
+            domain,
+            model,
+            ids,
+        }
+    }
+
+    fn host() -> BulkHost {
+        BulkHost {
+            dirty: HashSet::from(["/tmp/tsk-bulk-dirty".to_string()]),
+            ..BulkHost::default()
+        }
+    }
+
+    fn press(board: &mut Board, intent: BoardIntent, host: &mut BulkHost) {
+        let mut recovery = SaveRecovery::new();
+        handle_board_intent_with_host(
+            &board.store,
+            &mut board.domain,
+            &mut board.model,
+            intent,
+            &mut recovery,
+            false,
+            true,
+            host,
+            &mut |_| {},
+        )
+        .expect("intent");
+        assert!(!recovery.is_pending());
+    }
+
+    fn tick(board: &mut Board, host: &mut BulkHost) {
+        let mut recovery = SaveRecovery::new();
+        finish_queued_cleanup_with_host(
+            &board.store,
+            &mut board.domain,
+            &mut board.model,
+            &mut recovery,
+            true,
+            host,
+        )
+        .expect("loop step");
+    }
+
+    fn statuses(board: &Board) -> Vec<HumanStatus> {
+        board
+            .ids
+            .iter()
+            .map(|id| board.domain.get(*id).unwrap().status)
+            .collect()
+    }
+
+    fn cleaned(board: &Board, index: usize) -> bool {
+        board
+            .domain
+            .get(board.ids[index])
+            .unwrap()
+            .dispatch
+            .as_ref()
+            .unwrap()
+            .cleaned
+    }
+
+    #[test]
+    fn bulk_done_on_a_set_with_live_dispatches_opens_one_card_and_keeps_marks() {
+        let mut board = marked_board("open");
+        let mut host = host();
+        press(&mut board, BoardIntent::Complete, &mut host);
+        let prompt = board.model.cleanup_prompt().expect("bulk card");
+        assert_eq!(prompt.rows.len(), 2, "one row per live dispatch");
+        assert!(prompt.checking(), "each verdict starts as checking");
+        let bulk = prompt.bulk.as_ref().expect("bulk");
+        assert_eq!(bulk.targets.len(), 3);
+        assert_eq!(bulk.plain.len(), 1);
+        assert_eq!(board.model.input_mode(), BoardInputMode::CleanupConfirm);
+        assert_eq!(
+            board.model.marked_ids().len(),
+            3,
+            "marks survive while the card is up"
+        );
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Started));
+        assert!(host.removed.is_empty());
+    }
+
+    #[test]
+    fn esc_on_the_bulk_card_changes_nothing_and_keeps_the_marked_set() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut board = marked_board("esc");
+        let mut host = host();
+        press(&mut board, BoardIntent::Complete, &mut host);
+        let key = |code| {
+            super::board_keyboard_intent(
+                &board.model,
+                board.model.input_mode(),
+                KeyEvent::new(code, KeyModifiers::NONE),
+            )
+        };
+        // The card owns Esc and `M`: mark mode must not clear the set out from under it.
+        assert_eq!(key(KeyCode::Esc), Some(BoardIntent::CancelCleanup));
+        assert_eq!(key(KeyCode::Char('M')), None);
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        assert!(board.model.cleanup_prompt().is_none());
+        assert_eq!(board.model.popup(), BoardPopup::None);
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Started));
+        assert!(host.removed.is_empty() && host.deleted.is_empty());
+        assert_eq!(board.model.marked_ids().len(), 3);
+        assert!(board.model.bulk_verb_active());
+        let disk = board.store.load().expect("load");
+        assert!(disk
+            .tasks()
+            .iter()
+            .all(|task| task.status == HumanStatus::Started));
+    }
+
+    #[test]
+    fn y_cleans_every_clean_worktree_leaves_dirty_ones_unchanged_and_completes_the_rest_as_one_undo(
+    ) {
+        let mut board = marked_board("yes");
+        let mut host = host();
+        press(&mut board, BoardIntent::Complete, &mut host);
+        host.land_all(true);
+        tick(&mut board, &mut host);
+        assert!(!board.model.cleanup_prompt().unwrap().checking());
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        // The dirty row stays unchanged, so the finished card stays on its rows until Esc.
+        assert!(board.model.cleanup_run().is_some_and(|run| run.finished()));
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        assert!(board.model.cleanup_prompt().is_none());
+        assert_eq!(
+            statuses(&board),
+            [HumanStatus::Done, HumanStatus::Started, HumanStatus::Done],
+            "uncommitted work is not even marked done"
+        );
+        assert_eq!(host.removed, vec!["w-clean".to_string()]);
+        assert_eq!(host.deleted, vec!["tsk/clean".to_string()]);
+        assert!(cleaned(&board, 0));
+        assert!(!cleaned(&board, 1), "a dirty worktree is never cleaned");
+        assert!(board.model.marked_ids().is_empty());
+        let message = board.model.message().unwrap_or_default().to_string();
+        assert_eq!(message, "done 2 · cleaned 1 · unchanged 1");
+
+        let disk = board
+            .store
+            .load()
+            .expect("completion and cleaned markers persisted");
+        assert_eq!(disk.get(board.ids[1]).unwrap().status, HumanStatus::Started);
+        assert!(matches!(
+            disk.last_undo(),
+            Some(UndoEntry::Batch { entries }) if entries.len() == 2
+        ));
+        press(&mut board, BoardIntent::Undo, &mut host);
+        assert_eq!(
+            statuses(&board),
+            [HumanStatus::Started; 3],
+            "one undo puts every task it completed back to started"
+        );
+        assert!(
+            cleaned(&board, 0),
+            "undo reverses only completion, not cleanup"
+        );
+    }
+
+    #[test]
+    fn n_completes_the_whole_set_and_keeps_every_worktree() {
+        let mut board = marked_board("no");
+        let mut host = host();
+        press(&mut board, BoardIntent::Complete, &mut host);
+        press(&mut board, BoardIntent::KeepCleanup, &mut host);
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Done));
+        assert!(host.removed.is_empty() && host.deleted.is_empty());
+        assert!(!cleaned(&board, 0) && !cleaned(&board, 1));
+        assert!(board.model.marked_ids().is_empty());
+        assert_eq!(board.model.message(), Some("done 3 · worktrees kept"));
+        assert!(
+            board.model.message_is_sticky(),
+            "kept worktrees are something kept: the outcome stays"
+        );
+        let disk = board.store.load().expect("load");
+        assert!(matches!(
+            disk.last_undo(),
+            Some(UndoEntry::Batch { entries }) if entries.len() == 3
+        ));
+    }
+
+    #[test]
+    fn a_bulk_row_whose_check_failed_keeps_its_branch_on_y() {
+        let mut board = marked_board("failed-check");
+        let mut host = host();
+        press(&mut board, BoardIntent::Complete, &mut host);
+        for check in host.checks.values() {
+            check.complete(MergeVerdict {
+                unreachable_remote: None,
+                branch_merged: false,
+                base_available: false,
+                warning: Some("ancestry check timed out".into()),
+                confirmed: false,
+            });
+        }
+        tick(&mut board, &mut host);
+        assert!(!board.model.cleanup_prompt().unwrap().checking());
+        host.cached_merged = true;
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        assert_eq!(
+            statuses(&board),
+            [HumanStatus::Done, HumanStatus::Started, HumanStatus::Done]
+        );
+        assert_eq!(host.removed, vec!["w-clean".to_string()]);
+        assert!(
+            host.deleted.is_empty(),
+            "a failed check never confirms a merge"
+        );
+    }
+
+    #[test]
+    fn a_bulk_row_whose_check_was_offline_keeps_its_branch_on_y() {
+        let mut board = marked_board("offline-check");
+        let mut host = host();
+        host.cached_merged = true;
+        press(&mut board, BoardIntent::Complete, &mut host);
+        for check in host.checks.values() {
+            check.complete(MergeVerdict {
+                unreachable_remote: Some("origin".into()),
+                branch_merged: true,
+                base_available: true,
+                warning: Some("fetch failed: offline; merged status not confirmed".into()),
+                confirmed: true,
+            });
+        }
+        tick(&mut board, &mut host);
+        assert!(!board.model.cleanup_prompt().unwrap().checking());
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        assert_eq!(
+            statuses(&board),
+            [HumanStatus::Done, HumanStatus::Started, HumanStatus::Done]
+        );
+        assert_eq!(host.removed, vec!["w-clean".to_string()]);
+        assert!(
+            host.deleted.is_empty(),
+            "an unreachable remote never confirms a merge"
+        );
+    }
+
+    #[test]
+    fn a_queued_bulk_y_waits_for_every_check_and_keeps_unconfirmed_branches_at_its_bound() {
+        let mut board = marked_board("queued");
+        let mut host = host();
+        host.cached_merged = true;
+        press(&mut board, BoardIntent::Complete, &mut host);
+        let pressed = Instant::now();
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        // No check ever lands here: a `y` that waited for them would block until their bound.
+        // Half that bound still catches it, with seconds to spare for a loaded runner's save.
+        assert!(pressed.elapsed() < crate::dispatch::MERGE_CHECK_TIMEOUT / 2);
+        // The set is done at once (but for the dirty row); only the worker waits for checks.
+        assert_eq!(
+            disk_statuses(&board),
+            [HumanStatus::Done, HumanStatus::Started, HumanStatus::Done]
+        );
+        tick(&mut board, &mut host);
+        assert!(
+            !board.model.cleanup_run().unwrap().started,
+            "no verdict yet"
+        );
+        board.model.cleanup_run_mut().unwrap().start_deadline = Instant::now();
+        tick(&mut board, &mut host);
+        assert_eq!(host.removed, vec!["w-clean".to_string()]);
+        assert!(
+            host.deleted.is_empty(),
+            "cached refs say merged, but no check confirmed it"
+        );
+    }
+
+    #[test]
+    fn a_set_whose_only_dispatches_lost_their_worktrees_converges_without_a_card() {
+        let mut board = marked_board("missing");
+        let mut host = host();
+        host.missing = HashSet::from([
+            "/tmp/tsk-bulk-clean".to_string(),
+            "/tmp/tsk-bulk-dirty".to_string(),
+        ]);
+        press(&mut board, BoardIntent::Complete, &mut host);
+        assert!(board.model.cleanup_prompt().is_none());
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Done));
+        assert!(cleaned(&board, 0) && cleaned(&board, 1));
+        let disk = board.store.load().expect("load");
+        assert!(matches!(
+            disk.last_undo(),
+            Some(UndoEntry::Batch { entries }) if entries.len() == 3
+        ));
+        // In target order, which tasks created in the same instant may break either way.
+        let mut closed = host.closed.clone();
+        closed.sort();
+        assert_eq!(
+            closed,
+            ["w-clean", "w-dirty"],
+            "each gone worktree's own workspace closes"
+        );
+        assert_eq!(
+            board.model.message(),
+            Some("done 3 · 2 worktrees already gone · 2 workspaces closed")
+        );
+    }
+
+    /// The single cursor task: unmarked, selected on the board.
+    fn cursor_on_clean(board: &mut Board) {
+        board.model.clear_marks();
+        let index = board
+            .model
+            .visible_ids()
+            .iter()
+            .position(|visible| *visible == board.ids[0])
+            .expect("visible");
+        apply_intent(
+            &mut board.domain,
+            &mut board.model,
+            BoardIntent::SelectIndex(index),
+            None,
+        )
+        .expect("select");
+    }
+
+    /// T234: `ctrl+d` on a task whose worktree was deleted by hand closes the Herdr workspace
+    /// the dispatch opened, once the completion is saved; only that workspace, by its id.
+    #[test]
+    fn done_on_a_task_whose_worktree_is_gone_closes_its_workspace() {
+        let mut board = marked_board("gone-single");
+        cursor_on_clean(&mut board);
+        let mut host = host();
+        host.missing = HashSet::from(["/tmp/tsk-bulk-clean".to_string()]);
+        press(&mut board, BoardIntent::Complete, &mut host);
+        assert!(board.model.cleanup_prompt().is_none());
+        assert_eq!(host.closed, vec!["w-clean".to_string()]);
+        assert!(host.removed.is_empty() && host.deleted.is_empty());
+        assert_eq!(
+            board.model.message(),
+            Some("done T1 · worktree already gone · workspace closed · branch kept")
+        );
+        let disk = board.store.load().expect("load");
+        let task = disk.get(board.ids[0]).unwrap();
+        assert_eq!(task.status, HumanStatus::Done);
+        assert!(task.dispatch.as_ref().unwrap().cleaned);
+    }
+
+    /// A workspace already closed is never closed again, and one Herdr refuses to close
+    /// stays open with the reason on the status row: the task is done either way.
+    #[test]
+    fn done_on_a_task_whose_worktree_is_gone_reports_a_workspace_it_could_not_close() {
+        let mut board = marked_board("gone-closed");
+        cursor_on_clean(&mut board);
+        let mut closed = host();
+        closed.missing = HashSet::from(["/tmp/tsk-bulk-clean".to_string()]);
+        closed.gone_workspaces = HashSet::from(["w-clean".to_string()]);
+        press(&mut board, BoardIntent::Complete, &mut closed);
+        assert!(closed.closed.is_empty());
+        assert_eq!(
+            board.model.message(),
+            Some("done T1 · worktree already gone · branch kept")
+        );
+
+        let mut board = marked_board("gone-refused");
+        cursor_on_clean(&mut board);
+        let mut refusing = host();
+        refusing.missing = HashSet::from(["/tmp/tsk-bulk-clean".to_string()]);
+        refusing.close_error = Some("herdr is not running".into());
+        press(&mut board, BoardIntent::Complete, &mut refusing);
+        assert_eq!(
+            board.model.message(),
+            Some(
+                "done T1 · worktree already gone · branch kept · could not close workspace \
+                 w-clean: herdr is not running"
+            )
+        );
+        let disk = board.store.load().expect("load");
+        assert_eq!(disk.get(board.ids[0]).unwrap().status, HumanStatus::Done);
+    }
+
+    /// On a marked set's card, `y` closes the workspace of a row whose worktree was already
+    /// gone; `n` keeps everything the dispatches left, that workspace included.
+    /// A worktree deleted after the card opened is found gone by the worker: its row says
+    /// whether the workspace closed, and a close Herdr refused is never silent.
+    #[test]
+    fn a_card_row_whose_worktree_went_after_the_card_opened_reports_its_workspace() {
+        for (close_error, outcome, summary) in [
+            (
+                None,
+                "done · worktree already gone · workspace closed · branch kept",
+                "1 workspace closed",
+            ),
+            (
+                Some("herdr is not running"),
+                "done · worktree already gone · could not close workspace w-clean: herdr is not \
+                 running · branch kept",
+                // Named past the summary's width, so counted.
+                "workspace kept 1",
+            ),
+        ] {
+            let mut board = marked_board("gone-later");
+            let mut host = host();
+            press(&mut board, BoardIntent::Complete, &mut host);
+            host.land_all(true);
+            tick(&mut board, &mut host);
+            // Deleted by hand while the card was open.
+            host.missing = HashSet::from(["/tmp/tsk-bulk-clean".to_string()]);
+            host.close_error = close_error.map(str::to_string);
+            press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+            tick(&mut board, &mut host);
+            let run = board.model.cleanup_run().expect("run");
+            assert!(run.finished());
+            let row = run
+                .rows
+                .iter()
+                .find(|row| row.task_id == board.ids[0])
+                .expect("T1 row");
+            assert_eq!(run.row_outcome(row).as_deref(), Some(outcome));
+            let (text, clean) = run.summary();
+            assert!(text.contains(summary), "{text}");
+            assert!(!clean, "a kept branch (and pane) never expires on its own");
+            assert_eq!(
+                host.closed,
+                if close_error.is_none() {
+                    vec!["w-clean".to_string()]
+                } else {
+                    Vec::new()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn a_marked_set_card_closes_a_gone_worktrees_workspace_only_on_y() {
+        for (intent, closed) in [
+            (BoardIntent::ConfirmCleanup, vec!["w-clean".to_string()]),
+            (BoardIntent::KeepCleanup, Vec::new()),
+        ] {
+            let mut board = marked_board("gone-card");
+            // T2 is clean here, so the card offers `y`.
+            let mut host = BulkHost {
+                missing: HashSet::from(["/tmp/tsk-bulk-clean".to_string()]),
+                ..BulkHost::default()
+            };
+            press(&mut board, BoardIntent::Complete, &mut host);
+            host.land_all(true);
+            tick(&mut board, &mut host);
+            let options = board
+                .model
+                .cleanup_prompt()
+                .expect("T2 is still live")
+                .options()
+                .into_iter()
+                .map(|option| option.text)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                options
+                    .iter()
+                    .filter(|text| text.contains("close T1's agent pane"))
+                    .count(),
+                1,
+                "`y` says it closes T1's pane, `n` keeps it: {options:?}"
+            );
+            // The run stays on the card while T2's removal is held.
+            host.hold = true;
+            press(&mut board, intent.clone(), &mut host);
+            assert_eq!(host.closed, closed, "{intent:?}");
+            assert!(cleaned(&board, 0), "{intent:?}");
+            if intent == BoardIntent::ConfirmCleanup {
+                let run = board.model.cleanup_run().expect("run");
+                assert_eq!(run.workspaces, vec![("T1".to_string(), Ok(()))]);
+                assert!(
+                    run.summary()
+                        .0
+                        .contains("1 already gone · 1 workspace closed"),
+                    "{}",
+                    run.summary().0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_missing_worktree_relaunched_while_the_card_is_open_is_not_marked_cleaned() {
+        let mut board = marked_board("relaunched");
+        let mut host = host();
+        host.missing = HashSet::from(["/tmp/tsk-bulk-clean".to_string()]);
+        press(&mut board, BoardIntent::Complete, &mut host);
+        let bulk = board.model.cleanup_prompt().unwrap().bulk.clone().unwrap();
+        assert_eq!(bulk.missing.len(), 1, "T1 opens as already gone");
+
+        // Another board relaunches T1 before this card is answered: a fresh worktree and a
+        // fresh, live dispatch record land on disk.
+        let mut other = board.store.load().expect("load");
+        let mut relaunched = dispatched("clean");
+        relaunched.at = SystemTime::now() + std::time::Duration::from_secs(1);
+        other
+            .record_dispatch(board.ids[0], relaunched.clone())
+            .expect("relaunch");
+        board
+            .store
+            .reload_merge_save(&mut other)
+            .expect("save relaunch");
+        host.missing.clear();
+
+        press(&mut board, BoardIntent::KeepCleanup, &mut host);
+        let record = board
+            .domain
+            .get(board.ids[0])
+            .unwrap()
+            .dispatch
+            .clone()
+            .unwrap();
+        assert_eq!(record, relaunched, "the relaunched dispatch stays live");
+        assert!(!record.cleaned);
+        let disk = board.store.load().expect("load");
+        assert!(
+            !disk
+                .get(board.ids[0])
+                .unwrap()
+                .dispatch
+                .as_ref()
+                .unwrap()
+                .cleaned
+        );
+    }
+
+    #[test]
+    fn a_bulk_row_relaunched_while_the_card_is_open_is_skipped_not_cleaned() {
+        let mut board = marked_board("row-relaunched");
+        let mut host = host();
+        host.cached_merged = true;
+        press(&mut board, BoardIntent::Complete, &mut host);
+        host.land_all(true);
+        tick(&mut board, &mut host);
+
+        let mut other = board.store.load().expect("load");
+        other
+            .record_dispatch_cleaned(board.ids[0], crate::domain::CleanupOutcome::Removed)
+            .expect("cleaned");
+        board
+            .store
+            .reload_merge_save(&mut other)
+            .expect("save cleaned");
+        let mut other = board.store.load().expect("load");
+        let mut relaunched = dispatched("clean");
+        relaunched.herdr_workspace_id = "w-clean-2".into();
+        relaunched.at = SystemTime::now() + std::time::Duration::from_secs(1);
+        other
+            .record_dispatch(board.ids[0], relaunched.clone())
+            .expect("relaunch");
+        board.store.reload_merge_save(&mut other).expect("save");
+
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        assert!(
+            host.removed.is_empty() && host.deleted.is_empty(),
+            "{:?}",
+            host.removed
+        );
+        let record = board
+            .domain
+            .get(board.ids[0])
+            .unwrap()
+            .dispatch
+            .clone()
+            .unwrap();
+        assert_eq!(record, relaunched);
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        let message = board.model.message().unwrap_or_default().to_string();
+        assert!(message.contains("T1 (dispatch changed)"), "{message}");
+    }
+
+    #[test]
+    fn bulk_done_without_a_live_dispatch_keeps_the_plain_batch() {
+        let mut board = marked_board("plain");
+        for index in [0, 1] {
+            board
+                .domain
+                .record_dispatch_cleaned(board.ids[index], crate::domain::CleanupOutcome::Removed)
+                .expect("cleaned");
+        }
+        board
+            .store
+            .reload_merge_save(&mut board.domain)
+            .expect("save");
+        board.model.sync_from_domain(&board.domain);
+        let mut host = host();
+        assert_eq!(
+            offer_bulk_cleanup_prompt_with_host(
+                &mut board.domain,
+                &mut board.model,
+                true,
+                &mut host
+            )
+            .expect("offer"),
+            BulkCleanupOffer::None
+        );
+        press(&mut board, BoardIntent::Complete, &mut host);
+        assert!(board.model.cleanup_prompt().is_none());
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Done));
+    }
+
+    fn slow_board(label: &str) -> (Board, BulkHost) {
+        let mut board = marked_board(label);
+        let mut host = BulkHost {
+            hold: true,
+            ..BulkHost::default()
+        };
+        press(&mut board, BoardIntent::Complete, &mut host);
+        host.land_all(true);
+        tick(&mut board, &mut host);
+        (board, host)
+    }
+
+    fn disk_statuses(board: &Board) -> Vec<HumanStatus> {
+        let disk = board.store.load().expect("load");
+        board
+            .ids
+            .iter()
+            .map(|id| disk.get(*id).unwrap().status)
+            .collect()
+    }
+
+    /// The card's row state for `board.ids[index]`.
+    fn row_state(board: &Board, index: usize) -> CleanupRowState {
+        board
+            .model
+            .cleanup_run()
+            .expect("run")
+            .rows
+            .iter()
+            .find(|row| row.task_id == board.ids[index])
+            .expect("row")
+            .state
+            .clone()
+    }
+
+    /// The job slot the worker handles `board.ids[index]` in.
+    fn slot(board: &Board, index: usize) -> usize {
+        board
+            .model
+            .cleanup_run()
+            .expect("run")
+            .rows
+            .iter()
+            .find(|row| row.task_id == board.ids[index])
+            .and_then(|row| row.slot)
+            .expect("worker row")
+    }
+
+    #[test]
+    fn y_returns_before_any_removal_and_rows_land_through_the_loop() {
+        let (mut board, mut host) = slow_board("slow");
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        // The board is interactive again with nothing removed: completion is durable first.
+        assert!(host.removed.is_empty());
+        assert!(disk_statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Done));
+        assert!(board.model.cleanup_card_open(), "the card stays to report");
+        assert_eq!(row_state(&board, 0), CleanupRowState::Queued);
+        assert_eq!(row_state(&board, 1), CleanupRowState::Queued);
+        let (first, second) = (slot(&board, 0), slot(&board, 1));
+        // Idle frames never wait on the worker.
+        tick(&mut board, &mut host);
+        tick(&mut board, &mut host);
+        host.start(first);
+        tick(&mut board, &mut host);
+        assert_eq!(row_state(&board, 0), CleanupRowState::Removing);
+        host.release(first);
+        tick(&mut board, &mut host);
+        assert_eq!(row_state(&board, 0), CleanupRowState::cleaned(None));
+        assert!(cleaned(&board, 0));
+        let disk = board.store.load().expect("load");
+        assert!(
+            disk.get(board.ids[0])
+                .unwrap()
+                .dispatch
+                .as_ref()
+                .unwrap()
+                .cleaned,
+            "each landed row saves its cleaned marker"
+        );
+        assert!(!cleaned(&board, 1));
+        // Esc hides the card; cleanup continues and the status row reports it.
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        assert!(!board.model.cleanup_card_open());
+        assert!(board.model.cleanup_run().is_some());
+        tick(&mut board, &mut host);
+        assert_eq!(board.model.message(), Some("cleaning 2 of 2…"));
+        host.release(second);
+        tick(&mut board, &mut host);
+        assert!(board.model.cleanup_run().is_none());
+        assert!(cleaned(&board, 1));
+        assert_eq!(board.model.message(), Some("done 3 · cleaned 2"));
+        assert_eq!(host.removed.len(), 2);
+        // Cleaned markers landed after completion, and one undo still puts the set back to
+        // the status each left.
+        press(&mut board, BoardIntent::Undo, &mut host);
+        assert!(statuses(&board)
+            .iter()
+            .all(|status| *status == HumanStatus::Started));
+        assert!(cleaned(&board, 0) && cleaned(&board, 1));
+    }
+
+    /// The cleanup card as painted, one string per screen row.
+    fn rendered_card(board: &Board) -> String {
+        let (width, height) = (120u16, 30u16);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+                .expect("terminal");
+        terminal
+            .draw(|frame| {
+                crate::ui::board::draw_board(frame, &board.model);
+            })
+            .expect("draw card");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer.cell((x, y)).expect("cell").symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_row_the_worker_kept_says_kept_once_on_the_card() {
+        // These refusals carry `kept:` in their CLI wording; the card writes its own lead.
+        for (error, reason) in [
+            (
+                CleanupError::FilesInUse,
+                "done · cleanup refused: files in use",
+            ),
+            (
+                CleanupError::PathTooLong,
+                "done · cleanup refused: path too long",
+            ),
+            (
+                CleanupError::RemovalTimedOut,
+                "done · cleanup refused: removal timed out",
+            ),
+        ] {
+            let (mut board, mut host) = slow_board("kept-once");
+            press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+            let (first, second) = (slot(&board, 0), slot(&board, 1));
+            let job = host.held.as_ref().expect("held job").0.clone();
+            job.finish(first, Err(error));
+            host.release(second);
+            tick(&mut board, &mut host);
+            assert!(board.model.cleanup_card_open(), "a kept row is not missed");
+            let card = rendered_card(&board);
+            assert!(card.contains(&format!("T1  {reason}")), "{card}");
+            assert!(!card.contains("refused: kept"), "{card}");
+        }
+    }
+
+    #[test]
+    fn a_failed_row_never_stops_the_others_and_the_card_shows_why() {
+        let mut board = marked_board("fail");
+        let mut host = BulkHost {
+            fail: HashSet::from(["w-clean".to_string()]),
+            ..BulkHost::default()
+        };
+        press(&mut board, BoardIntent::Complete, &mut host);
+        host.land_all(true);
+        tick(&mut board, &mut host);
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        assert_eq!(host.removed, vec!["w-dirty".to_string()]);
+        assert!(!cleaned(&board, 0) && cleaned(&board, 1));
+        let state = row_state(&board, 0);
+        assert!(
+            matches!(&state, CleanupRowState::Kept { short, full }
+                if short == "removal failed" && full.contains("could not remove w-clean")),
+            "{state:?}"
+        );
+        assert!(board.model.cleanup_card_open(), "a kept row is not missed");
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        assert_eq!(
+            board.model.message(),
+            Some("done 3 · cleaned 1 · kept T1 (removal failed)")
+        );
+        // Sticky: still there after the ephemeral window would have passed.
+        assert!(board.model.message_is_sticky());
+    }
+
+    #[test]
+    fn quit_mid_cleanup_waits_for_the_git_and_herdr_steps() {
+        let (mut board, mut host) = slow_board("quit");
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        let mut recovery = SaveRecovery::new();
+        let quit = handle_board_intent_with_host(
+            &board.store,
+            &mut board.domain,
+            &mut board.model,
+            BoardIntent::Quit,
+            &mut recovery,
+            false,
+            true,
+            &mut host,
+            &mut |_| {},
+        )
+        .expect("quit");
+        assert!(!quit, "the board stays up while cleanup finishes");
+        assert!(board.model.quitting_after_cleanup());
+        assert!(!board.model.cleanup_card_open());
+        assert_eq!(board.model.message(), Some("finishing cleanup…"));
+        assert!(!board.model.quit_after_cleanup_due());
+        let (first, second) = (slot(&board, 0), slot(&board, 1));
+        host.release(first);
+        tick(&mut board, &mut host);
+        assert!(!board.model.quit_after_cleanup_due());
+        assert_eq!(board.model.message(), Some("finishing cleanup…"));
+        host.release(second);
+        tick(&mut board, &mut host);
+        assert!(board.model.quit_after_cleanup_due());
+        let disk = board.store.load().expect("load");
+        assert!(board.ids[..2].iter().all(|id| disk
+            .get(*id)
+            .unwrap()
+            .dispatch
+            .as_ref()
+            .unwrap()
+            .cleaned));
+    }
+
+    #[test]
+    fn ctrl_d_on_another_dispatch_while_cleanup_runs_is_refused() {
+        let (mut board, mut host) = slow_board("busy");
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        let id = board
+            .domain
+            .create(
+                "another",
+                None,
+                TaskScope::Project {
+                    path: PROJECT.into(),
+                },
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create");
+        board
+            .domain
+            .record_dispatch(id, dispatched("another"))
+            .expect("dispatch");
+        board.model.sync_from_domain(&board.domain);
+        assert_eq!(
+            super::offer_cleanup_prompt_with_host(
+                &mut board.domain,
+                &mut board.model,
+                id,
+                true,
+                &mut host
+            )
+            .expect("offer"),
+            super::CleanupOffer::Busy
+        );
+        assert_ne!(board.domain.get(id).unwrap().status, HumanStatus::Done);
+    }
+
+    #[test]
+    fn a_row_relaunched_after_y_is_skipped_right_before_its_host_work() {
+        let (mut board, mut host) = slow_board("rebound");
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        let (clean, dirty) = (slot(&board, 0), slot(&board, 1));
+        // Another process relaunches T1 after `y`, before the worker reaches it.
+        let mut other = board.store.load().expect("load");
+        let mut relaunched = dispatched("clean");
+        relaunched.herdr_workspace_id = "w-clean-2".into();
+        relaunched.at = SystemTime::now() + std::time::Duration::from_secs(1);
+        other
+            .record_dispatch(board.ids[0], relaunched.clone())
+            .expect("relaunch");
+        board.store.reload_merge_save(&mut other).expect("save");
+        // This board relaunches T2 itself; its own domain has the new record.
+        let mut again = dispatched("dirty");
+        again.at = SystemTime::now() + std::time::Duration::from_secs(1);
+        board
+            .domain
+            .record_dispatch(board.ids[1], again.clone())
+            .expect("relaunch here");
+        tick(&mut board, &mut host);
+        host.release(clean);
+        host.release(dirty);
+        tick(&mut board, &mut host);
+        assert!(
+            host.removed.is_empty(),
+            "neither relaunch loses its worktree: {:?}",
+            host.removed
+        );
+        assert!(board
+            .model
+            .cleanup_run()
+            .is_some_and(|run| run.rows.iter().all(
+                |row| matches!(&row.state, CleanupRowState::Kept { short, .. }
+                if short == "dispatch changed")
+            )));
+        assert!(!cleaned(&board, 1));
+    }
+
+    #[test]
+    fn hidden_progress_owns_its_status_slot_and_ends_with_the_run() {
+        let (mut board, mut host) = slow_board("status");
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        tick(&mut board, &mut host);
+        assert_eq!(board.model.message(), Some("cleaning 1 of 2…"));
+        // Another action's feedback covers it, then gives the slot back.
+        board.model.set_message("marked");
+        assert_eq!(board.model.message(), Some("marked"));
+        board.model.clear_message();
+        assert_eq!(board.model.message(), Some("cleaning 1 of 2…"));
+        tick(&mut board, &mut host);
+        assert_eq!(board.model.message(), Some("cleaning 1 of 2…"));
+        let (first, second) = (slot(&board, 0), slot(&board, 1));
+        host.release(first);
+        host.release(second);
+        tick(&mut board, &mut host);
+        assert_eq!(board.model.message(), Some("done 3 · cleaned 2"));
+        assert!(!board.model.message_is_sticky());
+        // When the clean summary goes, the finished run's progress does not come back.
+        board.model.clear_message();
+        assert_eq!(board.model.message(), None);
+    }
+
+    #[test]
+    fn ctrl_d_in_the_project_preview_respects_a_cleanup_running_on_the_outer_board() {
+        let (mut board, mut host) = slow_board("outer-busy");
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        let id = board
+            .domain
+            .create(
+                "another",
+                None,
+                TaskScope::Project {
+                    path: PROJECT.into(),
+                },
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create");
+        board
+            .domain
+            .record_dispatch(id, dispatched("another"))
+            .expect("dispatch");
+        board.model.sync_from_domain(&board.domain);
+        apply_intent(
+            &mut board.domain,
+            &mut board.model,
+            BoardIntent::SelectNavTab(crate::ui::queue::NavTab::Projects),
+            None,
+        )
+        .expect("projects overview");
+        for _ in 0..2 {
+            apply_intent(
+                &mut board.domain,
+                &mut board.model,
+                BoardIntent::StageRight,
+                None,
+            )
+            .expect("stage right");
+        }
+        assert!(board.model.project_right_seat_focused());
+        assert_eq!(
+            super::offer_cleanup_prompt_with_host(
+                &mut board.domain,
+                board.model.input_target_mut(),
+                id,
+                true,
+                &mut host
+            )
+            .expect("offer"),
+            super::CleanupOffer::Busy
+        );
+    }
+
+    fn plain_task(board: &mut Board, title: &str) -> uuid::Uuid {
+        let id = board
+            .domain
+            .create(
+                title,
+                None,
+                TaskScope::Project {
+                    path: PROJECT.into(),
+                },
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create");
+        board.model.sync_from_domain(&board.domain);
+        id
+    }
+
+    /// Move the cursor to `id` (a second select on the cursor row would open its page).
+    fn select(board: &mut Board, id: uuid::Uuid) {
+        if board.model.selected_id() == Some(id) {
+            return;
+        }
+        let index = board
+            .model
+            .visible_ids()
+            .iter()
+            .position(|visible| *visible == id)
+            .expect("visible");
+        apply_intent(
+            &mut board.domain,
+            &mut board.model,
+            BoardIntent::SelectIndex(index),
+            None,
+        )
+        .expect("select");
+    }
+
+    #[test]
+    fn ctrl_d_is_refused_for_any_target_while_cleanup_runs() {
+        let (mut board, mut host) = slow_board("busy-any");
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        // A task with no dispatch at all.
+        let plain = plain_task(&mut board, "plain one");
+        select(&mut board, plain);
+        press(&mut board, BoardIntent::Complete, &mut host);
+        assert_eq!(board.model.message(), Some(super::CLEANUP_BUSY));
+        assert_ne!(board.domain.get(plain).unwrap().status, HumanStatus::Done);
+        // A marked set of ordinary tasks.
+        let other = plain_task(&mut board, "plain two");
+        if !board.model.mark_mode_active() {
+            apply_intent(
+                &mut board.domain,
+                &mut board.model,
+                BoardIntent::ToggleMarkMode,
+                None,
+            )
+            .expect("mark mode");
+        }
+        for id in [plain, other] {
+            select(&mut board, id);
+            apply_intent(
+                &mut board.domain,
+                &mut board.model,
+                BoardIntent::MarkToggle,
+                None,
+            )
+            .expect("mark");
+        }
+        assert!(board.model.bulk_verb_active());
+        press(&mut board, BoardIntent::Complete, &mut host);
+        assert_eq!(board.model.message(), Some(super::CLEANUP_BUSY));
+        let disk = board.store.load().expect("load");
+        assert!([plain, other].iter().all(|id| disk
+            .get(*id)
+            .is_none_or(|task| task.status != HumanStatus::Done)));
+        assert!(
+            board.model.bulk_verb_active(),
+            "the marks wait with the refusal"
+        );
+    }
+
+    #[test]
+    fn a_finished_cleanup_clears_its_busy_refusal_with_the_summary() {
+        let (mut board, mut host) = slow_board("busy-cleared");
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        press(&mut board, BoardIntent::Complete, &mut host);
+        assert_eq!(board.model.message(), Some(super::CLEANUP_BUSY));
+        let (first, second) = (slot(&board, 0), slot(&board, 1));
+        host.release(first);
+        host.release(second);
+        tick(&mut board, &mut host);
+        assert_eq!(board.model.message(), Some("done 3 · cleaned 2"));
+        board.model.clear_message();
+        assert_eq!(
+            board.model.message(),
+            None,
+            "the obsolete refusal does not come back"
+        );
+    }
+}
+
+#[cfg(test)]
+mod merge_cleanup_tests {
+    use std::collections::{HashMap, HashSet};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::SystemTime;
+
+    use super::handle_board_intent_with_host;
+    use crate::agents::MergeMethod;
+    use crate::dispatch::pr::{MergeJob, PrState};
+    use crate::dispatch::{
+        BranchDeletion, CleanupInspection, CreatedWorktree, DispatchHost, MergeRow, PrLookup,
+        PullRequest,
+    };
+    use crate::domain::{Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope};
+    use crate::save_recovery::SaveRecovery;
+    use crate::store::TaskStore;
+    use crate::ui::board::{apply_intent, BoardModel};
+    use crate::ui::input::BoardIntent;
+
+    const PROJECT: &str = "/repos/merge";
+
+    /// A fake `gh` per branch: the PR each `pr view` finds, the merges `pr merge` ran, and the
+    /// branches whose merge GitHub refuses. A merged PR reads MERGED afterwards.
+    #[derive(Default)]
+    struct MergeHost {
+        prs: HashMap<String, PullRequest>,
+        refuse: HashMap<String, String>,
+        dirty: HashSet<String>,
+        /// Branches whose worktree is already gone.
+        gone: HashSet<String>,
+        /// Branches whose worktree cannot be inspected.
+        uninspectable: HashSet<String>,
+        merges: Vec<(String, MergeMethod, String)>,
+        deleted_at_tip: Vec<String>,
+        removed: Vec<String>,
+        /// Workspaces closed by id, a gone worktree's.
+        closed: Vec<String>,
+        /// A slow `gh`: `m` hands the merges over and the test lands them by hand.
+        hold: bool,
+        /// No `gh` on PATH.
+        no_gh: bool,
+        /// `gh pr merge` exits 0 but only queues: the PR stays open.
+        queue: bool,
+        /// The merge leaves the remote branch.
+        remote_left: bool,
+        /// GitHub deletes the branch on merge, a moment late: the first this many checks
+        /// still find it.
+        remote_gone_after: Option<usize>,
+        remote_checks: usize,
+        held: Option<(MergeJob, Vec<MergeRow>, MergeMethod)>,
+    }
+
+    fn tip(branch: &str) -> String {
+        format!("tip-of-{branch}")
+    }
+
+    impl DispatchHost for MergeHost {
+        fn is_git_repo(&mut self, _: &Path) -> Result<bool, String> {
+            Ok(true)
+        }
+        fn create_worktree(
+            &mut self,
+            _: &Path,
+            _: &str,
+            _: Option<&str>,
+            _: &str,
+        ) -> Result<CreatedWorktree, String> {
+            Err("not used".into())
+        }
+        /// The run after `m` fetches: the base moved on GitHub. Ancestry still reads unmerged,
+        /// as after a squash.
+        fn inspect_cleanup(
+            &mut self,
+            project: &Path,
+            record: &Dispatch,
+            in_herdr: bool,
+        ) -> Result<CleanupInspection, String> {
+            self.inspect_cleanup_cached(project, record, in_herdr)
+        }
+        fn inspect_cleanup_cached(
+            &mut self,
+            _: &Path,
+            record: &Dispatch,
+            _: bool,
+        ) -> Result<CleanupInspection, String> {
+            if self.uninspectable.contains(&record.branch) {
+                return Err("git status failed".into());
+            }
+            Ok(CleanupInspection {
+                unreachable_remote: None,
+                worktree_exists: !self.gone.contains(&record.branch),
+                dirty: self.dirty.contains(&record.branch),
+                dirty_files: Vec::new(),
+                checked_out_elsewhere: false,
+                branch_merged: false,
+                workspace_exists: true,
+                target_matches: true,
+                warning: None,
+                base_available: true,
+            })
+        }
+        fn remove_herdr_worktree(&mut self, workspace_id: &str) -> Result<(), String> {
+            self.removed.push(workspace_id.to_string());
+            Ok(())
+        }
+        fn close_herdr_workspace(&mut self, workspace_id: &str) -> Result<(), String> {
+            self.closed.push(workspace_id.to_string());
+            Ok(())
+        }
+        fn pull_request(&mut self, _: &Path, branch: &str) -> PrLookup {
+            if self.no_gh {
+                return Err(crate::dispatch::PrLookupError::Missing);
+            }
+            Ok(self.prs.get(branch).cloned())
+        }
+        fn branch_tip(&mut self, _: &Path, branch: &str) -> Result<Option<String>, String> {
+            Ok(Some(tip(branch)))
+        }
+        fn merge_pull_request(
+            &mut self,
+            _: &Path,
+            branch: &str,
+            method: MergeMethod,
+            head: &str,
+        ) -> Result<(), String> {
+            self.merges.push((branch.into(), method, head.into()));
+            if let Some(reason) = self.refuse.get(branch) {
+                return Err(reason.clone());
+            }
+            if !self.queue {
+                if let Some(pr) = self.prs.get_mut(branch) {
+                    pr.state = PrState::Merged;
+                }
+            }
+            Ok(())
+        }
+        fn remote_branch_exists(&mut self, _: &Path, _: &str, _: &str) -> Result<bool, String> {
+            self.remote_checks += 1;
+            Ok(match self.remote_gone_after {
+                Some(checks) => self.remote_checks <= checks,
+                None => self.remote_left,
+            })
+        }
+        fn delete_branch_at_tip(
+            &mut self,
+            _: &Path,
+            _: &str,
+            tip: &str,
+        ) -> Result<BranchDeletion, String> {
+            self.deleted_at_tip.push(tip.into());
+            Ok(BranchDeletion::Removed)
+        }
+        fn begin_merges(&mut self, job: MergeJob, rows: Vec<MergeRow>, method: MergeMethod) {
+            if self.hold {
+                self.held = Some((job, rows, method));
+            } else {
+                crate::dispatch::pr::run_merge_job(&job, &rows, method, self);
+            }
+        }
+        fn root_pane(&mut self, _: &str) -> Result<String, crate::dispatch::RootPaneError> {
+            Err("not used".into())
+        }
+        fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
+            Err("not used".into())
+        }
+    }
+
+    impl MergeHost {
+        fn open_pr(&mut self, branch: &str, base: &str) {
+            self.prs.insert(
+                branch.into(),
+                PullRequest {
+                    number: 7,
+                    url: "https://github.com/o/r/pull/7".into(),
+                    state: PrState::Open,
+                    head_oid: tip(branch),
+                    base: base.into(),
+                },
+            );
+        }
+    }
+
+    struct Board {
+        dir: PathBuf,
+        store: TaskStore,
+        domain: DomainState,
+        model: BoardModel,
+        ids: Vec<uuid::Uuid>,
+    }
+
+    impl Drop for Board {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Started tasks, each dispatched on `tsk/<title>` from `origin/main` unless titled
+    /// `plain`; `[merge] method = "squash"`. With more than one task, all are marked.
+    fn board(label: &str, titles: &[&str]) -> Board {
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "tsk-merge-cleanup-{label}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("state dir");
+        std::fs::write(dir.join("config.toml"), "[merge]\nmethod = \"squash\"\n").expect("config");
+        let store = TaskStore::new(&dir);
+        let mut domain = DomainState::new();
+        let mut ids = Vec::new();
+        for title in titles {
+            let id = domain
+                .create(
+                    title,
+                    None,
+                    TaskScope::Project {
+                        path: PROJECT.into(),
+                    },
+                    ProvenanceOrigin::Manual,
+                    None,
+                )
+                .expect("create");
+            domain.set_status(id, HumanStatus::Started).expect("start");
+            if *title != "plain" {
+                domain
+                    .record_dispatch(
+                        id,
+                        Dispatch {
+                            argv: vec!["agent".into()],
+                            worktree: format!("/tmp/tsk-merge-{title}"),
+                            branch: format!("tsk/{title}"),
+                            base: Some("origin/main".into()),
+                            base_commit: None,
+                            base_remote: Some("origin".into()),
+                            base_ref: Some("refs/remotes/origin/main".into()),
+                            herdr_workspace_id: format!("w-{title}"),
+                            at: SystemTime::now(),
+                            cleaned: false,
+                        },
+                    )
+                    .expect("dispatch");
+            }
+            ids.push(id);
+        }
+        store.reload_merge_save(&mut domain).expect("save");
+        let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(PROJECT)));
+        let select = |domain: &mut DomainState, model: &mut BoardModel, id| {
+            let index = model
+                .visible_ids()
+                .iter()
+                .position(|visible| *visible == id)
+                .expect("visible");
+            apply_intent(domain, model, BoardIntent::SelectIndex(index), None).expect("select");
+        };
+        if ids.len() > 1 {
+            apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None)
+                .expect("mark mode");
+            for &id in &ids {
+                select(&mut domain, &mut model, id);
+                apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+            }
+        } else {
+            select(&mut domain, &mut model, ids[0]);
+        }
+        Board {
+            dir,
+            store,
+            domain,
+            model,
+            ids,
+        }
+    }
+
+    fn press(board: &mut Board, intent: BoardIntent, host: &mut MergeHost) -> bool {
+        let mut recovery = SaveRecovery::new();
+        let quit = handle_board_intent_with_host(
+            &board.store,
+            &mut board.domain,
+            &mut board.model,
+            intent,
+            &mut recovery,
+            false,
+            true,
+            host,
+            &mut |_| {},
+        )
+        .expect("intent");
+        assert!(!recovery.is_pending());
+        quit
+    }
+
+    /// One board-loop step, as the real loop takes it: land the merges, advance the cleanup.
+    fn tick(board: &mut Board, host: &mut MergeHost) {
+        let mut recovery = SaveRecovery::new();
+        super::board_background_step(
+            &board.store,
+            &mut board.domain,
+            &mut board.model,
+            &mut recovery,
+            true,
+            host,
+            &mut |_| {},
+        )
+        .expect("loop step");
+        assert!(!recovery.is_pending());
+    }
+
+    fn key(board: &Board, code: crossterm::event::KeyCode, ctrl: bool) -> Option<BoardIntent> {
+        use crossterm::event::{KeyEvent, KeyModifiers};
+        let modifiers = if ctrl {
+            KeyModifiers::CONTROL
+        } else {
+            KeyModifiers::NONE
+        };
+        super::board_keyboard_intent(
+            &board.model,
+            board.model.input_mode(),
+            KeyEvent::new(code, modifiers),
+        )
+    }
+
+    fn status(board: &Board, index: usize) -> HumanStatus {
+        board.domain.get(board.ids[index]).unwrap().status
+    }
+
+    fn on_disk(board: &Board, index: usize) -> HumanStatus {
+        board
+            .store
+            .load()
+            .unwrap()
+            .get(board.ids[index])
+            .unwrap()
+            .status
+    }
+
+    fn screen(model: &BoardModel) -> String {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut terminal = Terminal::new(TestBackend::new(110, 30)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                crate::ui::board::draw_board(frame, model);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (0..30)
+            .map(|y| {
+                (0..110)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn m_shows_only_for_a_clean_task_with_an_open_pr_into_its_recorded_base() {
+        for (label, pr_base, dirty, offered, line) in [
+            ("no pr", None, false, false, Some("no pull request")),
+            ("open", Some("main"), false, true, Some("PR #7 open")),
+            (
+                "other base",
+                Some("dev"),
+                false,
+                false,
+                Some("PR #7 targets dev, not main"),
+            ),
+            (
+                "dirty",
+                Some("main"),
+                true,
+                false,
+                Some("PR #7 open · commit or discard changes to merge"),
+            ),
+        ] {
+            let mut board = board("offer", &["task"]);
+            let mut host = MergeHost::default();
+            if let Some(base) = pr_base {
+                host.open_pr("tsk/task", base);
+            }
+            if dirty {
+                host.dirty.insert("tsk/task".into());
+            }
+            press(&mut board, BoardIntent::Complete, &mut host);
+            let prompt = board.model.cleanup_prompt().expect("card");
+            assert_eq!(prompt.can_merge_any(), offered, "{label}");
+            assert_eq!(prompt.rows[0].pr_line().as_deref(), line, "{label}");
+            let painted = screen(&board.model);
+            assert_eq!(
+                painted.contains("m  squash-merge PR #7 to main"),
+                offered,
+                "{label}: {painted}"
+            );
+        }
+        // Without gh the card reads exactly as before: no PR line, no `m`.
+        let mut board = board("no-gh", &["task"]);
+        let mut host = MergeHost {
+            no_gh: true,
+            ..MergeHost::default()
+        };
+        press(&mut board, BoardIntent::Complete, &mut host);
+        let prompt = board.model.cleanup_prompt().expect("card");
+        assert!(!prompt.can_merge_any());
+        assert_eq!(prompt.rows[0].pr_line(), None);
+    }
+
+    #[test]
+    fn m_merges_with_the_configured_method_then_completes_and_cleans_like_y() {
+        let mut board = board("merge", &["task"]);
+        let mut host = MergeHost::default();
+        host.open_pr("tsk/task", "main");
+        press(&mut board, BoardIntent::Complete, &mut host);
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        assert_eq!(
+            host.merges,
+            [("tsk/task".to_string(), MergeMethod::Squash, tip("tsk/task"))]
+        );
+        assert_eq!(
+            status(&board, 0),
+            HumanStatus::Started,
+            "nothing before it lands"
+        );
+        tick(&mut board, &mut host);
+        assert_eq!(
+            on_disk(&board, 0),
+            HumanStatus::Done,
+            "done saved after the merge"
+        );
+        tick(&mut board, &mut host);
+        assert_eq!(host.removed, ["w-task"], "the worktree went as on y");
+        assert_eq!(
+            host.deleted_at_tip,
+            [tip("tsk/task")],
+            "the squash-merged branch went at its exact tip"
+        );
+        assert!(
+            board
+                .domain
+                .get(board.ids[0])
+                .unwrap()
+                .dispatch
+                .as_ref()
+                .unwrap()
+                .cleaned
+        );
+        let message = board.model.message().unwrap_or_default().to_string();
+        assert!(message.contains("merged PR #7 (squash)"), "{message}");
+    }
+
+    #[test]
+    fn a_refused_merge_changes_nothing_and_the_card_says_why() {
+        let mut board = board("refused", &["task"]);
+        let mut host = MergeHost::default();
+        host.open_pr("tsk/task", "main");
+        host.refuse.insert(
+            "tsk/task".into(),
+            "Pull request is not mergeable: the base branch policy prohibits the merge.".into(),
+        );
+        press(&mut board, BoardIntent::Complete, &mut host);
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        tick(&mut board, &mut host);
+        assert_eq!(on_disk(&board, 0), HumanStatus::Started);
+        assert!(host.removed.is_empty() && host.deleted_at_tip.is_empty());
+        let prompt = board.model.cleanup_prompt().expect("the card stays");
+        assert!(board.model.cleanup_run().is_none());
+        assert!(prompt.options().is_empty(), "the card only closes now");
+        let painted = screen(&board.model);
+        assert!(
+            painted.contains("Merge failed: Pull request is not mergeable"),
+            "{painted}"
+        );
+        assert!(painted.contains("nothing changed"), "{painted}");
+        assert!(painted.contains("esc close"), "{painted}");
+        press(&mut board, BoardIntent::ConfirmCleanup, &mut host);
+        assert!(host.removed.is_empty(), "y is gone with the options");
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        assert!(board.model.cleanup_prompt().is_none());
+        assert_eq!(status(&board, 0), HumanStatus::Started);
+    }
+
+    #[test]
+    fn the_card_waits_for_gh_and_takes_no_choice_meanwhile() {
+        let mut board = board("hold", &["task"]);
+        let mut host = MergeHost {
+            hold: true,
+            ..MergeHost::default()
+        };
+        host.open_pr("tsk/task", "main");
+        press(&mut board, BoardIntent::Complete, &mut host);
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        for intent in [
+            BoardIntent::CancelCleanup,
+            BoardIntent::ConfirmCleanup,
+            BoardIntent::KeepCleanup,
+            BoardIntent::MergeCleanup,
+        ] {
+            press(&mut board, intent, &mut host);
+            assert!(board.model.cleanup_prompt().is_some_and(|p| p.merging()));
+            assert_eq!(status(&board, 0), HumanStatus::Started);
+        }
+        tick(&mut board, &mut host);
+        assert_eq!(status(&board, 0), HumanStatus::Started, "still merging");
+        assert!(screen(&board.model).contains("Merging PR #7 with gh…"));
+        let (job, rows, method) = host.held.take().expect("held merges");
+        crate::dispatch::pr::run_merge_job(&job, &rows, method, &mut host);
+        tick(&mut board, &mut host);
+        assert_eq!(on_disk(&board, 0), HumanStatus::Done);
+    }
+
+    #[test]
+    fn quit_while_merging_waits_for_the_merge_its_done_and_its_cleanup() {
+        use crossterm::event::KeyCode;
+        for quit_key in ['q', 'c'] {
+            let mut board = board("quit", &["task"]);
+            let mut host = MergeHost {
+                hold: true,
+                ..MergeHost::default()
+            };
+            host.open_pr("tsk/task", "main");
+            press(&mut board, BoardIntent::Complete, &mut host);
+            assert_eq!(
+                key(&board, KeyCode::Char('m'), false),
+                Some(BoardIntent::MergeCleanup)
+            );
+            press(&mut board, BoardIntent::MergeCleanup, &mut host);
+            // Ctrl+Q quits from the card; Ctrl+C is inert on it (no mapping escapes the card).
+            let intent = key(&board, KeyCode::Char(quit_key), true);
+            let expected = (quit_key == 'q').then_some(BoardIntent::Quit);
+            assert_eq!(intent, expected, "ctrl+{quit_key}");
+            if let Some(intent) = intent {
+                assert!(
+                    !press(&mut board, intent, &mut host),
+                    "ctrl+{quit_key} waits"
+                );
+            } else {
+                assert!(
+                    !press(&mut board, BoardIntent::Quit, &mut host),
+                    "quit waits"
+                );
+            }
+            assert!(board.model.quitting_after_cleanup());
+            assert!(!board.model.quit_after_cleanup_due());
+            assert!(
+                board.model.cleanup_prompt().is_some_and(|p| p.merging()),
+                "the card the merge lands on stays"
+            );
+            tick(&mut board, &mut host);
+            assert!(!board.model.quit_after_cleanup_due(), "gh has not answered");
+            let (job, rows, method) = host.held.take().expect("held merges");
+            crate::dispatch::pr::run_merge_job(&job, &rows, method, &mut host);
+            tick(&mut board, &mut host);
+            assert_eq!(
+                on_disk(&board, 0),
+                HumanStatus::Done,
+                "done saved before exit"
+            );
+            tick(&mut board, &mut host);
+            assert_eq!(host.removed, ["w-task"], "cleanup ran before exit");
+            assert!(board.model.quit_after_cleanup_due());
+        }
+    }
+
+    #[test]
+    fn quit_waits_for_a_merge_running_in_the_project_preview() {
+        let mut board = board("quit-preview", &["task"]);
+        let mut host = MergeHost {
+            hold: true,
+            ..MergeHost::default()
+        };
+        host.open_pr("tsk/task", "main");
+        apply_intent(
+            &mut board.domain,
+            &mut board.model,
+            BoardIntent::SelectNavTab(crate::ui::queue::NavTab::Projects),
+            None,
+        )
+        .expect("projects overview");
+        for _ in 0..2 {
+            apply_intent(
+                &mut board.domain,
+                &mut board.model,
+                BoardIntent::StageRight,
+                None,
+            )
+            .expect("stage right");
+        }
+        assert!(board.model.project_right_seat_focused());
+        let id = board.ids[0];
+        super::offer_cleanup_prompt_with_host(
+            &mut board.domain,
+            board.model.input_target_mut(),
+            id,
+            true,
+            &mut host,
+        )
+        .expect("offer");
+        let mut recovery = SaveRecovery::new();
+        handle_board_intent_with_host(
+            &board.store,
+            &mut board.domain,
+            board.model.input_target_mut(),
+            BoardIntent::MergeCleanup,
+            &mut recovery,
+            false,
+            true,
+            &mut host,
+            &mut |_| {},
+        )
+        .expect("m");
+        assert!(
+            board.model.merge_running(),
+            "the outer board sees the preview's merge"
+        );
+        assert!(!press(&mut board, BoardIntent::Quit, &mut host));
+        assert!(!board.model.quit_after_cleanup_due());
+        let (job, rows, method) = host.held.take().expect("held merges");
+        crate::dispatch::pr::run_merge_job(&job, &rows, method, &mut host);
+        tick(&mut board, &mut host);
+        tick(&mut board, &mut host);
+        assert_eq!(on_disk(&board, 0), HumanStatus::Done);
+        assert!(board.model.quit_after_cleanup_due());
+    }
+
+    #[test]
+    fn a_merge_gh_only_queued_leaves_the_task_and_says_so() {
+        let mut board = board("queued", &["task"]);
+        let mut host = MergeHost {
+            queue: true,
+            ..MergeHost::default()
+        };
+        host.open_pr("tsk/task", "main");
+        press(&mut board, BoardIntent::Complete, &mut host);
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        tick(&mut board, &mut host);
+        assert_eq!(on_disk(&board, 0), HumanStatus::Started);
+        assert!(host.removed.is_empty());
+        let painted = screen(&board.model);
+        assert!(
+            painted.contains("PR #7 is queued, not merged yet · nothing changed"),
+            "{painted}"
+        );
+    }
+
+    #[test]
+    fn a_pr_merged_into_another_branch_reads_so_and_keeps_the_branch() {
+        let mut board = board("elsewhere", &["task"]);
+        let mut host = MergeHost::default();
+        host.open_pr("tsk/task", "dev");
+        host.prs.get_mut("tsk/task").unwrap().state = PrState::Merged;
+        press(&mut board, BoardIntent::Complete, &mut host);
+        let row = &board.model.cleanup_prompt().unwrap().rows[0];
+        assert_eq!(
+            row.pr_line().as_deref(),
+            Some("PR #7 merged into dev, not main")
+        );
+        assert!(!row.pr_merged_at_tip());
+        assert!(!row.branch_deletable());
+        let painted = screen(&board.model);
+        assert!(!painted.contains("Pull request merged"), "{painted}");
+    }
+
+    #[test]
+    fn bulk_m_never_merges_a_branch_checked_out_in_another_worktree() {
+        let mut board = board("bulk-elsewhere", &["one", "two"]);
+        let mut host = MergeHost::default();
+        host.open_pr("tsk/one", "main");
+        host.open_pr("tsk/two", "main");
+        press(&mut board, BoardIntent::Complete, &mut host);
+        let prompt = board.model.cleanup_prompt_mut().unwrap();
+        prompt
+            .rows
+            .iter_mut()
+            .find(|row| row.branch == "tsk/two")
+            .unwrap()
+            .checked_out_elsewhere = true;
+        let merge = prompt
+            .options()
+            .into_iter()
+            .find(|option| option.choice == crate::ui::board::CleanupChoice::Merge)
+            .expect("m for the other PR");
+        assert!(
+            merge
+                .text
+                .contains("mark T2 done, remove its worktree and agent pane, keep its branch"),
+            "{}",
+            merge.text
+        );
+        assert!(
+            !merge.text.contains("(not merged)"),
+            "nothing says it is unmerged: {}",
+            merge.text
+        );
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        let attempted = host
+            .merges
+            .iter()
+            .map(|(branch, _, _)| branch.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            attempted,
+            ["tsk/one"],
+            "the card said the other's branch is kept"
+        );
+        tick(&mut board, &mut host);
+        tick(&mut board, &mut host);
+        assert_eq!(on_disk(&board, 1), HumanStatus::Done, "tidied as y would");
+        assert_eq!(host.removed.len(), 2);
+        assert!(
+            !host.deleted_at_tip.contains(&tip("tsk/two")),
+            "{:?}",
+            host.deleted_at_tip
+        );
+    }
+
+    #[test]
+    fn bulk_m_that_merges_nothing_keeps_the_marks_and_says_why_on_close() {
+        let mut board = board("bulk-none", &["one", "dirty"]);
+        let mut host = MergeHost::default();
+        host.open_pr("tsk/one", "main");
+        host.dirty.insert("tsk/dirty".into());
+        host.refuse
+            .insert("tsk/one".into(), "merge conflicts".into());
+        press(&mut board, BoardIntent::Complete, &mut host);
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        tick(&mut board, &mut host);
+        assert!(
+            board.model.cleanup_prompt().unwrap().settled.is_some(),
+            "nothing went on: the card only closes"
+        );
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        assert!(board.model.cleanup_prompt().is_none());
+        assert_eq!(board.model.marked_count(), 2, "the marks stay for a retry");
+        let message = board.model.message().unwrap_or_default().to_string();
+        assert!(
+            message.starts_with("nothing merged · marks kept")
+                && message.contains("merge failed: merge conflicts")
+                && message.contains("uncommitted changes"),
+            "{message}"
+        );
+        for index in 0..2 {
+            assert_eq!(on_disk(&board, index), HumanStatus::Started);
+        }
+    }
+
+    #[test]
+    fn bulk_m_whose_only_merge_fails_still_tidies_the_rest() {
+        // No merge lands and no row was already merged: the rest still go on.
+        let mut board = board("bulk-fail-only", &["one", "nopr", "plain"]);
+        let mut host = MergeHost::default();
+        host.open_pr("tsk/one", "main");
+        host.refuse
+            .insert("tsk/one".into(), "merge conflicts".into());
+        press(&mut board, BoardIntent::Complete, &mut host);
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        tick(&mut board, &mut host);
+        tick(&mut board, &mut host);
+        assert!(
+            board
+                .model
+                .cleanup_prompt()
+                .is_none_or(|prompt| prompt.settled.is_none()),
+            "something went on: the card did not settle"
+        );
+        assert_eq!(
+            [0, 1, 2].map(|index| on_disk(&board, index)),
+            [HumanStatus::Started, HumanStatus::Done, HumanStatus::Done],
+            "the refused merge stays, the rest go ahead"
+        );
+        assert_eq!(host.removed, ["w-nopr"]);
+        assert!(
+            host.deleted_at_tip.is_empty(),
+            "the unmerged branch is kept"
+        );
+        assert!(matches!(
+            board.domain.last_undo(),
+            Some(crate::domain::UndoEntry::Batch { entries }) if entries.len() == 2
+        ));
+        assert!(
+            screen(&board.model).contains("merge failed: merge conflicts · unchanged"),
+            "{}",
+            screen(&board.model)
+        );
+    }
+
+    #[test]
+    fn bulk_m_merges_past_a_failure_completes_the_rest_as_one_batch_and_names_the_failure() {
+        let mut board = board("bulk", &["one", "two", "nopr", "plain"]);
+        let mut host = MergeHost {
+            remote_left: true,
+            ..MergeHost::default()
+        };
+        host.open_pr("tsk/one", "main");
+        host.open_pr("tsk/two", "main");
+        press(&mut board, BoardIntent::Complete, &mut host);
+        // The job merges in card order: make the first candidate the one GitHub refuses.
+        let order = board
+            .model
+            .cleanup_prompt()
+            .unwrap()
+            .rows
+            .iter()
+            .filter(|row| row.mergeable())
+            .map(|row| row.branch.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(order.len(), 2);
+        host.refuse
+            .insert(order[0].clone(), "merge conflicts".into());
+        assert!(screen(&board.model).contains("m  squash-merge PR #"));
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        let attempted = host
+            .merges
+            .iter()
+            .map(|(branch, _, _)| branch.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            attempted, order,
+            "the failure first, then the next one still merges"
+        );
+        tick(&mut board, &mut host);
+        let index = |branch: &str| {
+            board
+                .ids
+                .iter()
+                .position(|id| {
+                    board
+                        .domain
+                        .get(*id)
+                        .unwrap()
+                        .dispatch
+                        .as_ref()
+                        .map(|d| d.branch.as_str())
+                        == Some(branch)
+                })
+                .unwrap()
+        };
+        let (refused, merged) = (index(&order[0]), index(&order[1]));
+        assert_eq!(on_disk(&board, merged), HumanStatus::Done);
+        assert_eq!(
+            on_disk(&board, refused),
+            HumanStatus::Started,
+            "the refused one stays"
+        );
+        assert_eq!(on_disk(&board, 2), HumanStatus::Done, "no PR: tidied as y");
+        assert_eq!(on_disk(&board, 3), HumanStatus::Done, "no dispatch: done");
+        assert!(matches!(
+            board.domain.last_undo(),
+            Some(crate::domain::UndoEntry::Batch { entries }) if entries.len() == 3
+        ));
+        tick(&mut board, &mut host);
+        assert_eq!(host.removed.len(), 2);
+        let painted = screen(&board.model);
+        for line in ["merge failed: merge conflicts · unchanged", "T4  done"] {
+            assert!(
+                painted.contains(line),
+                "the finished card says {line}: {painted}"
+            );
+        }
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        assert_eq!(
+            board.model.message(),
+            Some("merged 1 · done 3 · cleaned 2 · branch kept T3 (not merged) · 1 remote branch kept · unchanged 1")
+        );
+    }
+
+    #[test]
+    fn an_invalid_merge_setting_merges_nothing_and_says_why_on_the_card() {
+        let mut board = board("config", &["task"]);
+        std::fs::write(board.dir.join("config.toml"), "[merge]\nmethod = \"ff\"\n").unwrap();
+        let mut host = MergeHost::default();
+        host.open_pr("tsk/task", "main");
+        press(&mut board, BoardIntent::Complete, &mut host);
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        assert!(host.merges.is_empty());
+        let painted = screen(&board.model);
+        assert!(
+            painted.contains("can't merge: config.toml: [merge] method"),
+            "{painted}"
+        );
+    }
+
+    /// Age the open card past its early-Enter guard.
+    fn settle_card(board: &mut Board) {
+        let prompt = board.model.cleanup_prompt_mut().expect("card");
+        prompt.selector.opened_at -= crate::ui::board::CARD_ENTER_GUARD;
+    }
+
+    #[test]
+    fn enter_runs_the_selected_option_but_not_right_after_the_card_opens() {
+        let mut board = board("enter", &["task"]);
+        let mut host = MergeHost::default();
+        host.open_pr("tsk/task", "main");
+        press(&mut board, BoardIntent::Complete, &mut host);
+        assert_eq!(
+            key(&board, crossterm::event::KeyCode::Enter, false),
+            Some(BoardIntent::CleanupRunSelected)
+        );
+        // The tail of a double tap on the key that opened the card.
+        press(&mut board, BoardIntent::CleanupRunSelected, &mut host);
+        assert!(host.merges.is_empty(), "too soon: nothing runs");
+        assert!(board.model.cleanup_prompt().is_some());
+        settle_card(&mut board);
+        // The cursor starts on the bold `m`; move it to `n` and back to `y`.
+        press(&mut board, BoardIntent::CleanupSelectDown, &mut host);
+        press(&mut board, BoardIntent::CleanupSelectDown, &mut host);
+        press(&mut board, BoardIntent::CleanupSelectUp, &mut host);
+        press(&mut board, BoardIntent::CleanupRunSelected, &mut host);
+        assert!(host.merges.is_empty(), "y never merges");
+        assert_eq!(on_disk(&board, 0), HumanStatus::Done);
+        tick(&mut board, &mut host);
+        assert_eq!(host.removed, ["w-task"], "y removed the worktree");
+        assert!(
+            host.deleted_at_tip.is_empty(),
+            "and kept the open PR's branch"
+        );
+    }
+
+    #[test]
+    fn enter_on_an_option_paged_out_of_sight_shows_it_and_a_second_enter_runs_it() {
+        let titles = (1..=30).map(|n| format!("t{n}")).collect::<Vec<_>>();
+        let titles = titles.iter().map(String::as_str).collect::<Vec<_>>();
+        let mut board = board("enter-hidden", &titles);
+        let mut host = MergeHost::default();
+        for title in &titles {
+            host.open_pr(&format!("tsk/{title}"), "main");
+        }
+        press(&mut board, BoardIntent::Complete, &mut host);
+        settle_card(&mut board);
+        assert!(
+            screen(&board.model).contains("▸ m"),
+            "opens on the ▸ option"
+        );
+        for _ in 0..40 {
+            press(&mut board, BoardIntent::CleanupScrollUp, &mut host);
+        }
+        assert!(!screen(&board.model).contains("▸ m"), "paged out of sight");
+        press(&mut board, BoardIntent::CleanupRunSelected, &mut host);
+        assert!(host.merges.is_empty(), "an unseen option never runs");
+        assert!(
+            screen(&board.model).contains("▸ m"),
+            "Enter scrolled it back into view"
+        );
+        press(&mut board, BoardIntent::CleanupRunSelected, &mut host);
+        assert_eq!(host.merges.len(), 30, "the second Enter runs what it shows");
+    }
+
+    #[test]
+    fn enter_on_the_likely_option_merges() {
+        let mut board = board("enter-merge", &["task"]);
+        let mut host = MergeHost::default();
+        host.open_pr("tsk/task", "main");
+        press(&mut board, BoardIntent::Complete, &mut host);
+        settle_card(&mut board);
+        press(&mut board, BoardIntent::CleanupRunSelected, &mut host);
+        assert_eq!(host.merges.len(), 1, "the cursor started on m");
+    }
+
+    #[test]
+    fn a_double_click_runs_its_option_and_one_across_two_lines_runs_neither() {
+        let mut board = board("click", &["task"]);
+        let mut host = MergeHost::default();
+        host.open_pr("tsk/task", "main");
+        press(&mut board, BoardIntent::Complete, &mut host);
+        // `m` then `y`: two lines, each click only selects.
+        press(&mut board, BoardIntent::CleanupClickOption(0), &mut host);
+        press(&mut board, BoardIntent::CleanupClickOption(1), &mut host);
+        assert!(host.merges.is_empty());
+        assert_eq!(status(&board, 0), HumanStatus::Started);
+        assert_eq!(
+            board.model.cleanup_prompt().unwrap().selector.selected,
+            Some(crate::ui::board::CleanupChoice::Clean)
+        );
+        // A press elsewhere disarms the pending double click.
+        board.model.cancel_project_header_double_click();
+        press(&mut board, BoardIntent::CleanupClickOption(1), &mut host);
+        assert_eq!(status(&board, 0), HumanStatus::Started);
+        press(&mut board, BoardIntent::CleanupClickOption(1), &mut host);
+        assert_eq!(
+            on_disk(&board, 0),
+            HumanStatus::Done,
+            "the double click ran y"
+        );
+        assert!(host.merges.is_empty());
+    }
+
+    #[test]
+    fn a_choice_the_card_does_not_offer_does_nothing() {
+        let mut board = board("unoffered", &["task"]);
+        let mut host = MergeHost::default();
+        host.prs.insert(
+            "tsk/task".into(),
+            PullRequest {
+                number: 9,
+                url: String::new(),
+                state: PrState::Merged,
+                head_oid: tip("tsk/task"),
+                base: "main".into(),
+            },
+        );
+        press(&mut board, BoardIntent::Complete, &mut host);
+        // Already merged: no `m` on the card, so the key does nothing.
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        assert!(host.merges.is_empty());
+        assert!(board.model.cleanup_prompt().is_some());
+    }
+
+    /// T: `open` (open PR), `merged` (merged at its tip), `nopr` (not merged), `dirty`
+    /// (uncommitted, with an open PR).
+    fn four_kinds(label: &str, host: &mut MergeHost) -> Board {
+        let board = board(label, &["open", "merged", "nopr", "dirty"]);
+        host.open_pr("tsk/open", "main");
+        host.open_pr("tsk/dirty", "main");
+        host.prs.insert(
+            "tsk/merged".into(),
+            PullRequest {
+                number: 8,
+                url: String::new(),
+                state: PrState::Merged,
+                head_oid: tip("tsk/merged"),
+                base: "main".into(),
+            },
+        );
+        host.dirty.insert("tsk/dirty".into());
+        board
+    }
+
+    #[test]
+    fn bulk_m_merges_open_prs_tidies_the_rest_and_leaves_uncommitted_work_unchanged() {
+        let mut host = MergeHost {
+            remote_gone_after: Some(0),
+            ..MergeHost::default()
+        };
+        let mut board = four_kinds("bulk-kinds", &mut host);
+        press(&mut board, BoardIntent::Complete, &mut host);
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        assert_eq!(
+            host.merges
+                .iter()
+                .map(|(branch, ..)| branch.as_str())
+                .collect::<Vec<_>>(),
+            ["tsk/open"],
+            "only the clean open PR merges"
+        );
+        tick(&mut board, &mut host);
+        tick(&mut board, &mut host);
+        assert_eq!(
+            [0, 1, 2, 3].map(|index| on_disk(&board, index)),
+            [
+                HumanStatus::Done,
+                HumanStatus::Done,
+                HumanStatus::Done,
+                HumanStatus::Started,
+            ],
+            "m never touches uncommitted work"
+        );
+        let mut removed = host.removed.clone();
+        removed.sort();
+        assert_eq!(
+            removed,
+            ["w-merged", "w-nopr", "w-open"],
+            "all three tidied"
+        );
+        let mut deleted = host.deleted_at_tip.clone();
+        deleted.sort();
+        assert_eq!(
+            deleted,
+            [tip("tsk/merged"), tip("tsk/open")],
+            "both merged branches deleted at their tips, the unmerged one kept"
+        );
+        let painted = screen(&board.model);
+        for line in [
+            "T1  merged PR #7 (squash) · done · cleaned · remote",
+            "branch deleted by GitHub",
+            "done · cleaned",
+            "unchanged · uncommitted changes",
+        ] {
+            assert!(painted.contains(line), "{line}:\n{painted}");
+        }
+        press(&mut board, BoardIntent::CancelCleanup, &mut host);
+        assert_eq!(
+            board.model.message(),
+            Some("merged 1 · done 3 · cleaned 3 · branch kept T3 (not merged) · unchanged 1")
+        );
+        assert!(matches!(
+            board.domain.last_undo(),
+            Some(crate::domain::UndoEntry::Batch { entries }) if entries.len() == 3
+        ));
+    }
+
+    #[test]
+    fn bulk_m_acts_on_every_kind_of_task_in_the_mix() {
+        // `four_kinds`, then a closed PR, no dispatch, a worktree already gone, and one that
+        // cannot be inspected.
+        let mut host = MergeHost::default();
+        drop(four_kinds("bulk-mix-hosts", &mut host));
+        let mut board = board(
+            "bulk-mix",
+            &[
+                "open", "merged", "nopr", "dirty", "closed", "plain", "gone", "broken",
+            ],
+        );
+        host.prs.insert(
+            "tsk/closed".into(),
+            PullRequest {
+                number: 9,
+                url: String::new(),
+                state: PrState::Closed,
+                head_oid: tip("tsk/closed"),
+                base: "main".into(),
+            },
+        );
+        host.gone.insert("tsk/gone".into());
+        host.uninspectable.insert("tsk/broken".into());
+        press(&mut board, BoardIntent::Complete, &mut host);
+        let prompt = board.model.cleanup_prompt().unwrap();
+        // The card lists rows in board order, which tasks created in the same instant may
+        // break either way.
+        let unmerged = prompt
+            .rows
+            .iter()
+            .filter(|row| [3, 5].contains(&row.number))
+            .map(|row| format!("T{}", row.number))
+            .collect::<Vec<_>>()
+            .join(" and ");
+        let merge = prompt
+            .options()
+            .into_iter()
+            .find(|option| option.choice == crate::ui::board::CleanupChoice::Merge)
+            .expect("m");
+        assert_eq!(
+            merge.text,
+            format!(
+                "squash-merge PR #7 (T1) · mark T1 and T2 done, remove their worktrees, \
+                 branches and agent panes · mark {unmerged} done, remove their worktrees and \
+                 agent panes, keep their branches (not merged) · mark T6 and T7 done · close \
+                 T7's agent pane · T4 and T8 unchanged"
+            )
+        );
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        tick(&mut board, &mut host);
+        tick(&mut board, &mut host);
+        assert_eq!(
+            [0, 1, 2, 3, 4, 5, 6, 7].map(|index| on_disk(&board, index)),
+            [
+                HumanStatus::Done,
+                HumanStatus::Done,
+                HumanStatus::Done,
+                HumanStatus::Started,
+                HumanStatus::Done,
+                HumanStatus::Done,
+                HumanStatus::Done,
+                HumanStatus::Started,
+            ],
+            "only uncommitted work and the uninspectable task stay"
+        );
+        let mut removed = host.removed.clone();
+        removed.sort();
+        assert_eq!(removed, ["w-closed", "w-merged", "w-nopr", "w-open"]);
+        assert_eq!(
+            host.closed,
+            ["w-gone"],
+            "`m` closes the gone worktree's pane as `y` does"
+        );
+        let mut deleted = host.deleted_at_tip.clone();
+        deleted.sort();
+        assert_eq!(deleted, [tip("tsk/merged"), tip("tsk/open")]);
+        let gone = board.domain.get(board.ids[6]).unwrap().dispatch.clone();
+        assert!(gone.is_some_and(|record| record.cleaned), "gone converged");
+        assert!(matches!(
+            board.domain.last_undo(),
+            Some(crate::domain::UndoEntry::Batch { entries }) if entries.len() == 6
+        ));
+        let painted = screen(&board.model);
+        for line in [
+            "T6  done",
+            "T7  done · worktree already gone · workspace closed",
+            "unchanged · uncommitted changes",
+            "unchanged · can't inspect",
+        ] {
+            assert!(painted.contains(line), "{line}:\n{painted}");
+        }
+    }
+
+    #[test]
+    fn a_failed_merge_never_stops_an_already_merged_row_from_tidying() {
+        let mut host = MergeHost::default();
+        let mut board = four_kinds("bulk-fail", &mut host);
+        host.refuse
+            .insert("tsk/open".into(), "merge conflicts".into());
+        press(&mut board, BoardIntent::Complete, &mut host);
+        press(&mut board, BoardIntent::MergeCleanup, &mut host);
+        tick(&mut board, &mut host);
+        tick(&mut board, &mut host);
+        assert_eq!(
+            on_disk(&board, 0),
+            HumanStatus::Started,
+            "refused: unchanged"
+        );
+        assert_eq!(
+            on_disk(&board, 1),
+            HumanStatus::Done,
+            "merged: tidied anyway"
+        );
+        assert_eq!(on_disk(&board, 2), HumanStatus::Done, "not merged: tidied");
+        let mut removed = host.removed.clone();
+        removed.sort();
+        assert_eq!(removed, ["w-merged", "w-nopr"]);
+        let painted = screen(&board.model);
+        assert!(
+            painted.contains("merge failed: merge conflicts · unchanged"),
+            "{painted}"
+        );
+    }
+
+    #[test]
+    fn the_remote_branch_is_reported_as_it_really_is_after_the_merge() {
+        // GitHub deletes the branch on merge a moment late: the first look still finds it.
+        for (host, note) in [
+            (
+                MergeHost {
+                    remote_gone_after: Some(2),
+                    ..MergeHost::default()
+                },
+                "remote branch deleted by GitHub",
+            ),
+            (
+                MergeHost {
+                    remote_left: true,
+                    ..MergeHost::default()
+                },
+                "remote branch kept",
+            ),
+        ] {
+            let mut host = host;
+            let mut board = board("remote", &["task"]);
+            host.open_pr("tsk/task", "main");
+            press(&mut board, BoardIntent::Complete, &mut host);
+            press(&mut board, BoardIntent::MergeCleanup, &mut host);
+            tick(&mut board, &mut host);
+            tick(&mut board, &mut host);
+            // A clean finish closes the card onto the status row.
+            assert_eq!(
+                board.model.message(),
+                Some(format!("done T1 · merged PR #7 (squash) · cleaned · {note}").as_str())
+            );
+        }
     }
 }

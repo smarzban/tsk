@@ -51,6 +51,38 @@ async function open(page, width) {
   await expect(row(page, 12)).toBeVisible();
   await page.locator("#board-demo").focus();
 }
+// A row's painted lines: each prefix line (the live line's `│` gutter on wrapped title
+// lines) beside its title line. `aligned` says each prefix line sits on its title line's row.
+async function paintedRow(locator) {
+  return locator.evaluate((el) => {
+    const prefixEl = el.querySelector(".tsk-row-prefix");
+    const prefix = prefixEl.textContent.split("\n");
+    // Title lines, then any row-label lines that wrapped below them.
+    const titles = [
+      ...el.querySelectorAll(
+        ".tsk-title-line, .tsk-row-title > .tsk-row-label",
+      ),
+    ];
+    const lines = titles.map((line, i) =>
+      `${prefix[i] ?? " ".repeat(prefix[0].length)}${line.textContent}`.trimEnd(),
+    );
+    // Offsets from each column's first row: inline and block boxes differ by leading.
+    const offsets = (tops) =>
+      [...new Set(tops.map(Math.round))]
+        .sort((a, b) => a - b)
+        .map((top, _, all) => top - all[0]);
+    const range = document.createRange();
+    range.selectNodeContents(prefixEl);
+    const prefixRows = offsets([...range.getClientRects()].map((r) => r.top));
+    const titleRows = offsets(
+      titles.map((line) => line.getBoundingClientRect().top),
+    );
+    const aligned =
+      prefix.length === 1 ||
+      JSON.stringify(prefixRows) === JSON.stringify(titleRows);
+    return { lines, aligned };
+  });
+}
 async function capture(page, testInfo, name) {
   await page.locator("#tsk-demo").screenshot({
     path: testInfo.outputPath(`${name}.png`),
@@ -83,18 +115,18 @@ test("multi-select gates task marking and ctrl click stays ordinary", async ({
   await page.keyboard.press("Space");
   await row(page, 12).dispatchEvent("click", { ctrlKey: true });
   await expect(page.locator("#tsk-demo")).not.toContainText(
-    "selected · esc clears",
+    "selected · esc clear",
   );
 
   await page.keyboard.press("Shift+M");
   await expect(page.locator("#tsk-demo")).toContainText("multi-select");
   await row(page, 12).click();
   await expect(page.locator("#tsk-demo")).toContainText(
-    "1 selected · esc clears",
+    "1 selected · esc clear",
   );
   await page.keyboard.press("Shift+M");
   await expect(page.locator("#tsk-demo")).not.toContainText(
-    "selected · esc clears",
+    "selected · esc clear",
   );
 });
 
@@ -123,7 +155,7 @@ test("marked task sets complete, delete, and undo as one demo action", async ({
   await page.keyboard.press("Shift+ArrowDown");
   await page.keyboard.press("Space");
   await expect(page.locator("#tsk-demo")).toContainText(
-    "2 selected · esc clears",
+    "2 selected · esc clear",
   );
   await expect(row(page, 12).locator(".tsk-row-prefix")).toContainText("▪");
   await expect(row(page, 13).locator(".tsk-row-prefix")).toContainText("▪");
@@ -144,7 +176,7 @@ test("marked task sets complete, delete, and undo as one demo action", async ({
   );
   await page.keyboard.press("x");
   await expect(page.locator("#tsk-demo")).toContainText(
-    "deleted 2 tasks · u restores",
+    "deleted 2 tasks · u undo",
   );
   await expect(row(page, 12)).toHaveCount(0);
   await expect(row(page, 13)).toHaveCount(0);
@@ -155,7 +187,7 @@ test("marked task sets complete, delete, and undo as one demo action", async ({
   await page.keyboard.press("Shift+M");
   await row(page, 12).click();
   await expect(page.locator("#tsk-demo")).toContainText(
-    "1 selected · esc clears",
+    "1 selected · esc clear",
   );
   await page.keyboard.press("Escape");
   await page.keyboard.press("x");
@@ -170,7 +202,7 @@ test("marked task sets complete, delete, and undo as one demo action", async ({
   await page.keyboard.press("x");
   await expect(row(page, 12)).toHaveCount(0);
   await expect(page.locator("#tsk-demo")).toContainText(
-    'Deleted T12 "Check the release notes" · u undo',
+    'Deleted T12 "Check the release notes and the migration guide before the announcement goes out tomorrow" · u undo',
   );
   // The notice leaves the row after a few seconds; u still restores the task.
   await expect(page.locator("#tsk-demo")).not.toContainText("Deleted T12", {
@@ -194,7 +226,7 @@ test("task-page demo actions ignore board marks and use the open task", async ({
   await expect(row(page, 12)).toHaveCount(0);
   await expect(row(page, 13)).toBeVisible();
   await expect(page.locator("#tsk-demo")).not.toContainText(
-    "selected · esc clears",
+    "selected · esc clear",
   );
 });
 
@@ -219,6 +251,26 @@ test("Escape closes Help then collapses both wide splits", async ({ page }) => {
   }
 });
 
+// T12's page leads with the BLOCKED section the app paints: the live line, why and needs as
+// plain text, the numbered options. Only the action line differs: the demo answers nothing.
+for (const width of [40, 78, 109, 110]) {
+  test(`blocked task page section at ${width} columns`, async ({ page }) => {
+    await open(page, width);
+    await row(page, 12).click();
+    await page.keyboard.press("Enter");
+    const lines = (
+      await page.locator(".tsk-page-block > span").allTextContents()
+    ).map((line) => line.trimEnd());
+    expect(lines.slice(0, -2)).toEqual(
+      await readReference(`blocked-page-${width}`),
+    );
+    expect(lines.at(-1)).toBe("b unblock");
+    await expect(page.locator(".tsk-trail-heading")).toHaveText(
+      /^PAPER TRAIL · \d+ ▸$/,
+    );
+  });
+}
+
 for (const width of [40, 78, 109, 110]) {
   test(`desk start open back and wrapping at ${width} columns`, async ({
     page,
@@ -226,6 +278,14 @@ for (const width of [40, 78, 109, 110]) {
     await open(page, width);
     await expect(page.locator(".tsk-attribution")).toHaveCount(0);
     await expect(page.locator(".tsk-sec")).not.toContainText(["IN MOTION"]);
+    // The blocked row's live line matches the app's at the fixture's clock.
+    await expect(row(page, 12).locator(".tsk-live-line")).toHaveText(
+      await readReference(`live-${width}`),
+    );
+    // Its wrapped title lines carry the live line's gutter, as the app paints them.
+    await expect
+      .poll(() => paintedRow(row(page, 12)))
+      .toEqual({ lines: await readReference(`row-${width}`), aligned: true });
     await capture(page, info, "initial");
     await page.keyboard.press("ArrowDown");
     await expect(row(page, 13)).toHaveClass(/is-sel/);
@@ -279,13 +339,29 @@ for (const width of [40, 78, 109])
     await expect(page.locator(".tsk-attribution")).toHaveText(
       "    └─ #release · tsk-parity",
     );
+    // A recorded block's peek replaces the live line: live text, why, Decide; no notes.
+    await expect(page.locator(".tsk-peek, .tsk-attribution")).toHaveText(
+      await readReference(`peek-${width}`),
+    );
+    await expect(row(page, 12).locator(".tsk-live-line")).toHaveCount(0);
+    // The peek keeps the gutter on the wrapped title, so no gap opens above it.
+    await expect
+      .poll(() => paintedRow(row(page, 12)))
+      .toEqual({
+        lines: await readReference(`peek-row-${width}`),
+        aligned: true,
+      });
     await capture(page, info, "project-peek");
     await page.keyboard.press("Escape");
     await expect(page.locator(".tsk-attribution")).toHaveCount(0);
+    await expect(row(page, 12).locator(".tsk-live-line")).toHaveText(
+      await readReference(`live-${width}`),
+    );
     await page.keyboard.press("2");
     await expect(page.locator(".tsk-tab")).toHaveCount(3);
     await page.keyboard.press("ArrowDown");
     await page.keyboard.press("ArrowRight");
+    // A project board leaves its own project out of the label.
     await expect(page.locator(".tsk-attribution")).toHaveText(
       "    └─ #release",
     );
@@ -296,6 +372,45 @@ for (const width of [40, 78, 109])
     await expect(page.locator(".tsk-peek")).toContainText(["no notes yet"]);
     await capture(page, info, "unlabeled-peek");
   });
+for (const width of [110, 130])
+  test(`project preview live line and block peek at ${width}`, async ({
+    page,
+  }) => {
+    await open(page, width);
+    await page.keyboard.press("3");
+    await page.keyboard.press("ArrowDown");
+    await expect(page.locator(".tsk-wide-split.is-split")).toBeVisible();
+    await page.keyboard.press("l");
+    await expect(page.locator(".tsk-project-preview.is-live")).toBeVisible();
+    const previewRow = page.locator(`[data-preview-task="${id(12)}"]`);
+    await expect(previewRow.locator(".tsk-live-line")).toHaveText(
+      await readReference(`preview-live-${width}`),
+    );
+    await expect
+      .poll(() => paintedRow(previewRow))
+      .toEqual({
+        lines: await readReference(`preview-row-${width}`),
+        aligned: true,
+      });
+    await page.keyboard.press("l");
+    const preview = page.locator(".tsk-project-preview");
+    await expect(preview.locator(".tsk-peek, .tsk-attribution")).toHaveText(
+      await readReference(`preview-peek-${width}`),
+    );
+    await expect(previewRow.locator(".tsk-live-line")).toHaveCount(0);
+    await expect
+      .poll(() => paintedRow(previewRow))
+      .toEqual({
+        lines: await readReference(`preview-peek-row-${width}`),
+        aligned: true,
+      });
+    await page.keyboard.press("h");
+    await expect(preview.locator(".tsk-peek")).toHaveCount(0);
+    await expect(previewRow.locator(".tsk-live-line")).toHaveText(
+      await readReference(`preview-closed-${width}`),
+    );
+  });
+
 test("110-column boundary and rail mouse return", async ({ page }, info) => {
   await open(page, 109);
   await page.keyboard.press("ArrowRight");
@@ -317,7 +432,7 @@ test("h and l mirror task-detail navigation in every demo board", async ({
 }) => {
   await open(page, 109);
   await page.keyboard.press("l");
-  await expect(page.locator(".tsk-peek")).toBeVisible();
+  await expect(page.locator(".tsk-peek").first()).toBeVisible();
   await page.keyboard.press("h");
   await expect(page.locator(".tsk-peek")).toHaveCount(0);
 
@@ -337,7 +452,7 @@ test("h and l mirror task-detail navigation in every demo board", async ({
   await page.keyboard.press("l");
   await expect(page.locator(".tsk-project-preview.is-live")).toBeVisible();
   await page.keyboard.press("l");
-  await expect(page.locator(".tsk-peek")).toBeVisible();
+  await expect(page.locator(".tsk-peek").first()).toBeVisible();
   await page.keyboard.press("h");
   await expect(page.locator(".tsk-peek")).toHaveCount(0);
   await page.keyboard.press("Enter");
@@ -420,14 +535,14 @@ test("projects overview opens a live project preview and keeps its task seat", a
   await expect(page.locator("[data-preview-task]")).not.toHaveCount(0);
   await page.keyboard.press("t");
   await expect(
-    page.locator('[role="dialog"][aria-label="project thread filter"]'),
+    page.locator('[role="dialog"][aria-label="project filter"]'),
   ).toBeVisible();
   await page
     .locator("[data-preview-filter-option]")
     .filter({ hasText: "#release" })
     .click();
   await expect(
-    page.locator('[role="dialog"][aria-label="project thread filter"]'),
+    page.locator('[role="dialog"][aria-label="project filter"]'),
   ).toHaveCount(0);
   await expect(page.locator("[data-preview-task]")).toHaveCount(2);
   await expect(

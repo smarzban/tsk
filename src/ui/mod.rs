@@ -147,8 +147,7 @@ pub use input::{
     intent_primary_action, intent_primary_capture_action, map_capture_key, map_capture_paste_state,
     map_edit_paste, map_key, primary_action_sample_key, primary_capture_action_sample_focus,
     primary_capture_action_sample_key, BoardIntent, CaptureIntent, PrimaryBoardAction,
-    PrimaryCaptureAction, BOARD_HELP_LINE, CAPTURE_HELP_LINE, PRIMARY_BOARD_ACTIONS,
-    PRIMARY_CAPTURE_ACTIONS,
+    PrimaryCaptureAction, CAPTURE_HELP_LINE, PRIMARY_BOARD_ACTIONS, PRIMARY_CAPTURE_ACTIONS,
 };
 pub use mouse::{
     capture_layout, capture_layout_for_model, capture_layout_state, left_click, map_board_mouse,

@@ -760,6 +760,16 @@ fn registered_root(
         .transpose()
 }
 
+/// Unlocks explicitly rather than by closing: the lock belongs to the open file description,
+/// which a process forked by another thread shares until it execs. Closing only our
+/// descriptor would leave the next setup in this process refused for that window.
+struct SetupLock(fs::File);
+impl Drop for SetupLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
 fn run_at(
     config: &Path,
     version: &str,
@@ -813,7 +823,7 @@ fn run_at(
     let home = home.as_ref().unwrap_or(&parent);
     parent.validate()?;
     home.validate()?;
-    let _lock = home.lock()?;
+    let _lock = SetupLock(home.lock()?);
     let unchanged = || -> io::Result<()> {
         parent.validate()?;
         home.validate()?;

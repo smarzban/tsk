@@ -297,6 +297,71 @@ mod tests {
     }
 
     #[test]
+    fn invocation_adopts_the_stored_spelling_of_an_aliased_project() {
+        let root = std::env::temp_dir().join(format!(
+            "tsk-project-adopt-{}-{}",
+            std::process::id(),
+            TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let project = root.join("project");
+        let other = root.join("other");
+        let alias = root.join("alias");
+        fs::create_dir_all(&project).expect("project directory");
+        fs::create_dir(&other).expect("other directory");
+        symlink(&project, &alias).expect("stored alias");
+        let stored = alias.to_string_lossy().into_owned();
+        let mut domain = DomainState::new();
+        domain
+            .create(
+                "stored fixture",
+                None,
+                TaskScope::Project {
+                    path: stored.clone(),
+                },
+                crate::domain::ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create stored project fixture");
+
+        let mut snapshot = InvocationSnapshot {
+            default_scope: TaskScope::Project {
+                path: project.to_string_lossy().into_owned(),
+            },
+            this_repo: Some(project.clone()),
+            title_prefill: None,
+            provenance: crate::domain::ProvenanceOrigin::Capture,
+        };
+        adopt_stored_identity(&mut snapshot, &domain);
+        assert_eq!(
+            snapshot.default_scope,
+            TaskScope::Project {
+                path: stored.clone()
+            }
+        );
+        assert_eq!(
+            snapshot.this_repo,
+            Some(project.clone()),
+            "the launch spelling stays a name candidate"
+        );
+
+        let mut fresh = InvocationSnapshot {
+            default_scope: TaskScope::Project {
+                path: other.to_string_lossy().into_owned(),
+            },
+            this_repo: Some(other.clone()),
+            title_prefill: None,
+            provenance: crate::domain::ProvenanceOrigin::Capture,
+        };
+        let before = fresh.clone();
+        adopt_stored_identity(&mut fresh, &domain);
+        assert_eq!(
+            fresh, before,
+            "a project with no stored alias keeps its spelling"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn bare_project_name_dedupes_equivalent_stored_and_invocation_aliases() {
         let root = std::env::temp_dir().join(format!(
             "tsk-project-bare-alias-{}-{}",
@@ -406,9 +471,37 @@ pub fn resolve_project_path(
 
     let matches = candidates.basename_matches(token);
     match matches.as_slice() {
-        [path] => Ok(path.clone()),
+        // A launch-repository match lands on the stored project it aliases, if any.
+        [path] => Ok(stored_spelling(domain, path).unwrap_or_else(|| path.clone())),
         [] => Err(ProjectResolveError::Unknown),
         _ => Err(ProjectResolveError::Ambiguous(matches)),
+    }
+}
+
+/// The stored spelling of a project equivalent to `path`, exact spelling first.
+///
+/// The OS reports a resolved cwd (`/private/tmp/repo` on macOS) while stored tasks keep
+/// the spelling they were added with (`/tmp/repo`). Destinations go through this so an
+/// alias never starts a second project; `None` when no stored project is equivalent.
+pub fn stored_spelling(domain: &DomainState, path: &str) -> Option<String> {
+    ProjectCandidates {
+        stored: stored_project_paths(domain),
+        invocation: BTreeSet::new(),
+    }
+    .preferred_equivalent(path)
+}
+
+/// Rewrite an invocation's default destination to the stored project it aliases.
+///
+/// Only `default_scope` changes. `this_repo` keeps the launch spelling, because it is
+/// also the "repository you launched from" name candidate: `-p alpha` from `/work/alpha`
+/// must still resolve when the stored alias is `/links/beta`. A path with no stored
+/// equivalent is left as-is, so a new project keeps the invocation spelling.
+pub fn adopt_stored_identity(snapshot: &mut InvocationSnapshot, domain: &DomainState) {
+    if let TaskScope::Project { path } = &mut snapshot.default_scope {
+        if let Some(stored) = stored_spelling(domain, path) {
+            *path = stored;
+        }
     }
 }
 
@@ -422,7 +515,8 @@ pub(crate) fn resolve_permissive_project_path(
     if has_path_separator(token) {
         return token.to_string();
     }
-    let mut candidates = stored_project_paths(domain);
+    let stored = stored_project_paths(domain);
+    let mut candidates = stored.clone();
     if let Some(snapshot) = snapshot {
         // Outside Git, the invocation directory was not historically a basename alias.
         if let TaskScope::Project { path } = &snapshot.default_scope {
@@ -432,11 +526,21 @@ pub(crate) fn resolve_permissive_project_path(
             }
         }
     }
-    let mut matches = candidates
+    // Stored spellings sort first among equivalents, so an alias collapses onto the
+    // stored project rather than reading as an ambiguous second match.
+    let mut ordered: Vec<String> = candidates
         .into_iter()
-        .filter(|path| basename_matches(path, token));
-    match (matches.next(), matches.next()) {
-        (Some(path), None) => path,
+        .filter(|path| basename_matches(path, token))
+        .collect();
+    ordered.sort_by_key(|path| !stored.contains(path));
+    let mut matches: Vec<String> = Vec::new();
+    for path in ordered {
+        if !matches.iter().any(|known| paths_equivalent(known, &path)) {
+            matches.push(path);
+        }
+    }
+    match matches.as_slice() {
+        [path] => stored_spelling(domain, path).unwrap_or_else(|| path.clone()),
         _ => token.to_string(),
     }
 }

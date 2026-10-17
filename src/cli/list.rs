@@ -7,8 +7,10 @@ use uuid::Uuid;
 
 use crate::cli::parser::{parse_task_address, TaskAddress};
 use crate::context::snapshot_from_env;
-use crate::domain::{normalize_thread, thread_refusal_message, HumanStatus, TaskScope};
-use crate::scope::resolve_permissive_project_path;
+use crate::domain::{
+    normalize_thread, thread_refusal_message, DomainState, HumanStatus, TaskScope,
+};
+use crate::scope::{resolve_permissive_project_path, PathIdentityCache};
 use crate::store::{default_state_dir, TaskStore};
 use crate::ui::queue::{arrange_rows, GroupBy, SortBy, ThreadFilter};
 
@@ -26,6 +28,8 @@ pub struct ListInput {
     pub ready: bool,
     /// Normalized at the argv boundary so filtering only compares valid names.
     pub thread: Option<String>,
+    /// Exact normalized assignee filter. Removed profiles remain listable.
+    pub assignee: Option<String>,
     /// Unthreaded tasks only: the board filter's `without a thread`.
     pub no_thread: bool,
     /// The board's `g` grouping, applied under each status heading. `None` when the
@@ -65,13 +69,30 @@ pub(crate) struct ListRow {
     pub(crate) status: HumanStatus,
     pub(crate) project: Option<String>,
     pub(crate) thread: Option<String>,
+    pub(crate) assignee: Option<String>,
+    pub(crate) base: Option<String>,
+    /// The tasks this one runs after, in its own order, each with whether it is done.
+    pub(crate) after: Vec<AfterLink>,
+    /// The live tasks that run after this one (read-only, derived from their `after`).
+    pub(crate) before: Vec<u64>,
     /// `archived` / `project archived` mark, set only in the archived view.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) archived: Option<&'static str>,
+    /// The open block's reason, painted as `blocked: <why>` by the human listing only.
+    #[serde(skip)]
+    pub(crate) blocked_why: Option<String>,
     /// Painted group label (`herdr-tsk`, `desk`, `#release`, `no thread`), set only
     /// under `--group`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) group: Option<String>,
+}
+
+/// One prerequisite of a listed task. A number no live task carries any more reads as done:
+/// nothing waits on it.
+#[derive(Debug, Serialize)]
+pub(crate) struct AfterLink {
+    pub(crate) task: u64,
+    pub(crate) done: bool,
 }
 
 /// Complete detail attached only to a direct single-task listing.
@@ -79,6 +100,13 @@ pub(crate) struct ListRow {
 pub(crate) struct DirectTaskDetails {
     pub(crate) notes: Option<String>,
     pub(crate) steps: Vec<crate::cli::steps::StepLine>,
+    pub(crate) dispatch: Option<crate::domain::Dispatch>,
+    pub(crate) block: Option<crate::domain::Block>,
+    pub(crate) past_blocks: Vec<crate::domain::Block>,
+    /// Every event, oldest first, for the JSON `activity` list.
+    pub(crate) history: Vec<crate::domain::TaskEvent>,
+    /// The paper trail, newest first, for the human listing.
+    pub(crate) trail: Vec<crate::activity::TrailEntry>,
 }
 
 /// Read-only result for the list command.
@@ -112,6 +140,7 @@ pub fn parse(args: &[String]) -> Result<ListInput, String> {
         open: false,
         ready: false,
         thread: None,
+        assignee: None,
         no_thread: false,
         group: None,
         sort: None,
@@ -147,6 +176,13 @@ pub fn parse(args: &[String]) -> Result<ListInput, String> {
                 )?);
                 index += 1;
             }
+            flag if flag.starts_with("--assignee=") => {
+                once("--assignee")?;
+                input.assignee = Some(normalize_thread(&flag["--assignee=".len()..]).map_err(
+                    |error| format!("invalid agent name · {}", thread_refusal_message(error)),
+                )?);
+                index += 1;
+            }
             "--json" => {
                 input.json = true;
                 index += 1;
@@ -160,6 +196,13 @@ pub fn parse(args: &[String]) -> Result<ListInput, String> {
                 once("--thread")?;
                 input.thread = Some(normalize_thread(&value(flag)?).map_err(|error| {
                     format!("invalid thread name · {}", thread_refusal_message(error))
+                })?);
+                index += 2;
+            }
+            "--assignee" => {
+                once("--assignee")?;
+                input.assignee = Some(normalize_thread(&value(flag)?).map_err(|error| {
+                    format!("invalid agent name · {}", thread_refusal_message(error))
                 })?);
                 index += 2;
             }
@@ -245,10 +288,11 @@ pub fn parse(args: &[String]) -> Result<ListInput, String> {
             || input.global
             || input.project.is_some()
             || input.thread.is_some()
+            || input.assignee.is_some()
             || input.no_thread)
     {
         return Err(
-            "task operand cannot be used with --project, --desk, --all, --thread, or --no-thread"
+            "task operand cannot be used with --project, --desk, --all, --thread, --no-thread, or --assignee"
                 .into(),
         );
     }
@@ -308,6 +352,11 @@ pub fn parse(args: &[String]) -> Result<ListInput, String> {
             "--group thread and --sort thread cannot be used with {flag}"
         ));
     }
+    if input.assignee.is_some()
+        && (input.group == Some(GroupBy::Assignee) || input.sort == Some(SortBy::Assignee))
+    {
+        return Err("--group assignee and --sort assignee cannot be used with --assignee".into());
+    }
     if !input.all && (input.group == Some(GroupBy::Project) || input.sort == Some(SortBy::Project))
     {
         return Err("--group project and --sort project need --all".into());
@@ -320,8 +369,9 @@ fn parse_group(value: &str) -> Result<GroupBy, String> {
         "none" => Ok(GroupBy::None),
         "project" => Ok(GroupBy::Project),
         "thread" => Ok(GroupBy::Thread),
+        "assignee" => Ok(GroupBy::Assignee),
         _ => Err(format!(
-            "unknown --group {value}, expected none, project, or thread"
+            "unknown --group {value}, expected none, project, thread, or assignee"
         )),
     }
 }
@@ -332,8 +382,9 @@ fn parse_sort(value: &str) -> Result<SortBy, String> {
         "project" => Ok(SortBy::Project),
         "thread" => Ok(SortBy::Thread),
         "title" => Ok(SortBy::Title),
+        "assignee" => Ok(SortBy::Assignee),
         _ => Err(format!(
-            "unknown --sort {value}, expected recent, project, thread, or title"
+            "unknown --sort {value}, expected recent, project, thread, title, or assignee"
         )),
     }
 }
@@ -359,7 +410,7 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
             ListView::Open
         };
         return Ok(ListResult {
-            rows: vec![row_for(task)],
+            rows: vec![row_for(task, &domain)],
             view,
             include_scope: false,
             group: GroupBy::None,
@@ -367,6 +418,11 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
             direct: Some(DirectTaskDetails {
                 notes: task.notes.clone(),
                 steps: crate::cli::steps::step_lines(&task.steps),
+                dispatch: task.dispatch.clone(),
+                block: task.block.clone(),
+                past_blocks: task.past_blocks.clone(),
+                history: task.history.clone(),
+                trail: crate::activity::paper_trail(task),
             }),
         });
     }
@@ -394,14 +450,32 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
         ThreadFilter::All
     };
     if view == ListView::Deleted {
-        return deleted_rows(&store, &domain, &scope, &thread_filter, input.all);
+        return deleted_rows(
+            &store,
+            &domain,
+            &scope,
+            &thread_filter,
+            input.assignee.as_deref(),
+            input.all,
+        );
     }
+    let identities = PathIdentityCache::default();
     let mut tasks = domain
         .tasks()
         .iter()
         .filter(|task| !task.is_notice())
-        .filter(|task| scope.as_ref().is_none_or(|scope| task.scope == *scope))
+        .filter(|task| {
+            scope
+                .as_ref()
+                .is_none_or(|scope| in_scope(task, scope, &identities))
+        })
         .filter(|task| thread_filter.admits(task))
+        .filter(|task| {
+            input
+                .assignee
+                .as_deref()
+                .is_none_or(|assignee| task.assignee.as_deref() == Some(assignee))
+        })
         .filter(|task| match view {
             ListView::Open => {
                 !task.soft_deleted
@@ -448,7 +522,7 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
     let rows = arranged
         .into_iter()
         .map(|(group, task)| {
-            let mut row = row_for(task);
+            let mut row = row_for(task, &domain);
             row.group = group;
             if view == ListView::Archived {
                 // "archived" wins over "project archived".
@@ -480,24 +554,29 @@ fn deleted_rows(
     domain: &crate::domain::DomainState,
     scope: &Option<TaskScope>,
     thread_filter: &ThreadFilter,
+    assignee: Option<&str>,
     include_scope: bool,
 ) -> Result<ListResult, ListError> {
     let trash = store
         .load_trash()
         .map_err(|error| ListError::Store(error.to_string()))?;
-    let in_scope = |task: &crate::domain::Task| {
+    let identities = PathIdentityCache::default();
+    let in_view = |task: &crate::domain::Task| {
         !task.is_notice()
-            && scope.as_ref().is_none_or(|scope| task.scope == *scope)
+            && scope
+                .as_ref()
+                .is_none_or(|scope| in_scope(task, scope, &identities))
             && thread_filter.admits(task)
+            && assignee.is_none_or(|assignee| task.assignee.as_deref() == Some(assignee))
     };
     let mut dated: Vec<(std::time::SystemTime, ListRow)> = domain
         .tasks()
         .iter()
-        .filter(|task| task.soft_deleted && in_scope(task))
+        .filter(|task| task.soft_deleted && in_view(task))
         .map(|task| {
             (
                 task.soft_deleted_at().unwrap_or(task.updated_at),
-                row_for(task),
+                row_for(task, domain),
             )
         })
         .collect();
@@ -505,10 +584,10 @@ fn deleted_rows(
         domain.tasks().iter().map(|task| task.id).collect();
     for line in trash {
         // A task in both places is listed once, from the live copy.
-        if live_ids.contains(&line.task.id) || !in_scope(&line.task) {
+        if live_ids.contains(&line.task.id) || !in_view(&line.task) {
             continue;
         }
-        dated.push((line.deleted_at, row_for(&line.task)));
+        dated.push((line.deleted_at, row_for(&line.task, domain)));
     }
     dated.sort_by(|(left, _), (right, _)| right.cmp(left));
     Ok(ListResult {
@@ -521,7 +600,8 @@ fn deleted_rows(
     })
 }
 
-fn row_for(task: &crate::domain::Task) -> ListRow {
+fn row_for(task: &crate::domain::Task, domain: &DomainState) -> ListRow {
+    let waiting = domain.waiting_on(task);
     ListRow {
         id: task.id,
         number: task
@@ -534,7 +614,25 @@ fn row_for(task: &crate::domain::Task) -> ListRow {
             TaskScope::Project { path } => Some(path.clone()),
         },
         thread: task.thread.clone(),
+        assignee: task.assignee.clone(),
+        base: task.base.clone(),
+        after: task
+            .after
+            .iter()
+            .map(|number| AfterLink {
+                task: *number,
+                done: !waiting.contains(number),
+            })
+            .collect(),
+        before: task
+            .number
+            .map_or_else(Vec::new, |number| domain.before(number)),
         archived: None,
+        blocked_why: task
+            .block
+            .as_ref()
+            .filter(|_| task.status == HumanStatus::Blocked)
+            .and_then(|block| block.why.clone()),
         group: None,
     }
 }
@@ -558,5 +656,16 @@ fn status_group_rank(status: HumanStatus) -> u8 {
         HumanStatus::Blocked => 3,
         HumanStatus::Review => 4,
         HumanStatus::Done => 5,
+    }
+}
+
+/// Whether a task sits in a filter scope. Project paths match by directory identity, so
+/// `/tmp/x` and `/private/tmp/x` (any symlink alias) list the same tasks.
+fn in_scope(task: &crate::domain::Task, scope: &TaskScope, identities: &PathIdentityCache) -> bool {
+    match (&task.scope, scope) {
+        (TaskScope::Project { path }, TaskScope::Project { path: filter }) => {
+            identities.equivalent(path, filter)
+        }
+        (task_scope, scope) => task_scope == scope,
     }
 }

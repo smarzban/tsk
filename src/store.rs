@@ -24,6 +24,12 @@ const STATE_FILE: &str = "tsk.json";
 const BACKUP_FILE: &str = "tsk.json.1";
 /// Inter-process exclusive lock file (sibling of the state document).
 const LOCK_FILE: &str = "tsk.json.lock";
+/// Held shared by every open board and quick-capture popup for its whole session, so a
+/// restore can refuse while one is open (its next save would write back tasks the restored
+/// document no longer holds).
+const BOARD_LOCK_FILE: &str = "board.lock";
+/// Prefix of the copy a restore keeps of the document it replaced.
+const PRE_RESTORE_PREFIX: &str = "tsk.json.pre-restore-";
 /// Trash file for tasks removed from the live store, rewritten atomically on
 /// each change and bounded by the 30-day purge.
 const TRASH_FILE: &str = "trash.jsonl";
@@ -36,13 +42,25 @@ type MigrationStep = fn(serde_json::Value) -> Result<serde_json::Value, StoreErr
 /// Document-format migrations: the index `i` step converts version `i + 1` to `i + 2`.
 ///
 /// v1 documents gain the empty per-project record map, v2 documents the notice
-/// counter, v3 documents rewrite ready to open, and v4 documents keep their
-/// wire shape while gaining support for batch undo entries.
+/// counter, v3 documents rewrite ready to open, v4 documents gain batch undo,
+/// v5 documents gain the optional v6 task fields, v6 documents gain blocks, v7 documents
+/// gain the start undo entry, v8 documents gain review rounds, v9 documents gain event
+/// authors and details, v10 documents gain `after` links, v11 documents gain the reply
+/// `sent` marker, and v12 documents gain the status a done's undo restores plus the status,
+/// steps, and archive undo entries.
 const MIGRATIONS: &[MigrationStep] = &[
     migrate_v1_to_v2,
     migrate_v2_to_v3,
     migrate_v3_to_v4,
     migrate_v4_to_v5,
+    migrate_v5_to_v6,
+    migrate_v6_to_v7,
+    migrate_v7_to_v8,
+    migrate_v8_to_v9,
+    migrate_v9_to_v10,
+    migrate_v10_to_v11,
+    migrate_v11_to_v12,
+    migrate_v12_to_v13,
 ];
 
 /// v1 -> v2: a v1 store has no archived projects, so it gains an empty project map.
@@ -103,6 +121,55 @@ fn migrate_v3_to_v4(mut document: serde_json::Value) -> Result<serde_json::Value
 
 /// v4 -> v5: batch undo adds a new enum variant but changes no existing wire value.
 fn migrate_v4_to_v5(document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
+    Ok(document)
+}
+
+/// v5 -> v6: optional assignment and dispatch fields add no existing wire value.
+fn migrate_v5_to_v6(document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
+    Ok(document)
+}
+
+/// v6 -> v7: optional block fields and the block undo entry add no existing wire value.
+/// A v6 `blocked` task keeps no block and reads as blocked on you with no reason.
+fn migrate_v6_to_v7(document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
+    Ok(document)
+}
+
+/// v7 -> v8: the start undo entry (a start that dispatched) adds a new enum variant but
+/// changes no existing wire value.
+fn migrate_v7_to_v8(document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
+    Ok(document)
+}
+
+/// v8 -> v9: review rounds (the `review` record kind, `agent:` waiting-on, the review fields
+/// and two event kinds) add only optional fields and new variants. A v8 `review` task keeps
+/// no round and reads as in review on you with nothing recorded.
+fn migrate_v8_to_v9(document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
+    Ok(document)
+}
+
+/// v9 -> v10: task events gain an optional author (`by`) and per-kind `detail`. Existing events
+/// keep kind and time only and read as made by nobody in particular, with no detail.
+fn migrate_v9_to_v10(document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
+    Ok(document)
+}
+
+/// v10 -> v11: tasks gain an optional `after` list, events an optional `after` detail, and the
+/// undo stack a `set_after` entry. A v10 task runs after nothing.
+fn migrate_v10_to_v11(document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
+    Ok(document)
+}
+
+/// v11 -> v12: replies gain an optional `sent` marker (delivered on its own by
+/// `tsk reply --send`). A v11 reply reads as not sent, so the record's close delivers it.
+fn migrate_v11_to_v12(document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
+    Ok(document)
+}
+
+/// v12 -> v13: a done's undo entry gains the status it restores (`previous`), and the undo
+/// stack gains `status`, `steps`, and `archive` entries. A v12 done entry carries no `previous` and reads
+/// as `open`, where its undo always went.
+fn migrate_v12_to_v13(document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
     Ok(document)
 }
 
@@ -279,12 +346,41 @@ pub struct StoreSignature {
 #[derive(Debug, Clone)]
 pub struct TaskStore {
     path: PathBuf,
+    /// Unit tests count durable saves and fail the next one through this handle and its clones.
+    #[cfg(test)]
+    probe: std::sync::Arc<SaveProbe>,
+}
+
+/// Test-only view into a store handle's durable writes.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct SaveProbe {
+    saves: std::sync::atomic::AtomicUsize,
+    fail_next: std::sync::atomic::AtomicBool,
 }
 
 impl TaskStore {
     /// `path` is the plugin state directory (not the JSON file itself).
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            #[cfg(test)]
+            probe: std::sync::Arc::default(),
+        }
+    }
+
+    /// Durable saves this handle (and its clones) made.
+    #[cfg(test)]
+    pub(crate) fn durable_saves(&self) -> usize {
+        self.probe.saves.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Fail this handle's next durable write, after any merge, as a full disk would.
+    #[cfg(test)]
+    pub(crate) fn fail_next_save(&self) {
+        self.probe
+            .fail_next
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn path(&self) -> &Path {
@@ -521,18 +617,30 @@ impl TaskStore {
     /// changed from, merge sibling records, then durably write. Divergent same-task writes are
     /// rejected rather than ordered by wall clock or silently overwritten.
     pub fn reload_merge_save(&self, local: &mut DomainState) -> Result<(), StoreError> {
-        self.reload_merge_save_with(local, &StdFilesystem)
+        self.reload_merge_save_with(local, &StdFilesystem, |_| ())
+    }
+
+    /// [`Self::reload_merge_save`], with `merged` run on the caller's state after the merge and
+    /// before the write, under the same lock: a decision that must see every other writer's
+    /// changes (what a completion released) lands in the same save.
+    pub fn reload_merge_save_then<T>(
+        &self,
+        local: &mut DomainState,
+        merged: impl FnOnce(&mut DomainState) -> T,
+    ) -> Result<T, StoreError> {
+        self.reload_merge_save_with(local, &StdFilesystem, merged)
     }
 
     /// Internal filesystem seam for the merge-save durability boundary.
     ///
     /// The caller's state keeps its merge bases until the replacement succeeds, so Save
     /// Recovery can retry the same intended mutation after any write-stage failure.
-    fn reload_merge_save_with<F: AtomicFilesystem>(
+    fn reload_merge_save_with<F: AtomicFilesystem, T>(
         &self,
         local: &mut DomainState,
         filesystem: &F,
-    ) -> Result<(), StoreError> {
+        merged: impl FnOnce(&mut DomainState) -> T,
+    ) -> Result<T, StoreError> {
         check_format_version(local.format_version())?;
         let _guard = self.lock_exclusive()?;
         let disk = self.load_unlocked()?;
@@ -540,6 +648,7 @@ impl TaskStore {
         local
             .merge_for_save(&disk)
             .map_err(|message| StoreError::Io(io::Error::other(message)))?;
+        let result = merged(local);
         let mut durable = local.clone();
         durable.assign_numbers_for_persistence();
         durable.clear_merge_bases();
@@ -559,7 +668,7 @@ impl TaskStore {
         }
         local.sync_numbers_from_persisted(&durable);
         local.clear_merge_bases();
-        Ok(())
+        Ok(result)
     }
 
     fn load_unlocked(&self) -> Result<DomainState, StoreError> {
@@ -615,6 +724,14 @@ impl TaskStore {
         filesystem: &F,
         supported: u32,
     ) -> Result<(), StoreError> {
+        #[cfg(test)]
+        if self
+            .probe
+            .fail_next
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(StoreError::Io(io::Error::other("injected save failure")));
+        }
         check_supported(state.format_version(), supported)?;
         // Locked persistence boundary: every save path and locked_transition lands here,
         // after number assignment and any merge-undo union.
@@ -664,7 +781,106 @@ impl TaskStore {
         if write_result.is_err() {
             let _ = filesystem.remove_file(&tmp);
         }
+        #[cfg(test)]
+        if write_result.is_ok() {
+            self.probe
+                .saves
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        if write_result.is_ok() {
+            // Best effort and off the save path: at most a detached child is started.
+            crate::backup::after_save(&self.path);
+        }
         write_result
+    }
+
+    /// Hold a shared lock on `board.lock` for as long as the guard lives. Every board and
+    /// quick-capture session holds one; [`Self::restore_document`] refuses while any is held.
+    pub fn hold_board_presence(&self) -> io::Result<BoardPresence> {
+        fsperm::ensure_private_dir(&self.path)?;
+        let path = self.path.join(BOARD_LOCK_FILE);
+        let file = fsperm::open_lock_file(&path)?;
+        fsperm::tighten_file(&path);
+        file.lock_shared()?;
+        Ok(BoardPresence { file })
+    }
+
+    /// Replace the live document with `document`, byte for byte, under the store lock.
+    ///
+    /// Refuses while a board or quick capture is open, and refuses a document that is not a
+    /// store or whose format is newer than this binary reads, before writing anything. An
+    /// older format is written as is and migrates on the next open like any older store. The
+    /// replaced document is first copied to `tsk.json.pre-restore-<UTC time>`; that path is
+    /// returned (`None` when there was no live document).
+    pub fn restore_document(
+        &self,
+        document: &[u8],
+        now: SystemTime,
+    ) -> Result<Option<PathBuf>, RestoreError> {
+        check_document(document)?;
+        fsperm::ensure_private_dir(&self.path).map_err(|e| RestoreError::Store(e.into()))?;
+        let presence_path = self.path.join(BOARD_LOCK_FILE);
+        let presence =
+            fsperm::open_lock_file(&presence_path).map_err(|e| RestoreError::Store(e.into()))?;
+        fsperm::tighten_file(&presence_path);
+        match presence.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => return Err(RestoreError::BoardOpen),
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(RestoreError::Store(error.into()))
+            }
+        }
+        // Held exclusively until the swap is durable, so a board opening meanwhile waits and
+        // then loads the restored document.
+        let _presence = BoardPresence { file: presence };
+        let _guard = self.lock_exclusive().map_err(RestoreError::Store)?;
+        self.sweep_orphan_temps();
+        let file = self.state_file();
+        let kept = if file.exists() {
+            let mut kept = self.path.join(format!(
+                "{PRE_RESTORE_PREFIX}{}",
+                crate::backup::utc_stamp(now)
+            ));
+            let mut collisions = 0_u32;
+            while kept.exists() {
+                collisions += 1;
+                kept = self.path.join(format!(
+                    "{PRE_RESTORE_PREFIX}{}-{collisions}",
+                    crate::backup::utc_stamp(now)
+                ));
+            }
+            // Durable before the swap: a crash after it must still leave the replaced store.
+            (|| -> io::Result<()> {
+                fs::copy(&file, &kept)?;
+                fsperm::tighten_file(&kept);
+                // Write access: Windows flushes only a handle opened for writing.
+                fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&kept)?
+                    .sync_all()?;
+                StdFilesystem.sync_directory(&self.path)
+            })()
+            .map_err(|e| RestoreError::Store(e.into()))?;
+            Some(kept)
+        } else {
+            None
+        };
+        let tmp = self.unique_tmp_path();
+        let write_result = (|| -> io::Result<()> {
+            let mut temp_file = fsperm::create_private_file(&tmp)?;
+            temp_file.write_all(document)?;
+            temp_file.sync_all()?;
+            drop(temp_file);
+            fsperm::replace_file(&tmp, &file)?;
+            StdFilesystem.sync_directory(&self.path)
+        })();
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&tmp);
+            return Err(RestoreError::Store(error.into()));
+        }
+        prune_pre_restore(&self.path);
+        Ok(kept)
     }
 
     /// Move soft-deleted tasks undo can no longer reach (or that aged past the
@@ -816,6 +1032,8 @@ impl TaskStore {
         let unlocked = [
             crate::update::UPDATE_TEMP_PREFIX,
             crate::delivery::DELIVERY_TEMP_PREFIX,
+            crate::agents::CONFIG_TEMP_PREFIX,
+            crate::backup::STATUS_TEMP_PREFIX,
         ];
         let stale_after = Duration::from_secs(60);
         for entry in entries.flatten() {
@@ -871,6 +1089,9 @@ fn is_private_state_name(name: &str) -> bool {
         || name == BACKUP_FILE
         || name == LOCK_FILE
         || name == TRASH_FILE
+        || name == BOARD_LOCK_FILE
+        || name.starts_with(PRE_RESTORE_PREFIX)
+        || crate::backup::is_private_state_name(name)
         || name == "update.json"
         || name == crate::delivery::DELIVERY_FILE
         || name.starts_with(&format!("{STATE_FILE}.v"))
@@ -879,6 +1100,116 @@ fn is_private_state_name(name: &str) -> bool {
         || name.starts_with(&format!(".{BACKUP_FILE}.tmp."))
         || name.starts_with(crate::update::UPDATE_TEMP_PREFIX)
         || name.starts_with(crate::delivery::DELIVERY_TEMP_PREFIX)
+        || name.starts_with(crate::agents::CONFIG_TEMP_PREFIX)
+}
+
+/// Check `document` is a store this binary opens: UTF-8 JSON with a supported
+/// `format_version` that parses (after migrating, when older) the way the next open will.
+/// Restore runs it before a swap and backups before a copy, so neither passes on a damaged
+/// store. Refusals are [`RestoreError::Invalid`] or [`RestoreError::Unsupported`].
+pub fn check_document(document: &[u8]) -> Result<(), RestoreError> {
+    let text = std::str::from_utf8(document)
+        .map_err(|_| RestoreError::Invalid("not UTF-8 text".into()))?;
+    let found = peek_format_version(text)
+        .map_err(|error| RestoreError::Invalid(format!("not a tsk store: {error}")))?;
+    if found == 0 || found > STORE_FORMAT_VERSION {
+        return Err(RestoreError::Unsupported {
+            found,
+            supported: STORE_FORMAT_VERSION,
+        });
+    }
+    let parsed: Result<DomainState, StoreError> = if found < STORE_FORMAT_VERSION {
+        serde_json::from_str(text)
+            .map_err(StoreError::from)
+            .and_then(|document| migrate(document, found))
+            .and_then(|migrated| serde_json::from_value(migrated).map_err(StoreError::from))
+    } else {
+        serde_json::from_str(text).map_err(StoreError::from)
+    };
+    parsed
+        .map(drop)
+        .map_err(|error| RestoreError::Invalid(format!("not a readable store: {error}")))
+}
+
+/// A store document's `format_version`, when it has one.
+pub fn format_version(document: &[u8]) -> Option<u32> {
+    peek_format_version(std::str::from_utf8(document).ok()?)
+        .ok()
+        .filter(|version| *version > 0)
+}
+
+/// Restores keep this many `tsk.json.pre-restore-*` copies, deleting older ones.
+pub const PRE_RESTORE_KEPT: usize = 5;
+
+/// Delete all but the newest [`PRE_RESTORE_KEPT`] pre-restore copies. Names sort by their UTC
+/// time; a same-second `-<n>` copy sorts after its unsuffixed sibling.
+fn prune_pre_restore(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut copies: Vec<(String, u32, PathBuf)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_str()?.to_string();
+            let rest = name.strip_prefix(PRE_RESTORE_PREFIX)?;
+            let (stamp, suffix) = match rest.split_once('-') {
+                Some((stamp, n)) => (stamp.to_string(), n.parse().ok()?),
+                None => (rest.to_string(), 0),
+            };
+            Some((stamp, suffix, entry.path()))
+        })
+        .collect();
+    copies.sort_by(|a, b| (&b.0, b.1).cmp(&(&a.0, a.1)));
+    for (_, _, path) in copies.into_iter().skip(PRE_RESTORE_KEPT) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// A board or quick-capture session's shared hold on `board.lock` (released on drop or exit).
+#[derive(Debug)]
+pub struct BoardPresence {
+    file: File,
+}
+
+impl Drop for BoardPresence {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+/// Why [`TaskStore::restore_document`] refused or failed.
+#[derive(Debug)]
+pub enum RestoreError {
+    /// A board or quick capture holds `board.lock`.
+    BoardOpen,
+    /// The backup's format is unversioned or newer than this binary.
+    Unsupported {
+        found: u32,
+        supported: u32,
+    },
+    /// The bytes are not a store document.
+    Invalid(String),
+    Store(StoreError),
+}
+
+impl std::fmt::Display for RestoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RestoreError::BoardOpen => write!(
+                f,
+                "a board or quick capture is open on this store; quit it, then restore"
+            ),
+            RestoreError::Unsupported { found: 0, .. } => {
+                write!(f, "backup has no format version; this tsk cannot read it")
+            }
+            RestoreError::Unsupported { found, supported } => write!(
+                f,
+                "backup is store format {found}, newer than this tsk reads ({supported}); update tsk first"
+            ),
+            RestoreError::Invalid(message) => write!(f, "backup is {message}"),
+            RestoreError::Store(error) => write!(f, "{error}"),
+        }
+    }
 }
 
 /// RAII exclusive lock on the store lock file (released on drop via `File::unlock`).
@@ -1366,7 +1697,7 @@ mod tests {
         let filesystem = RecordingFilesystem::new(Some(SaveStage::FileSync));
         assert!(
             store
-                .reload_merge_save_with(&mut local, &filesystem)
+                .reload_merge_save_with(&mut local, &filesystem, |_| ())
                 .is_err(),
             "the injected durable write failure must reach Save Recovery"
         );
@@ -1607,7 +1938,7 @@ mod tests {
     }
 
     #[test]
-    fn save_emits_format_version_five() {
+    fn save_emits_format_version_twelve() {
         let dir = temp_dir("format-stamp");
         let _guard = TempDirGuard(dir.clone());
         let store = TaskStore::new(&dir);
@@ -1616,7 +1947,7 @@ mod tests {
         let value: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(dir.join(STATE_FILE)).expect("read"))
                 .expect("json");
-        assert_eq!(value["format_version"], 5);
+        assert_eq!(value["format_version"], 13);
         assert_eq!(value["next_notice_number"], 1);
     }
 
@@ -1634,7 +1965,7 @@ mod tests {
             error,
             StoreError::UnsupportedFormat {
                 found: 0,
-                supported: 5
+                supported: 13
             }
         ));
         let on_disk: serde_json::Value =
@@ -1645,7 +1976,7 @@ mod tests {
 
     #[test]
     fn load_refuses_noncurrent_format_without_rewriting() {
-        for format_version in [0, 6] {
+        for format_version in [0, 14] {
             let dir = temp_dir("format-noncurrent");
             let _guard = TempDirGuard(dir.clone());
             let document = serde_json::json!({
@@ -1663,7 +1994,7 @@ mod tests {
                     error,
                     StoreError::UnsupportedFormat {
                         found,
-                        supported: 5
+                        supported: 13
                     } if found == format_version
                 ),
                 "{error}"
@@ -1680,7 +2011,7 @@ mod tests {
         let dir = temp_dir("format-save-state");
         let _guard = TempDirGuard(dir.clone());
         let state: DomainState = serde_json::from_value(serde_json::json!({
-            "format_version": 6,
+            "format_version": 14,
             "next_task_number": 1,
             "tasks": [],
             "undo_stack": []
@@ -1693,8 +2024,8 @@ mod tests {
         assert!(matches!(
             error,
             StoreError::UnsupportedFormat {
-                found: 6,
-                supported: 5
+                found: 14,
+                supported: 13
             }
         ));
         assert!(!dir.join(STATE_FILE).exists());
@@ -1708,7 +2039,7 @@ mod tests {
         store.save(&DomainState::new()).expect("seed current store");
         let before = fs::read(dir.join(STATE_FILE)).expect("read current store");
         let mut local: DomainState = serde_json::from_value(serde_json::json!({
-            "format_version": 6,
+            "format_version": 14,
             "next_task_number": 1,
             "tasks": [],
             "undo_stack": []
@@ -1721,8 +2052,8 @@ mod tests {
         assert!(matches!(
             error,
             StoreError::UnsupportedFormat {
-                found: 6,
-                supported: 5
+                found: 14,
+                supported: 13
             }
         ));
         assert_eq!(
@@ -1736,7 +2067,7 @@ mod tests {
         let dir = temp_dir("format-save-newer");
         let _guard = TempDirGuard(dir.clone());
         let newer = serde_json::json!({
-            "format_version": 6,
+            "format_version": 14,
             "tasks": [],
             "undo_stack": []
         });
@@ -1749,8 +2080,8 @@ mod tests {
             matches!(
                 error,
                 StoreError::UnsupportedFormat {
-                    found: 6,
-                    supported: 5
+                    found: 14,
+                    supported: 13
                 }
             ),
             "{error}"
@@ -1855,6 +2186,7 @@ mod tests {
         for prefix in [
             crate::update::UPDATE_TEMP_PREFIX,
             crate::delivery::DELIVERY_TEMP_PREFIX,
+            crate::agents::CONFIG_TEMP_PREFIX,
         ] {
             let stale = dir.join(format!("{prefix}1.1"));
             let fresh = dir.join(format!("{prefix}2.2"));
@@ -2974,32 +3306,33 @@ mod tests {
         let store = TaskStore::new(&dir);
         let original = round_tripped_current_state("migrate me");
         let mut original_value = serde_json::to_value(&original).expect("encode state");
-        original_value["format_version"] = serde_json::json!(4);
-        let original_bytes = serde_json::to_vec_pretty(&original_value).expect("encode v4");
+        original_value["format_version"] = serde_json::json!(6);
+        let original_bytes = serde_json::to_vec_pretty(&original_value).expect("encode v6");
         fs::create_dir_all(&dir).expect("mkdir");
-        fs::write(dir.join(STATE_FILE), &original_bytes).expect("seed v4 file");
+        fs::write(dir.join(STATE_FILE), &original_bytes).expect("seed v6 file");
 
-        let mut state = store.load().expect("v4 file loads through v4 -> v5");
-        assert_eq!(state.format_version(), 5);
+        let mut state = store.load().expect("v6 file loads through v6 -> v13");
+        assert_eq!(state.format_version(), 13);
+        assert_eq!(state.tasks()[0].assignee, None);
         assert_eq!(
             state.tasks()[0].title,
             "migrate me",
             "migration must preserve the task content"
         );
 
-        store.save(&state).expect("first save at v5");
+        store.save(&state).expect("first save at v13");
         assert_eq!(
-            fs::read(dir.join("tsk.json.v4")).expect("read version backup"),
+            fs::read(dir.join("tsk.json.v6")).expect("read version backup"),
             original_bytes,
             "the first backup of the pre-migration version is byte-identical"
         );
         let live: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(dir.join(STATE_FILE)).expect("read live"))
                 .expect("json");
-        assert_eq!(live["format_version"], 5);
+        assert_eq!(live["format_version"], 13);
         assert_eq!(live["tasks"][0]["title"], "migrate me");
         assert_eq!(
-            fs::read(dir.join("tsk.json.1")).expect("last-good holds the v4 original"),
+            fs::read(dir.join("tsk.json.1")).expect("last-good holds the v6 original"),
             original_bytes,
             "tsk.json.1 semantics are unchanged"
         );
@@ -3013,11 +3346,11 @@ mod tests {
                 None,
             )
             .expect("create");
-        store.save(&state).expect("second save at v5");
+        store.save(&state).expect("second save at v13");
         assert_eq!(
-            fs::read(dir.join("tsk.json.v4")).expect("read version backup"),
+            fs::read(dir.join("tsk.json.v6")).expect("read version backup"),
             original_bytes,
-            "a second save must not touch tsk.json.v4"
+            "a second save must not touch tsk.json.v6"
         );
     }
 
@@ -3045,7 +3378,7 @@ mod tests {
 
     #[test]
     fn load_refuses_a_higher_version_and_changes_nothing_in_the_state_dir() {
-        for (format_version, supported) in [(7u32, 5u32), (7, 6)] {
+        for (format_version, supported) in [(14u32, 13u32), (15, 14)] {
             let dir = temp_dir("format-higher");
             let _guard = TempDirGuard(dir.clone());
             let document = serde_json::json!({
@@ -3066,7 +3399,7 @@ mod tests {
             assert!(
                 matches!(
                     error,
-                    StoreError::UnsupportedFormat { found, supported: 5 } if found == format_version
+                    StoreError::UnsupportedFormat { found, supported: 13 } if found == format_version
                 ),
                 "{error}"
             );
@@ -3100,7 +3433,9 @@ mod tests {
         let dir = temp_dir("migration-fails");
         let _guard = TempDirGuard(dir.clone());
         let original = round_tripped_current_state("fragile");
-        let original_bytes = serde_json::to_vec_pretty(&original).expect("encode v5");
+        let mut original_value = serde_json::to_value(&original).expect("encode state");
+        original_value["format_version"] = serde_json::json!(5);
+        let original_bytes = serde_json::to_vec_pretty(&original_value).expect("encode v5");
         fs::create_dir_all(&dir).expect("mkdir");
         fs::write(dir.join(STATE_FILE), &original_bytes).expect("seed v5 file");
         let before = dir_listing_with_bytes(&dir);
@@ -3163,5 +3498,231 @@ mod tests {
             payload,
             "leftover tasks.json must be left untouched"
         );
+    }
+
+    fn saved_with_titles(dir: &Path, titles: &[&str]) -> DomainState {
+        let store = TaskStore::new(dir);
+        let mut state = store.load().expect("load");
+        for title in titles {
+            state
+                .create(
+                    title,
+                    None,
+                    TaskScope::Global,
+                    ProvenanceOrigin::Manual,
+                    None,
+                )
+                .expect("create");
+        }
+        store.reload_merge_save(&mut state).expect("save");
+        state
+    }
+
+    fn titles(state: &DomainState) -> Vec<String> {
+        let mut titles: Vec<String> = state.tasks().iter().map(|t| t.title.clone()).collect();
+        titles.sort();
+        titles
+    }
+
+    #[test]
+    fn restore_round_trips_bytes_and_keeps_the_replaced_store() {
+        let dir = temp_dir("restore-round-trip");
+        let _guard = TempDirGuard(dir.clone());
+        saved_with_titles(&dir, &["one"]);
+        let backup = fs::read(dir.join(STATE_FILE)).expect("backup bytes");
+        saved_with_titles(&dir, &["two"]);
+        let replaced = fs::read(dir.join(STATE_FILE)).expect("replaced bytes");
+
+        let store = TaskStore::new(&dir);
+        let now = UNIX_EPOCH + Duration::from_secs(1_792_135_428);
+        let kept = store
+            .restore_document(&backup, now)
+            .expect("restore")
+            .expect("a live store was kept");
+        assert_eq!(
+            kept.file_name().and_then(|n| n.to_str()),
+            Some("tsk.json.pre-restore-20261016T072348Z")
+        );
+        assert_eq!(fs::read(&kept).expect("kept"), replaced);
+        assert_eq!(fs::read(dir.join(STATE_FILE)).expect("live"), backup);
+        assert_eq!(titles(&store.load().expect("load")), ["one"]);
+        // A second restore in the same second keeps both replaced stores.
+        let second = store
+            .restore_document(&replaced, now)
+            .expect("restore again")
+            .expect("kept");
+        assert_ne!(second, kept);
+        assert_eq!(titles(&store.load().expect("load")), ["one", "two"]);
+    }
+
+    #[test]
+    fn restore_into_a_fresh_state_dir_keeps_nothing() {
+        let source = temp_dir("restore-source");
+        let _source = TempDirGuard(source.clone());
+        saved_with_titles(&source, &["from the old laptop"]);
+        let bytes = fs::read(source.join(STATE_FILE)).expect("bytes");
+        let fresh = temp_dir("restore-fresh");
+        let _fresh = TempDirGuard(fresh.clone());
+        let store = TaskStore::new(&fresh);
+        assert_eq!(
+            store
+                .restore_document(&bytes, SystemTime::now())
+                .expect("restore"),
+            None
+        );
+        assert_eq!(
+            titles(&store.load().expect("load")),
+            ["from the old laptop"]
+        );
+    }
+
+    #[test]
+    fn restore_refuses_a_newer_or_unversioned_format_without_writing() {
+        let dir = temp_dir("restore-newer");
+        let _guard = TempDirGuard(dir.clone());
+        saved_with_titles(&dir, &["keep me"]);
+        let live = fs::read(dir.join(STATE_FILE)).expect("live");
+        let store = TaskStore::new(&dir);
+        let newer = format!(
+            r#"{{"format_version":{},"tasks":[]}}"#,
+            STORE_FORMAT_VERSION + 1
+        );
+        assert!(matches!(
+            store.restore_document(newer.as_bytes(), SystemTime::now()),
+            Err(RestoreError::Unsupported { found, .. }) if found == STORE_FORMAT_VERSION + 1
+        ));
+        assert!(matches!(
+            store.restore_document(br#"{"tasks":[]}"#, SystemTime::now()),
+            Err(RestoreError::Unsupported { found: 0, .. })
+        ));
+        assert!(matches!(
+            store.restore_document(b"not json", SystemTime::now()),
+            Err(RestoreError::Invalid(_))
+        ));
+        let damaged = format!(r#"{{"format_version":{STORE_FORMAT_VERSION},"tasks":"oops"}}"#);
+        assert!(matches!(
+            store.restore_document(damaged.as_bytes(), SystemTime::now()),
+            Err(RestoreError::Invalid(_))
+        ));
+        assert_eq!(fs::read(dir.join(STATE_FILE)).expect("live"), live);
+        let leftovers: Vec<String> = fs::read_dir(&dir)
+            .expect("dir")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(PRE_RESTORE_PREFIX))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn restore_writes_an_older_format_as_is_and_it_migrates_on_open() {
+        let dir = temp_dir("restore-older");
+        let _guard = TempDirGuard(dir.clone());
+        saved_with_titles(&dir, &["current"]);
+        let older = br#"{"format_version":12,"next_task_number":2,"next_notice_number":1,"projects":{},"tasks":[],"undo_stack":[]}"#;
+        let store = TaskStore::new(&dir);
+        store
+            .restore_document(older, SystemTime::now())
+            .expect("an older format restores");
+        assert_eq!(fs::read(dir.join(STATE_FILE)).expect("live"), older);
+        let loaded = store.load().expect("migrates in memory on open");
+        assert_eq!(loaded.format_version(), STORE_FORMAT_VERSION);
+    }
+
+    /// What a board that stays open across a restore does: its next save merges the disk and
+    /// writes back every task it holds that the restored document lacks. Restore therefore
+    /// refuses while a board holds `board.lock`.
+    #[test]
+    fn an_open_board_would_resurrect_tasks_so_restore_refuses_while_one_is_open() {
+        let dir = temp_dir("restore-board-open");
+        let _guard = TempDirGuard(dir.clone());
+        saved_with_titles(&dir, &["old"]);
+        let backup = fs::read(dir.join(STATE_FILE)).expect("backup");
+        saved_with_titles(&dir, &["created after the backup"]);
+        let store = TaskStore::new(&dir);
+
+        // Characterize: a board's in-memory state, a restore under it, then its next save.
+        let mut board = store.load().expect("board load");
+        store
+            .restore_document(&backup, SystemTime::now())
+            .expect("no board holds the lock in this half");
+        let disk = store.load().expect("disk");
+        board.merge_tasks_from_disk(&disk);
+        board
+            .create(
+                "typed on the board",
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create");
+        store.reload_merge_save(&mut board).expect("board save");
+        assert!(
+            titles(&store.load().expect("load")).contains(&"created after the backup".to_string()),
+            "the open board wrote back a task the restore removed"
+        );
+
+        // So restore refuses while any board or quick capture is open, and works once it quits.
+        let presence = store.hold_board_presence().expect("board presence");
+        let second = TaskStore::new(&dir)
+            .hold_board_presence()
+            .expect("boards share it");
+        let before = fs::read(dir.join(STATE_FILE)).expect("live");
+        assert!(matches!(
+            store.restore_document(&backup, SystemTime::now()),
+            Err(RestoreError::BoardOpen)
+        ));
+        assert_eq!(fs::read(dir.join(STATE_FILE)).expect("live"), before);
+        drop(presence);
+        assert!(matches!(
+            store.restore_document(&backup, SystemTime::now()),
+            Err(RestoreError::BoardOpen)
+        ));
+        drop(second);
+        store
+            .restore_document(&backup, SystemTime::now())
+            .expect("restores once every board quit");
+        assert_eq!(titles(&store.load().expect("load")), ["old"]);
+    }
+
+    #[test]
+    fn restore_keeps_only_the_newest_five_replaced_stores() {
+        let dir = temp_dir("restore-prune");
+        let _guard = TempDirGuard(dir.clone());
+        saved_with_titles(&dir, &["one"]);
+        let backup = fs::read(dir.join(STATE_FILE)).expect("bytes");
+        let store = TaskStore::new(&dir);
+        let mut kept = Vec::new();
+        for second in 0..7u64 {
+            let now = UNIX_EPOCH + Duration::from_secs(1_792_135_428 + second);
+            kept.push(
+                store
+                    .restore_document(&backup, now)
+                    .expect("restore")
+                    .expect("kept"),
+            );
+        }
+        let mut left: Vec<PathBuf> = fs::read_dir(&dir)
+            .expect("dir")
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(PRE_RESTORE_PREFIX))
+            })
+            .collect();
+        left.sort();
+        assert_eq!(left, kept[2..].to_vec(), "the newest five stay");
+    }
+
+    #[test]
+    fn a_newer_backup_tells_the_user_to_update_tsk() {
+        let error = check_document(
+            format!(r#"{{"format_version":{}}}"#, STORE_FORMAT_VERSION + 1).as_bytes(),
+        )
+        .expect_err("newer");
+        assert!(error.to_string().contains("update tsk first"), "{error}");
     }
 }

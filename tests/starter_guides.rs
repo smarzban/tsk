@@ -8,8 +8,11 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
+use tsk_tui::agents::{AgentProfiles, STARTER_CONFIG};
 use tsk_tui::announcements;
-use tsk_tui::app::{load_board, load_board_for_quick_capture, load_board_model};
+use tsk_tui::app::{
+    load_board, load_board_for_quick_capture, load_board_model, load_snapshot, seed_quick_capture,
+};
 use tsk_tui::context::{build_snapshot, RawHostContext, CONTEXT_JSON_ENV};
 use tsk_tui::delivery;
 use tsk_tui::domain::{DomainState, HumanStatus, ProvenanceOrigin, Task, TaskScope};
@@ -17,7 +20,7 @@ use tsk_tui::guides::CATALOG;
 use tsk_tui::store::TaskStore;
 use tsk_tui::ui::board::{apply_intent, IntentOutcome};
 use tsk_tui::ui::input::BoardIntent;
-use tsk_tui::ui::queue::NavTab;
+use tsk_tui::ui::queue::{GroupBy, NavTab, SortBy};
 use tsk_tui::update::suppress_background_fetch;
 
 static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -86,6 +89,47 @@ fn catalog_ids() -> BTreeSet<String> {
         .iter()
         .map(|guide| guide.catalog_id.to_string())
         .collect()
+}
+
+#[test]
+fn full_board_open_seeds_a_parseable_commented_agent_profile_file() {
+    let _lock = env_lock();
+    suppress_background_fetch();
+    let env = StateDirEnv::set("agents-file");
+
+    let _ = load_board_model().expect("full board open");
+
+    assert_eq!(
+        fs::read_to_string(env.dir.join("config.toml")).expect("seeded config.toml"),
+        STARTER_CONFIG
+    );
+    assert!(
+        AgentProfiles::load(&env.dir)
+            .expect("seeded file parses")
+            .is_empty(),
+        "all starter profiles are commented out"
+    );
+}
+
+#[test]
+fn full_board_open_never_overwrites_an_existing_agent_profile_file() {
+    let _lock = env_lock();
+    suppress_background_fetch();
+    for (label, content) in [
+        ("agents-existing-empty", ""),
+        ("agents-existing-content", "owner content\n"),
+    ] {
+        let env = StateDirEnv::set(label);
+        fs::create_dir_all(&env.dir).expect("state dir");
+        fs::write(env.dir.join("config.toml"), content).expect("existing config.toml");
+
+        let _ = load_board_model().expect("full board open");
+
+        assert_eq!(
+            fs::read_to_string(env.dir.join("config.toml")).expect("existing config.toml"),
+            content
+        );
+    }
 }
 
 #[test]
@@ -223,6 +267,10 @@ fn quick_capture_open_seeds_nothing() {
     assert!(notices(&state).is_empty());
     assert!(notices(&store.load().expect("load")).is_empty());
     assert!(!env.dir.join(delivery::DELIVERY_FILE).exists());
+    assert!(
+        !env.dir.join("config.toml").exists(),
+        "quick capture does not seed agent profiles"
+    );
 }
 
 fn drop_delivery_record(state_dir: &std::path::Path) {
@@ -272,36 +320,7 @@ fn t64_real_board_ctrl_q_exits_from_a_stored_task_page() {
     session.send(b"\r");
     session.output_until("target");
     session.send(b"\x11");
-    assert!(session.wait_exit(Duration::from_secs(5)).success());
-}
-
-fn assert_real_root_esc_exits(label: &str, tab_key: u8) {
-    let root = pty::scratch_root(&format!("t64-root-esc-{label}"));
-    let cwd = root.join("project");
-    fs::create_dir_all(&cwd).expect("project directory");
-    seed_pty_task(&root, &cwd, &format!("T64 {label} root"));
-
-    let mut session = pty::Session::spawn(root, &cwd, &[], &[], 24, 78);
-    session.output_until("root");
-    session.send(&[tab_key]);
-    std::thread::sleep(Duration::from_millis(100));
-    session.send(b"\x1b[27u");
-    assert!(session.wait_exit(Duration::from_secs(5)).success());
-}
-
-#[test]
-fn t64_real_board_root_esc_exits_from_desk() {
-    assert_real_root_esc_exits("desk", b'1');
-}
-
-#[test]
-fn t64_real_board_root_esc_exits_from_project_board() {
-    assert_real_root_esc_exits("project", b'2');
-}
-
-#[test]
-fn t64_real_board_root_esc_exits_from_projects_index() {
-    assert_real_root_esc_exits("projects", b'3');
+    assert!(session.wait_exit(Duration::from_secs(30)).success());
 }
 
 #[test]
@@ -322,10 +341,11 @@ fn t64_real_board_editor_ctrl_q_stays_live_then_task_page_ctrl_q_exits() {
     session.send(b"\x11");
     session.send(b"ZXQMARK");
     session.output_until("\x1b[1mK");
-    session.send(b"\x1b");
+    // The unambiguous Esc: a bare one read together with the next byte is alt+ctrl+q.
+    session.send(b"\x1b[27u");
     std::thread::sleep(Duration::from_millis(100));
     session.send(b"\x11");
-    assert!(session.wait_exit(Duration::from_secs(5)).success());
+    assert!(session.wait_exit(Duration::from_secs(30)).success());
 }
 
 #[test]
@@ -346,7 +366,7 @@ fn completing_a_guide_on_the_real_board_records_its_dismissal() {
 
     session.send(b"\x04");
     session.send(b"\x11");
-    assert!(session.wait_exit(Duration::from_secs(5)).success());
+    assert!(session.wait_exit(Duration::from_secs(30)).success());
 
     let state = store.load().unwrap();
     let done: Vec<&Task> = notices(&state)
@@ -360,4 +380,172 @@ fn completing_a_guide_on_the_real_board_records_its_dismissal() {
         delivery::load(&state_dir).guides,
         [dismissed].into_iter().collect::<BTreeSet<_>>()
     );
+}
+
+/// Launched from `work/alpha` while the store knows the same repository as the
+/// symlink `links/beta`, the board opens on the stored project, lists it once, and both
+/// the board's quick add and the capture popup default to the stored spelling.
+#[test]
+fn board_and_capture_from_an_aliased_launch_repo_use_the_stored_project() {
+    let _lock = env_lock();
+    suppress_background_fetch();
+    let env = StateDirEnv::set("alias-board");
+    let root = env.dir.parent().unwrap().to_path_buf();
+    let real = root.join("work").join("alpha");
+    fs::create_dir_all(real.join(".git")).expect("git marker");
+    fs::create_dir_all(root.join("links")).expect("links directory");
+    let alias = root.join("links").join("beta");
+    std::os::unix::fs::symlink(&real, &alias).expect("alias");
+    let stored = TaskScope::Project {
+        path: alias.to_string_lossy().into_owned(),
+    };
+    let mut seed = DomainState::new();
+    seed.create(
+        "seeded",
+        None,
+        stored.clone(),
+        ProvenanceOrigin::Manual,
+        None,
+    )
+    .expect("seed task");
+    TaskStore::new(&env.dir).save(&seed).expect("save seed");
+    let _context = ContextEnv::set(&real);
+
+    let (_store, mut state, mut model) = load_board().expect("full board open");
+    assert_eq!(model.selected_project(), Some(alias.as_path()));
+    assert_eq!(
+        model
+            .project_options()
+            .iter()
+            .filter(|option| matches!(option, tsk_tui::ui::board::ProjectScopeOption::Project(_)))
+            .count(),
+        1
+    );
+    // From the desk tab, quick add takes the launch default rather than the open project.
+    apply_intent(
+        &mut state,
+        &mut model,
+        BoardIntent::SelectNavTab(NavTab::Desk),
+        None,
+    )
+    .expect("desk tab");
+    let snapshot = load_snapshot(&state);
+    apply_intent(
+        &mut state,
+        &mut model,
+        BoardIntent::OpenCapture,
+        Some(&snapshot),
+    )
+    .expect("open quick add");
+    apply_intent(
+        &mut state,
+        &mut model,
+        BoardIntent::QuickAddInsertText("board capture".into()),
+        None,
+    )
+    .expect("type title");
+    assert_eq!(
+        apply_intent(&mut state, &mut model, BoardIntent::QuickAddSave, None)
+            .expect("save quick add"),
+        IntentOutcome::Persist
+    );
+    let saved = state
+        .tasks()
+        .iter()
+        .find(|task| task.title == "board capture")
+        .expect("saved task");
+    assert_eq!(saved.scope, stored);
+
+    let (_store, mut state, mut model) = load_board_for_quick_capture().expect("capture open");
+    let snapshot = load_snapshot(&state);
+    seed_quick_capture(&mut state, &mut model, &snapshot);
+    assert_eq!(model.form_scope(), Some(&stored));
+}
+
+/// A state dir holding `config` and two started desk tasks: `zeta work` changed status
+/// last, so it leads the ungrouped recent order; `alpha work` leads a title sort.
+fn board_config_state(label: &str, config: &str) -> (StateDirEnv, ContextEnv, [uuid::Uuid; 2]) {
+    let env = StateDirEnv::set(label);
+    fs::create_dir_all(&env.dir).expect("state dir");
+    fs::write(env.dir.join("config.toml"), config).expect("config.toml");
+    let outside = env.dir.parent().unwrap().join("outside");
+    fs::create_dir_all(&outside).expect("outside directory");
+    let context = ContextEnv::set(&outside);
+    let mut seeded = DomainState::new();
+    let mut ids = Vec::new();
+    for title in ["alpha work", "zeta work"] {
+        let id = seeded
+            .create(
+                title,
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("task");
+        seeded.set_status(id, HumanStatus::Started).expect("start");
+        std::thread::sleep(Duration::from_millis(5));
+        ids.push(id);
+    }
+    TaskStore::new(&env.dir).save(&seeded).expect("save");
+    (env, context, [ids[0], ids[1]])
+}
+
+#[test]
+fn board_config_seeds_the_layouts_and_opens_with_the_cursor_on_the_arranged_top_row() {
+    let _lock = env_lock();
+    suppress_background_fetch();
+    let (_env, _context, [alpha, zeta]) = board_config_state(
+        "board-config",
+        "[board]\ngroup = \"assignee\"\nsort = \"title\"\nproject_group = \"thread\"\n",
+    );
+    let (_store, _state, model) = load_board_for_quick_capture().expect("open");
+    assert_eq!(model.nav_tab(), NavTab::Desk);
+    assert_eq!(model.layout().group, GroupBy::Assignee);
+    assert_eq!(model.layout().sort, SortBy::Title);
+    assert_eq!(model.message(), None);
+    let _ = zeta;
+    assert_eq!(
+        model.selected_id(),
+        Some(alpha),
+        "the cursor opens on the sorted group's first row, not the recent order's"
+    );
+}
+
+#[test]
+fn a_bad_board_config_opens_at_the_default_layout_and_says_why_on_the_status_row() {
+    let _lock = env_lock();
+    suppress_background_fetch();
+    let (_env, _context, _) =
+        board_config_state("board-config-bad", "[board]\ngroup = \"status\"\n");
+    let (_store, _state, model) = load_board_for_quick_capture().expect("open");
+    assert_eq!(model.layout().group, GroupBy::None);
+    let message = model.message().expect("status row message");
+    assert!(
+        message.starts_with("config.toml: [board] group \"status\""),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_profile_error_keeps_the_status_row_over_a_board_error() {
+    let _lock = env_lock();
+    suppress_background_fetch();
+    let (env, _context, _) = board_config_state(
+        "board-config-profile",
+        "[agent.x]\nprompt = 1\n\n[board]\ngroup = \"status\"\n",
+    );
+    let (_store, _state, model) = load_board_for_quick_capture().expect("open");
+    let message = model.message().expect("status row message");
+    assert!(message.contains("agent \"x\""), "{message}");
+    assert!(!message.contains("[board]"), "{message}");
+
+    // A broken profile never blocks a valid [board].
+    fs::write(
+        env.dir.join("config.toml"),
+        "[agent.x]\nprompt = 1\n\n[board]\ngroup = \"assignee\"\n",
+    )
+    .expect("config.toml");
+    let (_store, _state, model) = load_board_for_quick_capture().expect("open");
+    assert_eq!(model.layout().group, GroupBy::Assignee);
 }

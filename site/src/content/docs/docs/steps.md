@@ -13,7 +13,7 @@ Steps are a flat, ordered checklist. Checking every step does not complete the t
 
 While a text field is open, `ctrl+a` is line start instead; leave the field first. With a step selected, `ctrl+a` opens the new row directly below it; otherwise the step goes at the end. Clicking **+ step** always adds at the end. `Enter` saves the step and opens another empty row below the one just added, so a burst of steps keeps its typed order. `Shift+Enter` saves it and finishes any active task edit. Click elsewhere to discard an empty new-step row.
 
-New steps save independently, including during task editing. Cancelling the task edit does not undo steps already added.
+New steps save independently, including during task editing. Cancelling the task edit does not undo steps already added. Each tick, untick, new step, removal, move, or new step text is one `ctrl+u` [undo](/docs/board/#delete-and-undo) step; undoing new text from a task-page save leaves that save's title and notes.
 
 ## Complete
 
@@ -35,11 +35,13 @@ The heading shows completed/total steps. In view mode, status shortcuts change t
 
 `Enter` retains the rename in the edit session without saving that session. Moving to another existing step retains the previous draft. `Esc` cancels the field; cancelling task editing restores staged changes.
 
+A step cannot be saved empty. If you clear a step's text, saving the task edit reopens that step with `text required` on its row and saves nothing until you type text, remove the step, or cancel. If a new step you typed is still open, that row keeps the editor so its text is not lost, and the status row says `a cleared step needs text` instead.
+
 ## Reorder
 
 Select a step and press `alt+↑` or `alt+↓` to move it one place. The selection follows the step. You can also press `:` and run **move step up** or **move step down**.
 
-A moved step keeps its ID, short ID, and checked state. Moves save at once, including during task editing, and skip steps staged for removal; cancelling the task edit does not undo them.
+A moved step keeps its ID, short ID, and checked state. Moves save at once, including during task editing, and skip steps staged for removal; cancelling the task edit does not undo them. `ctrl+u` on the task page puts the last move back.
 
 `alt+↑` / `alt+↓` is the one changing shortcut without `ctrl`: macOS reserves `ctrl+arrows` for Mission Control. Your terminal must send `alt+↑` as one modified key (xterm's default); a terminal set to prefix Option or Alt with `Esc` delivers `Esc` and then the arrow, which closes the task page.
 

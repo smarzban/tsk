@@ -115,6 +115,29 @@ verb_help_test!(
     ]
 );
 verb_help_test!(
+    backup_help_has_reference_sections,
+    ["backup", "--help"],
+    [
+        "usage:",
+        "Actions",
+        "Values",
+        "Examples:",
+        "Refusals (exit 1):",
+        "Exit:"
+    ]
+);
+verb_help_test!(
+    restore_help_has_reference_sections,
+    ["restore", "--help"],
+    [
+        "usage:",
+        "Values",
+        "Examples:",
+        "Refusals (exit 1):",
+        "Exit:"
+    ]
+);
+verb_help_test!(
     archive_help_has_reference_sections,
     ["archive", "--help"],
     [
@@ -209,6 +232,8 @@ fn command_help_lines_have_no_trailing_whitespace() {
         &["unarchive", "--help"],
         &["project", "--help"],
         &["trash", "--help"],
+        &["backup", "--help"],
+        &["restore", "--help"],
         &["setup", "--help"],
         &["update", "--help"],
         &["guide", "--help"],
@@ -235,6 +260,8 @@ fn every_command_help_purpose_is_a_capitalized_sentence() {
         &["unarchive", "--help"],
         &["project", "--help"],
         &["trash", "--help"],
+        &["backup", "--help"],
+        &["restore", "--help"],
         &["setup", "--help"],
         &["update", "--help"],
         &["guide", "--help"],

@@ -1,0 +1,32 @@
+┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                              │
+│ desk  ·  tsk ▾  ·  projects                                        group: assignee ▾   sort: title ▾   all ▾ │
+│                                                                                                              │
+│ NEEDS YOU ─────────────────────────────────────────────────────────────────────────────────────────────────2 │
+│                                                                                                              │
+│ ▾ @claude · 1                                                                                                │
+│▸ ■ T5 Wire dispatch cleanup receipts  #dispatch · herdr                                                      │
+│    └─ @claude blocked on you · 41m                                                                           │
+│ ▾ @pi · 1                                                                                                    │
+│  ▲ T6 Docs refresh pass after F9 ships  herdr                                                                │
+│    └─ needs your review · 3h                                                                                 │
+│                                                                                                              │
+│ IN MOTION ─────────────────────────────────────────────────────────────────────────────────────────────────2 │
+│                                                                                                              │
+│ ▾ @claude · 1                                                                                                │
+│  ● T1 Smoke-test worktree dispatch  #release · tsk                                                           │
+│ ▾ @pi · 1                                                                                                    │
+│  ● T2 Edit target binding pin  #dispatch · herdr                                                             │
+│                                                                                                              │
+│ ON DECK · desk ────────────────────────────────────────────────────────────────────────────────────────────1 │
+│                                                                                                              │
+│ ▾ unassigned · 1                                                                                             │
+│  ○ T7 Global backlog note  #release                                                                          │
+│                                                                                                              │
+│                                                                                                              │
+│                                                                                                              │
+│                                                                                                              │
+│──────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+│ desk                                                                                             → task pane │
+│ enter open · ctrl+d done · ctrl+b unblock · ctrl+o inbox · + add · ? help                                    │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

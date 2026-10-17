@@ -52,6 +52,378 @@ fn task_store(dir: &std::path::Path) -> TaskStore {
     TaskStore::new(dir)
 }
 
+fn write_agents(dir: &std::path::Path) {
+    std::fs::write(
+        dir.join("config.toml"),
+        "[agent.reviewer]\ncommand = [\"true\"]\n",
+    )
+    .expect("write agents");
+}
+
+fn init_git_project(path: &std::path::Path) {
+    tsk_tui::git_base::stretch_default_deadlines_for_tests();
+    std::fs::create_dir_all(path).expect("create project");
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "test@example.com"][..],
+        &["config", "user.name", "Test"][..],
+    ] {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .status()
+            .expect("run git")
+            .success());
+    }
+    std::fs::write(path.join("README"), "seed\n").expect("seed file");
+    assert!(Command::new("git")
+        .args(["add", "."])
+        .current_dir(path)
+        .status()
+        .expect("git add")
+        .success());
+    assert!(Command::new("git")
+        .args(["commit", "-qm", "seed"])
+        .current_dir(path)
+        .status()
+        .expect("git commit")
+        .success());
+    assert!(Command::new("git")
+        .args(["branch", "release"])
+        .current_dir(path)
+        .status()
+        .expect("git branch")
+        .success());
+}
+
+#[test]
+fn add_base_validates_against_the_resolved_task_project_and_persists() {
+    let _env = env_lock();
+    let dir = temp_state_dir("base");
+    let project = dir.join("project");
+    init_git_project(&project);
+
+    let output = add(
+        &[
+            "tsk".into(),
+            "add".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "--title".into(),
+            "based task".into(),
+            "--project".into(),
+            state_dir_arg(&project),
+            "--base".into(),
+            "release".into(),
+        ],
+        true,
+    );
+    assert_eq!(output.code, 0, "{output:?}");
+    assert_eq!(
+        task_store(&dir).load().expect("load").tasks()[0]
+            .base
+            .as_deref(),
+        Some("release")
+    );
+
+    let unknown = add(
+        &[
+            "tsk".into(),
+            "add".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "--title".into(),
+            "unknown base".into(),
+            "--project".into(),
+            state_dir_arg(&project),
+            "--base".into(),
+            "missing".into(),
+        ],
+        true,
+    );
+    assert_eq!(unknown.code, 1, "{unknown:?}");
+    assert!(unknown.stderr.contains("unknown-base"), "{unknown:?}");
+    assert_eq!(task_store(&dir).load().expect("reload").tasks().len(), 1);
+
+    let desk = add(
+        &[
+            "tsk".into(),
+            "add".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "--title".into(),
+            "desk base".into(),
+            "--desk".into(),
+            "--base".into(),
+            "release".into(),
+        ],
+        true,
+    );
+    assert_eq!(desk.code, 1, "{desk:?}");
+    assert!(desk.stderr.contains("unknown-base"), "{desk:?}");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn add_assignee_flag_and_json_plan_require_known_profiles_and_round_trip() {
+    let _env = env_lock();
+    let dir = temp_state_dir("assignee");
+    write_agents(&dir);
+    let output = add(
+        &[
+            "tsk".into(),
+            "add".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "--title".into(),
+            "assigned task".into(),
+            "--assignee".into(),
+            "Reviewer".into(),
+            "--json".into(),
+        ],
+        true,
+    );
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    let added_json: serde_json::Value =
+        serde_json::from_str(&output.stdout).expect("add JSON result");
+    assert_eq!(added_json["assignee"], "reviewer");
+    assert_eq!(
+        task_store(&dir).load().expect("load").tasks()[0]
+            .assignee
+            .as_deref(),
+        Some("reviewer")
+    );
+
+    let plan = dir.join("plan.json");
+    std::fs::write(&plan, r#"[{"title":"planned","assignee":"reviewer"}]"#).expect("write plan");
+    let planned = add(
+        &[
+            "tsk".into(),
+            "add".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "--file".into(),
+            state_dir_arg(&plan),
+        ],
+        true,
+    );
+    assert_eq!(planned.code, 0, "{}", planned.stderr);
+    assert_eq!(
+        task_store(&dir).load().expect("reload").tasks()[1]
+            .assignee
+            .as_deref(),
+        Some("reviewer")
+    );
+
+    let unknown = add(
+        &[
+            "tsk".into(),
+            "add".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "--title".into(),
+            "unknown".into(),
+            "--assignee".into(),
+            "missing".into(),
+        ],
+        true,
+    );
+    assert_eq!(unknown.code, 1);
+    assert!(
+        unknown.stderr.contains("unknown-agent"),
+        "{}",
+        unknown.stderr
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn add_does_not_seed_agent_profiles() {
+    let _env = env_lock();
+    let dir = temp_state_dir("no-agent-seed");
+    let output = add(
+        &[
+            "tsk".into(),
+            "add".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "--title".into(),
+            "headless task".into(),
+        ],
+        true,
+    );
+
+    assert_eq!(output.code, 0);
+    assert!(!dir.join("config.toml").exists());
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn malformed_agent_profiles_are_lazy_and_assignment_is_a_usage_error() {
+    let _env = env_lock();
+    let dir = temp_state_dir("malformed-agents");
+    std::fs::write(
+        dir.join("config.toml"),
+        "[agent.Reviewer]\ncommand = [\"true\"]\n",
+    )
+    .expect("write malformed agents");
+
+    let ordinary = add(
+        &[
+            "tsk".into(),
+            "add".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "--title".into(),
+            "ordinary".into(),
+        ],
+        true,
+    );
+    assert_eq!(ordinary.code, 0, "{}", ordinary.stderr);
+
+    let assigned = add(
+        &[
+            "tsk".into(),
+            "add".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "--title".into(),
+            "must refuse".into(),
+            "--assignee".into(),
+            "reviewer".into(),
+        ],
+        true,
+    );
+    assert_eq!(assigned.code, 2, "{assigned:?}");
+    assert!(assigned.stderr.contains("config.toml"), "{assigned:?}");
+    let state = task_store(&dir).load().expect("load state");
+    assert_eq!(state.tasks().len(), 1);
+    assert_eq!(state.tasks()[0].title, "ordinary");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn json_plan_unknown_assignee_refuses_only_that_item() {
+    let _env = env_lock();
+    let dir = temp_state_dir("plan-unknown-agent");
+    write_agents(&dir);
+    let plan = dir.join("plan.json");
+    std::fs::write(
+        &plan,
+        r#"[{"title":"valid sibling","assignee":"reviewer"},{"title":"unknown sibling","assignee":"missing"}]"#,
+    )
+    .expect("write plan");
+
+    let output = add(
+        &[
+            "tsk".into(),
+            "add".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "--file".into(),
+            state_dir_arg(&plan),
+        ],
+        true,
+    );
+    assert_eq!(output.code, 1, "{output:?}");
+    let report: serde_json::Value = serde_json::from_str(&output.stdout).expect("plan report");
+    assert_eq!(report["created"][0]["i"], 0);
+    assert_eq!(report["failed"][0]["i"], 1);
+    assert_eq!(report["failed"][0]["code"], "unknown-agent");
+    let state = task_store(&dir).load().expect("load state");
+    assert_eq!(state.tasks().len(), 1);
+    assert_eq!(state.tasks()[0].title, "valid sibling");
+    assert_eq!(state.tasks()[0].assignee.as_deref(), Some("reviewer"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn json_plan_malformed_assignee_values_refuse_per_item() {
+    let _env = env_lock();
+    let dir = temp_state_dir("plan-malformed-agent");
+    write_agents(&dir);
+    let plan = dir.join("plan.json");
+    std::fs::write(
+        &plan,
+        r#"[{"title":"bad name","assignee":"-nope"},{"title":"bad type","assignee":7},{"title":"fine","assignee":"reviewer"}]"#,
+    )
+    .expect("write plan");
+
+    let output = add(
+        &[
+            "tsk".into(),
+            "add".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "--file".into(),
+            state_dir_arg(&plan),
+        ],
+        true,
+    );
+    assert_eq!(output.code, 1, "{output:?}");
+    let report: serde_json::Value = serde_json::from_str(&output.stdout).expect("plan report");
+    assert_eq!(report["failed"][0]["i"], 0);
+    assert_eq!(report["failed"][0]["code"], "unknown-agent");
+    assert_eq!(report["failed"][1]["i"], 1);
+    assert_eq!(report["failed"][1]["code"], "invalid-item");
+    assert_eq!(report["created"][0]["i"], 2);
+    let state = task_store(&dir).load().expect("load state");
+    assert_eq!(state.tasks().len(), 1);
+    assert_eq!(state.tasks()[0].title, "fine");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn add_dedupe_distinguishes_assignees_and_matches_equal_assignees() {
+    let _env = env_lock();
+    let dir = temp_state_dir("assignee-dedupe");
+    write_agents(&dir);
+    let run = |assignee: Option<&str>| {
+        let mut args = vec![
+            "tsk".into(),
+            "add".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "--title".into(),
+            "same title".into(),
+            "--json".into(),
+        ];
+        if let Some(assignee) = assignee {
+            args.push("--assignee".into());
+            args.push(assignee.into());
+        }
+        add(&args, true)
+    };
+
+    let first = run(Some("reviewer"));
+    assert_eq!(first.code, 0, "{first:?}");
+    let different = run(None);
+    assert_eq!(different.code, 0, "{different:?}");
+    let repeat = run(Some("reviewer"));
+    assert_eq!(repeat.code, 0, "{repeat:?}");
+    let first_json: serde_json::Value = serde_json::from_str(&first.stdout).expect("first JSON");
+    let different_json: serde_json::Value =
+        serde_json::from_str(&different.stdout).expect("different JSON");
+    let repeat_json: serde_json::Value = serde_json::from_str(&repeat.stdout).expect("repeat JSON");
+    assert_eq!(first_json["outcome"], "created");
+    assert_eq!(different_json["outcome"], "created");
+    assert_eq!(repeat_json["outcome"], "existing");
+    assert_eq!(repeat_json["id"], first_json["id"]);
+    assert_ne!(different_json["id"], first_json["id"]);
+    assert_eq!(
+        task_store(&dir).load().expect("load state").tasks().len(),
+        2
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn add_thread_flag_applies_to_every_item_and_round_trips() {
     let _env = env_lock();
@@ -1923,7 +2295,8 @@ fn flag_add_json_reports_created_and_existing_resolved_tasks() {
     assert_eq!(created["title"], "json task");
     assert_eq!(created["project"], project_text);
     let id = created["id"].as_str().expect("created id").to_owned();
-    assert_eq!(created.as_object().expect("created object").len(), 5);
+    assert_eq!(created["assignee"], serde_json::Value::Null);
+    assert_eq!(created.as_object().expect("created object").len(), 6);
 
     let existing = add(&args, true);
     assert_eq!(existing.code, 0);
@@ -1934,7 +2307,8 @@ fn flag_add_json_reports_created_and_existing_resolved_tasks() {
     assert_eq!(existing["id"], id);
     assert_eq!(existing["title"], "json task");
     assert_eq!(existing["project"], project.to_string_lossy().as_ref());
-    assert_eq!(existing.as_object().expect("existing object").len(), 5);
+    assert_eq!(existing["assignee"], serde_json::Value::Null);
+    assert_eq!(existing.as_object().expect("existing object").len(), 6);
 
     let global = add(
         &[
@@ -2423,5 +2797,173 @@ fn plan_failed_rows_keep_item_order_when_an_archived_refusal_precedes_a_parse_fa
     assert_eq!(failed[0]["code"], "project-archived");
     assert_eq!(failed[1]["code"], "empty-title");
     let _ = std::fs::remove_dir_all(repo);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn flag_and_plan_add_fetch_new_remote_base_before_validation() {
+    let _env = env_lock();
+    let dir = temp_state_dir("fresh-remote-base");
+    let remote = dir.join("remote");
+    let local = dir.join("local");
+    init_git_project(&remote);
+    assert!(Command::new("git")
+        .args(["clone", "-q"])
+        .arg(&remote)
+        .arg(&local)
+        .status()
+        .unwrap()
+        .success());
+    for (index, branch) in ["new-flag", "new-plan"].iter().enumerate() {
+        assert!(Command::new("git")
+            .current_dir(&remote)
+            .args(["branch", branch])
+            .status()
+            .unwrap()
+            .success());
+        let base = format!("origin/{branch}");
+        let output = if index == 0 {
+            run_with(
+                [
+                    "tsk",
+                    "add",
+                    "--state-dir",
+                    &state_dir_arg(&dir),
+                    "-p",
+                    &local.to_string_lossy(),
+                    "-t",
+                    "fresh flag",
+                    "--base",
+                    &base,
+                ],
+                Cursor::new(Vec::<u8>::new()),
+                true,
+            )
+        } else {
+            let plan = serde_json::json!([{"title": "fresh plan", "project": local, "base": base}]);
+            run_with(
+                [
+                    "tsk",
+                    "add",
+                    "--state-dir",
+                    &state_dir_arg(&dir),
+                    "--file",
+                    "-",
+                ],
+                Cursor::new(serde_json::to_vec(&plan).unwrap()),
+                true,
+            )
+        };
+        assert_eq!(output.code, 0, "{output:?}");
+        assert!(TaskStore::new(&dir)
+            .load()
+            .unwrap()
+            .tasks()
+            .iter()
+            .any(|task| task.base.as_deref() == Some(base.as_str())));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Launched from `work/alpha` while the store knows the same repository as the
+/// symlink `links/beta`, every add route lands on the stored spelling, and the launch
+/// basename `alpha` still resolves (it names the repository you launched from).
+#[cfg(unix)]
+#[test]
+fn adds_from_an_aliased_launch_repo_keep_the_stored_project_spelling() {
+    let _env = env_lock();
+    let root = temp_state_dir("alias-root");
+    let real = root.join("work").join("alpha");
+    std::fs::create_dir_all(real.join(".git")).expect("create git marker");
+    std::fs::create_dir(root.join("links")).expect("links directory");
+    let alias = root.join("links").join("beta");
+    std::os::unix::fs::symlink(&real, &alias).expect("alias");
+    let stored = alias.to_string_lossy().into_owned();
+    let dir = temp_state_dir("alias-state");
+    let seeded = add(
+        &[
+            "tsk".into(),
+            "add".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "-t".into(),
+            "seeded".into(),
+            "-p".into(),
+            stored.clone(),
+        ],
+        true,
+    );
+    assert_eq!(seeded.code, 0, "{}", seeded.stderr);
+
+    let prior = std::env::var_os("HERDR_PLUGIN_CONTEXT_JSON");
+    let context = format!(
+        r#"{{"focused_pane_cwd":{}}}"#,
+        serde_json::to_string(&real).unwrap()
+    );
+    // SAFETY: ENV_LOCK serializes this test's process-wide environment mutation.
+    unsafe { std::env::set_var("HERDR_PLUGIN_CONTEXT_JSON", context) };
+    let flag = |title: &str, project: Option<&str>| {
+        let mut args: Vec<String> = vec![
+            "tsk".into(),
+            "add".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "-t".into(),
+            title.into(),
+        ];
+        if let Some(project) = project {
+            args.extend(["-p".into(), project.into()]);
+        }
+        add(&args, true)
+    };
+    let outputs = [
+        flag("default scope", None),
+        flag("launch basename", Some("alpha")),
+        flag("stored basename", Some("beta")),
+        flag("launch path", Some(&real.to_string_lossy())),
+        run_with(
+            [
+                "tsk",
+                "add",
+                "--state-dir",
+                &state_dir_arg(&dir),
+                "--file",
+                "-",
+            ],
+            Cursor::new(r#"[{"title":"plan default"},{"title":"plan launch","project":"alpha"}]"#),
+            true,
+        ),
+    ];
+    match prior {
+        Some(value) => {
+            // SAFETY: ENV_LOCK serializes this test's process-wide environment mutation.
+            unsafe { std::env::set_var("HERDR_PLUGIN_CONTEXT_JSON", value) };
+        }
+        None => {
+            // SAFETY: ENV_LOCK serializes this test's process-wide environment mutation.
+            unsafe { std::env::remove_var("HERDR_PLUGIN_CONTEXT_JSON") };
+        }
+    }
+
+    for output in &outputs {
+        assert_eq!(output.code, 0, "{}{}", output.stdout, output.stderr);
+    }
+    let state = task_store(&dir).load().expect("load alias state");
+    let scopes: Vec<(&str, &TaskScope)> = state
+        .tasks()
+        .iter()
+        .map(|task| (task.title.as_str(), &task.scope))
+        .collect();
+    assert_eq!(scopes.len(), 7);
+    for (title, scope) in scopes {
+        assert_eq!(
+            scope,
+            &TaskScope::Project {
+                path: stored.clone()
+            },
+            "{title} must land on the stored spelling"
+        );
+    }
+    let _ = std::fs::remove_dir_all(root);
     let _ = std::fs::remove_dir_all(dir);
 }

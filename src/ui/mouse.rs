@@ -34,6 +34,12 @@ pub enum BoardPopup {
     SaveRecovery,
     /// Two-choice card raised at launch when the cwd default is an archived project.
     LaunchCard,
+    /// Cleanup confirmation for one cursor-pinned dispatch.
+    CleanupConfirm,
+    /// Bulk dispatch confirmation for a marked set.
+    DispatchConfirm,
+    /// The block card for the cursor task or a marked set.
+    BlockCard,
 }
 
 /// Labeled capture hit region.
@@ -342,18 +348,21 @@ fn quick_add_verb_intent(index: usize) -> Option<BoardIntent> {
 }
 
 fn form_verb_intent(model: &BoardModel, index: usize) -> Option<BoardIntent> {
-    let dropdown_open = model.input_mode() == BoardInputMode::FormScopeDropdown;
+    let dropdown_open = model.input_mode() == BoardInputMode::FormDropdown;
     let focus = model.form_focus()?;
     match form_verb_items(focus, dropdown_open).get(index)?.key {
         "shift+enter" => Some(BoardIntent::ConfirmEdit),
-        "enter" if dropdown_open => Some(BoardIntent::ConfirmFormScopeDropdown),
-        "enter" if focus == CaptureField::Scope => Some(BoardIntent::OpenFormScopeDropdown),
+        "enter" if dropdown_open => Some(BoardIntent::ConfirmFormDropdown),
+        "enter" if matches!(focus, CaptureField::Scope | CaptureField::Assignee) => {
+            Some(BoardIntent::OpenFormDropdown(focus))
+        }
+        "space/←→" if focus == CaptureField::Assignee => Some(BoardIntent::FormAssigneeNext),
         // The Title bar paints `enter next`: the click must do what the key does.
         "enter" if focus == CaptureField::Title => Some(BoardIntent::FormFocusNext),
         // The Notes bar paints `enter new line`: a click opens a line, it never saves.
         "enter" if focus == CaptureField::Notes => Some(BoardIntent::EditInsertLineBreak),
         "enter" => Some(BoardIntent::ConfirmEdit),
-        "esc" if dropdown_open => Some(BoardIntent::CancelFormScopeDropdown),
+        "esc" if dropdown_open => Some(BoardIntent::CancelFormDropdown),
         "esc" => Some(BoardIntent::CancelEdit),
         _ => None,
     }
@@ -503,7 +512,7 @@ pub fn map_responsive_board_mouse(
                 | BoardInputMode::EditNotes
                 | BoardInputMode::EditThread
                 | BoardInputMode::EditScope
-                | BoardInputMode::FormScopeDropdown
+                | BoardInputMode::FormDropdown
         );
     // A task-row click opens or retargets the task beside the board in A (the reducer
     // moves the stage). In mark mode, a plain click stays on the board and toggles that row.
@@ -704,6 +713,13 @@ fn wheel_board_intent(model: &BoardModel, kind: MouseEventKind) -> Option<BoardI
             MouseEventKind::ScrollDown => Some(BoardIntent::HelpScrollDown),
             _ => None,
         },
+        BoardInputMode::CleanupConfirm
+        | BoardInputMode::CleanupDirtyConfirm
+        | BoardInputMode::DispatchConfirm => match kind {
+            MouseEventKind::ScrollUp => Some(BoardIntent::CleanupScrollUp),
+            MouseEventKind::ScrollDown => Some(BoardIntent::CleanupScrollDown),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -800,26 +816,36 @@ pub fn map_board_mouse(
             // triggering a second board action behind the capture surface.
             _ => Some(BoardIntent::CancelQuickAdd),
         },
-        BoardInputMode::EditTitle | BoardInputMode::EditNotes | BoardInputMode::EditScope => {
-            match hit_at(hits, pos) {
-                Some(QueueHitTarget::FormTitle) => {
-                    Some(BoardIntent::FocusFormField(CaptureField::Title))
-                }
-                Some(QueueHitTarget::FormNotes(_)) => {
-                    Some(BoardIntent::FocusFormField(CaptureField::Notes))
-                }
-                Some(QueueHitTarget::FormScope) => Some(BoardIntent::OpenFormScopeDropdown),
-                Some(QueueHitTarget::FormThread) => {
-                    Some(BoardIntent::FocusFormField(CaptureField::Thread))
-                }
-                Some(QueueHitTarget::Step(index)) if model.task_editing() => {
-                    Some(BoardIntent::SelectStep(index))
-                }
-                Some(QueueHitTarget::StepAdd) => Some(BoardIntent::BeginAppendStep),
-                Some(QueueHitTarget::Verb(index)) => form_verb_intent(model, index),
-                _ => None,
+        BoardInputMode::EditTitle
+        | BoardInputMode::EditNotes
+        | BoardInputMode::EditScope
+        | BoardInputMode::EditAssignee
+        | BoardInputMode::SelectBase
+        | BoardInputMode::SelectAfter => match hit_at(hits, pos) {
+            Some(QueueHitTarget::FormTitle) => {
+                Some(BoardIntent::FocusFormField(CaptureField::Title))
             }
-        }
+            Some(QueueHitTarget::FormNotes(_)) => {
+                Some(BoardIntent::FocusFormField(CaptureField::Notes))
+            }
+            Some(QueueHitTarget::FormScope) => {
+                Some(BoardIntent::OpenFormDropdown(CaptureField::Scope))
+            }
+            Some(QueueHitTarget::FormAssignee) => {
+                Some(BoardIntent::OpenFormDropdown(CaptureField::Assignee))
+            }
+            Some(QueueHitTarget::FormBase) => Some(BoardIntent::OpenBasePicker),
+            Some(QueueHitTarget::FormAfter) => Some(BoardIntent::OpenAfterPicker),
+            Some(QueueHitTarget::FormThread) => {
+                Some(BoardIntent::FocusFormField(CaptureField::Thread))
+            }
+            Some(QueueHitTarget::Step(index)) if model.task_editing() => {
+                Some(BoardIntent::SelectStep(index))
+            }
+            Some(QueueHitTarget::StepAdd) => Some(BoardIntent::BeginAppendStep),
+            Some(QueueHitTarget::Verb(index)) => form_verb_intent(model, index),
+            _ => None,
+        },
         BoardInputMode::SelectThread | BoardInputMode::EditThread => match hit_at(hits, pos) {
             Some(QueueHitTarget::FormThread) => Some(BoardIntent::ToggleThreadEditing),
             Some(QueueHitTarget::FormTitle) => {
@@ -828,7 +854,14 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::FormNotes(_)) => {
                 Some(BoardIntent::FocusFormField(CaptureField::Notes))
             }
-            Some(QueueHitTarget::FormScope) => Some(BoardIntent::OpenFormScopeDropdown),
+            Some(QueueHitTarget::FormScope) => {
+                Some(BoardIntent::OpenFormDropdown(CaptureField::Scope))
+            }
+            Some(QueueHitTarget::FormAssignee) => {
+                Some(BoardIntent::OpenFormDropdown(CaptureField::Assignee))
+            }
+            Some(QueueHitTarget::FormBase) => Some(BoardIntent::OpenBasePicker),
+            Some(QueueHitTarget::FormAfter) => Some(BoardIntent::OpenAfterPicker),
             Some(QueueHitTarget::Step(index)) if model.task_editing() => {
                 Some(BoardIntent::SelectStep(index))
             }
@@ -848,19 +881,32 @@ pub fn map_board_mouse(
                 Some(BoardIntent::FocusFormField(CaptureField::Thread))
             }
             Some(QueueHitTarget::FormScope) if model.task_editing() => {
-                Some(BoardIntent::OpenFormScopeDropdown)
+                Some(BoardIntent::OpenFormDropdown(CaptureField::Scope))
             }
+            Some(QueueHitTarget::FormAssignee) if model.task_editing() => {
+                Some(BoardIntent::OpenFormDropdown(CaptureField::Assignee))
+            }
+            Some(QueueHitTarget::FormBase) => Some(BoardIntent::OpenBasePicker),
+            Some(QueueHitTarget::FormAfter) => Some(BoardIntent::OpenAfterPicker),
+            // View mode: `@name` or `+ assign` opens the quick assignee picker.
+            Some(QueueHitTarget::FormAssignee) => Some(BoardIntent::OpenAssigneePicker),
             // Step clicks always select. In view mode this remains read-only; the reducer opens
             // the inline editor only when the task edit session is already active.
             Some(QueueHitTarget::Step(index)) => Some(BoardIntent::SelectStep(index)),
             Some(QueueHitTarget::StepAdd) => Some(BoardIntent::BeginAppendStep),
+            Some(QueueHitTarget::TrailRecord(index)) => {
+                Some(BoardIntent::ToggleTrailRecord(Some(index)))
+            }
+            Some(QueueHitTarget::TrailHeading) => Some(BoardIntent::ToggleTrail),
+            Some(QueueHitTarget::PageCheck(index)) => Some(BoardIntent::ClickCheck(index)),
+            Some(QueueHitTarget::PassedFold) => Some(BoardIntent::ClickPassedFold),
             Some(QueueHitTarget::PageScroll(offset)) => Some(BoardIntent::PageScrollTo(offset)),
             Some(QueueHitTarget::Verb(index)) => verb_intent(model, index),
             _ => None,
         },
-        BoardInputMode::FormScopeDropdown => match hit_at(hits, pos) {
-            Some(QueueHitTarget::FormScopeOption(index)) => {
-                Some(BoardIntent::SelectFormScopeOption(index))
+        BoardInputMode::FormDropdown => match hit_at(hits, pos) {
+            Some(QueueHitTarget::FormDropdownOption(index)) => {
+                Some(BoardIntent::SelectFormDropdownOption(index))
             }
             Some(QueueHitTarget::Verb(index)) => form_verb_intent(model, index),
             _ => None,
@@ -875,7 +921,14 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::FormThread) => {
                 Some(BoardIntent::FocusFormField(CaptureField::Thread))
             }
-            Some(QueueHitTarget::FormScope) => Some(BoardIntent::OpenFormScopeDropdown),
+            Some(QueueHitTarget::FormScope) => {
+                Some(BoardIntent::OpenFormDropdown(CaptureField::Scope))
+            }
+            Some(QueueHitTarget::FormAssignee) => {
+                Some(BoardIntent::OpenFormDropdown(CaptureField::Assignee))
+            }
+            Some(QueueHitTarget::FormBase) => Some(BoardIntent::OpenBasePicker),
+            Some(QueueHitTarget::FormAfter) => Some(BoardIntent::OpenAfterPicker),
             Some(QueueHitTarget::Step(index)) => Some(BoardIntent::SelectStep(index)),
             Some(QueueHitTarget::StepAdd) => Some(BoardIntent::BeginAppendStep),
             Some(QueueHitTarget::Verb(index)) => verb_intent(model, index),
@@ -893,21 +946,47 @@ pub fn map_board_mouse(
             _ => None,
         },
         BoardInputMode::SaveRecovery => None,
+        // The `esc` line (and `[x]`) is Esc. An option line selects its option; a double click
+        // on it runs it. A confirmed card only reports its run, so its options are gone.
+        BoardInputMode::CleanupConfirm | BoardInputMode::CleanupDirtyConfirm => {
+            match hit_at(hits, pos) {
+                Some(QueueHitTarget::ModalClose) => Some(BoardIntent::CancelCleanup),
+                Some(QueueHitTarget::CleanupOption(index)) if model.cleanup_run().is_none() => {
+                    Some(BoardIntent::CleanupClickOption(index))
+                }
+                _ => None,
+            }
+        }
+        // A start card: the `esc` line (and `[x]`) cancels; an option line selects its option
+        // and a double click on it runs it.
+        BoardInputMode::DispatchConfirm => match hit_at(hits, pos) {
+            Some(QueueHitTarget::ModalClose) => Some(BoardIntent::CancelDispatch),
+            Some(QueueHitTarget::CleanupOption(index)) => {
+                Some(BoardIntent::CleanupClickOption(index))
+            }
+            _ => None,
+        },
+        // `[x]` cancels; the card body and the board behind it are inert.
+        BoardInputMode::BlockCard => match hit_at(hits, pos) {
+            Some(QueueHitTarget::ModalClose) => Some(BoardIntent::BlockCardCancel),
+            _ => None,
+        },
+        // The reply box owns the page until it saves or cancels.
+        BoardInputMode::EditReply => None,
+        // The launch card: an option line selects and a double click runs it; the `esc` line
+        // keeps the project archived, as `Esc` does.
         BoardInputMode::LaunchCard => match hit_at(hits, pos) {
-            Some(QueueHitTarget::LaunchOption(0)) => Some(BoardIntent::LaunchUnarchive),
-            Some(QueueHitTarget::LaunchOption(1)) => Some(BoardIntent::LaunchKeepArchived),
+            Some(QueueHitTarget::ModalClose) => Some(BoardIntent::LaunchKeepArchived),
+            Some(QueueHitTarget::CleanupOption(index)) => {
+                Some(BoardIntent::CleanupClickOption(index))
+            }
             _ => None,
         },
         BoardInputMode::ListPicker => match hit_at(hits, pos) {
             Some(QueueHitTarget::ListPickerOption(index)) => {
                 Some(BoardIntent::SelectListOption(index))
             }
-            Some(QueueHitTarget::PickerTab(tab)) => {
-                Some(BoardIntent::SwitchListPickerTab(Some(match tab {
-                    crate::ui::board::PickerTab::Main => crate::ui::board::FilterTab::Threads,
-                    crate::ui::board::PickerTab::Archived => crate::ui::board::FilterTab::Projects,
-                })))
-            }
+            Some(QueueHitTarget::ListPickerTab(tab)) => Some(BoardIntent::SelectListPickerTab(tab)),
             Some(QueueHitTarget::ModalChrome) => None,
             Some(QueueHitTarget::ModalClose) => Some(BoardIntent::CancelListPicker),
             _ => Some(BoardIntent::CancelListPicker),

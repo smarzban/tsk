@@ -18,12 +18,15 @@ pub enum CommandSurface {
 /// One discoverable board command: a label plus the existing intent it dispatches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoardCommand {
-    pub label: &'static str,
+    pub label: String,
     pub intent: BoardIntent,
 }
 
-const fn command(label: &'static str, intent: BoardIntent) -> BoardCommand {
-    BoardCommand { label, intent }
+fn command(label: impl Into<String>, intent: BoardIntent) -> BoardCommand {
+    BoardCommand {
+        label: label.into(),
+        intent,
+    }
 }
 
 impl BoardModel {
@@ -57,15 +60,15 @@ impl BoardModel {
         // Unresolved save failure: only the recovery routes the boundary accepts.
         if self.popup == BoardPopup::SaveRecovery {
             return vec![
-                command("Retry save", BoardIntent::RetrySave),
-                command("Cancel save", BoardIntent::CancelSave),
+                command("retry save", BoardIntent::RetrySave),
+                command("cancel save", BoardIntent::CancelSave),
             ];
         }
         let mut commands = Vec::new();
         if self.selected_id().is_some() {
-            // the tail: set status x4, edit notes, change scope, then shared tail.
-            // No park / resume / link / dispatch entries.
-            commands.extend_from_slice(&[
+            // the tail: set status x4, edit notes, change scope, assignment and optional
+            // relaunch, then shared tail. No park / resume / link entries.
+            commands.extend([
                 command(
                     "set status: ready",
                     BoardIntent::SetStatus(HumanStatus::Ready),
@@ -87,8 +90,28 @@ impl BoardModel {
                     BoardIntent::SetStatus(HumanStatus::Review),
                 ),
                 command("edit notes", BoardIntent::BeginEditNotes),
-                command("change scope", BoardIntent::BeginEditScope),
+                command("move to project / desk", BoardIntent::BeginEditScope),
+                command("set assignee", BoardIntent::OpenAssigneePicker),
+                command("set base", BoardIntent::OpenBasePicker),
+                command("set after (wait for)…", BoardIntent::OpenAfterPicker),
             ]);
+            // Two or more marked tasks chain in the order they were marked. The palette owns
+            // input while it lists this, so ask about the task list underneath it.
+            if self.marks_under_palette() >= 2 {
+                commands.push(command(
+                    "chain marked tasks in order",
+                    BoardIntent::ChainAfter,
+                ));
+            }
+            // Starting dispatches an assigned task (`set status: started`, `ctrl+s`); dispatch
+            // again is the explicit, cursor-only relaunch.
+            if self
+                .selected_id()
+                .and_then(|id| self.tasks.iter().find(|task| task.id == id))
+                .is_some_and(|task| task.dispatch.is_some())
+            {
+                commands.push(command("dispatch again", BoardIntent::DispatchAgain));
+            }
         }
         // A step selected on the open task page: the alt+↑/↓ moves, findable by name.
         if self.page_step_selected() {
@@ -100,13 +123,13 @@ impl BoardModel {
         // Always-available board commands, then selection-gated delete when present.
         // The status commands above are absolute, so `set status: open` replaces the old
         // done-only `reopen` entry and stays useful from every status.
-        commands.push(command("new task", BoardIntent::OpenCapture));
+        commands.push(command("add task", BoardIntent::OpenCapture));
         if self.selected_id().is_some() {
-            commands.push(command("delete", BoardIntent::SoftDelete));
+            commands.push(command("delete task", BoardIntent::SoftDelete));
         }
         commands.extend_from_slice(&[
             command("undo", BoardIntent::Undo),
-            command("done drawer", BoardIntent::ToggleDoneDrawer),
+            command("show / hide done drawer", BoardIntent::ToggleDoneDrawer),
         ]);
         // Layout commands act on the task list, never over an open task page.
         if self.task_list_under_surfaces() {
@@ -117,10 +140,10 @@ impl BoardModel {
             ]);
         }
         commands.extend_from_slice(&[
-            command("help", BoardIntent::OpenHelp),
+            command("show all keys", BoardIntent::OpenHelp),
             command("quit", BoardIntent::Quit),
         ]);
-        // Park / resume / link / dispatch stay out of the palette.
+        // Park / resume / link stay out of the palette.
         commands
     }
 
@@ -146,11 +169,20 @@ impl BoardModel {
         }
         commands
             .into_iter()
-            .filter(|command| subsequence_match(command.label, query))
+            .filter(|command| subsequence_match(&command.label, query))
             .collect()
     }
 
     /// The command a confirmation would invoke.
+    /// The command a palette `ConfirmCommand` or `SelectCommand` would run, without running it.
+    pub fn selected_command_for(&self, intent: &BoardIntent) -> Option<BoardCommand> {
+        match intent {
+            BoardIntent::ConfirmCommand => self.selected_command(),
+            BoardIntent::SelectCommand(index) => self.visible_commands().get(*index).cloned(),
+            _ => None,
+        }
+    }
+
     pub fn selected_command(&self) -> Option<BoardCommand> {
         let index = self.command_selected()?;
         self.visible_commands().get(index).cloned()

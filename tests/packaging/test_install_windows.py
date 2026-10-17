@@ -591,11 +591,18 @@ $env:TSK_UPDATE_PID = $PID
             installed.write_bytes(b"old-binary")
 
             quote = lambda value: str(value).replace("'", "''")
+            # The holder must own the handle for the whole update: a fixed head start lost
+            # the race on a slow runner (powershell.exe still starting), and the installer
+            # then replaced the unlocked file directly instead of staging.
+            ready = root / "holder-ready"
+            release = root / "holder-release"
             holder_script = (
                 "$stream=[IO.File]::Open('"
                 + quote(installed)
                 + "',[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read); "
-                + "Start-Sleep -Seconds 30"
+                + "[IO.File]::WriteAllText('" + quote(ready) + "', 'ready'); "
+                + "$deadline=(Get-Date).AddSeconds(180); "
+                + "while (-not (Test-Path -LiteralPath '" + quote(release) + "') -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }"
             )
             holder = subprocess.Popen(
                 ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", holder_script],
@@ -603,7 +610,11 @@ $env:TSK_UPDATE_PID = $PID
                 stderr=subprocess.DEVNULL,
             )
             try:
-                time.sleep(1)
+                deadline = time.monotonic() + 60
+                while not ready.exists():
+                    self.assertIsNone(holder.poll(), "lock holder exited before opening the executable")
+                    self.assertLess(time.monotonic(), deadline, "lock holder never opened the executable")
+                    time.sleep(0.1)
                 harness = f"""
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 function Get-LatestReleaseTag {{ param([string] $Uri) '{version}' }}
@@ -643,6 +654,7 @@ $env:TSK_UPDATE_PID = $PID
                 self.assertEqual(update.returncode, 0, update.stderr)
                 self.assertIn("Update staged", update.stdout)
             finally:
+                release.write_text("release")
                 holder.terminate()
                 holder.wait(timeout=10)
 

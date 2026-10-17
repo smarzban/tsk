@@ -322,19 +322,14 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("temp dir");
         let argv = dir.join("argv");
         let curl = dir.join("curl");
-        std::fs::write(
+        crate::test_stub::write_stub(
             &curl,
             format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '{{\"tag_name\": \"v9.9.9\"}}'\n",
                 argv.display()
             ),
-        )
-        .expect("fake curl");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        }
+            0o755,
+        );
         assert_eq!(fetch_latest_with(&curl), Some("v9.9.9".to_string()));
         let argv = std::fs::read_to_string(&argv).expect("argv");
         let args: Vec<&str> = argv.lines().collect();

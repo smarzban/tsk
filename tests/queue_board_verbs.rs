@@ -1,17 +1,33 @@
 //! Verb Surface reducers — primary verbs, done/reopen/block, drawer, Esc layers.
 
+#[cfg(unix)]
+use crate::stub;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
+use tsk_tui::agents::AgentProfiles;
+use tsk_tui::app::{
+    confirm_cleanup_with_host, offer_cleanup_prompt_with_host, poll_cleanup_runs, CleanupOffer,
+};
 use tsk_tui::context::InvocationSnapshot;
-use tsk_tui::domain::{DomainState, HumanStatus, ProvenanceOrigin, TaskEventKind, TaskScope};
+use tsk_tui::dispatch::{
+    CleanupError, CleanupInspection, CleanupJob, CleanupSlot, CreatedWorktree, DispatchHost,
+    MergeCheck, MergeVerdict,
+};
+use tsk_tui::domain::{
+    Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskEventKind, TaskScope,
+};
+use tsk_tui::store::TaskStore;
 use tsk_tui::ui::board::{
     apply_intent, board_hit_map, board_intent_may_persist, board_verb_items, draw_board,
-    resolve_board_command, BoardInputMode, BoardModel, CommandSurface, IntentOutcome,
-    ProjectScopeOption,
+    resolve_board_command, BoardInputMode, BoardModel, CleanupPrompt, CleanupRow, CleanupRowState,
+    CommandSurface, IntentOutcome, ListPickerKind, ProjectScopeOption, REFRESHING_BRANCHES,
 };
 use tsk_tui::ui::capture::CaptureField;
 use tsk_tui::ui::input::{
@@ -68,6 +84,54 @@ fn board_with_task(title: &str, status: HumanStatus) -> (DomainState, BoardModel
     (domain, model, id)
 }
 
+fn git_repo_with_branch(label: &str) -> PathBuf {
+    tsk_tui::git_base::stretch_default_deadlines_for_tests();
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let root = std::env::temp_dir().join(format!(
+        "tsk-board-base-{label}-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&root).expect("create git repo");
+    let run = |args: &[&str]| {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    run(&["init", "-b", "main"]);
+    run(&["config", "user.email", "test@example.com"]);
+    run(&["config", "user.name", "test"]);
+    run(&["commit", "--allow-empty", "-m", "initial"]);
+    run(&["branch", "dispatch"]);
+    root
+}
+
+/// Wait out the picker's background refresh, if it started one.
+fn await_base_picker(model: &mut BoardModel) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let refreshing = |model: &BoardModel| {
+        model
+            .visible_list_picker_options()
+            .iter()
+            .any(|(_, option)| option.label == REFRESHING_BRANCHES)
+    };
+    while refreshing(model) && !model.poll_base_picker_results() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "branch picker lookup timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 fn select_done_task(domain: &mut DomainState, model: &mut BoardModel, id: uuid::Uuid) {
     apply_intent(domain, model, BoardIntent::ToggleDoneDrawer, None).expect("drawer");
     let index = model
@@ -76,6 +140,75 @@ fn select_done_task(domain: &mut DomainState, model: &mut BoardModel, id: uuid::
         .position(|&row| row == id)
         .expect("done task visible");
     apply_intent(domain, model, BoardIntent::SelectIndex(index), None).expect("select done");
+}
+
+fn set_agent_profiles(model: &mut BoardModel, names: &[&str]) {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-board-verbs-agents-{nanos}-{}",
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).expect("create profiles dir");
+    let content = names
+        .iter()
+        .map(|name| format!("[agent.{name}]\ncommand = [\"true\"]\n"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(dir.join("config.toml"), content).expect("write profiles");
+    model.set_agent_profiles(&AgentProfiles::load(&dir).expect("load profiles"));
+    std::fs::remove_dir_all(dir).expect("remove profiles dir");
+}
+
+#[derive(Default)]
+struct CleanupHost {
+    inspection: Option<CleanupInspection>,
+    inspections: usize,
+    removed: usize,
+}
+
+impl DispatchHost for CleanupHost {
+    fn is_git_repo(&mut self, _: &Path) -> Result<bool, String> {
+        Ok(true)
+    }
+
+    fn create_worktree(
+        &mut self,
+        _: &Path,
+        _: &str,
+        _: Option<&str>,
+        _: &str,
+    ) -> Result<CreatedWorktree, String> {
+        Err("not used".into())
+    }
+
+    fn inspect_cleanup(
+        &mut self,
+        _: &Path,
+        _: &Dispatch,
+        _: bool,
+    ) -> Result<CleanupInspection, String> {
+        self.inspections += 1;
+        self.inspection
+            .clone()
+            .ok_or_else(|| "inspection missing".into())
+    }
+
+    fn remove_herdr_worktree(&mut self, _: &str) -> Result<(), String> {
+        self.removed += 1;
+        Ok(())
+    }
+
+    fn root_pane(&mut self, _: &str) -> Result<String, tsk_tui::dispatch::RootPaneError> {
+        Err("not used".into())
+    }
+
+    fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
+        Err("not used".into())
+    }
 }
 
 fn mark_tasks(domain: &mut DomainState, model: &mut BoardModel, ids: &[uuid::Uuid]) {
@@ -91,6 +224,1491 @@ fn mark_tasks(domain: &mut DomainState, model: &mut BoardModel, ids: &[uuid::Uui
         apply_intent(domain, model, BoardIntent::SelectIndex(index), None).expect("select task");
         apply_intent(domain, model, BoardIntent::MarkToggle, None).expect("mark task");
     }
+}
+
+#[test]
+fn ctrl_g_is_retired_and_the_palette_lists_no_dispatch_before_a_launch() {
+    let (mut domain, mut model, id) = board_with_task("send it", HumanStatus::Ready);
+    set_agent_profiles(&mut model, &["implementer"]);
+    domain
+        .assign(id, Some("implementer".into()))
+        .expect("assign task");
+    model.sync_from_domain(&domain);
+
+    for mode in [BoardInputMode::Normal, BoardInputMode::TaskPage] {
+        assert_eq!(map_key(mode, ctrl(KeyCode::Char('g'))), None);
+        assert_eq!(
+            map_key(mode, ctrl(KeyCode::Char('s'))),
+            Some(BoardIntent::PrimaryVerb)
+        );
+    }
+    let labels = model
+        .available_commands()
+        .into_iter()
+        .map(|command| command.label)
+        .collect::<Vec<_>>();
+    assert!(
+        !labels.iter().any(|label| label.starts_with("dispatch")),
+        "starting dispatches; the palette has no dispatch entry before a launch: {labels:?}"
+    );
+    assert!(labels.iter().any(|label| label == "set base"), "{labels:?}");
+}
+
+#[test]
+fn cleanup_popup_maps_explicit_choices_and_paints_the_guardrail_state() {
+    let (_, mut model, id) = board_with_task("clean me", HumanStatus::Started);
+    model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
+        merge_check: None,
+        check_failed: false,
+        pr: Default::default(),
+        unreachable_remote: None,
+        inspected: None,
+        number: 1,
+        task_id: id,
+        worktree: "/tmp/tsk-t1-clean-me".into(),
+        branch: "tsk/t1-clean-me".into(),
+        base: "origin/main".into(),
+        dirty: false,
+        dirty_files: Vec::new(),
+        checked_out_elsewhere: false,
+        branch_merged: false,
+        workspace_exists: true,
+        warning: None,
+        base_available: true,
+    }));
+    assert_eq!(model.input_mode(), BoardInputMode::CleanupConfirm);
+    assert_eq!(
+        map_key(BoardInputMode::CleanupConfirm, press(KeyCode::Char('y'))),
+        Some(BoardIntent::ConfirmCleanup)
+    );
+    assert_eq!(
+        map_key(BoardInputMode::CleanupConfirm, press(KeyCode::Char('n'))),
+        Some(BoardIntent::KeepCleanup)
+    );
+    assert_eq!(
+        map_key(BoardInputMode::CleanupConfirm, press(KeyCode::Esc)),
+        Some(BoardIntent::CancelCleanup)
+    );
+    for mode in [
+        BoardInputMode::CleanupConfirm,
+        BoardInputMode::CleanupDirtyConfirm,
+    ] {
+        assert_eq!(
+            map_key(mode, press(KeyCode::Down)),
+            Some(BoardIntent::CleanupSelectDown)
+        );
+        assert_eq!(
+            map_key(mode, press(KeyCode::Up)),
+            Some(BoardIntent::CleanupSelectUp)
+        );
+        assert_eq!(
+            map_key(mode, press(KeyCode::Enter)),
+            Some(BoardIntent::CleanupRunSelected)
+        );
+        assert_eq!(
+            map_key(mode, press(KeyCode::PageDown)),
+            Some(BoardIntent::CleanupScrollDown)
+        );
+        assert_eq!(
+            map_key(mode, press(KeyCode::PageUp)),
+            Some(BoardIntent::CleanupScrollUp)
+        );
+    }
+    let screen = rendered_board(&model, 100, 30);
+    for text in [
+        "Done T1",
+        "Not merged into origin/main",
+        "▸ y  mark done · remove worktree and agent pane · keep",
+        "     the branch (not merged)",
+        "  n  mark done · keep everything",
+        "worktree  /tmp/tsk-t1-clean-me",
+        "branch    tsk/t1-clean-me",
+        "esc cancel",
+    ] {
+        assert!(screen.contains(text), "missing {text:?}:\n{screen}");
+    }
+}
+
+#[test]
+fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
+    let (mut domain, mut model, first) = board_with_task("first", HumanStatus::Started);
+    let second = domain
+        .create(
+            "second",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("second");
+    domain
+        .record_dispatch(
+            first,
+            Dispatch {
+                argv: vec!["agent".into()],
+                worktree: "/tmp/first".into(),
+                branch: "tsk/t1-first".into(),
+                base: None,
+                base_commit: None,
+                base_remote: None,
+                base_ref: None,
+                herdr_workspace_id: "w1".into(),
+                at: SystemTime::now(),
+                cleaned: false,
+            },
+        )
+        .expect("dispatch first");
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cleanup-popup-{}-{}",
+        std::process::id(),
+        AtomicU64::new(0).fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).expect("temp store");
+    let store = TaskStore::new(&dir);
+    store.save(&domain).expect("number tasks");
+    domain = store.load().expect("reload numbered tasks");
+    model.sync_from_domain(&domain);
+    mark_tasks(&mut domain, &mut model, &[first, second]);
+    let mut host = CleanupHost {
+        inspection: Some(CleanupInspection {
+            unreachable_remote: None,
+            worktree_exists: true,
+            dirty: true,
+            dirty_files: Vec::new(),
+            checked_out_elsewhere: false,
+            branch_merged: false,
+            workspace_exists: true,
+            target_matches: true,
+            warning: None,
+            base_available: false,
+        }),
+        ..CleanupHost::default()
+    };
+    assert_eq!(
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, first, true, &mut host)
+            .expect("bulk bypass"),
+        CleanupOffer::None
+    );
+    assert_eq!(
+        host.inspections, 0,
+        "with marks active the single cursor offer stands aside for the bulk card"
+    );
+
+    let first_index = model
+        .visible_ids()
+        .iter()
+        .position(|id| *id == first)
+        .unwrap();
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::SelectIndex(first_index),
+        None,
+    )
+    .expect("select dispatched task");
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+    assert_eq!(
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, first, true, &mut host)
+            .expect("task page is cursor-only despite retained marks"),
+        CleanupOffer::Prompted
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::CancelCleanup, None).expect("cancel prompt");
+    assert_eq!(host.inspections, 1);
+
+    apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close page");
+    assert_eq!(
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, first, true, &mut host)
+            .expect("offer"),
+        CleanupOffer::Prompted
+    );
+    assert_eq!(model.input_mode(), BoardInputMode::CleanupDirtyConfirm);
+    assert_eq!(
+        map_key(
+            BoardInputMode::CleanupDirtyConfirm,
+            press(KeyCode::Char('y'))
+        ),
+        None,
+        "dirty worktrees do not offer cleanup"
+    );
+    let screen = rendered_board(&model, 100, 30);
+    assert!(!screen.contains(" y  "), "{screen}");
+    assert!(
+        screen.contains("▸ n  don't merge · mark done · keep everything"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("Uncommitted changes in the worktree: commit or discard"),
+        "{screen}"
+    );
+    assert!(
+        !screen.contains("remove worktree"),
+        "a dirty card never claims anything goes:\n{screen}"
+    );
+    let run = confirm_cleanup_with_host(&mut domain, &mut model, true, true, &mut host)
+        .expect("completion")
+        .expect("card")
+        .run
+        .expect("y plans the card's rows");
+    assert!(
+        run.plan.is_empty(),
+        "a dirty worktree is never handed to the worker"
+    );
+    assert!(matches!(
+        &run.rows[0].state,
+        CleanupRowState::Kept { short, .. } if short == "uncommitted changes"
+    ));
+    assert_eq!(host.removed, 0);
+    assert_eq!(domain.get(first).unwrap().status, HumanStatus::Done);
+    assert_eq!(domain.get(second).unwrap().status, HumanStatus::Open);
+    store
+        .reload_merge_save(&mut domain)
+        .expect("cleanup and completion retain the original save merge base");
+    std::fs::remove_dir_all(dir).expect("cleanup temp store");
+}
+
+/// A host whose cached-ref inspection and network-refreshed inspection disagree, with a
+/// merged check the test completes by hand.
+struct MergeCheckHost {
+    cached: CleanupInspection,
+    fetched: CleanupInspection,
+    check: MergeCheck,
+    deleted: usize,
+}
+
+impl DispatchHost for MergeCheckHost {
+    fn is_git_repo(&mut self, _: &Path) -> Result<bool, String> {
+        Ok(true)
+    }
+
+    fn create_worktree(
+        &mut self,
+        _: &Path,
+        _: &str,
+        _: Option<&str>,
+        _: &str,
+    ) -> Result<CreatedWorktree, String> {
+        Err("not used".into())
+    }
+
+    fn inspect_cleanup(
+        &mut self,
+        _: &Path,
+        _: &Dispatch,
+        _: bool,
+    ) -> Result<CleanupInspection, String> {
+        Ok(self.fetched.clone())
+    }
+
+    fn inspect_cleanup_cached(
+        &mut self,
+        _: &Path,
+        _: &Dispatch,
+        _: bool,
+    ) -> Result<CleanupInspection, String> {
+        Ok(self.cached.clone())
+    }
+
+    fn begin_merge_check(&mut self, _: &Path, _: &Dispatch) -> Option<MergeCheck> {
+        Some(self.check.clone())
+    }
+
+    fn remove_herdr_worktree(&mut self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn delete_branch(&mut self, _: &Path, _: &str) -> Result<(), String> {
+        self.deleted += 1;
+        Ok(())
+    }
+
+    fn root_pane(&mut self, _: &str) -> Result<String, tsk_tui::dispatch::RootPaneError> {
+        Err("not used".into())
+    }
+
+    fn run_in_pane(&mut self, _: &str, _: &str) -> Result<(), String> {
+        Err("not used".into())
+    }
+}
+
+fn dispatched_board_for_merge_check(label: &str) -> (DomainState, BoardModel, uuid::Uuid, PathBuf) {
+    let (mut domain, mut model, id) = board_with_task(label, HumanStatus::Started);
+    domain
+        .record_dispatch(
+            id,
+            Dispatch {
+                argv: vec!["agent".into()],
+                worktree: format!("/tmp/{label}"),
+                branch: format!("tsk/t1-{label}"),
+                base: Some("origin/main".into()),
+                base_commit: None,
+                base_remote: Some("origin".into()),
+                base_ref: Some("refs/remotes/origin/main".into()),
+                herdr_workspace_id: "w1".into(),
+                at: SystemTime::now(),
+                cleaned: false,
+            },
+        )
+        .expect("dispatch");
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cleanup-check-{label}-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).expect("temp store");
+    let store = TaskStore::new(&dir);
+    store.save(&domain).expect("number tasks");
+    domain = store.load().expect("reload numbered tasks");
+    model.sync_from_domain(&domain);
+    (domain, model, id, dir)
+}
+
+fn merge_check_host(cached_merged: bool, fetched_merged: bool) -> MergeCheckHost {
+    let inspection = |branch_merged| CleanupInspection {
+        unreachable_remote: None,
+        worktree_exists: true,
+        dirty: false,
+        dirty_files: Vec::new(),
+        checked_out_elsewhere: false,
+        branch_merged,
+        workspace_exists: true,
+        target_matches: true,
+        warning: None,
+        base_available: true,
+    };
+    MergeCheckHost {
+        cached: inspection(cached_merged),
+        fetched: inspection(fetched_merged),
+        check: MergeCheck::default(),
+        deleted: 0,
+    }
+}
+
+#[test]
+fn cleanup_card_opens_from_cached_refs_and_a_background_check_fills_merged_status() {
+    let (mut domain, mut model, id, dir) = dispatched_board_for_merge_check("card-check");
+    let mut host = merge_check_host(false, true);
+    assert_eq!(
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            .expect("offer"),
+        CleanupOffer::Prompted
+    );
+    assert!(model.cleanup_prompt().unwrap().checking());
+    let screen = rendered_board(&model, 100, 30);
+    assert!(
+        screen.contains("Checking merge into main…"),
+        "card paints before the fetch lands:\n{screen}"
+    );
+    assert!(!screen.contains("squash-merged"), "{screen}");
+    assert!(!model.poll_cleanup_check(), "nothing to apply yet");
+
+    host.check.complete(MergeVerdict {
+        unreachable_remote: None,
+        branch_merged: true,
+        base_available: true,
+        warning: None,
+        confirmed: true,
+    });
+    assert!(model.poll_cleanup_check());
+    assert!(!model.cleanup_prompt().unwrap().checking());
+    let screen = rendered_board(&model, 100, 30);
+    assert!(screen.contains("Merged into main ✓"), "{screen}");
+    assert!(
+        screen.contains("▸ y  mark done · remove worktree, branch and agent pane"),
+        "{screen}"
+    );
+
+    // Esc drops the check with its card; a late verdict reaches no other prompt.
+    apply_intent(&mut domain, &mut model, BoardIntent::CancelCleanup, None).expect("cancel");
+    host.check = MergeCheck::default();
+    offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host).expect("reoffer");
+    let stale = host.check.clone();
+    apply_intent(&mut domain, &mut model, BoardIntent::CancelCleanup, None).expect("cancel");
+    stale.complete(MergeVerdict {
+        unreachable_remote: None,
+        branch_merged: true,
+        base_available: true,
+        warning: None,
+        confirmed: true,
+    });
+    assert!(!model.poll_cleanup_check());
+    assert!(model.cleanup_prompt().is_none());
+    std::fs::remove_dir_all(dir).expect("cleanup temp store");
+}
+
+#[test]
+fn a_confirmed_card_reports_each_row_and_esc_closes_it_once_finished() {
+    let (mut domain, mut model, id, dir) = dispatched_board_for_merge_check("progress");
+    let mut host = merge_check_host(true, true);
+    offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host).expect("offer");
+    let mut run = confirm_cleanup_with_host(&mut domain, &mut model, true, true, &mut host)
+        .expect("completion")
+        .expect("card")
+        .run
+        .expect("y plans a run");
+    run.started = true;
+    run.rows[0].state = CleanupRowState::Removing;
+    model.begin_cleanup_run(run);
+    let screen = rendered_board(&model, 100, 30);
+    assert!(screen.contains("Done T1"), "{screen}");
+    assert!(screen.contains("Cleaning up…"), "{screen}");
+    assert!(screen.contains("esc hide, keep cleaning"), "{screen}");
+    assert!(!screen.contains(" y  "), "{screen}");
+
+    let mut run = model.cleanup_run_mut().expect("run");
+    run.rows[0].state =
+        CleanupRowState::cleaned(Some(("not merged".into(), "not merged into main".into())));
+    run.settled = true;
+    drop(run);
+    let screen = rendered_board(&model, 100, 30);
+    assert!(
+        screen.contains("Done T1 · cleaned · branch kept (not merged)"),
+        "{screen}"
+    );
+    assert!(screen.contains("esc close"), "{screen}");
+    apply_intent(&mut domain, &mut model, BoardIntent::CancelCleanup, None).expect("close");
+    assert!(model.cleanup_run().is_none());
+    assert_eq!(
+        model.message(),
+        Some("done T1 · cleaned · branch kept (not merged)")
+    );
+    std::fs::remove_dir_all(dir).expect("cleanup temp store");
+}
+
+#[test]
+fn a_refused_cleanup_on_the_card_says_why_once_for_every_refusal() {
+    // Some refusals carry `kept:` in their CLI wording; the card writes its own lead.
+    let (mut domain, mut model, id, dir) = dispatched_board_for_merge_check("kept-once");
+    let mut host = merge_check_host(true, true);
+    offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host).expect("offer");
+    let mut run = confirm_cleanup_with_host(&mut domain, &mut model, true, true, &mut host)
+        .expect("completion")
+        .expect("card")
+        .run
+        .expect("y plans a run");
+    run.started = true;
+    run.settled = true;
+    model.begin_cleanup_run(run);
+    for (error, reason) in [
+        (CleanupError::FilesInUse, "files in use"),
+        (CleanupError::PathTooLong, "path too long"),
+        (CleanupError::RemovalTimedOut, "removal timed out"),
+        (CleanupError::DirtyWorktree, "worktree has uncommitted"),
+        (CleanupError::DispatchChanged, "changed since the card"),
+    ] {
+        model.cleanup_run_mut().expect("run").rows[0].state = CleanupRowState::kept(&error);
+        let screen = rendered_board(&model, 120, 30);
+        assert!(
+            screen.contains(&format!("Cleanup refused: {reason}")),
+            "{screen}"
+        );
+        assert!(!screen.contains("refused: kept"), "{screen}");
+    }
+    std::fs::remove_dir_all(dir).expect("cleanup temp store");
+}
+
+#[test]
+fn cleanup_completed_while_still_checking_never_deletes_on_the_cached_verdict() {
+    // Cached refs say merged, but no check has confirmed it (a queued `y` past its bound).
+    let (mut domain, mut model, id, dir) = dispatched_board_for_merge_check("confirm-early");
+    let mut host = merge_check_host(true, false);
+    offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host).expect("offer");
+    assert!(model.cleanup_prompt().unwrap().checking());
+    let plan = confirm_cleanup_with_host(&mut domain, &mut model, true, true, &mut host)
+        .expect("completion")
+        .expect("card")
+        .run
+        .expect("y plans the clean row")
+        .plan;
+    let job = CleanupJob::new(plan.len());
+    tsk_tui::dispatch::run_cleanup_job(&job, &plan, true, &mut host);
+    let (slots, settled) = job.snapshot().expect("job idle");
+    assert!(settled);
+    let CleanupSlot::Done(Ok(result)) = &slots[0] else {
+        panic!("cleanup ran: {slots:?}");
+    };
+    assert_eq!(
+        host.deleted, 0,
+        "an unconfirmed merge never deletes the branch"
+    );
+    assert_eq!(
+        result.branch_reason,
+        Some(tsk_tui::dispatch::BranchRetentionReason::MergeCheckUnfinished)
+    );
+    assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
+    std::fs::remove_dir_all(dir).expect("cleanup temp store");
+}
+
+#[test]
+fn missing_worktree_converges_cleaned_and_done_in_one_board_save_without_a_popup() {
+    let (mut domain, mut model, id) = board_with_task("already removed", HumanStatus::Started);
+    domain
+        .record_dispatch(
+            id,
+            Dispatch {
+                argv: vec!["agent".into()],
+                worktree: "/tmp/already-removed".into(),
+                branch: "tsk/t1-already-removed".into(),
+                base: Some("main".into()),
+                base_commit: None,
+                base_remote: None,
+                base_ref: None,
+                herdr_workspace_id: "w1".into(),
+                at: SystemTime::now(),
+                cleaned: false,
+            },
+        )
+        .expect("dispatch");
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cleanup-missing-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("temp store");
+    let store = TaskStore::new(&dir);
+    store.save(&domain).expect("seed");
+    domain = store.load().expect("numbered state");
+    model.sync_from_domain(&domain);
+    let mut host = CleanupHost {
+        inspection: Some(CleanupInspection {
+            unreachable_remote: None,
+            worktree_exists: false,
+            dirty: false,
+            dirty_files: Vec::new(),
+            checked_out_elsewhere: false,
+            branch_merged: false,
+            workspace_exists: false,
+            target_matches: true,
+            warning: None,
+            base_available: true,
+        }),
+        ..CleanupHost::default()
+    };
+
+    assert!(matches!(
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            .expect("missing worktree converges"),
+        CleanupOffer::MissingConverged { .. }
+    ));
+    assert_eq!(model.popup(), BoardPopup::None);
+    assert!(domain.get(id).unwrap().dispatch.as_ref().unwrap().cleaned);
+    assert_eq!(domain.get(id).unwrap().status, HumanStatus::Done);
+    store
+        .reload_merge_save(&mut domain)
+        .expect("one save contains cleanup and completion");
+    let saved = store.load().expect("reload");
+    let task = saved.get(id).unwrap();
+    assert_eq!(task.status, HumanStatus::Done);
+    assert!(task.dispatch.as_ref().unwrap().cleaned);
+    assert!(task
+        .history
+        .iter()
+        .any(|event| event.kind == TaskEventKind::Cleaned));
+    std::fs::remove_dir_all(dir).expect("cleanup temp store");
+}
+
+#[test]
+fn cleanup_offer_skips_done_and_archived_tasks_without_inspection_or_mutation() {
+    for archived in [false, true] {
+        let (mut domain, mut model, id) =
+            board_with_task("no second completion", HumanStatus::Started);
+        domain
+            .record_dispatch(
+                id,
+                Dispatch {
+                    argv: vec!["agent".into()],
+                    worktree: "/tmp/no-second-completion".into(),
+                    branch: "tsk/t1-no-second-completion".into(),
+                    base: Some("main".into()),
+                    base_commit: None,
+                    base_remote: None,
+                    base_ref: None,
+                    herdr_workspace_id: "w1".into(),
+                    at: SystemTime::now(),
+                    cleaned: false,
+                },
+            )
+            .expect("dispatch");
+        if archived {
+            domain.archive_task(id).expect("archive");
+        } else {
+            domain.set_status(id, HumanStatus::Done).expect("done");
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "tsk-cleanup-noop-{}-{}-{archived}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp store");
+        let store = TaskStore::new(&dir);
+        store.save(&domain).expect("number task");
+        domain = store.load().expect("reload numbered task");
+        model.sync_from_domain(&domain);
+        let before = serde_json::to_value(&domain).unwrap();
+        let mut host = CleanupHost {
+            inspection: Some(CleanupInspection {
+                unreachable_remote: None,
+                worktree_exists: true,
+                dirty: false,
+                dirty_files: Vec::new(),
+                checked_out_elsewhere: false,
+                branch_merged: true,
+                workspace_exists: true,
+                target_matches: true,
+                warning: None,
+                base_available: true,
+            }),
+            ..CleanupHost::default()
+        };
+
+        assert_eq!(
+            offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+                .expect("no offer"),
+            CleanupOffer::None
+        );
+        assert_eq!(host.inspections, 0);
+        assert_eq!(model.popup(), BoardPopup::None);
+        assert_eq!(serde_json::to_value(&domain).unwrap(), before);
+        std::fs::remove_dir_all(dir).expect("cleanup temp store");
+    }
+}
+
+#[test]
+fn cleanup_offer_defers_to_the_archived_project_read_only_refusal() {
+    let (mut domain, mut model, id) = read_only_focus();
+    domain
+        .record_dispatch(
+            id,
+            Dispatch {
+                argv: vec!["agent".into()],
+                worktree: "/tmp/read-only".into(),
+                branch: "tsk/t1-read-only".into(),
+                base: Some("main".into()),
+                base_commit: None,
+                base_remote: None,
+                base_ref: None,
+                herdr_workspace_id: "w1".into(),
+                at: SystemTime::now(),
+                cleaned: false,
+            },
+        )
+        .expect("dispatch");
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cleanup-read-only-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("temp store");
+    let store = TaskStore::new(&dir);
+    store.save(&domain).expect("number task");
+    domain = store.load().expect("reload numbered task");
+    model.sync_from_domain(&domain);
+    let before = serde_json::to_value(&domain).unwrap();
+    let mut host = CleanupHost {
+        inspection: Some(CleanupInspection {
+            unreachable_remote: None,
+            worktree_exists: true,
+            dirty: false,
+            dirty_files: Vec::new(),
+            checked_out_elsewhere: false,
+            branch_merged: true,
+            workspace_exists: true,
+            target_matches: true,
+            warning: None,
+            base_available: true,
+        }),
+        ..CleanupHost::default()
+    };
+
+    assert_eq!(
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            .expect("read-only skips cleanup"),
+        CleanupOffer::None
+    );
+    assert_eq!(host.inspections, 0);
+    assert_eq!(model.popup(), BoardPopup::None);
+    assert_eq!(
+        apply_intent(&mut domain, &mut model, BoardIntent::Complete, None).unwrap(),
+        IntentOutcome::None
+    );
+    assert_eq!(
+        model.message(),
+        Some("project app is archived · ctrl+u unarchive")
+    );
+    assert_eq!(serde_json::to_value(&domain).unwrap(), before);
+    std::fs::remove_dir_all(dir).expect("cleanup temp store");
+}
+
+#[test]
+fn successful_popup_cleanup_saves_completion_first_and_undo_reverses_only_status() {
+    let (mut domain, _, id) = board_with_task("clean and done", HumanStatus::Started);
+    domain
+        .record_dispatch(
+            id,
+            Dispatch {
+                argv: vec!["agent".into()],
+                worktree: "/tmp/clean-and-done".into(),
+                branch: "tsk/t1-clean-and-done".into(),
+                base: None,
+                base_commit: None,
+                base_remote: None,
+                base_ref: None,
+                herdr_workspace_id: "w1".into(),
+                at: SystemTime::now(),
+                cleaned: false,
+            },
+        )
+        .expect("dispatch");
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cleanup-save-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("temp store");
+    let store = TaskStore::new(&dir);
+    store.save(&domain).expect("seed");
+    domain = store.load().expect("numbered state");
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    let mut host = CleanupHost {
+        inspection: Some(CleanupInspection {
+            unreachable_remote: None,
+            worktree_exists: true,
+            dirty: false,
+            dirty_files: Vec::new(),
+            checked_out_elsewhere: false,
+            branch_merged: false,
+            workspace_exists: true,
+            target_matches: true,
+            warning: None,
+            base_available: false,
+        }),
+        ..CleanupHost::default()
+    };
+    assert_eq!(
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host).unwrap(),
+        CleanupOffer::Prompted
+    );
+    let run = confirm_cleanup_with_host(&mut domain, &mut model, true, true, &mut host)
+        .unwrap()
+        .unwrap()
+        .run
+        .expect("y plans a run");
+    assert_eq!(run.plan[0].number, 1);
+    // Completion is durable before the worker touches anything; the cleaned marker lands
+    // in its own save when the loop applies the finished row.
+    store
+        .reload_merge_save(&mut domain)
+        .expect("completion saves first");
+    assert_eq!(host.removed, 0);
+    model.begin_cleanup_run(run);
+    let mut recovery = tsk_tui::save_recovery::SaveRecovery::new();
+    poll_cleanup_runs(
+        &store,
+        &mut domain,
+        &mut model,
+        &mut recovery,
+        true,
+        &mut host,
+    );
+    assert!(!recovery.is_pending());
+    assert_eq!(host.removed, 1);
+    let task = domain.get(id).unwrap();
+    assert_eq!(task.status, HumanStatus::Done);
+    assert!(task.dispatch.as_ref().unwrap().cleaned);
+    domain.undo().expect("undo completion");
+    let task = domain.get(id).unwrap();
+    assert_ne!(task.status, HumanStatus::Done);
+    assert!(task.dispatch.as_ref().unwrap().cleaned);
+    std::fs::remove_dir_all(dir).expect("cleanup temp store");
+}
+
+#[test]
+fn dispatched_task_page_renders_the_record_and_assigned_legend() {
+    let (mut domain, mut model, id) = board_with_task("send it", HumanStatus::Ready);
+    assert!(
+        board_verb_items(&model).iter().all(|verb| verb.key != "g"),
+        "unassigned tasks do not advertise dispatch"
+    );
+    domain
+        .assign(id, Some("implementer".into()))
+        .expect("assign task");
+    model.sync_from_domain(&domain);
+    let verbs = board_verb_items(&model);
+    assert!(
+        verbs.iter().any(|verb| verb.key == "s") && verbs.iter().all(|verb| verb.key != "g"),
+        "an assigned task starts (which dispatches) with no separate dispatch verb: {verbs:?}"
+    );
+
+    domain
+        .record_dispatch(
+            id,
+            Dispatch {
+                argv: vec!["runner".into()],
+                worktree: "/tmp/dispatch-worktree".into(),
+                branch: "tsk/t1-send-it".into(),
+                base: None,
+                base_commit: None,
+                base_remote: None,
+                base_ref: None,
+                herdr_workspace_id: "w9".into(),
+                at: SystemTime::now(),
+                cleaned: false,
+            },
+        )
+        .expect("record dispatch");
+    model.sync_from_domain(&domain);
+    let commands = model.available_commands();
+    assert!(commands.iter().any(|command| {
+        command.label == "dispatch again" && command.intent == BoardIntent::DispatchAgain
+    }));
+    assert!(commands
+        .iter()
+        .all(|command| !command.label.starts_with("dispatch to @")));
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+    let screen = rendered_board(&model, 100, 30);
+    assert!(
+        screen.contains("worktree /tmp/dispatch-worktree"),
+        "{screen}"
+    );
+    assert!(screen.contains("branch tsk/t1-send-it"), "{screen}");
+    assert!(screen.contains("when"), "{screen}");
+
+    domain
+        .record_dispatch_cleaned(id, tsk_tui::domain::CleanupOutcome::Removed)
+        .expect("mark cleaned");
+    model.sync_from_domain(&domain);
+    let cleaned = rendered_board(&model, 100, 30);
+    assert!(cleaned.contains("dispatch · cleaned"), "{cleaned}");
+    assert!(cleaned.contains("worktree removed"), "{cleaned}");
+}
+
+#[test]
+fn dispatched_task_page_hides_record_during_notes_edit_and_restores_it_in_view_mode() {
+    let (mut domain, mut model, id) = board_with_task("edit dispatched notes", HumanStatus::Ready);
+    domain
+        .assign(id, Some("implementer".into()))
+        .expect("assign task");
+    domain
+        .record_dispatch(
+            id,
+            Dispatch {
+                argv: vec!["runner".into()],
+                worktree: "/tmp/notes-edit-dispatch-worktree".into(),
+                branch: "tsk/t1-notes-edit-dispatch".into(),
+                base: None,
+                base_commit: None,
+                base_remote: None,
+                base_ref: None,
+                herdr_workspace_id: "w9".into(),
+                at: SystemTime::now(),
+                cleaned: false,
+            },
+        )
+        .expect("record dispatch");
+    model.sync_from_domain(&domain);
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+
+    let view = rendered_board(&model, 100, 30);
+    assert!(
+        view.contains("worktree /tmp/notes-edit-dispatch-worktree"),
+        "view mode should paint the dispatch record: {view}"
+    );
+
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginEditNotes, None).expect("edit notes");
+    let editing = rendered_board(&model, 100, 30);
+    assert!(
+        !editing.contains("notes-edit-dispatch-worktree")
+            && !editing.contains("branch tsk/t1-notes-edit-dispatch"),
+        "notes edit must not paint uneditable dispatch rows: {editing}"
+    );
+
+    apply_intent(&mut domain, &mut model, BoardIntent::CancelEdit, None).expect("exit notes edit");
+    let restored = rendered_board(&model, 100, 30);
+    assert!(
+        restored.contains("worktree /tmp/notes-edit-dispatch-worktree")
+            && restored.contains("branch tsk/t1-notes-edit-dispatch"),
+        "view mode should restore the dispatch record: {restored}"
+    );
+}
+
+#[test]
+fn base_picker_opens_on_cached_branches_with_a_disabled_refreshing_row_and_cancels_immediately() {
+    let repo = git_repo_with_branch("loading");
+    // An inaccessible transport exercises the picker fetch without any caller environment changes.
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["remote", "add", "origin", "ssh://127.0.0.1:1/unreachable"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    #[cfg(unix)]
+    {
+        let ssh = repo.join("delayed-ssh");
+        stub::write_stub(
+            &ssh,
+            format!(
+                "#!/bin/sh\ntouch '{}'\nsleep 10\nexit 1\n",
+                repo.join("fetch-started").display()
+            ),
+            0o755,
+        );
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["config", "core.sshCommand"])
+            .arg(&ssh)
+            .status()
+            .unwrap()
+            .success());
+    }
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "task",
+            None,
+            project(&repo.to_string_lossy()),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    let mut model = BoardModel::from_domain(&domain, Some(repo.clone()));
+    let started = std::time::Instant::now();
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
+    // Well under the fake transport's 10s, with room for a loaded machine's local Git reads.
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    // Cached refs paint at once, before the (slow, failing) fetch has returned.
+    let labels: Vec<String> = model
+        .visible_list_picker_options()
+        .into_iter()
+        .map(|(_, option)| option.label)
+        .collect();
+    assert_eq!(&labels[1..], ["dispatch", "main", REFRESHING_BRANCHES]);
+    apply_intent(&mut domain, &mut model, BoardIntent::ListPickerPrev, None).unwrap();
+    assert_eq!(
+        model.list_picker_selected(),
+        2,
+        "refreshing is not a selectable branch"
+    );
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::SelectListOption(3),
+        None,
+    )
+    .unwrap();
+    assert_eq!(model.list_picker_kind(), Some(ListPickerKind::Base));
+    assert_eq!(domain.get(id).unwrap().base, None);
+    #[cfg(unix)]
+    {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !repo.join("fetch-started").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fake SSH worker did not start"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    let cancelled = std::time::Instant::now();
+    apply_intent(&mut domain, &mut model, BoardIntent::CancelListPicker, None).unwrap();
+    assert!(cancelled.elapsed() < std::time::Duration::from_secs(3));
+    assert_eq!(model.input_mode(), BoardInputMode::Normal);
+    // Bounded worker owns this path after cancel; removing it is safe for its error result.
+    std::fs::remove_dir_all(repo).unwrap();
+}
+
+#[test]
+fn base_picker_refreshes_in_place_after_its_fetch_and_keeps_the_users_selection() {
+    let repo = git_repo_with_branch("refresh");
+    let remote = repo.with_extension("remote.git");
+    let git = |args: &[&str]| {
+        assert!(Command::new("git").args(args).status().unwrap().success());
+    };
+    git(&[
+        "clone",
+        "-q",
+        "--bare",
+        repo.to_str().unwrap(),
+        remote.to_str().unwrap(),
+    ]);
+    git(&[
+        "-C",
+        repo.to_str().unwrap(),
+        "remote",
+        "add",
+        "origin",
+        remote.to_str().unwrap(),
+    ]);
+    let mut domain = DomainState::new();
+    domain
+        .create(
+            "refresh task",
+            None,
+            project(&repo.to_string_lossy()),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    let mut model = BoardModel::from_domain(&domain, Some(repo.clone()));
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
+    let labels = |model: &BoardModel| -> Vec<String> {
+        model
+            .visible_list_picker_options()
+            .into_iter()
+            .map(|(_, option)| option.label)
+            .collect()
+    };
+    assert_eq!(
+        &labels(&model)[1..],
+        ["dispatch", "main", REFRESHING_BRANCHES]
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::ListPickerNext, None).unwrap();
+    apply_intent(&mut domain, &mut model, BoardIntent::ListPickerNext, None).unwrap();
+    await_base_picker(&mut model);
+    assert_eq!(
+        &labels(&model)[1..],
+        ["dispatch", "main", "origin/dispatch", "origin/main"]
+    );
+    assert_eq!(
+        model.selected_list_picker_option().unwrap().1.label,
+        "main",
+        "the refresh keeps the user's choice"
+    );
+
+    // Inside the fetch window a reopen is already current: no refresh row, no second fetch.
+    apply_intent(&mut domain, &mut model, BoardIntent::CancelListPicker, None).unwrap();
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
+    assert_eq!(
+        &labels(&model)[1..],
+        ["dispatch", "main", "origin/dispatch", "origin/main"]
+    );
+    std::fs::remove_dir_all(repo).unwrap();
+    std::fs::remove_dir_all(remote).unwrap();
+}
+
+#[test]
+fn base_picker_opens_on_the_tasks_current_base_and_keeps_it_through_the_refresh() {
+    let repo = git_repo_with_branch("current-base");
+    let remote = repo.with_extension("remote.git");
+    let git = |args: &[&str]| {
+        assert!(Command::new("git").args(args).status().unwrap().success());
+    };
+    git(&[
+        "clone",
+        "-q",
+        "--bare",
+        repo.to_str().unwrap(),
+        remote.to_str().unwrap(),
+    ]);
+    git(&[
+        "-C",
+        repo.to_str().unwrap(),
+        "remote",
+        "add",
+        "origin",
+        remote.to_str().unwrap(),
+    ]);
+    let mut domain = DomainState::new();
+    domain
+        .create(
+            "based task",
+            None,
+            project(&repo.to_string_lossy()),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    let id = domain.tasks()[0].id;
+    domain.set_base(id, Some("dispatch".into())).unwrap();
+    let mut model = BoardModel::from_domain(&domain, Some(repo.clone()));
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
+    assert_eq!(
+        model.selected_list_picker_option().unwrap().1.label,
+        "dispatch",
+        "cached list opens on the current base"
+    );
+    await_base_picker(&mut model);
+    assert_eq!(
+        model.selected_list_picker_option().unwrap().1.label,
+        "dispatch",
+        "the refresh keeps it"
+    );
+    std::fs::remove_dir_all(repo).unwrap();
+    std::fs::remove_dir_all(remote).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn base_picker_reports_an_offline_refresh_and_keeps_cached_branches() {
+    let repo = git_repo_with_branch("offline");
+    let upload = repo.join("failing-upload");
+    stub::write_stub(&upload, "#!/bin/sh\nexit 1\n", 0o700);
+    for args in [
+        vec!["remote", "add", "origin", repo.to_str().unwrap()],
+        vec![
+            "config",
+            "remote.origin.uploadpack",
+            upload.to_str().unwrap(),
+        ],
+    ] {
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(args)
+            .status()
+            .unwrap()
+            .success());
+    }
+    let mut domain = DomainState::new();
+    domain
+        .create(
+            "offline task",
+            None,
+            project(&repo.to_string_lossy()),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    let mut model = BoardModel::from_domain(&domain, Some(repo.clone()));
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
+    await_base_picker(&mut model);
+    let labels: Vec<String> = model
+        .visible_list_picker_options()
+        .into_iter()
+        .map(|(_, option)| option.label)
+        .collect();
+    assert_eq!(
+        &labels[1..],
+        ["dispatch", "main", tsk_tui::git_base::OFFLINE_BRANCHES]
+    );
+    std::fs::remove_dir_all(repo).unwrap();
+}
+
+#[test]
+fn base_picker_applies_one_undoable_batch_across_marked_projects() {
+    let first_repo = git_repo_with_branch("first");
+    let second_repo = git_repo_with_branch("second");
+    let mut domain = DomainState::new();
+    let first = domain
+        .create(
+            "first",
+            None,
+            project(&first_repo.to_string_lossy()),
+            ProvenanceOrigin::Manual,
+            Some("dispatch".into()),
+        )
+        .expect("create first");
+    let second = domain
+        .create(
+            "second",
+            None,
+            project(&second_repo.to_string_lossy()),
+            ProvenanceOrigin::Manual,
+            Some("dispatch".into()),
+        )
+        .expect("create second");
+    let mut model = BoardModel::from_domain(&domain, Some(first_repo.clone()));
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::SelectNavTab(NavTab::Projects),
+        None,
+    )
+    .expect("projects");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenProjectsViewPicker,
+        None,
+    )
+    .expect("open View picker");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ListPickerQueryInsertText("dispatch".into()),
+        None,
+    )
+    .expect("filter View picker");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ConfirmListPicker,
+        None,
+    )
+    .expect("open cross-project thread");
+    mark_tasks(&mut domain, &mut model, &[first, second]);
+
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None)
+        .expect("open base picker");
+    await_base_picker(&mut model);
+    assert_eq!(model.list_picker_kind(), Some(ListPickerKind::Base));
+    let labels = model
+        .visible_list_picker_options()
+        .into_iter()
+        .map(|(_, option)| option.label)
+        .collect::<Vec<_>>();
+    assert_eq!(labels.first().map(String::as_str), Some("default"));
+    assert!(labels.iter().any(|label| label == "dispatch"), "{labels:?}");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ListPickerQueryInsertText("dispatch".into()),
+        None,
+    )
+    .expect("filter branches");
+    assert_eq!(
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            None,
+        )
+        .expect("set marked base"),
+        IntentOutcome::Persist
+    );
+    assert_eq!(
+        domain.get(first).and_then(|task| task.base.as_deref()),
+        Some("dispatch")
+    );
+    assert_eq!(
+        domain.get(second).and_then(|task| task.base.as_deref()),
+        Some("dispatch")
+    );
+
+    domain
+        .undo()
+        .expect("one undo reverses the whole base batch");
+    assert_eq!(domain.get(first).expect("first").base, None);
+    assert_eq!(domain.get(second).expect("second").base, None);
+    std::fs::remove_dir_all(first_repo).expect("remove first repo");
+    std::fs::remove_dir_all(second_repo).expect("remove second repo");
+}
+
+#[test]
+fn task_edit_base_field_uses_picker_and_saves_with_the_page_session() {
+    let repo = git_repo_with_branch("edit-ring");
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "edit base",
+            None,
+            project(&repo.to_string_lossy()),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    let mut model = BoardModel::from_domain(&domain, Some(repo.clone()));
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::FocusFormField(CaptureField::Base),
+        None,
+    )
+    .expect("Base field");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
+    assert_eq!(
+        map_key(BoardInputMode::SelectBase, press(KeyCode::Enter)),
+        Some(BoardIntent::OpenBasePicker)
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None)
+        .expect("branch picker");
+    await_base_picker(&mut model);
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ListPickerQueryInsertText("dispatch".into()),
+        None,
+    )
+    .expect("filter branch");
+    assert_eq!(
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            None,
+        )
+        .expect("choose branch draft"),
+        IntentOutcome::None
+    );
+    assert_eq!(domain.get(id).expect("task").base, None);
+    assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
+    assert_eq!(
+        apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).expect("save page"),
+        IntentOutcome::Persist
+    );
+    assert_eq!(
+        domain.get(id).and_then(|task| task.base.as_deref()),
+        Some("dispatch")
+    );
+    std::fs::remove_dir_all(repo).expect("remove repo");
+}
+
+#[test]
+fn assignee_enter_opens_a_keyboard_dropdown_with_none_and_profiles() {
+    let (mut domain, mut model, id) = board_with_task("assign from dropdown", HumanStatus::Open);
+    set_agent_profiles(&mut model, &["implementer", "reviewer"]);
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::FocusFormField(CaptureField::Assignee),
+        None,
+    )
+    .expect("focus assignee");
+    let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(
+        map_task_form_key(CaptureField::Assignee, false, enter),
+        Some(BoardIntent::OpenFormDropdown(CaptureField::Assignee))
+    );
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenFormDropdown(CaptureField::Assignee),
+        None,
+    )
+    .expect("open dropdown");
+    assert_eq!(model.input_mode(), BoardInputMode::FormDropdown);
+    let rendered = rendered_board(&model, 80, 24);
+    assert!(
+        rendered.contains("none")
+            && rendered.contains("implementer")
+            && rendered.contains("reviewer"),
+        "assignee options:\n{rendered}"
+    );
+    apply_intent(&mut domain, &mut model, BoardIntent::FormDropdownNext, None)
+        .expect("highlight implementer");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::CancelFormDropdown,
+        None,
+    )
+    .expect("cancel dropdown");
+    apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).expect("save cancelled");
+    assert_eq!(domain.get(id).expect("task").assignee, None);
+
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::FocusFormField(CaptureField::Assignee),
+        None,
+    )
+    .expect("focus assignee again");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenFormDropdown(CaptureField::Assignee),
+        None,
+    )
+    .expect("reopen dropdown");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormDropdownNext, None)
+        .expect("highlight implementer again");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ConfirmFormDropdown,
+        None,
+    )
+    .expect("pick implementer");
+    assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
+    apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).expect("save");
+    assert_eq!(
+        domain.get(id).expect("task").assignee.as_deref(),
+        Some("implementer")
+    );
+}
+
+#[test]
+fn task_page_assignee_save_persists_without_changing_human_status() {
+    let (mut domain, mut model, id) = board_with_task("started", HumanStatus::Started);
+    set_agent_profiles(&mut model, &["reviewer"]);
+
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::FocusFormField(CaptureField::Assignee),
+        None,
+    )
+    .expect("focus assignee");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormAssigneeNext, None)
+        .expect("pick reviewer");
+    assert_eq!(
+        apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None)
+            .expect("save task page"),
+        IntentOutcome::Persist
+    );
+
+    let task = domain.get(id).expect("started task");
+    assert_eq!(task.assignee.as_deref(), Some("reviewer"));
+    assert_eq!(task.status, HumanStatus::Started);
+}
+
+#[test]
+fn retargeted_task_page_keeps_all_assignee_options_and_the_saved_value() {
+    let (mut domain, mut model, first) = board_with_task("first", HumanStatus::Open);
+    let second = domain
+        .create(
+            "assigned second",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create second");
+    domain
+        .assign(second, Some("reviewer".into()))
+        .expect("seed assignee");
+    model.sync_from_domain(&domain);
+    set_agent_profiles(&mut model, &["implementer", "reviewer"]);
+
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+    assert_eq!(model.selected_id(), Some(first));
+    let second_index = model
+        .visible_ids()
+        .iter()
+        .position(|id| *id == second)
+        .expect("second visible");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::FocusBoardAndSelectIndex(second_index),
+        None,
+    )
+    .expect("retarget page");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::FocusFormField(CaptureField::Assignee),
+        None,
+    )
+    .expect("edit retargeted assignee");
+    for _ in 0..3 {
+        apply_intent(&mut domain, &mut model, BoardIntent::FormAssigneeNext, None)
+            .expect("cycle full assignee ring");
+    }
+    apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None)
+        .expect("save unchanged assignee");
+
+    assert_eq!(
+        domain.get(second).expect("second").assignee.as_deref(),
+        Some("reviewer"),
+        "the retargeted form must include unassigned and both configured profiles"
+    );
 }
 
 #[test]
@@ -187,18 +1805,27 @@ fn status_verbs_target_all_marks_once_then_clear_them() {
     let outcome = apply_intent(
         &mut domain,
         &mut model,
-        BoardIntent::SetStatus(HumanStatus::Blocked),
+        BoardIntent::SetStatus(HumanStatus::Review),
         None,
     )
-    .expect("block marked set");
+    .expect("review marked set");
+    assert_eq!(
+        outcome,
+        IntentOutcome::None,
+        "the palette asks first, like ctrl+r"
+    );
+    assert_eq!(model.input_mode(), BoardInputMode::BlockCard);
+    let outcome = apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
+        .expect("confirm the review card");
     assert_eq!(outcome, IntentOutcome::Persist);
+    model.sync_from_domain(&domain);
     assert_eq!(
         domain.get(first).expect("first").status,
-        HumanStatus::Blocked
+        HumanStatus::Review
     );
     assert_eq!(
         domain.get(second).expect("second").status,
-        HumanStatus::Blocked
+        HumanStatus::Review
     );
     assert_eq!(model.marked_count(), 0, "a completed verb clears marks");
 }
@@ -232,7 +1859,11 @@ fn bulk_start_preserves_per_task_eligibility_and_toggle_verbs_are_all_or_nothing
 
     mark_tasks(&mut domain, &mut model, &[open, blocked]);
     apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None)
+        .expect("mixed set opens the block card");
+    apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
         .expect("mixed set goes blocked");
+    // The card and the marks are held until the saved tasks sync back.
+    model.sync_from_domain(&domain);
     assert!([open, blocked]
         .into_iter()
         .all(|id| domain.get(id).expect("task").status == HumanStatus::Blocked));
@@ -245,7 +1876,10 @@ fn bulk_start_preserves_per_task_eligibility_and_toggle_verbs_are_all_or_nothing
 
     mark_tasks(&mut domain, &mut model, &[open, blocked]);
     apply_intent(&mut domain, &mut model, BoardIntent::ToggleReview, None)
+        .expect("mixed set opens the review card");
+    apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
         .expect("mixed set goes review");
+    model.sync_from_domain(&domain);
     assert!([open, blocked]
         .into_iter()
         .all(|id| domain.get(id).expect("task").status == HumanStatus::Review));
@@ -261,7 +1895,8 @@ fn bulk_start_preserves_per_task_eligibility_and_toggle_verbs_are_all_or_nothing
     apply_intent(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer, None)
         .expect("open done drawer");
     mark_tasks(&mut domain, &mut model, &[open, blocked]);
-    apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None)
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None).expect("bulk block card");
+    apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
         .expect("bulk block includes a done target");
     assert!([open, blocked]
         .into_iter()
@@ -314,7 +1949,7 @@ fn bulk_start_names_skipped_done_marks_on_the_status_row() {
 }
 
 #[test]
-fn help_names_where_archived_tasks_live_and_the_group_sort_fold_keys() {
+fn help_names_archive_restore_and_the_group_sort_fold_keys() {
     let lines = tsk_tui::ui::input::help_card_lines();
     let row = |chord: &str| {
         lines
@@ -325,8 +1960,8 @@ fn help_names_where_archived_tasks_live_and_the_group_sort_fold_keys() {
     };
     let archive = row("ctrl+f");
     assert!(
-        archive.contains("restore") && archive.contains("archived: d drawer"),
-        "ctrl+f help must say where archived tasks live: {archive}"
+        archive.contains("archive / restore task"),
+        "ctrl+f help must name the whole action: {archive}"
     );
     for (chord, label) in [
         ("g", "group by"),
@@ -334,10 +1969,13 @@ fn help_names_where_archived_tasks_live_and_the_group_sort_fold_keys() {
         ("f", "fold / unfold group"),
         ("shift+F", "fold / unfold all groups"),
     ] {
-        let line = row(chord);
+        // `g` also has a task-page row (paper trail); look for the board's row.
         assert!(
-            line.contains(label),
-            "{chord} help must say {label}: {line}"
+            lines
+                .iter()
+                .any(|line| line.split_whitespace().next() == Some(chord) && line.contains(label)),
+            "{chord} help must say {label}:\n{}",
+            lines.join("\n")
         );
     }
 }
@@ -501,7 +2139,7 @@ fn bulk_delete_confirms_count_once_and_one_undo_restores_the_set() {
         .all(|id| domain.get(id).expect("task").soft_deleted));
     assert_eq!(model.marked_count(), 0);
     assert!(
-        rendered_board(&model, 80, 24).contains("deleted 2 tasks · ctrl+u restores"),
+        rendered_board(&model, 80, 24).contains("deleted 2 tasks · ctrl+u undo"),
         "bulk delete notice must name its one-step recovery"
     );
 
@@ -848,13 +2486,16 @@ fn task_page_status_verbs_stay_cursor_only_and_clear_board_marks() {
     apply_intent(
         &mut domain,
         &mut model,
-        BoardIntent::SetStatus(HumanStatus::Blocked),
+        BoardIntent::SetStatus(HumanStatus::Review),
         None,
     )
     .expect("apply status from task page");
+    apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
+        .expect("confirm the review card");
+    model.sync_from_domain(&domain);
     assert_eq!(
         domain.get(cursor).expect("cursor").status,
-        HumanStatus::Blocked
+        HumanStatus::Review
     );
     assert_eq!(
         domain.get(marked).expect("marked").status,
@@ -966,7 +2607,7 @@ fn space_on_todo_sets_doing_via_domain() {
         Some(HumanStatus::Started)
     );
     assert!(
-        board_intent_may_persist(&BoardIntent::PrimaryVerb),
+        board_intent_may_persist(&model, &BoardIntent::PrimaryVerb),
         "PrimaryVerb must load a save baseline when it can mutate"
     );
 }
@@ -1034,8 +2675,8 @@ fn d_completes_non_done_and_o_reopens_done() {
     assert_eq!(outcome, IntentOutcome::Persist);
     assert_eq!(domain.get(id).expect("task").status, HumanStatus::Open);
 
-    assert!(board_intent_may_persist(&BoardIntent::Complete));
-    assert!(board_intent_may_persist(&BoardIntent::Reopen));
+    assert!(board_intent_may_persist(&model, &BoardIntent::Complete));
+    assert!(board_intent_may_persist(&model, &BoardIntent::Reopen));
 }
 
 #[test]
@@ -1056,7 +2697,7 @@ fn b_on_blocked_sets_todo_and_keeps_task_on_deck_not_in_motion() {
         .sections
         .iter()
         .any(|section| section.kind == SectionKind::InMotion && section.task_ids.contains(&id)));
-    assert!(board_intent_may_persist(&BoardIntent::ToggleBlock));
+    assert!(board_intent_may_persist(&model, &BoardIntent::ToggleBlock));
 }
 
 #[test]
@@ -1069,7 +2710,11 @@ fn b_blocks_todo_doing_and_review() {
         let (mut domain, mut model, id) = board_with_task("block me", status);
 
         let outcome =
-            apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None).expect("block");
+            apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None).expect("card");
+        assert_eq!(outcome, IntentOutcome::None, "blocking asks why first");
+        assert_eq!(model.input_mode(), BoardInputMode::BlockCard, "{status:?}");
+        let outcome = apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
+            .expect("block");
 
         assert_eq!(outcome, IntentOutcome::Persist, "{status:?}");
         assert_eq!(
@@ -1099,7 +2744,10 @@ fn enter_opens_the_task_page_and_enter_again_closes_it_without_mutating() {
     assert_eq!(outcome, IntentOutcome::None);
     assert_eq!(model.input_mode(), BoardInputMode::Normal);
     assert_eq!(domain.get(id).expect("task").revision, rev_before);
-    assert!(!board_intent_may_persist(&BoardIntent::OpenTaskPage));
+    assert!(!board_intent_may_persist(
+        &model,
+        &BoardIntent::OpenTaskPage
+    ));
 }
 
 #[test]
@@ -1131,8 +2779,11 @@ fn right_arrow_peeks_detail_and_left_arrow_collapses_it() {
     assert_eq!(model.detail_open(), None);
     assert_eq!(domain.get(id).expect("task").revision, rev_before);
 
-    assert!(!board_intent_may_persist(&BoardIntent::PeekDetail));
-    assert!(!board_intent_may_persist(&BoardIntent::CollapseDetail));
+    assert!(!board_intent_may_persist(&model, &BoardIntent::PeekDetail));
+    assert!(!board_intent_may_persist(
+        &model,
+        &BoardIntent::CollapseDetail
+    ));
 }
 
 #[test]
@@ -1272,7 +2923,7 @@ fn t64_ctrl_q_quits_every_non_editor_mode_and_stays_inert_in_editors_and_recover
         BoardInputMode::CapturePage,
         BoardInputMode::SelectThread,
         BoardInputMode::EditScope,
-        BoardInputMode::FormScopeDropdown,
+        BoardInputMode::FormDropdown,
         BoardInputMode::LaunchCard,
         BoardInputMode::ProjectPicker,
         BoardInputMode::ListPicker,
@@ -1503,7 +3154,11 @@ fn palette_lists_exactly_m1_commands_for_selection_filters_by_subsequence_and_di
     .expect("open palette");
     assert_eq!(model.command_surface(), CommandSurface::Palette);
 
-    let labels: Vec<&str> = model.visible_commands().iter().map(|c| c.label).collect();
+    let labels: Vec<String> = model
+        .visible_commands()
+        .iter()
+        .map(|c| c.label.clone())
+        .collect();
     let expected = [
         "set status: ready",
         "set status: open",
@@ -1511,15 +3166,18 @@ fn palette_lists_exactly_m1_commands_for_selection_filters_by_subsequence_and_di
         "set status: blocked",
         "set status: review",
         "edit notes",
-        "change scope",
-        "new task",
-        "delete",
+        "move to project / desk",
+        "set assignee",
+        "set base",
+        "set after (wait for)…",
+        "add task",
+        "delete task",
         "undo",
-        "done drawer",
+        "show / hide done drawer",
         "group by…",
         "sort by…",
         "fold / unfold group",
-        "help",
+        "show all keys",
         "quit",
     ];
     assert_eq!(
@@ -1527,7 +3185,7 @@ fn palette_lists_exactly_m1_commands_for_selection_filters_by_subsequence_and_di
         "palette catalog with a selection must match exactly"
     );
     assert!(
-        labels.contains(&"set status: open"),
+        labels.iter().any(|label| label == "set status: open"),
         "a ready selection offers the absolute inbox status"
     );
 
@@ -1541,7 +3199,11 @@ fn palette_lists_exactly_m1_commands_for_selection_filters_by_subsequence_and_di
         )
         .expect("type");
     }
-    let filtered: Vec<&str> = model.visible_commands().iter().map(|c| c.label).collect();
+    let filtered: Vec<String> = model
+        .visible_commands()
+        .iter()
+        .map(|c| c.label.clone())
+        .collect();
     assert_eq!(filtered, vec!["set status: started"]);
     // Substring-only would need the contiguous run "ssg"; none of the labels contain it.
     assert!(
@@ -1759,7 +3421,7 @@ fn help_card_lists_every_binding_scrolls_and_closes_on_esc() {
         "TASK ACTIONS",
         "CREATE & EDIT",
         "VIEWS & FIND",
-        "SURFACE CONTROLS",
+        "PICKERS & EDITING",
         "APP CONTROLS",
     ] {
         assert!(
@@ -1771,14 +3433,14 @@ fn help_card_lists_every_binding_scrolls_and_closes_on_esc() {
     for (chord, action) in [
         ("ctrl+x / ctrl+delete", "delete"),
         ("ctrl+c", "cancel editing"),
-        ("ctrl+e", "line end (text input)"),
-        ("ctrl+←", "word left (text input)"),
-        ("home", "line start (text input)"),
-        ("backspace", "delete backward (text input)"),
+        ("ctrl+e", "go to line end (text input)"),
+        ("ctrl+←", "move one word left (text input)"),
+        ("home", "go to line start (text input)"),
+        ("backspace", "delete previous character (text input)"),
         ("q", "close project picker"),
-        ("y", "unarchive launch project"),
+        ("y", "unarchive this project (launch prompt)"),
         ("r / enter", "retry failed save"),
-        ("↑↓ / page keys", "scroll Help"),
+        ("↑↓ / page keys", "scroll (Help)"),
     ] {
         assert!(
             lines
@@ -1916,7 +3578,7 @@ fn help_card_lists_every_binding_scrolls_and_closes_on_esc() {
         .expect("clear scroll query");
     }
     let mut scrolled_help = rendered_board(&scroll_model, 40, 10);
-    for _ in 0..200 {
+    for _ in 0..300 {
         apply_intent(
             &mut domain,
             &mut scroll_model,
@@ -1931,7 +3593,7 @@ fn help_card_lists_every_binding_scrolls_and_closes_on_esc() {
         "wrapped rows must extend the scroll horizon"
     );
     assert!(
-        scrolled_help.contains("ctrl+q") && scrolled_help.contains("quit"),
+        scrolled_help.contains("clear search"),
         "the wrapped tail must remain reachable:\n{scrolled_help}"
     );
     assert!(
@@ -1967,7 +3629,7 @@ fn help_card_lists_every_binding_scrolls_and_closes_on_esc() {
     for mode in [
         BoardInputMode::SelectThread,
         BoardInputMode::EditScope,
-        BoardInputMode::FormScopeDropdown,
+        BoardInputMode::FormDropdown,
     ] {
         assert_eq!(
             map_key(mode, press(KeyCode::Char('?'))),
@@ -2618,8 +4280,11 @@ fn page_verbs_act_on_the_page_task_and_the_page_stays_open() {
 
     // `b` blocks, `b` again unblocks.
     let block = map_key(BoardInputMode::TaskPage, ctrl(KeyCode::Char('b'))).expect("b");
-    apply_intent(&mut domain, &mut model, block.clone(), None).expect("block");
+    apply_intent(&mut domain, &mut model, block.clone(), None).expect("block card");
+    apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None).expect("block");
+    model.sync_from_domain(&domain);
     assert_eq!(domain.get(id).expect("task").status, HumanStatus::Blocked);
+    assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
     apply_intent(&mut domain, &mut model, block, None).expect("unblock");
     assert_eq!(domain.get(id).expect("task").status, HumanStatus::Ready);
 }
@@ -2690,7 +4355,7 @@ fn page_scroll_intents_are_session_only_and_bounded() {
     for intent in [BoardIntent::PageScrollUp, BoardIntent::PageScrollDown] {
         let outcome = apply_intent(&mut domain, &mut model, intent.clone(), None).expect("scroll");
         assert_eq!(outcome, IntentOutcome::None);
-        assert!(!board_intent_may_persist(&intent));
+        assert!(!board_intent_may_persist(&model, &intent));
     }
     // Far more downs than the notes have lines must stay bounded and mutation-free.
     for _ in 0..50 {
@@ -3115,6 +4780,8 @@ fn view_tab_selection_wraps_without_starting_task_edit_and_ctrl_e_opens_inline_s
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
         .expect("Tab selects add target");
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("Tab selects the paper trail heading");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
         .expect("Tab wraps to first");
     assert!(rendered_board(&model, 80, 24).contains("▸ ▪ first step"));
     assert!(!model.task_editing(), "wrapping remains task view mode");
@@ -3166,7 +4833,16 @@ fn view_tab_selection_wraps_without_starting_task_edit_and_ctrl_e_opens_inline_s
         .expect("Tab reaches the trailing add target after the final step");
     assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
-        .expect("Tab leaves the add target for Thread");
+        .expect("Tab leaves the add target for Assignee");
+    assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("Tab leaves Assignee for Base");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("Tab leaves Base for After");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectAfter);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("Tab leaves After for Thread");
     assert_eq!(model.input_mode(), BoardInputMode::SelectThread);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
         .expect("Tab leaves Thread for Scope");
@@ -3193,7 +4869,7 @@ fn plain_enter_parks_an_existing_step_rename_without_saving_the_task_session() {
 }
 
 #[test]
-fn task_edit_tab_cycles_every_step_between_notes_and_thread_then_scope() {
+fn task_edit_tab_cycles_every_step_before_assignee_thread_and_scope() {
     let (mut domain, mut model, _) = board_with_steps("Tab fields", None, &["first", "second"]);
     assert!(rendered_board(&model, 80, 24).contains("▸ ▪ first"));
 
@@ -3205,7 +4881,16 @@ fn task_edit_tab_cycles_every_step_between_notes_and_thread_then_scope() {
         .expect("Tab reaches the add target after the final step");
     assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
-        .expect("Tab leaves the add target for Thread");
+        .expect("Tab leaves the add target for Assignee");
+    assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("Tab leaves Assignee for Base");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("Tab leaves Base for After");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectAfter);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("Tab leaves After for Thread");
     assert_eq!(model.input_mode(), BoardInputMode::SelectThread);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
         .expect("Tab reaches Scope");
@@ -3374,19 +5059,30 @@ fn ctrl_d_with_a_step_selected_completes_the_task_and_enter_toggles_the_step() {
     assert_eq!(dones, vec![false, false, false], "no step flipped");
 }
 
-/// `ctrl+r` walks review ↔ ready and rides the persist path; a done task refuses.
+/// `ctrl+r` opens the review card (an empty Enter puts the work up for review at once), on a
+/// task in review returns it to ready, and rides the persist path; a done task refuses.
 #[test]
 fn ctrl_r_toggles_review_and_ready_and_refuses_on_done() {
     let (mut domain, mut model, id) = board_with_task("Review me", HumanStatus::Ready);
     let review = map_key(BoardInputMode::Normal, ctrl(KeyCode::Char('r'))).expect("ctrl+r");
     assert_eq!(review, BoardIntent::ToggleReview);
     assert!(
-        board_intent_may_persist(&review),
+        board_intent_may_persist(&model, &review),
         "review is a durable status change"
     );
 
-    let outcome = apply_intent(&mut domain, &mut model, review.clone(), None).expect("to review");
+    let outcome = apply_intent(&mut domain, &mut model, review.clone(), None).expect("card");
+    assert_eq!(outcome, IntentOutcome::None, "the card asks first");
+    assert_eq!(model.input_mode(), BoardInputMode::BlockCard);
+    let outcome = apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
+        .expect("to review");
     assert_eq!(outcome, IntentOutcome::Persist);
+    model.sync_from_domain(&domain);
+    assert_eq!(
+        model.input_mode(),
+        BoardInputMode::Normal,
+        "the card closed"
+    );
     assert_eq!(domain.get(id).expect("task").status, HumanStatus::Review);
 
     // Review lives in NEEDS YOU, so the row stays selected and the bar keeps done/block.
@@ -3399,7 +5095,10 @@ fn ctrl_r_toggles_review_and_ready_and_refuses_on_done() {
     for from in [HumanStatus::Started, HumanStatus::Blocked] {
         domain.set_status(id, from).expect("seed status");
         model.sync_from_domain(&domain);
-        apply_intent(&mut domain, &mut model, review.clone(), None).expect("to review");
+        apply_intent(&mut domain, &mut model, review.clone(), None).expect("card");
+        apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
+            .expect("to review");
+        model.sync_from_domain(&domain);
         assert_eq!(
             domain.get(id).expect("task").status,
             HumanStatus::Review,
@@ -3878,7 +5577,7 @@ fn page_scroll_up_reverses_the_shared_content_region() {
     apply_intent(&mut domain, &mut model, BoardIntent::PageScrollUp, None).expect("scroll up");
     let up = rendered_board(&model, 80, 24);
     assert_ne!(down, up, "Up must move the shared body back");
-    assert!(up.contains("Deactivate witness") && up.contains("created"));
+    assert!(up.contains("Deactivate witness") && up.contains("⎇ default"));
 }
 
 /// T-10 (AC-17, AC-18, AC-26): keys own the active cursor before they move the
@@ -4706,7 +6405,7 @@ fn archived_group_is_collapsed_on_a_fresh_model_and_a_click_or_arrows_on_the_hea
 }
 
 #[test]
-fn ctrl_f_archives_the_selected_task_keeping_status_and_pushing_no_undo() {
+fn ctrl_f_archives_the_selected_task_keeping_status_and_ctrl_u_brings_it_back() {
     let mut domain = DomainState::new();
     let b = domain
         .create(
@@ -4740,7 +6439,8 @@ fn ctrl_f_archives_the_selected_task_keeping_status_and_pushing_no_undo() {
         "the archived row leaves the working lens"
     );
 
-    // Select the remaining row and undo: nothing about A may change (AC-7).
+    // Undo right after, with the cursor on another row, brings A back (#173): the archive is
+    // the top undo entry, and the row names the task it is about.
     let b_index = model
         .visible_ids()
         .iter()
@@ -4756,16 +6456,17 @@ fn ctrl_f_archives_the_selected_task_keeping_status_and_pushing_no_undo() {
     assert_eq!(model.selected_id(), Some(b));
     apply_intent(&mut domain, &mut model, BoardIntent::Undo, None).expect("undo");
     let task_a = domain.get(a).expect("task a");
-    assert!(
-        task_a.archived,
-        "archive pushes no undo entry, so undo cannot touch A"
-    );
-    assert_eq!(task_a.status, HumanStatus::Review);
+    assert!(!task_a.archived, "ctrl+u right after ctrl+f unarchives A");
+    assert_eq!(task_a.status, HumanStatus::Review, "human status is kept");
+    // Unsaved tasks carry no number yet; the app tests check the T number once saved.
+    assert_eq!(model.message(), Some("archive undone · a task"));
     assert_eq!(
         domain.get(b).expect("task b").status,
         HumanStatus::Open,
-        "the empty-stack undo is a no-op"
+        "the undo is about A only"
     );
+    apply_intent(&mut domain, &mut model, BoardIntent::Undo, None).expect("second undo");
+    assert_eq!(model.message(), Some("nothing to undo"));
 }
 
 #[test]
@@ -5906,6 +7607,163 @@ fn shift_enter_on_add_keeps_a_dirty_title() {
     assert!(!model.task_editing());
 }
 
+#[test]
+fn expanded_capture_base_picker_stages_and_clears_base_without_editing_the_board_task() {
+    let repo = git_repo_with_branch("capture-base-picker");
+    for (title, query, expected) in [
+        ("Captured branch", "dispatch", Some("dispatch")),
+        ("Captured default !b dispatch", "default", None),
+    ] {
+        let mut domain = DomainState::new();
+        let existing = domain
+            .create(
+                "existing",
+                None,
+                project(&repo.to_string_lossy()),
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .unwrap();
+        domain.set_status(existing, HumanStatus::Ready).unwrap();
+        let mut model = BoardModel::from_domain(&domain, Some(repo.clone()));
+        let snapshot = InvocationSnapshot {
+            default_scope: project(&repo.to_string_lossy()),
+            this_repo: Some(repo.clone()),
+            title_prefill: None,
+            provenance: ProvenanceOrigin::Capture,
+        };
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenCapture,
+            Some(&snapshot),
+        )
+        .unwrap();
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::QuickAddInsertText(title.into()),
+            None,
+        )
+        .unwrap();
+        apply_intent(&mut domain, &mut model, BoardIntent::ExpandQuickAdd, None).unwrap();
+        for _ in 0..3 {
+            apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).unwrap();
+        }
+        assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
+        let before = serde_json::to_value(&domain).unwrap();
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
+        await_base_picker(&mut model);
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ListPickerQueryInsertText(query.into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            apply_intent(
+                &mut domain,
+                &mut model,
+                BoardIntent::ConfirmListPicker,
+                None
+            )
+            .unwrap(),
+            IntentOutcome::None
+        );
+        assert_eq!(serde_json::to_value(&domain).unwrap(), before);
+        assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
+        assert_eq!(
+            apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).unwrap(),
+            IntentOutcome::Persist
+        );
+        let captured = domain
+            .tasks()
+            .iter()
+            .find(|task| task.id != existing)
+            .unwrap();
+        assert_eq!(captured.base.as_deref(), expected);
+        assert_eq!(domain.get(existing).unwrap().base, None);
+    }
+    std::fs::remove_dir_all(repo).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn base_picker_reopen_reuses_one_in_flight_worker_for_the_project() {
+    let repo = git_repo_with_branch("reopen-single-worker");
+    let ssh = repo.join("counted-ssh");
+    let counter = repo.join("fetch-count");
+    let release = repo.join("fetch-release");
+    // The transport holds until the reopen loop ends, so the first fetch cannot finish
+    // mid-loop and let a later reopen rightly start a fresh one.
+    stub::write_stub(
+        &ssh,
+        format!(
+            "#!/bin/sh\nprintf 'fetch\\n' >> '{}'\nwhile [ ! -f '{}' ]; do sleep 0.05; done\nexit 1\n",
+            counter.display(),
+            release.display()
+        ),
+        0o755,
+    );
+    for args in [
+        vec!["remote", "add", "origin", "ssh://127.0.0.1:1/unreachable"],
+        vec!["config", "ssh.variant", "ssh"],
+        vec!["config", "core.sshCommand", ssh.to_str().unwrap()],
+    ] {
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(args)
+            .status()
+            .unwrap()
+            .success());
+    }
+    let mut domain = DomainState::new();
+    domain
+        .create(
+            "picker task",
+            None,
+            project(&repo.to_string_lossy()),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    let mut model = BoardModel::from_domain(&domain, Some(repo.clone()));
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
+    // Only bounds a failure: a loaded machine can take seconds to reach the transport.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !counter.exists() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    for _ in 0..8 {
+        apply_intent(&mut domain, &mut model, BoardIntent::CancelListPicker, None).unwrap();
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
+    }
+    std::fs::write(&release, "").unwrap();
+    while model
+        .visible_list_picker_options()
+        .iter()
+        .any(|(_, option)| option.label == REFRESHING_BRANCHES)
+    {
+        assert!(std::time::Instant::now() < deadline);
+        model.poll_base_picker_results();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // Let any incorrectly detached duplicate worker reach the transport too.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(
+        std::fs::read_to_string(&counter).unwrap().lines().count(),
+        1
+    );
+    assert!(model
+        .visible_list_picker_options()
+        .iter()
+        .any(|(_, option)| option.label == "dispatch"));
+    std::fs::remove_dir_all(repo).unwrap();
+}
+
 /// GitHub #178: Windows reports AltGr as Ctrl+Alt, so a German layout's `AltGr+8` arrives as
 /// `[` with both modifiers. Every text field must insert it.
 #[test]
@@ -6356,5 +8214,779 @@ fn altgr_insertion_leaves_ctrl_alt_and_super_chords_alone() {
     assert_eq!(
         map_key(BoardInputMode::EditNotes, ctrl(KeyCode::Char('c'))),
         Some(BoardIntent::CancelEdit)
+    );
+}
+
+/// Undo the top entry from the board and say whether it took.
+fn board_undo(domain: &mut DomainState, model: &mut BoardModel) {
+    assert_eq!(
+        apply_intent(domain, model, BoardIntent::Undo, None).expect("ctrl+u"),
+        IntentOutcome::Persist
+    );
+}
+
+/// Every status verb on the board is one undo step that restores the status it left
+/// (#173 finding 4): a plain start, ready, open, and toggling a block or review off.
+#[test]
+fn ctrl_u_after_a_status_verb_restores_the_status_it_left() {
+    let cases = [
+        (
+            HumanStatus::Open,
+            BoardIntent::PrimaryVerb,
+            HumanStatus::Started,
+        ),
+        (
+            HumanStatus::Ready,
+            BoardIntent::PrimaryVerb,
+            HumanStatus::Started,
+        ),
+        (
+            HumanStatus::Started,
+            BoardIntent::SetStatus(HumanStatus::Ready),
+            HumanStatus::Ready,
+        ),
+        (
+            HumanStatus::Ready,
+            BoardIntent::SetStatus(HumanStatus::Open),
+            HumanStatus::Open,
+        ),
+        (
+            HumanStatus::Open,
+            BoardIntent::SetStatus(HumanStatus::Started),
+            HumanStatus::Started,
+        ),
+        (HumanStatus::Started, BoardIntent::Reopen, HumanStatus::Open),
+        (
+            HumanStatus::Blocked,
+            BoardIntent::ToggleBlock,
+            HumanStatus::Ready,
+        ),
+        (
+            HumanStatus::Review,
+            BoardIntent::ToggleReview,
+            HumanStatus::Ready,
+        ),
+    ];
+    for (before, intent, after) in cases {
+        let (mut domain, mut model, id) = board_with_task("status witness", before);
+        assert_eq!(
+            apply_intent(&mut domain, &mut model, intent.clone(), None).expect("status verb"),
+            IntentOutcome::Persist,
+            "{intent:?} from {before:?}"
+        );
+        assert_eq!(domain.get(id).expect("task").status, after);
+        board_undo(&mut domain, &mut model);
+        assert_eq!(
+            domain.get(id).expect("task").status,
+            before,
+            "ctrl+u after {intent:?} from {before:?}"
+        );
+    }
+}
+
+/// Undoing an unblock reopens the very block it closed, reasons and all.
+#[test]
+fn ctrl_u_after_an_unblock_reopens_the_block_it_closed() {
+    let (mut domain, mut model, id) = board_with_task("blocked witness", HumanStatus::Open);
+    domain
+        .block(
+            id,
+            tsk_tui::domain::BlockDraft {
+                why: Some("needs the API key".into()),
+                ..Default::default()
+            },
+            "you",
+        )
+        .expect("block");
+    model.sync_from_domain(&domain);
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None).expect("unblock");
+    assert!(domain.get(id).expect("task").block.is_none());
+    board_undo(&mut domain, &mut model);
+    let task = domain.get(id).expect("task");
+    assert_eq!(task.status, HumanStatus::Blocked);
+    assert_eq!(
+        task.block.as_ref().and_then(|block| block.why.as_deref()),
+        Some("needs the API key")
+    );
+}
+
+/// A marked status verb is one batch undo entry: one ctrl+u puts every task back to the
+/// status it left, and a task the verb did not move stays as it is.
+#[test]
+fn ctrl_u_after_a_marked_status_verb_restores_each_status_as_one_step() {
+    let marked_cases = [
+        BoardIntent::SetStatus(HumanStatus::Ready),
+        BoardIntent::SetStatus(HumanStatus::Open),
+        BoardIntent::PrimaryVerb,
+        BoardIntent::Reopen,
+    ];
+    for intent in marked_cases {
+        let (mut domain, mut model, first) = board_with_task("first", HumanStatus::Open);
+        let mut ids = vec![first];
+        for (title, status) in [
+            ("second", HumanStatus::Ready),
+            ("third", HumanStatus::Started),
+        ] {
+            let id = domain
+                .create(
+                    title,
+                    None,
+                    project(THIS_REPO),
+                    ProvenanceOrigin::Manual,
+                    None,
+                )
+                .expect("create");
+            domain.set_status(id, status).expect("status");
+            ids.push(id);
+        }
+        model.sync_from_domain(&domain);
+        let statuses = |domain: &DomainState| -> Vec<HumanStatus> {
+            ids.iter()
+                .map(|id| domain.get(*id).expect("task").status)
+                .collect()
+        };
+        let before = statuses(&domain);
+        mark_tasks(&mut domain, &mut model, &ids);
+        assert_eq!(
+            apply_intent(&mut domain, &mut model, intent.clone(), None).expect("marked verb"),
+            IntentOutcome::Persist,
+            "{intent:?}"
+        );
+        assert_ne!(statuses(&domain), before, "{intent:?} moves the set");
+        let stack = serde_json::to_value(&domain).expect("state")["undo_stack"].clone();
+        assert!(
+            stack
+                .as_array()
+                .and_then(|stack| stack.last())
+                .is_some_and(|entry| entry.get("batch").is_some()),
+            "{intent:?} on a marked set is one batch entry: {stack}"
+        );
+        board_undo(&mut domain, &mut model);
+        assert_eq!(
+            statuses(&domain),
+            before,
+            "one ctrl+u after a marked {intent:?}"
+        );
+    }
+}
+
+fn step_view(domain: &DomainState, id: uuid::Uuid) -> Vec<(String, bool)> {
+    domain
+        .get(id)
+        .expect("task")
+        .steps
+        .iter()
+        .map(|step| (step.text.clone(), step.done))
+        .collect()
+}
+
+/// Ticking and unticking a step are each one undo step on the task page (#173 finding 4).
+#[test]
+fn ctrl_u_on_the_page_reverts_a_step_tick_and_an_untick() {
+    let (mut domain, mut model, id) =
+        board_with_steps("Tick witness", None, &["alpha step", "bravo step"]);
+    apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("leave edit");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("select first step");
+    let untouched = step_view(&domain, id);
+
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleStep, None).expect("tick");
+    assert!(domain.get(id).expect("task").steps[0].done);
+    let ticked = step_view(&domain, id);
+    board_undo(&mut domain, &mut model);
+    assert_eq!(step_view(&domain, id), untouched, "ctrl+u unticks");
+    assert!(
+        rendered_board(&model, 80, 24).contains("steps 0/2"),
+        "the page follows the undo"
+    );
+
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleStep, None).expect("tick again");
+    assert_eq!(step_view(&domain, id), ticked);
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleStep, None).expect("untick");
+    assert_eq!(step_view(&domain, id), untouched);
+    board_undo(&mut domain, &mut model);
+    assert_eq!(step_view(&domain, id), ticked, "ctrl+u ticks it back");
+}
+
+/// Removing a step (ctrl+x twice) is one undo step that puts it back in place.
+#[test]
+fn ctrl_u_on_the_page_restores_a_removed_step() {
+    let (mut domain, mut model, id) =
+        board_with_steps("Remove witness", None, &["alpha step", "bravo step"]);
+    apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("leave edit");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("select first step");
+    let before = step_view(&domain, id);
+    apply_intent(&mut domain, &mut model, BoardIntent::SoftDelete, None).expect("mark step");
+    assert_eq!(
+        apply_intent(&mut domain, &mut model, BoardIntent::SoftDelete, None).expect("remove"),
+        IntentOutcome::Persist
+    );
+    assert_eq!(step_view(&domain, id).len(), 1);
+    board_undo(&mut domain, &mut model);
+    assert_eq!(step_view(&domain, id), before);
+    assert!(
+        !domain.get(id).expect("task").soft_deleted,
+        "the task is untouched"
+    );
+}
+
+/// Adding a step is one undo step that takes it away again.
+#[test]
+fn ctrl_u_on_the_page_takes_back_an_added_step() {
+    let (mut domain, mut model, id) = board_with_steps("Add witness", None, &["alpha step"]);
+    apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("leave edit");
+    let before = step_view(&domain, id);
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginAddStep, None).expect("add step");
+    for character in "zed step".chars() {
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsert(character),
+            None,
+        )
+        .expect("type");
+    }
+    apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).expect("save step");
+    assert_eq!(step_view(&domain, id).len(), 2);
+    apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close editor");
+    board_undo(&mut domain, &mut model);
+    assert_eq!(step_view(&domain, id), before);
+}
+
+/// New step text is one undo step that restores the old text.
+#[test]
+fn ctrl_u_on_the_page_restores_a_step_s_old_text() {
+    let (mut domain, mut model, id) =
+        board_with_steps("Rename witness", None, &["alpha step", "bravo step"]);
+    apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("leave edit");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+        .expect("select first step");
+    let before = step_view(&domain, id);
+    let edit = map_key(BoardInputMode::TaskPage, ctrl(KeyCode::Char('e'))).expect("ctrl+e");
+    apply_intent(&mut domain, &mut model, edit, None).expect("edit step");
+    apply_intent(&mut domain, &mut model, BoardIntent::EditInsert('!'), None).expect("type");
+    let save = map_key(model.input_mode(), shift(KeyCode::Enter)).expect("shift+enter");
+    apply_intent(&mut domain, &mut model, save, None).expect("rename step");
+    model.sync_from_domain(&domain);
+    assert_eq!(domain.get(id).expect("task").steps[0].text, "alpha step!");
+    board_undo(&mut domain, &mut model);
+    assert_eq!(step_view(&domain, id), before);
+    assert_eq!(domain.get(id).expect("task").title, "Rename witness");
+}
+
+static UNDO_STATE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// #173 finding 3: archiving a task changes it, so the completion's undo entry is stale. The
+/// refusal names the task the way the board paints it, says what went stale and why, and
+/// never prints a uuid.
+#[test]
+fn undo_after_archiving_a_completed_task_names_the_task_and_the_archive() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    let seq = UNDO_STATE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("tsk-verbs-stale-undo-{nanos}-{seq}"));
+    std::fs::create_dir_all(&dir).expect("state dir");
+    let _guard = TempDirGuard(dir.clone());
+    let store = tsk_tui::store::TaskStore::new(&dir);
+
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "archive me",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    domain
+        .set_status(id, HumanStatus::Started)
+        .expect("start the task");
+    // The persistence boundary assigns the public number the refusal must name.
+    store.save(&domain).expect("save");
+    let mut domain = store.load().expect("load numbered task");
+    let number = domain.get(id).and_then(|task| task.number).expect("number");
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    assert_eq!(model.selected_id(), Some(id), "the only task is selected");
+
+    apply_intent(&mut domain, &mut model, BoardIntent::Complete, None).expect("ctrl+d");
+    assert_eq!(domain.get(id).expect("task").status, HumanStatus::Done);
+    domain.archive_task(id).expect("ctrl+f archives the task");
+    model.sync_from_domain(&domain);
+
+    let outcome = apply_intent(&mut domain, &mut model, BoardIntent::Undo, None).expect("ctrl+u");
+    assert_eq!(
+        outcome,
+        IntentOutcome::None,
+        "a refused undo persists nothing"
+    );
+    let task = domain.get(id).expect("task");
+    assert!(task.archived, "the refused undo leaves the task archived");
+    assert_eq!(task.status, HumanStatus::Done, "and done");
+
+    let expected = format!("T{number} changed since it was completed (archived); nothing undone");
+    assert_eq!(model.message(), Some(expected.as_str()));
+    let row = board_chrome_row(&model, (80, 24));
+    assert!(
+        row.contains(&expected),
+        "painted on the status row: {row:?}"
+    );
+    assert!(
+        !row.contains(&id.to_string()),
+        "the board never prints a task uuid: {row:?}"
+    );
+}
+
+struct TempDirGuard(PathBuf);
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// #173 finding 5: an existing step emptied in a task edit is refused like a new empty step:
+/// on its own row, with its editor open, and nothing saved. Both routes are covered: saving
+/// from inside the step editor, and saving after the emptied draft was parked.
+#[test]
+fn emptied_existing_step_is_refused_on_its_row_and_its_editor_stays_open() {
+    for park_first in [false, true] {
+        let (mut domain, mut model, id) =
+            board_with_steps("Empty rename witness", None, &["alpha step", "bravo step"]);
+        apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None)
+            .expect("open the selected step");
+        assert_eq!(model.input_mode(), BoardInputMode::EditStep);
+        for _ in "alpha step".chars() {
+            apply_intent(&mut domain, &mut model, BoardIntent::EditBackspace, None)
+                .expect("delete the step text");
+        }
+        if park_first {
+            let enter = map_key(model.input_mode(), press(KeyCode::Enter)).expect("enter");
+            apply_intent(&mut domain, &mut model, enter, None).expect("park the empty draft");
+            assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+        }
+        // A parked edit session routes keys through the form mapper, as the app does.
+        let save = if park_first {
+            let focus = model.form_focus().expect("task form focus");
+            map_task_form_key(focus, false, shift(KeyCode::Enter))
+        } else {
+            map_key(model.input_mode(), shift(KeyCode::Enter))
+        }
+        .expect("shift+enter");
+        let outcome = apply_intent(&mut domain, &mut model, save, None)
+            .expect("an emptied step is refused, not propagated");
+        assert_eq!(outcome, IntentOutcome::None, "park_first={park_first}");
+        assert_eq!(
+            model.input_mode(),
+            BoardInputMode::EditStep,
+            "the emptied step's editor is open (park_first={park_first})"
+        );
+        assert_eq!(
+            model.message(),
+            None,
+            "the refusal is not a status-row message (park_first={park_first})"
+        );
+        let refused = rendered_board(&model, 80, 24);
+        assert!(
+            refused
+                .lines()
+                .any(|row| row.contains("step…") && row.contains("text required")),
+            "the refusal paints on the step's own row (park_first={park_first}):\n{refused}"
+        );
+        assert_eq!(domain.get(id).expect("task").steps[0].text, "alpha step");
+
+        for ch in "zed".chars() {
+            apply_intent(&mut domain, &mut model, BoardIntent::EditInsert(ch), None)
+                .expect("type into the reopened editor");
+        }
+        let save = map_key(model.input_mode(), shift(KeyCode::Enter)).expect("shift+enter");
+        let outcome = apply_intent(&mut domain, &mut model, save, None).expect("save");
+        assert_eq!(outcome, IntentOutcome::Persist, "park_first={park_first}");
+        let task = domain.get(id).expect("task");
+        assert_eq!(task.steps[0].text, "zed", "park_first={park_first}");
+        assert_eq!(task.steps[1].text, "bravo step");
+    }
+}
+
+/// The one case the emptied step cannot take the editor: a typed new step is open. Its text
+/// survives, nothing is saved, and the status row says why.
+#[test]
+fn emptied_existing_step_refusal_keeps_an_open_typed_new_step() {
+    let (mut domain, mut model, id) = board_with_steps("Typed add witness", None, &["alpha step"]);
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None)
+        .expect("open the selected step");
+    for _ in "alpha step".chars() {
+        apply_intent(&mut domain, &mut model, BoardIntent::EditBackspace, None)
+            .expect("delete the step text");
+    }
+    let enter = map_key(model.input_mode(), press(KeyCode::Enter)).expect("enter");
+    apply_intent(&mut domain, &mut model, enter, None).expect("park the empty draft");
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginAddStep, None)
+        .expect("open the add row");
+    for ch in "new one".chars() {
+        apply_intent(&mut domain, &mut model, BoardIntent::EditInsert(ch), None)
+            .expect("type the new step");
+    }
+    let save = map_key(model.input_mode(), shift(KeyCode::Enter)).expect("shift+enter");
+    let outcome = apply_intent(&mut domain, &mut model, save, None).expect("refused save");
+    assert_eq!(outcome, IntentOutcome::None);
+    assert_eq!(model.input_mode(), BoardInputMode::EditStep);
+    assert_eq!(model.message(), Some("a cleared step needs text"));
+    let frame = rendered_board(&model, 80, 24);
+    assert!(
+        frame.contains("new one"),
+        "the typed add survives:\n{frame}"
+    );
+    let task = domain.get(id).expect("task");
+    assert_eq!(task.steps.len(), 1, "nothing is added");
+    assert_eq!(task.steps[0].text, "alpha step", "nothing is renamed");
+}
+
+/// A saved board of `titles` (numbered T1, T2, … by the store), every task `status`, with
+/// an empty undo stack, and the store it lives in.
+fn numbered_board(
+    titles: &[&str],
+    status: HumanStatus,
+) -> (
+    DomainState,
+    BoardModel,
+    Vec<uuid::Uuid>,
+    TaskStore,
+    TempDirGuard,
+) {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    let seq = UNDO_STATE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("tsk-verbs-undo-note-{nanos}-{seq}"));
+    std::fs::create_dir_all(&dir).expect("state dir");
+    let guard = TempDirGuard(dir.clone());
+    let store = TaskStore::new(&dir);
+    let mut domain = DomainState::new();
+    let ids: Vec<uuid::Uuid> = titles
+        .iter()
+        .map(|title| {
+            let id = domain
+                .create(
+                    *title,
+                    None,
+                    project(THIS_REPO),
+                    ProvenanceOrigin::Manual,
+                    None,
+                )
+                .expect("create");
+            if status != HumanStatus::Open {
+                domain.set_status(id, status).expect("status");
+            }
+            id
+        })
+        .collect();
+    store.save(&domain).expect("save numbers");
+    let domain = store.load().expect("load");
+    let model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    (domain, model, ids, store, guard)
+}
+
+/// Put the cursor on `id` with the arrow keys (a repeated row select reads as a double click,
+/// which opens the page).
+fn select_task(domain: &mut DomainState, model: &mut BoardModel, id: uuid::Uuid) {
+    let target = model
+        .visible_ids()
+        .iter()
+        .position(|&visible| visible == id)
+        .expect("task visible");
+    for _ in 0..model.visible_ids().len() {
+        let at = model
+            .selected_id()
+            .and_then(|selected| model.visible_ids().iter().position(|&v| v == selected));
+        let step = match at {
+            Some(at) if at == target => return,
+            Some(at) if at > target => BoardIntent::SelectPrev,
+            _ => BoardIntent::SelectNext,
+        };
+        apply_intent(domain, model, step, None).expect("move cursor");
+    }
+    assert_eq!(model.selected_id(), Some(id), "cursor reached the task");
+}
+
+/// Mark `ids` with the arrow keys and space.
+fn mark_by_keys(domain: &mut DomainState, model: &mut BoardModel, ids: &[uuid::Uuid]) {
+    if !model.mark_mode_active() {
+        apply_intent(domain, model, BoardIntent::ToggleMarkMode, None).expect("mark mode");
+    }
+    for &id in ids {
+        select_task(domain, model, id);
+        apply_intent(domain, model, BoardIntent::MarkToggle, None).expect("mark");
+    }
+}
+
+fn undo_message(domain: &mut DomainState, model: &mut BoardModel) -> String {
+    apply_intent(domain, model, BoardIntent::Undo, None).expect("ctrl+u");
+    model.message().unwrap_or_default().to_string()
+}
+
+/// `ctrl+f` then `ctrl+u` brings the task back and says which one; a marked set comes back
+/// as one undo step naming every task (#173).
+#[test]
+fn ctrl_u_right_after_ctrl_f_brings_the_task_or_marked_set_back() {
+    let (mut domain, mut model, ids, _store, _guard) =
+        numbered_board(&["one", "two", "three"], HumanStatus::Ready);
+    select_task(&mut domain, &mut model, ids[0]);
+    apply_intent(&mut domain, &mut model, BoardIntent::File, None).expect("ctrl+f");
+    assert!(domain.get(ids[0]).expect("task").archived);
+    assert_eq!(undo_message(&mut domain, &mut model), "archive undone · T1");
+    assert!(!domain.get(ids[0]).expect("task").archived);
+    assert_eq!(domain.get(ids[0]).expect("task").status, HumanStatus::Ready);
+
+    mark_by_keys(&mut domain, &mut model, &[ids[1], ids[2]]);
+    apply_intent(&mut domain, &mut model, BoardIntent::File, None).expect("marked ctrl+f");
+    assert!(ids[1..]
+        .iter()
+        .all(|id| domain.get(*id).expect("task").archived));
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "archive undone · T2, T3"
+    );
+    assert!(ids
+        .iter()
+        .all(|id| !domain.get(*id).expect("task").archived));
+    assert_eq!(undo_message(&mut domain, &mut model), "nothing to undo");
+}
+
+/// Unarchiving with `ctrl+f` in the archived group is undoable too, single and marked.
+#[test]
+fn ctrl_u_after_unarchiving_with_ctrl_f_archives_again() {
+    let (mut domain, mut model, ids, _store, _guard) =
+        numbered_board(&["one", "two"], HumanStatus::Done);
+    for id in &ids {
+        domain.archive_task(*id).expect("archive");
+    }
+    model.sync_from_domain(&domain);
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer, None).expect("drawer");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ToggleArchivedGroup,
+        None,
+    )
+    .expect("archived group");
+    select_task(&mut domain, &mut model, ids[0]);
+    apply_intent(&mut domain, &mut model, BoardIntent::File, None).expect("unarchive");
+    assert!(!domain.get(ids[0]).expect("task").archived);
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "unarchive undone · T1"
+    );
+    assert!(domain.get(ids[0]).expect("task").archived);
+
+    mark_by_keys(&mut domain, &mut model, &ids);
+    apply_intent(&mut domain, &mut model, BoardIntent::File, None).expect("marked unarchive");
+    assert!(ids
+        .iter()
+        .all(|id| !domain.get(*id).expect("task").archived));
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "unarchive undone · T1, T2"
+    );
+    assert!(ids.iter().all(|id| domain.get(*id).expect("task").archived));
+}
+
+/// Archiving in the drawer can leave the cursor on the task just archived: `ctrl+u` then
+/// undoes the archive (one step, no older entry left behind) rather than taking the plain
+/// unarchive route, which would leave the archive's entry to go stale.
+#[test]
+fn ctrl_u_on_the_task_just_archived_undoes_the_archive() {
+    let (mut domain, mut model, ids, _store, _guard) = numbered_board(&["one"], HumanStatus::Done);
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer, None).expect("drawer");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ToggleArchivedGroup,
+        None,
+    )
+    .expect("archived group");
+    select_task(&mut domain, &mut model, ids[0]);
+    apply_intent(&mut domain, &mut model, BoardIntent::File, None).expect("ctrl+f");
+    assert!(domain.get(ids[0]).expect("task").archived);
+    select_task(&mut domain, &mut model, ids[0]);
+    assert_eq!(undo_message(&mut domain, &mut model), "archive undone · T1");
+    assert!(!domain.get(ids[0]).expect("task").archived);
+    assert_eq!(undo_message(&mut domain, &mut model), "nothing to undo");
+}
+
+/// An archived cursor with an older entry on top still restores just that task, and says so.
+#[test]
+fn ctrl_u_on_an_archived_cursor_names_the_task_it_unarchives() {
+    let (mut domain, mut model, ids, _store, _guard) =
+        numbered_board(&["one", "two"], HumanStatus::Done);
+    domain
+        .archive_task(ids[0])
+        .expect("archived outside the board");
+    model.sync_from_domain(&domain);
+    apply_intent(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer, None).expect("drawer");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ToggleArchivedGroup,
+        None,
+    )
+    .expect("archived group");
+    select_task(&mut domain, &mut model, ids[0]);
+    assert_eq!(undo_message(&mut domain, &mut model), "T1 unarchived");
+    assert!(!domain.get(ids[0]).expect("task").archived);
+}
+
+/// Every undone entry names the task(s) it is about: one task by number with where it went,
+/// a marked set by its numbers, or `N tasks` past three (#173).
+#[test]
+fn undo_messages_name_the_tasks_of_the_entry_undone() {
+    let (mut domain, mut model, ids, _store, _guard) =
+        numbered_board(&["one", "two", "three", "four"], HumanStatus::Started);
+
+    select_task(&mut domain, &mut model, ids[0]);
+    apply_intent(&mut domain, &mut model, BoardIntent::Complete, None).expect("done");
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "done undone · T1 back to started"
+    );
+
+    mark_by_keys(&mut domain, &mut model, &[ids[0], ids[1]]);
+    apply_intent(&mut domain, &mut model, BoardIntent::Complete, None).expect("marked done");
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "done undone · T1, T2"
+    );
+
+    select_task(&mut domain, &mut model, ids[2]);
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::SetStatus(HumanStatus::Ready),
+        None,
+    )
+    .expect("ready");
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "status undone · T3 back to started"
+    );
+
+    mark_by_keys(&mut domain, &mut model, &ids);
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::SetStatus(HumanStatus::Open),
+        None,
+    )
+    .expect("marked open");
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "status undone · 4 tasks"
+    );
+
+    domain.soft_delete(ids[3]).expect("delete");
+    model.sync_from_domain(&domain);
+    assert_eq!(undo_message(&mut domain, &mut model), "delete undone · T4");
+
+    domain
+        .assign(ids[1], Some("builder".into()))
+        .expect("assign");
+    model.sync_from_domain(&domain);
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "assignee undone · T2"
+    );
+
+    domain
+        .with_steps_undo(ids[1], |domain| {
+            domain.add_step(ids[1], "a step").map(|_| ())
+        })
+        .expect("step");
+    model.sync_from_domain(&domain);
+    assert_eq!(undo_message(&mut domain, &mut model), "steps undone · T2");
+    assert_eq!(undo_message(&mut domain, &mut model), "nothing to undo");
+}
+
+/// The refusal names the task that moved on and, for a marked set, every task of the entry
+/// it refused. Once a save prunes that stale entry, `ctrl+u` reaches the older one, and the
+/// row names that older task, never the one the user last touched.
+#[test]
+fn a_refused_undo_names_its_tasks_and_a_pruned_one_never_hides_which_task_comes_back() {
+    let (mut domain, mut model, ids, store, _guard) =
+        numbered_board(&["one", "two", "three"], HumanStatus::Started);
+    select_task(&mut domain, &mut model, ids[0]);
+    apply_intent(&mut domain, &mut model, BoardIntent::Complete, None).expect("done T1");
+    mark_by_keys(&mut domain, &mut model, &[ids[1], ids[2]]);
+    apply_intent(&mut domain, &mut model, BoardIntent::Complete, None).expect("done T2, T3");
+    domain
+        .set_status(ids[2], HumanStatus::Started)
+        .expect("T3 reopened outside undo");
+    model.sync_from_domain(&domain);
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "done of T2, T3 not undone: T3 changed since it was completed (reopened)"
+    );
+    assert_eq!(domain.get(ids[1]).expect("T2").status, HumanStatus::Done);
+
+    store.save(&domain).expect("save prunes the stale entry");
+    let mut domain = store.load().expect("reload");
+    model.sync_from_domain(&domain);
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "done undone · T1 back to started"
+    );
+    assert_eq!(domain.get(ids[1]).expect("T2").status, HumanStatus::Done);
+}
+
+/// A refused done that had started a waiting task names the done, whichever of the two moved
+/// on (review K1).
+#[test]
+fn a_refused_done_with_a_released_start_names_the_done_and_the_task_that_changed() {
+    for stale_is_released in [true, false] {
+        let (mut domain, mut model, ids, _store, _guard) =
+            numbered_board(&["one", "two"], HumanStatus::Started);
+        domain.set_after(ids[1], &[1]).expect("T2 after T1");
+        domain
+            .set_status(ids[1], HumanStatus::Ready)
+            .expect("T2 ready");
+        domain.complete(ids[0]).expect("done T1");
+        let done = domain.take_completed();
+        for (id, after) in domain.released_by(&done) {
+            domain.start_released(id, after).expect("released start");
+        }
+        assert_eq!(domain.get(ids[1]).expect("T2").status, HumanStatus::Started);
+        let expected = if stale_is_released {
+            domain
+                .set_status(ids[1], HumanStatus::Blocked)
+                .expect("T2 moves on");
+            "done of T1 not undone: T2 changed since it was started"
+        } else {
+            domain
+                .set_status(ids[0], HumanStatus::Ready)
+                .expect("T1 moves on");
+            "done of T1 (with T2) not undone: T1 changed since it was completed (reopened)"
+        };
+        model.sync_from_domain(&domain);
+        assert_eq!(undo_message(&mut domain, &mut model), expected);
+    }
+}
+
+/// A refused delete that also unlinked another task's `after` names the deleted task.
+#[test]
+fn a_refused_delete_names_the_deleted_task_when_an_unlinked_one_changed() {
+    let (mut domain, mut model, ids, _store, _guard) =
+        numbered_board(&["one", "two"], HumanStatus::Ready);
+    domain.set_after(ids[1], &[1]).expect("T2 after T1");
+    domain.soft_delete(ids[0]).expect("delete T1");
+    domain
+        .set_status(ids[1], HumanStatus::Started)
+        .expect("T2 moves on");
+    model.sync_from_domain(&domain);
+    assert_eq!(
+        undo_message(&mut domain, &mut model),
+        "delete of T1 not undone: T2 changed since its after change"
     );
 }

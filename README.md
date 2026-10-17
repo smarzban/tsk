@@ -26,11 +26,14 @@ In a wide pane, click a task or press `→` / `l` to open its details beside the
 Press `Enter` for a full-screen task and `Esc` to return. For a standalone board,
 run `tsk` in your terminal.
 
-### Coming soon
+### From task to implementation
 
-**From task to implementation.** The next phase brings agent execution into the
-board: assign a task to an agent, start implementation from tsk, and run the work
-in Herdr worktrees.
+Define your agents once in `config.toml`, press `@` to assign a task, and press
+`ctrl+s` to start it: starting an assigned task dispatches it. tsk opens a Git
+worktree and Herdr workspace for the task and launches the agent there with the
+task as its brief. When the pull request is
+merged, `ctrl+d` completes the task and cleans up the worktree and branch, never
+touching uncommitted or unmerged work. Dispatch runs in Herdr on macOS and Linux.
 
 ## Quickstart
 
@@ -122,7 +125,7 @@ Prefer the keyboard? A few keys for everyday use:
 | `ctrl+s` | Start an open or ready task |
 | `ctrl+n` | Pick a task, moving it to ready |
 | `ctrl+o` | Send a task to the open inbox |
-| `ctrl+r` | Send a task to review, or back to ready |
+| `ctrl+r` | Send a task to review with what was done and what to check, or back to ready |
 | `ctrl+d` | Mark the selected task done |
 | `p` | Switch projects |
 | `d` | Show or hide completed tasks |

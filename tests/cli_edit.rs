@@ -3,6 +3,7 @@
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -58,6 +59,146 @@ fn edit(dir: &Path, args: &[&str]) -> CliOutput {
     ];
     command.extend(args.iter().map(|argument| (*argument).to_string()));
     cli(command)
+}
+
+fn init_git_project(path: &Path) {
+    tsk_tui::git_base::stretch_default_deadlines_for_tests();
+    fs::create_dir_all(path).expect("create project");
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "test@example.com"][..],
+        &["config", "user.name", "Test"][..],
+    ] {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .status()
+            .expect("run git")
+            .success());
+    }
+    fs::write(path.join("README"), "seed\n").expect("seed file");
+    assert!(Command::new("git")
+        .args(["add", "."])
+        .current_dir(path)
+        .status()
+        .expect("git add")
+        .success());
+    assert!(Command::new("git")
+        .args(["commit", "-qm", "seed"])
+        .current_dir(path)
+        .status()
+        .expect("git commit")
+        .success());
+    assert!(Command::new("git")
+        .args(["branch", "release"])
+        .current_dir(path)
+        .status()
+        .expect("git branch")
+        .success());
+}
+
+#[test]
+fn edit_sets_and_clears_base_validated_only_against_the_task_project() {
+    let dir = temp_state_dir("base");
+    let _guard = TempDirGuard(dir.clone());
+    let project = dir.join("project");
+    init_git_project(&project);
+    let mut state = DomainState::new();
+    state
+        .create(
+            "based",
+            None,
+            TaskScope::Project {
+                path: project.to_string_lossy().into_owned(),
+            },
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("seed task");
+    TaskStore::new(&dir).save(&state).expect("save task");
+
+    let set = edit(&dir, &["T1", "--base", "release"]);
+    assert_eq!(set.code, 0, "{set:?}");
+    assert_eq!(
+        TaskStore::new(&dir).load().expect("load").tasks()[0]
+            .base
+            .as_deref(),
+        Some("release")
+    );
+
+    let unknown = edit(&dir, &["T1", "--base", "missing"]);
+    assert_eq!(unknown.code, 1, "{unknown:?}");
+    assert!(unknown.stderr.contains("unknown-base"), "{unknown:?}");
+    assert_eq!(
+        TaskStore::new(&dir).load().expect("reload").tasks()[0]
+            .base
+            .as_deref(),
+        Some("release")
+    );
+
+    let clear = edit(&dir, &["T1", "--clear-base"]);
+    assert_eq!(clear.code, 0, "{clear:?}");
+    assert_eq!(
+        TaskStore::new(&dir).load().expect("reload clear").tasks()[0].base,
+        None
+    );
+}
+
+#[test]
+fn edit_assigns_and_unassigns_only_known_profiles() {
+    let dir = temp_state_dir("assignee");
+    let _guard = TempDirGuard(dir.clone());
+    fs::write(
+        dir.join("config.toml"),
+        "[agent.reviewer]\ncommand = [\"true\"]\n",
+    )
+    .expect("write profiles");
+    assert_eq!(add_task(&dir, "assign me").code, 0);
+
+    let assigned = edit(&dir, &["T1", "--assignee", "Reviewer"]);
+    assert_eq!(assigned.code, 0, "{}", assigned.stderr);
+    assert_eq!(
+        TaskStore::new(&dir).load().expect("load").tasks()[0]
+            .assignee
+            .as_deref(),
+        Some("reviewer")
+    );
+
+    let unknown = edit(&dir, &["T1", "--assignee", "missing"]);
+    assert_eq!(unknown.code, 1);
+    assert!(
+        unknown.stderr.contains("unknown-agent"),
+        "{}",
+        unknown.stderr
+    );
+
+    let unassigned = edit(&dir, &["T1", "--unassign"]);
+    assert_eq!(unassigned.code, 0, "{}", unassigned.stderr);
+    assert_eq!(
+        TaskStore::new(&dir).load().expect("reload").tasks()[0].assignee,
+        None
+    );
+}
+
+#[test]
+fn edit_loads_malformed_agent_profiles_only_for_assignment() {
+    let dir = temp_state_dir("malformed-agents");
+    let _guard = TempDirGuard(dir.clone());
+    fs::write(
+        dir.join("config.toml"),
+        "[agent.Reviewer]\ncommand = [\"true\"]\n",
+    )
+    .expect("write malformed profiles");
+    assert_eq!(add_task(&dir, "edit me").code, 0);
+
+    let ordinary = edit(&dir, &["T1", "--title", "edited without profiles"]);
+    assert_eq!(ordinary.code, 0, "{ordinary:?}");
+    let assigned = edit(&dir, &["T1", "--assignee", "reviewer"]);
+    assert_eq!(assigned.code, 2, "{assigned:?}");
+    assert!(assigned.stderr.contains("config.toml"), "{assigned:?}");
+    let state = TaskStore::new(&dir).load().expect("load state");
+    assert_eq!(state.tasks()[0].title, "edited without profiles");
+    assert_eq!(state.tasks()[0].assignee, None);
 }
 
 #[test]
@@ -210,7 +351,11 @@ fn edit_without_fields_is_usage() {
     assert_eq!(add_task(&dir, "keep me").code, 0);
     let output = edit(&dir, &["T1"]);
     assert_eq!(output.code, 2);
-    assert!(output.stderr.contains("title or notes is required"));
+    assert!(output
+        .stderr
+        .contains(
+        "title, notes, assignee, base, after, --unassign, --clear-base, or --clear-after is required"
+    ));
 }
 
 #[test]
@@ -238,4 +383,47 @@ fn edit_help_names_title_notes_and_equals_forms() {
             "edit help should contain {term:?}"
         );
     }
+}
+
+#[test]
+fn edit_fetches_a_new_remote_base_before_validation() {
+    let dir = temp_state_dir("fresh-remote-base");
+    let _guard = TempDirGuard(dir.clone());
+    let remote = dir.join("remote");
+    let local = dir.join("local");
+    init_git_project(&remote);
+    assert!(Command::new("git")
+        .args(["clone", "-q"])
+        .arg(&remote)
+        .arg(&local)
+        .status()
+        .unwrap()
+        .success());
+    let mut domain = DomainState::new();
+    domain
+        .create(
+            "fresh edit",
+            None,
+            TaskScope::Project {
+                path: local.to_string_lossy().into_owned(),
+            },
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .unwrap();
+    TaskStore::new(&dir).save(&domain).unwrap();
+    assert!(Command::new("git")
+        .current_dir(&remote)
+        .args(["branch", "new-edit"])
+        .status()
+        .unwrap()
+        .success());
+    let output = edit(&dir, &["T1", "--base", "origin/new-edit"]);
+    assert_eq!(output.code, 0, "{output:?}");
+    assert_eq!(
+        TaskStore::new(&dir).load().unwrap().tasks()[0]
+            .base
+            .as_deref(),
+        Some("origin/new-edit")
+    );
 }

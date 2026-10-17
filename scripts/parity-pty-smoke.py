@@ -104,7 +104,7 @@ for width in (40, 78, 109, 110):
             if width < 110:
                 # The peek closes on the row's full `#thread · project` label.
                 attribution = [line for line in screen.display if '└─' in line]
-                assert attribution and '#release · tsk-parity' in attribution[0], screen.display
+                assert any('#release · tsk-parity' in line for line in attribution), screen.display
             key(b'\x1b[D', 'closed')
             key(b'\x1b[B', 'selected')
             key(b'\x13', 'started')

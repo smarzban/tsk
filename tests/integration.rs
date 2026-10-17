@@ -1,9 +1,25 @@
 //! Shared integration executable. Keep process-state-mutating suites isolated in Cargo.toml.
 //! Add new suites here; cli_discovery checks that every root test file is registered once.
 
+// Shared fixture, not a suite (`pub(crate)` keeps cli_discovery from counting it).
+#[cfg(unix)]
+#[path = "support/pty.rs"]
+pub(crate) mod pty;
+#[cfg(unix)]
+#[path = "support/stub.rs"]
+pub(crate) mod stub;
+
 mod archive_launch_card;
+mod board_backup_process;
+mod board_blocks;
+mod board_cleanup_card;
+mod board_paper_trail;
+mod board_start_cards;
+mod cli_after;
 mod cli_archive;
+mod cli_backup;
 mod cli_discovery;
+mod cli_dispatch;
 mod cli_edit;
 mod cli_guide;
 mod cli_help;
@@ -16,6 +32,8 @@ mod docs_parity;
 mod e2e_persist;
 mod edit_target_binding;
 mod f6_save_recovery;
+mod footer_fit;
+mod git_base;
 mod host_scripts;
 mod host_scripts_windows;
 mod manifest;

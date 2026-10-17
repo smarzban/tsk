@@ -143,7 +143,7 @@ test("demo matches the quick-add, peek, and group-toggle contracts", async () =>
   const landing = await read("../src/styles/landing.css");
   assert.match(demo, /if \(e\.key === "Enter" && !e\.ctrlKey && !e\.altKey && !e\.metaKey\)/);
   assert.match(demo, /saveDraft\(e\.shiftKey\)/);
-  assert.match(demo, /id: "save", label: "enter save"/);
+  assert.match(demo, /id: "save", label: "enter add"/);
   assert.match(demo, /id: "details", label: "tab notes"/);
   assert.match(demo, /id: "close", label: "esc close"/);
   // Closing the page by click must drop any open title/notes draft, or the next task
@@ -159,7 +159,7 @@ test("demo matches the quick-add, peek, and group-toggle contracts", async () =>
   assert.match(demo, /function runHint/);
   assert.match(demo, /data-hint=/);
   assert.match(demo, /"inbox"\}<\/span> · <span class="count">\$\{row\.count\}<\/span>/);
-  assert.match(demo, /\["views & find", "z \/ D", "done drawer"/);
+  assert.match(demo, /\["views & find", "z \/ D", "show \/ hide done drawer"/);
   assert.match(demo, /state\.helpQ/);
   assert.match(demo, /search keys or actions/);
   assert.match(demo, /tsk-help-divider/);
@@ -168,7 +168,10 @@ test("demo matches the quick-add, peek, and group-toggle contracts", async () =>
   assert.match(landing, /overflow-wrap: anywhere/);
   assert.match(demo, /e\.key === "z" \|\| e\.key === "D"/);
   assert.doesNotMatch(demo, /saveDraft\(e\.ctrlKey \|\| e\.metaKey\)/);
-  assert.doesNotMatch(demo, /thread #\$\{task\.thread\}|scope \$\{projectName\(task\)\}|created \$\{age\(/);
+  assert.doesNotMatch(demo, /thread #\$\{task\.thread\}|scope \$\{projectName\(task\)\}/);
+  // Dates belong on the task page, never in the compact peek attribution.
+  const peekMeta = demo.slice(demo.indexOf("function metaFor(task)"), demo.indexOf("function showCopyNotice"));
+  assert.doesNotMatch(peekMeta, /created|updated|age\(/);
   assert.match(demo, /function toggleAllGroups\(\)/);
   assert.match(demo, /id: "groups", label: "toggle groups"/);
   assert.match(demo, /if \(e\.key === "g" && !e\.altKey && !e\.ctrlKey && !e\.metaKey\)/);
@@ -218,6 +221,11 @@ test("attribution is peek-only in demo and static anatomy", async () => {
   const styles = await read("../src/styles/landing.css");
   const guide = await read("../src/content/docs/docs/board.md");
   assert.doesNotMatch(demo, /<span class="meta">/);
+  assert.match(
+    demo,
+    /task\.assignee && showAssignee \? `@\$\{task\.assignee\}` : "",\s*rowLabelText \|\| "",/,
+    "peek metadata must be @assignee (unless the view already says it), then the row's #thread · project label",
+  );
   assert.match(styles, /\.tsk-attribution\s*\{[^}]*white-space: pre-wrap;[^}]*overflow-wrap: anywhere;/);
   assert.match(styles, /\.tsk-row-main\s*\{[^}]*padding-right: 2ch;/);
   assert.doesNotMatch(page, /class="r meta"/);
