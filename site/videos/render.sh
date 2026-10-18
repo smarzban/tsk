@@ -13,7 +13,10 @@ set -euo pipefail
 export LC_ALL=C
 
 cd "$(dirname "$0")"
+# shellcheck source=lib/env.sh
 . lib/env.sh
+# A failed or interrupted recording still stops its Herdr server (and the agent in it).
+trap 'vid_stop_herdr' EXIT
 OUT="$VIDEOS_DIR/out"
 mkdir -p "$OUT"
 

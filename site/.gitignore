@@ -22,6 +22,9 @@ pnpm-debug.log*
 # leftover decode/lock scratch (never ship)
 tmp/
 
+# rendered demo videos (videos/render.sh)
+videos/out/
+
 # generated from ../../skills/tsk-cli/SKILL.md
 src/content/docs/docs/agents.md
 

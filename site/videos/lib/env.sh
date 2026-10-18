@@ -152,7 +152,7 @@ vid_start_herdr() {
 }
 
 vid_stop_herdr() {
-  [ -S "$VID_ROOT/herdr.sock" ] || return 0
+  [ -n "${VID_ROOT:-}" ] && [ -S "$VID_ROOT/herdr.sock" ] || return 0
   vid_run herdr server stop >/dev/null 2>&1 || true
 }
 
