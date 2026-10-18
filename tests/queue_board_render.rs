@@ -7175,7 +7175,7 @@ fn live_line_tasks() -> Vec<Task> {
             15,
             "Why only",
             "claude",
-            asked(Some("Which staging client?"), None),
+            asked(Some("Which staging\nclient?"), None),
             25,
         ),
         answered,
@@ -7232,6 +7232,11 @@ fn live_line_tasks() -> Vec<Task> {
             open.after = vec![23];
             open
         },
+        {
+            let mut chained = numbered(28, "Runs after an open task", HumanStatus::Ready, 9 * 3600);
+            chained.after = vec![26];
+            chained
+        },
     ]
 }
 
@@ -7273,8 +7278,9 @@ fn live_line_says_what_is_going_on_for_every_case() {
 }
 
 /// What each case paints on the board row: the asker's own words under it, or what it waits on
-/// in its label (`after T22, T23`, `→ @pi`). The peek and task page keep the words above.
-const ROW_CASES: [(u64, &str, Option<&str>, Option<&str>); 25] = [
+/// in its label (`waiting on @pi`, `after T22, T23`, `before T8`). The peek and task page keep
+/// the status words.
+const ROW_CASES: [(u64, &str, Option<&str>, Option<&str>); 26] = [
     // Blocked on you with a message: the needs (options never replace it here).
     (1, "Agent asks", Some("@claude: a decision · 2h"), None),
     // Your own block: no asker.
@@ -7303,18 +7309,16 @@ const ROW_CASES: [(u64, &str, Option<&str>, Option<&str>); 25] = [
         Some("T99 was deleted · unblock it"),
         None,
     ),
-    (7, "Blocked elsewhere", None, Some("→ design team")),
+    (7, "Blocked elsewhere", None, Some("waiting on design team")),
     (8, "Waits on two", None, Some("after T22, T23")),
     (9, "Waited on a done task", None, None),
     (10, "Assigned and started", None, None),
-    (12, "Waits on a started task", None, Some("→ T22")),
-    (
-        13,
-        "Review on pi",
-        Some("@claude: Built the widget; empty input now handled. · 1m"),
-        Some("→ @pi"),
-    ),
+    (12, "Waits on a started task", None, Some("waiting on T22")),
+    // A row waiting elsewhere never paints a line, even when the asker said something: it is
+    // not addressed to you.
+    (13, "Review on pi", None, Some("@pi reviewing")),
     (14, "Bare review", None, None),
+    // A multi-line message flattens onto one line.
     (
         15,
         "Why only",
@@ -7335,16 +7339,22 @@ const ROW_CASES: [(u64, &str, Option<&str>, Option<&str>); 25] = [
         None,
     ),
     (18, "No message", None, None),
-    // A multi-line message flattens onto one line.
     (
         19,
         "Blocked on pi with a message",
-        Some("@claude: pi's schema for the pagination · 3m"),
-        Some("→ @pi"),
+        None,
+        Some("waiting on @pi"),
     ),
-    (24, "Blocked on pi without one", None, Some("→ @pi")),
+    (
+        24,
+        "Blocked on pi without one",
+        None,
+        Some("waiting on @pi"),
+    ),
     (25, "Review without done", None, None),
-    (26, "Open and waiting", None, Some("after T23")),
+    // Both sides of a chain: what it runs after, then what runs after it.
+    (26, "Open and waiting", None, Some("after T23 · before T28")),
+    (28, "Runs after an open task", None, Some("after T26")),
     (
         27,
         "Third party replied last",
@@ -7352,8 +7362,9 @@ const ROW_CASES: [(u64, &str, Option<&str>, Option<&str>); 25] = [
         None,
     ),
     (20, "Finished blocker", None, None),
-    (22, "Started prerequisite", None, None),
-    (23, "Open prerequisite", None, None),
+    // A prerequisite names the unfinished tasks that wait on it (T20 is done: none).
+    (22, "Started prerequisite", None, Some("before T8")),
+    (23, "Open prerequisite", None, Some("before T8, T26")),
 ];
 
 #[test]
@@ -7887,7 +7898,18 @@ fn task_page_rail_rows_carry_their_labels() {
         0,
     );
     item.thread = Some("ship".into());
-    let mut model = BoardModel::from_tasks(vec![item], None);
+    item.number = Some(1);
+    // A ready task waiting on it (a project task, off the desk's ON DECK).
+    let mut waits = task(
+        9931,
+        "Waiting task",
+        HumanStatus::Ready,
+        project("/repos/alpha"),
+        0,
+    );
+    waits.number = Some(2);
+    waits.after = vec![1];
+    let mut model = BoardModel::from_tasks(vec![item, waits], None);
     let mut domain = DomainState::new();
     for _ in 0..2 {
         apply_intent(&mut domain, &mut model, BoardIntent::StageRight, None).unwrap();
@@ -7906,8 +7928,10 @@ fn task_page_rail_rows_carry_their_labels() {
         .collect();
     let text = column.join("\n");
     assert!(text.contains("Threaded"), "{text}");
+    // Wrapped labels rejoined: the rail is narrow.
+    let words = text.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        column.iter().any(|row| row.contains("#ship · alpha")),
-        "the rail row keeps its label: {text}"
+        words.contains("before T2 · #ship · alpha"),
+        "the rail row keeps its label, led by what waits on it: {text}"
     );
 }

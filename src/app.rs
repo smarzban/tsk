@@ -14866,9 +14866,9 @@ mod quick_assign_tests {
         assert!(screen.contains("feedback to @builder…"), "{screen}");
     }
 
-    /// A review handed to another agent rides IN MOTION with `△` and `→ @pi` in its label; on
-    /// you it is `▲` in NEEDS YOU. Both say what was done under the row (`@claude: done`). The
-    /// right edge is empty.
+    /// A review handed to another agent rides IN MOTION with `△` and `@pi reviewing` in its
+    /// label and no line under it; on you it is `▲` in NEEDS YOU with what was done under the
+    /// row (`@claude: done`). The right edge is empty.
     #[test]
     fn a_review_on_another_agent_rides_in_motion() {
         let temp = Temp::new("review-elsewhere", &["builder", "pi"]);
@@ -14918,13 +14918,10 @@ mod quick_assign_tests {
             "{screen}"
         );
         assert!(
-            theirs.contains("△") && theirs.trim_end().ends_with("theirs  → @pi"),
+            theirs.contains("△") && theirs.trim_end().ends_with("theirs  @pi reviewing"),
             "{theirs}"
         );
-        assert!(
-            lines[theirs_at + 1].starts_with("    └─ @claude: done · "),
-            "{screen}"
-        );
+        assert!(!lines[theirs_at + 1].contains("└─"), "{screen}");
         let at = |line: &str| screen.find(line).expect("row");
         assert!(needs < at(mine) && at(mine) < motion, "{screen}");
         assert!(motion < at(theirs), "{screen}");

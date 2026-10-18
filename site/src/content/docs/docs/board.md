@@ -244,7 +244,7 @@ On a marked set, `m` merges every listed task that has an open pull request into
 
 ## Group and sort
 
-Every task row carries a dim `#thread · project` label (`desk` for a desk task), at every width, including the narrow board rail beside an open task page. A row that waits leads its label with what it waits on: `after T202, T205` for a ready or open task with unfinished [prerequisites](#after), `→ T169`, `→ @pi`, or `→ design team` for a block or review waiting elsewhere (`after T202 · #auth · tsk`). It follows the title two spaces after its last word; when it does not fit on the title's last line, it starts the next line at the title's indent and wraps like the title. Neither the title nor the label is ever truncated. A label leaves out what the view already says: a project board never names its own project, a thread filter drops the thread and a project filter the project, grouping drops its dimension inside the sections that actually group (the done drawer keeps it), and rows under **ON DECK · desk** never repeat `desk`. Archived rows carry the same label as done rows.
+Every task row carries a dim `#thread · project` label (`desk` for a desk task), at every width, including the narrow board rail beside an open task page. A row in a chain or waiting elsewhere leads its label with that, in the peek's words and in this order: `waiting on T169`, `waiting on @pi`, `waiting on design team`, or `@pi reviewing` for a block or review waiting elsewhere; `after T202, T205` for a ready or open task with unfinished [prerequisites](#after); `before T203, T204` for the unfinished tasks that run after it (`after T1 · before T5 · #auth · tsk`). It follows the title two spaces after its last word; when it does not fit on the title's last line, it starts the next line at the title's indent and wraps like the title. Neither the title nor the label is ever truncated. A label leaves out what the view already says: a project board never names its own project, a thread filter drops the thread and a project filter the project, grouping drops its dimension inside the sections that actually group (the done drawer keeps it), and rows under **ON DECK · desk** never repeat `desk`. Archived rows carry the same label as done rows.
 
 | Key | Action |
 | --- | --- |
@@ -275,17 +275,19 @@ Status glyphs are `◌` open, `○` ready, `●` started, `■` blocked, `▲` r
 
 A row with something to say carries a dim **live line** under it, in the peek's `└─` style, wrapped and never cut. It is part of its row: selection never stops on it and a click on it acts on the task. When the row's title wraps, each wrapped title line carries a dim `│` in the `└` column, so the title and its live line (or its open peek) read as one block; the title keeps its wrap width. The right edge of a row stays empty.
 
-The live line carries the asker's own words: the newest reply from whoever blocked or handed back the task, when it came after yours, or else the block's needs (its why when it has no needs) or what the review says was done. A multi-line message reads as one line. The asker is left out when it is you. What the row waits on goes in its label, before `#thread · project`.
+The live line is only for what is addressed to you: a block or review on you, or a blocking task you now need to unblock. It carries the asker's own words: the newest reply from whoever blocked or handed back the task, when it came after yours, or else the block's needs (its why when it has no needs) or what the review says was done. A multi-line message reads as one line. The asker is left out when it is you. A row waiting elsewhere says so in its label instead, and paints no line even when the asker wrote something.
 
 | Row | Live line | Label |
 | --- | --- | --- |
 | Blocked on you | `@claude: the client id from the provider · 2h`, or `the vendor's reply · 30m` when you set it yourself | |
 | Review on you | `@claude: Built the widget; empty input now handled. · 40m` | |
 | Blocked or in review on you, nothing said | none: the NEEDS YOU header says it | |
-| Blocked on another task, an agent, or something else; review handed elsewhere | the asker's words, when there are any | `→ T169`, `→ @pi`, `→ design team` |
+| Blocked on an unfinished task, an agent, or something else | none | `waiting on T169`, `waiting on @pi`, `waiting on design team` |
+| Review handed elsewhere | none | `@pi reviewing` |
 | Blocking task done | `T169 is done · unblock it · 1h` | |
 | Blocking task deleted | `T169 was deleted · unblock it · 1h` | |
 | Ready or open, running [after](#after) unfinished tasks | none | `after T202, T205` |
+| Unfinished tasks run after it | none | `before T203, T204` |
 
 The age is how old the message is: since the reply, or since the block or review round opened; for a blocking task, since it finished or was deleted. A started task, a done or archived task, a [notice](#notices), and a waiting task whose prerequisites are all done have no live line. When the blocking task is done, the blocked task returns to NEEDS YOU; tsk never changes the status itself.
 
@@ -371,7 +373,7 @@ Agents can set any status with [the CLI](/docs/cli/#status). Task status does no
 
 ## After
 
-A task can run **after** other tasks: it waits while any of them is not done. Task numbers are board-wide, so a prerequisite can be in any project or on the desk. A waiting ready or open row's label leads with `after T202, T205` (the prerequisites not yet done), gone once every prerequisite is done; nothing moves sections. Its peek lists each prerequisite with its status, `after T202 · started`, and a prerequisite's peek lists what waits on it, `before T203, T204`. The [task page](/docs/task-page/#after) footer shows the same.
+A task can run **after** other tasks: it waits while any of them is not done. Task numbers are board-wide, so a prerequisite can be in any project or on the desk. A waiting ready or open row's label leads with `after T202, T205` (the prerequisites not yet done), gone once every prerequisite is done; nothing moves sections. An unfinished prerequisite's label leads with the unfinished tasks that wait on it, `before T203, T204`. The waiting task's peek lists each prerequisite with its status, `after T202 · started`, and a prerequisite's peek lists what runs after it, `before T203, T204`. The [task page](/docs/task-page/#after) footer shows the same.
 
 Set it from the task page's **After** field, with **set after (wait for)…** in the palette (the cursor task, or every marked task), with `!w T202` in [quick-add](/docs/capture/#title-tokens), or with [`tsk edit --after`](/docs/cli/#edit). The task picker lists the tasks that are not done, the task's own project first and then the others with their project. Type to filter by number or title, `Space` ticks several, `Enter` applies the ticked tasks (or the highlighted one when nothing is ticked), and **none** clears the list. A task cannot run after itself, and a choice that would close a loop is refused, for example `T202 already runs after T205`.
 
@@ -405,7 +407,7 @@ Your first board open seeds four desk tasks with `N` ids (not `T`). They teach t
 | Wheel or drag a scrollbar | Scroll |
 | Drag across text | Select and copy on release |
 
-Open peeks show notes, followed by one metadata footer ordered `@assignee · ⎇ <base> · #thread · project`, omitting unset parts, the default base, and whatever the view already says (a project board's own project, a filtered thread or assignee, an `@name` view's assignee, a grouped dimension). Rows themselves never show the assignee. A peeked row moves its `#thread · project` label into that footer, so it never paints twice; the `after T202` or `→ @pi` lead stays off it, since the peek says that in words. A task with [after](#after) links lists them above the notes. A blocked or review task's peek shows its [status words and block or review](#status) instead of the notes. Below 110 columns, `→` or `l` opens a peek and `←` or `h` closes it. Peeks show up to five wrapped note lines; the [task page](/docs/task-page/) shows the rest.
+Open peeks show notes, followed by one metadata footer ordered `@assignee · ⎇ <base> · #thread · project`, omitting unset parts, the default base, and whatever the view already says (a project board's own project, a filtered thread or assignee, an `@name` view's assignee, a grouped dimension). Rows themselves never show the assignee. A peeked row moves its `#thread · project` label into that footer, so it never paints twice; the `waiting on`, `after`, and `before` lead stays off it, since the peek says that in its own lines. A task with [after](#after) links lists them above the notes. A blocked or review task's peek shows its [status words and block or review](#status) instead of the notes. Below 110 columns, `→` or `l` opens a peek and `←` or `h` closes it. Peeks show up to five wrapped note lines; the [task page](/docs/task-page/) shows the rest.
 
 ## Wide stage slider
 
