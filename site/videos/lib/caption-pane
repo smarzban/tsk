@@ -1,0 +1,29 @@
+#!/bin/bash
+# The caption strip under the demo: dim, centred text, word-wrapped to the strip. The tape
+# focuses this pane while recording is hidden, types the next caption and Enter, and focuses
+# back, so every caption change lands as a clean cut. An empty line clears the strip.
+# Clearing the scrollback too keeps Herdr from drawing a scrollbar on the strip.
+stty -echo 2>/dev/null
+show() {
+  local cols rows lines line row pad
+  cols="$(tput cols)"
+  rows="$(tput lines)"
+  printf '\e[?25l\e[H\e[2J\e[3J'
+  [ -n "$1" ] || return 0
+  lines=()
+  while IFS= read -r line; do
+    lines+=("$line")
+  done < <(printf '%s\n' "$1" | fold -s -w "$cols" | sed 's/ *$//')
+  row=$(( (rows - ${#lines[@]}) / 2 + 1 ))
+  [ "$row" -lt 1 ] && row=1
+  for line in "${lines[@]}"; do
+    pad=$(( (cols - ${#line}) / 2 ))
+    [ "$pad" -lt 0 ] && pad=0
+    printf '\e[%d;%dH\e[2m%s\e[0m' "$row" $(( pad + 1 )) "$line"
+    row=$(( row + 1 ))
+  done
+}
+show "${1:-}"
+while IFS= read -r caption; do
+  show "$caption"
+done

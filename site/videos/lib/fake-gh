@@ -1,0 +1,71 @@
+#!/bin/bash
+# A stand-in for the GitHub CLI, first on the clip's PATH. It answers the three calls tsk
+# makes (pr view, pr merge) plus the agent's pr create, against the clip's local bare origin.
+# A branch pushed to origin has an open PR; `pr merge` squashes it onto origin's main, deletes
+# the remote branch as GitHub would, and records the PR as merged.
+set -euo pipefail
+
+state="${VID_ROOT:?}/gh"
+number=42
+
+pr_file() { printf '%s/%s' "$state" "$(printf '%s' "$1" | tr '/' '_')"; }
+
+remote_tip() {
+  git ls-remote --heads origin "refs/heads/$1" | cut -f1
+}
+
+repo_slug() {
+  basename "$(git remote get-url origin)" .git
+}
+
+case "${1:-} ${2:-}" in
+  "pr create")
+    printf 'https://github.com/demo/%s/pull/%s\n' "$(repo_slug)" "$number"
+    ;;
+  "pr view")
+    branch="$3"
+    file="$(pr_file "$branch")"
+    if [ -f "$file" ]; then
+      head="$(cat "$file")"
+      pr_state=MERGED
+    else
+      head="$(remote_tip "$branch")"
+      pr_state=OPEN
+    fi
+    if [ -z "$head" ]; then
+      echo "no pull requests found for branch \"$branch\"" >&2
+      exit 1
+    fi
+    printf '{"number":%s,"url":"https://github.com/demo/%s/pull/%s","state":"%s","headRefOid":"%s","baseRefName":"main"}\n' \
+      "$number" "$(repo_slug)" "$number" "$pr_state" "$head"
+    ;;
+  "pr merge")
+    branch="$3"
+    shift 3
+    match=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --match-head-commit) match="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    head="$(remote_tip "$branch")"
+    if [ -z "$head" ] || [ "$head" != "$match" ]; then
+      echo "X Pull request head does not match" >&2
+      exit 1
+    fi
+    origin="$(git remote get-url origin)"
+    work="$(mktemp -d "$VID_ROOT/tmp/merge.XXXXXX")"
+    git clone -q "$origin" "$work"
+    git -C "$work" merge -q --squash "origin/$branch" >/dev/null
+    git -C "$work" commit -q -m "$(git -C "$work" log -1 --format=%s "origin/$branch") (#$number)"
+    git -C "$work" push -q origin main
+    git -C "$work" push -q origin --delete "$branch"
+    rm -rf -- "$work"
+    printf '%s' "$head" >"$(pr_file "$branch")"
+    ;;
+  *)
+    echo "fake gh: unsupported: $*" >&2
+    exit 1
+    ;;
+esac

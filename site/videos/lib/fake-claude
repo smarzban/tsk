@@ -1,0 +1,61 @@
+#!/bin/bash
+# A scripted agent for demo clips: deterministic, offline, free. tsk launches it like any
+# profile, with the rendered prompt as the last argument. It reads the clip's plan for the
+# task ($VID_ROOT/agent/T<n>.sh), prints believable work, edits a file in its worktree,
+# commits, pushes, opens a (fake) PR, and hands the task back with `tsk status … review`.
+set -euo pipefail
+
+prompt="${*: -1}"
+number="$(printf '%s' "$prompt" | sed -nE 's/.*dispatched to T([0-9]+).*/\1/p' | head -1)"
+plan="${VID_ROOT:?}/agent/T$number.sh"
+[ -f "$plan" ] || { echo "no plan for T$number" >&2; exec sleep 86400; }
+
+# The plan sets: EDIT_FILE, EDIT_FROM, EDIT_TO, TEST_LINE, COMMIT, DONE, CHECKS (array).
+# shellcheck source=/dev/null
+. "$plan"
+
+dim=$'\e[2m' bold=$'\e[1m' red=$'\e[31m' green=$'\e[32m' reset=$'\e[0m'
+say() { printf '%s\n' "$*"; }
+pause() { sleep "${1:-0.9}"; }
+tool() { printf '%s●%s %s\n' "$bold" "$reset" "$*"; }
+out() { printf '  %s⎿  %s%s\n' "$dim" "$*" "$reset"; }
+
+clear
+say "${dim}> T$number · $(git rev-parse --abbrev-ref HEAD)${reset}"
+say
+pause 0.8
+tool "Bash(tsk list $number --json)"
+out "brief read · 1 file to change"
+pause
+tool "Read($EDIT_FILE)"
+out "$(wc -l <"$EDIT_FILE" | tr -d ' ') lines"
+pause
+tool "Update($EDIT_FILE)"
+printf '  %s- %s%s\n' "$red" "$EDIT_FROM" "$reset"
+printf '  %s+ %s%s\n' "$green" "$EDIT_TO" "$reset"
+python3 - "$EDIT_FILE" "$EDIT_FROM" "$EDIT_TO" <<'PY'
+import sys
+path, old, new = sys.argv[1:]
+text = open(path).read()
+open(path, "w").write(text.replace(old, new, 1))
+PY
+pause 0.9
+tool "Bash(npm test)"
+pause 0.7
+out "$TEST_LINE"
+pause
+git add -A
+git commit -q -m "$COMMIT"
+git push -q -u origin HEAD >/dev/null 2>&1
+url="$(gh pr create --fill --base main)"
+tool "Bash(git commit · git push · gh pr create)"
+out "$url"
+pause
+args=()
+for check in "${CHECKS[@]}"; do args+=(--check "$check"); done
+tsk status "$number" review --done "$DONE" "${args[@]}" >/dev/null
+tool "Bash(tsk status $number review)"
+out "handed back for review"
+say
+say "${dim}waiting for review…${reset}"
+exec sleep 86400

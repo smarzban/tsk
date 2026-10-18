@@ -19,6 +19,8 @@ Cargo.lock.bak
 site/node_modules/
 site/dist/
 site/.astro/
+# rendered demo videos (site/videos/render.sh)
+site/videos/out/
 
 # Local release preparation and Python test caches
 /dist-release/

@@ -1,0 +1,23 @@
+{
+  "name": "gruvbox-material-dark (owner's Ghostty)",
+  "black": "#141617",
+  "red": "#ea6926",
+  "green": "#c1d041",
+  "yellow": "#eecf75",
+  "blue": "#6da3ec",
+  "magenta": "#fd9bc1",
+  "cyan": "#b9bdbc",
+  "white": "#ffffff",
+  "brightBlack": "#4c4c4c",
+  "brightRed": "#d3573b",
+  "brightGreen": "#c1d041",
+  "brightYellow": "#eecf75",
+  "brightBlue": "#2c86ff",
+  "brightMagenta": "#fd9bc1",
+  "brightCyan": "#b9bdbc",
+  "brightWhite": "#ffffff",
+  "background": "#141414",
+  "foreground": "#C8C8C8",
+  "selection": "#4c4c4c",
+  "cursor": "#ffffff"
+}
