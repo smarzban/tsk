@@ -282,10 +282,13 @@ test("hero board pins reveal callout copy", async () => {
   assert.match(page, /s-footrule[\s\S]*<span class="l meta">desk<\/span>/);
   assert.equal((page.match(/s-footrule/g) || []).length, 1);
   assert.doesNotMatch(page, /<span class="l meta">2 done<\/span>/);
-  // The fixture's verb bar minus ctrl+b, so it sits on one line beside the pin gutter.
-  const verbBar = await read("../../tests/fixtures/queue_board/board.txt");
-  assert.ok(verbBar.includes("enter open · ctrl+d done · ctrl+n next · ctrl+o inbox · ctrl+b block · ? help"));
-  assert.match(page, /enter open · ctrl\+d done · ctrl\+n next · ctrl\+o inbox · \? help/);
+  // The selected row is a review on you (▲), so the bar is the TUI's bar for that row: the
+  // blocked row's seats in the golden fixtures, with `block` where a blocked row says
+  // `unblock` (board_verb_items / status_verbs in src/ui/board/draw.rs). Like the compact
+  // tier's five-entry budget, it sheds `+ add` so it stays on one line beside the pin gutter.
+  const desk78 = await read("../../tests/fixtures/queue_board/desk_group_project_sort_thread_78x24.txt");
+  assert.ok(desk78.includes("enter open · ctrl+d done · ctrl+b unblock · ctrl+o inbox · + add · ? help"));
+  assert.match(page, /<span class="l meta">enter open · ctrl\+d done · ctrl\+b block · ctrl\+o inbox · \? help<\/span>/);
   const css = await read("../src/styles/landing.css");
   assert.match(css, /\.hero-side \.screen \{[^}]*white-space: pre-wrap/);
   assert.match(css, /\.hero-side \.s-row \.l \{[^}]*text-overflow: clip/);

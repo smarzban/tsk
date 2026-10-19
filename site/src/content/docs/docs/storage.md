@@ -80,7 +80,19 @@ The prompt goes to the command as its last argument. Both `command` and `prompt`
 | `{branch}` | The task branch |
 | `{base}` | The short base branch name, such as `dispatch` for `origin/dispatch` |
 
-The default prompt tells the agent to read the task with `tsk guide` and `tsk list`, work only on `{branch}`, open a pull request into `{base}` without merging it, then set the task to review or block it with a question. The starter `config.toml` quotes it in full. A profile's own `prompt` replaces it entirely.
+Without `prompt`, tsk sends this default. A profile's own `prompt` replaces it entirely.
+
+```text
+You were dispatched to T{number} ({title}) in worktree {worktree} on branch {branch}, based on {base}.
+
+1. Run `tsk guide`, then `tsk list {number} --json`. The task notes are your brief.
+2. Read the repo's agent instructions (AGENTS.md or CLAUDE.md) if present.
+3. Work only on {branch}. Run the project's checks before saying you are done.
+4. Push and open a pull request into {base}. Never merge it.
+5. Set the task to review with what you did and what to check: `tsk status {number} review --done "…" --check "…"`, one `--check` per thing to verify, adding `--next` for what comes after. When you need a human, block it with your question: `tsk status {number} blocked --why "…"`, adding `--needs` and one `--option` per choice, then stop.
+6. On a relaunch, first read whichever record closed last (`closed_at`) in `tsk list {number} --json`: the `replies` of the last `past_blocks` entry, or the `feedback` and failed `checks` of the last `past_reviews` entry when it was `sent_back`.
+7. A message `[tsk T{number} sent back] …` is review feedback, with any failed checks: address it, then set review again.
+```
 
 How tsk launches the command:
 
@@ -231,7 +243,7 @@ tsk restore
 
 ## Store version
 
-When a new tsk changes the store format, it upgrades `tsk.json` on the first save and keeps the old file as `tsk.json.v<N>`. An older tsk refuses a newer store rather than rewrite it. To go back to the older tsk, quit every board and copy `tsk.json.v<N>` over `tsk.json`; changes made since the upgrade are lost.
+Older tsk refuses a newer store. tsk keeps a `tsk.json.v<N>` copy when it upgrades the file; to roll back, copy it over `tsk.json`.
 
 ## Deleted tasks
 
