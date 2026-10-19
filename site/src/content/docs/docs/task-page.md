@@ -23,7 +23,7 @@ The footer reads `@assignee · ⎇ <base> · after T202 · before T203 · #threa
 | --- | --- |
 | `@assignee` | The agent profile. An unassigned task shows `+ assign` when at least one [agent profile](/docs/storage/#configuration) exists. Click to pick |
 | `⎇ <base>` | The base branch. Unset, it shows the repository default, such as `⎇ main (default)`. Click to pick |
-| `after T202, T205` | The tasks this one [runs after](/docs/board/#after). Shown only when set |
+| `after T202, T205` | The tasks this one [runs after](/docs/board/#after). Shown only when set. Click to pick |
 | `before T203` | The tasks that run after this one. Read-only: it changes when you edit theirs |
 | `#thread · project` | The thread and the project, or desk |
 
@@ -57,7 +57,7 @@ In view mode, three fields save at once:
 
 - `@`, or a click on the footer's `@name` or `+ assign`, opens the assignee picker. During an edit, `@` opens the Assignee field's list instead.
 - A click on the footer's `⎇` slot, or **set base** in the palette, opens the base picker.
-- **set after (wait for)…** in the palette opens the task picker.
+- A click on the footer's `after` slot, or **set after (wait for)…** in the palette, opens the task picker.
 
 ## Save and cancel
 
@@ -87,29 +87,36 @@ you · 1m      Go with 2.
 ────────────────────────────────────────────────
 ```
 
-- The top line says who the block waits on and for how long, like the board row: `@claude blocked on you · 2h`, `waiting on T202`, or `T202 is done · unblock it · 1h`.
+- The top line says who the block waits on and for how long, like the peek: `@claude blocked on you · 2h`, `waiting on T202`, or `T202 is done · unblock it · 1h`.
 - Below it come the why, the needs, the numbered options, and the replies. Each reply shows `you` or the agent profile, and its age. A deleted reply leaves a dim `deleted` stub.
 - The last line lists only the keys that work at the cursor. A block that waits on another task or on something else shows `ctrl+b unblock` there.
 - When the block closes, it moves to the paper trail.
 
 ### Reply box
 
+From the page:
+
 | Action | Key |
 | --- | --- |
-| Reply | `r` |
-| Reply starting from option N | `1`…`9`, or `Enter` on the option |
+| Open the reply box | `r` |
+| Open it starting from option N | `1`…`9`, or `Enter` on the option |
+| Edit why, on, and needs (top line selected), or your selected reply | `ctrl+e` |
+| Delete your selected reply | `ctrl+x` |
+
+In the box:
+
+| Action | Key |
+| --- | --- |
 | New line | `Enter` |
 | Save the reply | `shift+Enter` |
 | Save the reply and unblock | `ctrl+s` |
 | Cancel | `Esc` |
-| Edit why, on, and needs (top line selected), or your selected reply | `ctrl+e` |
-| Delete your selected reply | `ctrl+x` |
 
 - A saved reply waits. Unblocking sends every reply the agent has not received yet.
 - Unblocking moves an unassigned task to ready. An assigned task starts: it dispatches, asks before relaunching a gone agent, or sends the replies to its running agent. [Dispatch](/docs/dispatch/#dispatch).
 - `ctrl+s` outside the box, with nothing typed, unblocks the same way.
 - `r` on a blocked board row opens the same box under the row.
-- The box belongs to the block it opened on. If that block closes or changes elsewhere, saving refuses and keeps your draft.
+- The box belongs to the block it opened on. If that block closes or is replaced elsewhere, saving refuses and keeps your draft.
 - You can edit an agent's block, but not its replies.
 
 ## Review
@@ -134,27 +141,36 @@ tab next field · enter cycle check · r feedback · ctrl+s send back · ctrl+d 
 
 - The top line says who the review is on: `@claude needs your review · 40m`, or `@pi reviewing` for a review on someone else.
 - Below it come what was done, what is next, the checks, and your feedback. Checks are `✓` passed, `✗` failed, or `○` open.
-- Passed checks fold into a dim `N passed ▸` line. A check you pass stays in place until the page opens again.
+- Passed checks fold into a dim `N passed ▸` line. A check you pass stays in place until the page opens again, or until you fold the line.
 - The page opens on the first open check.
 - Checks belong to the review and never become steps.
 - When the round closes, it moves to the paper trail. The page shows no round number.
 
 ### Feedback box
 
+From the page:
+
 | Action | Key |
 | --- | --- |
 | Cycle the selected check: open → passed → failed → open | `Enter`, or click it |
 | Show / fold the passed checks | `Enter` on the `N passed` line, or click it |
-| Give feedback | `r` |
+| Open the feedback box | `r` |
+| Send back, with nothing typed | `ctrl+s` |
+| Approve | `ctrl+d` |
+| Edit done, checks, next, and on (top line selected), or your selected feedback | `ctrl+e` |
+| Delete your selected feedback | `ctrl+x` |
+
+In the box:
+
+| Action | Key |
+| --- | --- |
 | New line | `Enter` |
 | Save the feedback; the task stays in review | `shift+Enter` |
 | Send back | `ctrl+s` |
 | Approve | `ctrl+d` |
 | Cancel | `Esc` |
-| Edit done, checks, next, and on (top line selected), or your selected feedback | `ctrl+e` |
-| Delete your selected feedback | `ctrl+x` |
 
-- Send back sets the task to started and sends the round's feedback and failed checks to its running agent. Outside the box, with nothing typed, it needs a failed check.
+- Send back sets the task to started and sends the round's feedback and failed checks to its running agent. With nothing typed, it needs a failed check.
 - Approve marks the task done, through the [cleanup card](/docs/dispatch/#complete-and-clean-up) when its dispatch is live. Nothing is sent.
 - Saved feedback waits for the send-back.
 - The empty box reads `feedback to @claude…`. Like the reply box, it belongs to the round it opened on.
@@ -164,7 +180,7 @@ tab next field · enter cycle check · r feedback · ctrl+s send back · ctrl+d 
 
 Below the steps, the paper trail lists who did what to the task, newest first. It opens collapsed as `PAPER TRAIL · 14 ▸`. Press `g`, or `Enter` on the heading, to expand it.
 
-- An agent's entries name its profile, such as `@claude`. Everything else is `you`.
+- An agent's entries name its profile, such as `@claude`. Yours read `you`.
 - The same entry by the same author within a minute groups into one: `3 steps checked`.
 - Closed blocks and review rounds end in `▸`. `Enter` or a click expands one in place.
 - The trail stays expanded while you stay on the task, and collapses when another task opens.

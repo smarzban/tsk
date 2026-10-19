@@ -11,7 +11,7 @@ Add a task without leaving your work: quick-add on the board, the Herdr popup, o
 2. Type a title, with [title tokens](#title-tokens) if you like.
 3. Press `Enter` to save, or `shift+Enter` to save and add another.
 
-- The saved task flashes and is selected in the inbox.
+- The saved task flashes and is selected when the current view shows it.
 - Invalid input keeps the line open and says why.
 - Clicking a task while the line is open discards the draft and selects that task.
 
@@ -20,7 +20,8 @@ Add a task without leaving your work: quick-add on the board, the Herdr popup, o
 Press `Tab` on the line to open the full draft in Notes. It holds the task page's fields in the same [order](/docs/task-page/#edit): notes, steps, assignee, base, after, thread, and scope.
 
 - `shift+Enter` saves.
-- `Esc` returns to the line, and `Tab` brings your details back.
+- `Esc` returns to the line. `Tab` brings your details back while the line is unchanged.
+- `Enter` on the line saves it without the details.
 
 ## Destination
 
@@ -56,7 +57,7 @@ Buy coffee !p !a
 
 - Each token takes one word. Put a bare `!p`, `!t`, or `!a` at the end, or before another token or a `#word`.
 - Tokens leave the saved title, and the remaining words join with single spaces. A title is required.
-- `!p name` must match one project the board knows: one with tasks, an archived one, or the launch repository. Otherwise the draft stays open and says so, such as `project atlss is not on the board`.
+- `!p name` must match one project the board knows: one with tasks, or the launch repository. Otherwise the draft stays open and says so, such as `project atlss is not on the board`. An archived project refuses with `project atlas is archived`.
 - `!p` creates a project only from an existing absolute directory, `/…` or `~/…`. A relative path or a file keeps the draft open.
 - `!b` is checked against the branches on disk, without fetching. An unknown branch refuses on save and keeps the draft open. [Base branch](/docs/dispatch/#base-branch).
 - `!w` takes any task number on the board, in any project. A missing or done task refuses and keeps the draft open. [After](/docs/board/#after).

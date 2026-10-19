@@ -34,7 +34,7 @@ The steps heading shows done and total.
 2. Edit its text.
 3. Press `shift+Enter` to save the task edit.
 
-`Enter` keeps the rename in the edit without saving it. A step cannot be empty: saving a cleared step shows `text required` on its row and saves nothing until you type text, remove the step, or cancel.
+`Enter` keeps the rename in the edit without saving it. A step cannot be empty. Saving a cleared step shows `text required` on its row and saves nothing until you type text, remove the step, or cancel.
 
 ## Reorder
 
@@ -42,11 +42,12 @@ Select a step and press `alt+↑` or `alt+↓` to move it one place, or run **mo
 
 ## Remove
 
-- In view mode, `ctrl+x` marks the selected step. Press it again to remove the step.
-- While editing, `ctrl+x` stages the removal and `shift+Enter` saves it. Cancelling the edit restores the step.
+- In view mode, the first `ctrl+x` marks the selected step `✗`. The second removes it.
+- While editing, `ctrl+x` hides the step until `shift+Enter` saves the removal. Cancelling the edit restores it.
 
 ## Saving and undo
 
 - New steps and moves save at once, even during a task edit. Cancelling the edit keeps them.
-- Each check, uncheck, new step, removal, move, or rename is one `ctrl+u` [undo](/docs/board/#delete-and-undo).
+- Each check, uncheck, new step, removal, or move is one `ctrl+u` [undo](/docs/board/#delete-and-undo).
+- The step changes saved by one task edit undo together, without its title or notes.
 - Agents and scripts change steps with [`tsk steps`](/docs/cli/#steps).

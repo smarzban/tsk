@@ -3,7 +3,7 @@ title: Keys
 description: Every keyboard shortcut, by surface.
 ---
 
-Every key tsk binds, by surface. Press `?` anywhere you are not typing for the same list, searchable. Clicks are on [Mouse](/docs/board/#mouse).
+Every key tsk binds, by surface. Press `?` on the board or the task page for the same list, searchable. Clicks are on [Mouse](/docs/board/#mouse).
 
 Status, edit, delete, and archive keys take `ctrl`. Bare letters move, open, and filter.
 
@@ -54,7 +54,7 @@ Group sub-headers, the inbox, and archived in the done drawer are headers.
 | Mark every task under a sub-header, unfolding it | `shift+M` |
 
 - With nothing to fold or unfold, `←` and `→` keep their usual meaning: the peek, or the wide slider.
-- `no thread`, `unassigned`, the inbox, and archived open nothing.
+- `no thread`, `unassigned`, `desk` on the desk, the inbox, and archived open nothing.
 
 ### Multi-select
 
@@ -69,7 +69,7 @@ Group sub-headers, the inbox, and archived in the done drawer are headers.
 - `ctrl+b` and `ctrl+r` send the whole set to blocked or review through one card. If every task already has that status, they all return to ready.
 - `ctrl+n` and `ctrl+o` also reopen done tasks.
 - One `ctrl+u` reverses the whole set.
-- Removing the last mark keeps multi-select on. `shift+M`, `Esc`, any task action, or a change of view leaves it and clears the marks.
+- Removing the last mark keeps multi-select on. `shift+M` on a task, `Esc`, any task action, or a change of view leaves it and clears the marks.
 - In a text field, `shift+M` types `M`.
 
 ## Cards
@@ -125,8 +125,8 @@ In view mode, before you start an edit:
 | Mark the selected step for removal, then remove it | `ctrl+x` |
 | Delete your selected reply; with nothing selected, delete the task | `ctrl+x` |
 | Assign an agent profile | `@` |
-| Expand / collapse the paper trail | `g` |
-| Expand a closed block or review round | `Enter` |
+| Expand / collapse the paper trail | `g`, or `Enter` on its heading |
+| Expand / fold a closed block or review round | `Enter` |
 | Status, undo, and archive, on this task | the [board's](#board) `ctrl` keys |
 | Command palette | `:` |
 | All keys | `?` |
@@ -159,13 +159,13 @@ On a blocked page or a review:
 | Notes: move through wrapped lines | `↑` / `↓` |
 | New step: save it and open the next row | `Enter` |
 | Existing step: keep the rename in this edit | `Enter` |
-| Add a step, with no text field open | `ctrl+a` |
+| Add a step from a selected step, **+ step**, the Scope row, or a selected Thread | `ctrl+a` |
 | Stage removal of the selected step | `ctrl+x` |
 | Open the Scope, Assignee, Base, or After picker; confirm the choice | `Enter` |
 | Cycle Scope or Assignee without opening it | `Space` or `←` / `→` |
 | Open / close the Thread editor | `Enter` |
 | Line start / end | `Home` / `End` or `ctrl+a` / `ctrl+e` |
-| Word left / right | `alt+←` / `alt+→` or `ctrl+←` / `ctrl+→` |
+| Word left / right | `alt+←` / `alt+→`, `ctrl+←` / `ctrl+→`, or `alt+b` / `alt+f` |
 | Delete a character backward / forward | `Backspace` / `Delete` |
 | Delete a word backward | `alt+Backspace` or `ctrl+w` |
 | Delete a word forward | `alt+Delete` or `alt+d` |
@@ -177,16 +177,16 @@ In the step editor, `ctrl+d` and `ctrl+o` still act on the task, and `ctrl+x` st
 - The word and line keys work in every text field: Title, Notes, steps, Thread, and quick-add.
 - A word is a run of non-space characters, as with Option+arrow in macOS. In Notes, word moves cross line breaks and a word delete stops at one.
 - In Notes, `ctrl+u` at a line start joins the line above, and `ctrl+k` at a line end joins the next line.
-- Search, the palette, Help, and pickers have no cursor. There, `alt+Backspace` and `ctrl+w` delete the query's last word, and `ctrl+u` and `ctrl+k` do nothing.
-- Outside text fields, `ctrl+u` is undo and `ctrl+a` adds a step.
+- Search, the palette, Help, and the pickers you type into have no cursor. There, `alt+Backspace` and `ctrl+w` delete the query's last word, and `ctrl+u` and `ctrl+k` do nothing.
+- Outside text fields, `ctrl+u` is undo.
 - Paste keeps line breaks in Notes and turns them into spaces in one-line fields.
 - On macOS, `Cmd+←` and `Cmd+→` arrive as `ctrl+a` and `ctrl+e`, and `Cmd+Backspace` as `ctrl+u`.
-- On macOS, Option reaches tsk only when the terminal sends it as Meta: Terminal.app's **Use Option as Meta key**, or iTerm2's Option key set to **Esc+**. If Option+B types `∫`, use `ctrl+←`, `ctrl+→`, and `ctrl+w`.
+- On macOS, Option reaches tsk only when the terminal sends it as Meta. Turn on Terminal.app's **Use Option as Meta key**, or set iTerm2's Option key to **Esc+**. If Option+B types `∫`, use `ctrl+←`, `ctrl+→`, and `ctrl+w`.
 - On Windows, AltGr letters type as characters.
 
 ### If shift+Enter does not save
 
-Some terminals send a plain line feed for `shift+Enter`, such as Ghostty with `keybind = shift+enter=text:\n`. tsk reads it as `ctrl+j`, changes nothing, and shows `Shift+Enter sent Ctrl+J: check terminal keys`. Remove the binding, or map `shift+Enter` to a sequence that keeps the Shift modifier.
+Some terminals send a plain line feed for `shift+Enter`, such as Ghostty with `keybind = shift+enter=text:\n`. tsk reads it as `ctrl+j` and changes nothing. In a form it shows `Shift+Enter sent Ctrl+J: check terminal keys`. Remove the binding, or map `shift+Enter` to a sequence that keeps the Shift modifier.
 
 ## Quick-add
 
@@ -197,16 +197,17 @@ Some terminals send a plain line feed for `shift+Enter`, such as Ghostty with `k
 | Open notes and details | `Tab` |
 | Cancel the line, or return from details | `Esc` |
 
-In the Herdr popup, `shift+Enter` saves and closes it. `Esc` discards the popup, after first closing an open step editor or picker. [Capture](/docs/capture/).
+In the Herdr popup, `shift+Enter` saves and closes it. `Esc` or `ctrl+c` discards the popup, after first closing an open step editor or picker. [Capture](/docs/capture/).
 
 ## Pickers, search, palette, help
 
 | Surface | Keys |
 | --- | --- |
-| Project picker (`p`) | `↑` / `↓` or `j` / `k` select · `Tab` or `←` / `→` switch tabs · `Enter` opens · `ctrl+f` archives · `ctrl+f` or `ctrl+u` restores on the archived tab · `Esc` or `q` closes |
+| Project picker (`p`) | `↑` / `↓` or `j` / `k` select · `Tab` or `←` / `→` switch tabs · `Enter` opens · `Esc` or `q` closes |
+| Project picker, archive | `ctrl+f` archives the selected project · on the archived tab, `ctrl+f` or `ctrl+u` restores |
 | Archived project's board | `ctrl+u` restores · `Esc`, `p`, or `1`–`3` leaves |
 | Filter and view pickers (`t`, `v`) | type to filter · `↑` / `↓` select · `Tab` or `←` / `→` switch tabs, `shift+Tab` back · `Enter` chooses · `Esc` closes |
-| Assignee and base pickers | type to filter · `↑` / `↓` or `Tab` select · `Enter` applies · `Esc` closes with no change |
+| Group, sort, assignee, and base pickers | type to filter · `↑` / `↓` or `Tab` select · `Enter` applies · `Esc` closes with no change |
 | After picker | as above, and `Space` ticks several · `Enter` applies the ticked tasks or the highlighted one · **none** clears |
 | Board search (`/`) | type or paste · `Backspace` · `Enter` pins the query · `Esc` clears and closes |
 | Palette (`:`) | type to filter · `↑` / `↓` or `Tab` / `shift+Tab` select · `Enter` runs · `Esc` closes |
@@ -214,7 +215,7 @@ In the Herdr popup, `shift+Enter` saves and closes it. `Esc` discards the popup,
 | Failed save | `r` or `Enter` retries · `c` or `Esc` cancels |
 
 - The base and after pickers have no key. Open them from the palette (**set base**, **set after (wait for)…**), the task page footer, or the edit form's Base and After fields.
-- `h`, `j`, `k`, `l`, `?`, and `/` are text in search, the filter and view pickers, the assignee, base, and after pickers, the palette, Help, and every text field.
+- `h`, `j`, `k`, `l`, `?`, and `/` are text wherever you type: text fields, search, the palette, Help, and the pickers you type into.
 
 ## Wide slider
 
@@ -247,10 +248,11 @@ With the right board focused, board keys act on that board.
 | Quit at the board root, with no confirmation | `Esc` |
 | Quit from any surface except text entry | `ctrl+q` |
 | Quit from the board, the task page, Help, or the archived-project card | `ctrl+c` |
-| Cancel a field, edit, or card | `Esc` or `ctrl+c` |
+| Cancel a field, an edit, the block or review card, or the reply box | `Esc` or `ctrl+c` |
 
-- With tasks marked, `Esc` first leaves multi-select and clears the marks. In a filter, view, assignee, or base picker it closes the picker first and keeps them.
-- At the board root, `Esc` quits from any tab. It does not go back to the desk.
+- With tasks marked, `Esc` first leaves multi-select and clears the marks. In a picker you type into, a card, or the reply box, it closes that first and keeps them.
+- At the board root, `Esc` quits from any tab. It does not go back to the desk. With the cursor on the inbox or archived header, it does nothing.
+- On an archived project's board, `Esc` returns to the desk.
 - In a wide split, `Esc` closes the right column once no editor or overlay is open. If narrowing the terminal hides the right column, `Esc` quits at once.
 - `ctrl+q` does not quit from a text field, board search, the quick-add line, the palette, the block or review card, or the reply box.
 - Unsaved work blocks quitting and closing the Projects view's right board. Save or cancel the draft first. During a failed save, retry or cancel it first.
