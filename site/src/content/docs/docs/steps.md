@@ -1,23 +1,24 @@
 ---
 title: Steps
-description: Add, check, rename, reorder, and remove checklist steps.
+description: Add, check, rename, reorder, and remove a task's checklist steps.
 ---
 
-Steps are a flat, ordered checklist. Checking every step does not complete the task.
+Steps are a task's flat, ordered checklist, on the [task page](/docs/task-page/). Checking every step does not complete the task. Step keys: [Task page keys](/docs/keys/#task-page).
 
 ## Add
 
-1. Open a task.
-2. Click **+ step**, or press `ctrl+a`.
-3. Type the step and press `Enter`.
+1. Open the task.
+2. Press `ctrl+a`, or click **+ step**.
+3. Type the step and press `Enter`. An empty row opens for the next one.
 
-While a text field is open, `ctrl+a` is line start instead; leave the field first. With a step selected, `ctrl+a` opens the new row directly below it; otherwise the step goes at the end. Clicking **+ step** always adds at the end. `Enter` saves the step and opens another empty row below the one just added, so a burst of steps keeps its typed order. `Shift+Enter` saves it and finishes any active task edit. Click elsewhere to discard an empty new-step row.
+- With a step selected, `ctrl+a` adds below it; otherwise the step goes at the end. **+ step** always adds at the end.
+- `shift+Enter` saves the step and any open task edit.
+- Click elsewhere to discard an empty row.
+- In a text field, `ctrl+a` moves to the line start. Leave the field first.
 
-New steps save independently, including during task editing. Cancelling the task edit does not undo steps already added. Each tick, untick, new step, removal, move, or new step text is one `ctrl+u` [undo](/docs/board/#delete-and-undo) step; undoing new text from a task-page save leaves that save's title and notes.
+## Check
 
-## Complete
-
-Select a step with a click, `Tab`, or the arrows. Press `Enter` to check or uncheck it.
+Select a step with `Tab`, the arrows, or a click, then press `Enter` to check or uncheck it.
 
 | Mark | Meaning |
 | --- | --- |
@@ -25,62 +26,27 @@ Select a step with a click, `Tab`, or the arrows. Press `Enter` to check or unch
 | `✓` | Done |
 | `✗` | Marked for removal |
 
-The heading shows completed/total steps. In view mode, status shortcuts change the task, not the selected step.
+The steps heading shows done and total.
 
 ## Rename
 
-1. Select a step and press `ctrl+e`.
+1. Select the step and press `ctrl+e`.
 2. Edit its text.
-3. Press `Shift+Enter` to save the task edit.
+3. Press `shift+Enter` to save the task edit.
 
-`Enter` retains the rename in the edit session without saving that session. Moving to another existing step retains the previous draft. `Esc` cancels the field; cancelling task editing restores staged changes.
-
-A step cannot be saved empty. If you clear a step's text, saving the task edit reopens that step with `text required` on its row and saves nothing until you type text, remove the step, or cancel. If a new step you typed is still open, that row keeps the editor so its text is not lost, and the status row says `a cleared step needs text` instead.
+`Enter` keeps the rename in the edit without saving it. A step cannot be empty: saving a cleared step shows `text required` on its row and saves nothing until you type text, remove the step, or cancel.
 
 ## Reorder
 
-Select a step and press `alt+↑` or `alt+↓` to move it one place. The selection follows the step. You can also press `:` and run **move step up** or **move step down**.
-
-A moved step keeps its ID, short ID, and checked state. Moves save at once, including during task editing, and skip steps staged for removal; cancelling the task edit does not undo them. `ctrl+u` on the task page puts the last move back.
-
-`alt+↑` / `alt+↓` is the one changing shortcut without `ctrl`: macOS reserves `ctrl+arrows` for Mission Control. Your terminal must send `alt+↑` as one modified key (xterm's default); a terminal set to prefix Option or Alt with `Esc` delivers `Esc` and then the arrow, which closes the task page.
+Select a step and press `alt+↑` or `alt+↓` to move it one place, or run **move step up** or **move step down** from the palette. The step keeps its checked state, and the selection follows it. [Terminal setup for `alt+↑`](/docs/keys/#task-page).
 
 ## Remove
 
-| Mode | Action |
-| --- | --- |
-| Task view | Select a step; press `ctrl+x` to mark it, then again to remove it |
-| Task editing | Select a step; `ctrl+x` stages removal; `Shift+Enter` saves |
+- In view mode, `ctrl+x` marks the selected step. Press it again to remove the step.
+- While editing, `ctrl+x` stages the removal and `shift+Enter` saves it. Cancelling the edit restores the step.
 
-Cancelling task editing restores staged removals.
+## Saving and undo
 
-## Navigate
-
-- In view mode, `Tab` / `Shift+Tab` cycle steps and **+ step**.
-- `↓` activates the first stored step; arrows then move between steps.
-- During task editing, `Tab` includes the task fields.
-- While adding a step, arrows scroll the page.
-- Wheel and scrollbar remain available during editing.
-
-## CLI
-
-Use the task number and the step's short ID from direct JSON output:
-
-```sh
-tsk list T12 --json
-tsk steps T12 add "Reproduce the timeout"
-tsk steps T12 add "Capture a trace" --after <step-short-id>
-tsk steps T12 toggle <step-short-id>
-tsk steps T12 rename <step-short-id> "Reproduce on a slow connection"
-tsk steps T12 move <step-short-id> --before <other-short-id>
-tsk steps T12 move <step-short-id> --first
-tsk steps T12 remove <step-short-id>
-```
-
-`add` takes an optional place and `move` requires one: `--before <step-short-id>`, `--after <step-short-id>`, `--first`, or `--last`. Placing a step relative to itself refuses with `same-step`.
-
-A short ID is the shortest unique prefix of a step ID. Full UUIDs also work.
-
-Read the task again with `tsk list T12 --json` before retrying an uncertain change. Repeating `add` adds another step; repeating `toggle` reverses it; repeating `remove` refuses after success. Repeating the same rename or move is safe.
-
-Deleted tasks refuse step changes. [CLI errors and exit codes](/docs/cli/#exit-contract).
+- New steps and moves save at once, even during a task edit. Cancelling the edit keeps them.
+- Each check, uncheck, new step, removal, move, or rename is one `ctrl+u` [undo](/docs/board/#delete-and-undo).
+- Agents and scripts change steps with [`tsk steps`](/docs/cli/#steps).

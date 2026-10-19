@@ -1,49 +1,40 @@
 ---
 title: Capture
-description: Add a task without leaving your work.
+description: Add a task from the board, a Herdr popup, or the terminal.
 ---
 
-Press `+` or click **+ add**. Type a title, then press `Enter`. On the website demo, the capture footer actions are clickable. New captures land in the **inbox** with status `open`.
+Add a task without leaving your work: quick-add on the board, the Herdr popup, or `tsk capture`. New tasks land in the **inbox** with status `open`. Every key: [Quick-add keys](/docs/keys/#quick-add).
 
 ## Quick-add
 
-| Key | Action |
-| --- | --- |
-| `Enter` | Save and close |
-| `Shift+Enter` | Save and add another |
-| `Tab` | Add notes and details |
-| `Esc` | Cancel |
+1. Press `+` or click **+ add**. The board stays visible.
+2. Type a title, with [title tokens](#title-tokens) if you like.
+3. Press `Enter` to save, or `shift+Enter` to save and add another.
 
-The board stays visible. A saved task flashes and becomes selected in the inbox. Invalid input stays open with an explanation.
-
-Clicking a task while the quick-add line is open discards the draft and selects that task.
+- The saved task flashes and is selected in the inbox.
+- Invalid input keeps the line open and says why.
+- Clicking a task while the line is open discards the draft and selects that task.
 
 ## Details
 
-Press `Tab` from quick-add to add notes, steps, an assignee, a base branch, the tasks it runs after, a thread, or a scope. The draft uses the full pane and opens in Notes. Its forward field ring is Title → Notes → steps → **+ step** → Assignee → Base → After → Thread → Scope → Title; `Shift+Tab` reverses it. The footer uses that same left-to-right order. In a project preview, its title stays in the right-column header while Notes is active.
+Press `Tab` on the line to open the full draft in Notes. It holds the task page's fields in the same [order](/docs/task-page/#edit): notes, steps, assignee, base, after, thread, and scope.
 
-- `Enter` in Notes starts a new line; the footer says `enter new line` when the pane is wide enough for it.
-- `Shift+Enter` saves.
-- `Esc` returns to the quick-add line.
-- `Tab` from the line restores your draft details.
-
-Scroll to reach steps below long notes. Typing brings the notes cursor back into view.
+- `shift+Enter` saves.
+- `Esc` returns to the line, and `Tab` brings your details back.
 
 ## Destination
 
 | Where you add | Default destination |
 | --- | --- |
 | Project board | That project |
-| Desk or Projects | The board's launch repository inside Git; desk outside Git |
-| Herdr quick-capture popup | The focused pane's repository inside Git; desk outside Git |
+| Desk or Projects view | The board's launch repository inside Git; desk outside Git |
+| Herdr popup | The focused pane's repository inside Git; desk outside Git |
 
-Use title tokens or the draft's scope control to change the destination. Archived projects cannot receive new tasks.
-
-Keeping an archived launch project archived changes the session's default to desk.
+Title tokens or the draft's Scope field change the destination. Archived projects cannot receive new tasks. Launching inside an archived project: [Done drawer and archive](/docs/board/#done-drawer-and-archive).
 
 ## Title tokens
 
-Add a project, thread, assignee, base branch, or the tasks it runs after while typing the title:
+Set a project, thread, assignee, base branch, or the tasks to run after while you type the title:
 
 ```text
 Fix login timeout !p atlas !t auth !a reviewer !b main
@@ -51,29 +42,24 @@ Ship the release notes !w T202 !w T205
 Buy coffee !p !a
 ```
 
-| Token | Destination, thread, assignee, base, or after |
+| Token | Sets |
 | --- | --- |
 | `!p` | Desk |
-| `!p name` | Existing project uniquely matching that basename, ignoring case |
-| `!p /path` | Existing absolute directory, creating a project there if needed |
+| `!p name` | The existing project with that basename, ignoring case |
+| `!p /path` | An existing absolute directory, creating a project there if needed |
 | `!t` | No thread |
-| `!t name` | Named thread |
+| `!t name` | That thread |
 | `!a` | Unassigned |
-| `!a name` | Exact configured agent profile name, normalized to lowercase |
-| `!b branch` | Explicit dispatch base branch in the task's project repository |
-| `!w T202` | Run after T202 ("wait for"); repeat for several. `!w 202` works too |
+| `!a name` | That agent profile, lowercased; it must exist |
+| `!b branch` | The dispatch base: an existing local or remote branch in the task's repository |
+| `!w T202` | Run after T202 ("wait for"). Repeat for several. `!w 202` works too |
 
-Each token takes one whitespace-separated argument. Put bare `!p`, `!t`, or `!a` at the end, or before another token. A following `#word` also leaves the token bare.
-
-`!b` takes an existing local or remote branch, such as `dispatch` or `origin/dispatch`, not a tag or commit. The board checks it against the branches already on disk without fetching: an unknown branch refuses on save and keeps the draft open, and the Base picker can fetch newer branches first. With no base, [dispatch](/docs/board/#base-branch) uses the repository's default branch (`origin/HEAD`). Choose **default** in the Base picker to clear a staged base.
-
-`!w T202`: run after T202. It takes a task number in any project or on the desk; a task that is not on the board or already done refuses and keeps the draft open. The task [waits](/docs/board/#after) until every task it runs after is done.
-
-Tokens are removed from the saved title. Remaining words are joined with single spaces. A title is required.
-
-A bare project name must match exactly one project the board already knows: a project with tasks, an archived project, or the repository you launched from. A missing or ambiguous name leaves the draft open and names the problem, for example `project atlss is not on the board`.
-
-Use an absolute existing directory (`/…` or `~/…`) to create a new project destination. Relative paths and paths that are not directories leave the draft open; the destination row keeps showing the last valid destination.
+- Each token takes one word. Put a bare `!p`, `!t`, or `!a` at the end, or before another token or a `#word`.
+- Tokens leave the saved title, and the remaining words join with single spaces. A title is required.
+- `!p name` must match one project the board knows: one with tasks, an archived one, or the launch repository. Otherwise the draft stays open and says so, such as `project atlss is not on the board`.
+- `!p` creates a project only from an existing absolute directory, `/…` or `~/…`. A relative path or a file keeps the draft open.
+- `!b` is checked against the branches on disk, without fetching. An unknown branch refuses on save and keeps the draft open. [Base branch](/docs/dispatch/#base-branch).
+- `!w` takes any task number on the board, in any project. A missing or done task refuses and keeps the draft open. [After](/docs/board/#after).
 
 ## Thread names
 
@@ -83,36 +69,30 @@ Thread names are lowercased and must:
 - Contain only ASCII letters, digits, `-`, or `.`.
 - Be at most 32 characters.
 
-Invalid names leave the draft open with the rule that failed.
+An invalid name keeps the draft open and says which rule failed.
 
-## Quick capture
+## Herdr quick capture
 
-In Herdr, press **prefix+a** after [setup](/docs/install/#add-to-herdr). A popup opens with Title focused.
+In Herdr, press `prefix+a` after [setup](/docs/install/#add-to-herdr). A popup opens with the title focused, prefilled with any text selected in the pane you came from.
 
-| Action | Result |
-| --- | --- |
-| Type or edit the title | Name the task |
-| Add notes, a thread, an assignee, a base, or steps | Include details before saving |
-| `Shift+Enter` | Save and close the popup |
-| `Esc` | Discard and close |
+- `shift+Enter` saves and closes the popup.
+- `Esc` discards it, after first closing an open step editor or picker.
+- A failed save keeps the draft open to retry or cancel.
 
-If a step editor or scope picker is open, `Esc` closes that first. During save recovery, it cancels the pending save.
-
-Selected text from the invoking pane prefills the title. An archived launch project falls back to desk. A failed save keeps the draft open for retry or cancel.
-
-You can also invoke the popup explicitly:
+To open the popup from a script:
 
 ```sh
 herdr plugin action invoke quick-capture --plugin herdr-tsk
 ```
 
-For the same capture flow in your terminal, run `tsk capture`. `TSK_MODE=capture tsk` is equivalent. Captured tasks start `open`.
+## In the terminal
+
+`tsk capture` opens the same capture flow in your terminal, as does `TSK_MODE=capture tsk`. It exits after a save or a discard.
 
 ## From an agent or script
 
 ```sh
 tsk add -t "Fix login timeout" --thread auth
-# the new task starts open; use tsk status T<n> ready when you pick it
 ```
 
-[CLI options](/docs/cli/#add) · [Editing tasks](/docs/task-page/)
+The task starts `open`. [`tsk add`](/docs/cli/#add) lists every option.

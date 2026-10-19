@@ -96,7 +96,7 @@ test("docs and demo describe the wide stage slider and threshold", async () => {
   assert.match(board, /four-stage slider/);
   assert.match(board, /\| Task \| Task details beside a narrow board rail \|/);
   assert.doesNotMatch(board, /bordered|cyan/);
-  assert.match(keys, /Wide stage slider/);
+  assert.match(keys, /## Wide slider/);
   assert.match(keys, /\| Full screen \| No change \| Task with rail \|/);
   assert.doesNotMatch(keys, /cyan/);
   assert.match(taskPage, /110 usable columns/);

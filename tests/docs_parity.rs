@@ -385,7 +385,7 @@ fn keys_md_board_table_matches_the_normal_mode_keymap() {
 fn keys_md_step_editor_chords_match_the_edit_step_keymap() {
     let doc = read_doc("keys.md");
     assert!(
-        doc.contains("In the step editor, `ctrl+d` and `ctrl+o` still address the task; `ctrl+x` removes the step being edited, staged until the task edit is saved; `Enter` in a new step saves it and opens the next row."),
+        doc.contains("In the step editor, `ctrl+d` and `ctrl+o` still act on the task, and `ctrl+x` stages the step's removal until the task edit is saved."),
         "keys.md step-editor sentence changed; update this test with the code it now claims"
     );
     let chord = |letter: char| {
