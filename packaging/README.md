@@ -1,10 +1,11 @@
 # Native distribution
 
-The GitHub `Prepare release` workflow is manually dispatched and creates a **draft**, never a published release. Publishing and changing repository visibility require owner approval.
+How tsk is built, packaged, and released, for maintainers. This file owns the release
+steps. The user-facing install guide is [install.md](https://gettsk.sh/docs/install/).
 
 ## Artifacts
 
-Each stable `vX.Y.Z` release has six archives:
+Each stable `vX.Y.Z` release carries six archives, each built natively:
 
 | Target | Build runner | Format |
 | --- | --- | --- |
@@ -15,112 +16,296 @@ Each stable `vX.Y.Z` release has six archives:
 | `aarch64-pc-windows-msvc` | `windows-11-arm` | `.zip` |
 | `x86_64-pc-windows-msvc` | `windows-2025` | `.zip` |
 
-Unix archives are named `tsk-vX.Y.Z-<target>.tar.gz`, containing `tsk`, `LICENSE`, and `README.md` at the archive root. Windows archives are named `tsk-vX.Y.Z-<target>.zip`, containing `tsk.exe`, `LICENSE`, and `README.md`. macOS builds set `MACOSX_DEPLOYMENT_TARGET=11.0`. Linux builds use a native musl compiler rather than depending on the runner's glibc version. Both Windows architectures are built and tested natively with MSVC. Actual minimum-OS installation still needs release smoke testing, not just a successful compile.
+- Unix archives are `tsk-vX.Y.Z-<target>.tar.gz`, holding `tsk`, `LICENSE`, and `README.md`
+  at the root. Windows archives are `tsk-vX.Y.Z-<target>.zip`, holding `tsk.exe`,
+  `LICENSE`, and `README.md`.
+- macOS builds set `MACOSX_DEPLOYMENT_TARGET=11.0`. Linux builds use a native musl
+  compiler, independent of the runner's glibc. Both Windows architectures build and test
+  natively with MSVC.
+- `SHA256SUMS` covers the six archives plus `install.sh` and `install.ps1`.
+- `tsk.rb`, the Homebrew formula, pins the four Unix archives by URL and SHA-256.
+- tsk is not published to crates.io: `Cargo.toml` keeps `publish = false`.
 
-`SHA256SUMS` covers all six archives plus `install.sh` and `install.ps1`. `tsk.rb` remains generated from only the four Unix archive digests. This is checksum verification over HTTPS, not code signing or independent publisher authentication. The checksum file and binaries share the GitHub trust boundary.
+## Build locally
 
-## Local packaging
-
-Python 3.11+ is required for maintainer scripts, not end-user installation. Set `TSK_TEST_BINARY` to a built binary to include the installer binary smoke and setup PTY test; Rust CI runs these after its release build. The installer workflow runs packaging tests and ShellCheck on installer, release-script, or packaging-test changes without rebuilding Rust.
+Python 3.11+ is needed for the maintainer scripts, not for users.
 
 ```sh
 python3 -m unittest discover -s tests/packaging
 shellcheck site/public/install.sh
-python3 scripts/release.py check-version v0.5.0
+python3 scripts/release.py check-version vX.Y.Z
 ```
 
-`check-version` requires the tag to match `Cargo.toml`, the `tsk-tui` entry in `Cargo.lock`, `herdr-plugin.toml`, and `site/src/version.mjs`; the workflow runs it first, so a partial bump fails before anything is built.
+- `check-version` requires the tag to match `Cargo.toml`, the `tsk-tui` entry in
+  `Cargo.lock`, `herdr-plugin.toml`, and `site/src/version.mjs`. The workflow runs it
+  first, so a partial bump fails before anything is built.
+- Set `TSK_TEST_BINARY` to a built binary to add the installer binary smoke and the setup
+  PTY test.
+- The `Installer` workflow runs the packaging tests and ShellCheck on installer,
+  release-script, or packaging-test changes, without rebuilding Rust. Rust CI runs the
+  binary smokes after its release build.
 
-For a real release, use its actual stable tag and matching Cargo version, not the example above. Build from that tag with `cargo build --release --locked --target <target>`, then:
+To package by hand, build from the release tag with
+`cargo build --release --locked --target <target>`, then:
 
 ```text
 python3 scripts/release.py package <tag> <target> <binary-path> <output-directory>
 python3 scripts/release.py assemble <tag> <output-directory>
 ```
 
-Package refuses to overwrite an archive. Assemble requires all six platform archives and validates their contents before writing checksums or a formula. It refuses existing files or symlinks for every output (`install.sh`, `install.ps1`, `SHA256SUMS`, `tsk.rb`); use a clean output directory. These commands do not build or validate the machine architecture of a supplied binary; the workflow's native build matrix owns that contract. Do not feed one host binary into multiple targets for a real release.
+- `package` refuses to overwrite an archive.
+- `assemble` requires all six archives and validates their contents before writing
+  checksums or a formula. It refuses an existing file or symlink at every output
+  (`install.sh`, `install.ps1`, `SHA256SUMS`, `tsk.rb`): use a clean output directory.
+- Neither checks a binary's machine architecture; the workflow's native build matrix owns
+  that. Never feed one host binary into several targets for a real release.
 
-## Owner-gated release sequence
+## Release steps
 
-1. Review and merge the packaging, choose the next version, and update the crate, lockfile, plugin and site version together. Obtain approval before pushing the stable tag. The old `v0.5.0` tag does not include this workflow's scripts and cannot be used to package this change.
-2. Confirm Actions runner availability and billing, then run `Prepare release` from the reviewed workflow with that existing tag. It resolves the tag once to a commit, uses the same commit for every platform, tests the target build, and checks that the tag has not moved before creating a draft. There is no automatic tag creation, public publishing, or replacement of existing releases. A tiny tag-move race remains between the final check and GitHub creating the draft: inspect the draft tag before publishing and enable GitHub immutable releases when available.
-3. Review the `release-bundle` workflow artifact and draft assets. To rehearse the real user flow, flip the draft to a **pre-release** rather than publishing: `gh release edit vX.Y.Z --draft=false --prerelease`. GitHub excludes pre-releases from `releases/latest`, so default installers and the board's update nudge keep pointing at the previous stable release, while the assets become public. The pre-release is listed on `/releases` with a `Pre-release` badge and notifies release watchers; only a draft is fully hidden, and a draft cannot serve installer downloads. Test Unix with the pinned installer and isolated state: `TSK_VERSION=vX.Y.Z TSK_INSTALL_DIR=/tmp/tsk-rc/bin sh -c "$(curl -fsSL https://gettsk.sh/install.sh)"`. Test Windows 10/11 ARM64 and x64 with the matching release asset: `Invoke-WebRequest https://github.com/smarzban/tsk/releases/download/vX.Y.Z/install.ps1 -OutFile "$env:TEMP\install-tsk.ps1"; $env:TSK_VERSION='vX.Y.Z'; $env:TSK_INSTALL_DIR="$env:TEMP\tsk-rc\bin"; powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-tsk.ps1"`. Test the formula from the asset: `gh release download vX.Y.Z -p tsk.rb -D /tmp/tsk-rc && HOMEBREW_DEVELOPER=1 brew install --formula /tmp/tsk-rc/tsk.rb`. Test installation on every supported architecture, including a locked Windows self-update. The public one-liners and cross-platform smokes are owner steps after promotion. Do not run `tsk update` on a pre-release copy before promotion: it follows `releases/latest`, still the previous stable. A failed rehearsal burns the tag, fix forward with the next patch version. Replace the draft checklist with actual release notes, inspect interrupted drafts before deleting anything.
-4. Obtain approval to make the source repository publicly accessible if still private, and publish the release: from a pre-release rehearsal that is `gh release edit vX.Y.Z --prerelease=false --latest`, no rebuild, the tested assets are the shipped assets. The anonymous installer cannot download private or draft assets. Mark the intended stable release as latest; the installer uses GitHub's latest-release redirect, not a semantic-version sort or `main`.
-5. Create the public `smarzban/homebrew-tap` repository with approval, using `packaging/homebrew/` as its scaffold. Put the generated `tsk.rb` in `Formula/tsk.rb`, test it, then commit and push. Repeat the formula update for every release, only after that release's assets exist publicly. No cross-repository write token is configured here.
-6. Before publishing Windows instructions, confirm `releases/latest` exposes both Windows ZIPs, `SHA256SUMS`, and `install.ps1`. Then smoke the exact public commands on clean machines: `curl -fsSL https://gettsk.sh/install.sh | sh` and, in a Windows PowerShell 5.1 window, `irm https://www.gettsk.sh/install.ps1 | iex`. Confirm the PowerShell URL returns the script with HTTP 200 rather than a redirect or HTML response. Smoke the tap too.
+1. **Bump the version (one PR).** Update `Cargo.toml`, `Cargo.lock`, `herdr-plugin.toml`,
+   and `site/src/version.mjs` together. Rename the `CHANGELOG.md` Unreleased section to
+   `## vX.Y.Z` and open a fresh, empty Unreleased above it. Append an `[[announcement]]` to
+   `src/announcements/catalog.toml` if the release deserves a board notice.
+   `python3 scripts/release.py check-version vX.Y.Z` must pass. Merge.
+2. **Tag.** With maintainer approval, push the stable tag `vX.Y.Z`. Tags match
+   `v[0-9]+.[0-9]+.[0-9]+` only: the workflow, `release.py`, and both installers refuse
+   anything else, so there are no `-rc` tags.
+3. **Build the draft.** Confirm Actions runner availability and billing, then dispatch
+   `Prepare release` with the existing tag. It pins the tag to one commit, tests and builds
+   the six targets from it, and creates a **draft** holding the archives, `SHA256SUMS`,
+   both installers, and a version-pinned `tsk.rb`. It refuses a moved tag or an existing
+   release, and never publishes or updates the tap. The draft is named with
+   `--title "$TAG"`: an unnamed GitHub release shows the tagged commit's subject instead.
+4. **Check the draft.** Review the `release-bundle` workflow artifact and the draft assets,
+   and confirm the draft's tag still points at the built commit.
+5. **Make it a pre-release**, not a release:
+   `gh release edit vX.Y.Z --draft=false --prerelease`. GitHub excludes pre-releases from
+   `releases/latest`, so installers and the board's update nudge stay on the previous
+   stable while the assets are public. A pre-release is listed on `/releases` with a
+   `Pre-release` badge and notifies watchers. Only a draft is fully hidden, and a draft
+   cannot serve installer downloads.
+6. **Rehearse the user flows** with isolated state (see [Rehearsal traps](#rehearsal-traps)).
+   Unix installer, then the formula from the release asset:
 
-## User contracts
+   ```sh
+   TSK_VERSION=vX.Y.Z TSK_INSTALL_DIR=/tmp/tsk-rc/bin sh -c "$(curl -fsSL https://gettsk.sh/install.sh)"
+   env TSK_STATE_DIR=/tmp/tsk-rc/state /tmp/tsk-rc/bin/tsk
+   gh release download vX.Y.Z -p tsk.rb -D /tmp/tsk-rc && HOMEBREW_DEVELOPER=1 brew install --formula /tmp/tsk-rc/tsk.rb
+   ```
 
-On Unix, the installer uses `curl`, `tar`, `sed`, and `sha256sum` or `shasum`. It detects the running OS/architecture (an Intel/Rosetta shell selects Intel), defaults to `~/.local/bin`, and accepts `TSK_INSTALL_DIR` and a public `TSK_VERSION=vX.Y.Z` release tag. It verifies the selected archive before staging and atomically replacing the executable. It refuses a symlink or directory at the destination rather than modifying a package-manager-owned installation. After installation, it appends a duplicate-safe PATH entry for Bash (`~/.bashrc` and the first existing login profile, default `~/.profile`) or Zsh (`${ZDOTDIR-$HOME}/.zshrc`) when needed. It never sources startup files or overwrites their content, and leaves symlinked, non-regular or unwritable files alone with manual guidance. Unsupported shells also get manual guidance. PATH coaching prints reopen/export guidance when needed. When `herdr` is already on PATH, an interactive install (stdin TTY or usable `/dev/tty`) asks whether to run the newly installed `tsk setup herdr`, and when agent skill roots are detected asks once to install or update the tsk skill; `CI` or no TTY skips the ask so the install never hangs. The install closes with one `Done.` line, followed by setup nudges where needed. A custom `TSK_INSTALL_DIR` skips both asks. Setup failure does not undo the binary install. Install paths cannot contain PATH separators (colon/newline). Task data is untouched. `tsk update` runs the installer with `TSK_UPDATE=1` and `TSK_CURRENT_VERSION`, then refreshes existing Herdr and skill integrations.
+   Windows 10/11, ARM64 and x64, from the release asset:
 
-On Windows 10/11 ARM64 or x64, run `irm https://www.gettsk.sh/install.ps1 | iex` in a PowerShell window (Windows PowerShell 5.1 or PowerShell 7), or download the script first when using options. It detects the native architecture, including from an emulated x64 PowerShell process, and selects the matching release ZIP. `-Help` prints offline syntax for CI and users. It defaults to `%LOCALAPPDATA%\Programs\tsk\bin`, accepts `TSK_INSTALL_DIR` and a public `TSK_VERSION` tag, bounds HTTPS redirects, time, downloaded bytes, and expanded bytes, then verifies the ZIP against `SHA256SUMS` before extraction. It adds the install directory to user PATH without changing machine PATH or duplicating the entry, preserving the raw value and its registry string kind; `-NoPathUpdate` skips that change. A PATH write failure does not turn an installed binary into a failed install; manual guidance is printed. It rejects reparse-point and directory destinations. First-install Herdr and agent setup prompts, noninteractive skips, custom-directory behavior, and the closing block match the Unix installer. Initial installs and ordinary upgrades use a same-volume atomic replacement. In `TSK_UPDATE` mode, when Windows locks the running executable, the installer leaves the verified executable staged and launches a detached stock Windows PowerShell helper; the helper waits for `TSK_UPDATE_PID` to exit and then atomically replaces `tsk.exe`. Paths containing semicolon or newline are refused. Task data is untouched.
+   ```powershell
+   Invoke-WebRequest https://github.com/smarzban/tsk/releases/download/vX.Y.Z/install.ps1 -OutFile "$env:TEMP\install-tsk.ps1"
+   $env:TSK_VERSION='vX.Y.Z'; $env:TSK_INSTALL_DIR="$env:TEMP\tsk-rc\bin"
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-tsk.ps1"
+   ```
 
-Homebrew follows the formula's explicit release URLs and SHA-256 values. A release alone does not update Homebrew. Homebrew installs are noninteractive and do not run the curl installer's Herdr prompt; the formula caveat tells users to run `tsk setup herdr` and `tsk setup agents`. Uninstall through the channel used to install: `brew uninstall tsk`, or remove the installer-created executable. Neither should delete `~/.tsk`.
+   - The site serves both installers from `main`. If one changed in this release, fetch
+     that installer from `releases/download/vX.Y.Z/` instead.
+   - Smoke `tsk setup herdr` under isolated roots ([AGENTS.md](../AGENTS.md#isolated-state)).
+   - Rehearse the update path against a throwaway `HOME` holding an outdated skill and a
+     Herdr config on a custom key:
+
+     ```sh
+     env HOME=/tmp/x/home XDG_CONFIG_HOME=/tmp/x/home/.config HERDR_SOCKET_PATH=/tmp/x/none.sock \
+       TSK_VERSION=vX.Y.Z TSK_UPDATE=1 TSK_CURRENT_VERSION=vPREV TSK_INSTALL_DIR=/tmp/x/bin \
+       sh /tmp/x/install.sh
+     ```
+
+   - Install on every supported architecture, including a locked Windows self-update.
+7. **If the rehearsal fails**, the tag is burnt: fix forward with the next patch version.
+   Leave the bad pre-release, or delete it with approval. Inspect an interrupted draft
+   before deleting anything.
+8. **Write the notes.** Replace the draft's skeleton and checklist with the version's
+   `CHANGELOG.md` section verbatim, dropping empty subsections. Keep the one-line Install
+   section.
+9. **Promote** the tested assets, no rebuild:
+   `gh release edit vX.Y.Z --prerelease=false --latest`. Confirm
+   `https://github.com/smarzban/tsk/releases/latest` redirects to the new tag: installers
+   follow that redirect, not a version sort or `main`.
+10. **Update the tap.** Then, and only then, copy the generated `tsk.rb` to
+    `Formula/tsk.rb` in `smarzban/homebrew-tap`, test it, and push. A release alone never
+    updates Homebrew, and no cross-repository token is configured here.
+    `packaging/homebrew/README.md` is the tap's README and maintenance checklist.
+11. **Smoke the public flows** on clean machines:
+    - `releases/latest` exposes both Windows ZIPs, `SHA256SUMS`, and `install.ps1`.
+    - `curl -fsSL https://gettsk.sh/install.sh | sh`
+    - In a Windows PowerShell 5.1 window, `irm https://www.gettsk.sh/install.ps1 | iex`.
+      The URL returns the script with HTTP 200, not a redirect or HTML.
+    - `brew install smarzban/tap/tsk`
+
+### Rehearsal traps
+
+- Never run `tsk update` on a pre-release copy before promotion. It follows
+  `releases/latest`, still the previous stable, so it downgrades the binary, and the
+  downgraded binary then refuses the store the pre-release migrated.
+- Never point a candidate binary at a store you did not create for the rehearsal. Pass the
+  state override as `env TSK_STATE_DIR=… /path/tsk`. In a Herdr pane, read until an idle
+  prompt first: a pending shell prompt can eat the first character of a `VAR=value`
+  prefix, and the candidate then opens and migrates the real `~/.tsk`.
+- `brew install --formula tsk.rb` on a machine with the tap's `tsk` installed replaces the
+  daily copy (same formula name) and removes the old keg. Use a throwaway machine, or
+  `brew unlink` first and expect to `brew reinstall smarzban/tap/tsk` afterwards.
+
+### Who runs what
+
+- Maintainer steps: pushing the tag, `Prepare release`, publishing, the tap, the public
+  installer flows, and the Linux, Intel, and both Windows architecture smokes.
+- An agent sandbox cannot execute a downloaded script, and the checked-in rehearsal can
+  only run the macOS ARM archive binary directly. An agent verifies the checksums, the
+  archive binary, the upgrade path, and setup, and says which of these it did not run.
+
+## Installer contracts
+
+What the installers promise; `tsk update` and support answers rely on it. The user-facing
+description lives in [install.md](https://gettsk.sh/docs/install/).
+
+| Contract | `install.sh` (macOS, Linux) | `install.ps1` (Windows 10/11) |
+| --- | --- | --- |
+| Needs | `curl`, `tar`, `sha256sum` or `shasum`, and standard POSIX tools | Windows PowerShell 5.1 or PowerShell 7, 64-bit |
+| Platform | From `uname`; an Intel or Rosetta shell selects Intel | Native architecture, even from an emulated x64 PowerShell |
+| Default directory | `~/.local/bin` | `%LOCALAPPDATA%\Programs\tsk\bin` |
+| Options | `TSK_INSTALL_DIR` (absolute), `TSK_VERSION=vX.Y.Z` (a public release tag) | The same, plus `-Help` (offline syntax) and `-NoPathUpdate` |
+| Download | Archive verified against `SHA256SUMS` before staging | Redirects, time, downloaded and expanded bytes bounded; ZIP verified against `SHA256SUMS` before extraction |
+| Replace | Atomic | Same-volume atomic |
+| Refuses | A symlink or directory at the destination; a path containing `:` or a newline | A reparse point or directory at the destination; a path containing `;`, CR, or a newline |
+| PATH | A duplicate-safe entry for Bash (`~/.bashrc` and the first existing login profile, default `~/.profile`) or Zsh (`${ZDOTDIR-$HOME}/.zshrc`). Never sources or overwrites startup files. Symlinked, non-regular, or unwritable files and other shells get manual guidance | User PATH only, without duplicates, keeping the raw value and its registry string kind. A failed write prints guidance; the install still succeeds |
+| Asks | When interactive (stdin TTY or a usable `/dev/tty`): run `tsk setup herdr` if `herdr` is on PATH, and install or update the agent skill once if skill roots exist. `CI` or no TTY skips the asks; a custom `TSK_INSTALL_DIR` skips both on install | The same |
+| Finish | One `Done.` line, then setup nudges | The same |
+| Never | Undoes the binary when setup fails; touches task data | The same |
+
+`tsk update` downloads the platform installer and runs it with `TSK_UPDATE=1`,
+`TSK_CURRENT_VERSION`, and `TSK_INSTALL_DIR` set to the running binary's directory. A
+Homebrew install gets `brew upgrade` guidance instead.
+
+- In update mode the installer refreshes integrations: a Herdr registration that binds
+  both plugin commands is refreshed without asking, even under `CI`; otherwise the usual
+  ask applies. It reads `tsk setup herdr --check` and `tsk setup --skill-states` for this
+  (stable probes; see AGENTS.md, Host integration).
+- On Windows, when the running `tsk.exe` is locked, the installer stages the verified
+  binary and starts a detached Windows PowerShell helper. The helper waits for
+  `TSK_UPDATE_PID` to exit, then replaces `tsk.exe` atomically. The installer refuses while
+  other `tsk.exe` processes run from the same path.
+
+### Homebrew
+
+- The formula follows explicit release URLs and SHA-256 values.
+- Homebrew installs are noninteractive and never run the curl installer's asks. The
+  formula caveat tells users to run `tsk setup herdr` and `tsk setup agents`.
+- Uninstall through the channel used to install: `brew uninstall tsk`, or remove the
+  installer-created executable. Neither deletes `~/.tsk`.
+
+## Herdr setup internals
+
+How `tsk setup herdr` edits Herdr's config and registers the plugin. What users see is in
+[install.md](https://gettsk.sh/docs/install/).
+
+### Config and safe writes
+
+- Setup requires Herdr 0.9+ on PATH, or Herdr's `0.9.0-preview.*` Windows build, checked
+  with `herdr --version` before any write. An older host is refused with an update
+  message.
+- Config path: `HERDR_CONFIG_PATH`, else `$XDG_CONFIG_HOME/herdr/config.toml`, else
+  `~/.config/herdr/config.toml`. On Windows the fallback is `%APPDATA%\herdr\config.toml`.
+  Empty values count as unset.
+- A symlinked config file or config directory (dotfiles managers) is followed: setup edits
+  the link's target in place and keeps the link. The staged candidate, atomic rename, and
+  backup land beside the real file; generated assets and the lock stay beside the
+  configured path. A dangling or looping link is refused before any read or write.
+- On Unix an open directory descriptor anchors every write, backup, rename, and cleanup,
+  so a replaced parent cannot redirect them. Windows refuses reparse-point ancestors and
+  final paths around each operation.
+- A kernel lock on `.tsk-setup.lock` serializes setup: a concurrent run fails at once, and
+  the lock is released on process death. The file stays on disk and does not mean a setup
+  is running.
+
+### Plugin assets
+
+- The embedded manifest and launchers are written to `tsk-plugins/<content-hash>` beside
+  the config. The hash is FNV-1a-64 over versioned, length-prefixed UTF-8 asset names and
+  contents, not Rust's implementation-dependent `DefaultHasher`. The manifest includes the
+  crate version, so an upgrade changes the root.
+- Herdr 0.9.0 replaces registrations by plugin ID: the online handler inserts into its
+  ID-keyed map, and the offline CLI removes entries with that ID before inserting the
+  replacement. Setup checks the new registration before removing the intact old managed
+  root.
+- Setup never calls `plugin unlink herdr-tsk` after linking: that would unlink the new
+  registration. Explicit setup replaces an existing `herdr-tsk` link.
+- Source-checkout and other installation roots are never removed, and a missing prior root
+  needs no cleanup. Modified stale assets are kept and reported with their path.
+- When the previously registered root no longer exists (a rehearsal that relinked the live
+  Herdr to a temp dir), setup says so on stderr before re-registering.
+- Setup keeps the invoked binary path, such as the unversioned Homebrew symlink, not its
+  canonical Cellar target. Board and capture share it. Reopen boards after a binary
+  upgrade.
+
+References: Herdr 0.9.0
+[`handle_plugin_link`](https://github.com/herdrdev/herdr/blob/v0.9.0/src/app/api/plugins/mod.rs)
+and [`persist_plugin_offline`](https://github.com/herdrdev/herdr/blob/v0.9.0/src/cli/plugin.rs).
+
+### Shortcuts and backups
+
+- The shortcut planner keeps the configured prefix and unrelated settings. It asks before
+  replacing each conflicting `prefix+t` / `prefix+a` binding; declining keeps that
+  shortcut. A noninteractive conflict aborts before any filesystem or host change.
+- An accepted builtin override left with no bindings is removed, restoring Herdr's
+  default.
+- Herdr checks the candidate config before registration. The existing config is staged as
+  a temporary backup before linking and the config is replaced atomically afterwards.
+  Then the backup is promoted to `config.toml.tsk-backup-<YYYYMMDD-HHMMSS>` in UTC (`-1`,
+  `-2`, … when that second already has one).
+- A failed link removes the temporary backup. A failed config replace or backup promotion
+  names any recovery copy it kept.
+- A registration failure leaves the config intact; a later failure names the partial
+  state. Success prints any backup path and the shortcuts; the content-addressed root
+  appears only in error messages.
+- Shortcuts apply after `herdr server reload-config` or a Herdr restart.
+
+### Upgrades
+
+`tsk update` refreshes a registration that already binds both plugin commands without
+asking. Otherwise its installer asks as on a fresh install; `tsk setup herdr` updates the
+manifest and launchers at any time.
+
+### Remove or recover
+
+To remove the integration:
+
+1. Close the board and its popups.
+2. Run `herdr plugin unlink herdr-tsk`.
+3. Remove its two command bindings.
+4. Reload the config.
+
+- Restore a setup backup only if it will not discard later edits.
+- Removing the binary alone leaves Herdr config and `~/.tsk` intact.
+- A failed asset integrity check names the file to inspect. Never erase an unrelated
+  checkout or package-manager installation to recover setup.
+- Smoke tests isolate state as [AGENTS.md](../AGENTS.md#isolated-state) says. Never relink
+  a daily plugin for a test.
+
+## Accepted risks
+
+- **Checksums, not signatures.** `SHA256SUMS` over HTTPS is not code signing or independent
+  publisher authentication: the checksum file and the binaries share GitHub's trust
+  boundary.
+- **Tag-move race.** A small window remains between the workflow's last tag check and
+  GitHub creating the draft. Inspect the draft's tag before publishing, and enable GitHub
+  immutable releases when available.
+- **Minimum OS.** A successful compile does not prove installation on the minimum OS;
+  release smoke tests it.
+- **Workflow wiring.** Artifact and draft-handoff tests do not prove the native runner
+  matrix; the maintainer-run release smoke is that check.
+- **Herdr config ancestors.** On Unix, existing symlinks among the config path's ancestors
+  are trusted; a linked config file or directory is resolved first, then fd-pinned.
+  Rejecting a symlinked `~/.config` would break common dotfile setups, and Herdr follows
+  that ancestor too. Symlinks inside `tsk-plugins` and at `.tsk-setup.lock` are refused.
+- **Install directory.** `TSK_INSTALL_DIR` is a trusted location: anyone who can swap it
+  can replace the executable directly, so protecting it is the user's boundary.
+- **Plugin root hash.** FNV-1a detects changes; it is not cryptographic authentication.
 
 ## References
 
 - [Homebrew tap structure](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap)
 - [Formula configuration and tests](https://docs.brew.sh/Formula-Cookbook)
 - [GitHub runner images](https://github.com/actions/runner-images)
-
-crates.io publishing is separate task T29. `publish = false` remains in Cargo.toml.
-
-## Herdr setup and upgrades
-
-`tsk setup herdr` requires Herdr 0.9+ on PATH, or Herdr's supported `0.9.0-preview.*` Windows build, checked from `herdr --version` before any write; an older host is refused with an update message. It uses `HERDR_CONFIG_PATH`, otherwise
-`$XDG_CONFIG_HOME/herdr/config.toml`, otherwise `~/.config/herdr/config.toml`.
-Empty config-path environment values are treated as unset. A symlinked config file or config directory (dotfiles managers) is followed: setup edits the link's target in place and never replaces the link. The staged candidate, atomic rename and backup land beside the real file; generated assets and the lock stay beside the configured path. A dangling or looping config link is refused before any read or write. On Unix, an open directory descriptor anchors all setup writes, backups, renames and cleanup, so a replaced parent cannot redirect them. Windows refuses reparse-point ancestors and final paths around each operation. A kernel lock on `.tsk-setup.lock` serializes setup and is released on process death. The lock file
-stays on disk and does not imply a running setup.
-
-The embedded manifest and launchers are materialized in `tsk-plugins/<content-hash>`
-beside that config. The root name uses fixed FNV-1a-64 over versioned, length-prefixed UTF-8 asset names and contents, not Rust's implementation-dependent DefaultHasher. This is change detection, not cryptographic authentication. The manifest includes the crate version, so upgrading changes
-the root. Herdr 0.9.0 replaces registrations by plugin ID: the online handler inserts
-into its ID-keyed map; the offline CLI removes entries with that ID then inserts
-the replacement. Setup checks the new registration before removing the intact old
-managed root. It does not call `plugin unlink herdr-tsk` after linking: that would
-unlink the new registration. Source-checkout and other installation roots are never
-removed. A missing prior root needs no cleanup. Modified stale assets are retained and reported with their path.
-
-References: Herdr 0.9.0
-[`handle_plugin_link`](https://github.com/herdrdev/herdr/blob/v0.9.0/src/app/api/plugins/mod.rs)
-and [`persist_plugin_offline`](https://github.com/herdrdev/herdr/blob/v0.9.0/src/cli/plugin.rs).
-
-Setup retains the invoked binary path, including the unversioned Homebrew symlink,
-not its canonical Cellar target. Board and capture share it. Reopen boards after a
-binary upgrade. `tsk update` reruns setup for a registration that already binds both
-plugin commands; otherwise rerun `tsk setup herdr` to update the manifest and launchers.
-Explicit setup replaces an existing `herdr-tsk` link.
-
-The shortcut planner preserves the configured prefix and unrelated settings.
-It asks before replacing each conflicting prefix+t / prefix+a binding. Declining
-keeps that shortcut; a noninteractive conflict aborts before filesystem or host
-changes. If an accepted builtin override has no remaining bindings, it is removed,
-restoring Herdr's default. Candidate config is checked by Herdr before registration;
-existing config bytes are staged in a temporary backup before linking. The config is replaced atomically afterward, then the backup is promoted to its final timestamped name, `config.toml.tsk-backup-<YYYYMMDD-HHMMSS>` in UTC (`-1`, `-2`, ... when that second already has a backup). A failed link removes the temporary backup; a config replacement or backup-promotion failure names any retained recovery copy.
-Registration failure leaves config intact; post-registration failures identify the
-partial state. Success prints any backup path and the shortcuts; the content-addressed
-plugin root appears only in error messages. When the previously registered root no longer
-exists on disk (a rehearsal that relinked the live Herdr to a temp dir), setup says so on
-stderr before re-registering. Reload config with `herdr server reload-config` or restart
-Herdr to apply shortcuts.
-
-To remove integration, close its board/popups, run `herdr plugin unlink herdr-tsk`,
-remove its two command bindings, and reload config. Restore a setup backup only if
-it will not discard later edits. Removing the binary alone leaves Herdr config and
-`~/.tsk` intact.
-
-For isolated smoke tests, override XDG config/state roots **and** `HERDR_SOCKET_PATH`,
-as well as `TSK_STATE_DIR`. `HERDR_CONFIG_PATH` alone does not
-isolate Herdr's running session or plugin registry. Never relink a daily plugin for
-a test. A failed asset integrity check names the file to inspect; do not erase an
-unrelated checkout or package-manager installation to recover setup.
-
-Review scope decisions (F-1/F-7/F-16, F-6, F-11): ancestor symlinks in the Herdr
-config path are trusted; a linked config file or config directory is resolved first, and
-the resolved directory is then fd-pinned. Symlinks inside the generated `tsk-plugins`
-tree and at `.tsk-setup.lock` are refused. Rejecting a symlinked `~/.config` would break common dotfile
-setups, and Herdr follows that ancestor too. `TSK_INSTALL_DIR` is likewise a trusted
-installation location: an attacker who can swap it can replace the executable
-directly, so protecting that directory is the owner's boundary (F-6). F-11 is an
-accepted workflow-wiring coverage limitation: artifact and draft-handoff tests do
-not prove the native runner matrix; owner-run release smoke remains that check.
