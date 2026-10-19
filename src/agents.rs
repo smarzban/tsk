@@ -22,9 +22,11 @@ static CONFIG_TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 /// the quoted default prompt must stay equal to [`DEFAULT_PROMPT`] (pinned by a test).
 pub const STARTER_CONFIG: &str = r##"# tsk configuration
 #
-# Agent profiles let you assign a task to an agent (`!a name` or `@`).
-# Starting an assigned task (ctrl+s) launches it: tsk creates a git worktree
-# for the task, opens a Herdr workspace there, and runs the profile's command.
+# Agent profiles let you assign a task to an agent (`@` or `!a name`).
+# In Herdr, starting an assigned project task (ctrl+s) dispatches it: tsk
+# creates a git worktree for the task, opens a Herdr workspace there, and runs
+# the profile's command. Outside Herdr, or on a desk task, a start only sets
+# the status.
 #
 # Any agent that runs in a terminal works, including ones not listed here.
 # A profile needs only:
@@ -41,7 +43,7 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 #   KEY = "value"
 #
 # Placeholders, usable in `command` and `prompt`:
-#   {number}    task number, e.g. 158
+#   {number}    task number, e.g. 12
 #   {title}     task title
 #   {notes}     task notes
 #   {steps}     task steps, one per line as [ ] or [x]
@@ -76,20 +78,22 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 
 # --- Examples using the default prompt -------------------------------------
 
+# Flags follow the program, for example a model: ["codex", "--model", "<model>"].
+
 # [agent.claude]
 # command = ["claude"]
 
-# [agent.sol]
-# command = ["codex", "--model", "gpt-6.1-sol"]
+# [agent.codex]
+# command = ["codex"]
 
-# [agent.pi-opus]
-# command = ["pi", "--model", "anthropic/claude-opus-5-5", "--thinking", "high"]
+# [agent.pi]
+# command = ["pi"]
 
 # --- Examples with their own prompt -----------------------------------------
 
 # A quick fixer for small tasks, with the task text inlined.
 # [agent.grok]
-# command = ["grok", "--model", "grok-4.7"]
+# command = ["grok"]
 # prompt = """
 # Fix T{number}: {title}
 #
@@ -101,9 +105,8 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 # then set the task to review.
 # """
 
-# Any other terminal agent: put its program and flags in `command`.
-# `env` sets environment variables for that agent only. For example, mark
-# the agent's commits so they are easy to tell apart from yours.
+# Any other terminal agent: its program and flags go in `command`. `env` sets
+# variables for that agent only, here to mark its commits as the agent's.
 # Do not put API keys here: this file is plain text.
 # [agent.my-agent]
 # command = ["my-agent", "--some-flag"]
@@ -119,12 +122,9 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 # [agent.claude-win]
 # command = ['C:\Users\you\.local\bin\claude.exe']
 
-# [agent.pi-win]
-# command = ["pi", "--model", "anthropic/claude-opus-5-5", "--thinking", "high"]
-
 # --- Merging a task's pull request ------------------------------------------
 
-# `m` on the cleanup card (and `tsk status N done --merge`) merges the task's
+# `m` on the cleanup card (or `tsk status T12 done --merge`) merges the task's
 # open pull request with the GitHub CLI (`gh`), then marks the task done and
 # cleans up. `method` is "merge" (the default), "squash", or "rebase".
 # [merge]
@@ -147,12 +147,12 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 
 # --- Backups ------------------------------------------------------------------
 
-# Copies of tsk.json and this file to a git repository. `tsk backup setup`
-# makes a private GitHub repository with the GitHub CLI and adds it; `tsk
-# backup add <git-url>` adds any other repository. Both write these entries and
-# run a first backup; `tsk backup list` shows how each went; `tsk restore` puts a
-# version back. tsk uses your own `git` and its credentials. Backups hold your
-# task notes, so keep the repository private.
+# Saves copy tsk.json and this file (without `env` values) to a git
+# repository, using your own `git` and its credentials. `tsk backup setup`
+# makes a private GitHub repository with `gh`; `tsk backup add <git-url>` adds
+# any other. Both write an entry like the one below. `tsk backup list` shows
+# how each went, and `tsk restore` puts a version back. Backups hold your task
+# notes: keep the repository private.
 #   every  "save" (the default) or "daily"
 # [[backup]]
 # url = "git@github.com:you/tsk-backup.git"
@@ -1441,15 +1441,7 @@ then set review again."
         let profiles = AgentProfiles::parse(&examples).expect("uncommented examples parse");
         assert_eq!(
             profiles.names().collect::<Vec<_>>(),
-            [
-                "claude",
-                "claude-win",
-                "grok",
-                "my-agent",
-                "pi-opus",
-                "pi-win",
-                "sol"
-            ]
+            ["claude", "claude-win", "codex", "grok", "my-agent", "pi"]
         );
         assert_eq!(
             profiles.get("claude-win").expect("windows example").command,
@@ -1465,7 +1457,7 @@ then set review again."
             profiles.get("my-agent").expect("generic example").env["GIT_AUTHOR_NAME"],
             "my-agent (via tsk)"
         );
-        assert!(profiles.get("sol").expect("sol").prompt.is_none());
+        assert!(profiles.get("codex").expect("codex").prompt.is_none());
     }
 
     #[test]
