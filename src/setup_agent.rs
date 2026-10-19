@@ -11,7 +11,12 @@ use crate::cli::guide::SKILL_MD;
 const SKILL_FOLDER: &str = "tsk-cli";
 const SKILL_FILE: &str = "SKILL.md";
 
-pub const USAGE: &str = "usage: tsk setup [herdr | agents | claude | pi | omp | cursor | grok | codex | opencode | --skill-dir <path>] [--yes] [--force] [--json]\n       tsk setup --detected-ids | --skill-states\n       tsk setup herdr --check";
+pub const USAGE: &str = "usage: tsk setup [--json]
+       tsk setup herdr [--check]
+       tsk setup agents [--yes [--force]] [--json]
+       tsk setup <agent> [--force] [--json]
+       tsk setup --skill-dir <path> [--force] [--json]
+       tsk setup --detected-ids | --skill-states";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {

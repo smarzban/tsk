@@ -23,6 +23,11 @@ fn human_reason(reason: &str) -> String {
     terminal_text(reason)
 }
 
+/// One command's `--help`. Every command uses one set of group headings, in this order:
+/// `Arguments` (positional values), `Actions` (subcommands), flag groups named for what they
+/// select or the status they go with (`Scope`, `Filters`, `Arrange`, `Place`, `Started`,
+/// `Done`, `Blocked`, `Review`), `Options` (every other flag), then `Output`. Examples fit on
+/// one 80-column line, so none wraps mid-command.
 struct HelpDoc {
     usage: Vec<String>,
     purpose: String,
@@ -41,9 +46,10 @@ impl HelpDoc {
     fn render(self) -> String {
         const WIDTH: usize = 80;
         let mut output = String::new();
+        // A wrapped form hangs deeper than the next form starts, so each form reads as one.
         for (index, usage) in self.usage.iter().enumerate() {
             let prefix = if index == 0 { "usage: " } else { "       " };
-            append_usage_wrapped(&mut output, prefix, "       ", usage, WIDTH);
+            append_usage_wrapped(&mut output, prefix, "           ", usage, WIDTH);
         }
         output.push('\n');
         append_help_wrapped(&mut output, "", "", &self.purpose, WIDTH);
@@ -75,7 +81,7 @@ impl HelpDoc {
         if !self.refusals.is_empty() {
             output.push_str("\nRefusals (exit 1):\n");
             for refusal in &self.refusals {
-                append_help_wrapped(&mut output, "  ", "  ", refusal, WIDTH);
+                append_help_wrapped(&mut output, "  ", "    ", refusal, WIDTH);
             }
         }
         if !self.exit.is_empty() {
@@ -104,6 +110,78 @@ fn group(heading: &str, options: &[(&str, &str)]) -> HelpGroup {
     }
 }
 
+/// Usage lines shared by a command's `--help` and its usage errors, so the two never disagree.
+const ADD_USAGE: &[&str] = &[
+    "tsk add -t <title> [-n <notes>] [-p <project> | --desk] [--thread <name>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--json] [--state-dir <dir>]",
+    "tsk add [--file <path|->] [--state-dir <dir>]",
+];
+const LIST_USAGE: &[&str] = &[
+    "tsk list [<task>] [-p <project> | --desk | --all] [--thread <name> | --no-thread] [--assignee <name>] [--open | --ready | --done | --deleted | --archived] [--group <by>] [--sort <by>] [--json] [--state-dir <dir>]",
+];
+const STATUS_USAGE: &[&str] = &[
+    "tsk status <task> <status> [--state-dir <dir>]",
+    "tsk status <task> started [--no-dispatch | --again] [--force]",
+    "tsk status <task> done [--clean | --merge]",
+    "tsk status <task> blocked [--why <text>] [--needs <text>] [--option <text>]... [--on <who>]",
+    "tsk status <task> review [--done <text>] [--check <text>]... [--next <text>] [--on <who>]",
+];
+const EDIT_USAGE: &[&str] = &[
+    "tsk edit <task> [--title <title>] [--notes <notes>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--after <task>]... [--clear-after] [--state-dir <dir>]",
+];
+const STEPS_USAGE: &[&str] = &[
+    "tsk steps <task> add <text> [<place>] [--state-dir <dir>]",
+    "tsk steps <task> toggle <step-short-id> [--state-dir <dir>]",
+    "tsk steps <task> rename <step-short-id> <text> [--state-dir <dir>]",
+    "tsk steps <task> move <step-short-id> <place> [--state-dir <dir>]",
+    "tsk steps <task> remove <step-short-id> [--state-dir <dir>]",
+];
+const REPLY_USAGE: &[&str] = &["tsk reply <task> <text> [--send] [--state-dir <dir>]"];
+const DISPATCH_USAGE: &[&str] =
+    &["tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]"];
+const CLEAN_USAGE: &[&str] = &["tsk clean <task> [--merge] [--json] [--state-dir <dir>]"];
+const PROJECT_USAGE: &[&str] = &[
+    "tsk project archive <name> [--state-dir <dir>]",
+    "tsk project unarchive <name> [--state-dir <dir>]",
+];
+const TRASH_USAGE: &[&str] = &["tsk trash restore <task> [--state-dir <dir>]"];
+const BACKUP_USAGE: &[&str] = &[
+    "tsk backup setup [--repo <name>] [--state-dir <dir>]",
+    "tsk backup [now] [--state-dir <dir>]",
+    "tsk backup add <git-url> [--every <when>] [--state-dir <dir>]",
+    "tsk backup list [--state-dir <dir>]",
+    "tsk backup remove <target> [--state-dir <dir>]",
+];
+const RESTORE_USAGE: &[&str] = &["tsk restore [<version>] [--all] [--state-dir <dir>]"];
+
+fn lines(usage: &[&str]) -> Vec<String> {
+    usage.iter().map(|line| (*line).to_string()).collect()
+}
+
+/// `usage: <first>` then each further form indented under it.
+fn usage_block(usage: &[impl AsRef<str>]) -> String {
+    usage
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let prefix = if index == 0 { "usage: " } else { "       " };
+            format!("{prefix}{}\n", line.as_ref())
+        })
+        .collect()
+}
+
+/// A usage error: the reason, then every usage form of the command (exit 2).
+fn usage_error(verb: &str, reason: &str, usage: &[&str]) -> CliOutput {
+    CliOutput {
+        stdout: String::new(),
+        stderr: format!(
+            "tsk {verb}: {}\n{}",
+            human_reason(reason),
+            usage_block(usage)
+        ),
+        code: 2,
+    }
+}
+
 fn exit_line(success: &str, refusal: Option<&str>, store_io: bool) -> String {
     let mut clauses = vec![format!("0 {success}")];
     if let Some(refusal) = refusal {
@@ -120,25 +198,25 @@ pub fn top_level_help() -> String {
     concat!(
         "usage: tsk [capture] | <command> [args] | help [<command>] | --help | --version\n\n",
         "Tasks\n",
-        "  add      create one task or apply a JSON plan\n",
-        "  list     inspect tasks\n",
-        "  status   set a task's human status, block it, or put it up for review\n",
-        "  reply    answer a blocked task, or give feedback on a review\n",
-        "  dispatch hand a task to its assigned agent\n",
-        "  clean    remove a dispatched worktree safely\n",
-        "  edit     update a task's title or notes\n",
-        "  steps    add, toggle, rename, move, or remove one step on a task\n\n",
+        "  add      create a task, or every task in a JSON plan\n",
+        "  list     read tasks\n",
+        "  status   set a task's status, block it, or put it up for review\n",
+        "  edit     change a task's title, notes, assignee, base, or after list\n",
+        "  steps    add, toggle, rename, move, or remove a step\n",
+        "  reply    answer a block, or give feedback on a review\n",
+        "  dispatch launch a task's assigned agent in its own worktree\n",
+        "  clean    remove a dispatched task's worktree and merged branch\n\n",
         "Board\n",
-        "  archive    keep a task off the working views\n",
+        "  archive    hide a task from the working views\n",
         "  unarchive  put an archived task back\n",
         "  project    archive or unarchive a project\n",
-        "  trash      restore a trashed task\n",
+        "  trash      restore a deleted task\n",
         "  backup     back the store up to a git repository\n",
         "  restore    put a backed-up version of the store back\n\n",
         "Setup\n",
-        "  setup    register herdr, or install the agent skill\n",
+        "  setup    register Herdr, or install the agent skill\n",
         "  update   install the latest stable release\n",
-        "  guide    print the agent workflow skill\n\n",
+        "  guide    print the agent workflow\n\n",
         "Statuses\n",
         "  open     captured, not yet picked (inbox)\n",
         "  ready    picked, up next (on deck)\n",
@@ -165,44 +243,129 @@ pub fn help_usage(reason: &str) -> CliOutput {
 
 pub fn add_help() -> CliOutput {
     help(HelpDoc {
-        usage: vec![
-            "tsk add -t <title> [-n <notes>] [-p <project> | --desk] [--thread <name>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--json] [--state-dir <dir>]".into(),
-            "tsk add [--file <path|->] [--state-dir <dir>]".into(),
-        ],
-        purpose: "Create one task or apply a JSON plan.".into(),
+        usage: lines(ADD_USAGE),
+        purpose: "Create one task, or every task in a JSON plan.".into(),
         groups: vec![
-            group("Scope", &[("-p, --project <project>", "create in a project"), ("--desk", "create on your desk")]),
-            group("Output", &[("--json", "print one result object for a flag add")]),
-            group("Values", &[("-t, --title <title>", "required task title"), ("-n, --notes <notes>", "optional notes"), ("--thread <name>", "optional normalized thread"), ("--assignee <name>", "assign a defined agent profile"), ("--unassign", "leave the task unassigned"), ("--base <branch>", "set an existing project branch as the dispatch base"), ("--clear-base", "use the project's remote default branch"), ("--file <path|->", "read a JSON plan from a file or stdin"), ("--state-dir <dir>", "use another board store"), ("--flag=<value>", "use equals syntax for dash-leading title, notes, project, state-dir, or file values")]),
+            group(
+                "Scope",
+                &[
+                    (
+                        "-p, --project <project>",
+                        "a project on the board, or an absolute path",
+                    ),
+                    ("--desk", "the desk"),
+                ],
+            ),
+            group(
+                "Options",
+                &[
+                    ("-t, --title <title>", "the title (required without a plan)"),
+                    ("-n, --notes <notes>", "notes"),
+                    ("--thread <name>", "a thread label"),
+                    ("--assignee <name>", "an agent profile from config.toml"),
+                    ("--unassign", "create without an assignee"),
+                    (
+                        "--base <branch>",
+                        "dispatch from this existing branch of the project",
+                    ),
+                    ("--clear-base", "dispatch from the project's default branch"),
+                    (
+                        "--file <path|->",
+                        "read a JSON plan from a file, or - for stdin",
+                    ),
+                    ("--state-dir <dir>", "use another board store"),
+                    ("--flag=<value>", "use = for a value that starts with -"),
+                ],
+            ),
+            group(
+                "Output",
+                &[("--json", "print the result as JSON (a plan always does)")],
+            ),
         ],
-        examples: vec!["tsk add -t \"Draft release notes\"".into(), "tsk add -t \"Buy milk\" --desk".into(), "tsk add -t \"Fix widget\" --project widget --thread release-2026".into(), "tsk add --file plan.json".into(), "cat plan.json | tsk add".into()],
+        examples: vec![
+            "tsk add -t \"Draft release notes\"".into(),
+            "tsk add -t \"Buy milk\" --desk".into(),
+            "tsk add -t \"Fix login timeout\" -p atlas --thread auth".into(),
+            "tsk add --file plan.json".into(),
+            "cat plan.json | tsk add".into(),
+        ],
         refusals: vec![
-            "empty-title".into(),
-            "invalid-title".into(),
-            "invalid-thread (JSON plan)".into(),
-            "invalid-item (JSON plan)".into(),
-            "invalid-after (JSON plan)".into(),
-            "unknown-project".into(),
-            "unknown-agent".into(),
-            "unknown-base".into(),
-            "project-archived".into(),
+            "empty-title, invalid-title, unknown-project, project-archived".into(),
+            "unknown-agent, unknown-base".into(),
+            "in a plan item: invalid-item, invalid-thread, invalid-after".into(),
         ],
-        exit: exit_line("every item was created or already existed", Some("one or more items refused, retry failed only"), true),
+        exit: exit_line(
+            "every item created or already there",
+            Some("an item refused; retry only the failed items"),
+            true,
+        ),
     })
 }
 
 pub fn list_help(_terminal_width: Option<usize>) -> CliOutput {
     help(HelpDoc {
-        usage: vec!["tsk list [<task>] [-p <project> | --desk | --all] [--thread <name> | --no-thread] [--assignee <name>] [--open | --ready | --done | --deleted | --archived] [--group <by>] [--sort <by>] [--json] [--state-dir <dir>]".into()],
-        purpose: "Inspect tasks in the selected scope, or one task anywhere in the live store.".into(),
+        usage: lines(LIST_USAGE),
+        purpose: "Read the tasks in a scope, or one task in full.".into(),
         groups: vec![
-            group("Scope", &[("-p, --project <project>", "select a project"), ("--desk", "select your desk"), ("--all", "select every scope")]),
-            group("Filters", &[("<task>", "a task number or UUID, not combined with filters"), ("--thread <name>", "filter within the selected scope"), ("--no-thread", "show only tasks without a thread"), ("--assignee <name>", "filter by exact assignee"), ("--open, --ready", "show inbox or picked on-deck tasks"), ("--done, --archived", "show done or archived tasks"), ("--deleted", "show soft-deleted and trashed tasks")]),
-            group("Arrange", &[("--group <by>", "group live tasks under each status: none, project (with --all), thread, or assignee"), ("--sort <by>", "order rows: recent, project (with --all), thread, title, or assignee")]),
-            group("Output", &[("--json", "print machine-readable task rows, flat, in listed order")]),
-            group("Values", &[("--state-dir <dir>", "use another board store"), ("--project=<scope>", "use equals syntax for a dash-leading project or state-dir value")]),
+            group(
+                "Arguments",
+                &[(
+                    "<task>",
+                    "a task number or UUID: that task in full, wherever it is; takes no scope, filter, or arrange flag",
+                )],
+            ),
+            group(
+                "Scope",
+                &[
+                    ("-p, --project <project>", "a project"),
+                    ("--desk", "the desk"),
+                    ("--all", "every project and the desk"),
+                ],
+            ),
+            group(
+                "Filters",
+                &[
+                    ("--thread <name>", "only tasks on this thread"),
+                    ("--no-thread", "only tasks without a thread"),
+                    ("--assignee <name>", "only tasks assigned to this agent profile"),
+                    ("--open, --ready", "only open, or only ready, tasks"),
+                    ("--done, --archived", "done or archived tasks instead"),
+                    ("--deleted", "deleted tasks instead"),
+                ],
+            ),
+            group(
+                "Arrange",
+                &[
+                    (
+                        "--group <by>",
+                        "group live tasks under each status: none, project (with --all), thread, or assignee",
+                    ),
+                    (
+                        "--sort <by>",
+                        "order live tasks: recent, project (with --all), thread, title, or assignee",
+                    ),
+                ],
+            ),
+            group(
+                "Options",
+                &[
+                    ("--state-dir <dir>", "use another board store"),
+                    ("--flag=<value>", "use = for a value that starts with -"),
+                ],
+            ),
+            group(
+                "Output",
+                &[("--json", "print the rows as one JSON array, in listed order")],
+            ),
         ],
-        examples: vec!["tsk list".into(), "tsk list T12".into(), "tsk list --all --json".into(), "tsk list --archived --all".into(), "tsk list --all --thread release --json".into(), "tsk list --all --group project --sort title".into()],
+        examples: vec![
+            "tsk list".into(),
+            "tsk list T12".into(),
+            "tsk list --all --json".into(),
+            "tsk list --all --thread release --json".into(),
+            "tsk list --all --group project --sort title".into(),
+            "tsk list --archived --all".into(),
+        ],
         refusals: Vec::new(),
         exit: exit_line("tasks listed", None, true),
     })
@@ -267,14 +430,7 @@ pub fn plan(result: crate::cli::add::PlanResult) -> CliOutput {
 }
 
 pub fn usage(reason: &str) -> CliOutput {
-    CliOutput {
-        stdout: String::new(),
-        stderr: format!(
-            "tsk add: {}\nusage: tsk add -t <title> [-n <notes>] [-p <project> | --desk] [--thread <name>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--json] [--state-dir <dir>]\n",
-            human_reason(reason)
-        ),
-        code: 2,
-    }
+    usage_error("add", reason, ADD_USAGE)
 }
 
 pub fn list(result: ListResult, json: bool, terminal_width: Option<usize>) -> CliOutput {
@@ -1190,35 +1346,40 @@ fn path_segments(path: &str) -> Vec<String> {
 
 pub fn steps_help() -> CliOutput {
     help(HelpDoc {
-        usage: vec![
-            "tsk steps <task> add <text> [<place>] [--state-dir <dir>]".into(),
-            "tsk steps <task> toggle <step-short-id> [--state-dir <dir>]".into(),
-            "tsk steps <task> rename <step-short-id> <text> [--state-dir <dir>]".into(),
-            "tsk steps <task> move <step-short-id> <place> [--state-dir <dir>]".into(),
-            "tsk steps <task> remove <step-short-id> [--state-dir <dir>]".into(),
-        ],
+        usage: lines(STEPS_USAGE),
         purpose: "Add, toggle, rename, move, or remove one step on a task.".into(),
         groups: vec![
+            group(
+                "Arguments",
+                &[
+                    ("<task>", "a task number or UUID"),
+                    (
+                        "<step-short-id>",
+                        "the step's short_id from tsk list <task> --json, or any prefix of its id that only it has",
+                    ),
+                    ("<text>", "the step's text"),
+                ],
+            ),
+            group(
+                "Actions",
+                &[
+                    ("add", "add a step, at the bottom unless placed"),
+                    ("toggle", "check or uncheck a step"),
+                    ("rename", "replace a step's text"),
+                    ("move", "move a step to a place"),
+                    ("remove", "delete a step"),
+                ],
+            ),
             group(
                 "Place",
                 &[
                     ("--before <step-short-id>", "directly above that step"),
                     ("--after <step-short-id>", "directly below that step"),
                     ("--first", "at the top"),
-                    ("--last", "at the bottom (add's default)"),
+                    ("--last", "at the bottom"),
                 ],
             ),
-            group(
-                "Values",
-                &[
-                    ("<task>", "a task number or UUID"),
-                    (
-                        "<step-short-id>",
-                        "an unambiguous prefix from tsk list <task> --json",
-                    ),
-                    ("--state-dir <dir>", "use another board store"),
-                ],
-            ),
+            group("Options", &[("--state-dir <dir>", "use another board store")]),
         ],
         examples: vec![
             "tsk steps T12 add \"Write the failing test\"".into(),
@@ -1228,13 +1389,8 @@ pub fn steps_help() -> CliOutput {
             "tsk steps T12 move a3 --first".into(),
         ],
         refusals: vec![
-            "empty-step-text".into(),
-            "invalid-step-text".into(),
-            "unknown-task".into(),
-            "soft-deleted-task".into(),
-            "unknown-step".into(),
-            "ambiguous-step".into(),
-            "same-step".into(),
+            "unknown-task, soft-deleted-task, empty-step-text, invalid-step-text".into(),
+            "unknown-step, ambiguous-step, same-step".into(),
         ],
         exit: exit_line(
             "step created, toggled, renamed, moved, or removed",
@@ -1282,14 +1438,11 @@ pub fn steps(result: StepsResult) -> CliOutput {
 }
 
 pub fn steps_usage(reason: &str) -> CliOutput {
-    CliOutput {
-        stdout: String::new(),
-        stderr: format!(
-            "tsk steps: {}\nusage: tsk steps <task> add <text> [<place>] | toggle <step-short-id> | rename <step-short-id> <text> | move <step-short-id> <place> | remove <step-short-id> [--state-dir <dir>]\nplace: --before <step-short-id> | --after <step-short-id> | --first | --last\n",
-            human_reason(reason)
-        ),
-        code: 2,
-    }
+    let mut output = usage_error("steps", reason, STEPS_USAGE);
+    output
+        .stderr
+        .push_str("place: --before <step-short-id> | --after <step-short-id> | --first | --last\n");
+    output
 }
 
 /// Human tail for a task-verb refusal, painted after its stable code as
@@ -1343,96 +1496,83 @@ pub(crate) fn status_name(status: HumanStatus) -> &'static str {
 
 pub fn dispatch_help() -> CliOutput {
     help(HelpDoc {
-        usage: vec!["tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]".into()],
-        purpose: "Create a project worktree and launch the task's assigned agent in Herdr.".into(),
-        groups: vec![group(
-            "Options",
-            &[
-                (
-                    "--again",
-                    "relaunch, recreating a cleaned worktree when needed",
-                ),
-                (
-                    "--base <branch>",
-                    "use an existing project branch for this launch only",
-                ),
-                ("--state-dir <dir>", "use another board store"),
-            ],
-        )],
-        examples: vec!["tsk dispatch T12".into(), "tsk dispatch 12 --again".into()],
-        refusals: vec![
-            "unknown-task".into(),
-            "soft-deleted-task".into(),
-            "no-assignee".into(),
-            "not-in-herdr".into(),
-            "unsupported-platform".into(),
-            "unsafe-state-dir".into(),
-            "needs-git-project".into(),
-            "done-task".into(),
-            "archived-task".into(),
-            "already-dispatched".into(),
-            "unknown-agent".into(),
-            "agent-config".into(),
-            "unknown-base".into(),
-            "no-default-base".into(),
-            "herdr-failed".into(),
+        usage: lines(DISPATCH_USAGE),
+        purpose: "Launch the task's assigned agent in its own worktree and Herdr workspace, then set the task started.".into(),
+        groups: vec![
+            group("Arguments", &[("<task>", "a task number or UUID")]),
+            group(
+                "Options",
+                &[
+                    (
+                        "--again",
+                        "relaunch a dispatched task, recreating its worktree if it was cleaned",
+                    ),
+                    (
+                        "--base <branch>",
+                        "start from this existing branch, for this launch only",
+                    ),
+                    ("--state-dir <dir>", "use another board store"),
+                ],
+            ),
         ],
-        exit: exit_line(
-            "task dispatched",
-            Some("dispatch refused, nothing persisted"),
-            true,
+        examples: vec![
+            "tsk dispatch T12".into(),
+            "tsk dispatch T12 --base main".into(),
+            "tsk dispatch T12 --again".into(),
+        ],
+        refusals: vec![
+            "unknown-task, soft-deleted-task, done-task, archived-task".into(),
+            "no-assignee, unknown-agent, agent-config, already-dispatched".into(),
+            "not-in-herdr, needs-git-project, unknown-base, no-default-base, herdr-failed".into(),
+            "Windows: unsupported-platform, unsafe-state-dir".into(),
+        ],
+        exit: format!(
+            "{} (code store-error)",
+            exit_line(
+                "task dispatched",
+                Some("dispatch refused, nothing persisted"),
+                true,
+            )
         ),
     })
 }
 
 pub fn clean_help() -> CliOutput {
     help(HelpDoc {
-        usage: vec!["tsk clean <task> [--merge] [--json] [--state-dir <dir>]".into()],
-        purpose: "Remove a clean dispatched worktree, keeping an unmerged branch. A branch whose pull request GitHub merged (squash or rebase) at its exact tip counts as merged when gh is available. --merge first merges the task's open pull request, then marks the task done and cleans.".into(),
+        usage: lines(CLEAN_USAGE),
+        purpose: "Remove a dispatched task's worktree, and inside Herdr its workspace, without changing its status. The branch is deleted only when it is merged into the recorded base; with gh, a pull request merged at the branch tip counts.".into(),
         groups: vec![
+            group("Arguments", &[("<task>", "a task number or UUID")]),
             group(
                 "Options",
                 &[
                     (
                         "--merge",
-                        "merge the task's pull request with gh (config.toml [merge] method), then done and clean",
+                        "first merge the task's pull request with gh, then set it done and clean",
                     ),
-                    ("--json", "print one machine-readable cleanup result"),
                     ("--state-dir <dir>", "use another board store"),
                 ],
             ),
-            group(
-                "Store failures",
-                &[("store-error (exit 3)", "verify the task with tsk list")],
-            ),
+            group("Output", &[("--json", "print the result as one JSON object")]),
         ],
         examples: vec![
             "tsk clean T12".into(),
-            "tsk clean 12 --json".into(),
+            "tsk clean T12 --json".into(),
             "tsk clean T12 --merge".into(),
         ],
         refusals: vec![
-            "unknown-task".into(),
-            "not-dispatched".into(),
-            "already-cleaned".into(),
-            "dirty-worktree".into(),
-            "worktree-mismatch".into(),
-            "files-in-use".into(),
-            "path-too-long".into(),
-            "removal-timed-out".into(),
-            "partly-removed".into(),
-            "herdr-failed".into(),
-            "gh-unavailable".into(),
-            "no-pr".into(),
-            "pr-not-open".into(),
-            "pr-base-mismatch".into(),
-            "merge-failed".into(),
-            "merge-config".into(),
+            "unknown-task, not-dispatched, already-cleaned, dirty-worktree".into(),
+            "worktree-mismatch, herdr-failed".into(),
+            "Windows: files-in-use, path-too-long, removal-timed-out, partly-removed".into(),
+            "--merge: gh-unavailable, no-pr, pr-not-open, pr-base-mismatch, merge-failed, merge-config".into(),
         ],
-        exit: exit_line(
-            "dispatch cleaned, or its worktree was already missing",
-            Some("cleanup refused, task and dispatch record unchanged"),
-            true,
+        exit: format!(
+            "{} (code store-error)",
+            exit_line(
+                "dispatch cleaned, or its worktree was already missing",
+                Some("cleanup refused, task and dispatch record unchanged"),
+                true,
+            )
         ),
     })
 }
@@ -1564,14 +1704,7 @@ pub fn cleaned_merged(
 }
 
 pub fn clean_usage(reason: &str) -> CliOutput {
-    CliOutput {
-        stdout: String::new(),
-        stderr: format!(
-            "tsk clean: {}\nusage: tsk clean <task> [--merge] [--json] [--state-dir <dir>]\n",
-            human_reason(reason)
-        ),
-        code: 2,
-    }
+    usage_error("clean", reason, CLEAN_USAGE)
 }
 
 pub fn clean_rejected(error: CleanupError, task: TaskAddress) -> CliOutput {
@@ -1609,14 +1742,7 @@ pub fn dispatched(result: DispatchResult) -> CliOutput {
 }
 
 pub fn dispatch_usage(reason: &str) -> CliOutput {
-    CliOutput {
-        stdout: String::new(),
-        stderr: format!(
-            "tsk dispatch: {}\nusage: tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]\n",
-            human_reason(reason)
-        ),
-        code: 2,
-    }
+    usage_error("dispatch", reason, DISPATCH_USAGE)
 }
 
 pub fn dispatch_rejected(error: DispatchError, task: TaskAddress) -> CliOutput {
@@ -1630,60 +1756,49 @@ pub fn dispatch_rejected(error: DispatchError, task: TaskAddress) -> CliOutput {
 
 pub fn status_help() -> CliOutput {
     help(HelpDoc {
-        usage: vec![
-            "tsk status <task> <status> [--clean] [--state-dir <dir>]".into(),
-            "tsk status <task> done --merge [--state-dir <dir>]".into(),
-            "tsk status <task> started [--again | --no-dispatch] [--force] [--state-dir <dir>]".into(),
-            "tsk status <task> blocked --why <text> [--needs <text>] [--option <text>]... [--on you|T<n>|<text>]".into(),
-            "tsk status <task> review --done <text> [--check <text>]... [--next <text>] [--on you|<agent>|<text>]".into(),
-        ],
-        purpose: "Set a task's human status, optionally cleaning its dispatch after done persists. Block with a reason so the owner can answer it, or put work up for review with what was done and what to check; running review again while in review updates the same round. Starting an assigned task that was never dispatched dispatches it, like tsk dispatch. A task that runs after others refuses to start until they are done unless forced; setting the last of them done starts each waiting ready task the same way."
-            .into(),
+        usage: lines(STATUS_USAGE),
+        purpose: "Set a task's status. Starting an assigned task launches its agent, and done starts the ready tasks that wait on it. A block can carry a question, and a review what was done and what to check.".into(),
         groups: vec![
             group(
-                "Values",
+                "Arguments",
                 &[
                     ("<task>", "a task number or UUID"),
                     (
                         "<status>",
                         "open, ready, started (or start), blocked, review, or done",
                     ),
-                    (
-                        "--clean",
-                        "after setting done, safely clean its dispatch if it has a live one",
-                    ),
-                    (
-                        "--merge",
-                        "with done, first merge the task's pull request with gh (config.toml [merge] method), then done and clean",
-                    ),
-                    (
-                        "--again",
-                        "with started, relaunch a dispatched task whose agent is gone",
-                    ),
-                    (
-                        "--no-dispatch",
-                        "with started, only set the status, never launch an agent",
-                    ),
-                    (
-                        "--force",
-                        "with started, start even though tasks it runs after are not done",
-                    ),
-                    ("--state-dir <dir>", "use another board store"),
                 ],
             ),
             group(
-                "Block",
+                "Started",
+                &[
+                    ("--no-dispatch", "only set the status: never launch or send"),
+                    ("--again", "relaunch a dispatched task whose agent is gone"),
+                    (
+                        "--force",
+                        "start even though tasks it runs after are not done",
+                    ),
+                ],
+            ),
+            group(
+                "Done",
+                &[
+                    ("--clean", "then clean its dispatch, if it has a live one"),
+                    (
+                        "--merge",
+                        "first merge its pull request with gh, then set done and clean",
+                    ),
+                ],
+            ),
+            group(
+                "Blocked",
                 &[
                     ("--why <text>", "what stops the work"),
                     ("--needs <text>", "what would unblock it"),
                     ("--option <text>", "one suggested answer; repeat for more"),
                     (
                         "--on <who>",
-                        "you (default), another task T<n>, or any other text",
-                    ),
-                    (
-                        "--flag=<value>",
-                        "use equals syntax for dash-leading values",
+                        "you (the default), another task such as T202, or any other text",
                     ),
                 ],
             ),
@@ -1698,41 +1813,31 @@ pub fn status_help() -> CliOutput {
                     ("--next <text>", "what comes after"),
                     (
                         "--on <who>",
-                        "you (default), an agent profile, or any other text",
+                        "you (the default), an agent profile, or any other text",
                     ),
+                ],
+            ),
+            group(
+                "Options",
+                &[
+                    ("--state-dir <dir>", "use another board store"),
+                    ("--flag=<value>", "use = for a value that starts with -"),
                 ],
             ),
         ],
         examples: vec![
             "tsk status T12 ready".into(),
-            "tsk status T12 review".into(),
             "tsk status T12 started --no-dispatch".into(),
             "tsk status T12 done --merge".into(),
-            "tsk status T12 blocked --why \"Which database?\" --option postgres --option sqlite".into(),
-            "tsk status T12 blocked --why \"Needs the API from T9\" --on T9".into(),
-            "tsk status T12 review --done \"Opened PR #41\" --check \"tests pass\" --check \"no flicker at 80 cols\" --next \"docs\"".into(),
+            "tsk status T12 blocked --why \"Which database?\" --option postgres".into(),
+            "tsk status T12 blocked --why \"Needs the API\" --on T202".into(),
+            "tsk status T12 review --done \"Opened PR #42\" --check \"tests pass\"".into(),
         ],
         refusals: vec![
-            "unknown-task".into(),
-            "soft-deleted-task".into(),
-            "text-too-long".into(),
-            "invalid-blocker".into(),
-            "after-not-done".into(),
-            "agent-gone".into(),
-            "needs-git-project".into(),
-            "unknown-agent".into(),
-            "unknown-base".into(),
-            "no-default-base".into(),
-            "agent-config".into(),
-            "herdr-failed".into(),
-            "unsupported-platform".into(),
-            "unsafe-state-dir".into(),
-            "gh-unavailable".into(),
-            "no-pr".into(),
-            "pr-not-open".into(),
-            "pr-base-mismatch".into(),
-            "merge-failed".into(),
-            "merge-config".into(),
+            "unknown-task, soft-deleted-task, text-too-long, invalid-blocker".into(),
+            "started: after-not-done, agent-gone, needs-git-project, unknown-agent, agent-config, unknown-base, no-default-base, herdr-failed, and on Windows unsupported-platform, unsafe-state-dir".into(),
+            "done --clean: dirty-worktree, worktree-mismatch, herdr-failed, and on Windows files-in-use, path-too-long, removal-timed-out, partly-removed".into(),
+            "done --merge: the --clean codes, not-dispatched, already-cleaned, gh-unavailable, no-pr, pr-not-open, pr-base-mismatch, merge-failed, merge-config".into(),
         ],
         exit: exit_line(
             "status set, or it already had the value",
@@ -1744,32 +1849,35 @@ pub fn status_help() -> CliOutput {
 
 pub fn reply_help() -> CliOutput {
     help(HelpDoc {
-        usage: vec!["tsk reply <task> <text> [--send] [--state-dir <dir>]".into()],
-        purpose: "Add a reply to a blocked task's open block, or feedback to a task's open review round. Not idempotent: each run adds one."
+        usage: lines(REPLY_USAGE),
+        purpose: "Add a reply to a task's open block, or feedback to its open review round. Each run adds one, so read the task before retrying."
             .into(),
-        groups: vec![group(
-            "Values",
-            &[
-                ("<task>", "a task number or UUID"),
-                ("<text>", "the reply; put -- before text that begins with -"),
-                (
-                    "--send",
-                    "also send your replies since the agent's last one to its running agent; the status stays",
-                ),
-                ("--state-dir <dir>", "use another board store"),
-            ],
-        )],
+        groups: vec![
+            group(
+                "Arguments",
+                &[
+                    ("<task>", "a task number or UUID"),
+                    ("<text>", "the reply; put -- before text that starts with -"),
+                ],
+            ),
+            group(
+                "Options",
+                &[
+                    (
+                        "--send",
+                        "also send this reply, and only it, to the task's running agent; the status stays",
+                    ),
+                    ("--state-dir <dir>", "use another board store"),
+                ],
+            ),
+        ],
         examples: vec![
             "tsk reply T12 \"Use postgres\"".into(),
             "tsk reply T12 \"Use postgres\" --send".into(),
             "tsk reply T12 -- \"-5 degrees is fine\"".into(),
         ],
         refusals: vec![
-            "unknown-task".into(),
-            "soft-deleted-task".into(),
-            "not-blocked".into(),
-            "empty-reply".into(),
-            "text-too-long".into(),
+            "unknown-task, soft-deleted-task, not-blocked, empty-reply, text-too-long".into(),
         ],
         exit: exit_line(
             "reply stored",
@@ -1805,14 +1913,7 @@ pub fn replied(result: crate::cli::reply::ReplyResult) -> CliOutput {
 }
 
 pub fn reply_usage(reason: &str) -> CliOutput {
-    CliOutput {
-        stdout: String::new(),
-        stderr: format!(
-            "tsk reply: {}\nusage: tsk reply <task> <text> [--send] [--state-dir <dir>]\n",
-            human_reason(reason)
-        ),
-        code: 2,
-    }
+    usage_error("reply", reason, REPLY_USAGE)
 }
 
 pub fn reply_rejected(error: crate::cli::reply::ReplyError, task: TaskAddress) -> CliOutput {
@@ -1856,14 +1957,7 @@ pub fn status_dispatched(result: StatusResult, dispatched: DispatchResult) -> Cl
 }
 
 pub fn status_usage(reason: &str) -> CliOutput {
-    CliOutput {
-        stdout: String::new(),
-        stderr: format!(
-            "tsk status: {}\nusage: tsk status <task> <status> [--state-dir <dir>]\n",
-            human_reason(reason)
-        ),
-        code: 2,
-    }
+    usage_error("status", reason, STATUS_USAGE)
 }
 
 pub fn status_rejected(error: StatusError, task: TaskAddress) -> CliOutput {
@@ -1905,46 +1999,48 @@ pub fn status_rejected(error: StatusError, task: TaskAddress) -> CliOutput {
 
 pub fn edit_help() -> CliOutput {
     help(HelpDoc {
-        usage: vec![
-            "tsk edit <task> [--title <title>] [--notes <notes>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--after <task>]... [--clear-after] [--state-dir <dir>]".into(),
+        usage: lines(EDIT_USAGE),
+        purpose: "Change a task's title, notes, assignee, dispatch base, or the tasks it runs after. Scope and thread stay as they are.".into(),
+        groups: vec![
+            group("Arguments", &[("<task>", "a task number or UUID")]),
+            group(
+                "Options",
+                &[
+                    ("-t, --title <title>", "replace the title"),
+                    ("-n, --notes <notes>", "replace the notes; blank clears them"),
+                    ("--assignee <name>", "assign an agent profile from config.toml"),
+                    ("--unassign", "clear the assignee"),
+                    (
+                        "--base <branch>",
+                        "dispatch from this existing branch of the project",
+                    ),
+                    (
+                        "--clear-base",
+                        "dispatch from the project's default branch",
+                    ),
+                    (
+                        "--after <task>",
+                        "run after this task; repeat for more, replaces the list",
+                    ),
+                    ("--clear-after", "run after nothing"),
+                    ("--state-dir <dir>", "use another board store"),
+                    (
+                        "--flag=<value>",
+                        "use = for a value that starts with -: --title=<value>, --notes=<value>",
+                    ),
+                ],
+            ),
         ],
-        purpose: "Update a task's title, notes, assignee, dispatch base, or the tasks it runs after, without changing its scope or thread.".into(),
-        groups: vec![group(
-            "Values",
-            &[
-                ("<task>", "a task number or UUID"),
-                ("--title <title>", "replace the title"),
-                ("--notes <notes>", "replace notes, or clear them when blank"),
-                ("--assignee <name>", "assign a defined agent profile"),
-                ("--unassign", "clear the assignee"),
-                ("--base <branch>", "set an existing project branch as the dispatch base"),
-                ("--clear-base", "return to the project's remote default branch"),
-                (
-                    "--after <task>",
-                    "run after this task (repeatable; replaces the list); it starts when the last one is done",
-                ),
-                ("--clear-after", "run after nothing"),
-                ("--state-dir <dir>", "use another board store"),
-                (
-                    "--flag=<value>",
-                    "use --title=<value>, --notes=<value>, or --state-dir=<dir> for dash-leading values",
-                ),
-            ],
-        )],
         examples: vec![
             "tsk edit T12 --title \"Fix timeout on slow connections\"".into(),
-            "tsk edit T12 --notes \"Reproduced with a delayed response\"".into(),
-            "tsk edit T13 --after T12 --after T9".into(),
+            "tsk edit T12 --assignee claude --base main".into(),
+            "tsk edit T205 --after T202 --after T12".into(),
         ],
         refusals: vec![
-            "unknown-task".into(),
-            "soft-deleted-task".into(),
-            "empty-title".into(),
-            "invalid-title".into(),
-            "unknown-agent".into(),
-            "unknown-base".into(),
-            "invalid-after (the task itself, not on the board, or done)".into(),
-            "after-loop (T12 already runs after T13)".into(),
+            "unknown-task, soft-deleted-task, empty-title, invalid-title".into(),
+            "unknown-agent, unknown-base".into(),
+            "invalid-after: the task itself, one not on the board, or one already done".into(),
+            "after-loop: the link would close a loop".into(),
         ],
         exit: exit_line(
             "fields written, or already had the values",
@@ -1967,14 +2063,7 @@ pub fn edited(result: EditResult) -> CliOutput {
 }
 
 pub fn edit_usage(reason: &str) -> CliOutput {
-    CliOutput {
-        stdout: String::new(),
-        stderr: format!(
-            "tsk edit: {}\nusage: tsk edit <task> [--title <title>] [--notes <notes>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--state-dir <dir>]\n",
-            human_reason(reason)
-        ),
-        code: 2,
-    }
+    usage_error("edit", reason, EDIT_USAGE)
 }
 
 pub fn edit_rejected(error: EditError, task: TaskAddress) -> CliOutput {
@@ -1995,57 +2084,70 @@ pub fn edit_rejected(error: EditError, task: TaskAddress) -> CliOutput {
 
 pub fn trash_help() -> CliOutput {
     help(HelpDoc {
-        usage: vec!["tsk trash restore <task> [--state-dir <dir>]".into()],
-        purpose: "Restore one trashed task to the board.".into(),
-        groups: vec![group(
-            "Values",
-            &[
-                ("<task>", "a task number or UUID from tsk list --deleted"),
-                ("--state-dir <dir>", "use another board store"),
-            ],
-        )],
+        usage: lines(TRASH_USAGE),
+        purpose: "Restore a deleted task to the board.".into(),
+        groups: vec![
+            group(
+                "Arguments",
+                &[("<task>", "a task number or UUID from tsk list --deleted")],
+            ),
+            group(
+                "Actions",
+                &[("restore", "put the task back, with its number")],
+            ),
+            group(
+                "Options",
+                &[("--state-dir <dir>", "use another board store")],
+            ),
+        ],
         examples: vec![
             "tsk list --deleted --all".into(),
             "tsk trash restore T12".into(),
         ],
-        refusals: vec![
-            "no matching trash line".into(),
-            "task is already live".into(),
-        ],
-        exit: exit_line(
-            "task restored",
-            Some("no matching trash line, or task already live"),
-            true,
-        ),
+        refusals: vec!["<task> is not in trash".into()],
+        exit: exit_line("task restored", Some("the task is not in trash"), true),
     })
 }
 
 pub fn backup_help() -> CliOutput {
     help(HelpDoc {
-        usage: vec![
-            "tsk backup setup [--repo <[host/]owner/name|name>] [--state-dir <dir>]".into(),
-            "tsk backup [now] [--state-dir <dir>]".into(),
-            "tsk backup add <git-url> [--every <when>] [--state-dir <dir>]".into(),
-            "tsk backup list [--state-dir <dir>]".into(),
-            "tsk backup remove <target> [--state-dir <dir>]".into(),
-        ],
+        usage: lines(BACKUP_USAGE),
         purpose: "Back the task store and config.toml up to git repositories.".into(),
         groups: vec![
             group(
-                "Actions",
+                "Arguments",
                 &[
-                    ("setup", "create or reuse a private GitHub repository with gh, then add it"),
-                    ("now", "back up to every target now (the default)"),
-                    ("add <git-url>", "add a repository (URL or local path) to config.toml and test it with a first backup"),
-                    ("list", "show targets, their last backup, and their last error"),
-                    ("remove <target>", "remove a target by its URL, path, or number in list"),
+                    ("<git-url>", "a git URL, or a local repository path"),
+                    ("<target>", "a target's number in list, its URL, or its path"),
                 ],
             ),
             group(
-                "Values",
+                "Actions",
                 &[
-                    ("--repo <name>", "setup: name, owner/name, or host/owner/name (default tsk-backup)"),
-                    ("--every <when>", "save (the default) or daily"),
+                    (
+                        "setup",
+                        "create or reuse a private GitHub repository with gh, then add it",
+                    ),
+                    ("now", "back up to every target now (the default)"),
+                    (
+                        "add",
+                        "add a target to config.toml and test it with a first backup",
+                    ),
+                    ("list", "show each target, its last backup, and its last error"),
+                    ("remove", "remove a target; backups already pushed stay"),
+                ],
+            ),
+            group(
+                "Options",
+                &[
+                    (
+                        "--repo <name>",
+                        "with setup: name, owner/name, or host/owner/name (default tsk-backup)",
+                    ),
+                    (
+                        "--every <when>",
+                        "with add: save (the default) or daily",
+                    ),
                     ("--state-dir <dir>", "use another board store"),
                 ],
             ),
@@ -2053,14 +2155,13 @@ pub fn backup_help() -> CliOutput {
         examples: vec![
             "tsk backup setup".into(),
             "tsk backup add git@github.com:me/tsk-backup.git".into(),
-            "tsk backup add https://github.com/me/tsk-backup.git --every daily".into(),
+            "tsk backup add /srv/tsk.git --every daily".into(),
             "tsk backup list".into(),
             "tsk backup".into(),
         ],
         refusals: vec![
-            "no backup targets".into(),
+            "no backup targets, or no target matches <target>".into(),
             "setup: gh missing or not logged in, or the repository is public or holds other content".into(),
-            "no backup target <target>".into(),
             "a target failed to back up (a new target stays added)".into(),
         ],
         exit: exit_line(
@@ -2072,41 +2173,35 @@ pub fn backup_help() -> CliOutput {
 }
 
 pub fn backup_usage(reason: &str) -> CliOutput {
-    CliOutput {
-        stdout: String::new(),
-        stderr: format!(
-            "tsk backup: {}\nusage: tsk backup [setup [--repo <name>] | now | add <git-url> [--every <when>] | list | remove <target>] [--state-dir <dir>]\n",
-            human_reason(reason)
-        ),
-        code: 2,
-    }
+    usage_error("backup", reason, BACKUP_USAGE)
 }
 
 pub fn restore_help() -> CliOutput {
     help(HelpDoc {
-        usage: vec!["tsk restore [<version>] [--all] [--state-dir <dir>]".into()],
+        usage: lines(RESTORE_USAGE),
         purpose: "List the backed-up versions of the task store, or replace the store with one."
             .into(),
-        groups: vec![group(
-            "Values",
-            &[
-                (
+        groups: vec![
+            group(
+                "Arguments",
+                &[(
                     "<version>",
                     "a version id from the list; without one, a terminal asks which",
-                ),
-                (
-                    "--all",
-                    "list every git version, not the newest 20 per machine",
-                ),
-                ("--state-dir <dir>", "use another board store"),
-            ],
-        )],
+                )],
+            ),
+            group(
+                "Options",
+                &[
+                    ("--all", "list every version, not the newest 20 per machine"),
+                    ("--state-dir <dir>", "use another board store"),
+                ],
+            ),
+        ],
         examples: vec!["tsk restore".into(), "tsk restore 3f9a1c2e".into()],
         refusals: vec![
-            "no backup targets".into(),
-            "unknown version".into(),
-            "a board or quick capture is open".into(),
-            "backup is newer than this tsk".into(),
+            "no backup targets, or an unknown version".into(),
+            "a board or quick capture is open on the store".into(),
+            "the version is newer than this tsk, or is not a store".into(),
         ],
         exit: exit_line(
             "listed, or restored",
@@ -2117,25 +2212,11 @@ pub fn restore_help() -> CliOutput {
 }
 
 pub fn restore_usage(reason: &str) -> CliOutput {
-    CliOutput {
-        stdout: String::new(),
-        stderr: format!(
-            "tsk restore: {}\nusage: tsk restore [<version>] [--all] [--state-dir <dir>]\n",
-            human_reason(reason)
-        ),
-        code: 2,
-    }
+    usage_error("restore", reason, RESTORE_USAGE)
 }
 
 pub fn trash_usage(reason: &str) -> CliOutput {
-    CliOutput {
-        stdout: String::new(),
-        stderr: format!(
-            "tsk trash: {}\nusage: tsk trash restore <task> [--state-dir <dir>]\n",
-            human_reason(reason)
-        ),
-        code: 2,
-    }
+    usage_error("trash", reason, TRASH_USAGE)
 }
 
 pub fn trash_restored(result: TrashRestoreResult) -> CliOutput {
@@ -2168,57 +2249,59 @@ pub fn archive_help(verb: &str) -> CliOutput {
     } else {
         "archive"
     };
-    let verb_title = if verb == "archive" {
-        "Archive"
+    let (purpose, success) = if verb == "archive" {
+        (
+            "Hide a task from the working views. It keeps its status and number.",
+            "task archived, or already was",
+        )
     } else {
-        "Unarchive"
-    };
-    let success = if verb == "archive" {
-        "task archived, or already was"
-    } else {
-        "task unarchived, or already was"
+        (
+            "Put an archived task back in the working views, in its status.",
+            "task unarchived, or already was",
+        )
     };
     help(HelpDoc {
         usage: vec![format!("tsk {verb} <task> [--state-dir <dir>]")],
-        purpose: format!("{verb_title} one task while keeping its human status."),
-        groups: vec![group(
-            "Values",
-            &[
-                ("<task>", "a task number or UUID"),
-                ("--state-dir <dir>", "use another board store"),
-            ],
-        )],
+        purpose: purpose.into(),
+        groups: vec![
+            group("Arguments", &[("<task>", "a task number or UUID")]),
+            group(
+                "Options",
+                &[("--state-dir <dir>", "use another board store")],
+            ),
+        ],
         examples: vec![format!("tsk {verb} T12"), format!("tsk {antiverb} T12")],
-        refusals: vec!["unknown-task".into(), "soft-deleted-task".into()],
+        refusals: vec!["unknown-task, soft-deleted-task".into()],
         exit: exit_line(success, Some("unknown or deleted task"), true),
     })
 }
 
 pub fn archive_usage(verb: &str, reason: &str) -> CliOutput {
-    CliOutput {
-        stdout: String::new(),
-        stderr: format!(
-            "tsk {verb}: {}\nusage: tsk {verb} <task> [--state-dir <dir>]\n",
-            human_reason(reason)
-        ),
-        code: 2,
-    }
+    let usage = format!("tsk {verb} <task> [--state-dir <dir>]");
+    usage_error(verb, reason, &[usage.as_str()])
 }
 
 pub fn project_help() -> CliOutput {
     help(HelpDoc {
-        usage: vec![
-            "tsk project archive <name> [--state-dir <dir>]".into(),
-            "tsk project unarchive <name> [--state-dir <dir>]".into(),
-        ],
-        purpose: "Archive or unarchive a whole project while preserving task statuses.".into(),
+        usage: lines(PROJECT_USAGE),
+        purpose: "Archive or unarchive a whole project. Its tasks keep their statuses.".into(),
         groups: vec![
             group(
-                "Scope",
-                &[("<name>", "a project basename or verbatim path")],
+                "Arguments",
+                &[("<name>", "a project basename, or its path")],
             ),
             group(
-                "Values",
+                "Actions",
+                &[
+                    ("archive", "hide the project from the working views"),
+                    (
+                        "unarchive",
+                        "put it back; tasks archived on their own stay archived",
+                    ),
+                ],
+            ),
+            group(
+                "Options",
                 &[("--state-dir <dir>", "use another board store")],
             ),
         ],
@@ -2226,24 +2309,17 @@ pub fn project_help() -> CliOutput {
             "tsk project archive atlas".into(),
             "tsk project unarchive atlas".into(),
         ],
-        refusals: vec!["no project with that name has tasks".into()],
+        refusals: vec!["no project named <name> has tasks".into()],
         exit: exit_line(
-            "record written, or already had the value",
-            Some("no project with that name has tasks"),
+            "project archived or unarchived, or already was",
+            Some("no project of that name has tasks"),
             true,
         ),
     })
 }
 
 pub fn project_usage(reason: &str) -> CliOutput {
-    CliOutput {
-        stdout: String::new(),
-        stderr: format!(
-            "tsk project: {}\nusage: tsk project archive <name> | tsk project unarchive <name> [--state-dir <dir>]\n",
-            human_reason(reason)
-        ),
-        code: 2,
-    }
+    usage_error("project", reason, PROJECT_USAGE)
 }
 
 pub fn project_archived(result: ProjectResult, verb: &str) -> CliOutput {
@@ -2298,14 +2374,10 @@ pub fn archive_rejected(error: ArchiveCliError, verb: &str) -> CliOutput {
 }
 
 pub fn list_usage(reason: &str, terminal_width: Option<usize>) -> CliOutput {
-    let stderr = format!(
-        "tsk list: {}\nusage: tsk list [<task>] [-p <project> | --desk | --all] [--thread <name> | --no-thread] [--assignee <name>] [--open | --ready | --done | --deleted | --archived] [--group <by>] [--sort <by>] [--json] [--state-dir <dir>]\n",
-        human_reason(reason)
-    );
+    let usage = usage_error("list", reason, LIST_USAGE);
     CliOutput {
-        stdout: String::new(),
-        stderr: wrap_list_document(&stderr, terminal_width),
-        code: 2,
+        stderr: wrap_list_document(&usage.stderr, terminal_width),
+        ..usage
     }
 }
 
@@ -2353,19 +2425,74 @@ pub fn rejected(error: AddError) -> CliOutput {
 
 pub fn setup_help() -> CliOutput {
     help(HelpDoc {
-        usage: vec!["tsk setup [herdr | agents | claude | pi | omp | cursor | grok | codex | opencode | --skill-dir <path>] [--yes] [--force] [--json]".into(), "tsk setup --detected-ids | --skill-states".into(), "tsk setup herdr --check".into()],
-        purpose: "Register Herdr, or install the bundled agent workflow skill.".into(),
-        groups: vec![group("Output", &[("--json", "print machine-readable agent detection or install output"), ("--detected-ids", "print space-separated detected agent ids"), ("--skill-states", "print one tab-separated line per detected agent: id, state, installed version, path (for installers)"), ("herdr --check", "print bound when both plugin commands are already in the Herdr config, otherwise unbound")]), group("Values", &[("herdr", "register plugin assets and keyboard shortcuts"), ("agents --yes", "install or update every detected agent skill; add --force to rewrite matching versions"), ("<agent>, --skill-dir <path>", "install one named agent skill"), ("--force", "overwrite a matching skill version")])],
-        examples: vec!["tsk setup herdr".into(), "tsk setup agents --yes".into(), "tsk setup pi".into()],
-        refusals: vec!["skill-exists".into(), "setup failure".into(), "blocked skill root".into()],
-        exit: exit_line("setup completed or help listed", Some("setup refusal or failure"), false),
+        usage: crate::setup_agent::USAGE
+            .lines()
+            .map(|line| line.trim_start_matches("usage:").trim().to_string())
+            .collect(),
+        purpose: "Register tsk with Herdr, or install the agent skill. On a terminal, bare tsk setup offers the skill to every detected agent.".into(),
+        groups: vec![
+            group(
+                "Actions",
+                &[
+                    ("herdr", "register the plugin and its shortcuts with Herdr"),
+                    (
+                        "agents",
+                        "install or update the skill for every detected agent",
+                    ),
+                    (
+                        "<agent>",
+                        "install the skill for claude, pi, omp, cursor, grok, codex, or opencode",
+                    ),
+                    (
+                        "--skill-dir <path>",
+                        "install the skill as <path>/tsk-cli/SKILL.md",
+                    ),
+                ],
+            ),
+            group(
+                "Options",
+                &[
+                    (
+                        "--check",
+                        "with herdr: print bound if both plugin commands are in the Herdr config, else unbound",
+                    ),
+                    ("--yes", "with agents: install without asking"),
+                    ("--force", "rewrite a skill whose version already matches"),
+                ],
+            ),
+            group(
+                "Output",
+                &[
+                    ("--json", "print a machine-readable report"),
+                    (
+                        "--detected-ids",
+                        "print the detected agent ids, space-separated",
+                    ),
+                    (
+                        "--skill-states",
+                        "print one line per detected agent: id, state, version, path",
+                    ),
+                ],
+            ),
+        ],
+        examples: vec![
+            "tsk setup herdr".into(),
+            "tsk setup agents --yes".into(),
+            "tsk setup claude".into(),
+        ],
+        refusals: vec![
+            "skill-exists: the installed skill already has this version".into(),
+            "a symlinked skills root, skill folder, or skill file".into(),
+            "Herdr setup failed".into(),
+        ],
+        exit: exit_line("setup done, or guidance printed", Some("refused or failed"), false),
     })
 }
 
 pub fn update_help() -> CliOutput {
     help(HelpDoc {
         usage: vec!["tsk update".into()],
-        purpose: "Install the latest stable release for an installer-managed copy.".into(),
+        purpose: "Install the latest stable release over an installer-managed copy. A Homebrew copy prints the brew command instead.".into(),
         groups: Vec::new(),
         examples: vec!["tsk update".into()],
         refusals: vec!["the update could not be installed".into()],
@@ -2380,7 +2507,7 @@ pub fn update_help() -> CliOutput {
 pub fn guide_help() -> CliOutput {
     help(HelpDoc {
         usage: vec!["tsk guide".into()],
-        purpose: "Print the bundled agent workflow skill.".into(),
+        purpose: "Print the agent workflow: the skill tsk setup installs.".into(),
         groups: Vec::new(),
         examples: vec!["tsk guide".into()],
         refusals: Vec::new(),

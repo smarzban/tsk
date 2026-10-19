@@ -381,7 +381,7 @@ fn json_emits_written_exists_or_listed() {
 fn setup_herdr_help_uses_the_shared_reference() {
     let help = cli(&["tsk", "setup", "herdr", "--help"]);
     assert_eq!(help.code, 0);
-    assert!(help.stdout.contains("Values"));
+    assert!(help.stdout.contains("Actions"));
     assert!(help.stdout.contains("herdr"));
     assert!(help.stdout.contains("Exit:"));
     let bad = cli(&["tsk", "setup", "herdr", "--force"]);
