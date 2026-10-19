@@ -190,7 +190,8 @@ fn board_md_palette_table_matches_the_palette_catalog() {
     for row in &rows {
         let (actions, when) = (&row[0], &row[1]);
         let available = match when.as_str() {
-            "Always" => &always,
+            // The empty board is a task list with focus, so it offers the layout commands.
+            "Always" | "A task list has focus" => &always,
             "A task is selected" | "An assigned task without a dispatch record is selected" => {
                 &with_selection
             }
@@ -220,10 +221,26 @@ fn board_md_palette_table_matches_the_palette_catalog() {
                 !always.contains(label),
                 "{label:?} is documented as selection-only but the empty board offers it"
             ),
-            "Always" => assert!(
-                with_selection.contains(label),
-                "{label:?} is documented as always available but vanishes with a selection"
-            ),
+            "Always" => {
+                assert!(
+                    with_selection.contains(label),
+                    "{label:?} is documented as always available but vanishes with a selection"
+                );
+                assert!(
+                    with_step.contains(label),
+                    "{label:?} is documented as always available but vanishes over a task page"
+                );
+            }
+            "A task list has focus" => {
+                assert!(
+                    with_selection.contains(label),
+                    "{label:?} is documented for a focused task list but vanishes with a selection"
+                );
+                assert!(
+                    !with_step.contains(label),
+                    "{label:?} is documented for a focused task list but an open task page offers it"
+                );
+            }
             "A task-page step is selected" => assert!(
                 !with_selection.contains(label),
                 "{label:?} is documented as step-only but the board selection offers it"
@@ -241,7 +258,7 @@ fn board_md_palette_table_matches_the_palette_catalog() {
     };
     for label in &always {
         assert!(
-            covers(label, &["Always"]),
+            covers(label, &["Always", "A task list has focus"]),
             "the empty board offers {label:?} but board.md does not list it as Always"
         );
     }
@@ -251,6 +268,7 @@ fn board_md_palette_table_matches_the_palette_catalog() {
                 label,
                 &[
                     "Always",
+                    "A task list has focus",
                     "A task is selected",
                     "An assigned task without a dispatch record is selected"
                 ]
@@ -264,6 +282,7 @@ fn board_md_palette_table_matches_the_palette_catalog() {
                 label,
                 &[
                     "Always",
+                    "A task list has focus",
                     "A task is selected",
                     "A task with a dispatch record is selected"
                 ]
@@ -277,6 +296,7 @@ fn board_md_palette_table_matches_the_palette_catalog() {
                 label,
                 &[
                     "Always",
+                    "A task list has focus",
                     "A task is selected",
                     "Two or more tasks are marked"
                 ]

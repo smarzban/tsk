@@ -98,6 +98,7 @@ export default defineConfig({
           label: 'Use tsk',
           items: [
             { label: 'Board', slug: 'docs/board' },
+            { label: 'Dispatch', slug: 'docs/dispatch' },
             { label: 'Keys', slug: 'docs/keys' },
             { label: 'Capture', slug: 'docs/capture' },
             { label: 'Task page', slug: 'docs/task-page' },

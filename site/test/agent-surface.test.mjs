@@ -222,6 +222,7 @@ const SIDEBAR_TITLES = [
   "Overview",
   "Install",
   "Board",
+  "Dispatch",
   "Keys",
   "Capture",
   "Task page",

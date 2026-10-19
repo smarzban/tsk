@@ -12,6 +12,7 @@ export const SIDEBAR_SLUGS = [
   "index",
   "install",
   "board",
+  "dispatch",
   "keys",
   "capture",
   "task-page",
