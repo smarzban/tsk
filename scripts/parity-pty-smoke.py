@@ -99,14 +99,21 @@ for width in (40, 78, 109, 110):
                 first += drain()
             assert b'NEEDS YOU' in first, repr(first)
             key(b'1', 'initial')
-            assert 'ON DECK' in '\n'.join(screen.display)
+            # T24 waits on an agent, so IN MOTION opens under NEEDS YOU even at 40x24.
+            assert 'IN MOTION' in '\n'.join(screen.display)
             key(b'\x1b[C', 'peek-or-split')
             if width < 110:
                 # The peek closes on the row's full `#thread · project` label.
                 attribution = [line for line in screen.display if '└─' in line]
                 assert any('#release · tsk-parity' in line for line in attribution), screen.display
             key(b'\x1b[D', 'closed')
-            key(b'\x1b[B', 'selected')
+            # The review and the agent-blocked rows sit between T12 and T13.
+            t13_selected = lambda: any('▸' in line and 'T13' in line for line in screen.display)
+            for _ in range(12):
+                if t13_selected():
+                    break
+                key(b'\x1b[B', 'selected')
+            assert t13_selected(), screen.display
             key(b'\x13', 'started')
             assert saved_task(13, lambda t: t['status'] == 'started')['status'] == 'started'
             key(b'\r', 'page')

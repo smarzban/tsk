@@ -1,12 +1,19 @@
 import { readReference } from "./reference.mjs";
 import { test, expect } from "@playwright/test";
+// Start T13 and open its page.
 async function open(page, width) {
   await page.goto("/");
   await page
     .locator("#tsk-demo")
     .evaluate((el, w) => (el.style.width = `${w}ch`), width);
   await page.locator("#board-demo").focus();
-  await page.keyboard.press("ArrowDown");
+  const t13 = page.locator(
+    '[data-task="00000000-0000-4000-8000-000000000013"]',
+  );
+  for (let step = 0; step < 30; step += 1) {
+    if (/\bis-sel\b/.test((await t13.getAttribute("class")) || "")) break;
+    await page.keyboard.press("ArrowDown");
+  }
   await page.keyboard.press("s");
   await page.keyboard.press("Enter");
 }

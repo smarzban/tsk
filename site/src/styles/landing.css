@@ -998,11 +998,12 @@ html[data-theme="light"] .pane {
   color: var(--ink);
 }
 
+/* One row: the demo drops whole hints to fit, as the app does, so nothing wraps or clips. */
 .tsk-verbs {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.15rem 0;
+  flex-wrap: nowrap;
   white-space: pre;
+  overflow: hidden;
 }
 
 .tsk-verb:hover {
@@ -1229,13 +1230,13 @@ html[data-theme="light"] .pane {
   margin-bottom: 0;
 }
 
+/* The crumb, then the keys, drop whole when the row is short; the hint is never cut. */
 .tsk-stage-hint {
   flex: 1 1 auto;
   min-width: 0;
   text-align: right;
   white-space: pre;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* ── demo: the two layouts (beside an agent · full terminal) ─────────────── */

@@ -40,7 +40,7 @@ fn key(
 }
 /// Frame height for every reference. The browser demo paints the whole list without a
 /// scrollbar, so the app frame must be tall enough that its list never scrolls either.
-const HEIGHT: u16 = 40;
+const HEIGHT: u16 = 56;
 
 fn capture(model: &BoardModel, width: u16, _name: &str) -> String {
     let mut terminal = Terminal::new(TestBackend::new(width, HEIGHT)).unwrap();
@@ -272,6 +272,147 @@ fn write_json(dir: &Path, name: &str, lines: &[String]) {
     fs::write(dir.join(name), serde_json::to_string_pretty(lines).unwrap()).unwrap();
 }
 
+/// Write `{name}-{width}.json` when references are being regenerated.
+fn export_lines(width: u16, name: &str, lines: &[String]) {
+    if let Ok(dir) = std::env::var("TSK_PARITY_OUTPUT") {
+        fs::create_dir_all(&dir).unwrap();
+        write_json(Path::new(&dir), &format!("{name}-{width}.json"), lines);
+    }
+}
+
+/// Put the cursor on task `number` in the current view, as a click would.
+fn select_task(state: &mut DomainState, model: &mut BoardModel, number: u64) {
+    let id = state
+        .tasks()
+        .iter()
+        .find(|task| task.number == Some(number))
+        .unwrap()
+        .id;
+    let index = model
+        .visible_ids()
+        .iter()
+        .position(|visible| *visible == id)
+        .unwrap();
+    apply_intent(state, model, BoardIntent::SelectIndex(index), None).unwrap();
+}
+
+/// The frame's verb bar, without its padding.
+fn verb_bar(text: &str) -> String {
+    text.lines().last().unwrap_or_default().trim().to_string()
+}
+
+/// The desk rows the fixture adds for the dispatch board, anchored on glyph and number so a
+/// `before T25` label elsewhere never stands in for T25's own row: a review on you, a block
+/// waiting on an agent, and an assigned task that runs after it.
+const DESK_ROWS: [(u64, &str); 3] = [(23, "▲ T23 "), (24, "□ T24 "), (25, "○ T25 ")];
+
+/// The references for the rows a dispatch board adds: each row's lines and what hangs under
+/// it, its open peek below 110 columns, its verb bar at 78, and the review's task page.
+fn dispatch_rows_flow(width: u16, export: bool) {
+    let (mut state, mut model) = fixture_board();
+    apply_intent(
+        &mut state,
+        &mut model,
+        BoardIntent::SelectNavTab(NavTab::Desk),
+        None,
+    )
+    .unwrap();
+    let initial = capture(&model, width, "dispatch-rows");
+    // Work waiting on an agent rides in IN MOTION; its label says what it waits on and what
+    // runs after it. The review on you paints the asker's own words under its row.
+    assert!(initial.contains("IN MOTION"), "{initial}");
+    assert!(initial.contains("waiting on @pi · before T25"), "{initial}");
+    assert!(initial.contains("after T24"), "{initial}");
+    assert!(
+        initial.contains("└─ @claude: Capped retries at"),
+        "{initial}"
+    );
+    if width >= 78 {
+        // The selection starts on T12.
+        let bar = verb_bar(&initial);
+        assert!(bar.contains("ctrl+b unblock"), "{bar}");
+        if export && width == 78 {
+            export_lines(width, "footer-T12", &[bar]);
+        }
+    }
+    for (number, anchor) in DESK_ROWS {
+        if export {
+            export_lines(
+                width,
+                &format!("row-T{number}"),
+                &row_lines(&initial, anchor, 0),
+            );
+            export_lines(
+                width,
+                &format!("live-T{number}"),
+                &under_row(&initial, anchor, 0),
+            );
+        }
+    }
+    for (number, anchor) in DESK_ROWS {
+        select_task(&mut state, &mut model, number);
+        let selected = capture(&model, width, "dispatch-row-selected");
+        if export && width == 78 {
+            export_lines(width, &format!("footer-T{number}"), &[verb_bar(&selected)]);
+        }
+        if width < 110 {
+            key(
+                &mut state,
+                &mut model,
+                KeyCode::Right,
+                KeyModifiers::NONE,
+                width,
+            );
+            let peek = capture(&model, width, "dispatch-row-peek");
+            if export {
+                export_lines(
+                    width,
+                    &format!("peek-T{number}"),
+                    &under_row(&peek, anchor, 0),
+                );
+            }
+            key(
+                &mut state,
+                &mut model,
+                KeyCode::Left,
+                KeyModifiers::NONE,
+                width,
+            );
+        }
+    }
+    // The inbox row's verbs.
+    select_task(&mut state, &mut model, 18);
+    let inbox = capture(&model, width, "dispatch-row-selected");
+    if export && width == 78 {
+        export_lines(width, "footer-T18", &[verb_bar(&inbox)]);
+    }
+    // The review's task page leads with its REVIEW section: the live line, what was done,
+    // and the checks. The action line differs on purpose: the demo cycles no checks.
+    select_task(&mut state, &mut model, 23);
+    apply_intent(&mut state, &mut model, BoardIntent::OpenTaskPage, None).unwrap();
+    let page = capture(&model, width, "review-page");
+    assert!(page.contains("@claude needs your review"), "{page}");
+    if export {
+        let lines: Vec<String> = page
+            .lines()
+            .skip_while(|line| !line.contains("needs your review"))
+            .map(|line| {
+                line.chars()
+                    .skip(2)
+                    .collect::<String>()
+                    .trim_end_matches(['▌', ' '])
+                    .to_string()
+            })
+            .take_while(|line| !line.contains("tab next field"))
+            .collect();
+        let end = lines.iter().rposition(|line| !line.is_empty()).unwrap_or(0);
+        export_lines(width, "review-page", &lines[..=end]);
+        if width == 78 {
+            export_lines(width, "footer-page-T23", &[verb_bar(&page)]);
+        }
+    }
+}
+
 #[test]
 fn shared_fixture_first_flow_and_peek_references() {
     fixture_flow(false);
@@ -302,29 +443,16 @@ fn fixture_flow(export: bool) {
                 None,
             )
             .unwrap();
-            let blocked = state
-                .tasks()
-                .iter()
-                .find(|task| task.number == Some(12))
-                .unwrap()
-                .id;
-            let index = model
-                .visible_ids()
-                .iter()
-                .position(|id| *id == blocked)
-                .unwrap();
-            apply_intent(
-                &mut state,
-                &mut model,
-                BoardIntent::SelectIndex(index),
-                None,
-            )
-            .unwrap();
+            select_task(&mut state, &mut model, 12);
             apply_intent(&mut state, &mut model, BoardIntent::OpenTaskPage, None).unwrap();
             let page = capture(&model, width, "blocked-page");
             assert!(page.contains("@claude blocked on you"), "{page}");
             assert!(page.contains(" 1  Keep it"), "{page}");
+            if export && width == 78 {
+                export_lines(width, "footer-page-T12", &[verb_bar(&page)]);
+            }
         }
+        dispatch_rows_flow(width, export);
         let (mut state, mut model) = fixture_board();
         apply_intent(
             &mut state,
@@ -333,7 +461,8 @@ fn fixture_flow(export: bool) {
             None,
         )
         .unwrap();
-        assert!(!capture(&model, width, "initial").contains("IN MOTION"));
+        // T24 waits on an agent, so IN MOTION opens with it.
+        assert!(capture(&model, width, "initial").contains("IN MOTION"));
         key(
             &mut state,
             &mut model,
@@ -342,13 +471,26 @@ fn fixture_flow(export: bool) {
             width,
         );
         let peek = capture(&model, width, "project-peek-or-split");
+        if width >= 110 {
+            // The split's status row: the scope on the left, the stage crumb and keys on the right.
+            let status = peek.lines().nth(HEIGHT as usize - 2).unwrap_or_default();
+            let hint = status
+                .trim()
+                .strip_prefix("desk")
+                .unwrap_or_default()
+                .trim();
+            assert_eq!(hint, "board ▸ task    → task · ← close", "{status}");
+            if export {
+                export_lines(width, "status-hint-split", &[hint.to_string()]);
+            }
+        }
         if width < 110 {
             // A recorded block's peek: live line, why, Decide; no notes, no collapsed line.
             assert!(peek.contains("└─ #release · tsk-parity"), "{peek}");
             assert!(peek.contains("│ @claude blocked on you · 1m"), "{peek}");
             assert!(peek.contains("│ Decide: Keep it · Rewrite"), "{peek}");
             assert!(!peek.contains("Confirm the wording"), "{peek}");
-            assert!(!peek.contains("└─ @claude"), "{peek}");
+            assert!(!peek.contains("└─ @claude: your pick"), "{peek}");
         }
         key(
             &mut state,
@@ -359,13 +501,7 @@ fn fixture_flow(export: bool) {
         );
         let closed = capture(&model, width, "peek-closed");
         assert!(closed.contains("└─ @claude: your pick · 1m"), "{closed}");
-        key(
-            &mut state,
-            &mut model,
-            KeyCode::Down,
-            KeyModifiers::NONE,
-            width,
-        );
+        select_task(&mut state, &mut model, 13);
         key(
             &mut state,
             &mut model,
@@ -373,7 +509,7 @@ fn fixture_flow(export: bool) {
             KeyModifiers::CONTROL,
             width,
         );
-        assert!(capture(&model, width, "started").contains("IN MOTION"));
+        assert!(capture(&model, width, "started").contains("▸ ● T13"));
         key(
             &mut state,
             &mut model,
@@ -430,7 +566,7 @@ fn fixture_flow(export: bool) {
             KeyModifiers::NONE,
             width,
         );
-        assert!(capture(&model, width, "back").contains("IN MOTION"));
+        assert!(capture(&model, width, "back").contains("▸ ● T13"));
         if width < 110 {
             apply_intent(
                 &mut state,
@@ -574,13 +710,7 @@ fn selection_uses_arrow_and_underlined_tab_without_reverse_fill() {
             assert_eq!(cell.modifier.contains(Modifier::DIM), !active, "{label}");
         }
     }
-    key(
-        &mut state,
-        &mut model,
-        KeyCode::Down,
-        KeyModifiers::NONE,
-        78,
-    );
+    select_task(&mut state, &mut model, 13);
     terminal
         .draw(|f| {
             draw_board(f, &model);

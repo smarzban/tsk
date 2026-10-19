@@ -1,6 +1,6 @@
 {
-  "format_version": 4,
-  "next_task_number": 23,
+  "format_version": 13,
+  "next_task_number": 26,
   "tasks": [
     {
       "id": "00000000-0000-4000-8000-000000000012",
@@ -267,6 +267,104 @@
       ],
       "updated_at": [
         1700000023,
+        0
+      ]
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000023",
+      "number": 23,
+      "revision": "10000000-0000-4000-8000-000000000023",
+      "title": "Review the retry backoff change",
+      "notes": "Retries back off with jitter now.",
+      "thread": null,
+      "status": "review",
+      "block": {
+        "kind": "review",
+        "done": "Capped retries at five with jitter",
+        "checks": [
+          {
+            "text": "Retries stop after five attempts"
+          },
+          {
+            "text": "Jitter stays under one second"
+          }
+        ],
+        "round": 1,
+        "by": "claude",
+        "at": [
+          1700000080,
+          0
+        ]
+      },
+      "scope": "global",
+      "provenance": "selection",
+      "history": [],
+      "steps": [],
+      "soft_deleted": false,
+      "created_at": [
+        1699999990,
+        0
+      ],
+      "updated_at": [
+        1700000080,
+        0
+      ]
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000024",
+      "number": 24,
+      "revision": "10000000-0000-4000-8000-000000000024",
+      "title": "Warm the cache before deploys",
+      "notes": "Prefill the hot keys so the first requests stay fast.",
+      "thread": null,
+      "status": "blocked",
+      "block": {
+        "why": "Needs the cache key format from @pi",
+        "needs": "The final key format",
+        "on": "agent:pi",
+        "by": "claude",
+        "at": [
+          1700000150,
+          0
+        ]
+      },
+      "scope": "global",
+      "provenance": "selection",
+      "history": [],
+      "steps": [],
+      "soft_deleted": false,
+      "created_at": [
+        1700000024,
+        0
+      ],
+      "updated_at": [
+        1700000150,
+        0
+      ]
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000025",
+      "number": 25,
+      "revision": "10000000-0000-4000-8000-000000000025",
+      "title": "Turn on cache warmup in staging",
+      "notes": "Flip the flag once deploys warm the cache.",
+      "thread": null,
+      "status": "ready",
+      "after": [
+        24
+      ],
+      "assignee": "claude",
+      "scope": "global",
+      "provenance": "selection",
+      "history": [],
+      "steps": [],
+      "soft_deleted": false,
+      "created_at": [
+        1700000025,
+        0
+      ],
+      "updated_at": [
+        1700000025,
         0
       ]
     }

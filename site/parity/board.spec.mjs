@@ -42,6 +42,15 @@ test.beforeAll(async ({ browser }) => {
 });
 const id = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const row = (page, n) => page.locator(`[data-task="${id(n)}"]`);
+// Move the cursor down to task `n`, as the keyboard does; the list wraps at its end.
+async function selectTask(page, n) {
+  for (let step = 0; step < 30; step += 1) {
+    if (/\bis-sel\b/.test((await row(page, n).getAttribute("class")) || ""))
+      return;
+    await page.keyboard.press("ArrowDown");
+  }
+  throw new Error(`T${n} never took the cursor`);
+}
 async function open(page, width) {
   page.on("pageerror", (error) => console.error(error));
   await page.goto("/");
@@ -158,14 +167,14 @@ test("marked task sets complete, delete, and undo as one demo action", async ({
     "2 selected · esc clear",
   );
   await expect(row(page, 12).locator(".tsk-row-prefix")).toContainText("▪");
-  await expect(row(page, 13).locator(".tsk-row-prefix")).toContainText("▪");
+  await expect(row(page, 23).locator(".tsk-row-prefix")).toContainText("▪");
 
   await page.keyboard.press("d");
   await expect(row(page, 12)).toHaveCount(0);
-  await expect(row(page, 13)).toHaveCount(0);
+  await expect(row(page, 23)).toHaveCount(0);
   await page.keyboard.press("u");
   await expect(row(page, 12)).toBeVisible();
-  await expect(row(page, 13)).toBeVisible();
+  await expect(row(page, 23)).toBeVisible();
 
   await page.keyboard.press("Shift+M");
   await page.keyboard.press("Shift+ArrowDown");
@@ -179,10 +188,10 @@ test("marked task sets complete, delete, and undo as one demo action", async ({
     "deleted 2 tasks · u undo",
   );
   await expect(row(page, 12)).toHaveCount(0);
-  await expect(row(page, 13)).toHaveCount(0);
+  await expect(row(page, 23)).toHaveCount(0);
   await page.keyboard.press("u");
   await expect(row(page, 12)).toBeVisible();
-  await expect(row(page, 13)).toBeVisible();
+  await expect(row(page, 23)).toBeVisible();
 
   await page.keyboard.press("Shift+M");
   await row(page, 12).click();
@@ -277,7 +286,9 @@ for (const width of [40, 78, 109, 110]) {
   }, info) => {
     await open(page, width);
     await expect(page.locator(".tsk-attribution")).toHaveCount(0);
-    await expect(page.locator(".tsk-sec")).not.toContainText(["IN MOTION"]);
+    // T24 waits on an agent, so it rides in IN MOTION.
+    await expect(page.locator(".tsk-sec")).toContainText(["IN MOTION"]);
+    await expect(row(page, 24).locator(".tsk-row-glyph")).toHaveText("□");
     // The blocked row's live line matches the app's at the fixture's clock.
     await expect(row(page, 12).locator(".tsk-live-line")).toHaveText(
       await readReference(`live-${width}`),
@@ -287,8 +298,7 @@ for (const width of [40, 78, 109, 110]) {
       .poll(() => paintedRow(row(page, 12)))
       .toEqual({ lines: await readReference(`row-${width}`), aligned: true });
     await capture(page, info, "initial");
-    await page.keyboard.press("ArrowDown");
-    await expect(row(page, 13)).toHaveClass(/is-sel/);
+    await selectTask(page, 13);
     const lines = await row(page, 13)
       .locator(".tsk-title-line")
       .allTextContents();
@@ -332,6 +342,113 @@ for (const width of [40, 78, 109, 110]) {
     await capture(page, info, "back");
   });
 }
+// The rows a dispatch board adds: T23 a review on you (the asker's words under it), T24
+// blocked on @pi (in IN MOTION, its label says what it waits on and what runs after it), and
+// T25 assigned to @claude, running after T24.
+for (const width of [40, 78, 109, 110])
+  test(`dispatch board rows at ${width} columns`, async ({ page }) => {
+    await open(page, width);
+    for (const n of [23, 24, 25]) {
+      await expect
+        .poll(() => paintedRow(row(page, n)))
+        .toEqual({
+          lines: await readReference(`row-T${n}-${width}`),
+          aligned: true,
+        });
+      const live = await readReference(`live-T${n}-${width}`);
+      if (live.length)
+        await expect(row(page, n).locator(".tsk-live-line")).toHaveText(live);
+      else await expect(row(page, n).locator(".tsk-live-line")).toHaveCount(0);
+    }
+  });
+
+for (const width of [40, 78, 109])
+  test(`dispatch board peeks at ${width} columns`, async ({ page }) => {
+    await open(page, width);
+    for (const n of [23, 24, 25]) {
+      await selectTask(page, n);
+      await page.keyboard.press("ArrowRight");
+      await expect(page.locator(".tsk-peek, .tsk-attribution")).toHaveText(
+        await readReference(`peek-T${n}-${width}`),
+      );
+      await page.keyboard.press("ArrowLeft");
+    }
+  });
+
+// The demo's keys are bare on purpose; the verbs, their words and their order are the app's.
+test("verb bars carry the app's verbs for each status", async ({ page }) => {
+  const bare = async (name) =>
+    (await readReference(name))[0].replaceAll("ctrl+", "");
+  await open(page, 78);
+  const footer = page.locator(".tsk-verbs");
+  await expect(footer).toHaveText(await bare("footer-T12-78"));
+  for (const n of [23, 24, 25, 18]) {
+    await selectTask(page, n);
+    await expect(footer).toHaveText(await bare(`footer-T${n}-78`));
+  }
+  // The task page's bar follows its own task's status.
+  for (const n of [12, 23]) {
+    await selectTask(page, n);
+    await page.keyboard.press("Enter");
+    await expect(footer).toHaveText(await bare(`footer-page-T${n}-78`));
+    await page.keyboard.press("Escape");
+  }
+});
+
+test("a narrow verb bar drops whole hints and stays one row", async ({
+  page,
+}) => {
+  await open(page, 40);
+  const footer = page.locator(".tsk-verbs");
+  await expect(footer).toHaveText("enter open · d done · ? help");
+  const rows = await footer.evaluate(
+    (el) =>
+      el.getBoundingClientRect().height /
+      parseFloat(getComputedStyle(el).lineHeight),
+  );
+  expect(Math.round(rows)).toBe(1);
+});
+
+for (const width of [40, 78, 109, 110])
+  test(`review task page section at ${width} columns`, async ({ page }) => {
+    await open(page, width);
+    await selectTask(page, 23);
+    await page.keyboard.press("Enter");
+    const lines = (
+      await page.locator(".tsk-page-block > span").allTextContents()
+    ).map((line) => line.trimEnd());
+    expect(lines.slice(0, -2)).toEqual(
+      await readReference(`review-page-${width}`),
+    );
+    expect(lines.at(-1)).toBe("d done · r back to ready");
+  });
+
+test("the split's status row names its stage as the app does", async ({
+  page,
+}) => {
+  await open(page, 110);
+  await page.keyboard.press("ArrowRight");
+  await expect(page.locator(".tsk-stage-hint")).toHaveText(
+    (await readReference("status-hint-split-110"))[0],
+  );
+});
+
+// Done on the last task another waits on starts the waiting one, and one undo reverses both.
+test("a done releases the task that runs after it", async ({ page }) => {
+  await open(page, 78);
+  await selectTask(page, 24);
+  await page.keyboard.press("d");
+  await expect(row(page, 25).locator(".tsk-row-glyph")).toHaveText("●");
+  // Started, it moves to IN MOTION, where a desk row names its scope.
+  await expect(row(page, 25).locator(".tsk-row-label")).toHaveText("  desk");
+  await page.keyboard.press("u");
+  await expect(row(page, 24).locator(".tsk-row-glyph")).toHaveText("□");
+  await expect(row(page, 25).locator(".tsk-row-glyph")).toHaveText("○");
+  await expect(row(page, 25).locator(".tsk-row-label")).toHaveText(
+    "  after T24",
+  );
+});
+
 for (const width of [40, 78, 109])
   test(`peek attribution at ${width}`, async ({ page }, info) => {
     await open(page, width);

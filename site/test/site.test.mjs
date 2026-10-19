@@ -108,7 +108,7 @@ test("docs and demo describe the wide stage slider and threshold", async () => {
   assert.match(demo, /state\.stageOrigin = state\.stage;/);
   assert.match(demo, /class="tsk-wide-split is-rail"/);
   assert.match(demo, /tsk-rule-column/);
-  assert.match(demo, /board ▸ task    → task · ← close · enter open/);
+  assert.match(demo, /crumb: "board ▸ task", keys: "→ task · ← close"/);
   assert.match(styles, /\.tsk-wide-split\.is-split \{\s*grid-template-columns: minmax\(0, 2fr\) 1px minmax\(0, 3fr\);/);
   assert.match(styles, /\.tsk-wide-split\.is-rail \{\s*grid-template-columns: 32ch 1px/);
 });
@@ -143,9 +143,9 @@ test("demo matches the quick-add, peek, and group-toggle contracts", async () =>
   const landing = await read("../src/styles/landing.css");
   assert.match(demo, /if \(e\.key === "Enter" && !e\.ctrlKey && !e\.altKey && !e\.metaKey\)/);
   assert.match(demo, /saveDraft\(e\.shiftKey\)/);
-  assert.match(demo, /id: "save", label: "enter add"/);
-  assert.match(demo, /id: "details", label: "tab notes"/);
-  assert.match(demo, /id: "close", label: "esc close"/);
+  assert.match(demo, /verb\("enter", "add", 0, "save"\)/);
+  assert.match(demo, /verb\("tab", "notes", 1, "details"\)/);
+  assert.match(demo, /verb\("esc", "close", 0, "close"\)/);
   // Closing the page by click must drop any open title/notes draft, or the next task
   // opens in edit mode carrying it; the verbs hide while an editor owns the footer.
   assert.match(
@@ -157,7 +157,7 @@ test("demo matches the quick-add, peek, and group-toggle contracts", async () =>
     /function pageVerbBar\(\)[\s\S]{0,240}?steps\.editor \|\| steps\.dirty \|\| state\.editField/,
   );
   assert.match(demo, /function runHint/);
-  assert.match(demo, /data-hint=/);
+  assert.match(demo, /closest\("\[data-hint\]"\)/);
   assert.match(demo, /"inbox"\}<\/span> · <span class="count">\$\{row\.count\}<\/span>/);
   assert.match(demo, /\["views & find", "z \/ D", "show \/ hide done drawer"/);
   assert.match(demo, /state\.helpQ/);
@@ -223,8 +223,8 @@ test("attribution is peek-only in demo and static anatomy", async () => {
   assert.doesNotMatch(demo, /<span class="meta">/);
   assert.match(
     demo,
-    /task\.assignee && showAssignee \? `@\$\{task\.assignee\}` : "",\s*rowLabelText \|\| "",/,
-    "peek metadata must be @assignee (unless the view already says it), then the row's #thread · project label",
+    /task\.assignee && showAssignee \? `@\$\{task\.assignee\}` : "",\s*task\.base \? `⎇ \$\{task\.base\}` : "",\s*rowLabelText \|\| "",/,
+    "peek metadata must be @assignee (unless the view already says it), the base, then the row's #thread · project label",
   );
   assert.match(styles, /\.tsk-attribution\s*\{[^}]*white-space: pre-wrap;[^}]*overflow-wrap: anywhere;/);
   assert.match(styles, /\.tsk-row-main\s*\{[^}]*padding-right: 2ch;/);
