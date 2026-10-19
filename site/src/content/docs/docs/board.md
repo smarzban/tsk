@@ -119,7 +119,7 @@ On the desk, ON DECK holds only desk tasks. On a project board, it holds that pr
 | `▲` / `△` | review on you / elsewhere |
 | `✓` | done |
 
-NEEDS YOU, IN MOTION, and the done drawer put the most recent status change on top. ON DECK lists ready tasks oldest pick first, and the inbox oldest capture first. Setting a status moves a task to the top of its new section. Editing a task or ticking a step never moves it.
+NEEDS YOU, IN MOTION, and the done drawer put the most recent status change on top. ON DECK lists ready tasks oldest pick first, so a task you set ready joins the end. The inbox keeps capture order, oldest first. Editing a task or ticking a step never moves it.
 
 The status shortcuts set open, ready, started, done, blocked, and review ([Keys](/docs/keys/#board)). Repeating the current status does nothing, except block and review: on a blocked or in-review task, they return it to ready. A done task can go straight back to ready or open.
 
