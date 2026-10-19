@@ -27,12 +27,12 @@ const BOARD_PINS = [
   {
     n: 2,
     title: 'NEEDS YOU.',
-    body: 'Blocked on you and review across all projects on Desk, or within the selected project on its board, above IN MOTION. A line under the row carries the asker\'s own words (<code>@claude: the client id from the provider · 2h</code>); work blocked on another task rides in IN MOTION as <code>□</code>, its label leading with <code>waiting on T169</code>.',
+    body: 'Work blocked on you or waiting for your review comes first. The <b>desk</b> gathers it from every project; a project board shows its own. A dim line under the row carries the asker\'s words (<code>@claude: the client id from the provider · 2h</code>). Work waiting on someone else sits in IN MOTION as <code>□</code>, labelled <code>waiting on T202</code>.',
   },
   {
     n: 3,
     title: 'A task.',
-    body: 'A selection arrow without a filled highlight, status glyph, a dim <code>T</code>-number you can click to copy, and the wrapped title. Rows stay a title, plus a dim block note on blocked rows; an open peek shows a block\'s why, needs, and options, then the footer in assignee, base, thread, project order.',
+    body: 'A selection arrow, the status glyph, a dim <code>T</code> number you can click to copy, then the title, wrapped and never cut.',
   },
   {
     n: 4,
@@ -42,7 +42,7 @@ const BOARD_PINS = [
   {
     n: 5,
     title: 'Your loose backlog.',
-    body: "Desk's ON DECK contains only tasks without a project. Picked <code>ready</code> tasks lead, then the expandable <code>inbox</code> of <code>open</code> tasks. Project backlogs live on their own boards, with thread and assignee filters across every status.",
+    body: 'On the <b>desk</b>, ON DECK holds only tasks without a project: picked <code>ready</code> tasks first, then the <code>inbox</code> of <code>open</code> tasks. Each project keeps its backlog on its own board.',
   },
 ];
 const pinLabel = (n) => {
@@ -302,8 +302,8 @@ const softwareApplication = {
             <h2 id="why-heading">Not another to-do app.</h2>
             <p class="band-lede">
               tsk is the shared surface between a developer and the agents working beside
-              them. It lives in the pane you already have open. No browser tab, no sync
-              service, no form takeover.
+              them. It lives in the pane you already have open. No browser tab, no account,
+              no sync service.
             </p>
           </header>
 
@@ -311,34 +311,35 @@ const softwareApplication = {
             <article class="pillar">
               <h3>Capture never leaves the list.</h3>
               <p>
-                <kbd>+</kbd> opens one line on the status row. <kbd>Enter</kbd> saves,
-                <kbd>Shift+Enter</kbd> keeps the line open, <kbd>Tab</kbd> expands onto the task
-                page. Two tokens set project and thread from inside the title.
+                <kbd>+</kbd> opens one line on the status row. <kbd>Enter</kbd> adds the task,
+                <kbd>shift+Enter</kbd> adds it and keeps the line open, <kbd>Tab</kbd> opens the full
+                draft. Five tokens in the title set the project, thread, assignee, base branch,
+                and the tasks it runs after: <code>!p</code> <code>!t</code> <code>!a</code> <code>!b</code> <code>!w</code>.
               </p>
               <pre class="mini" aria-label="Quick-add example"><span class="prompt">+</span> Fix the flaky bench <span class="tok">!p</span> tsk <span class="tok">!t</span> ci<span class="cursor" aria-hidden="true">█</span>
-<span class="dim">enter save · shift+enter stay · tab page · esc close</span></pre>
+<span class="dim">enter add · tab notes · esc close</span></pre>
             </article>
 
             <article class="pillar">
               <h3>Nothing completes itself.</h3>
               <p>
-                Every mutating verb needs <kbd>Ctrl</kbd>. Bare letters do nothing, so a stray
-                keystroke in a focused board cannot finish or delete work. Undo is one chord
-                away.
+                Every status change, archive, and delete needs <kbd>Ctrl</kbd>. Bare keys move,
+                open, and filter, so a stray keystroke cannot finish or delete work. Undo is one
+                chord away: <kbd>ctrl+u</kbd>.
               </p>
-              <pre class="mini" aria-label="Verb bar"><span class="dim">enter</span> open · <span class="dim">ctrl+d</span> done · <span class="dim">ctrl+n</span> ready · <span class="dim">ctrl+o</span> open · <span class="dim">:</span> palette
-<span class="dim">ctrl+x</span> delete · <span class="dim">ctrl+u</span> undo · <span class="dim">?</span> help · <span class="dim">+</span> capture</pre>
+              <pre class="mini" aria-label="Verb bar"><span class="dim">enter</span> open · <span class="dim">ctrl+d</span> done · <span class="dim">ctrl+n</span> next ·
+<span class="dim">ctrl+o</span> inbox · <span class="dim">ctrl+b</span> block · <span class="dim">?</span> help</pre>
             </article>
 
             <article class="pillar">
               <h3>One store. Everyone at the table.</h3>
               <p>
-                You, herdr's quick-capture popup, and your agents edit the same
-                <code>~/.tsk</code>. An agent drops a plan in as JSON, new tasks enter the inbox, and the board shows them on
-                the next tick.
+                You, Herdr's quick-capture popup, and your agents edit the same store. An agent
+                drops a plan in as JSON, the new tasks land in the inbox, and the open board
+                shows them live.
               </p>
               <pre class="mini" aria-label="Three ways in"><span class="prompt">$</span> cat plan.json | tsk add
-<span class="dim">&#123; "created": [T33, T34, T35], "existing": [], "failed": [] &#125;</span>
+<span class="dim">&#123;"created":[…],"existing":[],"failed":[]&#125;</span>
 <span class="prompt">$</span> herdr plugin action invoke quick-capture --plugin herdr-tsk</pre>
             </article>
           </div>
@@ -349,7 +350,7 @@ const softwareApplication = {
       <section class="stage" id="demo" aria-labelledby="demo-heading">
 
         <div class="stage-inner">
-          <div class="demo-invitation"><h2 id="demo-heading">Try it. This board is yours to play with.</h2><p>Double-click a task to open it, check off a step, or press + to add your own. Switch to Projects at a wide width, then move to a project to preview its board. Explore auth, API, and reliability work with threads and checklists. Press Shift+M to mark several tasks and act on them at once. Changes stay in this demo; refresh to start over.</p></div>
+          <div class="demo-invitation"><h2 id="demo-heading">Try it. This board is yours to play with.</h2><p>Double-click a task to open it, check off a step, press + to add one, or press shift+M to mark several. Changes stay in this page; refresh to start over.</p></div>
           <div
             class="pane"
             id="board-demo"
@@ -366,7 +367,7 @@ const softwareApplication = {
               <span class="pane-cols" data-cols aria-live="polite"></span>
               <span class="pane-hint">
                 drag the divider · <kbd>j</kbd><kbd>k</kbd> move · <kbd>h</kbd><kbd>l</kbd> close or open ·
-                <kbd>+</kbd> capture · <kbd>?</kbd> help
+                <kbd>+</kbd> add · <kbd>?</kbd> help
               </span>
             </div>
             <div class="split is-full" data-split>
@@ -375,9 +376,9 @@ const softwareApplication = {
                 <div class="agent-body">
                   <p class="agent-line you">webhook retries are applying the same event twice. investigate and add a task.</p>
                   <p class="agent-line say">The handler applies side effects before recording the event ID. Concurrent retries can both get through.</p>
-                  <div class="agent-tool"><span class="tool-name">Bash</span><span class="tool-arg">tsk add -t "Make webhook delivery idempotent" -p launchpad --thread api --json</span><span class="tool-out" data-cli-add-output>&#123;"outcome":"created","id":"00000000-0000-4000-8000-000000000013","number":13,"title":"Make webhook delivery idempotent","project":"/home/agent/work/launchpad","assignee":null&#125;</span></div>
+                  <div class="agent-tool"><span class="tool-name">Bash</span><span class="tool-arg">tsk add -t "Make webhook delivery idempotent" -p launchpad --thread api --json</span><span class="tool-out" data-cli-add-output>&#123;"assignee":null,"id":"00000000-0000-4000-8000-000000000013","number":13,"outcome":"created","project":"/home/agent/work/launchpad","title":"Make webhook delivery idempotent"&#125;</span></div>
                   <div class="agent-tool"><span class="tool-name">Bash</span><span class="tool-arg">tsk steps T13 add "Reproduce duplicate delivery"</span><span class="tool-out" data-cli-step-output>added 3f Reproduce duplicate delivery</span></div>
-                  <p class="agent-line say">T13 is open with a checklist to reproduce duplicate delivery, persist processed event IDs, and test concurrent retries. Pick it when you are ready to work.</p>
+                  <p class="agent-line say">T13 is on the board with a checklist: reproduce duplicate delivery, persist processed event IDs, and test concurrent retries.</p>
                 </div>
                 <div class="agent-input"><span class="agent-prompt">›</span><span class="cursor" aria-hidden="true"></span><span class="agent-shortcut">? for shortcuts</span></div>
               </aside>
@@ -393,16 +394,9 @@ const softwareApplication = {
             </div>
           </div>
           <p class="stage-note">
-            Two real layouts. Beside an agent, tsk is the 78-column board herdr opens by default,
-            and <kbd>→</kbd> or <kbd>l</kbd> peeks. Give it the whole terminal, or drag the divider past 110
-            columns, and the same board becomes the four-stage slider: <kbd>→</kbd> or <kbd>l</kbd> slides the
-            task page in. On the Projects tab, moving to a project opens its preview at Split,
-            and <kbd>→</kbd> or <kbd>l</kbd> makes that project board live at Rail. The demo takes bare
-            <kbd>s</kbd> <kbd>n</kbd> <kbd>o</kbd> <kbd>d</kbd> <kbd>b</kbd>
-            because browsers keep the control chords. In the app, every mutating verb needs
-            <kbd>Ctrl</kbd>. <kbd>Esc</kbd> closes either split after its editors and overlays.
-            At the full-board root, <kbd>Esc</kbd> exits the terminal app;
-            here it only releases keyboard focus, keeping the current tab. This demo covers marking and updating task sets, browsing, opening tasks, plus adding, checking, renaming and removing steps. Full task editing and save recovery remain unfinished.
+            The demo covers browsing, opening tasks, status changes, steps, and multi-select, beside
+            an agent or at full width. It takes bare <kbd>s</kbd> <kbd>n</kbd> <kbd>o</kbd> <kbd>d</kbd> <kbd>b</kbd>
+            because browsers keep the control chords; in the app, each needs <kbd>Ctrl</kbd>.
           </p>
         </div>
       </section>
@@ -414,19 +408,18 @@ const softwareApplication = {
             <span class="index">02 <span class="index-label">board</span></span>
             <h2 id="board-heading">One list, ordered by urgency.</h2>
             <p class="band-lede">
-              Inside Git, start on the repo’s project board. Outside Git, start on <b>desk</b> with the current directory one tab away. <b>desk</b> shows what
-              needs you across projects, active work, and your loose backlog. The selected
-              <b>project</b> stays one key away; <b>projects</b> is a searchable index with
-              a View selector for cross-project threads. Filter threads within a project
-              with <kbd>t</kbd>, or across projects with <kbd>v</kbd> on the index.
-              Give the board 110 columns and it becomes a slider.
+              Inside Git, the board opens on the repo’s project. Outside Git, it opens on the
+              <b>desk</b>, with the current directory one tab away. The <b>desk</b> shows what needs
+              you across projects, work in motion, and your loose backlog. <b>projects</b> is a
+              searchable index of them all. Filter a board with <kbd>t</kbd>; follow a thread or
+              assignee across projects with <kbd>v</kbd> on the index.
             </p>
           </header>
 
           <div class="stages">
             <div class="stages-head">
               <h3>Wide: the four-stage slider.</h3>
-              <p>At 110 columns and up, focus and geometry are the same thing. One rule, one footer, no colour.</p>
+              <p>At 110 columns and up, the board and the task page share the screen. Arrow keys slide between four stages.</p>
             </div>
             <ol class="stage-strip" aria-label="The four stages: board, split, rail, page">
               <li>
@@ -467,9 +460,9 @@ const softwareApplication = {
             <span class="index">03 <span class="index-label">status</span></span>
             <h2 id="status-heading">One workflow for you and your agents.</h2>
             <p class="band-lede">
-              Six states shared by everyone on the board. You and your agents can create tasks,
-              edit titles and notes, manage steps, and move tasks through the board, from <b>open</b>
-              to <b>done</b>, using the CLI. Checking every step leaves the task status unchanged until it is explicitly updated.
+              Six statuses, shared by everyone on the board. You and your agents create tasks,
+              edit them, manage steps, and move them from <b>open</b> to <b>done</b>; agents use
+              the CLI. Checking off every step leaves the status alone until someone sets it.
             </p>
           </header>
 
@@ -546,17 +539,16 @@ const softwareApplication = {
           <div class="cli-grid">
             <div class="cli-main">
               <pre class="shell" aria-label="CLI session"><span class="prompt">$</span> tsk add -t "Draft release notes" -p tsk --thread release --json
-<span class="dim">&#123;"outcome":"created","id":"5c1e…","number":32,"title":"Draft release notes","project":"tsk"&#125;</span>
+<span class="dim">&#123;"assignee":null,"id":"5c1e…","number":32,"outcome":"created","project":"/home/you/tsk","title":"Draft release notes"&#125;</span>
 <span class="prompt">$</span> tsk steps T32 add "Write the failing test"
 <span class="dim">added 9f Write the failing test</span>
-<span class="prompt">$</span> tsk status T32 start
+<span class="prompt">$</span> tsk status T32 started
 <span class="dim">status T32 started Draft release notes</span>
-<span class="prompt">$</span> tsk list T32
+<span class="prompt">$</span> tsk list
 <span class="dim">STARTED
- - 32 Draft release notes #release
-   [ ] 9f Write the failing test</span>
+ - 32 Draft release notes #release</span>
 <span class="prompt">$</span> cat plan.json | tsk add
-<span class="dim">&#123; "created": [...], "existing": [...], "failed": [] &#125;</span></pre>
+<span class="dim">&#123;"created":[…],"existing":[…],"failed":[]&#125;</span></pre>
 
               <section class="agent-block" id="agents" aria-labelledby="agents-heading">
                 <h3 class="side-title" id="agents-heading">Paste this into your agent</h3>
@@ -577,10 +569,10 @@ const softwareApplication = {
               <h3 class="side-title">Exit contract</h3>
               <table class="exits">
                 <tbody>
-                  <tr><th scope="row">0</th><td>listed, created, existed, or applied</td></tr>
-                  <tr><th scope="row">1</th><td>one or more item refusals. Retry the failed subset.</td></tr>
-                  <tr><th scope="row">2</th><td>usage or parse error. Nothing persisted.</td></tr>
-                  <tr><th scope="row">3</th><td>store I/O. Indeterminate. <code>tsk list</code> before retrying.</td></tr>
+                  <tr><th scope="row">0</th><td>done, including a task that already existed</td></tr>
+                  <tr><th scope="row">1</th><td>refused. A plan may have saved other items: retry only the failed ones.</td></tr>
+                  <tr><th scope="row">2</th><td>bad arguments, input, or agent config. Nothing saved.</td></tr>
+                  <tr><th scope="row">3</th><td>storage error. A write may have landed: <code>tsk list</code> before retrying.</td></tr>
                 </tbody>
               </table>
               <ul class="agent-paths" aria-label="Agent surfaces">
@@ -596,8 +588,8 @@ const softwareApplication = {
                 </li>
               </ul>
               <p class="side-note">
-                Adds are idempotent on title, project, and thread. <code>--json</code> is flat
-                and stable. <a href="/docs/cli/">CLI reference →</a>
+                Adds are idempotent on title, project, thread, assignee, and base.
+                <a href="/docs/cli/">CLI reference →</a>
               </p>
             </div>
           </div>
@@ -611,9 +603,9 @@ const softwareApplication = {
             <span class="index">05 <span class="index-label">install</span></span>
             <h2 id="install-heading">Install it. Open the board.</h2>
             <p class="band-lede">
-              One binary, standalone or in Herdr. State lives in <code>~/.tsk</code> on macOS/Linux or
-              <code>%LOCALAPPDATA%\tsk</code> on Windows, whether you run it bare or inside Herdr.
-              Back it up to a private GitHub repository with <code>tsk backup setup</code>.
+              One binary, standalone or in Herdr. Tasks live in <code>~/.tsk</code> on macOS and
+              Linux, or <code>%LOCALAPPDATA%\tsk</code> on Windows. Back them up to a private
+              GitHub repository with <code>tsk backup setup</code>.
             </p>
           </header>
 
@@ -639,12 +631,9 @@ const softwareApplication = {
                 <button type="button" class="copy" data-copy aria-label="Copy Windows install command">copy</button>
               </div>
               <p class="install-note">
-                If prompted on macOS or Linux, reopen your terminal or run the installer's printed <code>export</code> command.
-                When Herdr is already installed, an interactive install may ask to run <code>tsk setup herdr</code>;
-                when agent skill roots are detected it also asks once to install the tsk skill.
-                The wrap-up then points at the board (<code>prefix+t</code> after Herdr setup, or <code>tsk setup herdr</code> / <code>tsk setup</code> when those asks are skipped).
-                Open the board with <code>tsk</code>. Add a task with <code>tsk add -t "your task title"</code>.
-                <a href="/docs/install/">Installation details</a>.
+                If prompted, reopen your terminal. When the installer finds Herdr or coding agents,
+                it offers to set them up. Then open the board with <code>tsk</code>, or add a task with
+                <code>tsk add -t "your task title"</code>. <a href="/docs/install/">Installation details</a>.
               </p>
             </div>
 
@@ -655,13 +644,15 @@ const softwareApplication = {
                 <button type="button" class="copy" data-copy aria-label="Copy Herdr setup commands">copy</button>
               </div>
               <p class="install-note">
-                After installing, connect the same binary to Herdr (the curl installer may offer this when Herdr is already present). Press <code>prefix+t</code> to open or focus
-                this workspace's board across tabs, or <code>prefix+a</code> to add a task. Other workspaces keep their boards. Setup asks before replacing conflicting shortcuts.
+                Connect the same binary to Herdr; the installer offers this when Herdr is installed.
+                <code>prefix+t</code> opens or focuses this workspace's board across tabs, and
+                <code>prefix+a</code> adds a task. Other workspaces keep their own boards. Setup asks
+                before replacing a shortcut you already use.
               </p>
             </div>
 
             <ul class="reqs" aria-label="Requirements">
-              <li><span class="dim">plugin mode</span> herdr 0.9+ or its supported Windows preview</li>
+              <li><span class="dim">plugin mode</span> Herdr 0.9 or newer; Windows is a preview</li>
               <li><a href="/docs/install/">Full install guide →</a></li>
             </ul>
           </div>
@@ -679,11 +670,11 @@ const softwareApplication = {
             </p>
           </header>
           <ol class="coming-steps" aria-label="Agent workflow">
-            <li><span class="dim">01</span><h3>Assign an agent.</h3><p>Choose who takes on the task, with its notes and steps as the brief.</p></li>
+            <li><span class="dim">01</span><h3>Assign an agent.</h3><p>Pick an agent profile for the task. The agent works from its notes and steps.</p></li>
             <li><span class="dim">02</span><h3>Start it.</h3><p>Starting an assigned task launches its agent in its own Herdr workspace and Git worktree.</p></li>
-            <li><span class="dim">03</span><h3>Review and clean.</h3><p>Keep unmerged work safe, then remove merged worktrees as you complete tasks.</p></li>
+            <li><span class="dim">03</span><h3>Review and clean.</h3><p>Review the pull request, then complete the task. Cleanup removes a merged worktree and never touches unmerged or uncommitted work.</p></li>
           </ol>
-          <p class="coming-availability">Runs in Herdr on macOS and Linux, from the board or <code>tsk dispatch</code>.</p>
+          <p class="coming-availability">Runs in Herdr, from the board or <code>tsk dispatch</code>. Windows support is a preview.</p>
         </div>
       </section>
     </main>

@@ -5,35 +5,37 @@ description: A shared task board for you and your agents.
 
 **tsk is a terminal task board for you and your agents: one shared queue, a TUI for you, a CLI for them.**
 
-Use it beside your agent in Herdr, or run `tsk` in any terminal. Both use the same tasks.
+Use it beside your agent in Herdr, or run `tsk` in any terminal. Both show the same tasks.
 
 ## Start here
 
 1. [Install tsk and connect Herdr](/docs/install/).
-2. Your first board opens with four `N` starter tasks on the desk. Open one with `Enter`; clear it with `ctrl+d`, `ctrl+f`, or `ctrl+x` when you are done. After an upgrade, a `What's new in tsk` task arrives the same way.
-3. Press `+`, type a title, and press `Enter`. It lands in the `open` inbox.
-4. Pick it with `ctrl+n` when you are ready, then open the task for notes and steps.
+2. Open the board. Four starter tasks (`N1`…) on the desk show you around: open one with `Enter`, and clear it with `ctrl+d`, `ctrl+f`, or `ctrl+x`.
+3. Press `+`, type a title, and press `Enter`. The task lands in the `open` inbox.
+4. Pick it with `ctrl+n` when you are ready, then open it for notes and steps.
 5. Give your agent its task number.
 
-Agents read tasks with `tsk list` and update them with `tsk status`. [Install the agent skill](/docs/cli/#setup) for the full workflow.
+Agents read tasks with `tsk list` and update them with `tsk status`. [Install the agent skill](/docs/install/#agent-skill) so your agent knows the workflow. To have tsk launch an agent on a task in its own worktree, see [Dispatch](/docs/dispatch/).
+
+After an upgrade, a `What's new in tsk` task lands on the desk. Clear it like a starter task.
 
 ## Find your work
 
-**No project setup needed.** Open tsk in your project directory and add your first task—the project appears on your board automatically. To add a task to another project, include `!p /path/to/project` in quick add, or use `-p /path/to/project` with `tsk add`.
+**No project setup needed.** Open tsk in a project directory and add a task: the project appears on your board. To add a task to another project, put `!p /path/to/project` in the title in quick-add, or pass `-p /path/to/project` to `tsk add`.
 
 | View | Use it for |
 | --- | --- |
-| **desk** | Personal tasks, plus work needing attention across projects |
-| **selected project** | One project's tasks |
-| **projects** | Browse projects or follow a thread across them |
+| **desk** | Work that needs you or is in motion across projects, plus tasks with no project |
+| **project** | One project's tasks |
+| **projects** | Browse projects, or follow a thread across them |
 
 | Section | Contains |
 | --- | --- |
-| **NEEDS YOU** | Blocked tasks and work ready for review |
-| **IN MOTION** | Started tasks |
+| **NEEDS YOU** | Tasks blocked on you, and work waiting for your review |
+| **IN MOTION** | Started tasks, and tasks waiting on someone else |
 | **ON DECK** | Picked `ready` tasks, then the `open` inbox |
 
-You or your agent set task status. Completing steps or ending an agent session does not mark a task done.
+You or your agent set a task's status. Checking off every step, or an agent session ending, does not mark a task done.
 
 ## Guides
 
@@ -44,6 +46,7 @@ You or your agent set task status. Completing steps or ending an agent session d
 | Add a task or capture an idea | [Capture](/docs/capture/) |
 | Edit notes, scope, or thread | [Task page](/docs/task-page/) |
 | Break work into a checklist | [Steps](/docs/steps/) |
-| Work through an agent | [Agent guide](/docs/agents/) |
+| Hand a task to an agent | [Dispatch](/docs/dispatch/) |
+| See what my agent reads | [tsk for agents](/docs/agents/) |
 | Script the board | [CLI](/docs/cli/) |
-| Find data, backups, or settings | [Storage](/docs/storage/) |
+| Configure tsk, back it up, or restore it | [Storage](/docs/storage/) |

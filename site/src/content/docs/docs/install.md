@@ -1,9 +1,9 @@
 ---
 title: Install
-description: Install tsk, connect Herdr, and give your agent the skill.
+description: Install tsk, connect Herdr, give your agent the skill, and upgrade or remove tsk.
 ---
 
-Available for macOS, Linux, and Windows 10/11 on ARM64 and x86-64. Windows package-manager submissions and code signing are not included yet.
+Install tsk on macOS, Linux, or Windows 10/11, on ARM64 or x86-64. Then connect it to Herdr and give your agent the skill. Windows builds are checksum-verified but not code-signed, and are not in a Windows package manager yet.
 
 ## Install
 
@@ -19,23 +19,31 @@ Or use Homebrew:
 brew install smarzban/tap/tsk
 ```
 
-Reopen your terminal if prompted, or run the printed `export` command.
+If the installer asks you to, reopen your terminal or run the `export` command it prints.
 
-### Windows 10/11 ARM64 and x86-64
+### Windows
 
-Run this in a PowerShell window (Windows PowerShell 5.1 or PowerShell 7). From Command Prompt, run `powershell` first:
+Run this in a PowerShell window (Windows PowerShell 5.1 or PowerShell 7). From Command Prompt, run `powershell` first.
 
 ```powershell
 irm https://www.gettsk.sh/install.ps1 | iex
 ```
 
-The installer verifies the release ZIP against `SHA256SUMS`, installs `tsk.exe` under `%LOCALAPPDATA%\Programs\tsk\bin`, and adds that directory to your user PATH. Windows artifacts are checksum-verified but not code-signed. To use `-NoPathUpdate`, download the script first and run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -NoPathUpdate`.
+It installs `tsk.exe` in `%LOCALAPPDATA%\Programs\tsk\bin` and adds that directory to your user PATH. Open a new terminal to use it.
 
-On every platform, if Herdr is already installed, an interactive installer asks whether to run `tsk setup herdr`. When global agent skill roots are detected, it also asks once whether to install or update the tsk skill for those agents. The installer closes with one `Done.` line: `Done. Run tsk in a project directory to open the board`, plus `, or press prefix+t in Herdr` after an accepted Herdr setup, and one row per step that did not run: `Herdr plugin:  tsk setup herdr` when Herdr setup was declined, skipped under CI or no TTY, or failed, and `Agent skills:  tsk setup` when the skill ask was declined or skipped. With `TSK_INSTALL_DIR` set, the installer skips both asks and prints `Custom install directory: setup was not run. When you are ready:` with the full binary path in both rows. Homebrew stays noninteractive and prints the `tsk setup herdr` and `tsk setup agents` commands as a caveat.
+### What the installer does
+
+1. Downloads the release for your platform and checks it against the release's `SHA256SUMS`.
+2. Installs `tsk` without sudo and adds it to your [PATH](#path).
+3. If Herdr is installed, asks whether to run `tsk setup herdr`.
+4. If it finds coding agents, asks once whether to install the tsk skill for them.
+5. Ends with a [closing message](#prompts-and-closing-message) naming any setup step still to run.
+
+Homebrew never asks. Its formula prints `tsk setup herdr` and `tsk setup agents` for you to run.
 
 ## Add to Herdr
 
-[Install Herdr](https://herdr.dev/docs/install/) first. Setup requires Herdr 0.9 or newer and accepts Herdr's supported `0.9.0-preview.*` Windows builds. An older `herdr` on PATH is refused with `herdr X.Y.Z found; tsk needs 0.9.0 or newer` before anything is written, so update Herdr and run `tsk setup herdr` again.
+[Install Herdr](https://herdr.dev/docs/install/) 0.9 or newer, then:
 
 ```sh
 tsk setup herdr
@@ -44,25 +52,31 @@ herdr server reload-config
 
 | Shortcut | Action |
 | --- | --- |
-| **prefix+t** | Open or focus the board in this workspace |
-| **prefix+a** | Quick capture |
+| `prefix+t` | Open the board in this workspace, or focus it across tabs |
+| `prefix+a` | Quick capture |
 
-Use your configured Herdr prefix. An existing board in this workspace is focused across tabs without resetting its view. If none exists here, a new board opens; other workspaces keep their boards. Windows setup writes PowerShell launchers and uses `%APPDATA%\herdr\config.toml`; Herdr currently describes Windows plugin support as preview. [Herdr keyboard guide](https://herdr.dev/docs/keyboard/).
+- Use your configured Herdr prefix. See the [Herdr keyboard guide](https://herdr.dev/docs/keyboard/).
+- Focusing an open board keeps its view. Other workspaces keep their own boards.
+- Herdr's Windows plugin support is a preview.
+
+More: [Herdr setup details](#herdr-setup-details).
 
 ## Agent skill
 
+The skill teaches your agent to read and update the board.
+
 ```sh
-tsk setup
-tsk setup pi
+tsk setup        # find your agents and ask once
+tsk setup pi     # install for one agent
 ```
 
-On a TTY, bare `tsk setup` detects installed agents and asks once to install or update the skill. Use `omp`, `claude`, `cursor`, `grok`, `codex`, or `opencode` instead of `pi` for a single named target. Setup installs the CLI skill in that agent's user-level skills directory; OMP uses its active profile.
+In a terminal, bare `tsk setup` finds your installed agents and asks once to install or update the skill for all of them. To install for one agent, name it: `pi`, `omp`, `claude`, `cursor`, `grok`, `codex`, or `opencode`.
 
-[Detection, version updates, and overwrite options](/docs/cli/#setup).
+Skill directories and options: [`tsk setup`](/docs/cli/#setup).
 
 ## First task
 
-Open the board and press `+`, type a title, then `Enter`. Or use the CLI:
+Open the board with `tsk`, or `prefix+t` in Herdr. Press `+`, type a title, and press `Enter`. Or use the CLI:
 
 ```sh
 tsk add -t "your task title"
@@ -70,111 +84,116 @@ tsk add -t "your task title"
 
 Give your agent the task number to work on it. [Board guide](/docs/board/).
 
-For standalone use, run `tsk` directly in your terminal.
-
 ## Upgrade
-
-Run `tsk update` to upgrade an installer-managed copy. It downloads the same checksum-verifying installer used for the first install, and runs it only once the download completed. It always follows the latest stable release (a `TSK_VERSION` in your shell is ignored) and refuses to move backwards if the running copy is newer than that release. On Windows, close every other running board first. The verified replacement waits in the install directory until the `tsk update` process exits, then an out-of-process PowerShell helper atomically replaces it and refreshes selected integrations; a refresh failure is recorded as `.tsk-update-error.log` beside `tsk.exe` with the command to retry. A successful Windows command means the verified update was staged, not that the helper has already replaced the running file. A Homebrew copy stays under Homebrew's control: `tsk update` prints `brew update && brew upgrade tsk` instead.
 
 | Installed with | Upgrade |
 | --- | --- |
 | Installer | `tsk update` |
 | Homebrew | `brew update && brew upgrade tsk` |
-| Source | Pull changes and rebuild |
+| Source | Pull and rebuild |
 
-After the binary is replaced, `tsk update` refreshes what is already set up:
+`tsk update` runs the same checksum-verifying installer for the latest stable release. It ignores a `TSK_VERSION` in your shell and never moves to an older release. On a Homebrew copy it prints the `brew` command instead.
 
-- A registered Herdr plugin (both plugin commands bound, on any keys) is re-registered without asking. Immediate replacements report `Herdr plugin refreshed.`; a locked Windows update reports that the refresh is staged and finishes it after `tsk` exits. Reload Herdr's config afterwards. If Herdr is on PATH but not set up, it asks as on a first install.
-- Installed agent skills at an older version are updated. On a terminal it asks once (`tsk skill installed for claude (v1.2.0), codex (v1.2.0); update to v1.3.0? [Y/n]`, Enter means yes); without one it updates unattended. An immediate replacement lists the agents it updated; a locked Windows update lists the selected agents as staged and writes them only after binary replacement succeeds. Skills that are already current print nothing. An update never installs a skill for an agent that did not have one; if no skill is installed anywhere, it offers the first-install ask for the detected agents.
-- A refresh that fails leaves the binary in place, prints `tsk setup`'s reason, and prints the matching `tsk setup` row. Updating onto a release older than this behaviour prints the plain `tsk setup` rows instead.
+After it replaces the binary, `tsk update` refreshes what you already set up:
+
+- **Herdr plugin:** re-registered without asking when both plugin shortcuts are bound, on any keys. Reload Herdr's config afterwards. If Herdr is installed but not set up, it asks as a first install does.
+- **Agent skills:** outdated skills are updated. In a terminal it asks once, for example `tsk skill installed for claude (v1.2.0), codex (v1.2.0); update to v1.3.0? [Y/n]`. It never adds a skill for an agent that had none, unless no agent has one: then it offers the first-install ask.
+- A refresh that fails leaves the new binary in place and prints the `tsk setup` command to run.
 
 Close and reopen running boards to use the new binary.
 
-The board shows a notice when a newer release is available. [Update-check settings](/docs/storage/#update-check).
+**Windows:** close every other running board first. `tsk update` stages the new `tsk.exe` and returns. The running file is replaced, and the refresh finished, after `tsk` exits. If that step fails, `.tsk-update-error.log` beside `tsk.exe` says why and how to retry.
+
+The board shows a notice when a newer release is out. [Update check settings](/docs/storage/#update-check).
 
 ## Uninstall
 
 | Installed with | Remove |
 | --- | --- |
-| Installer | Delete `tsk` on macOS/Linux, or `%LOCALAPPDATA%\Programs\tsk\bin\tsk.exe` on Windows |
+| Installer | Delete `tsk` from its install directory, `~/.local/bin` by default. On Windows, delete `%LOCALAPPDATA%\Programs\tsk\bin\tsk.exe` |
 | Homebrew | `brew uninstall tsk` |
 
-Task data remains in place.
+Your [task data](/docs/storage/#location) stays in place.
 
-To remove Herdr integration, run `herdr plugin unlink herdr-tsk`, remove the two shortcut bindings, and reload Herdr's config.
+- **Herdr:** run `herdr plugin unlink herdr-tsk`, remove the two shortcut bindings from Herdr's config, and reload it.
+- **PATH on macOS and Linux:** remove the `# tsk PATH` comment and the `case` line under it from the startup files the installer named.
+- **PATH on Windows:** remove the tsk install directory from your user `Path` variable.
 
-To undo installer PATH changes on macOS/Linux, remove the `# tsk PATH` comment and its following `case` line from the startup files named during installation. On Windows, remove the tsk install directory from your user `Path` environment variable. Neither uninstall path removes task data.
+## Installer reference
 
-## macOS and Linux installer details
+### Options
 
-The installer verifies the release's SHA-256 checksum and installs to `~/.local/bin`. It does not require sudo or change task data.
+| Option | Installer | Effect |
+| --- | --- | --- |
+| `TSK_VERSION=vX.Y.Z` | Both | Install that release instead of the latest stable one |
+| `TSK_INSTALL_DIR=<dir>` | Both | Install in this absolute directory. The setup asks are skipped |
+| `--help` | `install.sh` | Show help without downloading |
+| `-NoPathUpdate` | `install.ps1` | Leave your user PATH unchanged |
+| `-Help` | `install.ps1` | Show help without network access |
 
-| Setting | Purpose |
-| --- | --- |
-| `TSK_INSTALL_DIR` | Choose an absolute installation directory (no colons or newlines); the post-install setup asks are skipped |
-| `TSK_VERSION=vX.Y.Z` | Install a specific public release tag |
-| `--help` | Show help without downloading |
+Set the variables in the environment, for example `curl -fsSL https://gettsk.sh/install.sh | TSK_INSTALL_DIR="$HOME/bin" sh`. To pass a PowerShell switch, download the script first, then run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -NoPathUpdate`.
 
-Requires `curl`, `tar`, `sed`, and `sha256sum` or `shasum`.
+- `TSK_INSTALL_DIR` must be absolute and must not contain a newline or a PATH separator (`:` on macOS and Linux, `;` on Windows).
+- `install.sh` needs `curl`, `tar`, and `sha256sum` or `shasum`, plus standard tools such as `sed` and `awk`.
 
-## Windows installer details
+### PATH
 
-`install.ps1` requires Windows 10/11 ARM64 or x86-64 and Windows PowerShell 5.1 or PowerShell 7. It detects the native machine architecture even from an emulated x86-64 process, downloads the matching MSVC ZIP and `SHA256SUMS` over TLS with finite time, redirect, compressed-size, and expanded-size limits, requires one exact matching digest, validates the archive's three root entries, and stages `tsk.exe` beside the destination before replacement. It refuses unsupported architectures, reparse-point destinations and install paths, directory destinations, relative paths, and PATH separators.
+When the install directory is not on PATH, the installer adds it:
 
-| Setting | Purpose |
-| --- | --- |
-| `TSK_INSTALL_DIR` | Choose an absolute directory; a first install prints setup commands rather than running them |
-| `TSK_VERSION=vX.Y.Z` | Install a specific public release tag |
-| `-NoPathUpdate` | Install without changing the user PATH |
-| `-Help` | Show help without network access |
-
-The default is `%LOCALAPPDATA%\Programs\tsk\bin`. Unless `-NoPathUpdate` is used, the installer updates user PATH only, case-insensitively and without duplicates, while preserving environment-variable references and the registry value's existing string kind. A PATH update failure leaves the installed binary in place, reports that installation succeeded, and prints manual user-PATH guidance. `tsk update` supplies its process ID so a detached stock Windows PowerShell helper can wait out Windows executable locking; selected Herdr setup and installed agent skills are refreshed as part of the update flow.
-
-### macOS and Linux PATH
-
-If the install directory is missing from PATH, the installer adds it to:
-
-| Shell | Startup files |
+| Shell | Where |
 | --- | --- |
 | Zsh | `$ZDOTDIR/.zshrc`, or `~/.zshrc` |
-| Bash | `~/.bashrc` and the first existing login profile; defaults to `~/.profile` |
+| Bash | `~/.bashrc`, and the first of `~/.bash_profile`, `~/.bash_login`, or `~/.profile` that exists (`~/.profile` if none does) |
+| Windows | Your user PATH |
 
-The installer does not source these files. Symlinked, non-regular, or unwritable files are skipped with manual instructions. Other shells require manual PATH setup. Successful edits remain if another file cannot be updated.
+- Other shells: the installer prints the directory to add yourself.
+- It never sources your startup files. It skips a symlinked or unwritable one and says what to add by hand.
+- A PATH change that fails never undoes the install.
 
-### Herdr prompt
+### Prompts and closing message
 
-When `herdr` is on PATH after the binary is installed, the installer may ask to run plugin setup:
+The installer asks only in an interactive terminal, and only when it installs in the default directory. `curl | sh` can still ask: it reads your answer from the terminal.
 
-- Interactive terminal using the platform's default destination: asks `[y/N]`. Unix can read `/dev/tty` under `curl | sh`; PowerShell uses console input after `irm` has downloaded the complete response. Yes runs the newly installed `tsk setup herdr`.
-- An overridden `TSK_INSTALL_DIR` never executes the newly published binary; the closing block prints the `tsk setup herdr` and `tsk setup` commands with the full binary path instead.
-- `CI` set, or no usable terminal: skips the ask so the install never hangs.
-- Herdr absent: no Herdr prompt.
+| Prompt | When | Yes runs |
+| --- | --- | --- |
+| `Herdr detected. Set up the Herdr plugin now? [y/N]` | Herdr is on PATH | `tsk setup herdr` |
+| `Agents detected: claude, pi. Install the tsk skill for them? [y/N]` | Coding agents are found | `tsk setup agents --yes` |
 
-The install always ends with one closing block:
+With `CI` set, or without a terminal, it skips both prompts so it never hangs. A setup that fails never undoes the install.
 
-- Setup accepted: `Done. Run tsk in a project directory to open the board, or press prefix+t in Herdr.`
-- Declined, CI/no-TTY skip, or setup failure: `Done. Run tsk in a project directory to open the board.` followed by a `    Herdr plugin:  tsk setup herdr` row.
-- Agents detected but the skill batch declined or skipped: a `    Agent skills:  tsk setup` row.
-- Herdr absent: the `Done.` line only (no Herdr row).
+It ends with one closing message, with a row for each setup step still to run:
 
-Setup failures do not undo the install. Homebrew does not run this prompt; use the formula caveat or run `tsk setup herdr` yourself.
+```text
+Done. Run tsk in a project directory to open the board.
 
-## Herdr setup with an installed binary
+    Herdr plugin:  tsk setup herdr
+    Agent skills:  tsk setup
+```
 
-Setup registers bundled plugin files using the installed executable. No source checkout is needed.
+- After Herdr setup ran, the first line ends `, or press prefix+t in Herdr.` instead.
+- `Herdr plugin:` appears when Herdr is installed but its setup was declined, skipped, or failed.
+- `Agent skills:` appears when agents were found but the skill prompt was declined or skipped.
+- With `TSK_INSTALL_DIR`, the installer never runs the new binary. It prints `Custom install directory: setup was not run. When you are ready:`, then the setup rows with the binary's full path.
 
-- Shortcut conflicts ask for confirmation. Declining keeps the existing binding, and the output says so.
-- A noninteractive conflict stops before writing.
-- Config changes create a backup beside the config, `config.toml.tsk-backup-<YYYYMMDD-HHMMSS>` in UTC; a second setup within the same second appends `-1`, `-2`, ....
-- A symlinked `config.toml` or `herdr` directory (dotfiles) is followed: setup edits the real file, keeps the link, and writes the backup beside the real file. A dangling or looping link is refused before any change.
-- Rerunning setup updates the registration without duplicating bindings.
-- Use the stable command on PATH, not a versioned Homebrew Cellar path.
+## Herdr setup details
 
-Installation alone does not update an existing plugin registration unless you answer yes to the curl installer's Herdr prompt. [Setup recovery and configuration](https://github.com/smarzban/tsk/blob/main/packaging/README.md#herdr-setup-and-upgrades).
+`tsk setup herdr` registers the plugin with your installed `tsk`. No source checkout is needed.
+
+- **Version:** Herdr 0.9 or newer, including Herdr's `0.9.0-preview.*` Windows builds. An older Herdr is refused before anything is written: `herdr 0.8.2 found; tsk needs 0.9.0 or newer. Update Herdr, then run tsk setup herdr again`.
+- **Config file:** `HERDR_CONFIG_PATH`, else `$XDG_CONFIG_HOME/herdr/config.toml`, else `~/.config/herdr/config.toml`. On Windows: `HERDR_CONFIG_PATH`, else `%APPDATA%\herdr\config.toml`.
+- **Backup:** before changing the config, setup saves a copy beside it, `config.toml.tsk-backup-<YYYYMMDD-HHMMSS>` in UTC. A second setup in the same second adds `-1`, `-2`, and so on.
+- **Symlinks:** a symlinked config file or `herdr` directory (dotfiles) is followed. Setup edits the real file, keeps the link, and saves the copy beside the real file. A dangling or looping link is refused before any change.
+- **Shortcut conflicts:** setup asks before replacing a binding. Declining keeps yours, and the output says so. Without a terminal, a conflict stops setup before it writes anything.
+- **Your own keys:** a plugin command you already bound to another key keeps it. Setup does not add the default shortcut beside it.
+- **Reruns:** running setup again updates the registration without duplicating bindings.
+- **Binary path:** setup records the `tsk` you ran. Run the one on your PATH, not a versioned Homebrew Cellar path, so upgrades keep working.
+- **Windows:** setup writes PowerShell launchers.
+
+Installing a new tsk does not refresh the registration by itself. `tsk update` refreshes it, and so does running `tsk setup herdr` again.
 
 ## Manual archives
 
-Download the archive for your platform and `SHA256SUMS` from the same [release](https://github.com/smarzban/tsk/releases).
+Download your platform's archive and `SHA256SUMS` from the same [release](https://github.com/smarzban/tsk/releases).
 
 | Platform | Archive target |
 | --- | --- |
@@ -185,7 +204,11 @@ Download the archive for your platform and `SHA256SUMS` from the same [release](
 | Windows 10/11 ARM64 | `aarch64-pc-windows-msvc` |
 | Windows 10/11 x86-64 | `x86_64-pc-windows-msvc` |
 
-Unix archives are named `tsk-vX.Y.Z-<target>.tar.gz`; Windows archives use `.zip` and contain `tsk.exe`. Verify with `shasum -a 256` on macOS, `sha256sum` on Linux, or `Get-FileHash -Algorithm SHA256` on Windows. Compare the full digest with `SHA256SUMS`, then extract the executable into a directory on PATH.
+Archives are named `tsk-vX.Y.Z-<target>.tar.gz`. Windows archives are `.zip` files holding `tsk.exe`.
+
+1. Hash the archive: `shasum -a 256` on macOS, `sha256sum` on Linux, or `Get-FileHash -Algorithm SHA256` on Windows.
+2. Compare the full digest with the archive's line in `SHA256SUMS`.
+3. Extract the executable into a directory on your PATH.
 
 ## Source build
 
@@ -198,6 +221,6 @@ cargo build --release
 export PATH="$PWD/target/release:$PATH"
 ```
 
-For plugin development from a checkout, Herdr 0.9.0+ supports `herdr plugin link "$PWD"`. Rebuild after pulling changes.
+To develop the Herdr plugin from a checkout, run `herdr plugin link "$PWD"` (Herdr 0.9 or newer). Rebuild after pulling changes.
 
 [Contributing](https://github.com/smarzban/tsk/blob/main/CONTRIBUTING.md) · [Storage and configuration](/docs/storage/)
