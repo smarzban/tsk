@@ -244,7 +244,16 @@ Times such as `at` are `[seconds, nanoseconds]` since the Unix epoch.
 | `at` | When |
 | `by` | `you`, the agent profile that made the change, or `null` on old events |
 | `kind` | `created`, `edited`, `status_set`, `completed`, `reopened`, `soft_deleted`, `restored`, `archived`, `unarchived`, `step_added`, `step_checked`, `step_unchecked`, `step_renamed`, `step_removed`, `assigned`, `base_set`, `dispatched`, `cleaned`, `block_edited`, `replied`, `reply_edited`, `reply_deleted`, `review_edited`, or `check_set` |
-| `detail` | What changed, or `null`: `from` and `to` on a status change; `assignee` on `assigned`; `base` on `base_set`; `branch`, `base`, `sha`, and `relaunch` on `dispatched`; `outcome` (`removed`, `branch_kept`, or `missing`) on `cleaned`; `fields` on `edited`; `after` on a start that finishing a prerequisite caused |
+| `detail` | What changed, below, or `null` |
+
+| Event | `detail` |
+| --- | --- |
+| A status change | `from` and `to`, plus `after` when finishing that prerequisite started the task |
+| `assigned` | `assignee`; absent when unassigned |
+| `base_set` | `base`; absent when cleared |
+| `dispatched` | `branch`, `base`, `sha`, `relaunch: true` on a relaunch, and `after` as above |
+| `cleaned` | `outcome`: `removed`, `branch_kept`, or `missing` |
+| `edited` | `fields`: any of `title`, `notes`, `thread`, `project`, `after` |
 
 ## status
 
@@ -469,7 +478,7 @@ tsk clean <task> [--merge] [--json] [--state-dir <dir>]
 | `--json` | Print the result as one JSON object |
 
 - Uncommitted changes refuse with `dirty-worktree` and nothing is touched.
-- The branch is deleted only when it is merged into the recorded base, or, with `gh`, when its pull request merged at the branch tip. Otherwise it stays and the output says why.
+- The branch is deleted only when it is merged into the recorded base. With `gh`, a pull request merged at the branch tip counts too. Otherwise the branch stays and the output says why.
 - A worktree already gone counts as cleaned.
 - The task keeps its dispatch record, marked `cleaned`.
 - What counts as merged, and what stays: [complete and clean up](/docs/dispatch/#complete-and-clean-up).
@@ -485,7 +494,7 @@ Output is one line: `cleaned T12: worktree <path> (removed), branch <name> (kept
 | `warning` | A failed fetch, or a workspace Herdr would not close; `null` otherwise |
 | `merge` | With `--merge`: `pr`, `url`, `method`, and `remote_branch` (`kept`, `deleted`, or `null`), plus `"status": "done"` |
 
-When a step after a merge fails, `--merge --json` prints `number`, `merge`, `status` (`done`, or `null` when done was not saved), and `error` with `stage` (`done` or `cleanup`), `code`, and `message`.
+When a step after the merge fails, `--merge --json` prints `number`, `merge`, `status`, and `error`. `status` is `null` when done was not saved. `error` has `stage` (`done` or `cleanup`), `code`, and `message`.
 
 ```sh
 tsk clean T12 --json
@@ -589,7 +598,7 @@ tsk restore [<version>] [--all] [--state-dir <dir>]
 
 - The list shows each version's id, time, host, task count, and target, newest first. In a terminal it then asks which to restore; Enter cancels.
 - A restore keeps the replaced store beside it and prints its path. It never changes `config.toml`.
-- It refuses, replacing nothing, when there are no targets, the id is unknown, a board or quick capture is open, or the version is from a newer tsk.
+- It refuses and replaces nothing when there are no targets or the id is unknown. It also refuses while a board or quick capture is open, and for a version from a newer tsk.
 - `tsk restore T12` is not a version: it points at `tsk trash restore T12`.
 
 ```sh
@@ -628,9 +637,18 @@ tsk setup --detected-ids | --skill-states
 | `codex` | `~/.agents/skills/` |
 | `opencode` | `~/.config/opencode/skills/` |
 
+`tsk setup herdr` adds `prefix+t` (board) and `prefix+a` (quick capture) to the Herdr config:
+
+- The config is `HERDR_CONFIG_PATH`, else `$XDG_CONFIG_HOME/herdr/config.toml`, else `~/.config/herdr/config.toml`. On Windows it is `%APPDATA%\herdr\config.toml`.
+- A plugin command you already bound to another key keeps that key.
+- A shortcut that clashes with yours asks first. Without a terminal to ask in, setup stops before writing anything.
+
+For the skill:
+
 - An installed skill with the same version refuses with `skill-exists`; `--force` rewrites it. A different version updates without `--force`.
 - Setup refuses a symlinked skills root, skill folder, or skill file.
-- `--json` prints a machine-readable report. `--detected-ids` and `--skill-states` print plain lines for installers.
+- `--json` prints a machine-readable report.
+- For installers, `--detected-ids` prints the detected agent ids on one line. `--skill-states` prints `embedded <version>`, then one tab-separated `id state version path` line per detected agent, where the state is `missing`, `current`, `outdated`, or `blocked-symlink`.
 - Exit 0 on success, 1 on a refusal or failure, 2 for invalid arguments.
 
 ```sh

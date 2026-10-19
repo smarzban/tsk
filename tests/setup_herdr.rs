@@ -103,7 +103,7 @@ fn setup_help_is_headless_and_bad_arguments_are_usage_errors() {
         .unwrap();
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
-    assert!(help.contains("Values"));
+    assert!(help.contains("Actions"));
     assert!(help.contains("herdr"));
     assert!(help.contains("Exit:"));
     let output = Command::new(env!("CARGO_BIN_EXE_tsk"))

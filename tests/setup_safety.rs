@@ -34,7 +34,7 @@ fn setup_uses_cli_harness() {
     let output =
         tsk_tui::cli::run_with(["tsk", "setup", "herdr", "--help"], std::io::empty(), false);
     assert_eq!(output.code, 0);
-    assert!(output.stdout.contains("Values"));
+    assert!(output.stdout.contains("Actions"));
     assert!(output.stdout.contains("herdr"));
     assert!(output.stdout.contains("Exit:"));
 }
