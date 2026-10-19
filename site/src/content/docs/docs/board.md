@@ -48,10 +48,10 @@ Press `/` to filter the rows the current tab shows. Typing filters at once: empt
 
 | Tab | Matches |
 | --- | --- |
-| Projects view | Project names and paths |
+| Projects view, on **Overview** | Project names and paths |
 | Desk, project board, thread or assignee view | Title, notes, step text, thread, assignee (`claude` or `@claude`), task number (`T12`) |
 
-Every word you type must match somewhere in the same task, ignoring case. Search narrows inside the [filter](#filter). The done drawer is searched only while it is open.
+In a task list, every word you type must match somewhere in the same task, ignoring case. Search narrows inside the [filter](#filter). The done drawer is searched only while it is open.
 
 `Enter` pins the query and hands keys back to the board, so actions work on the filtered rows. `Esc` clears the query. Changing tab, project, or Projects view clears it too.
 
@@ -65,11 +65,11 @@ A **thread** groups related tasks, such as `release` or `login-fix`, and can spa
 | Desk | Three tabs: `threads · projects · @assignees` |
 | Projects view | `v` opens one thread or one assignee across all projects |
 
-- The threads tab lists `all`, the threads, then **Without a thread**.
+- On a project board, the threads tab lists `all`, the threads, then **Without a thread**.
 - The `@assignees` tab lists `all`, each profile as `@name`, any name left on tasks whose profile was removed, then `unassigned`.
 - Choices from different tabs combine: `#release @claude` shows release tasks assigned to claude. `all` clears its own tab.
 
-A filter lasts for the session, and a project board's clears when you switch projects. A thread or `@name` view lists matching tasks from every project and the desk, grouped by status. There is no `unassigned` view.
+The desk's tabs work the same way, and its projects tab also offers `desk`. The desk filter lasts for the session. A project board's filter clears when you leave that board. A thread or `@name` view lists matching tasks from every project and the desk, grouped by status. There is no `unassigned` view.
 
 Give a task a thread when you [capture](/docs/capture/) or [edit](/docs/task-page/#edit) it.
 
@@ -82,13 +82,15 @@ Press `g` to group, `s` to sort, or click the `group: none ▾` and `sort: recen
 | Group by | none, project, thread, assignee |
 | Sort by | recent, project, thread, title, assignee |
 
-A view never offers what it already fixes: a project board has no project choice, a thread view no thread, an `@name` view no assignee.
+Neither offers what the view already fixes: a project board has no project choice, a thread view no thread, an `@name` view no assignee.
 
 Grouping adds dim sub-headers inside NEEDS YOU, IN MOTION, ON DECK, and the inbox, such as `▾ #release · 2` or `▾ unassigned · 1`. Each sub-header counts its rows. The group whose newest row changed status most recently comes first. The done drawer and its archived group never group.
 
 Sorting reorders rows inside each group, or inside each section when ungrouped. **recent** is the section's normal order. The others sort by project (desk last), thread (unthreaded last), title, or assignee (unassigned last). Notices still lead.
 
-Each view keeps its own choice for the session. A fresh board starts ungrouped and sorted by recent, or from the board defaults in [`config.toml`](/docs/storage/#configuration). Session changes are never written back. In a narrow pane the controls shorten to `g:none ▾ s:recent ▾`, and controls still at their default drop first.
+The desk, project boards, thread views, and `@name` views each keep their own choice for the session. The desk and project boards start from the board defaults in [`config.toml`](/docs/storage/#configuration), if set; everything else starts ungrouped and sorted by recent. Session changes are never written back.
+
+In a narrow pane the controls shorten to `g:none ▾ s:recent ▾`, and controls still at their default drop first.
 
 ### Fold
 
@@ -100,7 +102,7 @@ Every sub-header is a cursor stop. You can fold the group under the cursor, or e
 
 | Section | Holds |
 | --- | --- |
-| **NEEDS YOU** | `blocked` on you, `review` on you |
+| **NEEDS YOU** | `blocked` on you, or on a task that is done or deleted; `review` on you |
 | **IN MOTION** | `started`; `blocked` on another task or something else; `review` on an agent or something else |
 | **ON DECK** | `ready`, then `open` in the **inbox** |
 | Done drawer | `done` |
@@ -144,7 +146,7 @@ A row addressed to you carries a dim **live line** under it, starting `└─`, 
 | In review on you | Their newest reply, else what was done: `@claude: Built the widget; empty input now handled. · 40m` |
 | Blocked on a task that is now done or deleted | `T202 is done · unblock it · 1h` |
 
-The age is how old the message is, and the asker is left out when it is you. Rows waiting elsewhere, started and done rows, and notices have no live line. When a blocking task is done, the blocked task returns to NEEDS YOU, but its status does not change.
+The age is how old the message is, and the asker is left out when it is you. A block or review with nothing said has no live line. Neither do rows waiting elsewhere, started and done rows, or notices. When a blocking task is done, the blocked task returns to NEEDS YOU, but its status does not change.
 
 ### Peek
 
