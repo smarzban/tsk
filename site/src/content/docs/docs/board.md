@@ -181,9 +181,9 @@ Press `r` on a blocked or review row to reply, or give feedback, right under it.
 
 ### Replies reach a running agent
 
-An unblock or a send-back can start a dispatched task whose agent still runs. Once the change is saved, tsk sends your answers to that agent:
+You can unblock a dispatched task whose agent still runs, or send its review back. Once that is saved, tsk sends your answers to the agent:
 
-- An unblock sends every reply you left on the block, oldest first: `[tsk T12 unblocked] <your reply>`.
+- An unblock sends every reply you left on the block, oldest first: `[tsk T12 unblocked] <your reply>`. With no reply of yours, a start sends the bare tag and a return to ready sends nothing.
 - A send-back sends every feedback entry of the round, then the failed checks: `[tsk T12 sent back] <feedback> Failed checks: <check>; <check>`.
 
 Two or more entries are numbered, one per line. Each reply goes out once: one already sent with [`tsk reply --send`](/docs/cli/#reply) is skipped. Saving a reply without unblocking sends nothing.
@@ -203,9 +203,9 @@ Set it with:
 - `!w T202` in [quick-add](/docs/capture/),
 - [`tsk edit --after`](/docs/cli/#edit).
 
-The task picker lists tasks that are not done, this project's first. `Space` ticks several, and **none** clears the list. A task cannot run after itself, and a loop is refused: `T202 already runs after T205`. Palette **chain marked tasks in order** makes each marked task run after the one marked before it, in one undo step.
+The task picker lists the other tasks that are not done, this project's first. `Space` ticks several, and **none** clears the list. A loop is refused: `T202 already runs after T205`. Palette **chain marked tasks in order** makes each marked task run after the one marked before it, in one undo step.
 
-When the last prerequisite is done, each waiting **ready** task starts in the same save, and an assigned one [dispatches](/docs/dispatch/#dispatch). Review does not count as done. The status row reads `T205 started · T202 done`. Waiting tasks in open, blocked, or review stay put.
+When the last prerequisite is done, each waiting **ready** task starts in the same save, and an assigned one [dispatches](/docs/dispatch/#dispatch). Review does not count as done. The status row says so, for example `T205 started · T202 done`. Waiting tasks in open, blocked, or review stay put.
 
 - A launch that fails puts the task back to ready and never blocks the done.
 - `ctrl+u` on the done reverts the statuses only. A launched agent keeps running.
