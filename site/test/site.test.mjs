@@ -204,7 +204,7 @@ test("docs open on the two-party board and let agents set status", async () => {
   assert.match(overview, /tsk status/);
   assert.doesNotMatch(overview, /Done is a human verb/);
   const cli = await read("../src/content/docs/docs/cli.md");
-  assert.match(cli, /## For agents/);
+  assert.match(cli, /\[tsk for agents\]\(\/docs\/agents\/\)/);
   assert.match(cli, /tsk status <task> done/);
 });
 
