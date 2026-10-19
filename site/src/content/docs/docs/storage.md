@@ -114,7 +114,7 @@ project_sort = "title"    # project boards: recent, thread, title, or assignee
 
 ### Errors
 
-Each table is checked on its own, so a mistake in one never blocks the others.
+An unknown key or a bad value in one table never blocks the others. A file that is not valid TOML breaks them all.
 
 | Mistake | What happens |
 | --- | --- |
