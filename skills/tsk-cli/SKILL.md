@@ -38,12 +38,15 @@ installer, package manager, or source build unless they asked.
      without it, to one short sentence. `--on T202` waits on another task instead.
    - Running either again while it is open edits the same review round or block.
 5. **Stop.** Say in one line what to look at, then wait. The user answers in your session:
-   `[tsk T12 unblocked] …` or `[tsk T12 reply] …` answers a block; `[tsk T12 sent back] …`, with any
+   `[tsk T12 unblocked] …` means the block is closed with their answer. `[tsk T12 reply] …` is a
+   reply to the open block or review; the status stays. `[tsk T12 sent back] …`, with any
    `Failed checks: …`, means the task is `started` again with their feedback. Address it, then hand
    back again: the next review opens a new round.
 
-To answer inside an open block or round yourself, `tsk reply T12 "…"` adds a reply. It is not safe to
-repeat, and a task with nothing open refuses with `not-blocked`.
+`tsk reply T12 "…"` adds a reply to the open block or review round. It is not safe to repeat, and a
+task with nothing open refuses with `not-blocked`. When the user asks you to send their answer to the
+task's running agent, add `--send`: it sends only that reply and prints `sent to @<agent>` or
+`not sent: <reason>`.
 
 ## Rules
 
@@ -54,15 +57,16 @@ repeat, and a task with nothing open refuses with `not-blocked`.
 3. **Never blind-retry.** `add`, `status`, `edit`, and `archive` are safe to repeat. `reply`,
    `dispatch`, `steps add`, `steps toggle`, and `steps remove` are not: read the task first.
 4. **Use a known project name or a full path.** A bare `-p name` must match one project on the board;
-   unknown or ambiguous names refuse. Only an existing absolute directory creates a new project.
-   `tsk edit` cannot move a task: add it again in the right scope (`--desk`, `-p <project>`) and
-   archive the stray.
+   for `add`, unknown or ambiguous names refuse. `tsk list -p <name>` does not refuse: an unknown
+   name lists nothing. Only an existing absolute directory creates a new project. `tsk edit` cannot
+   move a task: add it again in the right scope (`--desk`, `-p <project>`) and archive the stray.
 5. **Never pass `--state-dir`** unless the user asked. It points at a different board.
 6. **Ignore notice rows.** Rows the board paints as `N1`… are for the user; no command reaches them.
 7. **Values that start with `-` need `=`:** `--title="-fix parser"`. For `tsk reply`, put `--` first.
-8. **Names are exact.** `--assignee` must name a profile in `config.toml` (`unknown-agent`), `--base`
-   an existing branch of the task's repo (`unknown-base`), and `--thread` a valid thread name
-   (exit 2). `--unassign` and `--clear-base` clear the first two.
+8. **Names are exact.** `--assignee` must name a profile in `config.toml` (`unknown-agent`), and
+   `--base` an existing branch of the task's repo (`unknown-base`). `--unassign` and `--clear-base`
+   clear them. A thread name starts with a letter or digit, then lowercase letters, digits, `-`,
+   and `.`, up to 32 characters; `--thread` lowercases it and refuses anything else (exit 2).
 9. **After means wait.** `tsk edit T13 --after T12` makes T13 wait until T12 is done. Finishing T12
    then starts T13 if it is `ready`, and says so on a second line.
 10. **Steps are the user's plan.** Add them only when the user wants order of work tracked:
@@ -76,7 +80,8 @@ repeat, and a task with nothing open refuses with `not-blocked`.
 ## Reading the board
 
 `tsk list --json` reads this repo's project, or the desk outside Git. Present it in board language:
-what needs the user first, then in motion, then on deck. Rows already come in the board's order.
+what needs the user first, then in motion, then on deck. Rows come grouped by status, and within a
+status they are already in the board's order; keep it.
 
 | The user says | Read |
 | --- | --- |
@@ -127,8 +132,9 @@ Only when the user asks.
 
 A refusal prints a stable code first: `tsk status: unknown-task: T12 is not on the board`. Branch on
 the code, never the message. `tsk help <command>` lists each command's codes. `project`, `trash`,
-`backup`, and `restore` refuse with a message only. After exit 3 from `dispatch`, read the task before
-retrying: the agent may already run.
+`backup`, and `restore` refuse with a message only. After exit 3 from `dispatch`, or from a start that
+dispatched, the agent may already run without its record: check `herdr agent get t12-<assignee>` and
+read the task before retrying.
 
 ## Refine a task
 

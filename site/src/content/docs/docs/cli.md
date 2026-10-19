@@ -34,9 +34,9 @@ tsk list
 | [`tsk guide`](#guide) | Print the agent workflow |
 
 - `tsk --help` lists the commands. `tsk help <command>` and `tsk <command> --help` print the same reference for one command: usage, flags, examples, refusals, and exit codes. Help wraps at 80 columns.
-- `tsk --version` (or `-V`) prints `tsk <version>`. Put it before any command.
+- `tsk --version` (or `-V`) prints `tsk <version>`. It takes no command.
 - Every command that reads or writes tasks takes `--state-dir <dir>` to use another store. `setup`, `update`, and `guide` do not.
-- A value that starts with `-` needs the `=` form: `--title="-fix parser"`, `--notes="-5 degrees"`. [`tsk reply`](#reply) takes `--` before such text instead.
+- A flag value that starts with `-` needs the `=` form: `--title="-fix parser"`, `--notes="-5 degrees"`. [`tsk reply`](#reply) takes `--` before such text instead. Step text cannot start with `-`.
 - Human output escapes terminal control characters stored in tasks. JSON keeps the text as stored.
 
 ## Statuses
@@ -153,7 +153,7 @@ tsk list [<task>] [-p <project> | --desk | --all] [--thread <name> | --no-thread
 | Flag | Lists |
 | --- | --- |
 | none | Live tasks: `open`, `ready`, `started`, `blocked`, and `review`, not archived |
-| `<task>` | That task in full, wherever it is, including done, archived, and recently deleted. Takes no other filter |
+| `<task>` | That task in full, wherever it is, including done and archived. A deleted task shows until it moves to [trash](#trash). Takes no other filter |
 | `--thread <name>` | Tasks on that thread. With `--all`, across every project and the desk |
 | `--no-thread` | Tasks without a thread |
 | `--assignee <name>` | Tasks assigned to that agent profile |
@@ -165,9 +165,9 @@ tsk list [<task>] [-p <project> | --desk | --all] [--thread <name> | --no-thread
 | `--sort <by>` | Live tasks ordered by `recent` (the default), `project`, `thread`, `title`, or `assignee` |
 | `--json` | JSON instead of text |
 
-`--group` and `--sort` work like the board's [group and sort](/docs/board/#group-and-sort). They refuse with `--done`, `--archived`, or `--deleted`, and never arrange by something every row shares: `project` needs `--all`, `thread` refuses with `--thread` or `--no-thread`, and `assignee` with `--assignee`.
+`--group` and `--sort` work like the board's [group and sort](/docs/board/#group-and-sort). They never arrange by something every row shares: `project` needs `--all`, and `thread` and `assignee` do not combine with a thread or assignee filter.
 
-Scope flags exclude each other, as do the status filters, and `--thread` with `--no-thread`. A flag that takes a value given twice is a usage error. An unknown task address exits 2.
+These are usage errors (exit 2): `--group` or `--sort` with `--done`, `--archived`, or `--deleted`; two scope flags or two status filters; `--thread` with `--no-thread`; a value flag given twice; and an unknown task address.
 
 ```sh
 tsk list --all --thread release --json
@@ -283,8 +283,8 @@ tsk status T12 ready
 | --- | --- |
 | Unassigned, already started, done, or archived | Sets the status |
 | Assigned, never dispatched | [Dispatches](#dispatch) it and prints `dispatched T12 to @claude in <worktree>` |
-| Assigned, but outside Herdr or on the desk | Sets the status and prints `no launch: <reason>` |
-| Dispatched, agent still running or Herdr cannot tell | Sets the status. Coming back from `blocked` or `review`, it also sends the agent your replies or feedback and prints what it sent |
+| Assigned, never dispatched, but outside Herdr or on the desk | Sets the status and prints `no launch: <reason>` |
+| Dispatched, agent still running, Herdr cannot tell, or outside Herdr | Sets the status. When you start it from `blocked` or `review`, it also tries to send the agent your replies or feedback, and a second line says whether they went |
 | Dispatched, agent gone | Refuses with `agent-gone` |
 | Runs after a task that is not done | Refuses with `after-not-done`, unless `--force` |
 
@@ -333,11 +333,11 @@ tsk status T12 done --merge
 | `--option <text>` | One suggested answer; repeat for more |
 | `--on <who>` | Who it waits on: `you` (the default), another task (`T202`), or any other text |
 
-- Each text is at most 4 KB (`text-too-long`). `--on` must name another task on the board (`invalid-blocker`).
+- Each text is at most 4 KB (`text-too-long`). A task number for `--on` must name another task on the board (`invalid-blocker`).
 - A task has one open block. Running the command again edits it, replacing only the fields given.
 - `blocked` with no flags opens a block with no reason.
 - Leaving `blocked` by any route closes the block into `past_blocks`.
-- A block on you shows under NEEDS YOU. One on another task or on anything else stays IN MOTION until that changes ([sections](/docs/board/#sections-and-status)).
+- A block on you shows under NEEDS YOU. One on another task stays IN MOTION until that task is done or gone, then needs you. One on anything else stays IN MOTION ([sections](/docs/board/#sections-and-status)).
 
 ```sh
 tsk status T12 blocked --why "Which database?" --option postgres --option sqlite
@@ -457,7 +457,7 @@ tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]
 - The base is `--base`, else the task's base, else the repository's default branch. Never the branch you run the command in. [Base branch](/docs/dispatch/#base-branch).
 - A dispatched task refuses with `already-dispatched`. Use `--again` to relaunch on purpose.
 - Output is `dispatched T12 to @claude in <worktree>`.
-- A refusal changes nothing. Exit 3 after a launch means the agent may already run: read the task before retrying.
+- A refusal changes nothing. Exit 3 means the launch may have run without its record saved: check Herdr (`herdr agent get t12-claude`) and read the task before retrying. The same holds for a `tsk status T12 started` that dispatched.
 - On Windows dispatch is a preview ([Windows](/docs/dispatch/#windows-preview)).
 
 ```sh
@@ -686,7 +686,7 @@ A refusal prints `tsk <command>: <code>: <message>` on stderr, such as `tsk stat
 | --- | --- |
 | `add` | `empty-title`, `invalid-title`, `unknown-project`, `project-archived`, `unknown-agent`, `unknown-base`; in a plan also `invalid-item`, `invalid-thread`, `invalid-after` |
 | `status` | `unknown-task`, `soft-deleted-task`, `text-too-long`, `invalid-blocker` |
-| `status … started` | `after-not-done`, `agent-gone`, and the `dispatch` codes `needs-git-project`, `unknown-agent`, `agent-config`, `unknown-base`, `no-default-base`, `herdr-failed`, `unsupported-platform`, `unsafe-state-dir` |
+| `status … started` | `after-not-done`, `agent-gone`, and the `dispatch` codes `needs-git-project`, `unknown-agent`, `agent-config`, `unknown-base`, `no-default-base`, `herdr-failed`; on Windows `unsupported-platform`, `unsafe-state-dir` |
 | `status … done --clean` | The `clean` codes except `not-dispatched` and `already-cleaned` |
 | `status … done --merge` | Every `clean` code, with `--merge` |
 | `edit` | `unknown-task`, `soft-deleted-task`, `empty-title`, `invalid-title`, `unknown-agent`, `unknown-base`, `invalid-after`, `after-loop` |

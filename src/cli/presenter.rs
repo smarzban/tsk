@@ -2089,7 +2089,10 @@ pub fn trash_help() -> CliOutput {
         groups: vec![
             group(
                 "Arguments",
-                &[("<task>", "a task number or UUID from tsk list --deleted")],
+                &[(
+                    "<task>",
+                    "a task number or UUID of a task in trash; tsk list --deleted shows it",
+                )],
             ),
             group(
                 "Actions",
@@ -2470,7 +2473,7 @@ pub fn setup_help() -> CliOutput {
                     ),
                     (
                         "--skill-states",
-                        "print one line per detected agent: id, state, version, path",
+                        "print embedded <version>, then one line per detected agent: id, state, version, path",
                     ),
                 ],
             ),
