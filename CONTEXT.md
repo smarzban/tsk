@@ -152,7 +152,9 @@ this file names things.
   cursor's `▸`. Status, archive, delete, and assignee verbs act on the set when it is
   non-empty, otherwise on the cursor. Never persisted.
 - **batch undo**: the one undo entry a verb on a marked set records. One `ctrl+u` reverses
-  all of it; a stale batch refuses without changing any task.
+  all of it; a stale batch refuses without changing any task. A start that dispatches is
+  the exception: only its start-only tasks share the entry, and its launches are not
+  undoable.
 - **board search**: the `/` filter over the rows the current view shows: project rows on
   the Projects view, task rows (title, notes, steps, thread, number) everywhere else. Every
   query word must match. **Pinned** once `Enter` hands keys back to the board; `Esc` clears

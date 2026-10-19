@@ -299,7 +299,9 @@ migration or design work they imply. What the behaviour *is* lives in the docs
   atomically, and readers dedupe by id and skip torn lines. Nothing on the board reads it.
 - A bulk verb on a marked set is one domain transaction, one save, and one undo entry
   (`UndoEntry::Batch`, store v5). Never persist it as per-task entries: one `ctrl+u`
-  reverses the whole set, and a stale batch refuses without touching any task.
+  reverses the whole set, and a stale batch refuses without touching any task. The one
+  exception is a start that dispatches: its launches land one by one and are not undoable
+  (see Assignee and dispatch).
 - The state dir must be a real directory on a local disk (flock plus rename replace);
   permission hardening refuses a symlink rather than chmodding its target. Host-injected
   `HERDR_PLUGIN_*` dirs are ignored on purpose.

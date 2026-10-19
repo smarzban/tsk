@@ -199,7 +199,7 @@ Homebrew install gets `brew upgrade` guidance instead.
 ## Herdr setup internals
 
 How `tsk setup herdr` edits Herdr's config and registers the plugin. What users see is in
-[install.md](https://gettsk.sh/docs/install/).
+[install.md](https://gettsk.sh/docs/install/#herdr-setup-details).
 
 ### Config and safe writes
 
