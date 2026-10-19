@@ -40,7 +40,7 @@ The Projects view counts each project's work:
 | **ON DECK** | Ready and open, the inbox included |
 | **DONE** | Done |
 
-Archived tasks and archived projects are left out. A dim `·` means zero, and `here` marks the project the board opened in. At 100 columns or wider, the view also lists threads. At 110 it can show a project's board beside the list ([Wide layout](#wide-layout)).
+Archived tasks and archived projects are left out. A dim `·` means zero, and `here` marks the project the board opened in. At 100 columns or wider, the view also lists threads. At 110 it can show a project's board beside it ([Wide layout](#wide-layout)).
 
 ## Search
 
@@ -254,11 +254,11 @@ On the Projects view the slider stops at Rail:
 
 | View | What you see |
 | --- | --- |
-| Full board | The projects list |
-| Split | The list beside a dim preview of the selected project; the list keeps focus |
-| Rail | A narrow list beside that project's live board, which takes input |
+| Full board | The Projects view, full width |
+| Split | The Projects view beside a dim preview of the selected project, keeping focus |
+| Rail | A narrow Projects view beside that project's live board, which takes input |
 
-Moving the list selection opens Split. The right board has its own selection, drawer, filters, task page, and quick-add, and never opens a task full screen. `Esc` returns focus to the list.
+Moving the selection opens Split. The right board has its own selection, drawer, filters, task page, and quick-add, and never opens a task full screen. `Esc` returns focus to the Projects view.
 
 | Pane size | Layout |
 | --- | --- |
