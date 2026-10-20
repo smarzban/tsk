@@ -477,7 +477,8 @@ impl RenderedLaunch {
     /// The pane's shell parses only that fixed line, never task text or `env` values, whatever
     /// shell it is. The script runs twice: first it asks the user's login shell (`$SHELL -l`)
     /// for the fixed command `/bin/sh "<launcher>" login`, so the agent gets the login
-    /// environment; that second run deletes the script and starts the argv. Every value is
+    /// environment; that second run deletes the script, exports the `env` values as shell
+    /// assignments (never a program's arguments), and starts the argv. Every value is
     /// single-quoted for `/bin/sh` alone, where `'\''` is exact by POSIX. `launcher` must be
     /// literal inside double quotes in any shell ([`crate::dispatch::sh_launch_line`] checks).
     pub fn shell_script(&self, launcher: &str) -> String {
@@ -487,17 +488,18 @@ impl RenderedLaunch {
              if [ \"${{1-}}\" != login ]; then\n    \
              exec \"${{SHELL:-/bin/sh}}\" -l -c {}\n\
              fi\n\
-             rm -f -- \"$0\"\n\
-             exec",
+             rm -f -- \"$0\"\n",
             shell_quote(&login)
         );
-        if !self.env.is_empty() {
-            script.push_str(" env");
-            for (key, value) in &self.env {
-                script.push(' ');
-                script.push_str(&shell_quote(&format!("{key}={value}")));
-            }
+        // Keys are POSIX names (`unix_env_refusal`); quoted anyway, a bad one stops `sh`.
+        for (key, value) in &self.env {
+            script.push_str(&format!(
+                "export {}={}\n",
+                shell_quote(key),
+                shell_quote(value)
+            ));
         }
+        script.push_str("exec");
         for argument in &self.argv {
             script.push(' ');
             script.push_str(&shell_quote(argument));
@@ -538,6 +540,25 @@ impl RenderedLaunch {
         script.push_str(")\n& $TskCommand @TskArguments\nexit $LASTEXITCODE\n");
         script
     }
+}
+
+/// Why a Unix launch refuses this profile's `env`: a key `sh` cannot export, which is any
+/// key that is not a POSIX name (`[A-Za-z_][A-Za-z0-9_]*`). `None` when every key is one.
+pub fn unix_env_refusal(env: &BTreeMap<String, String>) -> Option<String> {
+    let posix_name = |key: &str| {
+        key.chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+            && key
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '_')
+    };
+    env.keys().find(|key| !posix_name(key)).map(|key| {
+        format!(
+            "env key {key:?} is not a variable name: use letters, digits, and _, not starting \
+             with a digit"
+        )
+    })
 }
 
 /// The fixed head of every PowerShell launcher. `TskArgument` escapes one argument the way
@@ -1515,16 +1536,20 @@ then set review again."
     }
 
     /// Run a Unix launcher the way a pane does: `pane -c '<typed line>'`, with `SHELL` set to
-    /// `login`. A fake agent records its arguments and whether `TSK_TEST_KEY` arrived.
+    /// `login`. A fake agent in `login-bin` records its arguments and whether `TSK_TEST_KEY`
+    /// arrived; `bare` names it without its directory, for the login shell's PATH to find.
     #[cfg(unix)]
     fn run_unix_launcher(
         dir: &TempDir,
         pane: &str,
         login: &str,
         title: &str,
+        bare: bool,
     ) -> (Vec<String>, String) {
         use std::os::unix::fs::PermissionsExt;
-        let agent = dir.path().join("agent");
+        let bin = dir.path().join("login-bin");
+        fs::create_dir_all(&bin).expect("login bin");
+        let agent = bin.join("tsk-test-agent");
         fs::write(
             &agent,
             "#!/bin/sh\nfor argument; do printf '%s\\0' \"$argument\"; done > \"$TSK_TEST_OUT\"\n\
@@ -1533,7 +1558,13 @@ then set review again."
         .expect("agent");
         fs::set_permissions(&agent, fs::Permissions::from_mode(0o755)).expect("chmod");
         let profile = AgentProfile {
-            command: vec![agent.to_string_lossy().into_owned(), "{title}".into()],
+            command: vec![
+                match bare {
+                    true => "tsk-test-agent".into(),
+                    false => agent.to_string_lossy().into_owned(),
+                },
+                "{title}".into(),
+            ],
             prompt: Some("Do T{number}: {title}".into()),
             env: [("TSK_TEST_KEY".to_string(), "secret value".to_string())].into(),
         };
@@ -1600,7 +1631,7 @@ then set review again."
         for shell in shells {
             for title in HOSTILE_TITLES {
                 let dir = TempDir::new("launch");
-                let (arguments, env) = run_unix_launcher(&dir, shell, shell, title);
+                let (arguments, env) = run_unix_launcher(&dir, shell, shell, title, false);
                 assert_eq!(
                     arguments,
                     [title.to_string(), format!("Do T101: {title}")],
@@ -1614,7 +1645,7 @@ then set review again."
 
     /// The login shell, whatever it is (fish, nushell…), is handed only a fixed command
     /// naming the launcher: it never parses task text or `env` values. A recording shell
-    /// stands in for one that is not POSIX.
+    /// stands in for one that is not POSIX; only its PATH finds the agent, by bare name.
     #[cfg(unix)]
     #[test]
     fn the_login_shell_parses_only_a_fixed_command_without_task_text() {
@@ -1624,13 +1655,17 @@ then set review again."
             let login = dir.path().join("login-shell");
             fs::write(
                 &login,
-                "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$TSK_TEST_OUT.login\"\n\
-                 [ \"$1\" = -l ] && [ \"$2\" = -c ] || exit 9\nexec /bin/sh -c \"$3\"\n",
+                format!(
+                    "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$TSK_TEST_OUT.login\"\n\
+                     [ \"$1\" = -l ] && [ \"$2\" = -c ] || exit 9\n\
+                     PATH='{}/login-bin':\"$PATH\"\nexport PATH\nexec /bin/sh -c \"$3\"\n",
+                    dir.path().display()
+                ),
             )
             .expect("login shell");
             fs::set_permissions(&login, fs::Permissions::from_mode(0o755)).expect("chmod");
             let (arguments, env) =
-                run_unix_launcher(&dir, "/bin/sh", &login.to_string_lossy(), title);
+                run_unix_launcher(&dir, "/bin/sh", &login.to_string_lossy(), title, true);
             assert_eq!(arguments[0], *title);
             assert_eq!(env, "set");
             let recorded = fs::read_to_string(dir.path().join("out.login")).expect("recorded");
@@ -1651,24 +1686,43 @@ then set review again."
         };
         let rendered = profile.render(&context());
         let script = rendered.shell_script("/state/launchers/dispatch-w1.sh");
-        let (head, start) = script.rsplit_once("\nexec ").expect("final exec");
+        let (login, rest) = script.split_once("\nrm -f").expect("login stage");
         assert!(
-            !head.contains("secret") && !head.contains("Load profiles"),
-            "{head}"
-        );
-        assert_eq!(
-            start,
-            "env 'API_TOKEN=it'\\''s secret' 'agent' 'Load profiles'\n"
+            !login.contains("secret") && !login.contains("Load profiles"),
+            "{login}"
         );
         assert!(
-            head.contains("-l -c '/bin/sh \"/state/launchers/dispatch-w1.sh\" login'"),
-            "{head}"
+            login.contains("-l -c '/bin/sh \"/state/launchers/dispatch-w1.sh\" login'"),
+            "{login}"
         );
+        // The value is a shell assignment, never an argument of env(1) or any program.
+        assert!(
+            rest.ends_with(
+                "\nexport 'API_TOKEN'='it'\\''s secret'\nexec 'agent' 'Load profiles'\n"
+            ),
+            "{rest}"
+        );
+        assert!(!script.contains("env "), "{script}");
         assert_eq!(
             rendered.argv,
             ["agent", "Load profiles"],
             "no env in the argv"
         );
+    }
+
+    #[test]
+    fn a_unix_launch_refuses_an_env_key_sh_cannot_export() {
+        let env = |key: &str| BTreeMap::from([(key.to_string(), "v".to_string())]);
+        for good in ["API_TOKEN", "_x", "a1"] {
+            assert_eq!(unix_env_refusal(&env(good)), None, "{good}");
+        }
+        for bad in ["1A", "A-B", "A B", "ProgramFiles(x86)", "", "K='x"] {
+            let refusal = unix_env_refusal(&env(bad)).expect(bad);
+            assert!(
+                refusal.starts_with(&format!("env key {bad:?} is not a variable name")),
+                "{refusal}"
+            );
+        }
     }
 
     /// Like `TskProgram`: only a name whose every match is a batch file is batch-only, in
@@ -1875,7 +1929,9 @@ LITERAL = "{branch}"
         assert_eq!(rendered.env["LITERAL"], "{branch}");
         let script = rendered.shell_script("/state/launchers/dispatch-w1.sh");
         assert!(
-            script.contains("exec env 'LITERAL={branch}' 'PI_MODEL=anthropic/claude' 'pi'"),
+            script.contains(
+                "export 'LITERAL'='{branch}'\nexport 'PI_MODEL'='anthropic/claude'\nexec 'pi'"
+            ),
             "{script}"
         );
     }

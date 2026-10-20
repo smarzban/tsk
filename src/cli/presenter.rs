@@ -1571,7 +1571,7 @@ pub fn dispatch_help() -> CliOutput {
             "unknown-task, soft-deleted-task, done-task, archived-task".into(),
             "no-assignee, unknown-agent, agent-config, already-dispatched".into(),
             "not-in-herdr, needs-git-project, unknown-base, no-default-base, herdr-failed".into(),
-            "Windows: unsupported-platform, unsafe-state-dir".into(),
+            "unsafe-state-dir; Windows: unsupported-platform".into(),
         ],
         exit: format!(
             "{} (code store-error)",
@@ -1882,7 +1882,7 @@ pub fn status_help() -> CliOutput {
         ],
         refusals: vec![
             "unknown-task, soft-deleted-task, text-too-long, invalid-blocker".into(),
-            "started: after-not-done, agent-gone, needs-git-project, unknown-agent, agent-config, unknown-base, no-default-base, herdr-failed, and on Windows unsupported-platform, unsafe-state-dir".into(),
+            "started: after-not-done, agent-gone, needs-git-project, unknown-agent, agent-config, unknown-base, no-default-base, herdr-failed, unsafe-state-dir, and on Windows unsupported-platform".into(),
             "done --clean: dirty-worktree, worktree-mismatch, herdr-failed, and on Windows files-in-use, path-too-long, removal-timed-out, partly-removed".into(),
             "done --merge: the --clean codes, not-dispatched, already-cleaned, gh-unavailable, no-pr, pr-not-open, pr-base-mismatch, merge-failed, merge-config".into(),
         ],

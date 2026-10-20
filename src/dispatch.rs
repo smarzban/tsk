@@ -3761,6 +3761,9 @@ pub fn launch_with_host(
     } else {
         let launcher = host.launcher_path("check").map_err(DispatchError::Herdr)?;
         sh_launch_line(&launcher)?;
+        if let Some(refusal) = crate::agents::unix_env_refusal(&profile.env) {
+            return Err(DispatchError::AgentConfig(refusal));
+        }
         None
     };
     let mut warning = None;
@@ -5434,9 +5437,12 @@ mod tests {
         assert_eq!(host.launchers.len(), 1, "one launcher per launch");
         let (workspace, script) = &host.launchers[0];
         assert_eq!(workspace, "w9");
-        assert!(script.contains("'API_TOKEN=sk-secret-value'"), "{script}");
         assert!(
-            script.contains(&format!("'TSK_AGENT={}'", result.assignee)),
+            script.contains("\nexport 'API_TOKEN'='sk-secret-value'\n"),
+            "{script}"
+        );
+        assert!(
+            script.contains(&format!("\nexport 'TSK_AGENT'='{}'\n", result.assignee)),
             "the agent's tsk calls know who they are: {script}"
         );
         assert!(script.contains("'Ship Dispatch!!!'"), "{script}");
@@ -5446,6 +5452,70 @@ mod tests {
         assert!(saved.contains("Ship Dispatch!!!"), "the record is saved");
         assert!(!saved.contains("sk-secret-value"), "{saved}");
         assert!(!saved.contains("API_TOKEN"), "{saved}");
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn a_unix_dispatch_refuses_an_env_key_sh_cannot_export_before_anything_exists() {
+        let path = std::env::temp_dir().join(format!(
+            "tsk-dispatch-bad-env-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&path).expect("mkdir");
+        fs::write(
+            path.join("config.toml"),
+            "[agent.implementer]\ncommand = [\"runner\"]\n\
+             [agent.implementer.env]\n\"BAD-KEY\" = \"v\"\n",
+        )
+        .expect("agents");
+        let profiles = AgentProfiles::load(&path).expect("profiles");
+        let (mut state, id) = task();
+        let before = serde_json::to_value(&state).expect("before");
+        let mut host = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        let error =
+            run_with_host(&mut state, id, &profiles, false, true, &mut host).expect_err("refused");
+        assert_eq!(error.code(), "agent-config");
+        assert!(
+            error
+                .to_string()
+                .contains("env key \"BAD-KEY\" is not a variable name"),
+            "{error}"
+        );
+        assert_eq!((host.creates, host.runs.len()), (0, 0));
+        assert!(host.launchers.is_empty());
+        assert_eq!(serde_json::to_value(&state).expect("after"), before);
+        // Windows names variables its own way: the same key launches there.
+        let mut host = windows_host();
+        run_with_host(&mut state, id, &profiles, false, true, &mut host).expect("dispatch");
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn unix_cleanup_removes_the_launcher_a_failed_login_left_behind() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        run_with_host(
+            &mut state,
+            id,
+            &profiles,
+            false,
+            true,
+            &mut FakeHost {
+                git: true,
+                ..FakeHost::default()
+            },
+        )
+        .expect("dispatch");
+        let mut host = FakeHost {
+            cleanup: Some(clean_inspection()),
+            ..FakeHost::default()
+        };
+        clean_with_host(&mut state, id, true, &mut host).expect("cleaned");
+        assert_eq!(host.removed_launchers, ["w9"]);
         fs::remove_dir_all(path).expect("cleanup");
     }
 

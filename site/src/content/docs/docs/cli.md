@@ -740,13 +740,13 @@ A refusal prints `tsk <command>: <code>: <message>` on stderr, such as `tsk stat
 | --- | --- |
 | `add` | `empty-title`, `invalid-title`, `unknown-project`, `project-archived`, `unknown-base`; in a plan also `invalid-item`, `invalid-thread`, `invalid-assignee`, `invalid-after` |
 | `status` | `unknown-task`, `soft-deleted-task`, `text-too-long`, `invalid-blocker` |
-| `status … started` | `after-not-done`, `agent-gone`, and the `dispatch` codes `needs-git-project`, `unknown-agent`, `agent-config`, `unknown-base`, `no-default-base`, `herdr-failed`; on Windows `unsupported-platform`, `unsafe-state-dir` |
+| `status … started` | `after-not-done`, `agent-gone`, and the `dispatch` codes `needs-git-project`, `unknown-agent`, `agent-config`, `unknown-base`, `no-default-base`, `herdr-failed`, `unsafe-state-dir`; on Windows `unsupported-platform` |
 | `status … done --clean` | The `clean` codes except `not-dispatched` and `already-cleaned` |
 | `status … done --merge` | Every `clean` code, with `--merge` |
 | `edit` | `unknown-task`, `soft-deleted-task`, `empty-title`, `invalid-title`, `unknown-base`, `invalid-after`, `after-loop`; with `--on` also `not-blocked`, `invalid-blocker`, `text-too-long` |
 | `steps` | `unknown-task`, `soft-deleted-task`, `empty-step-text`, `invalid-step-text`, `unknown-step`, `ambiguous-step`, `same-step` |
 | `reply` | `unknown-task`, `soft-deleted-task`, `not-blocked`, `empty-reply`, `text-too-long` |
-| `dispatch` | `unknown-task`, `soft-deleted-task`, `done-task`, `archived-task`, `no-assignee`, `unknown-agent`, `agent-config`, `already-dispatched`, `not-in-herdr`, `needs-git-project`, `unknown-base`, `no-default-base`, `herdr-failed`; on Windows `unsupported-platform`, `unsafe-state-dir` |
+| `dispatch` | `unknown-task`, `soft-deleted-task`, `done-task`, `archived-task`, `no-assignee`, `unknown-agent`, `agent-config`, `already-dispatched`, `not-in-herdr`, `needs-git-project`, `unknown-base`, `no-default-base`, `herdr-failed`, `unsafe-state-dir`; on Windows `unsupported-platform` |
 | `clean` | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `herdr-failed`; on Windows `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`; with `--merge` also `gh-unavailable`, `no-pr`, `pr-not-open`, `pr-base-mismatch`, `merge-failed`, `merge-config` |
 | `archive`, `unarchive` | `unknown-task`, `soft-deleted-task` |
 

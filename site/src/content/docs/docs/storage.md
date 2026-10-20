@@ -97,6 +97,9 @@ You were dispatched to T{number} ({title}) in worktree {worktree} on branch {bra
 How tsk launches the command:
 
 - **macOS and Linux:** the command and `env` go into a private launcher file that runs once, then deletes itself. The pane shows only `/bin/sh "…/launchers/dispatch-….sh"`. The command starts with your login shell's environment, so any shell works. No task text or `env` value is typed into your shell or its history.
+  - The program must be an executable on your login shell's `PATH`. Shell functions and aliases are not used.
+  - `env` names must be variable names: letters, digits, and `_`, not starting with a digit.
+  - Dispatch refuses a [state directory](#location) whose path contains `$`, `` ` ``, `\`, `"`, or `!`.
 - **Windows ([preview](/docs/dispatch/#windows-preview)):** the same command and `env` run through Windows PowerShell. Write paths as TOML literal strings so backslashes stay as typed: `command = ['C:\Users\you\.local\bin\claude.exe']`.
 
 ### Merge method
