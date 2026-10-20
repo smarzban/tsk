@@ -701,6 +701,10 @@ mod start_tests {
         /// Another writer edits the task titled `second` in this store as its launch is refused,
         /// so the save putting it back to ready meets a changed task.
         edit_on_refusal: Option<PathBuf>,
+        /// A launch leaves this store unreadable, so saving its record fails.
+        break_store_on_launch: Option<PathBuf>,
+        /// Every workspace whose worktree was removed.
+        removed: Vec<String>,
     }
 
     impl DispatchHost for Host {
@@ -752,7 +756,15 @@ mod start_tests {
                 }
                 return Err("pane refused".into());
             }
+            if let Some(dir) = self.break_store_on_launch.take() {
+                std::fs::write(dir.join("tsk.json"), "{").expect("break the store");
+            }
             self.ran += 1;
+            Ok(())
+        }
+
+        fn remove_herdr_worktree(&mut self, workspace_id: &str) -> Result<(), String> {
+            self.removed.push(workspace_id.into());
             Ok(())
         }
 
@@ -766,6 +778,33 @@ mod start_tests {
         no_dispatch: false,
         force: false,
     };
+
+    /// A start whose launch ran but whose record could not be saved takes the launch back: a
+    /// retry then starts one agent, never a second beside the first.
+    #[test]
+    fn a_start_whose_record_cannot_be_saved_takes_its_launch_back() {
+        let temp = Temp::new("unrecorded");
+        let number = temp.task(true, false, HumanStatus::Ready);
+        let store = std::fs::read(temp.0.join("tsk.json")).expect("read");
+        let mut host = Host {
+            break_store_on_launch: Some(temp.0.clone()),
+            ..Host::default()
+        };
+        let error = temp
+            .start(number, PLAIN, "you", &mut host)
+            .expect_err("the record save fails");
+        let StatusError::Store(detail) = error else {
+            panic!("a store error, exit 3: {error:?}");
+        };
+        assert!(detail.ends_with("; launch undone"), "{detail}");
+        assert_eq!((host.ran, host.removed.len()), (1, 1));
+
+        std::fs::write(temp.0.join("tsk.json"), store).expect("repair the store");
+        let outcome = temp.start(number, PLAIN, "you", &mut host).expect("retry");
+        assert!(matches!(outcome, StartOutcome::Dispatched(..)));
+        assert_eq!(temp.status(number), HumanStatus::Started);
+        assert_eq!(host.ran - host.removed.len(), 1, "one agent runs");
+    }
 
     #[test]
     fn an_unassigned_start_only_sets_the_status() {

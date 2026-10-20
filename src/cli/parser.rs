@@ -1313,6 +1313,44 @@ mod tests {
         ])
         .is_err());
     }
+
+    /// `--` ends the flags, so step text may start with `-`; flags still go before it.
+    #[test]
+    fn steps_parse_takes_text_that_starts_with_a_dash_after_double_dash() {
+        let args = |rest: &[&str]| {
+            ["tsk", "steps", "T2"]
+                .iter()
+                .chain(rest)
+                .map(|arg| arg.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            parse_flag_steps(&args(&["add", "--first", "--", "-5 degrees"]))
+                .expect("add after --")
+                .action,
+            Some(StepsAction::Add {
+                text: "-5 degrees".into(),
+                at: Some(StepPlacement::First),
+            })
+        );
+        assert_eq!(
+            parse_flag_steps(&args(&["rename", "ab", "--", "--fix parser"]))
+                .expect("rename after --")
+                .action,
+            Some(StepsAction::Rename {
+                short_id: "ab".into(),
+                text: "--fix parser".into(),
+            })
+        );
+        assert_eq!(
+            parse_flag_steps(&args(&["add", "--", "-x", "--first"])).unwrap_err(),
+            "unexpected steps argument --first"
+        );
+        assert_eq!(
+            parse_flag_steps(&args(&["add", "-5 degrees"])).unwrap_err(),
+            "unknown steps argument -5 degrees"
+        );
+    }
 }
 
 /// Parsed add input. A plan source is selected by `file` or piped stdin.
@@ -1509,8 +1547,8 @@ pub struct FlagSteps {
 
 /// Parse `tsk steps` arguments, including argv0 and the `steps` subcommand.
 ///
-/// Flags may appear anywhere; the positionals in order are task id, action, and
-/// the action's operand.
+/// Flags may appear anywhere before a `--`; the positionals in order are task id, action,
+/// and the action's operand.
 pub fn parse_flag_steps(args: &[String]) -> Result<FlagSteps, String> {
     if args.get(1).map(String::as_str) != Some("steps") {
         return Err("expected steps command".into());
@@ -1532,12 +1570,25 @@ pub fn parse_flag_steps(args: &[String]) -> Result<FlagSteps, String> {
         Ok(())
     };
     let mut index = 2;
+    // After `--`, every argument is a positional, so step text may start with `-`.
+    let mut literal = false;
     while let Some(flag) = args.get(index).map(String::as_str) {
         let value = |name: &str| match args.get(index + 1) {
             Some(value) if !value.starts_with('-') => Ok(value.clone()),
             _ => Err(format!("missing value for {name}")),
         };
         match flag {
+            positional if literal || !positional.starts_with('-') => {
+                if positionals.len() == 4 {
+                    return Err(format!("unexpected steps argument {positional}"));
+                }
+                positionals.push(positional);
+                index += 1;
+            }
+            "--" => {
+                literal = true;
+                index += 1;
+            }
             "--help" => {
                 parsed.help = true;
                 index += 1;
@@ -1586,14 +1637,7 @@ pub fn parse_flag_steps(args: &[String]) -> Result<FlagSteps, String> {
                 parsed.state_dir = Some(PathBuf::from(value(flag)?));
                 index += 2;
             }
-            flag if flag.starts_with('-') => return Err(format!("unknown steps argument {flag}")),
-            positional => {
-                if positionals.len() == 4 {
-                    return Err(format!("unexpected steps argument {positional}"));
-                }
-                positionals.push(positional);
-                index += 1;
-            }
+            flag => return Err(format!("unknown steps argument {flag}")),
         }
     }
 

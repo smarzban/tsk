@@ -61,7 +61,8 @@ task's running agent, add `--send`: it sends only that reply and prints `sent to
    existing absolute directory creates a project ([scope](https://gettsk.sh/docs/cli.md#scope)).
 5. **Never pass `--state-dir`** unless the user asked. It points at a different board.
 6. **Ignore notice rows.** Rows the board paints as `N1`… are for the user; no command reaches them.
-7. **Values that start with `-` need `=`:** `--title="-fix parser"`. For `tsk reply`, put `--` first.
+7. **Values that start with `-` need `=`:** `--title="-fix parser"`. For `tsk reply` and `tsk steps`
+   text, put `--` just before it.
 8. **Names are exact.** `--assignee` takes a `config.toml` profile, `--base` an existing branch, and
    `--thread` a [thread name](https://gettsk.sh/docs/capture.md#thread-names)
    ([add](https://gettsk.sh/docs/cli.md#add)).
@@ -90,8 +91,7 @@ status they are already in the board's order; keep it.
 | assigned work | `tsk list --assignee <name> --json` |
 | done, archived, deleted | `tsk list --done --json`, `--archived`, `--deleted`, with any scope flag |
 
-**What needs the user.** A `blocked` or `review` row does not say who it waits on. For each one, read
-`tsk list T12 --json` and check `block.on` or `review.on`:
+**What needs the user.** For each `blocked` or `review` row, check its `block.on` or `review.on`:
 
 - `you`: needs the user.
 - No `block` or `review` field: needs the user.
@@ -129,8 +129,8 @@ Only when the user asks.
 A refusal prints a stable code first: `tsk status: unknown-task: T12 is not on the board`. Branch on
 the code, never the message. `tsk help <command>` lists each command's codes. `project`, `trash`,
 `backup`, and `restore` refuse with a message only. After exit 3 from `dispatch`, or from a start that
-dispatched, the agent may already run without its record: check `herdr agent get t12-<assignee>` and
-read the task before retrying.
+dispatched, a message ending `launch undone` means no agent runs. Otherwise the agent may already run
+without its record: check `herdr agent get t12-<assignee>` and read the task before retrying.
 
 ## Refine a task
 

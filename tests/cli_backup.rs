@@ -397,6 +397,11 @@ fn backup_and_restore_refuse_without_targets() {
     assert_eq!(backup.status.code(), Some(1));
     let usage = tsk(&state.0, &["backup", "add", "/x.git", "--every", "hourly"]);
     assert_eq!(usage.status.code(), Some(2));
+    // The `=` form is the same flag.
+    let equals = tsk(&state.0, &["backup", "add", "/x.git", "--every=hourly"]);
+    assert_eq!(equals.status.code(), Some(2));
+    assert_eq!(stderr(&equals), stderr(&usage));
+    assert!(stderr(&equals).contains("--every hourly is not save or daily"));
     let usage = tsk(&state.0, &["backup", "add", "/x.git", "--folder"]);
     assert_eq!(usage.status.code(), Some(2), "folder targets are gone");
     assert!(!state.0.join("config.toml").exists());

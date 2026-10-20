@@ -414,6 +414,8 @@ pub struct DispatchResult {
     /// The Herdr agent name to apply once the record is saved, or `None` when a relaunch found
     /// an agent already running in the reused pane.
     pub naming: Option<AgentNaming>,
+    /// What to take back when the record cannot be saved.
+    pub undo: LaunchUndo,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -466,6 +468,19 @@ impl DispatchError {
             Self::AgentConfig(_) => "agent-config",
             Self::Herdr(_) => "herdr-failed",
             Self::Store(_) => "store-error",
+        }
+    }
+
+    /// The same refusal with `note` after its reason: what a failed launch left behind.
+    pub fn noting(self, note: &str) -> Self {
+        let note = |reason: String| format!("{reason}; {note}");
+        match self {
+            Self::UnsupportedPlatform(reason) => Self::UnsupportedPlatform(note(reason)),
+            Self::UnsafeStateDir(reason) => Self::UnsafeStateDir(note(reason)),
+            Self::AgentConfig(reason) => Self::AgentConfig(note(reason)),
+            Self::Herdr(reason) => Self::Herdr(note(reason)),
+            Self::Store(reason) => Self::Store(note(reason)),
+            other => Self::Herdr(note(other.to_string())),
         }
     }
 }
@@ -722,6 +737,16 @@ pub trait DispatchHost {
     /// it from the worktree.
     fn launcher_path(&self, _workspace_id: &str) -> Result<PathBuf, String> {
         Err("PowerShell launchers are not supported".into())
+    }
+    /// The batch file a Windows profile's `program` resolves to when the launcher would find
+    /// nothing else to run ([`crate::agents::batch_only_program`]), with the profile's `env`
+    /// applied as the launcher applies it. `None` when it finds something it may run.
+    fn batch_only_program(
+        &self,
+        _program: &str,
+        _env: &std::collections::BTreeMap<String, String>,
+    ) -> Option<PathBuf> {
+        None
     }
     /// The trusted Windows PowerShell that runs launchers, never one found from the worktree.
     fn powershell_path(&self) -> Result<PathBuf, String> {
@@ -1383,6 +1408,25 @@ impl DispatchHost for SystemDispatchHost {
 
     fn launcher_path(&self, workspace_id: &str) -> Result<PathBuf, String> {
         self.launcher_file(workspace_id)
+    }
+
+    fn batch_only_program(
+        &self,
+        program: &str,
+        env: &std::collections::BTreeMap<String, String>,
+    ) -> Option<PathBuf> {
+        // Windows names variables without regard to case.
+        let variable = |name: &str| {
+            env.iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| std::ffi::OsString::from(value))
+                .or_else(|| std::env::var_os(name))
+        };
+        crate::agents::batch_only_program(
+            program,
+            variable("PATH").as_deref(),
+            variable("PATHEXT").as_deref(),
+        )
     }
 
     fn powershell_path(&self) -> Result<PathBuf, String> {
@@ -3333,7 +3377,24 @@ pub fn run_with_host_base(
 ) -> Result<DispatchResult, DispatchError> {
     let eligible = check_with_host(state, id, profiles, again, in_herdr, host)?;
     let launched = launch_with_host(&eligible, base_override, host)?;
+    let (record, undo) = (launched.record.clone(), launched.undo.clone());
     commit_launch(state, eligible, launched)
+        .map_err(|error| unrecorded(host, &record, &undo, error))
+}
+
+/// A launch whose record did not land: take it back, so a retry never starts a second agent
+/// beside it, and say whether that worked.
+pub fn unrecorded(
+    host: &mut impl DispatchHost,
+    record: &Dispatch,
+    undo: &LaunchUndo,
+    error: DispatchError,
+) -> DispatchError {
+    match undo_launch(host, record, undo) {
+        None if undo.created == Created::Nothing => error,
+        None => error.noting("launch undone"),
+        Some(left) => error.noting(&format!("left behind: {left}; the agent may still run")),
+    }
 }
 
 /// A task that passed every dispatch check, with what its launch needs. Owns its data so a
@@ -3394,6 +3455,85 @@ pub struct Launched {
     pub record: Dispatch,
     pub naming: Option<AgentNaming>,
     pub warning: Option<String>,
+    pub undo: LaunchUndo,
+}
+
+/// What a launch created that was not there before it, so a failure after it can take that
+/// back ([`undo_launch`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchUndo {
+    project: PathBuf,
+    created: Created,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Created {
+    /// A relaunch typed into the recorded workspace's pane.
+    Nothing,
+    /// A relaunch opened a workspace on the recorded worktree.
+    Workspace,
+    /// A worktree and its workspace. `branch_from` is the commit a branch made for this
+    /// launch started at; a branch an earlier dispatch recorded stays.
+    Worktree { branch_from: Option<String> },
+}
+
+/// Take back what a launch created after it failed, or after its record could not be saved:
+/// the workspace, the worktree unless it holds changes, and a branch made for the launch
+/// while its tip is still where it started. Returns what stayed and why, or `None` when
+/// nothing did.
+pub fn undo_launch(
+    host: &mut impl DispatchHost,
+    record: &Dispatch,
+    undo: &LaunchUndo,
+) -> Option<String> {
+    let workspace = &record.herdr_workspace_id;
+    let worktree = Path::new(&record.worktree);
+    let branch_from = match &undo.created {
+        Created::Nothing => return None,
+        Created::Workspace => {
+            return host
+                .close_herdr_workspace(workspace)
+                .err()
+                .map(|error| format!("workspace {workspace} ({error})"));
+        }
+        Created::Worktree { branch_from } => branch_from,
+    };
+    let removed = if host.platform() == HostPlatform::Windows {
+        let preview = CleanupPreview {
+            number: 0,
+            title: String::new(),
+            project: undo.project.clone(),
+            record: record.clone(),
+            inspection: CleanupInspection::default(),
+        };
+        let removed = remove_windows_worktree(host, &preview, true);
+        if removed.is_ok() {
+            host.mark_removal(workspace, false);
+        }
+        removed.map_err(|error| error.reason())
+    } else {
+        match host.worktree_dirty(worktree) {
+            Ok(false) => host.remove_herdr_worktree(workspace),
+            Ok(true) => Err(CleanupError::DirtyWorktree.reason()),
+            Err(error) => Err(error),
+        }
+    };
+    if let Err(error) = removed {
+        return Some(format!(
+            "worktree {} and workspace {workspace} ({error})",
+            record.worktree
+        ));
+    }
+    let tip = branch_from.as_deref()?;
+    match host.delete_branch_at_tip(&undo.project, &record.branch, tip) {
+        Ok(BranchDeletion::Removed) => None,
+        Ok(BranchDeletion::Kept(reason)) => {
+            Some(format!("branch {} ({})", record.branch, reason.short()))
+        }
+        // Already gone is what was wanted.
+        Err(_) if host.branch_tip(&undo.project, &record.branch) == Ok(None) => None,
+        Err(error) => Some(format!("branch {} ({error})", record.branch)),
+    }
 }
 
 /// Every refusal a dispatch can give before any worktree or workspace exists. The only host
@@ -3510,12 +3650,21 @@ pub fn launch_with_host(
             .map_err(DispatchError::UnsupportedPlatform)?;
         let launcher = host.launcher_path("check").map_err(DispatchError::Herdr)?;
         powershell_launch_line(&powershell, &launcher)?;
+        // The launcher would refuse in the pane, after the dispatch is recorded. A program
+        // name built from a template is left to it.
+        if let Some(program) = profile.command.first().filter(|name| !name.contains('{')) {
+            if let Some(batch) = host.batch_only_program(program, &profile.env) {
+                return Err(DispatchError::AgentConfig(
+                    crate::agents::batch_only_refusal(program, &batch),
+                ));
+            }
+        }
         Some(powershell)
     } else {
         None
     };
     let mut warning = None;
-    let (worktree, branch, base, base_ref, base_commit, base_remote, workspace_id, pane_id) =
+    let (worktree, branch, base, base_ref, base_commit, base_remote, workspace_id, pane_id, made) =
         if let Some(existing) = task.dispatch.as_ref().filter(|_| eligible.again) {
             if existing.cleaned {
                 let label = workspace_label(number, &task.title);
@@ -3538,6 +3687,9 @@ pub fn launch_with_host(
                     existing.base_remote.clone(),
                     recreated.workspace_id,
                     recreated.root_pane_id,
+                    // A missing branch comes back from the recorded base; either way it is
+                    // the recorded one and stays.
+                    Created::Worktree { branch_from: None },
                 )
             } else if let Some(pane) = match host.root_pane(&existing.herdr_workspace_id) {
                 Ok(pane) => Some(pane),
@@ -3555,6 +3707,7 @@ pub fn launch_with_host(
                     existing.base_remote.clone(),
                     existing.herdr_workspace_id.clone(),
                     pane,
+                    Created::Nothing,
                 )
             } else {
                 // The workspace was closed but the worktree is kept: open a new workspace on it.
@@ -3571,6 +3724,7 @@ pub fn launch_with_host(
                     existing.base_remote.clone(),
                     reopened.workspace_id,
                     reopened.root_pane_id,
+                    Created::Workspace,
                 )
             }
         } else {
@@ -3597,6 +3751,10 @@ pub fn launch_with_host(
                     &label,
                 )
                 .map_err(DispatchError::Herdr)?;
+            // `free_branch` found no branch of this name, so Herdr made it at the base.
+            let made = Created::Worktree {
+                branch_from: choice.commit.clone(),
+            };
             (
                 created.path.to_string_lossy().into_owned(),
                 created.branch,
@@ -3606,6 +3764,7 @@ pub fn launch_with_host(
                 choice.remote,
                 created.workspace_id,
                 created.root_pane_id,
+                made,
             )
         };
 
@@ -3626,31 +3785,14 @@ pub fn launch_with_host(
         branch: &branch,
         base: &short_base,
     });
-    let line = match platform {
-        HostPlatform::Unix => rendered.command.clone(),
-        HostPlatform::Windows => {
-            let launcher = host
-                .write_launcher(&workspace_id, &rendered.powershell_script())
-                .map_err(DispatchError::Herdr)?;
-            let powershell = powershell.as_deref().expect("checked before launch");
-            powershell_launch_line(powershell, &launcher).inspect_err(|_| {
-                host.remove_launcher(&workspace_id);
-            })?
-        }
-    };
-    if let Err(error) = host.run_in_pane(&pane_id, &line) {
-        if platform == HostPlatform::Windows {
-            host.remove_launcher(&workspace_id);
-        }
-        return Err(DispatchError::Herdr(error));
-    }
-    if long_paths_off {
-        warning = Some(match warning {
-            Some(earlier) => format!("{earlier}; {LONG_PATHS_OFF}"),
-            None => LONG_PATHS_OFF.to_string(),
-        });
-    }
-
+    let launch = run_launch(
+        host,
+        platform,
+        powershell.as_deref(),
+        &workspace_id,
+        &pane_id,
+        &rendered,
+    );
     let record = Dispatch {
         argv: rendered.argv,
         worktree,
@@ -3663,6 +3805,24 @@ pub fn launch_with_host(
         at: SystemTime::now(),
         cleaned: false,
     };
+    let undo = LaunchUndo {
+        project: project.to_path_buf(),
+        created: made,
+    };
+    if let Err(error) = launch {
+        // Nothing records this launch: take back what it created, or `tsk clean` never could.
+        return Err(match undo_launch(host, &record, &undo) {
+            None => error,
+            Some(left) => error.noting(&format!("left behind: {left}")),
+        });
+    }
+    if long_paths_off {
+        warning = Some(match warning {
+            Some(earlier) => format!("{earlier}; {LONG_PATHS_OFF}"),
+            None => LONG_PATHS_OFF.to_string(),
+        });
+    }
+
     Ok(Launched {
         record,
         naming: name_launch.then(|| AgentNaming {
@@ -3670,6 +3830,37 @@ pub fn launch_with_host(
             name: agent_name(number, assignee),
         }),
         warning,
+        undo,
+    })
+}
+
+/// Type the launch line into the pane: on Windows through a launcher script, deleted again
+/// when the pane never ran it.
+fn run_launch(
+    host: &mut impl DispatchHost,
+    platform: HostPlatform,
+    powershell: Option<&Path>,
+    workspace_id: &str,
+    pane_id: &str,
+    rendered: &crate::agents::RenderedLaunch,
+) -> Result<(), DispatchError> {
+    let line = match platform {
+        HostPlatform::Unix => rendered.command.clone(),
+        HostPlatform::Windows => {
+            let launcher = host
+                .write_launcher(workspace_id, &rendered.powershell_script())
+                .map_err(DispatchError::Herdr)?;
+            let powershell = powershell.expect("checked before launch");
+            powershell_launch_line(powershell, &launcher).inspect_err(|_| {
+                host.remove_launcher(workspace_id);
+            })?
+        }
+    };
+    host.run_in_pane(pane_id, &line).map_err(|error| {
+        if platform == HostPlatform::Windows {
+            host.remove_launcher(workspace_id);
+        }
+        DispatchError::Herdr(error)
     })
 }
 
@@ -3808,6 +3999,7 @@ pub fn commit_launch_with_status(
         naming: launched.naming,
         assignee: eligible.assignee,
         record: launched.record,
+        undo: launched.undo,
     })
 }
 
@@ -4139,6 +4331,12 @@ mod tests {
         merge_error: Option<String>,
         /// `gh pr merge` succeeds but only queues: the PR stays open.
         merge_queues: bool,
+        /// The commit the base resolves to; unknown when unset.
+        base_commit: Option<String>,
+        /// Herdr says the recorded workspace is gone, so a relaunch reopens one.
+        workspace_gone: bool,
+        /// What a Windows profile's program resolves to when only batch files match.
+        batch_only: Option<PathBuf>,
     }
 
     impl DispatchHost for FakeHost {
@@ -4151,6 +4349,46 @@ mod tests {
                 return Err("repo has no origin default branch".into());
             }
             Ok("main".into())
+        }
+
+        fn resolve_base_choice(
+            &mut self,
+            project: &Path,
+            explicit: Option<&str>,
+        ) -> Result<crate::git_base::ResolvedBase, String> {
+            let reference = match explicit {
+                Some(base) => base.to_string(),
+                None => self.resolve_base(project)?,
+            };
+            Ok(crate::git_base::ResolvedBase {
+                full_ref: format!("refs/heads/{reference}"),
+                reference,
+                commit: self.base_commit.clone(),
+                remote: None,
+                warning: None,
+            })
+        }
+
+        fn open_worktree(
+            &mut self,
+            _: &Path,
+            worktree: &Path,
+            _: &str,
+        ) -> Result<CreatedWorktree, String> {
+            Ok(CreatedWorktree {
+                path: worktree.to_path_buf(),
+                branch: String::new(),
+                workspace_id: "w10".into(),
+                root_pane_id: "w10:p1".into(),
+            })
+        }
+
+        fn batch_only_program(
+            &self,
+            _: &str,
+            _: &std::collections::BTreeMap<String, String>,
+        ) -> Option<PathBuf> {
+            self.batch_only.clone()
         }
 
         fn branch_taken(&mut self, _: &Path, branch: &str) -> Result<bool, String> {
@@ -4330,8 +4568,11 @@ mod tests {
             Ok(true)
         }
 
-        fn root_pane(&mut self, _: &str) -> Result<String, crate::dispatch::RootPaneError> {
+        fn root_pane(&mut self, id: &str) -> Result<String, crate::dispatch::RootPaneError> {
             self.roots += 1;
+            if self.workspace_gone {
+                return Err(RootPaneError::WorkspaceGone(format!("{id} not found")));
+            }
             Ok("w9:p1".into())
         }
 
@@ -4728,6 +4969,147 @@ mod tests {
             serde_json::to_value(&state).expect("state"),
             serde_json::to_value(&before).expect("before")
         );
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    /// Nothing records a launch that fails after the worktree exists, so no `tsk clean` could
+    /// ever remove it: the launch takes back what it created, and only that.
+    #[test]
+    fn a_failed_launch_takes_back_only_what_it_created() {
+        let (path, profiles) = profiles();
+        let failing = |host: FakeHost| FakeHost {
+            fail_run: Some("pane gone".into()),
+            base_commit: Some("c0ffee".into()),
+            ..host
+        };
+        let unix = || FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+
+        // A first dispatch: its worktree and workspace, and the branch it made at the base.
+        let (mut state, id) = task();
+        let before = state.clone();
+        let mut host = failing(unix());
+        let error = run_with_host(&mut state, id, &profiles, false, true, &mut host)
+            .expect_err("launch fails");
+        assert_eq!(error, DispatchError::Herdr("pane gone".into()));
+        assert_eq!(host.removed_herdr, 1);
+        assert_eq!(host.deleted_at_tip, vec!["c0ffee".to_string()]);
+        assert_eq!(
+            serde_json::to_value(&state).expect("state"),
+            serde_json::to_value(&before).expect("before")
+        );
+
+        // Windows closes the workspace before git removes the checkout.
+        let (mut state, id) = task();
+        let mut host = failing(windows_host());
+        let error = run_with_host(&mut state, id, &profiles, false, true, &mut host)
+            .expect_err("launch fails");
+        assert_eq!(error, DispatchError::Herdr("pane gone".into()));
+        assert_eq!(host.closed_ids, vec!["w9".to_string()]);
+        assert_eq!((host.removed_herdr, host.removed_git), (0, 1));
+        assert_eq!(host.deleted_at_tip, vec!["c0ffee".to_string()]);
+        assert_eq!(
+            host.marks,
+            vec![("w9".to_string(), true), ("w9".to_string(), false)]
+        );
+
+        // Relaunches keep everything their record names.
+        let dispatched = || {
+            let (mut state, id) = task();
+            run_with_host(&mut state, id, &profiles, false, true, &mut unix()).expect("dispatch");
+            (state, id)
+        };
+        // Into the recorded workspace's pane: nothing was created.
+        let (mut state, id) = dispatched();
+        let mut host = failing(unix());
+        run_with_host(&mut state, id, &profiles, true, true, &mut host).expect_err("fails");
+        assert_eq!((host.removed_herdr, host.closed), (0, 0));
+        // A workspace reopened on the recorded worktree: only it closes.
+        let (mut state, id) = dispatched();
+        let mut host = FakeHost {
+            workspace_gone: true,
+            ..failing(unix())
+        };
+        run_with_host(&mut state, id, &profiles, true, true, &mut host).expect_err("fails");
+        assert_eq!(host.closed_ids, vec!["w10".to_string()]);
+        assert_eq!(host.removed_herdr, 0);
+        // A cleaned dispatch's worktree recreated: it goes, the recorded branch stays.
+        let (mut state, id) = dispatched();
+        let mut clean = FakeHost {
+            cleanup: Some(CleanupInspection {
+                base_available: true,
+                target_matches: true,
+                ..CleanupInspection::default()
+            }),
+            ..FakeHost::default()
+        };
+        clean_with_host(&mut state, id, true, &mut clean).expect("clean");
+        let mut host = failing(unix());
+        run_with_host(&mut state, id, &profiles, true, true, &mut host).expect_err("fails");
+        assert_eq!(host.removed_herdr, 1);
+        assert!(host.deleted_at_tip.is_empty());
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    /// What the launch could not take back is named after the reason it failed, and a worktree
+    /// that stays keeps its branch.
+    #[test]
+    fn a_failed_launch_names_what_it_left_behind() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let mut host = FakeHost {
+            git: true,
+            fail_run: Some("pane gone".into()),
+            base_commit: Some("c0ffee".into()),
+            herdr_remove_errors: vec!["herdr is busy".into()],
+            ..FakeHost::default()
+        };
+        let error = run_with_host(&mut state, id, &profiles, false, true, &mut host)
+            .expect_err("launch fails");
+        assert_eq!(
+            error,
+            DispatchError::Herdr(
+                "pane gone; left behind: worktree /tmp/worktree and workspace w9 (herdr is busy)"
+                    .into()
+            )
+        );
+        assert!(host.deleted_at_tip.is_empty());
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    /// The launcher refuses a program that finds only batch files once the pane runs it, after
+    /// the dispatch is recorded; dispatch refuses first, in the same words, creating nothing.
+    #[test]
+    fn a_windows_program_that_finds_only_a_batch_file_refuses_before_anything_is_created() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let before = state.clone();
+        let mut host = FakeHost {
+            batch_only: Some(PathBuf::from(r"C:\tools\runner.cmd")),
+            ..windows_host()
+        };
+        let error =
+            run_with_host(&mut state, id, &profiles, false, true, &mut host).expect_err("refused");
+        assert_eq!(error.code(), "agent-config");
+        assert_eq!(
+            error.to_string(),
+            crate::agents::batch_only_refusal("runner", Path::new(r"C:\tools\runner.cmd"))
+        );
+        assert_eq!(host.creates, 0);
+        assert!(host.runs.is_empty() && host.launchers.is_empty());
+        assert_eq!(
+            serde_json::to_value(&state).expect("state"),
+            serde_json::to_value(&before).expect("before")
+        );
+        // Only Windows asks.
+        let mut host = FakeHost {
+            git: true,
+            batch_only: Some(PathBuf::from("/tools/runner.cmd")),
+            ..FakeHost::default()
+        };
+        run_with_host(&mut state, id, &profiles, false, true, &mut host).expect("dispatch");
         fs::remove_dir_all(path).expect("cleanup");
     }
 

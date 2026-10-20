@@ -523,7 +523,33 @@ fn list_json(result: &ListResult) -> String {
         );
     }
 
-    let value = serde_json::to_value(&result.rows).expect("list rows are serializable");
+    /// A filtered row, with its open block or review round shaped as in the task in full.
+    #[derive(serde::Serialize)]
+    struct FilteredRow<'a> {
+        #[serde(flatten)]
+        row: &'a crate::cli::list::ListRow,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        block: Option<BlockJson<'a>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        review: Option<ReviewJson<'a>>,
+    }
+    let rows: Vec<FilteredRow<'_>> = result
+        .rows
+        .iter()
+        .map(|row| {
+            let record = row.record.as_ref();
+            FilteredRow {
+                row,
+                block: record
+                    .filter(|record| !record.is_review())
+                    .map(BlockJson::from),
+                review: record
+                    .filter(|record| record.is_review())
+                    .map(ReviewJson::from),
+            }
+        })
+        .collect();
+    let value = serde_json::to_value(&rows).expect("list rows are serializable");
     format!("{value}\n")
 }
 
@@ -1357,7 +1383,10 @@ pub fn steps_help() -> CliOutput {
                         "<step-short-id>",
                         "the step's short_id from tsk list <task> --json, or any prefix of its id that only it has",
                     ),
-                    ("<text>", "the step's text"),
+                    (
+                        "<text>",
+                        "the step's text; put -- before text that starts with -, after any flags",
+                    ),
                 ],
             ),
             group(

@@ -438,6 +438,66 @@ fn blocked_on_another_task_records_it() {
     assert_eq!(listed(&dir, "T2")["block"]["on"], "other:legal sign-off");
 }
 
+/// A filtered `list --json` row carries its open block or review exactly as the task in full
+/// does, so who it waits on reads off the row; a row with neither has no such field.
+#[test]
+fn filtered_list_rows_carry_the_open_block_and_review_like_the_task_in_full() {
+    let dir = temp_state_dir("list-rows-records");
+    let _guard = TempDirGuard(dir.clone());
+    for title in ["api", "client", "card"] {
+        assert_eq!(add_task(&dir, title).code, 0);
+    }
+    fs::write(
+        dir.join("config.toml"),
+        "[agent.pi]\ncommand = [\"true\"]\n",
+    )
+    .expect("profiles");
+    let output = cli(block_args(
+        &dir,
+        "T2",
+        &["--why", "needs the api", "--on", "t1"],
+    ));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    let output = cli(review_args(
+        &dir,
+        "T3",
+        &[
+            "--done",
+            "Opened PR #42",
+            "--check",
+            "tests pass",
+            "--on",
+            "@pi",
+        ],
+    ));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+
+    let output = cli(vec![
+        "tsk".into(),
+        "list".into(),
+        "--desk".into(),
+        "--json".into(),
+        "--state-dir".into(),
+        dir.to_string_lossy().into_owned(),
+    ]);
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&output.stdout).expect("rows");
+    let row = |number: u64| {
+        rows.iter()
+            .find(|row| row["number"] == number)
+            .expect("listed row")
+            .clone()
+    };
+    assert_eq!(row(2)["block"]["on"], "task:1");
+    assert_eq!(row(2)["block"], listed(&dir, "T2")["block"]);
+    assert!(row(2).get("review").is_none());
+    assert_eq!(row(3)["review"]["on"], "agent:pi");
+    assert_eq!(row(3)["review"], listed(&dir, "T3")["review"]);
+    assert!(row(3).get("block").is_none());
+    let open = row(1);
+    assert!(open.get("block").is_none() && open.get("review").is_none());
+}
+
 #[test]
 fn a_legacy_blocked_task_without_a_block_gains_one_without_a_status_change() {
     let dir = temp_state_dir("block-legacy");

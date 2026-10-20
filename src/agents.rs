@@ -460,6 +460,73 @@ function TskProgram([string]$Name) {
 }
 "#;
 
+/// The batch file `program` resolves to when `TskProgram` would find only batch files for it,
+/// so dispatch can refuse before it creates anything. It searches like `Get-Command`: the
+/// `;`-separated `path`, the name as given and under each `pathext` extension and `.ps1`, or
+/// an absolute path itself. `None` when it finds an executable or a PowerShell script, when
+/// it finds nothing, or when the name is relative to a directory only the pane knows: the
+/// launcher still refuses those.
+pub fn batch_only_program(
+    program: &str,
+    path: Option<&std::ffi::OsStr>,
+    pathext: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    let pathext = pathext
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
+    let mut names = vec![program.to_string()];
+    names.extend(
+        pathext
+            .split(';')
+            .chain([".ps1"])
+            .filter(|extension| !extension.is_empty())
+            .map(|extension| format!("{program}{extension}")),
+    );
+    let directories: Vec<PathBuf> = if program.contains(['\\', '/']) {
+        if !Path::new(program).is_absolute() {
+            return None;
+        }
+        vec![PathBuf::new()]
+    } else {
+        path.map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_default()
+            .split(';')
+            .map(|directory| directory.trim().trim_matches('"'))
+            .filter(|directory| !directory.is_empty())
+            .map(PathBuf::from)
+            .collect()
+    };
+    let found: Vec<PathBuf> = directories
+        .iter()
+        .flat_map(|directory| names.iter().map(move |name| directory.join(name)))
+        .filter(|candidate| candidate.is_file())
+        .collect();
+    let batch = |candidate: &PathBuf| {
+        candidate
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+            })
+    };
+    match found.first() {
+        Some(first) if found.iter().all(batch) => Some(first.clone()),
+        _ => None,
+    }
+}
+
+/// Why dispatch refuses a program that resolves only to `batch`: the launcher's own words.
+pub fn batch_only_refusal(program: &str, batch: &Path) -> String {
+    format!(
+        "not starting {program}: it resolves only to the batch file {}, {BATCH_ONLY_ADVICE}",
+        batch.display()
+    )
+}
+
+/// The end of the refusal, shared with [`POWERSHELL_PRELUDE`] (pinned by a test).
+const BATCH_ONLY_ADVICE: &str =
+    "and cmd.exe would run task text as commands. Point the profile at the agent's .exe or .ps1.";
+
 fn base64_text(value: &str) -> String {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     STANDARD.encode(value.as_bytes())
@@ -1329,6 +1396,58 @@ then set review again."
         assert!(printed.starts_with(
             "You were dispatched to T101 (Don't run `rm -rf $HOME`; echo \"hi\") in worktree"
         ));
+    }
+
+    /// Like `TskProgram`: only a name whose every match is a batch file is batch-only, in
+    /// `PATH` order; an executable or `.ps1` anywhere, or no match at all, is left to the pane.
+    #[test]
+    fn batch_only_program_finds_a_name_that_resolves_only_to_batch_files() {
+        let first = TempDir::new("batch-first");
+        let second = TempDir::new("batch-second");
+        let touch = |dir: &TempDir, name: &str| {
+            fs::write(dir.path().join(name), "").expect("touch");
+            dir.path().join(name)
+        };
+        let path = std::ffi::OsString::from(format!(
+            "{};\"{}\"",
+            first.path().display(),
+            second.path().display()
+        ));
+        let pathext = std::ffi::OsString::from(".exe;.bat;.cmd");
+        let resolve = |program: &str| batch_only_program(program, Some(&path), Some(&pathext));
+
+        let cmd = touch(&first, "agent.cmd");
+        touch(&second, "agent.bat");
+        assert_eq!(resolve("agent"), Some(cmd.clone()));
+        assert_eq!(resolve("agent.cmd"), Some(cmd.clone()));
+        touch(&second, "agent.exe");
+        assert_eq!(resolve("agent"), None, "an executable later in PATH runs");
+        touch(&first, "shim.cmd");
+        touch(&first, "shim.ps1");
+        assert_eq!(resolve("shim"), None, "a PowerShell script runs");
+        assert_eq!(resolve("missing"), None, "nothing found: the pane says so");
+        assert_eq!(
+            resolve(&cmd.to_string_lossy()),
+            Some(cmd.clone()),
+            "an absolute path is checked itself"
+        );
+        assert_eq!(resolve(r"tools\agent"), None, "relative to the worktree");
+        assert_eq!(
+            batch_only_program("agent", None, Some(&pathext)),
+            None,
+            "no PATH"
+        );
+
+        let refusal = batch_only_refusal("agent", &cmd);
+        assert!(refusal.starts_with(&format!(
+            "not starting agent: it resolves only to the batch file {}, ",
+            cmd.display()
+        )));
+        assert!(refusal.ends_with(BATCH_ONLY_ADVICE));
+        assert!(
+            POWERSHELL_PRELUDE.contains(&format!("$($Found[0].Path), {BATCH_ONLY_ADVICE}\")")),
+            "the launcher refuses in the same words"
+        );
     }
 
     #[test]

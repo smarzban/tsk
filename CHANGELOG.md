@@ -54,6 +54,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - With tasks marked, `ctrl+b` and `ctrl+r` skip done tasks, as starting does, and the status row counts them.
 - `Esc` on a selected Thread on the task page cancels only the thread, not the whole edit.
 - `ctrl+x` in a new step's row discards that row, instead of removing the step above it or deleting a task.
+- `tsk steps` takes `--` before step text that starts with `-`, as `tsk reply` does.
 
 ## v0.12.0
 

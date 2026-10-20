@@ -32,7 +32,7 @@ Start an assigned task to dispatch it: `ctrl+s`, palette **set status: started**
 3. runs the assignee's profile command there,
 4. records the dispatch on the task and sets it to started, in one save.
 
-If the launch fails, the task stays unstarted with no dispatch, and the status row says why. A started task with a live dispatch shows `◉` instead of `●`.
+If the launch fails, the task stays unstarted with no dispatch, and the status row says why. tsk removes the worktree, workspace, and new branch that launch created. The message names anything it had to leave, such as a worktree with changes. A started task with a live dispatch shows `◉` instead of `●`.
 
 The agent's instructions come from the profile's prompt. Without one, a default prompt asks it to open a pull request into the base and set the task to review. See [Configuration](/docs/storage/#configuration).
 
@@ -228,7 +228,7 @@ Quitting waits for a running merge. On a marked set, `m` merges each open pull r
 
 Herdr on Windows is a preview, and so is dispatch there.
 
-- A profile's `command` must find an `.exe` or a PowerShell script. A batch file (`.cmd`, `.bat`) is refused, because cmd.exe could run task text as commands. The workspace opens, but its pane says so and the agent does not start.
+- A profile's `command` must find an `.exe` or a PowerShell script. A batch file (`.cmd`, `.bat`) is refused, because cmd.exe could run task text as commands. Dispatch refuses it with `agent-config` before it creates anything. When tsk cannot see where the command leads, the workspace opens and its pane refuses instead.
 - A PowerShell script works as a shim that hands its arguments to a program, like the `.ps1` files npm installs. A script that reads `$args` itself sees the arguments escaped.
 - The [state directory](/docs/storage/#location) must not contain `$`, `` ` ``, `%`, `"`, or `!`. Dispatch refuses one that does.
 - If Git's `core.longpaths` is off, each dispatch says so. Turn it on with `git config --global core.longpaths true`.

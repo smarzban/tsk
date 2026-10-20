@@ -81,6 +81,9 @@ pub(crate) struct ListRow {
     /// The open block's reason, painted as `blocked: <why>` by the human listing only.
     #[serde(skip)]
     pub(crate) blocked_why: Option<String>,
+    /// The open block or review round, which JSON rows carry as `block` or `review`.
+    #[serde(skip)]
+    pub(crate) record: Option<crate::domain::Block>,
     /// Painted group label (`herdr-tsk`, `desk`, `#release`, `no thread`), set only
     /// under `--group`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -633,6 +636,7 @@ fn row_for(task: &crate::domain::Task, domain: &DomainState) -> ListRow {
             .as_ref()
             .filter(|_| task.status == HumanStatus::Blocked)
             .and_then(|block| block.why.clone()),
+        record: task.block.clone(),
         group: None,
     }
 }

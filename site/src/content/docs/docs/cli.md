@@ -36,7 +36,7 @@ tsk list
 - `tsk --help` lists the commands. `tsk help <command>` and `tsk <command> --help` print the same reference for one command: usage, flags, examples, refusals, and exit codes. Help wraps at 80 columns.
 - `tsk --version` (or `-V`) prints `tsk <version>`. It takes no command.
 - Every command that reads or writes tasks takes `--state-dir <dir>` to use another store. `setup`, `update`, and `guide` do not.
-- A flag value that starts with `-` needs the `=` form: `--title="-fix parser"`, `--notes="-5 degrees"`. [`tsk reply`](#reply) takes `--` before such text instead. Step text cannot start with `-`.
+- A flag value that starts with `-` needs the `=` form: `--title="-fix parser"`, `--notes="-5 degrees"`. [`tsk reply`](#reply) and [`tsk steps`](#steps) take `--` before such text instead.
 - Human output escapes terminal control characters stored in tasks. JSON keeps the text as stored.
 
 ## Statuses
@@ -199,10 +199,12 @@ tsk list --all --thread release --json
 | `thread`, `assignee`, `base` | Thread, agent profile, and explicit base branch, each `null` when unset |
 | `after` | Tasks this one runs after, in order, each `{"task": 202, "done": false}`. A task gone from the board reads as done |
 | `before` | Numbers of the tasks that run after this one |
+| `block` | The open block, below. Absent when there is none |
+| `review` | The open review round, below. Absent when there is none |
 | `archived` | With `--archived`: `archived` or `project archived` |
 | `group` | With `--group`: the group label |
 
-A task waits while any `after` entry has `done: false`. A filtered row does not say who a block or review waits on: read the task in full for that.
+A task waits while any `after` entry has `done: false`.
 
 `tsk list T12 --json` returns the task in full: the fields above plus these.
 
@@ -211,8 +213,6 @@ A task waits while any `after` entry has `done: false`. A filtered row does not 
 | `notes` | Notes, or `null` |
 | `steps` | Each step's `id`, `done`, `short_id` (for [`tsk steps`](#steps)), and `text` |
 | `dispatch` | Present once dispatched: `argv`, `worktree`, `branch`, `base`, `base_ref`, `base_commit`, `base_remote`, `herdr_workspace_id`, `at`, and `cleaned: true` once cleaned |
-| `block` | The open block, below |
-| `review` | The open review round, below |
 | `past_blocks`, `past_reviews` | Closed blocks and rounds, oldest first. Each adds `closed_at` and `closed_by` |
 | `activity` | Every event on the task, newest first, below |
 
@@ -411,6 +411,8 @@ tsk steps <task> remove <step-short-id> [--state-dir <dir>]
 
 `<place>` is `--before <step-short-id>`, `--after <step-short-id>`, `--first`, or `--last`. `add` appends without one and `move` needs one. A step's `short_id` comes from `tsk list T12 --json`; any prefix of its id that only it has works too.
 
+Put `--` before step text that starts with `-`, after any flags: `tsk steps T12 add --first -- "-5 degrees"`.
+
 | Action | Output | Safe to repeat |
 | --- | --- | --- |
 | `add` | `added <short-id> <text>` | No: adds another step |
@@ -469,7 +471,8 @@ tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]
 - The base is `--base`, else the task's base, else the repository's default branch. Never the branch you run the command in. [Base branch](/docs/dispatch/#base-branch).
 - A dispatched task refuses with `already-dispatched`. Use `--again` to relaunch on purpose.
 - Output is `dispatched T12 to @claude in <worktree>`.
-- A refusal changes nothing. Exit 3 means the launch may have run without its record saved: check Herdr (`herdr agent get t12-claude`) and read the task before retrying. The same holds for a `tsk status T12 started` that dispatched.
+- A refusal changes nothing. A launch that fails removes what it created ([Dispatch](/docs/dispatch/#dispatch)).
+- Exit 3 after a launch means its record was not saved. A message ending `launch undone` means tsk removed the launch. Otherwise the agent may still run: check Herdr (`herdr agent get t12-claude`) and read the task before retrying. The same holds for a `tsk status T12 started` that dispatched.
 - On Windows dispatch is a preview ([Windows](/docs/dispatch/#windows-preview)).
 
 **Refusals:** codes and exits in the [exit contract](#exit-contract).
