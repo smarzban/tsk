@@ -5693,16 +5693,28 @@ impl BoardModel {
         true
     }
 
-    /// Keep the task-picker cursor at `index` after a row above or under it went away.
+    /// Put the task-picker cursor back after the pinned row at `index` went away: on the next
+    /// pinned task, else the first match, else the last pinned task. Never on **clear all**,
+    /// where Enter would clear the tasks still pinned.
     fn clamp_after_cursor(&mut self, index: usize) {
+        let pinned = self
+            .list_picker
+            .as_ref()
+            .and_then(|picker| picker.after_target.as_ref())
+            .map_or(0, |target| target.pinned.len());
+        if pinned == 0 {
+            self.reseat_after_cursor(0);
+            return;
+        }
         let rows = self.after_picker_rows().len();
-        let pinned_rows = self.after_picker_pinned_rows();
+        let has_matches = rows > pinned + 1;
         if let Some(picker) = self.list_picker.as_mut() {
-            // The last unpin also drops **clear all**: land on the first match instead.
-            picker.selected = if pinned_rows == 0 {
-                0
+            picker.selected = if index < pinned {
+                index
+            } else if has_matches {
+                pinned + 1
             } else {
-                index.min(rows.saturating_sub(1))
+                pinned - 1
             };
         }
     }
@@ -6471,6 +6483,8 @@ impl BoardModel {
 
     /// Mark targets when the task list owns input, otherwise the cursor target.
     pub fn verb_target_ids(&self) -> Vec<Uuid> {
+        // An open task page acts on its own task, which the board selection may not be (a
+        // `before` link to a task the board cannot paint opens without moving it).
         if self.task_list_owns_input() && self.mark_mode && !self.marked_ids.is_empty() {
             self.marked_ids.iter().copied().collect()
         } else {

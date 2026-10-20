@@ -518,14 +518,19 @@ pub fn after_peek_lines(task: &Task, tasks: &[Task]) -> Vec<String> {
     lines
 }
 
-/// The live tasks that run after `task`, by number.
+/// The live, unarchived tasks that run after `task`, by number.
 pub fn before_numbers(task: &Task, tasks: &[Task]) -> Vec<u64> {
     let Some(number) = task.number else {
         return Vec::new();
     };
     let mut before: Vec<u64> = tasks
         .iter()
-        .filter(|other| !other.soft_deleted && !other.is_notice() && other.after.contains(&number))
+        .filter(|other| {
+            !other.soft_deleted
+                && !other.is_notice()
+                && !other.archived
+                && other.after.contains(&number)
+        })
         .filter_map(|other| other.number)
         .collect();
     before.sort_unstable();
@@ -5220,8 +5225,8 @@ const AFTER_PICKER_FOOTER: &[VerbEntry<'static>] = &[
 const AFTER_PICKER_MATCH_ROWS: usize = 8;
 
 /// The task picker card: the query row, the pinned block, then a fixed-height match window
-/// with a scroll bar when the matches overflow it. Every row is a `ListPickerOption` hit in
-/// visible order.
+/// with a scroll bar when the matches overflow it. Long rows wrap inside the card, never
+/// clipped. Every painted line is a `ListPickerOption` hit for its row, in visible order.
 fn paint_after_picker(
     frame: &mut Frame<'_>,
     geo: &TierGeometry,
@@ -5239,27 +5244,64 @@ fn paint_after_picker(
     // The query row and the two rules around the pinned block.
     let fixed = 3;
     let avail = capacity.saturating_sub(fixed).max(2);
+    // The same content width `paint_modal_card` carves out below.
+    let pad: u16 = if geo.tier == Tier::Compact { 0 } else { 1 };
+    let width = modal_card_width(geo, bounds, 0).saturating_sub(2 + 2 * pad) as usize;
     let pinned_rows = picker.pinned_rows.min(picker.rows.len());
-    // Nothing pinned still shows one row, saying so.
-    let pinned_block = pinned_rows.max(1);
-    let match_window = AFTER_PICKER_MATCH_ROWS
-        .min(avail.saturating_sub(pinned_block.min(avail - 1)))
-        .max(1);
-    let pinned_shown = pinned_block.min(avail.saturating_sub(match_window)).max(1);
-    let matches = &picker.rows[pinned_rows..];
     let selected = picker.selected.min(picker.rows.len().saturating_sub(1));
-    let window = |selected_in: Option<usize>, len: usize, shown: usize| match selected_in {
-        Some(index) if index >= shown => (index + 1 - shown).min(len.saturating_sub(shown)),
-        _ => 0,
+    // A row's wrapped lines; the first two cells carry the `▸ ` marker, and a pinned row's
+    // continuation lines indent under its text, past the `✓ `.
+    let wrap = |index: usize, row_width: usize| -> Vec<String> {
+        let label = &picker.rows[index];
+        let (tick, text) = match label.strip_prefix("✓ ") {
+            Some(text) => ("✓ ", text),
+            None => ("", label.as_str()),
+        };
+        let indent = if tick.is_empty() { "" } else { "  " };
+        let room = row_width.saturating_sub(2 + display_width(tick)).max(1);
+        let mut lines: Vec<String> = crate::ui::edit::wrap_text(text, room)
+            .into_iter()
+            .enumerate()
+            .map(|(part, row)| {
+                let lead = if part == 0 { tick } else { indent };
+                format!("{lead}{}", row.text)
+            })
+            .collect();
+        if lines.is_empty() {
+            lines.push(tick.to_string());
+        }
+        lines
     };
-    let pinned_scroll = window(
+    let pinned: Vec<Vec<String>> = (0..pinned_rows).map(|index| wrap(index, width)).collect();
+    // Nothing pinned still shows one row, saying so.
+    let pinned_total = pinned.iter().map(Vec::len).sum::<usize>().max(1);
+    let match_window = AFTER_PICKER_MATCH_ROWS
+        .min(avail.saturating_sub(pinned_total.min(avail - 1)))
+        .max(1);
+    let pinned_shown = pinned_total.min(avail.saturating_sub(match_window)).max(1);
+    let match_rows = pinned_rows..picker.rows.len();
+    let mut matches: Vec<Vec<String>> =
+        match_rows.clone().map(|index| wrap(index, width)).collect();
+    let mut match_total: usize = matches.iter().map(Vec::len).sum();
+    let overflow = scrollbar::needs_scrollbar(match_total, match_window);
+    let match_width = if overflow {
+        width.saturating_sub(usize::from(scrollbar::SCROLLBAR_RESERVE_COLS))
+    } else {
+        width
+    };
+    if overflow {
+        matches = match_rows.map(|index| wrap(index, match_width)).collect();
+        match_total = matches.iter().map(Vec::len).sum();
+    }
+    let pinned_start = after_window_start(
+        &pinned.iter().map(Vec::len).collect::<Vec<_>>(),
         (selected < pinned_rows).then_some(selected),
-        pinned_rows,
         pinned_shown,
     );
-    let match_scroll = window(
+    let match_counts: Vec<usize> = matches.iter().map(Vec::len).collect();
+    let match_start = after_window_start(
+        &match_counts,
         selected.checked_sub(pinned_rows),
-        matches.len(),
         match_window,
     );
 
@@ -5283,7 +5325,6 @@ fn paint_after_picker(
     }
     let width = content.width;
     let row_rect = |offset: usize| Rect::new(content.x, content.y + offset as u16, width, 1);
-    let mut offset = 0usize;
     let fits = |offset: usize| offset < content.height as usize;
 
     // `> query` with the caret after it; an empty query says what to type.
@@ -5295,15 +5336,14 @@ fn paint_after_picker(
     } else {
         paint_bounded_line(&format!("> {}", picker.query), width, style_bold())
     };
-    put_line_at(frame, surface, row_rect(offset), query_line);
+    put_line_at(frame, surface, row_rect(0), query_line);
     let caret = 2 + display_width(picker.query);
     place_edit_cursor_at(
         frame,
-        local_rect(surface, row_rect(offset)),
+        local_rect(surface, row_rect(0)),
         0,
         u16::try_from(caret).unwrap_or(u16::MAX),
     );
-    offset += 1;
 
     let rule = |frame: &mut Frame<'_>, offset: usize| {
         if fits(offset) {
@@ -5315,30 +5355,46 @@ fn paint_after_picker(
             );
         }
     };
-    rule(frame, offset);
-    offset += 1;
+    rule(frame, 1);
+    let mut offset = 2usize;
 
-    let mut paint_row = |frame: &mut Frame<'_>, offset: usize, index: usize, text_width: u16| {
-        if !fits(offset) {
-            return;
+    // Paint rows from `start` into `window` lines at `top`, each line a hit for its row.
+    let mut paint_rows = |frame: &mut Frame<'_>,
+                          top: usize,
+                          window: usize,
+                          first_index: usize,
+                          rows: &[Vec<String>],
+                          start: usize,
+                          text_width: u16| {
+        let mut line = 0usize;
+        for (slot, lines) in rows.iter().enumerate().skip(start) {
+            let index = first_index + slot;
+            let is_selected = index == selected;
+            let style = if is_selected {
+                style_reverse()
+            } else {
+                style_plain()
+            };
+            for (part, text) in lines.iter().enumerate() {
+                if line >= window || !fits(top + line) {
+                    return;
+                }
+                let marker = match (part, is_selected) {
+                    (0, true) => "▸ ",
+                    _ => "  ",
+                };
+                let rect = Rect::new(content.x, content.y + (top + line) as u16, text_width, 1);
+                put_line_at(
+                    frame,
+                    surface,
+                    rect,
+                    paint_bounded_line(&format!("{marker}{text}"), text_width, style),
+                );
+                hits.push(QueueHitTarget::ListPickerOption(index), rect);
+                hits.push_copyable(rect);
+                line += 1;
+            }
         }
-        let is_selected = index == selected;
-        let marker = if is_selected { "▸ " } else { "  " };
-        let text = format!("{marker}{}", picker.rows[index]);
-        let style = if is_selected {
-            style_reverse()
-        } else {
-            style_plain()
-        };
-        let rect = Rect::new(content.x, content.y + offset as u16, text_width, 1);
-        put_line_at(
-            frame,
-            surface,
-            rect,
-            paint_bounded_line(&text, text_width, style),
-        );
-        hits.push(QueueHitTarget::ListPickerOption(index), rect);
-        hits.push_copyable(rect);
     };
     if pinned_rows == 0 {
         if fits(offset) {
@@ -5350,20 +5406,12 @@ fn paint_after_picker(
             );
         }
     } else {
-        for (slot, index) in (pinned_scroll..pinned_rows).take(pinned_shown).enumerate() {
-            paint_row(frame, offset + slot, index, width);
-        }
+        paint_rows(frame, offset, pinned_shown, 0, &pinned, pinned_start, width);
     }
     offset += pinned_shown;
     rule(frame, offset);
     offset += 1;
 
-    let overflow = scrollbar::needs_scrollbar(matches.len(), match_window);
-    let text_width = if overflow {
-        width.saturating_sub(scrollbar::SCROLLBAR_RESERVE_COLS)
-    } else {
-        width
-    };
     if matches.is_empty() && !picker.query.trim().is_empty() && fits(offset) {
         put_line_at(
             frame,
@@ -5372,14 +5420,15 @@ fn paint_after_picker(
             paint_bounded_line("  no matching tasks", width, style_dim()),
         );
     }
-    for slot in 0..match_window.min(matches.len().saturating_sub(match_scroll)) {
-        paint_row(
-            frame,
-            offset + slot,
-            pinned_rows + match_scroll + slot,
-            text_width,
-        );
-    }
+    paint_rows(
+        frame,
+        offset,
+        match_window,
+        pinned_rows,
+        &matches,
+        match_start,
+        u16::try_from(match_width).unwrap_or(width),
+    );
     if overflow {
         let shown = match_window.min((content.height as usize).saturating_sub(offset));
         let track = Rect::new(
@@ -5388,13 +5437,22 @@ fn paint_after_picker(
             1,
             shown as u16,
         );
-        scrollbar::paint(
-            frame,
-            local_rect(surface, track),
-            match_scroll,
-            matches.len(),
-        );
+        let scroll = match_counts[..match_start].iter().sum();
+        scrollbar::paint(frame, local_rect(surface, track), scroll, match_total);
     }
+}
+
+/// The first row a task-picker window paints so the `selected` row's lines all fit in
+/// `window` lines below it; `counts` are each row's wrapped line counts.
+fn after_window_start(counts: &[usize], selected: Option<usize>, window: usize) -> usize {
+    let Some(selected) = selected.filter(|index| *index < counts.len()) else {
+        return 0;
+    };
+    let mut start = 0;
+    while start < selected && counts[start..=selected].iter().sum::<usize>() > window {
+        start += 1;
+    }
+    start
 }
 
 enum ListRow {

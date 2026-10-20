@@ -20925,46 +20925,76 @@ mod quick_assign_tests {
         );
     }
 
+    /// The footer hits of each `before` number on the open page, as (number, click point).
+    fn before_clicks(model: &BoardModel) -> Vec<(u64, (u16, u16))> {
+        crate::ui::board::board_hit_map(ratatui::layout::Rect::new(0, 0, 100, 30), model)
+            .regions
+            .iter()
+            .filter_map(|hit| match hit.target {
+                QueueHitTarget::FooterBefore(number) => Some((number, (hit.area.x, hit.area.y))),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
     fn a_click_on_a_footer_before_number_opens_that_task() {
         let temp = Temp::new("before-click", &["builder"]);
-        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second", "third"]);
         let mut host = fake_host(&temp);
-        link(
-            &temp,
-            &mut domain,
-            &mut model,
-            ids[1],
-            &[ids[0]],
-            HumanStatus::Open,
-        );
-        let second = number_of(&domain, ids[1]);
-        select(&mut domain, &mut model, ids[0]);
-        handle(
-            &temp,
-            &mut domain,
-            &mut model,
-            BoardIntent::OpenTaskPage,
-            &mut host,
-        );
-        let hits =
-            crate::ui::board::board_hit_map(ratatui::layout::Rect::new(0, 0, 100, 30), &model);
-        assert!(
-            hits.regions
-                .iter()
-                .any(|hit| hit.target == QueueHitTarget::FooterBefore(second)),
-            "each before number is its own click target"
-        );
-        handle(
-            &temp,
-            &mut domain,
-            &mut model,
-            BoardIntent::OpenBeforeTask(second),
-            &mut host,
-        );
-        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
-        assert_eq!(model.edit_target(), Some(ids[1]));
-        assert_eq!(model.selected_id(), Some(ids[1]));
+        for waiting in [ids[1], ids[2]] {
+            link(
+                &temp,
+                &mut domain,
+                &mut model,
+                waiting,
+                &[ids[0]],
+                HumanStatus::Open,
+            );
+        }
+        for target in [ids[1], ids[2]] {
+            select(&mut domain, &mut model, ids[0]);
+            // A page left parked rebinds to the selection; otherwise Enter opens it.
+            if model.input_mode() != BoardInputMode::TaskPage {
+                handle(
+                    &temp,
+                    &mut domain,
+                    &mut model,
+                    BoardIntent::OpenTaskPage,
+                    &mut host,
+                );
+            }
+            assert_eq!(model.edit_target(), Some(ids[0]));
+            let number = number_of(&domain, target);
+            let clicks = before_clicks(&model);
+            assert_eq!(
+                clicks.len(),
+                2,
+                "each before number is its own click target"
+            );
+            let (_, (x, y)) = clicks
+                .into_iter()
+                .find(|(n, _)| *n == number)
+                .expect("a hit for this number");
+            let intent = crate::ui::mouse::map_board_mouse(
+                &model,
+                &crate::ui::board::board_hit_map(ratatui::layout::Rect::new(0, 0, 100, 30), &model),
+                crate::ui::mouse::left_click(x, y),
+            )
+            .expect("the click maps");
+            assert_eq!(intent, BoardIntent::OpenBeforeTask(number));
+            handle(&temp, &mut domain, &mut model, intent, &mut host);
+            assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+            assert_eq!(model.edit_target(), Some(target));
+            assert_eq!(model.selected_id(), Some(target));
+            handle(
+                &temp,
+                &mut domain,
+                &mut model,
+                BoardIntent::CloseLayer,
+                &mut host,
+            );
+        }
 
         // A task in another project moves the board there, so the selection can follow.
         let elsewhere = domain
@@ -20994,6 +21024,245 @@ mod quick_assign_tests {
         assert_eq!(model.edit_target(), Some(elsewhere));
         assert_eq!(model.selected_id(), Some(elsewhere));
         assert!(model.visible_ids().contains(&elsewhere));
+    }
+
+    #[test]
+    fn an_archived_task_is_not_a_footer_before_link() {
+        let temp = Temp::new("before-archived", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Open,
+        );
+        domain.archive_task(ids[1]).expect("archive");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        select(&mut domain, &mut model, ids[0]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenTaskPage,
+            &mut host,
+        );
+        assert!(before_clicks(&model).is_empty());
+        let (screen, _) = board_screen(&model, 100, 30);
+        assert!(!screen.contains("before T"), "{screen}");
+    }
+
+    /// A before link to a task the board does not paint (a done task, drawer shut) opens its
+    /// page without moving the selection; the page's pickers still act on the page's task
+    /// (the reducer binds the selection to the focused page's task before each intent).
+    #[test]
+    fn a_page_opened_from_a_before_link_acts_on_its_own_task() {
+        let temp = Temp::new("before-hidden", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second", "third"]);
+        let mut host = fake_host(&temp);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0], ids[2]],
+            HumanStatus::Open,
+        );
+        domain.set_status(ids[1], HumanStatus::Done).expect("done");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        assert!(!model.visible_ids().contains(&ids[1]), "the drawer is shut");
+        let second = number_of(&domain, ids[1]);
+        select(&mut domain, &mut model, ids[0]);
+        for intent in [
+            BoardIntent::OpenTaskPage,
+            BoardIntent::OpenBeforeTask(second),
+        ] {
+            handle(&temp, &mut domain, &mut model, intent, &mut host);
+        }
+        assert_eq!(model.edit_target(), Some(ids[1]));
+        assert_eq!(
+            model.selected_id(),
+            Some(ids[0]),
+            "the selection stays painted"
+        );
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenAfterPicker, None)
+            .expect("open picker");
+        assert_eq!(
+            model.after_picker_title(),
+            Some(format!("T{second} runs after").as_str())
+        );
+        for intent in [
+            BoardIntent::ListPickerRemove,
+            BoardIntent::ConfirmListPicker,
+        ] {
+            handle(&temp, &mut domain, &mut model, intent, &mut host);
+        }
+        let disk = temp.store.load().expect("load");
+        assert_eq!(
+            disk.get(ids[1]).expect("task").after,
+            vec![number_of(&disk, ids[2])]
+        );
+        assert!(disk.get(ids[0]).expect("task").after.is_empty());
+    }
+
+    #[test]
+    fn removing_the_last_pinned_task_never_leaves_the_cursor_on_clear_all() {
+        let temp = Temp::new("after-ctrl-x-last", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second", "third"]);
+        let mut host = fake_host(&temp);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[2],
+            &[ids[0], ids[1]],
+            HumanStatus::Open,
+        );
+        select(&mut domain, &mut model, ids[2]);
+        for intent in [
+            BoardIntent::OpenAfterPicker,
+            BoardIntent::ListPickerNext,
+            BoardIntent::ListPickerRemove,
+        ] {
+            handle(&temp, &mut domain, &mut model, intent, &mut host);
+        }
+        let first = number_of(&domain, ids[0]);
+        assert_eq!(
+            model
+                .selected_list_picker_option()
+                .map(|(_, option)| option.label),
+            Some(format!("✓ T{first} first")),
+            "back on the task still pinned"
+        );
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        assert_eq!(disk.get(ids[2]).expect("task").after, vec![first]);
+    }
+
+    #[test]
+    fn a_click_on_a_task_picker_row_pins_without_saving() {
+        let temp = Temp::new("after-click", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second"]);
+        let mut host = fake_host(&temp);
+        select(&mut domain, &mut model, ids[1]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAfterPicker,
+            &mut host,
+        );
+        let first = number_of(&domain, ids[0]);
+        paste_query(&temp, &mut domain, &mut model, &first.to_string());
+        let area = ratatui::layout::Rect::new(0, 0, 100, 30);
+        let hits = crate::ui::board::board_hit_map(area, &model);
+        let row = hits
+            .regions
+            .iter()
+            .find(|hit| hit.target == QueueHitTarget::ListPickerOption(0))
+            .expect("the match row");
+        let intent = crate::ui::mouse::map_board_mouse(
+            &model,
+            &hits,
+            crate::ui::mouse::left_click(row.area.x + 2, row.area.y),
+        )
+        .expect("the click maps");
+        assert!(!crate::ui::board::board_intent_may_persist(&model, &intent));
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        assert_eq!(model.list_picker_kind(), Some(ListPickerKind::After));
+        assert_eq!(
+            picker_labels(&model),
+            vec![format!("✓ T{first} first"), "clear all".to_string()]
+        );
+        assert!(temp
+            .store
+            .load()
+            .expect("load")
+            .get(ids[1])
+            .expect("task")
+            .after
+            .is_empty());
+    }
+
+    #[test]
+    fn the_task_picker_on_a_marked_set_saves_one_undo_step() {
+        let temp = Temp::new("after-marked", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["first", "second", "third"]);
+        let mut host = fake_host(&temp);
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None).expect("mark");
+        for id in [ids[1], ids[2]] {
+            select(&mut domain, &mut model, id);
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        }
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAfterPicker,
+            &mut host,
+        );
+        assert_eq!(model.after_picker_title(), Some("2 tasks run after"));
+        let first = number_of(&domain, ids[0]);
+        paste_query(&temp, &mut domain, &mut model, &first.to_string());
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            &mut host,
+        );
+        let disk = temp.store.load().expect("load");
+        for id in [ids[1], ids[2]] {
+            assert_eq!(disk.get(id).expect("task").after, vec![first]);
+        }
+        assert!(matches!(
+            domain.last_undo(),
+            Some(UndoEntry::Batch { entries }) if entries.len() == 2
+        ));
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let disk = temp.store.load().expect("load");
+        assert!([ids[1], ids[2]]
+            .iter()
+            .all(|id| disk.get(*id).expect("task").after.is_empty()));
+    }
+
+    #[test]
+    fn long_task_picker_rows_wrap_instead_of_clipping() {
+        let temp = Temp::new("after-wrap", &["builder"]);
+        let long = "Refactor the session expiry handling so idle tabs log out cleanly everywhere";
+        let (mut domain, mut model, ids) = board(&temp, &[long, "target"]);
+        let mut host = fake_host(&temp);
+        link(
+            &temp,
+            &mut domain,
+            &mut model,
+            ids[1],
+            &[ids[0]],
+            HumanStatus::Open,
+        );
+        domain.set_status(ids[0], HumanStatus::Done).expect("done");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        select(&mut domain, &mut model, ids[1]);
+        handle(
+            &temp,
+            &mut domain,
+            &mut model,
+            BoardIntent::OpenAfterPicker,
+            &mut host,
+        );
+        let (screen, _) = board_screen(&model, 60, 30);
+        assert!(screen.contains("everywhere · done"), "{screen}");
     }
 
     #[test]
