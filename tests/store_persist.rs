@@ -1821,3 +1821,128 @@ fn undo_top(state: &DomainState) -> serde_json::Value {
         .and_then(|stack| stack.last().cloned())
         .unwrap_or_default()
 }
+
+/// Removing a name again after an assignment re-showed it keeps that assignment undoable
+/// through a save: `ctrl+u` undoes the removal, then the assignment.
+#[test]
+fn removing_a_reshown_name_keeps_the_assignment_undoable_across_a_save() {
+    use tsk_tui::domain::Assignee;
+    let dir = temp_state_dir();
+    let _guard = TempDirGuard(dir.clone());
+    let store = TaskStore::new(&dir);
+    let mut state = DomainState::new();
+    let id = state
+        .create(
+            "T5",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    assert!(state.hide_assignee("dnaa"));
+    store.reload_merge_save(&mut state).expect("save the hide");
+    state
+        .assign(id, Some(Assignee::person("dnaa")))
+        .expect("assign dnaa");
+    assert!(state.hide_assignee("dnaa"), "removed again");
+    store.reload_merge_save(&mut state).expect("save");
+    let mut state = store.load().expect("reload");
+
+    state.undo().expect("undo the second removal");
+    assert!(state.hidden_assignees().is_empty());
+    assert_eq!(
+        state.get(id).expect("task").assigned(),
+        Some(Assignee::person("dnaa"))
+    );
+    state.undo().expect("undo the assignment");
+    assert_eq!(state.get(id).expect("task").assignee, None, "unassigned");
+}
+
+/// Editing a task that already carries a removed name, from the task page or `tsk edit
+/// --title`, leaves the name off the list: only a change to that name shows it.
+#[test]
+fn editing_a_task_that_keeps_a_removed_name_leaves_it_hidden() {
+    use tsk_tui::domain::Assignee;
+    let dnaa = || Some(Assignee::person("dnaa"));
+    let mut state = DomainState::new();
+    let id = state
+        .create(
+            "T11",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    state.assign(id, dnaa()).expect("assign");
+    assert!(state.hide_assignee("dnaa"));
+    state
+        .edit_with_step_changes_and_base(
+            id,
+            "T11",
+            Some("new notes".into()),
+            TaskScope::Global,
+            None,
+            dnaa(),
+            None,
+            &[],
+            &[],
+            &[],
+            None,
+        )
+        .expect("page edit");
+    assert!(state.hidden_assignees().contains("dnaa"), "page edit");
+    state
+        .edit_with_assignee_and_base(
+            id,
+            "T11 renamed",
+            None,
+            TaskScope::Global,
+            None,
+            dnaa(),
+            None,
+        )
+        .expect("cli edit");
+    assert!(state.hidden_assignees().contains("dnaa"), "cli edit");
+}
+
+/// Another writer removing the name while this one's assignment re-showed it keeps that
+/// assignment's undo on disk: its stale name step does not keep the merge from taking it.
+#[test]
+fn a_concurrent_removal_keeps_the_other_writers_assignment_undo() {
+    use tsk_tui::domain::Assignee;
+    let dir = temp_state_dir();
+    let _guard = TempDirGuard(dir.clone());
+    let store = TaskStore::new(&dir);
+    let mut seed = DomainState::new();
+    let id = seed
+        .create(
+            "T5",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    assert!(seed.hide_assignee("dnaa"));
+    store.save(&seed).expect("seed");
+
+    let mut a = store.load().expect("writer A");
+    let mut b = store.load().expect("writer B");
+    a.assign(id, Some(Assignee::person("dnaa")))
+        .expect("A assigns dnaa");
+    store.reload_merge_save(&mut a).expect("A saves");
+    b.undo().expect("B undoes the seed hide");
+    assert!(b.hide_assignee("dnaa"), "B removes it again");
+    store.reload_merge_save(&mut b).expect("B merge-saves");
+
+    let mut disk = store.load().expect("reload");
+    disk.undo().expect("undo B's removal");
+    disk.undo().expect("undo A's assignment");
+    assert_eq!(
+        disk.get(id).expect("task").assignee,
+        None,
+        "A's assignment undone"
+    );
+}

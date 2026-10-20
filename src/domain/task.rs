@@ -2055,7 +2055,9 @@ impl DomainState {
         let changed_assignee = self.get(id).is_some_and(|task| task.assigned() != assignee);
         let changed_base = self.get(id).is_some_and(|task| task.base != base);
         self.edit(id, title, notes, scope, thread)?;
-        self.show_assigned(assignee.as_ref());
+        if changed_assignee {
+            self.show_assigned(assignee.as_ref());
+        }
         let task = self.task_mut(id)?;
         let at = task.updated_at;
         if changed_assignee {
@@ -2227,7 +2229,9 @@ impl DomainState {
         );
         task.history
             .extend((0..added_count).map(|_| event(TaskEventKind::StepAdded, at, None, None)));
-        self.show_assigned(shown.as_ref());
+        if changed_assignee {
+            self.show_assigned(shown.as_ref());
+        }
         Ok(())
     }
 
@@ -2594,12 +2598,12 @@ impl DomainState {
                     task.merge_base_revision == Some(expected) && task.revision != expected
                 })
             });
-            // A name entry undone here (or by an assignment) no longer matches the merged
-            // hidden set: importing it back would let `ctrl+u` replay it.
-            let stale_name = incoming
-                .leaf_entries()
-                .into_iter()
-                .any(|leaf| !self.name_leaf_is_live(leaf));
+            // A name-only entry undone here (or by an assignment) no longer matches the merged
+            // hidden set: importing it back would let `ctrl+u` replay it. Inside an assignment
+            // a stale name step is a harmless no-op, so the assignment still comes back.
+            let leaves = incoming.leaf_entries();
+            let stale_name = leaves.iter().all(|leaf| leaf.targets().is_empty())
+                && leaves.iter().any(|leaf| !self.name_leaf_is_live(leaf));
             if superseded || stale_name {
                 continue;
             }
@@ -2733,12 +2737,17 @@ impl DomainState {
             .enumerate()
             .map(|(index, entry)| {
                 let leaves = entry.leaf_entries();
+                // Name steps decide only for an entry that is nothing else: inside an
+                // assignment a stale one reverses as a no-op and never drops the assignment.
+                let name_only = leaves.iter().all(|leaf| leaf.targets().is_empty());
                 !leaves.is_empty()
                     && leaves.into_iter().all(|leaf| match leaf {
                         UndoEntry::HideAssignee { name } => {
-                            self.name_leaf_is_live(leaf) || shown_later(index, name)
+                            !name_only || self.name_leaf_is_live(leaf) || shown_later(index, name)
                         }
-                        UndoEntry::ShowAssignee { .. } => self.name_leaf_is_live(leaf),
+                        UndoEntry::ShowAssignee { .. } => {
+                            !name_only || self.name_leaf_is_live(leaf)
+                        }
                         leaf => leaf.targets().into_iter().all(|(id, expected_revision)| {
                             self.tasks
                                 .iter()
