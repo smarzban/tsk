@@ -10,8 +10,8 @@ use super::{AssigneeKind, BlockOn, DomainError, DomainState, HumanStatus, Step};
 /// Maximum undo entries retained in a saved document.
 pub const UNDO_CAP: usize = 50;
 
-/// What a done entry written before store v13 restores: `open`.
-fn pre_v13_previous() -> HumanStatus {
+/// What a done entry written before store v6 restores: `open`.
+fn pre_v6_previous() -> HumanStatus {
     HumanStatus::Open
 }
 
@@ -23,16 +23,16 @@ pub enum UndoEntry {
         id: Uuid,
         expected_revision: Uuid,
     },
-    /// A done; reversing restores `previous`. An entry written before store v13 carries no
+    /// A done; reversing restores `previous`. An entry written before store v6 carries no
     /// `previous` and reads as `open`, the status such an undo always went back to.
     Complete {
         id: Uuid,
-        #[serde(default = "pre_v13_previous")]
+        #[serde(default = "pre_v6_previous")]
         previous: HumanStatus,
         expected_revision: Uuid,
     },
     /// An assignment; reversing restores `previous` with its kind. An entry written before
-    /// store v14 carries no kind and reads as an agent, the only kind there was.
+    /// store v6 carries no kind and reads as an agent, the only kind there was.
     Assign {
         id: Uuid,
         previous: Option<String>,

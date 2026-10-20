@@ -2086,7 +2086,7 @@ every = "daily"
 
     #[test]
     fn counts_tasks_without_notices_or_deleted() {
-        let document = br#"{"format_version":13,"tasks":[{"title":"a"},{"title":"n","notice":{"kind":"x"}},{"title":"d","soft_deleted":true},{"title":"b","notice":null}]}"#;
+        let document = br#"{"format_version":6,"tasks":[{"title":"a"},{"title":"n","notice":{"kind":"x"}},{"title":"d","soft_deleted":true},{"title":"b","notice":null}]}"#;
         assert_eq!(count_tasks(document), Some(2));
         assert_eq!(count_tasks(b"nope"), None);
     }
@@ -2336,7 +2336,7 @@ every = "daily"
         let state = state_with_target(&root.0, &remote, "");
         fs::write(
             state.join("tsk.json"),
-            b"{\"format_version\":13,\"tasks\":7}",
+            b"{\"format_version\":6,\"tasks\":7}",
         )
         .expect("store");
         let results = run(&state, RunMode::Now, at(DAY)).expect("run");

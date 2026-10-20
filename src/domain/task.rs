@@ -521,7 +521,7 @@ fn base_detail(base: &Option<String>) -> Option<EventDetail> {
 }
 
 /// Document version written by this binary.
-pub const STORE_FORMAT_VERSION: u32 = 15;
+pub const STORE_FORMAT_VERSION: u32 = 6;
 
 fn default_next_notice_number() -> u64 {
     1
@@ -611,7 +611,7 @@ pub struct DomainState {
     #[serde(skip)]
     project_intents: BTreeMap<String, bool>,
     /// Person names removed from the assignee picker. Tasks keep them; only the picker's
-    /// list skips them. Absent before v15, and left out of the document while empty.
+    /// list skips them. Absent before v6, and left out of the document while empty.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     hidden_assignees: BTreeSet<String>,
     /// This process's not-yet-saved hide (true) and unhide (false) intents, re-applied after
