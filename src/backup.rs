@@ -360,22 +360,40 @@ pub fn remove_target(state_dir: &Path, selector: &str) -> Result<Target, String>
 
 fn remove_target_locked(state_dir: &Path, selector: &str) -> Result<Target, String> {
     let targets = load_targets(state_dir)?;
-    let index = selector
+    let absolute = absolute_path(selector);
+    let exact = targets.iter().position(|target| {
+        target.location == selector
+            || absolute
+                .as_deref()
+                .is_some_and(|path| target.location == path)
+    });
+    let index = match selector
         .parse::<usize>()
         .ok()
         .filter(|number| (1..=targets.len()).contains(number))
         .map(|number| number - 1)
-        .or_else(|| {
-            let absolute = absolute_path(selector);
-            targets.iter().position(|target| {
-                target.location == selector
-                    || shown_location(&target.location) == selector
-                    || absolute
-                        .as_deref()
-                        .is_some_and(|path| target.location == path)
-            })
-        })
-        .ok_or_else(|| format!("no backup target {selector}"))?;
+        .or(exact)
+    {
+        Some(index) => index,
+        // As `tsk backup list` shows it: two targets that differ only in credentials look
+        // alike there, and removing either one silently would be a guess.
+        None => {
+            let shown: Vec<usize> = (0..targets.len())
+                .filter(|&index| shown_location(&targets[index].location) == selector)
+                .collect();
+            match shown.as_slice() {
+                [index] => *index,
+                [] => return Err(format!("no backup target {}", shown_location(selector))),
+                _ => {
+                    return Err(format!(
+                        "{} names {} targets; remove one by its number in tsk backup list, or its full URL",
+                        shown_location(selector),
+                        shown.len()
+                    ))
+                }
+            }
+        }
+    };
     let content = crate::agents::read_config(state_dir)
         .map_err(|error| format!("could not read config.toml: {error}"))?
         .unwrap_or_default();
@@ -749,8 +767,14 @@ pub fn run_probe(state_dir: &Path, spec: &str) -> Result<(), String> {
     command.args(["ls-remote", "--heads", "--", &target.location]);
     let found = match crate::git_base::bounded_process_output(command, "git", PROBE_WAIT) {
         Ok(output) if output.status.success() => "reached\n".to_string(),
-        Ok(output) => format!("error: {}\n", git_failure("ls-remote", &output)),
-        Err(error) => format!("error: {}\n", error.replace('\n', " / ")),
+        Ok(output) => format!(
+            "error: {}\n",
+            target_error(&target, git_failure("ls-remote", &output))
+        ),
+        Err(error) => format!(
+            "error: {}\n",
+            target_error(&target, error.replace('\n', " / "))
+        ),
     };
     // Written beside its name and renamed, so the waiter never reads half a line.
     let file = state_dir.join(format!("{PROBE_FILE_PREFIX}{nonce}"));
@@ -865,7 +889,9 @@ pub fn run(state_dir: &Path, mode: RunMode, now: SystemTime) -> Result<Vec<Targe
             let results: Vec<TargetRun> = targets
                 .into_iter()
                 .map(|target| {
-                    let reached = sync_clone(state_dir, &target).map(|_| RunOutcome::NoStore);
+                    let reached = sync_clone(state_dir, &target)
+                        .map(|_| RunOutcome::NoStore)
+                        .map_err(|error| target_error(&target, error));
                     let record = status.targets.entry(target.key()).or_default();
                     record.last_attempt = Some(now_secs);
                     record.last_error = reached.as_ref().err().cloned();
@@ -938,7 +964,8 @@ pub fn run(state_dir: &Path, mode: RunMode, now: SystemTime) -> Result<Vec<Targe
         record.last_attempt = Some(now_secs);
         let outcome = match target.kind {
             Kind::Git => backup_to_git(state_dir, &target, &machine, &copy, now),
-        };
+        }
+        .map_err(|error| target_error(&target, error));
         if outcome.is_ok() && !matches!(mode, RunMode::Due(_)) {
             tidy_clone(state_dir, &target);
         }
@@ -1058,23 +1085,46 @@ pub fn shown_location(url: &str) -> String {
 }
 
 /// `text` with every URL in it shown as [`shown_location`] shows it: git's messages quote
-/// the URL they failed on, credentials included.
+/// the URL they failed on, credentials included. Only a URL's authority (up to the first
+/// `/`, `?`, `#`, or space) is rewritten, so quotes and other characters a password may
+/// hold never cut a credential short.
 pub fn redacted(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find("://") {
+        // The scheme's characters are ASCII, so `start` is always a char boundary.
         let start = rest[..at]
-            .rfind(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')))
-            .map_or(0, |index| index + 1);
-        let end = rest[at..]
-            .find(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '<' | '>' | '`'))
-            .map_or(rest.len(), |index| at + index);
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+            .last()
+            .map_or(at, |(index, _)| index);
+        let authority = at + 3;
+        let end = rest[authority..]
+            .find(|c: char| matches!(c, '/' | '?' | '#') || c.is_whitespace())
+            .map_or(rest.len(), |index| authority + index);
         out.push_str(&rest[..start]);
         out.push_str(&shown_location(&rest[start..end]));
         rest = &rest[end..];
     }
     out.push_str(rest);
     out
+}
+
+/// `error`, from a git call on `target`, as tsk records and prints it: [`redacted`], and
+/// with the target's credentials gone even where git quotes them outside a URL
+/// (`unable to look up me:token@host`).
+fn target_error(target: &Target, error: String) -> String {
+    let error = redacted(&error);
+    let userinfo = credentials(&target.location).and_then(|_| {
+        let rest = target.location.split_once("://")?.1;
+        let authority = rest.split(['/', '?', '#']).next()?;
+        Some(authority.rsplit_once('@')?.0).filter(|userinfo| !userinfo.is_empty())
+    });
+    match userinfo {
+        Some(userinfo) => error.replace(&format!("{userinfo}@"), "***@"),
+        None => error,
+    }
 }
 
 /// A `url` whose `scheme://userinfo@` part holds a secret, split into its scheme, the user
@@ -1461,7 +1511,7 @@ fn git_failure(verb: &str, output: &std::process::Output) -> String {
     } else {
         lines[lines.len().saturating_sub(4)..].join(" / ")
     };
-    format!("git {verb} failed: {}", redacted(&detail))
+    format!("git {verb} failed: {detail}")
 }
 
 /// One restorable copy.
@@ -1508,7 +1558,10 @@ pub fn list_versions(state_dir: &Path, all: bool) -> Result<Listing, String> {
         .and_then(|listed| listed);
         match listed {
             Ok(found) => versions.extend(found),
-            Err(error) => failures.push((target, error)),
+            Err(error) => {
+                let error = target_error(&target, error);
+                failures.push((target, error));
+            }
         }
     }
     versions.sort_by(|a, b| {
@@ -2454,6 +2507,111 @@ every = "daily"
         );
         assert!(pushed.contains("https://github.com/me/b.git"), "{pushed}");
         assert!(pushed.contains("ssh://git@host/x.git"), "{pushed}");
+    }
+
+    #[test]
+    fn a_password_holding_any_sub_delimiter_is_hidden_whole() {
+        for c in "!$&'()*+,;=".chars() {
+            let url = format!("https://me:sec{c}ret@host/x.git");
+            assert_eq!(shown_location(&url), "https://***@host/x.git", "{c}");
+            assert_eq!(
+                redacted(&format!("fatal: '{url}' failed")),
+                "fatal: 'https://***@host/x.git' failed",
+                "{c}"
+            );
+        }
+    }
+
+    #[test]
+    fn redacting_never_splits_a_character() {
+        assert_eq!(redacted("remote: é://x"), "remote: é://x");
+        assert_eq!(redacted("é://me:pw@h/x"), "é://me:***@h/x");
+        assert_eq!(redacted("日本https://t@h/x"), "日本https://***@h/x");
+        assert_eq!(
+            redacted("https://t@hé/x 😀://a:b@c"),
+            "https://***@hé/x 😀://a:***@c"
+        );
+        let pieces = [
+            "://", "@", ":", "é", "日", "'", "/", " ", "a", "https", "-", "+", "😀", "?", "#",
+        ];
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        for _ in 0..5_000 {
+            let mut text = String::new();
+            for _ in 0..12 {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                text.push_str(pieces[(seed % pieces.len() as u64) as usize]);
+            }
+            let once = redacted(&text);
+            if !text.contains("://") {
+                assert_eq!(once, text);
+            }
+        }
+    }
+
+    #[test]
+    fn a_shown_location_naming_two_targets_removes_neither() {
+        let root = TempDir::new("remove-ambiguous");
+        let state = root.0.join("state");
+        fs::create_dir_all(&state).expect("state");
+        fs::write(
+            state.join("config.toml"),
+            "[[backup]]\nurl = \"https://a:one@h/x.git\"\n\n[[backup]]\nurl = \"https://b:two@h/x.git\"\n",
+        )
+        .expect("config");
+        let error = remove_target(&state, "https://***@h/x.git").expect_err("ambiguous");
+        assert!(error.contains("names 2 targets"), "{error}");
+        assert!(
+            !error.contains(":one@") && !error.contains(":two@"),
+            "{error}"
+        );
+        assert_eq!(load_targets(&state).expect("targets").len(), 2);
+        let removed = remove_target(&state, "https://b:two@h/x.git").expect("full URL");
+        assert_eq!(removed.location, "https://b:two@h/x.git");
+        // One left: its shown form names it.
+        remove_target(&state, "https://***@h/x.git").expect("shown form");
+        assert!(load_targets(&state).expect("targets").is_empty());
+    }
+
+    #[test]
+    fn a_stored_error_never_holds_a_token() {
+        // git quotes the first inside a URL, the second outside one.
+        for (url, shown) in [
+            (
+                "file:///nope/https://me:S3CRET@h/x.git",
+                "https://***@h/x.git",
+            ),
+            ("git://me:S3CRET@127.0.0.1:9/x.git", "***@127.0.0.1"),
+        ] {
+            let root = TempDir::new("stored-error");
+            let state = state_with_target(&root.0, Path::new(url), "");
+            write_store(&state, "a1");
+            let results = run(&state, RunMode::Now, at(DAY)).expect("run");
+            let returned = results[0].1.clone().expect_err("unreachable");
+            let stored = load_status(&state)
+                .targets
+                .values()
+                .find_map(|record| record.last_error.clone())
+                .expect("an error is recorded");
+            for error in [returned, stored, failure_message(&state).expect("shown")] {
+                assert!(!error.contains("S3CRET"), "{error}");
+                assert!(error.contains(shown), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_url_that_looks_like_an_option_is_only_a_repository() {
+        let root = TempDir::new("dash-url");
+        let marker = root.0.join("ran");
+        let url = format!("--upload-pack=touch {}", marker.display());
+        let state = state_with_target(&root.0, Path::new(&url), "");
+        write_store(&state, "a1");
+        let results = run(&state, RunMode::Now, at(DAY)).expect("run");
+        let error = results[0].1.clone().expect_err("no such repository");
+        assert!(error.contains("'--upload-pack=touch"), "{error}");
+        assert!(!marker.exists());
     }
 
     #[test]

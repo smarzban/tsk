@@ -234,7 +234,7 @@ Prefer ssh or a credential helper to a token in a backup URL. A URL such as `htt
 
 - `config.toml` keeps the URL as you wrote it, token included.
 - Backups never push the token: the pushed `config.toml` has it removed.
-- Every command prints the URL with its credentials as `***`, such as `https://***@github.com/me/tsk-backup.git`. `tsk backup remove` takes that form too.
+- Every command prints the URL with its credentials as `***`, such as `https://***@github.com/me/tsk-backup.git`. `tsk backup remove` takes that form too, unless two targets share it: then give the number or the full URL.
 
 ## Restore
 

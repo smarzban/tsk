@@ -407,6 +407,27 @@ fn credentials_in_a_target_url_are_never_printed() {
 }
 
 #[test]
+fn a_usage_error_never_echoes_a_token() {
+    let state = TempDir::new("usage-token");
+    for args in [
+        &[
+            "backup",
+            "add",
+            "/srv/a.git",
+            "https://me:S3CRET@host/b.git",
+        ][..],
+        &["backup", "now", "https://me:S3CRET@host/b.git"],
+        &["restore", "deadbeef", "https://me:S3CRET@host/b.git"],
+    ] {
+        let output = tsk(&state.0, args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let text = stderr(&output);
+        assert!(!text.contains("S3CRET"), "{args:?}: {text}");
+        assert!(text.contains("https://***@host/b.git"), "{args:?}: {text}");
+    }
+}
+
+#[test]
 fn an_id_restores_a_version_past_the_newest_twenty() {
     let root = TempDir::new("past-twenty");
     let repo = bare_repo(&root.0);

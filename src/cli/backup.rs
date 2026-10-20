@@ -170,6 +170,11 @@ fn redacted_text(text: &str) -> String {
     terminal_text(&backup::redacted(text))
 }
 
+/// A target's location as the CLI prints it: [`backup::shown_location`], terminal-safe.
+fn location_text(location: &str) -> String {
+    terminal_text(&backup::shown_location(location))
+}
+
 /// `tsk <verb>: <message>` on stderr, exit 1. Each line is made safe on its own, so a
 /// message tsk writes on two lines prints as two lines rather than an escaped newline.
 fn refused(verb: &str, message: &str) -> CliOutput {
@@ -185,7 +190,7 @@ fn refused(verb: &str, message: &str) -> CliOutput {
 pub fn run_backup(args: Vec<String>) -> CliOutput {
     let input = match parse_backup(&args) {
         Ok(input) => input,
-        Err(reason) => return presenter::backup_usage(&reason),
+        Err(reason) => return presenter::backup_usage(&backup::redacted(&reason)),
     };
     if input.help {
         return presenter::backup_help();
@@ -210,7 +215,7 @@ pub fn run_backup(args: Vec<String>) -> CliOutput {
                 format!(
                     "removed {} target {}; copies already made stay where they are\n",
                     removed.kind.word(),
-                    redacted_text(&removed.location)
+                    location_text(&removed.location)
                 ),
                 String::new(),
                 0,
@@ -417,7 +422,7 @@ fn backup_setup(state_dir: &std::path::Path, repo: Option<&str>) -> CliOutput {
             || backup::absolute_path(&url).as_ref() == Some(&target.location)
     }) {
         return output(
-            format!("already backing up to {shown} ({})\n", redacted_text(&url)),
+            format!("already backing up to {shown} ({})\n", location_text(&url)),
             String::new(),
             0,
         );
@@ -489,7 +494,7 @@ fn backup_add(state_dir: &std::path::Path, location: &str, every: Option<Every>)
             };
             let mut stdout = format!(
                 "{verb} target {} ({})\n",
-                redacted_text(&target.location),
+                location_text(&target.location),
                 target.every.phrase()
             );
             if outcome == AddOutcome::Added {
@@ -526,7 +531,7 @@ fn backup_add(state_dir: &std::path::Path, location: &str, every: Option<Every>)
                     let stderr = match backup::probe_detached(state_dir, index) {
                         Probe::Failed(error) => format!(
                             "tsk backup: this backup worked, but a background backup (as a save starts one) could not reach {}: {}\nBackground backups have no terminal: git must reach the target without a prompt (an ssh-agent or credential helper the board's shell can see).\n",
-                            redacted_text(&target.location),
+                            location_text(&target.location),
                             redacted_text(&error),
                         ),
                         Probe::Reached | Probe::NoAnswer => String::new(),
@@ -537,7 +542,7 @@ fn backup_add(state_dir: &std::path::Path, location: &str, every: Option<Every>)
                     stdout,
                     format!(
                         "tsk backup: the first backup to {} failed: {}\nThe target is saved. Fix the URL or your git access, then run `tsk backup`.\n",
-                        redacted_text(&target.location),
+                        location_text(&target.location),
                         redacted_text(&error),
                     ),
                     1,
@@ -562,7 +567,7 @@ fn backup_now(state_dir: &std::path::Path) -> CliOutput {
     let mut stdout = String::new();
     let mut stderr = String::new();
     for (target, result) in results {
-        let location = redacted_text(&target.location);
+        let location = location_text(&target.location);
         match result {
             Ok(RunOutcome::Written(place)) => {
                 stdout.push_str(&format!("backed up to {}\n", redacted_text(&place)))
@@ -599,7 +604,7 @@ fn backup_list(state_dir: &std::path::Path) -> CliOutput {
         stdout.push_str(&format!(
             "{}. {} ({})\n",
             index + 1,
-            redacted_text(&target.location),
+            location_text(&target.location),
             target.every.phrase()
         ));
         let last = status
@@ -625,7 +630,7 @@ fn backup_list(state_dir: &std::path::Path) -> CliOutput {
 pub fn run_restore<R: Read>(args: Vec<String>, stdin: &mut R, stdin_is_tty: bool) -> CliOutput {
     let (rest, state_dir, help) = match common_flags(&args) {
         Ok(parsed) => parsed,
-        Err(reason) => return presenter::restore_usage(&reason),
+        Err(reason) => return presenter::restore_usage(&backup::redacted(&reason)),
     };
     if help {
         return presenter::restore_help();
@@ -636,11 +641,15 @@ pub fn run_restore<R: Read>(args: Vec<String>, stdin: &mut R, stdin_is_tty: bool
         match word.as_str() {
             "--all" => all = true,
             flag if flag.starts_with('-') => {
-                return presenter::restore_usage(&format!("unknown restore argument {flag}"))
+                return presenter::restore_usage(&backup::redacted(&format!(
+                    "unknown restore argument {flag}"
+                )))
             }
             id if wanted.is_none() => wanted = Some(id.to_string()),
             extra => {
-                return presenter::restore_usage(&format!("unexpected restore argument {extra}"))
+                return presenter::restore_usage(&backup::redacted(&format!(
+                    "unexpected restore argument {extra}"
+                )))
             }
         }
     }
@@ -680,7 +689,7 @@ pub fn run_restore<R: Read>(args: Vec<String>, stdin: &mut R, stdin_is_tty: bool
     for (target, error) in &failures {
         stderr.push_str(&format!(
             "tsk restore: could not read {}: {}\n",
-            redacted_text(&target.location),
+            location_text(&target.location),
             redacted_text(error)
         ));
     }
