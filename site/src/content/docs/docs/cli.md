@@ -450,6 +450,7 @@ tsk reply <task> <text> [--send] [--state-dir <dir>]
 - Put `--` before text that starts with `-`.
 - A task with no open block or round refuses with `not-blocked`. Empty text refuses with `empty-reply`, text over 4 KB with `text-too-long`.
 - Output is `replied T12 as <author> <title>`.
+- `<author>` is your [`[board] me`](/docs/storage/#board-defaults) name, `you` by default, or the agent profile's name.
 - With `--send`, a second line says `sent to @claude` or `not sent: <reason>`. The reply is stored either way and the exit is 0. A reply that was not sent goes out later, when you unblock the task or send the review back.
 - `--send` only sends your own replies, inside Herdr, to the agent tsk dispatched for the task. To answer and unblock in one step, use the board's [reply box](/docs/board/#block-review-reply).
 
