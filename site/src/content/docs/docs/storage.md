@@ -125,7 +125,7 @@ me = "sam"                # your name on the board; the default is you
 - The project keys also set the wide Projects preview.
 - `g` and `s` change the layout for the session only. Nothing is written back.
 
-`me` replaces `@you` wherever the board names you. That covers assignee labels, pickers, filter, group, and sort, who a block or review waits on, and the paper trail.
+`me` replaces `@you` wherever the board names you. That covers assignee labels, pickers, filter, group, and sort, who a block or review waits on, your replies, and the paper trail.
 
 - Sentences addressed to you keep "you". `tsk list --json` still says `you`.
 - The CLI takes `you`, `me`, or your name for yourself, in `--assignee` and `--on`.

@@ -1951,7 +1951,7 @@ pub fn replied(result: crate::cli::reply::ReplyResult) -> CliOutput {
         stdout: format!(
             "replied T{} as {} {}\n",
             result.number,
-            terminal_text(&result.by),
+            terminal_text(&crate::domain::display_name(&result.by)),
             terminal_text(&result.title)
         ),
         stderr: String::new(),

@@ -529,3 +529,76 @@ fn edit_on_changes_the_open_record_in_place_by_the_name_rule() {
         "{nothing:?}"
     );
 }
+
+/// `[board] me` is you on input and your handle in text, but never reaches the store or JSON:
+/// a typed `saeed` stores `you`, and a JSON group label stays `@you`.
+#[test]
+fn a_configured_me_name_reads_as_you_and_json_keeps_you() {
+    let dir = temp_state_dir("me");
+    let _guard = TempDirGuard(dir.clone());
+    fs::write(
+        dir.join("config.toml"),
+        "[agent.pi]\ncommand = [\"true\"]\n\n[board]\nme = \"saeed\"\n",
+    )
+    .expect("write config");
+    assert_eq!(add_task(&dir, "mine").code, 0);
+    assert_eq!(add_task(&dir, "asked").code, 0);
+
+    let assigned = edit(&dir, &["T1", "--assignee", "saeed"]);
+    assert_eq!(assigned.code, 0, "{assigned:?}");
+    assert_eq!(
+        assigned.stdout, "edited T1 mine\n",
+        "you are no person to warn about"
+    );
+    let state = TaskStore::new(&dir).load().expect("load");
+    assert_eq!(state.tasks()[0].assignee.as_deref(), Some("you"));
+    assert!(state.tasks()[0]
+        .assigned()
+        .is_some_and(|assignee| assignee.is_person()));
+
+    let blocked = cli(vec![
+        "tsk".into(),
+        "status".into(),
+        "T2".into(),
+        "blocked".into(),
+        "--why".into(),
+        "which db".into(),
+        "--on".into(),
+        "pi".into(),
+        "--state-dir".into(),
+        dir.to_string_lossy().into_owned(),
+    ]);
+    assert_eq!(blocked.code, 0, "{blocked:?}");
+    let handed = edit(&dir, &["T2", "--on", "saeed"]);
+    assert_eq!(handed.code, 0, "{handed:?}");
+    assert!(TaskStore::new(&dir).load().expect("reload").tasks()[1]
+        .block
+        .as_ref()
+        .is_some_and(|block| block.on.is_you()));
+
+    let list = |extra: &[&str]| {
+        let mut command = vec!["tsk".to_string(), "list".into(), "--desk".into()];
+        command.extend(extra.iter().map(|argument| (*argument).to_string()));
+        command.extend(["--state-dir".into(), dir.to_string_lossy().into_owned()]);
+        cli(command)
+    };
+    let json = list(&["--group", "assignee", "--json"]);
+    assert_eq!(json.code, 0, "{json:?}");
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&json.stdout).expect("rows");
+    let mine = rows
+        .iter()
+        .find(|row| row["number"] == 1)
+        .expect("T1 listed");
+    assert_eq!(mine["group"], "@you", "{}", json.stdout);
+    assert_eq!(mine["assignee"], "you");
+    assert_eq!(mine["assignee_kind"], "person");
+    let asked = rows
+        .iter()
+        .find(|row| row["number"] == 2)
+        .expect("T2 listed");
+    assert_eq!(asked["block"]["on"], "you");
+
+    let text = list(&["--group", "assignee"]);
+    assert_eq!(text.code, 0, "{text:?}");
+    assert!(text.stdout.contains("@saeed"), "{}", text.stdout);
+}

@@ -438,6 +438,29 @@ fn blocked_on_another_task_records_it() {
     assert_eq!(listed(&dir, "T2")["block"]["on"], "other:legal sign-off");
 }
 
+/// A block's `--on` follows the name rule: a profile, with or without `@`, is that agent, and
+/// `me` is you.
+#[test]
+fn blocked_on_a_profile_waits_on_that_agent() {
+    let dir = temp_state_dir("block-on-agent");
+    let _guard = TempDirGuard(dir.clone());
+    fs::write(
+        dir.join("config.toml"),
+        "[agent.pi]\ncommand = [\"true\"]\n",
+    )
+    .expect("write profiles");
+    assert_eq!(add_task(&dir, "schema").code, 0);
+    for (on, stored) in [("pi", "agent:pi"), ("me", "you"), ("@pi", "agent:pi")] {
+        let output = cli(block_args(
+            &dir,
+            "T1",
+            &["--why", "which schema", "--on", on],
+        ));
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert_eq!(listed(&dir, "T1")["block"]["on"], stored, "--on {on}");
+    }
+}
+
 /// A filtered `list --json` row carries its open block or review exactly as the task in full
 /// does, so who it waits on reads off the row; a row with neither has no such field.
 #[test]

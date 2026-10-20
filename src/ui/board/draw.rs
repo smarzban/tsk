@@ -1641,7 +1641,6 @@ fn block_page_rows(
     task: &crate::domain::Task,
     width: usize,
 ) -> BlockPageRows {
-    use crate::domain::OWNER;
     use crate::ui::board::BlockTarget;
     use render::{BlockPageRow, BlockRowKind};
 
@@ -1774,20 +1773,14 @@ fn block_page_rows(
     }
 
     // The thread: `name · age` in one column wide enough for every lead, the text beside it.
-    let name = |by: &str| {
-        if by == OWNER {
-            OWNER.to_string()
-        } else {
-            by.to_string()
-        }
-    };
+    // Your replies carry your `[board] me` name, as the paper trail does.
     let leads: Vec<String> = block
         .replies
         .iter()
         .map(|reply| {
             let mut lead = format!(
                 "{} · {}",
-                name(&reply.by),
+                crate::domain::display_name(&reply.by),
                 render::format_age(now, reply.at)
             );
             if reply.edited && !reply.deleted {
@@ -1798,10 +1791,11 @@ fn block_page_rows(
         .collect();
     let editor = form.block.reply.as_ref().filter(|_| own);
     let editor_lead = editor.map(|editor| {
+        let owner = crate::domain::owner_name();
         if editor.edit.is_some() {
-            format!("{OWNER} · edit")
+            format!("{owner} · edit")
         } else {
-            OWNER.to_string()
+            owner
         }
     });
     let column = leads

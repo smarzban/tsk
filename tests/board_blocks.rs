@@ -693,6 +693,46 @@ fn the_thread_keeps_names_in_a_fixed_column_and_wraps_at_40_and_110() {
     }
 }
 
+/// With `[board] me` set, your replies and your reply box carry that name, as the paper trail
+/// does. The stored author stays `you`.
+#[test]
+fn your_replies_and_reply_box_read_as_your_configured_name() {
+    tsk_tui::domain::with_owner_name(Some("sam".into()), || {
+        let (mut domain, mut model, id) = blocked_page();
+        domain.reply(id, "Go with postgres.", OWNER).unwrap();
+        model.sync_from_domain(&domain);
+        assert_eq!(
+            domain.get(id).unwrap().block.clone().unwrap().replies[0].by,
+            OWNER
+        );
+        let page = page_body(&rows(&model, 80, 30));
+        let lead = |page: &[String], lead: &str| {
+            page.iter()
+                .any(|row| row.trim_start_matches(['▸', ' ']).starts_with(lead))
+        };
+        assert!(lead(&page, "sam · "), "{}", page.join("\n"));
+        assert!(!lead(&page, "you · "), "{}", page.join("\n"));
+
+        // Your selected reply, edited: the box's lead names you the same way.
+        while model.block_target() != Some(BlockTarget::Reply(0)) {
+            press(
+                &mut domain,
+                &mut model,
+                key(KeyCode::Tab, KeyModifiers::NONE),
+            );
+        }
+        press(
+            &mut domain,
+            &mut model,
+            key(KeyCode::Char('e'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(model.input_mode(), BoardInputMode::EditReply);
+        let page = page_body(&rows(&model, 80, 30));
+        assert!(lead(&page, "sam · edit"), "{}", page.join("\n"));
+        assert!(!lead(&page, "you · edit"), "{}", page.join("\n"));
+    });
+}
+
 #[test]
 fn a_block_on_another_task_says_so_on_top_and_offers_ctrl_b() {
     let (mut domain, ids) = numbered_domain(&["wait for it", "the other one"]);

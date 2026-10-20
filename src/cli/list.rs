@@ -526,12 +526,22 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
         input.group.unwrap_or_default(),
         input.sort.unwrap_or_default(),
     );
-    let mut arranged: Vec<(Option<String>, &crate::domain::Task)> = Vec::new();
-    for status in tasks.chunk_by(|a, b| a.status == b.status) {
-        for (label, rows) in arrange_rows(status.to_vec(), group, sort) {
-            arranged.extend(rows.into_iter().map(|task| (label.clone(), task)));
+    let arrange = || {
+        let mut arranged: Vec<(Option<String>, &crate::domain::Task)> = Vec::new();
+        for status in tasks.chunk_by(|a, b| a.status == b.status) {
+            for (label, rows) in arrange_rows(status.to_vec(), group, sort) {
+                arranged.extend(rows.into_iter().map(|task| (label.clone(), task)));
+            }
         }
-    }
+        arranged
+    };
+    // Group labels name you as `[board] me` for the text listing; JSON keeps the stored
+    // `@you` whatever the config says.
+    let arranged = if input.json {
+        crate::domain::with_owner_name(None, arrange)
+    } else {
+        arrange()
+    };
     let rows = arranged
         .into_iter()
         .map(|(group, task)| {
