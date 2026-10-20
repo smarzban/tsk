@@ -374,7 +374,7 @@ fn stale_undo_message(domain: &DomainState, id: Uuid) -> String {
 pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> bool {
     // The mouse route recurses into ConfirmListPicker inside the reducer, so the outer
     // intent is the one the save baseline is decided on.
-    // A click in the task picker only pins or unpins; Enter is its one save.
+    // A click in the task picker only pins or unpins; shift+Enter is its one save.
     let picker_click_pins = matches!(intent, BoardIntent::SelectListOption(_))
         && model.list_picker_kind() == Some(crate::ui::board::ListPickerKind::After);
     let picker_assignment = matches!(

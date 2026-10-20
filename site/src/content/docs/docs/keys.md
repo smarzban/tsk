@@ -162,7 +162,7 @@ On a blocked page or a review:
 | Existing step: keep the rename in this edit | `Enter` |
 | Add a step from a selected step, **+ step**, the Scope row, or a selected Thread | `ctrl+a` |
 | Stage removal of the selected step | `ctrl+x` |
-| Open the Scope, Assignee, Base, or After picker; confirm the choice | `Enter` |
+| Open the Scope, Assignee, Base, or After picker; confirm the choice. In the After picker, `Enter` pins and `shift+Enter` saves | `Enter` |
 | Cycle Scope or Assignee without opening it | `Space` or `←` / `→` |
 | Open / close the Thread editor | `Enter` |
 | Line start / end | `Home` / `End` or `ctrl+a` / `ctrl+e` |
