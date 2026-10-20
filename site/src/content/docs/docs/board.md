@@ -162,7 +162,7 @@ With tasks marked, these act on the whole set as one save and one undo step: sta
 
 - Starting a set that would launch agents opens [one card first](/docs/dispatch/#start-a-marked-set).
 - Starting moves only open and ready tasks. It skips marked done tasks, and the status row counts them.
-- Block and review are all-or-nothing. If every marked task already has that status, all return to ready. Otherwise all move to it, through one card.
+- Block and review also skip marked done tasks, and the status row counts them. The rest move together: if every one already has that status, all return to ready. Otherwise all move to it, through one card.
 
 Marks last for this session only. Any action, `Esc`, or a view change clears them: fold, group, sort, filter, tab, project, or done drawer. Removing the last mark leaves the mode on.
 

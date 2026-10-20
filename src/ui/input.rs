@@ -458,7 +458,8 @@ pub enum BoardIntent {
     /// `z` — open/close the done drawer. Reducer lands in.
     ToggleDoneDrawer,
     /// `ctrl+f` — the file verb: toggle the task's archived flag (picker: archive/
-    /// unarchive the selected project). No undo entry. Reducer lands in.
+    /// unarchive the selected project). Archiving or restoring tasks records one undo entry;
+    /// a project archive from the picker has none.
     File,
     /// Picker `Tab` / `←` / `→`: flip the project selector between its main and
     /// archived tabs. Reducer lands in.
@@ -635,7 +636,7 @@ const NORMAL_KEYMAP: &[NormalKeyEntry] = &[
         code: KeyCode::Char('s'),
         intent: BoardIntent::PrimaryVerb,
         help_chord: "s",
-        help_label: "start (assigned: dispatch)",
+        help_label: "start",
         modifier: NormalModifier::Ctrl,
     },
     // `@` opens the assignee picker, an input surface like `t`: nothing changes until its
@@ -1046,7 +1047,7 @@ fn help_bindings() -> Vec<HelpBinding> {
         help_binding(
             HelpGroup::AppControls,
             "ctrl+c",
-            "quit (board)",
+            "quit (board, task page, Help)",
             "exit close app",
         ),
         help_binding(
@@ -1589,6 +1590,7 @@ pub fn map_key(mode: BoardInputMode, key: KeyEvent) -> Option<BoardIntent> {
                 | BoardInputMode::CapturePage
                 | BoardInputMode::SelectThread
                 | BoardInputMode::SelectBase
+                | BoardInputMode::SelectAfter
                 | BoardInputMode::EditScope
                 | BoardInputMode::EditAssignee
                 | BoardInputMode::FormDropdown

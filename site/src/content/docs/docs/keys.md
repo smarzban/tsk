@@ -66,7 +66,7 @@ Group sub-headers, the inbox, and archived in the done drawer are headers.
 
 - With tasks marked, status keys, `ctrl+x`, `ctrl+f`, `@`, and the palette's set commands act on the whole set. `Enter`, `ctrl+e`, and task-page keys stay on the cursor.
 - `ctrl+s` starts each open or ready task in the set and skips the rest.
-- `ctrl+b` and `ctrl+r` send the whole set to blocked or review through one card. If every task already has that status, they all return to ready.
+- `ctrl+b` and `ctrl+r` skip done tasks and send the rest to blocked or review through one card. If every one already has that status, they all return to ready.
 - `ctrl+n` and `ctrl+o` also reopen done tasks.
 - One `ctrl+u` reverses the whole set.
 - Removing the last mark keeps multi-select on. `shift+M` on a task, `Esc`, any task action, or a change of view leaves it and clears the marks.
@@ -171,7 +171,7 @@ On a blocked page or a review:
 | Delete a word forward | `alt+Delete` or `alt+d` |
 | Delete to line start / end | `ctrl+u` / `ctrl+k` |
 
-In the step editor, `ctrl+d` and `ctrl+o` still act on the task, and `ctrl+x` stages the step's removal until the task edit is saved.
+In the step editor, `ctrl+d` and `ctrl+o` still act on the task, and `ctrl+x` stages the step's removal until the task edit is saved. In a new step's row, `ctrl+x` discards that row, as `Esc` does.
 
 - Field order: [Edit](/docs/task-page/#edit).
 - The word and line keys work in every text field: Title, Notes, steps, Thread, and quick-add.

@@ -1897,10 +1897,13 @@ fn bulk_start_preserves_per_task_eligibility_and_toggle_verbs_are_all_or_nothing
     mark_tasks(&mut domain, &mut model, &[open, blocked]);
     apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None).expect("bulk block card");
     apply_intent(&mut domain, &mut model, BoardIntent::BlockCardConfirm, None)
-        .expect("bulk block includes a done target");
-    assert!([open, blocked]
-        .into_iter()
-        .all(|id| domain.get(id).expect("task").status == HumanStatus::Blocked));
+        .expect("bulk block skips a done target");
+    assert_eq!(domain.get(open).expect("open").status, HumanStatus::Blocked);
+    assert_eq!(
+        domain.get(blocked).expect("done").status,
+        HumanStatus::Done,
+        "bulk block skips done tasks, as bulk start does"
+    );
 }
 
 #[test]
@@ -2922,6 +2925,8 @@ fn t64_ctrl_q_quits_every_non_editor_mode_and_stays_inert_in_editors_and_recover
         BoardInputMode::TaskPage,
         BoardInputMode::CapturePage,
         BoardInputMode::SelectThread,
+        BoardInputMode::SelectBase,
+        BoardInputMode::SelectAfter,
         BoardInputMode::EditScope,
         BoardInputMode::FormDropdown,
         BoardInputMode::LaunchCard,
@@ -3433,6 +3438,8 @@ fn help_card_lists_every_binding_scrolls_and_closes_on_esc() {
     for (chord, action) in [
         ("ctrl+x / ctrl+delete", "delete"),
         ("ctrl+c", "cancel editing"),
+        ("ctrl+c", "quit (board, task page, Help)"),
+        ("ctrl+s", "start"),
         ("ctrl+e", "go to line end (text input)"),
         ("ctrl+←", "move one word left (text input)"),
         ("home", "go to line start (text input)"),
@@ -3449,6 +3456,11 @@ fn help_card_lists_every_binding_scrolls_and_closes_on_esc() {
             "missing help row for {chord:?} {action:?}"
         );
     }
+
+    assert!(
+        !lines.iter().any(|line| line.contains("assigned: dispatch")),
+        "help says plain start, as the docs and demo do"
+    );
 
     let filtered = tsk_tui::ui::input::help_card_lines_for_query("drawer");
     let filtered_text = filtered.join("\n");
@@ -6250,6 +6262,58 @@ fn delete_mark_shows_press_again_footer_message() {
         "the hint goes with the mark:\n{removed}"
     );
     assert_eq!(model.message(), None);
+}
+
+/// `ctrl+x` in a new-step row discards that draft row only: never the step it was opened
+/// below (marked in view, staged in an edit session), and never the task when no step is
+/// selected.
+#[test]
+fn ctrl_x_in_a_new_step_row_discards_only_that_draft() {
+    let delete = map_key(BoardInputMode::EditStep, ctrl(KeyCode::Char('x'))).expect("ctrl+x");
+    assert_eq!(delete, BoardIntent::SoftDelete);
+    for (steps, view) in [
+        (&["alpha step", "bravo step"][..], true),
+        (&["alpha step", "bravo step"][..], false),
+        (&[][..], true),
+    ] {
+        let (mut domain, mut model, id) = board_with_steps("Draft row", None, steps);
+        if view && !steps.is_empty() {
+            apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None)
+                .expect("leave task edit");
+            apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
+                .expect("select the first step");
+        }
+        assert_eq!(model.task_editing(), !view);
+        let add = map_key(BoardInputMode::TaskPage, ctrl(KeyCode::Char('a'))).expect("ctrl+a");
+        apply_intent(&mut domain, &mut model, add, None).expect("open the add row");
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsertText("draft".into()),
+            None,
+        )
+        .expect("type the draft");
+        assert_eq!(model.input_mode(), BoardInputMode::EditStep);
+
+        let outcome = apply_intent(&mut domain, &mut model, delete.clone(), None).expect("ctrl+x");
+        assert_eq!(outcome, IntentOutcome::None);
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage, "{steps:?}");
+        assert_eq!(model.message(), None, "{steps:?} arms no delete");
+        assert_eq!(
+            model.task_editing(),
+            !view,
+            "the edit session stays as it was"
+        );
+        let page = rendered_board(&model, 80, 24);
+        assert!(!page.contains("draft"), "the draft row is gone:\n{page}");
+        assert!(!page.contains('✗'), "no step is marked:\n{page}");
+        for step in steps {
+            assert!(page.contains(step), "{step} is not staged away:\n{page}");
+        }
+        let task = domain.get(id).expect("task");
+        assert!(!task.soft_deleted);
+        assert_eq!(task.steps.len(), steps.len());
+    }
 }
 
 #[test]

@@ -152,6 +152,50 @@ fn expanded_capture_ctrl_a_is_line_start_in_a_field_and_adds_a_step_from_the_pag
     assert_ne!(model.input_mode(), BoardInputMode::EditStep);
 }
 
+/// `ctrl+x` in the expanded draft's new-step row discards that row, as `Esc` does. It never
+/// reaches the board task hidden behind the draft.
+#[test]
+fn expanded_capture_ctrl_x_in_a_new_step_row_discards_only_that_row() {
+    let mut domain = DomainState::new();
+    let behind = domain
+        .create(
+            "board task",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    let mut model = BoardModel::from_domain(&domain, None);
+    let snap = snapshot();
+    open(&mut domain, &mut model, &snap);
+    type_title(&mut domain, &mut model, "draft task");
+    apply(&mut domain, &mut model, BoardIntent::ExpandQuickAdd, None);
+    apply(&mut domain, &mut model, BoardIntent::BeginAddStep, None);
+    apply(
+        &mut domain,
+        &mut model,
+        BoardIntent::EditInsertText("draft step".into()),
+        None,
+    );
+    assert_eq!(model.input_mode(), BoardInputMode::EditStep);
+
+    // Twice, through the live keymap: a second press must not confirm a delete either.
+    let ctrl_x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
+    for _ in 0..2 {
+        if let Some(intent) = map_key(model.input_mode(), ctrl_x) {
+            apply(&mut domain, &mut model, intent, None);
+        }
+    }
+    assert_ne!(model.input_mode(), BoardInputMode::EditStep);
+    assert_eq!(model.message(), None, "no delete is armed");
+    assert!(!domain.get(behind).expect("board task").soft_deleted);
+    assert!(
+        model.board_form_open(),
+        "the expanded draft stays open with its title"
+    );
+}
+
 #[test]
 fn scoped_project_quick_add_defaults_to_the_selected_project() {
     let mut domain = DomainState::new();

@@ -4,10 +4,10 @@
  * backticks; only the rendered element changes.
  */
 const NAMED = new Set([
-  'Enter', 'Esc', 'Tab', 'Delete', 'Space', 'Backspace', 'wheel',
+  'Enter', 'Esc', 'Tab', 'Delete', 'Space', 'Backspace', 'Home', 'End', 'wheel',
   '↑', '↓', '←', '→',
 ]);
-const CHORD = /^(ctrl|shift|alt|cmd|meta)(\+(ctrl|shift|alt|cmd|meta))*\+([A-Za-z0-9]|Enter|Esc|Tab|Delete|↑|↓|←|→)$/i;
+const CHORD = /^(ctrl|shift|alt|cmd|meta)(\+(ctrl|shift|alt|cmd|meta))*\+([A-Za-z0-9]|Enter|Esc|Tab|Delete|Backspace|Space|Home|End|↑|↓|←|→)$/i;
 // Single characters the board, task page, capture, and recovery bind. Anything else
 // in one-character code (`T`, `i`, `-`) is an identifier, not a key.
 const SINGLE = new Set(['h', 'j', 'k', 'l', 'z', 'P', 'g', 'q', 'r', 'c', 's', 'p', 'e', 'u', '+', ':', '?', '1', '2', '3']);

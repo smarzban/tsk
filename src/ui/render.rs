@@ -1332,9 +1332,11 @@ pub const BLOCKED_ELSEWHERE_GLYPH: &str = "□";
 /// Glyph for a task in review on an agent or on something other than you.
 pub const REVIEW_ELSEWHERE_GLYPH: &str = "△";
 
-/// Status glyph derived only from durable task state.
-pub fn task_status_glyph(task: &Task) -> &'static str {
-    let elsewhere = task.block.as_ref().is_some_and(|block| !block.on.is_you());
+/// Status glyph derived only from durable task state. `tasks` is the board's task slice: a
+/// block on a task that is done or gone waits on you again, so it paints like one on you.
+pub fn task_status_glyph(task: &Task, tasks: &[Task]) -> &'static str {
+    use crate::ui::queue::{block_wait, BlockWait};
+    let elsewhere = block_wait(task, tasks) == Some(BlockWait::Elsewhere);
     if task.status == HumanStatus::Blocked && elsewhere {
         BLOCKED_ELSEWHERE_GLYPH
     } else if task.status == HumanStatus::Review
@@ -5644,6 +5646,7 @@ fn build_list_rows_inner(
         let lines = if rail {
             paint_rail_row_lines(
                 task,
+                task_status_glyph(task, model.tasks),
                 identifier.as_deref(),
                 selected,
                 marked,
@@ -5654,7 +5657,7 @@ fn build_list_rows_inner(
         } else {
             paint_labelled_task_row_lines(
                 &TaskRowPaint {
-                    glyph: task_status_glyph(task),
+                    glyph: task_status_glyph(task, model.tasks),
                     identifier: identifier.as_deref(),
                     title: &task.title,
                     selected,
@@ -6218,8 +6221,10 @@ fn paint_project_row(
     bound_line(Line::from(spans), width as usize)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_rail_row_lines(
     task: &Task,
+    glyph: &str,
     identifier: Option<&str>,
     selected: bool,
     marked: bool,
@@ -6234,7 +6239,6 @@ fn paint_rail_row_lines(
         (false, true) => "▪ ",
         (false, false) => "  ",
     };
-    let glyph = task_status_glyph(task);
     let prefix = format!("{}{marker}{glyph} ", " ".repeat(leading_indent));
     let identifier_width = identifier.map(display_width).unwrap_or(0);
     let identifier_gap = usize::from(identifier_width > 0);

@@ -17,10 +17,10 @@ import { parseCapture } from "./capture.js";
     review: "▲",
     done: "✓",
   };
-  // A block or review waiting on someone else paints `□` / `△`; a started task with a live
-  // dispatch paints `◉`.
+  // A block or review waiting on someone else paints `□` / `△`; one on a task that is done or
+  // gone waits on you again. A started task with a live dispatch paints `◉`.
   const taskGlyph = (task) => {
-    const elsewhere = task.block && blockOn(task.block).kind !== "you";
+    const elsewhere = blockWait(task)?.kind === "elsewhere";
     if (task.status === "blocked" && elsewhere) return "□";
     if (task.status === "review" && elsewhere && isReview(task.block))
       return "△";

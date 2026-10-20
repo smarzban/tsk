@@ -54,6 +54,30 @@ fn take_verb_targets(model: &mut BoardModel) -> (Vec<Uuid>, bool) {
     (targets, bulk)
 }
 
+/// Block and review targets without their done tasks, and how many were dropped.
+fn without_done(domain: &DomainState, targets: Vec<Uuid>) -> (Vec<Uuid>, usize) {
+    let count = targets.len();
+    let rest: Vec<Uuid> = targets
+        .into_iter()
+        .filter(|id| {
+            !domain
+                .get(*id)
+                .is_some_and(|task| task.status == HumanStatus::Done)
+        })
+        .collect();
+    let skipped = count - rest.len();
+    (rest, skipped)
+}
+
+/// The status row's note for a marked set whose done tasks a block or review skipped.
+fn note_skipped_done(model: &mut BoardModel, skipped: usize) {
+    if skipped > 0 {
+        model.set_message(format!(
+            "skipped {skipped} done (ctrl+n or ctrl+o reopens them)"
+        ));
+    }
+}
+
 /// What one `ctrl+u` reverts, read from the top entry before it is undone: the action word, the
 /// tasks it is about, and, for a done, the tasks it started that go back to ready.
 struct UndoNote {
@@ -1709,6 +1733,7 @@ fn apply_board_intent(
                 model.input_mode,
                 BoardInputMode::EditTitle
                     | BoardInputMode::EditNotes
+                    | BoardInputMode::SelectThread
                     | BoardInputMode::EditThread
                     | BoardInputMode::EditScope
                     | BoardInputMode::EditAssignee
@@ -2859,13 +2884,9 @@ fn apply_board_intent(
                 model.set_message(NO_SELECTION);
                 return Ok(IntentOutcome::None);
             }
-            if !bulk
-                && targets.iter().any(|id| {
-                    domain
-                        .get(*id)
-                        .is_some_and(|task| task.status == HumanStatus::Done)
-                })
-            {
+            // A done task alone refuses; a marked set skips its done tasks, as start does.
+            let (targets, skipped_done) = without_done(domain, targets);
+            if targets.is_empty() {
                 model.set_message("completed tasks cannot be blocked");
                 return Ok(IntentOutcome::None);
             }
@@ -2877,9 +2898,11 @@ fn apply_board_intent(
             if !all_blocked {
                 // Blocking asks why first. The marks stay until the card confirms.
                 super::block::open_block_card(model, targets);
+                note_skipped_done(model, skipped_done);
                 return Ok(IntentOutcome::None);
             }
             model.clear_marks();
+            note_skipped_done(model, skipped_done);
             domain.change_status(&targets, HumanStatus::Ready, bulk)?;
         }
         BoardIntent::ToggleReview => {
@@ -2892,13 +2915,8 @@ fn apply_board_intent(
                 model.set_message(NO_SELECTION);
                 return Ok(IntentOutcome::None);
             }
-            if !bulk
-                && targets.iter().any(|id| {
-                    domain
-                        .get(*id)
-                        .is_some_and(|task| task.status == HumanStatus::Done)
-                })
-            {
+            let (targets, skipped_done) = without_done(domain, targets);
+            if targets.is_empty() {
                 model.set_message("completed tasks cannot go to review");
                 return Ok(IntentOutcome::None);
             }
@@ -2910,9 +2928,11 @@ fn apply_board_intent(
             if !all_review {
                 // Review asks what was done first. The marks stay until the card confirms.
                 super::block::open_review_card(model, targets);
+                note_skipped_done(model, skipped_done);
                 return Ok(IntentOutcome::None);
             }
             model.clear_marks();
+            note_skipped_done(model, skipped_done);
             domain.change_status(&targets, HumanStatus::Ready, bulk)?;
         }
         BoardIntent::StageRight => {
@@ -3534,6 +3554,24 @@ fn apply_board_intent(
                     model.set_message("agent replies cannot be deleted");
                     return Ok(IntentOutcome::None);
                 }
+            }
+            // In a new-step row the delete verb discards that draft row, as Esc does. It
+            // never reaches the step the row was opened below, nor the task.
+            if model.input_mode == BoardInputMode::EditStep
+                && model
+                    .form
+                    .as_ref()
+                    .and_then(|form| form.steps.editor.as_ref())
+                    .is_some_and(|editor| editor.rename.is_none())
+            {
+                let capture = model.form.as_ref().is_some_and(|form| !form.is_task());
+                close_step_editor(model);
+                if capture {
+                    if let Some(form) = model.form.as_ref() {
+                        model.input_mode = form.parent_mode();
+                    }
+                }
+                return Ok(IntentOutcome::None);
             }
             // On the page with the step cursor active, the delete verb is the
             // steps's mark-then-confirm: the first press visibly marks the

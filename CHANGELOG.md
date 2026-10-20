@@ -51,6 +51,9 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - Saving a task with a step's text cleared reopens that step with `text required` on its row, as for an empty new step. Thanks @LukasGold (#173).
 - A project reached through a symlinked path, such as `/tmp/repo` and `/private/tmp/repo` on macOS, is one project.
 - With tasks marked, `Esc` in the thread or view picker closes the picker and keeps the marks.
+- With tasks marked, `ctrl+b` and `ctrl+r` skip done tasks, as starting does, and the status row counts them.
+- `Esc` on a selected Thread on the task page cancels only the thread, not the whole edit.
+- `ctrl+x` in a new step's row discards that row, instead of removing the step above it or deleting a task.
 
 ## v0.12.0
 

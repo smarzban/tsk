@@ -190,12 +190,32 @@ test("the saved theme survives a visit to the docs", async () => {
 
 test("docs paint keys as keycaps and leave flags as code", async () => {
   const { isKeyName } = await import("../src/plugins/rehype-kbd.mjs");
-  for (const key of ["ctrl+s", "Shift+Enter", "Enter", "Esc", "→", "h", "j", "l", "P", "+", ":", "?"]) {
+  for (const key of [
+    "ctrl+s", "Shift+Enter", "Enter", "Esc", "→", "h", "j", "l", "P", "+", ":", "?",
+    "alt+Backspace", "Cmd+Backspace", "ctrl+Space", "ctrl+Delete", "shift+Tab", "alt+Esc",
+    "alt+↑", "ctrl+Home", "Home", "End", "Backspace", "Space",
+  ]) {
     assert.ok(isKeyName(key), `${key} is a key`);
   }
-  for (const code of ["--json", "-", "tsk add", "~/.tsk", "T30", "T", "i", "n", "global", "ctrl+"]) {
+  for (const code of ["--json", "-", "tsk add", "~/.tsk", "T30", "T", "i", "n", "global", "ctrl+", "ctrl+b unblock"]) {
     assert.ok(!isKeyName(code), `${code} is not a key`);
   }
+});
+
+test("every chord the docs name paints as a keycap", async () => {
+  const { isKeyName } = await import("../src/plugins/rehype-kbd.mjs");
+  const docsDir = new URL("../src/content/docs/docs/", import.meta.url);
+  const missed = [];
+  for (const name of await readdir(docsDir)) {
+    if (![".md", ".mdx"].includes(extname(name))) continue;
+    const text = await readFile(new URL(name, docsDir), "utf8");
+    for (const [, code] of text.matchAll(/`([^`\s]+)`/g)) {
+      if (/^(ctrl|shift|alt|cmd|meta)\+/i.test(code) && !isKeyName(code)) {
+        missed.push(`${name}: ${code}`);
+      }
+    }
+  }
+  assert.deepEqual(missed, []);
 });
 
 test("docs open on the two-party board and let agents set status", async () => {

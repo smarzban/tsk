@@ -236,6 +236,129 @@ fn ctrl_b_card_blocks_on_another_task_which_rides_in_motion_until_that_task_is_d
     assert!(!board.contains("needs the endpoint"), "{board}");
 }
 
+/// The board row that names `task`, such as `T2 client`.
+fn row_of(model: &BoardModel, task: &str) -> String {
+    rows(model, 80, 24)
+        .into_iter()
+        .find(|row| row.contains(task))
+        .unwrap_or_else(|| panic!("{task} row"))
+}
+
+/// Turn on multi-select if it is off, then mark `ids`.
+fn mark(domain: &mut DomainState, model: &mut BoardModel, ids: &[Uuid]) {
+    if !model.mark_mode_active() {
+        apply_intent(domain, model, BoardIntent::ToggleMarkMode, None).unwrap();
+    }
+    for id in ids {
+        // A select on the cursor row opens it, as a click would.
+        if model.selected_id() != Some(*id) {
+            select(domain, model, *id);
+        }
+        apply_intent(domain, model, BoardIntent::MarkToggle, None).unwrap();
+    }
+    assert_eq!(model.marked_count(), ids.len());
+}
+
+#[test]
+fn a_block_on_a_done_or_deleted_task_paints_the_blocked_on_you_glyph() {
+    let (mut domain, ids) = numbered_domain(&["api", "client", "docs", "spec"]);
+    for (id, on) in [(ids[1], 1), (ids[2], 4)] {
+        domain
+            .block(
+                id,
+                BlockDraft::from_input(Some("needs it"), None, &[], BlockOn::Task(on)).unwrap(),
+                OWNER,
+            )
+            .unwrap();
+    }
+    let mut model = BoardModel::from_domain(&domain, None);
+    model.sync_from_domain(&domain);
+    for task in ["T2 client", "T3 docs"] {
+        assert!(row_of(&model, task).contains('□'), "{task} waits elsewhere");
+    }
+
+    domain.complete(ids[0]).unwrap();
+    domain.soft_delete(ids[3]).unwrap();
+    model.sync_from_domain(&domain);
+    for (id, task) in [(ids[1], "T2 client"), (ids[2], "T3 docs")] {
+        assert!(section_ids(&model, SectionKind::NeedsYou).contains(&id));
+        let row = row_of(&model, task);
+        assert!(row.contains('■') && !row.contains('□'), "{row}");
+    }
+
+    select(&mut domain, &mut model, ids[1]);
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).unwrap();
+    let header = row_of(&model, "T2 client");
+    assert!(header.contains('■') && !header.contains('□'), "{header}");
+}
+
+#[test]
+fn a_marked_set_skips_done_tasks_for_block_and_review_and_says_so() {
+    for (verb, status) in [('b', HumanStatus::Blocked), ('r', HumanStatus::Review)] {
+        let (mut domain, ids) = numbered_domain(&["a", "b", "c"]);
+        domain.complete(ids[2]).unwrap();
+        let mut model = BoardModel::from_domain(&domain, None);
+        model.sync_from_domain(&domain);
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer, None).unwrap();
+        mark(&mut domain, &mut model, &ids);
+
+        press(
+            &mut domain,
+            &mut model,
+            key(KeyCode::Char(verb), KeyModifiers::CONTROL),
+        );
+        let noun = if verb == 'b' { "block" } else { "review" };
+        let card = rows(&model, 80, 24).join("\n");
+        assert!(card.contains(&format!("{noun} 2 tasks")), "{card}");
+        assert!(
+            card.contains("skipped 1 done (ctrl+n or ctrl+o reopens them)"),
+            "{card}"
+        );
+        assert_eq!(
+            press(
+                &mut domain,
+                &mut model,
+                key(KeyCode::Enter, KeyModifiers::NONE)
+            ),
+            IntentOutcome::Persist
+        );
+        for id in &ids[..2] {
+            assert_eq!(domain.get(*id).unwrap().status, status);
+        }
+        let done = domain.get(ids[2]).unwrap();
+        assert_eq!(done.status, HumanStatus::Done);
+        assert!(done.block.is_none(), "the done task stays done");
+        assert_eq!(last_batch_len(&domain), Some(2));
+
+        // The same set again returns the two to ready and still skips the done task.
+        mark(&mut domain, &mut model, &ids);
+        press(
+            &mut domain,
+            &mut model,
+            key(KeyCode::Char(verb), KeyModifiers::CONTROL),
+        );
+        for id in &ids[..2] {
+            assert_eq!(domain.get(*id).unwrap().status, HumanStatus::Ready);
+        }
+        assert_eq!(domain.get(ids[2]).unwrap().status, HumanStatus::Done);
+        let board = rows(&model, 80, 24).join("\n");
+        assert!(board.contains("skipped 1 done"), "{board}");
+
+        // A marked set of done tasks only refuses, like a done task under the cursor.
+        mark(&mut domain, &mut model, &ids[2..]);
+        press(
+            &mut domain,
+            &mut model,
+            key(KeyCode::Char(verb), KeyModifiers::CONTROL),
+        );
+        assert_eq!(model.input_mode(), BoardInputMode::Normal, "no card opens");
+        assert!(model
+            .message()
+            .is_some_and(|text| text.starts_with("completed tasks cannot")));
+        assert_eq!(domain.get(ids[2]).unwrap().status, HumanStatus::Done);
+    }
+}
+
 #[test]
 fn an_empty_card_blocks_with_no_reason_and_esc_changes_nothing() {
     let (mut domain, ids) = numbered_domain(&["one"]);

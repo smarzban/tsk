@@ -989,6 +989,63 @@ fn scope_and_thread_are_selected_controls_with_enter_activation() {
     );
 }
 
+/// Esc on the selected Thread footer cancels that field only, as on Base and After: the edit
+/// session and its other staged drafts stay.
+#[test]
+fn esc_on_the_selected_thread_cancels_only_the_thread() {
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "Task",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("open form");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::EditInsertText(" renamed".into()),
+        None,
+    )
+    .expect("stage a title");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::FocusFormField(CaptureField::Thread),
+        None,
+    )
+    .expect("select Thread");
+    for intent in [
+        BoardIntent::ToggleThreadEditing,
+        BoardIntent::EditInsertText("release".into()),
+        BoardIntent::ToggleThreadEditing,
+    ] {
+        apply_intent(&mut domain, &mut model, intent, None).expect("stage a thread");
+    }
+    assert_eq!(model.input_mode(), BoardInputMode::SelectThread);
+
+    let esc = map_key(
+        BoardInputMode::SelectThread,
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    )
+    .expect("esc maps");
+    apply_intent(&mut domain, &mut model, esc, None).expect("esc");
+    assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+    assert!(model.board_form_open(), "the edit session stays open");
+    assert!(model.task_editing());
+    assert_eq!(
+        apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).unwrap(),
+        IntentOutcome::Persist
+    );
+    let task = domain.get(id).unwrap();
+    assert!(task.title.contains("renamed"), "the staged title survives");
+    assert_eq!(task.thread, None, "the thread draft is cancelled");
+}
+
 #[test]
 fn page_edit_sets_thread_and_clearing_unthreads() {
     let mut domain = DomainState::new();

@@ -1040,7 +1040,7 @@ fn build_task_page_overlay<'a>(
         },
     };
     let glyph = bound_task
-        .map(render::task_status_glyph)
+        .map(|task| render::task_status_glyph(task, &model.tasks))
         .unwrap_or_else(|| render::status_glyph(status));
 
     // Meta footer: assignee · base · thread · scope. The PAPER TRAIL carries when the task was
@@ -2802,7 +2802,7 @@ fn draw_wide_board(
     let header_title: Option<(String, Option<u16>)> = header_task.map(|(form, task)| {
         if editing_title {
             let width = task_geo.map(|geo| geo.row_width as usize).unwrap_or(0);
-            let glyph_w = render::display_width(render::task_status_glyph(task));
+            let glyph_w = render::display_width(render::task_status_glyph(task, &model.tasks));
             let id_w = header_identifier
                 .as_deref()
                 .map(render::display_width)
@@ -2824,7 +2824,7 @@ fn draw_wide_board(
         .as_ref()
         .map(|(title, cursor)| render::TaskColumnHeader {
             glyph: header_task
-                .map(|(_, task)| render::task_status_glyph(task))
+                .map(|(_, task)| render::task_status_glyph(task, &model.tasks))
                 .unwrap_or("○"),
             identifier: header_identifier.as_deref(),
             identifier_task: header_task.and_then(|(form, _)| form.task_id()),
@@ -3042,7 +3042,7 @@ fn draw_projects_wide_board(
                 if let Some(task) = right.tasks.iter().find(|task| task.id == task_id) {
                     right_header_visible = true;
                     right_header_task = Some(task.id);
-                    right_header_glyph = render::task_status_glyph(task);
+                    right_header_glyph = render::task_status_glyph(task, &right.tasks);
                     right_header_identifier = task.board_identifier();
                     right_header_state = task_header_state(right, form, task);
                 }
