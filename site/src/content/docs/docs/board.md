@@ -5,7 +5,7 @@ description: Find tasks, switch projects, and keep work moving.
 
 The board is where you see and move your tasks. This page covers its views, sections, and tools. [Keys](/docs/keys/) lists every shortcut, and [Dispatch](/docs/dispatch/) covers handing tasks to agents.
 
-Click, or use the keyboard. The footer lists the actions for the cursor or the marked set, and each one is clickable. The board footer ends with `: commands` and `? help`, and the task page footer ends with `: commands`. Clicking `: commands` opens the command palette. In a narrow pane the footer shortens its labels, then drops whole actions, but keeps the main action, the way out, `: commands`, and `? help`. Only a pane too narrow even for those drops `: commands`.
+Click, or use the keyboard. The footer lists the actions for the cursor or the marked set, and each one is clickable. It ends with `: commands` and `? help`; clicking `: commands` opens the command palette. The task page has its own [action bar](/docs/task-page/#what-the-page-shows). In a narrow pane the footer shortens its labels, then drops whole actions, but keeps the main action, the way out, `: commands`, and `? help`. Only a pane too narrow even for those drops `: commands`.
 
 ## Views
 

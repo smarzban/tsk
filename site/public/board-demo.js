@@ -2224,8 +2224,7 @@ import { parseCapture } from "./capture.js";
   }
 
   // The task page's verb bar: edit, the task's own status verbs, the way out, `: commands`.
-  // An open editor
-  // or an unsaved step session shows its save and cancel keys instead.
+  // An open editor or an unsaved step session shows its save and cancel keys instead.
   function pageVerbs(task, pageSteps, editing) {
     if (pageSteps.editor)
       return [

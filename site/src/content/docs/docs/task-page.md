@@ -27,6 +27,8 @@ The footer reads `@assignee · ⎇ <base> · after T202 · before T203 · #threa
 | `before T203` | The tasks that run after this one. Read-only: it changes when you edit theirs |
 | `#thread · project` | The thread and the project, or desk |
 
+Below it, the action bar lists the page's keys. In view mode it reads `ctrl+e edit`, the task's status actions, `esc close`, and `: commands`. Each one is clickable; `: commands` opens the command palette.
+
 ## Edit
 
 The page opens in view mode. `ctrl+e` starts an edit at the title, or at the selected step. `Tab` then moves through the fields in this order, and `shift+Tab` goes back:
