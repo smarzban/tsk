@@ -1518,8 +1518,16 @@ fn setup_json_lists_each_skill_per_agent() {
             keys.sort_unstable();
             assert_eq!(keys, ["installed_version", "name", "path", "state"]);
             let name = skill["name"].as_str().expect("name");
-            let path = home.join(".cursor/skills").join(name).join("SKILL.md");
-            assert_eq!(skill["path"], path.display().to_string());
+            // Separators differ on Windows; compare them the way the USERPROFILE test does.
+            let path = home
+                .join(".cursor")
+                .join("skills")
+                .join(name)
+                .join("SKILL.md");
+            assert_eq!(
+                skill["path"].as_str().expect("path").replace('\\', "/"),
+                path.display().to_string().replace('\\', "/")
+            );
             assert_eq!(skill["state"], state);
             assert_eq!(skill["installed_version"], installed);
         }
