@@ -36,3 +36,6 @@ public/apple-touch-icon-light.png
 /parity-results/
 /playwright-report/
 /parity-reference/
+
+# a page sync interrupted before its rename
+src/content/docs/docs/*.tmp

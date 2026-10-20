@@ -1160,7 +1160,7 @@ fn base_picker_opens_on_cached_branches_with_a_disabled_refreshing_row_and_cance
         stub::write_stub(
             &ssh,
             format!(
-                "#!/bin/sh\ntouch '{}'\nwhile [ ! -e '{}' ]; do sleep 0.05; done\nexit 1\n",
+                "#!/bin/sh\ntouch '{}'\nn=0\nwhile [ ! -e '{}' ] && [ $n -lt 1200 ]; do sleep 0.05; n=$((n+1)); done\nexit 1\n",
                 repo.join("fetch-started").display(),
                 repo.join("fetch-release").display()
             ),
