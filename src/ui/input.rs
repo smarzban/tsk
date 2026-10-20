@@ -307,8 +307,10 @@ pub enum BoardIntent {
     ListPickerQueryInsertText(String),
     ListPickerQueryBackspace,
     ListPickerQueryDeleteWord,
-    /// List picker `ctrl+x`: remove the highlighted pinned task from the task picker.
-    ListPickerRemove,
+    /// Task picker `Enter`: pin the highlighted match, or unpin the highlighted pinned task.
+    AfterPickerPin,
+    /// Task picker `ctrl+x`: unpin every task.
+    AfterPickerClear,
     /// Type into the active lens's search.
     SearchQueryInsert(char),
     /// Paste into the active lens's search.
@@ -1364,15 +1366,21 @@ fn help_bindings() -> Vec<HelpBinding> {
         ),
         help_binding(
             HelpGroup::PickersEditing,
-            "space (after picker)",
-            "pin a task",
+            "enter (after picker)",
+            "pin or unpin a task",
             "after wait select tick",
         ),
         help_binding(
             HelpGroup::PickersEditing,
             "ctrl+x (after picker)",
-            "remove a pinned task",
-            "after wait unpin clear",
+            "unpin every task",
+            "after wait clear all",
+        ),
+        help_binding(
+            HelpGroup::PickersEditing,
+            "shift+enter (after picker)",
+            "save what it runs after",
+            "after wait apply",
         ),
         help_binding(
             HelpGroup::PickersEditing,
@@ -2357,7 +2365,8 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::ListPickerQueryInsertText(_)
         | BoardIntent::ListPickerQueryBackspace
         | BoardIntent::ListPickerQueryDeleteWord
-        | BoardIntent::ListPickerRemove
+        | BoardIntent::AfterPickerPin
+        | BoardIntent::AfterPickerClear
         | BoardIntent::SearchQueryInsert(_)
         | BoardIntent::SearchQueryInsertText(_)
         | BoardIntent::SearchQueryBackspace
@@ -2767,9 +2776,6 @@ fn map_project_picker(key: KeyEvent) -> Option<BoardIntent> {
 fn map_list_picker(key: KeyEvent) -> Option<BoardIntent> {
     if query_deletes_word(&key) {
         return Some(BoardIntent::ListPickerQueryDeleteWord);
-    }
-    if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('x') {
-        return Some(BoardIntent::ListPickerRemove);
     }
     if let Some(character) = altgr_text_char(&key) {
         return Some(BoardIntent::ListPickerQueryInsert(character));

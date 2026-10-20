@@ -2290,16 +2290,12 @@ fn apply_board_intent(
             open_full_task_page(domain, model, id);
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::ListPickerQueryInsert(' ')
-            if model.list_picker_kind() == Some(crate::ui::board::ListPickerKind::After) =>
-        {
+        BoardIntent::AfterPickerPin => {
             model.toggle_after_pin();
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::ListPickerRemove => {
-            if model.list_picker_kind() == Some(crate::ui::board::ListPickerKind::After) {
-                model.remove_after_pin();
-            }
+        BoardIntent::AfterPickerClear => {
+            model.clear_after_pins();
             return Ok(IntentOutcome::None);
         }
         BoardIntent::SelectListOption(index)

@@ -187,7 +187,7 @@ In the step editor, `ctrl+d` and `ctrl+o` still act on the task, and `ctrl+x` st
 
 ### If shift+Enter does not save
 
-Some terminals send a plain line feed for `shift+Enter`, such as Ghostty with `keybind = shift+enter=text:\n`. tsk reads it as `ctrl+j` and changes nothing. In a form it shows `Shift+Enter sent Ctrl+J: check terminal keys`. Remove the binding, or map `shift+Enter` to a sequence that keeps the Shift modifier.
+Some terminals send a plain line feed for `shift+Enter`, such as Ghostty with `keybind = shift+enter=text:\n`. tsk reads it as `ctrl+j` and changes nothing. In a form or the After picker it shows `Shift+Enter sent Ctrl+J: check terminal keys`. Remove the binding, or map `shift+Enter` to a sequence that keeps the Shift modifier.
 
 ## Quick-add
 
@@ -212,7 +212,7 @@ In the Herdr popup, `shift+Enter` saves and closes it. `Esc` or `ctrl+c` discard
 | Assignee and waiting-on pickers, **type a name…** | the row shows what you typed, such as `@dana` · `Enter` applies it |
 | Assignee picker, a person selected | `ctrl+x` [removes the name](/docs/dispatch/#remove-a-name-from-the-list) from the list · `ctrl+u` puts it back |
 | Waiting-on picker | as the assignee picker, and `←` / `→` also move |
-| After picker | type a number or a word · `↑` / `↓` select · `Space` pins a match · `ctrl+x` removes a pinned task · `Enter` saves the pinned tasks · `Esc` closes with no change |
+| After picker | type a number or words · `↑` / `↓` select · `Enter` pins a match or unpins a pinned task · `ctrl+x` unpins every task · `shift+Enter` saves the pinned tasks · `Esc` closes with no change |
 | Board search (`/`) | type or paste · `Backspace` · `Enter` pins the query · `Esc` clears and closes |
 | Palette (`:`) | type to filter · `↑` / `↓` or `Tab` / `shift+Tab` select · `Enter` runs · `Esc` closes |
 | Help (`?`) | type to filter by key or action · `↑` / `↓`, page keys, or the wheel scroll · `Esc` clears the search, then closes |

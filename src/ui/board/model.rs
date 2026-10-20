@@ -339,8 +339,6 @@ pub enum ListPickerValue {
     After(u64),
     /// A task the target runs after, pinned on top of the task picker.
     AfterPinned(u64),
-    /// The task picker's **clear all** row: unpin every task.
-    AfterClearAll,
     /// Informational row, never a selectable or confirmable value.
     Unavailable,
     DeskProjectAll,
@@ -349,9 +347,6 @@ pub enum ListPickerValue {
     Group(GroupBy),
     Sort(SortBy),
 }
-
-/// The task picker row under the pinned tasks that unpins them all.
-pub(super) const AFTER_CLEAR_ALL: &str = "clear all";
 
 /// Whether a task-picker query term names `number` (`202`, `T202`, a prefix of either) or
 /// appears in the task's `text` (its title and project).
@@ -5437,7 +5432,7 @@ impl BoardModel {
 
     /// Open the task picker over `ids` (or the open form's draft): a search box over the tasks
     /// not done, the target's project first. `current` starts pinned, a done or archived
-    /// prerequisite too, so every link can be removed. Space pins a match, Enter saves.
+    /// prerequisite too, so every link can be removed. `Enter` pins a match, `shift+Enter` saves.
     pub(super) fn open_after_picker(
         &mut self,
         ids: Vec<Uuid>,
@@ -5540,8 +5535,8 @@ impl BoardModel {
         self.input_mode = BoardInputMode::ListPicker;
     }
 
-    /// The task picker's rows: the pinned tasks (`✓ T202 …`), **clear all** under them, then
-    /// the tasks the query matches. An empty query matches nothing.
+    /// The task picker's rows: the pinned tasks (`✓ T202 …`), then the tasks the query
+    /// matches. An empty query matches nothing.
     fn after_picker_rows(&self) -> Vec<(usize, ListPickerOption)> {
         let Some(picker) = self.list_picker.as_ref() else {
             return Vec::new();
@@ -5573,13 +5568,6 @@ impl BoardModel {
                 }
             })
             .collect();
-        if !rows.is_empty() {
-            rows.push(ListPickerOption {
-                label: AFTER_CLEAR_ALL.to_string(),
-                count: None,
-                value: ListPickerValue::AfterClearAll,
-            });
-        }
         let query = picker.query.to_lowercase();
         let terms: Vec<&str> = query.split_whitespace().collect();
         if !terms.is_empty() {
@@ -5618,121 +5606,77 @@ impl BoardModel {
             .map(|target| target.title.as_str())
     }
 
-    /// How many leading task-picker rows are the pinned block (the pinned tasks and
-    /// **clear all**); the matches follow.
+    /// How many leading task-picker rows are pinned tasks; the matches follow.
     pub fn after_picker_pinned_rows(&self) -> usize {
         self.list_picker
             .as_ref()
             .and_then(|picker| picker.after_target.as_ref())
-            .map_or(0, |target| {
-                target.pinned.len() + usize::from(!target.pinned.is_empty())
-            })
+            .map_or(0, |target| target.pinned.len())
     }
 
-    /// Put the task-picker cursor on the `match_index`-th match (after a query change or a
-    /// pin), or on the first row when nothing matches.
-    fn reseat_after_cursor(&mut self, match_index: usize) {
+    /// Put the task-picker cursor on the first match after a query change, or on the first
+    /// row when nothing matches.
+    fn reseat_after_cursor(&mut self) {
         let pinned_rows = self.after_picker_pinned_rows();
         let rows = self.after_picker_rows().len();
         if let Some(picker) = self.list_picker.as_mut() {
-            picker.selected = if rows > pinned_rows {
-                (pinned_rows + match_index).min(rows - 1)
-            } else {
-                0
-            };
+            picker.selected = if rows > pinned_rows { pinned_rows } else { 0 };
         }
     }
 
-    /// Space (or a click) in the task picker: pin the highlighted match, unpin the highlighted
-    /// pinned task, or clear every pin on **clear all**.
+    /// `Enter` (or a click) in the task picker: pin the highlighted match and clear the query,
+    /// or unpin the highlighted pinned task.
     pub(super) fn toggle_after_pin(&mut self) {
         let Some((index, option)) = self.selected_list_picker_option() else {
             return;
         };
-        let pinned_rows = self.after_picker_pinned_rows();
-        let Some(target) = self
-            .list_picker
-            .as_mut()
-            .and_then(|picker| picker.after_target.as_mut())
-        else {
+        let Some(picker) = self.list_picker.as_mut() else {
+            return;
+        };
+        let Some(target) = picker.after_target.as_mut() else {
             return;
         };
         match option.value {
             ListPickerValue::After(number) => {
                 target.pinned.push(number);
-                self.reseat_after_cursor(index.saturating_sub(pinned_rows));
+                // The query found it; the next search starts empty, cursor on the new pin.
+                picker.selected = target.pinned.len() - 1;
+                picker.query.clear();
             }
             ListPickerValue::AfterPinned(number) => {
                 target.pinned.retain(|n| *n != number);
-                self.clamp_after_cursor(index);
-            }
-            ListPickerValue::AfterClearAll => {
-                target.pinned.clear();
-                self.reseat_after_cursor(0);
+                let pinned = target.pinned.len();
+                let rows = self.after_picker_rows().len();
+                if let Some(picker) = self.list_picker.as_mut() {
+                    // The next pinned task, else the first match, else the last pinned task.
+                    picker.selected = if index < pinned || rows > pinned {
+                        index.min(rows.saturating_sub(1))
+                    } else {
+                        pinned.saturating_sub(1)
+                    };
+                }
             }
             _ => {}
         }
     }
 
-    /// `ctrl+x` in the task picker: unpin the highlighted pinned task.
-    pub(super) fn remove_after_pin(&mut self) -> bool {
-        let Some((index, ListPickerValue::AfterPinned(number))) = self
-            .selected_list_picker_option()
-            .map(|(index, option)| (index, option.value))
-        else {
-            return false;
-        };
+    /// `ctrl+x` in the task picker: unpin every task.
+    pub(super) fn clear_after_pins(&mut self) {
         if let Some(target) = self
             .list_picker
             .as_mut()
             .and_then(|picker| picker.after_target.as_mut())
         {
-            target.pinned.retain(|n| *n != number);
+            target.pinned.clear();
         }
-        self.clamp_after_cursor(index);
-        true
+        self.reseat_after_cursor();
     }
 
-    /// Put the task-picker cursor back after the pinned row at `index` went away: on the next
-    /// pinned task, else the first match, else the last pinned task. Never on **clear all**,
-    /// where Enter would clear the tasks still pinned.
-    fn clamp_after_cursor(&mut self, index: usize) {
-        let pinned = self
-            .list_picker
-            .as_ref()
-            .and_then(|picker| picker.after_target.as_ref())
-            .map_or(0, |target| target.pinned.len());
-        if pinned == 0 {
-            self.reseat_after_cursor(0);
-            return;
-        }
-        let rows = self.after_picker_rows().len();
-        let has_matches = rows > pinned + 1;
-        if let Some(picker) = self.list_picker.as_mut() {
-            picker.selected = if index < pinned {
-                index
-            } else if has_matches {
-                pinned + 1
-            } else {
-                pinned - 1
-            };
-        }
-    }
-
-    /// What Enter in the task picker saves: exactly the pinned tasks. With nothing pinned, the
-    /// highlighted match is a quick single pick; otherwise nothing, which clears the list.
-    /// **clear all** under the cursor clears.
+    /// What `shift+Enter` in the task picker saves: exactly the pinned tasks. Nothing pinned
+    /// runs after nothing.
     pub fn after_picker_choice(&self) -> Option<Vec<u64>> {
         let picker = self.list_picker.as_ref()?;
-        let target = picker.after_target.as_ref()?;
-        let highlighted = self
-            .selected_list_picker_option()
-            .map(|(_, option)| option.value);
-        Some(match highlighted {
-            Some(ListPickerValue::AfterClearAll) => Vec::new(),
-            Some(ListPickerValue::After(number)) if target.pinned.is_empty() => vec![number],
-            _ => target.pinned.clone(),
-        })
+        Some(picker.after_target.as_ref()?.pinned.clone())
     }
 
     pub(super) fn close_after_picker(&mut self) -> Option<AfterPickerTarget> {
@@ -6071,7 +6015,7 @@ impl BoardModel {
     /// A task-picker query change lands the cursor on the first match, past the pinned rows.
     fn reseat_after_query(&mut self) {
         if self.list_picker_kind() == Some(ListPickerKind::After) {
-            self.reseat_after_cursor(0);
+            self.reseat_after_cursor();
         }
     }
 

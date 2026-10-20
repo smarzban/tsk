@@ -3590,7 +3590,9 @@ fn help_card_lists_every_binding_scrolls_and_closes_on_esc() {
         .expect("clear scroll query");
     }
     let mut scrolled_help = rendered_board(&scroll_model, 40, 10);
-    for _ in 0..300 {
+    // Scroll until the horizon stops moving, so a longer catalog never outgrows the test.
+    for _ in 0..2000 {
+        let before = scroll_model.help_scroll();
         apply_intent(
             &mut domain,
             &mut scroll_model,
@@ -3599,6 +3601,9 @@ fn help_card_lists_every_binding_scrolls_and_closes_on_esc() {
         )
         .expect("scroll wrapped Help");
         scrolled_help = rendered_board(&scroll_model, 40, 10);
+        if scroll_model.help_scroll() == before {
+            break;
+        }
     }
     assert!(
         scroll_model.help_scroll() > tsk_tui::ui::input::help_card_lines().len() - 1,

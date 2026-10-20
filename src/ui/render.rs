@@ -5183,15 +5183,15 @@ fn paint_scope_dropdown(
     }
 }
 
-/// What the task picker paints: its rows are the pinned block (the chosen tasks, then
-/// **clear all**) followed by the matches, in the model's visible order.
+/// What the task picker paints: its rows are the pinned tasks followed by the matches, in
+/// the model's visible order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AfterPickerPaint<'a> {
     /// `T5 runs after`.
     pub title: &'a str,
     pub query: &'a str,
     pub rows: &'a [String],
-    /// How many leading rows are the pinned block.
+    /// How many leading rows are pinned tasks.
     pub pinned_rows: usize,
     pub selected: usize,
 }
@@ -5200,22 +5200,17 @@ pub struct AfterPickerPaint<'a> {
 const AFTER_PICKER_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "enter",
-        label: "save",
+        label: "pin",
         shed: 0,
     },
     VerbEntry {
-        key: "space",
-        label: "select",
+        key: "ctrl+x",
+        label: "clear",
         shed: 1,
     },
     VerbEntry {
-        key: "ctrl+x",
-        label: "remove",
-        shed: 2,
-    },
-    VerbEntry {
-        key: "esc",
-        label: "close",
+        key: "shift+enter",
+        label: "save",
         shed: 0,
     },
 ];
