@@ -2669,6 +2669,7 @@ fn draw_board_hits(frame: &mut Frame, model: &BoardModel) -> render::QueueHitMap
         thread_labels: model.row_label_dimensions().0,
         show_project_meta: model.row_label_dimensions().1,
         assignee_labels: model.assignee_label_shown(),
+        messages_hidden: model.messages_hidden(),
         projects: &queue_view.projects,
         projects_index: surface == BoardSurface::Projects
             && matches!(model.projects_view(), ProjectsView::Overview),
@@ -2854,6 +2855,7 @@ fn draw_wide_board(
         thread_labels: model.row_label_dimensions().0,
         show_project_meta: model.row_label_dimensions().1,
         assignee_labels: model.assignee_label_shown(),
+        messages_hidden: model.messages_hidden(),
         projects: &queue_view.projects,
         projects_index: surface == BoardSurface::Projects
             && matches!(model.projects_view(), ProjectsView::Overview),
@@ -3111,6 +3113,7 @@ fn draw_projects_wide_board(
         thread_labels: false,
         show_project_meta: false,
         assignee_labels: true,
+        messages_hidden: model.messages_hidden(),
         projects: &outer_view.projects,
         projects_index: true,
         projects_cursor: model.projects_cursor(),
@@ -3152,6 +3155,7 @@ fn draw_projects_wide_board(
             thread_labels: right.row_label_dimensions().0,
             show_project_meta: right.row_label_dimensions().1,
             assignee_labels: right.assignee_label_shown(),
+            messages_hidden: right.messages_hidden(),
             projects: &[],
             projects_index: false,
             projects_cursor: 0,

@@ -497,6 +497,8 @@ pub enum BoardIntent {
     FoldGroup,
     /// `F` — fold every group in view, or unfold them all when all are folded.
     FoldAllGroups,
+    /// `z` — hide or show every board row's `└─` message line. Session-only.
+    ToggleMessages,
     /// A click on a fold header (a group sub-header, the inbox, or archived) selects it. A
     /// second click inside the double-click window opens what the header names, or folds or
     /// unfolds it when it opens nothing.
@@ -735,7 +737,7 @@ const NORMAL_KEYMAP: &[NormalKeyEntry] = &[
         help_label: "archive / restore task",
         modifier: NormalModifier::Ctrl,
     },
-    // `+` opens an input surface, like bare `:` palette, `z` drawer, and `?` help. It is
+    // `+` opens an input surface, like bare `:` palette, `d` drawer, and `?` help. It is
     // not a task-mutating verb, so it does not take the configured verb modifier.
     NormalKeyEntry {
         code: KeyCode::Char('+'),
@@ -781,6 +783,14 @@ const NORMAL_KEYMAP: &[NormalKeyEntry] = &[
         intent: BoardIntent::FoldAllGroups,
         help_chord: "shift+F",
         help_label: "fold / unfold all groups",
+        modifier: NormalModifier::Bare,
+    },
+    // `z` hides the message lines under board rows: a view key like `g` / `s`, so bare.
+    NormalKeyEntry {
+        code: KeyCode::Char('z'),
+        intent: BoardIntent::ToggleMessages,
+        help_chord: "z",
+        help_label: "hide / show agent messages",
         modifier: NormalModifier::Bare,
     },
     // The project slot is mouse-clickable; `p` gives the keyboard the same route.
@@ -965,6 +975,7 @@ fn board_help_group(intent: &BoardIntent) -> HelpGroup {
         | BoardIntent::OpenSortPicker
         | BoardIntent::FoldGroup
         | BoardIntent::FoldAllGroups
+        | BoardIntent::ToggleMessages
         | BoardIntent::OpenProjectSelector
         | BoardIntent::OpenThreadFilterPicker
         | BoardIntent::FocusSearch
@@ -2435,6 +2446,7 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::OpenSortPicker
         | BoardIntent::FoldGroup
         | BoardIntent::FoldAllGroups
+        | BoardIntent::ToggleMessages
         | BoardIntent::ClickHeader(_)
         | BoardIntent::FoldHeader
         | BoardIntent::UnfoldHeader

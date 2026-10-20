@@ -974,6 +974,9 @@ pub struct QueueFrameModel<'a> {
     /// Name the assignee on the peek's closing line (the filter or `@name` View does not
     /// already say it). Grouping by assignee drops it per section.
     pub assignee_labels: bool,
+    /// `z`: rows paint without their `└─` message lines; a row that had one ends its label
+    /// with [`HIDDEN_MESSAGE_MARKER`] instead.
+    pub messages_hidden: bool,
     /// The projects index rows (Projects surface, Overview view). When `projects_index`
     /// is set the list paints these instead of task sections.
     pub projects: &'a [ProjectRow],
@@ -5336,6 +5339,9 @@ fn paint_list_row(
     }
 }
 
+/// Ends the label of a row whose message line `z` hid.
+pub const HIDDEN_MESSAGE_MARKER: &str = "✉";
+
 /// The live line's painted rows, in the peek footer's `└─` style and wrapped under itself.
 fn live_line_rows(text: &str, row_width: u16) -> Vec<TaskRowLine> {
     let room = row_width.saturating_sub(9).max(1) as usize;
@@ -5681,6 +5687,13 @@ fn build_list_rows_inner(
         let live_text = (!rail && detail_target != Some(task.id))
             .then(|| row_live_line(task, model.tasks, model.now))
             .flatten();
+        // `z` drops the line and leaves a marker in the label, so a waiting message still
+        // shows. The rail paints no line either way, so it marks the same rows.
+        let hidden_message = model.messages_hidden
+            && detail_target != Some(task.id)
+            && (live_text.is_some()
+                || (rail && row_live_line(task, model.tasks, model.now).is_some()));
+        let live_text = live_text.filter(|_| !model.messages_hidden);
         // Where the row stands in a chain (`waiting on @pi`, `after T202`, `before T5`) leads
         // its label; the peek says it in its own lines, so the peek's footer keeps the plain
         // label.
@@ -5690,6 +5703,16 @@ fn build_list_rows_inner(
             row_wait_label(task, model.tasks),
             Some(meta.clone()),
         );
+        let row_meta = if hidden_message {
+            fit_row_meta(
+                None,
+                None,
+                Some(row_meta),
+                Some(HIDDEN_MESSAGE_MARKER.to_string()),
+            )
+        } else {
+            row_meta
+        };
         let label =
             (detail_target != Some(task.id) && !row_meta.is_empty()).then_some(row_meta.as_str());
         let lines = if rail {
@@ -7652,6 +7675,7 @@ mod tests {
             thread_labels: false,
             show_project_meta: false,
             assignee_labels: true,
+            messages_hidden: false,
             projects: &[],
             projects_index: false,
             projects_cursor: 0,
@@ -7719,6 +7743,7 @@ mod tests {
             thread_labels: false,
             show_project_meta: false,
             assignee_labels: true,
+            messages_hidden: false,
             projects: &[],
             projects_index: false,
             projects_cursor: 0,
@@ -7851,6 +7876,7 @@ mod tests {
             thread_labels: false,
             show_project_meta: false,
             assignee_labels: true,
+            messages_hidden: false,
             projects: &projects,
             projects_index: true,
             projects_cursor: 0,

@@ -544,7 +544,9 @@ fn config_board_defaults_seed_the_desk_project_boards_and_the_preview_seat() {
             sort: SortBy::Title,
             project_group: GroupBy::Thread,
             project_sort: SortBy::Assignee,
+            messages_hidden: true,
         });
+    assert!(board.model.messages_hidden());
     assert_eq!(board.model.layout().group, GroupBy::Assignee);
     assert_eq!(board.model.layout().sort, SortBy::Title);
     assert_eq!(

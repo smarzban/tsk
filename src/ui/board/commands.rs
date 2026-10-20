@@ -155,6 +155,14 @@ impl BoardModel {
                 command("group by…", BoardIntent::OpenGroupPicker),
                 command("sort by…", BoardIntent::OpenSortPicker),
                 command("fold / unfold group", BoardIntent::FoldGroup),
+                command(
+                    if self.messages_hidden {
+                        "show agent messages"
+                    } else {
+                        "hide agent messages"
+                    },
+                    BoardIntent::ToggleMessages,
+                ),
             ]);
         }
         commands.extend_from_slice(&[

@@ -110,7 +110,7 @@ method = "squash"   # "merge" (the default), "squash", or "rebase"
 
 ### Board defaults
 
-The `[board]` table sets the [group and sort](/docs/board/#group-and-sort) a fresh board starts with, and the name the board calls you:
+The `[board]` table sets the [group and sort](/docs/board/#group-and-sort) a fresh board starts with, whether it shows the [live lines](/docs/board/#rows) under rows, and the name the board calls you:
 
 ```toml
 [board]
@@ -118,12 +118,13 @@ group = "assignee"        # desk: none, project, thread, or assignee
 sort = "recent"           # desk: recent, project, thread, title, or assignee
 project_group = "thread"  # project boards: none, thread, or assignee
 project_sort = "title"    # project boards: recent, thread, title, or assignee
+messages = "hidden"       # live lines under rows: shown or hidden
 me = "sam"                # your name on the board; the default is you
 ```
 
-- A missing key keeps its default: `none` and `recent`.
+- A missing key keeps its default: `none`, `recent`, and `shown`.
 - The project keys also set the wide Projects preview.
-- `g` and `s` change the layout for the session only. Nothing is written back.
+- `g`, `s`, and `z` change the layout for the session only. Nothing is written back.
 
 `me` replaces `@you` wherever the board names you. That covers assignee labels, pickers, filter, group, and sort, who a block or review waits on, your replies, and the paper trail.
 

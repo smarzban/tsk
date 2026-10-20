@@ -1422,6 +1422,7 @@ pub fn apply_board_intent_with_save_recovery(
             | BoardIntent::ToggleInboxGroup
             | BoardIntent::FoldGroup
             | BoardIntent::FoldAllGroups
+            | BoardIntent::ToggleMessages
             | BoardIntent::FoldHeader
             | BoardIntent::UnfoldHeader
             | BoardIntent::ClickHeader(_) => return apply_intent(domain, model, intent, None),
@@ -2173,6 +2174,7 @@ fn dispatch_board_intent(
         save_recovery,
         quick_capture,
     )?;
+    model.adopt_seat_messages();
     // A preview seat's sub-header asked for a board only the outer board can show.
     if let Some(request) = model.take_outer_request().filter(|_| !quit) {
         quit = handle_board_intent(store, domain, model, request, save_recovery, quick_capture)?;
@@ -6628,6 +6630,33 @@ mod tests {
             None,
             "the preview's card must lose its pending double click"
         );
+    }
+
+    /// `z` in the focused preview seat reaches the outer board, so the next seat it opens
+    /// keeps the same message lines.
+    #[test]
+    fn z_in_the_focused_preview_seat_reaches_the_outer_board() {
+        let area = Rect::new(0, 0, 110, 30);
+        let temp = TempStore::new("projects-preview-messages");
+        let (mut domain, mut model) = projects_preview_open_tasks_fixture();
+        sync_frame_presentation(area, &model);
+        assert!(model.project_right_seat_focused());
+        let mut recovery = SaveRecovery::new();
+        dispatch_board_intent(
+            &temp.store,
+            &mut domain,
+            &mut model,
+            BoardDispatchRoute {
+                area,
+                target: BoardIntentTarget::Focused,
+            },
+            BoardIntent::ToggleMessages,
+            &mut recovery,
+            false,
+        )
+        .expect("z in the preview seat");
+        assert!(model.right_seat().expect("seat").messages_hidden());
+        assert!(model.messages_hidden());
     }
 
     #[test]
@@ -14901,6 +14930,87 @@ mod quick_assign_tests {
         let (screen, _) = board_screen(&model, 100, 24);
         assert!(screen.contains("done   built the card"), "{screen}");
         assert!(screen.contains("feedback to @builder…"), "{screen}");
+    }
+
+    /// `z` hides every row's `└─` message line and marks the rows that had one with `✉`; the
+    /// palette offers the opposite, and a second `z` brings the lines back. `[board] messages
+    /// = "hidden"` opens the board hidden.
+    #[test]
+    fn z_hides_and_shows_the_message_lines_under_board_rows() {
+        let temp = Temp::new("hide-messages", &["builder", "pi"]);
+        let (mut domain, mut model, ids) = board(&temp, &["mine", "theirs", "plain"]);
+        for (id, on) in [
+            (ids[0], crate::domain::BlockOn::You),
+            (ids[1], crate::domain::BlockOn::Agent("pi".into())),
+        ] {
+            domain
+                .review(
+                    id,
+                    crate::domain::ReviewDraft::from_input(
+                        Some("a long message from the builder"),
+                        &["a".into()],
+                        None,
+                        on,
+                    )
+                    .expect("draft"),
+                    "claude",
+                )
+                .expect("review");
+        }
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        let row = |screen: &str, title: &str| {
+            screen
+                .lines()
+                .find(|line| line.contains(title))
+                .expect("row")
+                .trim_end()
+                .to_string()
+        };
+        let palette = |model: &BoardModel| {
+            model
+                .available_commands()
+                .into_iter()
+                .find(|command| command.intent == BoardIntent::ToggleMessages)
+                .expect("palette command")
+                .label
+        };
+        let (shown, _) = board_screen(&model, 100, 24);
+        assert!(shown.contains("└─ @claude: a long message"), "{shown}");
+        assert!(!shown.contains('✉'), "{shown}");
+        assert_eq!(palette(&model), "hide agent messages");
+
+        let intent = key(&model, KeyCode::Char('z'), KeyModifiers::NONE);
+        assert_eq!(intent, BoardIntent::ToggleMessages);
+        apply_intent(&mut domain, &mut model, intent.clone(), None).expect("z");
+        assert_eq!(model.message(), Some("agent messages hidden"));
+        let (hidden, _) = board_screen(&model, 100, 24);
+        assert!(!hidden.contains("└─"), "{hidden}");
+        assert!(row(&hidden, "T1 mine").ends_with("mine  ✉"), "{hidden}");
+        assert!(
+            row(&hidden, "T2 theirs").ends_with("@pi reviewing"),
+            "{hidden}"
+        );
+        assert!(!row(&hidden, "T3 plain").contains('✉'), "{hidden}");
+        assert_eq!(palette(&model), "show agent messages");
+
+        apply_intent(&mut domain, &mut model, intent, None).expect("z again");
+        assert_eq!(model.message(), Some("agent messages shown"));
+        // Everything but the status row paints as before the first `z`.
+        let rows = |screen: &str| {
+            let mut lines: Vec<String> = screen.lines().map(str::to_string).collect();
+            lines.remove(lines.len() - 2);
+            lines
+        };
+        assert_eq!(rows(&board_screen(&model, 100, 24).0), rows(&shown));
+
+        model.set_layout_defaults(crate::agents::BoardDefaults {
+            messages_hidden: true,
+            ..Default::default()
+        });
+        let (configured, _) = board_screen(&model, 100, 24);
+        assert!(!configured.contains("└─"), "{configured}");
+        assert!(row(&configured, "T1 mine").ends_with('✉'), "{configured}");
     }
 
     /// A review handed to another agent rides IN MOTION with `△` and `@pi reviewing` in its

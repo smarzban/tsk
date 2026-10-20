@@ -462,6 +462,7 @@ import { parseCapture } from "./capture.js";
     flashId: null,
     copyNotice: "",
     drawer: false,
+    messagesHidden: false,
     archivedOpen: false,
     inboxOpen: true,
     overlay: null,
@@ -2443,6 +2444,13 @@ import { parseCapture } from "./capture.js";
           run: () =>
             foldCursorGroup(projectsPreviewFocused() ? preview : state),
         },
+        {
+          id: "messages",
+          label: state.messagesHidden
+            ? "show agent messages"
+            : "hide agent messages",
+          run: toggleMessages,
+        },
       );
     }
     if (!state.focusProject && state.tab === "projects") {
@@ -2615,9 +2623,24 @@ import { parseCapture } from "./capture.js";
     if (before.length) parts.push(`before ${taskList(before)}`);
     return parts.join(" · ");
   }
-  // A row's label: its chain lead, then its `#thread · project`.
+  // A row's label: its chain lead, then its `#thread · project`, then `✉` when the
+  // message line under it is hidden.
   const fullRowLabel = (task, label) =>
-    [rowWaitLabel(task), label].filter(Boolean).join(" · ");
+    [
+      rowWaitLabel(task),
+      label,
+      state.messagesHidden && rowLiveLine(task) ? "✉" : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+
+  // Hide or show every board row's message line.
+  function toggleMessages() {
+    state.messagesHidden = !state.messagesHidden;
+    state.message = state.messagesHidden
+      ? "agent messages hidden"
+      : "agent messages shown";
+  }
 
   // A block's or review's peek lines: the live line, then why and `Decide:` the options (or
   // the needs), or what was done and the checks. Empty for any other task.
@@ -2715,7 +2738,7 @@ import { parseCapture } from "./capture.js";
 
   // The live line inside its row's button (a click on it acts on the task), `columns` wide.
   function liveHtml(task, columns) {
-    const live = rowLiveLine(task);
+    const live = state.messagesHidden ? "" : rowLiveLine(task);
     if (!live) return "";
     return `<span class="tsk-live dim">${wrapText(live, columns - 9)
       .map(
@@ -3513,6 +3536,12 @@ import { parseCapture } from "./capture.js";
       ],
       ["views & find", "z / D", "show / hide done drawer", "board open done"],
       ["views & find", "g", "group by", "board layout project thread"],
+      [
+        "views & find",
+        "shift+Z",
+        "hide / show agent messages",
+        "board message line agent note",
+      ],
       [
         "views & find",
         "shift+S",
@@ -5533,6 +5562,13 @@ import { parseCapture } from "./capture.js";
     if (e.key === "F" && !alt) {
       e.preventDefault();
       if (!taskPageActive) toggleAllGroups();
+      render();
+      return;
+    }
+    // `z` is the drawer here, so hiding the message lines is Shift+Z.
+    if (e.key === "Z" && !alt) {
+      e.preventDefault();
+      if (!taskPageActive) toggleMessages();
       render();
       return;
     }

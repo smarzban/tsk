@@ -3182,6 +3182,7 @@ fn palette_lists_exactly_m1_commands_for_selection_filters_by_subsequence_and_di
         "group by…",
         "sort by…",
         "fold / unfold group",
+        "hide agent messages",
         "show all keys",
         "quit",
     ];

@@ -32,6 +32,7 @@ Status, edit, delete, and archive keys take `ctrl`. Bare letters move, open, and
 | Sort by recent, project, thread, title, or assignee | `s` |
 | Fold / unfold the cursor's group | `f` |
 | Fold / unfold every group in view | `shift+F` |
+| Hide / show the [live lines](/docs/board/#rows) under rows | `z` |
 | Open the desk / last project / Projects view | `1` / `2` / `3` |
 | Pick a project | `p` |
 | Filter by thread, project, or assignee | `t` |

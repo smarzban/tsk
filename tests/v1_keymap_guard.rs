@@ -58,6 +58,7 @@ fn normal_mode_keymap_equals_the_readme_and_queue_board_v1_set() {
         (KeyCode::Char('s'), BoardIntent::OpenSortPicker, false),
         (KeyCode::Char('f'), BoardIntent::FoldGroup, false),
         (KeyCode::Char('F'), BoardIntent::FoldAllGroups, false),
+        (KeyCode::Char('z'), BoardIntent::ToggleMessages, false),
         (KeyCode::Char('p'), BoardIntent::OpenProjectSelector, false),
         (
             KeyCode::Char('t'),
@@ -139,7 +140,8 @@ fn normal_mode_keymap_equals_the_readme_and_queue_board_v1_set() {
     assert_eq!(normal(KeyCode::Char('f')), Some(BoardIntent::FoldGroup));
     assert_eq!(ctrl(KeyCode::Char('f')), Some(BoardIntent::File));
 
-    for retired in ['a', 'c', 'i', 'z', 'P', '1', '2', '3', '[', ']'] {
+    // `z` was the drawer; it now hides the message lines under rows (documented above).
+    for retired in ['a', 'c', 'i', 'P', '1', '2', '3', '[', ']'] {
         assert_eq!(
             normal(KeyCode::Char(retired)),
             None,

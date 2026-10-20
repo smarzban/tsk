@@ -406,6 +406,7 @@ fn fixture_model_on_tab<'a>(
         thread_labels: false,
         show_project_meta: true,
         assignee_labels: true,
+        messages_hidden: false,
         projects: &[],
         projects_index: false,
         projects_cursor: 0,
@@ -3467,6 +3468,11 @@ fn golden_scenes() -> Vec<GoldenScene> {
     let board_view = fixture_view(&tasks, false);
     let board_model = fixture_model(&tasks, &board_view);
     let (base_rows, _) = paint(80, 24, &board_model);
+    // `z`: the same board without its message lines, T5 marked `✉` instead, wide and narrow.
+    let mut hidden_model = fixture_model(&tasks, &board_view);
+    hidden_model.messages_hidden = true;
+    let (messages_hidden_rows, _) = paint(80, 24, &hidden_model);
+    let (messages_hidden_narrow_rows, _) = paint(40, 24, &hidden_model);
     let mut marked_model = base_board_model();
     let mut marked_domain = DomainState::new();
     apply_intent(
@@ -3615,6 +3621,16 @@ fn golden_scenes() -> Vec<GoldenScene> {
             name: "board",
             rows: base_rows,
             width: 80,
+        },
+        GoldenScene {
+            name: "board_messages_hidden",
+            rows: messages_hidden_rows,
+            width: 80,
+        },
+        GoldenScene {
+            name: "board_messages_hidden_40x24",
+            rows: messages_hidden_narrow_rows,
+            width: 40,
         },
         GoldenScene {
             name: "board_default_split_78",

@@ -148,6 +148,8 @@ A row addressed to you carries a dim **live line** under it, starting `└─`, 
 
 The age is how old the message is, and the asker is left out when it is you. A block or review with nothing said has no live line. Neither do rows waiting elsewhere, started and done rows, or notices. When a blocking task is done, the blocked task returns to NEEDS YOU, but its status does not change.
 
+Press `z` to hide every live line, so each task takes one row. A row whose line is hidden ends its label with `✉`. The peek and the task page still show the message. Press `z` again to bring the lines back. The palette names the same toggle **hide agent messages**, or **show agent messages** while they are hidden. The choice lasts for the session; `[board] messages` in [`config.toml`](/docs/storage/#board-defaults) sets how the board opens.
+
 ### Peek
 
 Below 110 columns, a click or `→` opens a **peek** under the row. A wider pane opens the details beside the board instead ([Wide layout](#wide-layout)). The peek shows up to five wrapped note lines, then a footer: `@assignee · ⎇ <base> · #thread · project`, without what is unset or already said.
@@ -307,7 +309,7 @@ Press `:` on the board or a task page and type to find an action. Matching takes
 | Available actions | When |
 | --- | --- |
 | Add task, undo, show / hide done drawer, show all keys, quit | Always |
-| Group by…, sort by…, fold / unfold group | A task list has focus |
+| Group by…, sort by…, fold / unfold group, hide agent messages | A task list has focus |
 | Set open/ready/started/blocked/review, edit notes, move to project / desk, delete task | A task is selected |
 | Set assignee, set base, set after (wait for)… | A task is selected |
 | Set waiting on… | A task with an open block or review is selected or marked |

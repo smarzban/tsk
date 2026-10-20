@@ -137,18 +137,22 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 
 # The group and sort a fresh board starts from (`g` and `s` change them for
 # the session only). `group` and `sort` set the desk; `project_group` and
-# `project_sort` set every project board. `me` is the name the board shows
-# for you, such as `@sam` on a task assigned to you, instead of `you`.
+# `project_sort` set every project board. `messages` hides the agent message
+# lines under board rows (`z` toggles them for the session). `me` is the name
+# the board shows for you, such as `@sam` on a task assigned to you, instead
+# of `you`.
 #   group          "none", "project", "thread", or "assignee"
 #   sort           "recent", "project", "thread", "title", or "assignee"
 #   project_group  "none", "thread", or "assignee"
 #   project_sort   "recent", "thread", "title", or "assignee"
+#   messages       "shown" or "hidden"
 #   me             lowercase letters, digits, - and .; not an agent's name
 # [board]
 # group = "project"
 # sort = "recent"
 # project_group = "thread"
 # project_sort = "title"
+# messages = "hidden"
 # me = "sam"
 
 # --- Backups ------------------------------------------------------------------
@@ -686,8 +690,8 @@ impl MergeMethod {
     }
 }
 
-/// The board's starting group and sort: `[board]` in `config.toml`. A fresh board opens with
-/// these; changes made in the session are never written back.
+/// The board's starting group, sort, and message lines: `[board]` in `config.toml`. A fresh
+/// board opens with these; changes made in the session are never written back.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BoardDefaults {
     /// The desk (`group`, `sort`).
@@ -696,6 +700,8 @@ pub struct BoardDefaults {
     /// Every project board (`project_group`, `project_sort`).
     pub project_group: GroupBy,
     pub project_sort: SortBy,
+    /// `messages = "hidden"`: board rows start without their `└─` message lines.
+    pub messages_hidden: bool,
 }
 
 impl BoardDefaults {
@@ -745,7 +751,10 @@ impl BoardDefaults {
             if key == "me" {
                 continue;
             }
-            if !matches!(key, "group" | "sort" | "project_group" | "project_sort") {
+            if !matches!(
+                key,
+                "group" | "sort" | "project_group" | "project_sort" | "messages"
+            ) {
                 return Err(invalid(format!("unknown key {key:?}")));
             }
             let words = |choices: &[&str]| -> String {
@@ -779,6 +788,17 @@ impl BoardDefaults {
                     })
             };
             match key {
+                "messages" => {
+                    defaults.messages_hidden = match value {
+                        "shown" => false,
+                        "hidden" => true,
+                        _ => {
+                            return Err(invalid(format!(
+                                "messages {value:?} is not shown or hidden"
+                            )))
+                        }
+                    }
+                }
                 "group" => defaults.group = pick_group(&desk_groups)?,
                 "sort" => defaults.sort = pick_sort(&desk_sorts)?,
                 "project_group" => defaults.project_group = pick_group(&project_groups)?,
@@ -1178,6 +1198,7 @@ command = ["pi"]
                 sort: SortBy::Title,
                 project_group: GroupBy::Thread,
                 project_sort: SortBy::Assignee,
+                messages_hidden: false,
             }
         );
         for group in GroupBy::ALL {
@@ -1187,6 +1208,13 @@ command = ["pi"]
         for sort in SortBy::ALL {
             dir.write(&format!("[board]\nsort = \"{}\"\n", sort.word()));
             assert_eq!(BoardDefaults::load(dir.path()).unwrap().sort, sort);
+        }
+        for (word, hidden) in [("shown", false), ("hidden", true)] {
+            dir.write(&format!("[board]\nmessages = \"{word}\"\n"));
+            assert_eq!(
+                BoardDefaults::load(dir.path()).unwrap().messages_hidden,
+                hidden
+            );
         }
         // A broken profile never blocks the board defaults, and the reverse.
         dir.write("[board]\ngroup = \"thread\"\n[agent.x]\nprompt = 1\n");
@@ -1217,6 +1245,10 @@ command = ["pi"]
             (
                 "[board]\nproject_sort = \"project\"\n",
                 "project_sort \"project\" is not recent, thread, title, or assignee",
+            ),
+            (
+                "[board]\nmessages = \"off\"\n",
+                "messages \"off\" is not shown or hidden",
             ),
             ("[board]\ngroup = 1\n", "group must be a string"),
             ("[board]\nwide = true\n", "unknown key \"wide\""),
@@ -1291,6 +1323,7 @@ command = ["pi"]
                 sort: SortBy::Recent,
                 project_group: GroupBy::Thread,
                 project_sort: SortBy::Title,
+                messages_hidden: true,
             }
         );
         assert_eq!(

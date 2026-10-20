@@ -1150,6 +1150,9 @@ pub struct BoardModel {
     pub(super) assignee_view_layout: BoardLayout,
     /// `[board]` from `config.toml`, kept so a fresh preview seat starts from it too.
     pub(super) layout_defaults: crate::agents::BoardDefaults,
+    /// `z`: board rows paint without their `└─` message lines. Session-only; it starts from
+    /// `[board] messages` and is never written back.
+    pub(super) messages_hidden: bool,
     /// The projects index's View: the project overview, or one cross-project thread.
     pub(super) projects_view: ProjectsView,
     /// The active lens's content-search query. Session-only.
@@ -2318,6 +2321,7 @@ impl BoardModel {
             thread_view_layout: BoardLayout::default(),
             assignee_view_layout: BoardLayout::default(),
             layout_defaults: crate::agents::BoardDefaults::default(),
+            messages_hidden: false,
             projects_view: ProjectsView::Overview,
             search_query: String::new(),
             search_pinned: false,
@@ -3621,6 +3625,7 @@ impl BoardModel {
         right.hidden_assignees = self.hidden_assignees.clone();
         right.agent_names = self.agent_names.clone();
         right.set_layout_defaults(self.layout_defaults);
+        right.messages_hidden = self.messages_hidden;
         right.board_location = BoardLocation::Project(path.clone());
         right.selected_project = Some(path);
         right.preview_seat = true;
@@ -4356,6 +4361,22 @@ impl BoardModel {
 
     /// Whether the peek's closing line names the assignee: not where an assignee filter or
     /// the `@name` View already says it.
+    /// Whether board rows paint without their `└─` message lines (`z`).
+    pub fn messages_hidden(&self) -> bool {
+        self.messages_hidden
+    }
+
+    /// `z`: hide or show every board row's message line, here and in the preview seat.
+    /// Returns the new state.
+    pub(super) fn toggle_messages_hidden(&mut self) -> bool {
+        self.messages_hidden = !self.messages_hidden;
+        let hidden = self.messages_hidden;
+        if let Some(right) = self.right_seat.as_deref_mut() {
+            right.messages_hidden = hidden;
+        }
+        hidden
+    }
+
     pub fn assignee_label_shown(&self) -> bool {
         match self.effective_lens() {
             BoardLens::Desk => !matches!(self.desk_filter.assignee, AssigneeFilter::Named(_)),
@@ -4454,6 +4475,14 @@ impl BoardModel {
         self.stage_origin = None;
         self.drop_project_preview();
         self.reanchor_selection(previous, &previous_visible);
+    }
+
+    /// Follow a `z` pressed in the focused preview seat, so the outer board and the next seat
+    /// keep the same message lines. The outer board's own `z` already reached the seat.
+    pub(crate) fn adopt_seat_messages(&mut self) {
+        if let Some(right) = self.right_seat.as_deref() {
+            self.messages_hidden = right.messages_hidden;
+        }
     }
 
     /// Take the preview seat's pending request for this (outer) board.
@@ -7062,11 +7091,12 @@ impl BoardModel {
         }
     }
 
-    /// Start the desk and project boards from `config.toml`'s `[board]` group and sort, and
-    /// seed the cursor on the arranged rows. Called once at open (and for a fresh preview
-    /// seat); the session's own changes are never written back.
+    /// Start the desk and project boards from `config.toml`'s `[board]` group, sort, and
+    /// message lines, and seed the cursor on the arranged rows. Called once at open (and for
+    /// a fresh preview seat); the session's own changes are never written back.
     pub fn set_layout_defaults(&mut self, defaults: crate::agents::BoardDefaults) {
         self.layout_defaults = defaults;
+        self.messages_hidden = defaults.messages_hidden;
         self.desk_layout = BoardLayout {
             group: defaults.group,
             sort: defaults.sort,

@@ -2755,6 +2755,18 @@ fn apply_board_intent(
             }
             return Ok(IntentOutcome::None);
         }
+        BoardIntent::ToggleMessages => {
+            if !model.task_list_owns_input() {
+                return Ok(IntentOutcome::None);
+            }
+            // Rows keep their place and marks: only the lines under them come and go.
+            if model.toggle_messages_hidden() {
+                model.set_message("agent messages hidden");
+            } else {
+                model.set_message("agent messages shown");
+            }
+            return Ok(IntentOutcome::None);
+        }
         BoardIntent::ClickHeader(header_id) => {
             // One click only selects the header. A double-click opens what it names; a
             // header that opens nothing (inbox, archived, `no thread`, the desk on the desk)
