@@ -425,6 +425,21 @@ fn a_usage_error_never_echoes_a_token() {
         assert!(!text.contains("S3CRET"), "{args:?}: {text}");
         assert!(text.contains("https://***@host/b.git"), "{args:?}: {text}");
     }
+    // A URL given where a version id goes is echoed back as the unknown id.
+    let repo = bare_repo(&state.0);
+    fs::write(
+        state.0.join("config.toml"),
+        format!("[[backup]]\nurl = {repo:?}\n"),
+    )
+    .expect("config");
+    let output = tsk(&state.0, &["restore", "https://me:S3CRET@host/b.git"]);
+    assert_eq!(output.status.code(), Some(1));
+    let text = stderr(&output);
+    assert!(!text.contains("S3CRET"), "{text}");
+    assert!(
+        text.contains("unknown version https://***@host/b.git"),
+        "{text}"
+    );
 }
 
 #[test]

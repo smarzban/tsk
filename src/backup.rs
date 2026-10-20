@@ -1541,6 +1541,8 @@ struct Source {
     dir: PathBuf,
     commit: String,
     path: String,
+    /// The target the clone belongs to, so a failed read is reported as [`target_error`].
+    target: Target,
 }
 
 /// Every version on every target, newest first, plus a failure per target that could not be
@@ -1640,6 +1642,7 @@ fn git_versions(state_dir: &Path, target: &Target, all: bool) -> Result<Vec<Vers
                 dir: clone.dir.clone(),
                 commit: commit.to_string(),
                 path: path.to_string(),
+                target: target.clone(),
             };
             versions.push(Version {
                 id: version_id(target, machine, commit),
@@ -1661,7 +1664,9 @@ fn git_versions(state_dir: &Path, target: &Target, all: bool) -> Result<Vec<Vers
 /// The git command that prints the `config.toml` backed up with `version`, for people.
 /// `None` when the version has none.
 pub fn version_config(version: &Version) -> Option<String> {
-    let Source { dir, commit, path } = &version.source;
+    let Source {
+        dir, commit, path, ..
+    } = &version.source;
     let config = format!("{}/config.toml", path.rsplit_once('/')?.0);
     let spec = format!("{commit}:{config}");
     git(dir, &["cat-file", "-e", &spec])
@@ -1710,11 +1715,12 @@ pub fn repo_contents(state_dir: &Path, location: &str) -> Result<RepoContents, S
     })
     .map_err(|error| error.to_string())
     .and_then(|contents| contents)
+    .map_err(|error| target_error(&target, error))
 }
 
 /// The bytes of one listed version.
 pub fn read_version(version: &Version) -> Result<Vec<u8>, String> {
-    read_source(&version.source)
+    read_source(&version.source).map_err(|error| target_error(&version.source.target, error))
 }
 
 fn read_source(source: &Source) -> Result<Vec<u8>, String> {
@@ -2599,6 +2605,27 @@ every = "daily"
                 assert!(error.contains(shown), "{error}");
             }
         }
+    }
+
+    #[test]
+    fn a_url_that_looks_like_an_option_is_only_a_url_for_an_existing_clone() {
+        let root = TempDir::new("dash-set-url");
+        let marker = root.0.join("ran");
+        let url = format!("--upload-pack=touch {}", marker.display());
+        let state = state_with_target(&root.0, Path::new(&url), "");
+        write_store(&state, "a1");
+        // A clone for this target already exists, so the run goes through `set-url`.
+        let dir = repos_dir(&state).join(Target::new(url.clone()).id());
+        fs::create_dir_all(&dir).expect("clone dir");
+        git_in(&dir, &["init", "--quiet"]);
+        git_in(&dir, &["remote", "add", "origin", "/nowhere.git"]);
+        let results = run(&state, RunMode::Now, at(DAY)).expect("run");
+        let error = results[0].1.clone().expect_err("no such repository");
+        // set-url stored it as the URL, and fetch refused it as a path: no option was taken.
+        assert_eq!(git_in(&dir, &["remote", "get-url", "origin"]).trim(), url);
+        assert!(!error.contains("unknown option"), "{error}");
+        assert!(error.contains("'--upload-pack=touch"), "{error}");
+        assert!(!marker.exists());
     }
 
     #[test]

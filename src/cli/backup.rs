@@ -697,7 +697,7 @@ pub fn run_restore<R: Read>(args: Vec<String>, stdin: &mut R, stdin_is_tty: bool
         let Some(version) = versions.iter().find(|version| version.id == id) else {
             stderr.push_str(&format!(
                 "tsk restore: unknown version {}; run tsk restore to list them\n",
-                terminal_text(&id)
+                redacted_text(&id)
             ));
             return output(String::new(), stderr, 1);
         };
