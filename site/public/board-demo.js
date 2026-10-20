@@ -2148,6 +2148,8 @@ import { parseCapture } from "./capture.js";
   // click runs; an entry without one only informs.
   const verb = (key, label, shed, id = null) => ({ key, label, shed, id });
   const HELP = verb("?", "help", 0, "help");
+  // Essential like `? help`, but the first to go when even the essentials overflow.
+  const COMMANDS = verb(":", "commands", 0, "palette");
   const ADD = verb("+", "add", 1, "capture");
   const OPEN = verb("enter", "open", 0, "open");
   const UNDO = verb("u", "undo", 0, "undo");
@@ -2173,7 +2175,7 @@ import { parseCapture } from "./capture.js";
   }
 
   // The board's verb bar for a seat (the outer board or the project preview): what you are
-  // most likely to do next from the cursor, then the way out, then `? help`.
+  // most likely to do next from the cursor, then the way out, then `: commands · ? help`.
   function boardVerbs(form = state) {
     const rows = form === preview ? previewRows() : buildRows();
     const row = rows.find(
@@ -2182,7 +2184,7 @@ import { parseCapture } from "./capture.js";
     // After a delete the bar leads with its undo, while that undo is still the one `u` runs.
     const undo = form.undo?.kind === "delete" ? [UNDO] : [];
     if (form === state && projectsOverview())
-      return [...undo, OPEN, verb("/", "search", 1, "search"), HELP];
+      return [...undo, OPEN, verb("/", "search", 1, "search"), COMMANDS, HELP];
     // A header holds the cursor: it folds with ←, unfolds with →, and a sub-header that
     // names a board opens it.
     const folded = headerFolded(row, form);
@@ -2195,6 +2197,7 @@ import { parseCapture } from "./capture.js";
           ? verb("→", "unfold", 1, "unfold")
           : verb("←", "fold", 1, "fold"),
         ADD,
+        COMMANDS,
         HELP,
       ];
     }
@@ -2206,14 +2209,16 @@ import { parseCapture } from "./capture.js";
         UNDO,
         ...(task ? [OPEN, ...statusVerbs(task.status).slice(0, 1)] : []),
         ADD,
+        COMMANDS,
         HELP,
       ];
-    if (!task) return [HELP];
+    if (!task) return [COMMANDS, HELP];
     return [
       OPEN,
       ...statusVerbs(task.status),
       // The in-motion and done bars spend that seat on their lifecycle verbs.
       ...(["started", "done"].includes(task.status) ? [] : [ADD]),
+      COMMANDS,
       HELP,
     ];
   }
@@ -2254,18 +2259,22 @@ import { parseCapture } from "./capture.js";
 
   // Which entries a footer row keeps, as the app's fit_verbs decides: at most 7 entries (5
   // below 78 columns), then full labels, then short ones, then one whole entry dropped by
-  // `shed` and both measured again. Essentials that still do not fit lose the padding and
-  // the ` · ` separators, then drop from the right. Entries are whole or absent, never cut.
+  // `shed` and both measured again. Essentials that still do not fit lose `: commands`, then
+  // the padding and the ` · ` separators, then drop from the right. Entries are whole or
+  // absent, never cut.
   function fitVerbs(entries, width) {
     const budget = width >= 78 ? 7 : 5;
     const cells = (text) => [...text].length;
+    // The app paints a mutating key as `ctrl+<key>`: measure it so, and the demo's bare-key
+    // bar sheds exactly what the app's does.
+    const keyCells = (key) => cells(key) + (/^[sdobrxaeunfgq]$/.test(key) ? 5 : 0);
     const painted = (kept, compact, tight) =>
       (tight ? 0 : 1) +
       kept.reduce((sum, index) => {
         const { key, label } = entries[index];
         return (
           sum +
-          cells(key) +
+          keyCells(key) +
           1 +
           cells(compact ? compactVerbLabel(label) : label)
         );
@@ -2288,6 +2297,13 @@ import { parseCapture } from "./capture.js";
         if (painted(kept, compact, false) <= width)
           return { kept, compact, tight: false };
       if (!shedOne(kept)) break;
+    }
+    const at = kept.findIndex((index) => entries[index] === COMMANDS);
+    if (at >= 0) {
+      kept.splice(at, 1);
+      for (const compact of [false, true])
+        if (painted(kept, compact, false) <= width)
+          return { kept, compact, tight: false };
     }
     while (kept.length && painted(kept, true, true) > width) kept.pop();
     return { kept, compact: true, tight: true };

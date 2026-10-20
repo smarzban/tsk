@@ -22,5 +22,5 @@
 │                                        │
 │────────────────────────────────────────│
 │ tsk · #release @claude                 │
-│ enter open · ctrl+s start · ? help     │
+│ enter open · : commands · ? help       │
 └────────────────────────────────────────┘

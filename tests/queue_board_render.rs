@@ -1318,16 +1318,10 @@ fn compact_77x24_and_48x19_and_40x10_paint_glyph_title_only_rows_and_leq_5_verb_
 
         if let Some(verb_row) = geo.verb_row {
             let painted = trimmed(&rows[verb_row as usize]);
-            // Count key tokens from the fixture set that actually appear.
+            // Count the fixture set's whole `key label` entries that actually appear.
             let shown = todo_verbs()
                 .iter()
-                .filter(|v| {
-                    if v.key == "+" {
-                        painted.contains("+ capture")
-                    } else {
-                        painted.contains(v.key)
-                    }
-                })
+                .filter(|v| painted.contains(&format!("{} {}", v.key, v.label)))
                 .count();
             assert!(
                 shown <= 5,

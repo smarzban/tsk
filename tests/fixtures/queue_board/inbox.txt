@@ -22,5 +22,5 @@
 │                                                                                │
 │────────────────────────────────────────────────────────────────────────────────│
 │ desk                                                                           │
-│ enter open · ctrl+s start · ctrl+o inbox · ctrl+d done · + add · ? help        │
+│ enter open · ctrl+s start · ctrl+o inbox · ctrl+d done · : commands · ? help   │
 └────────────────────────────────────────────────────────────────────────────────┘

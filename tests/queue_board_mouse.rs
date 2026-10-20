@@ -723,7 +723,8 @@ fn assert_verb_parity(title: &str, status: HumanStatus, chord: &str, key: KeyCod
     )
     .expect("keyboard apply");
 
-    let hits = board_hit_map(STANDARD, &model_mouse);
+    // The started bar's seven seats outgrow 80 columns; read it where every seat fits.
+    let hits = board_hit_map(Rect::new(0, 0, 100, 24), &model_mouse);
     let region = verb_hit_for_chord(&model_mouse, &hits, chord);
     let mouse_intent =
         click(region, &model_mouse, &hits).unwrap_or_else(|| panic!("no mouse intent for {chord}"));
@@ -792,6 +793,7 @@ fn click_and_wheel_match_keyboard_effects_for_each_control() {
     assert_verb_parity("d", HumanStatus::Ready, "d", KeyCode::Char('d'));
     assert_verb_parity("b", HumanStatus::Started, "b", KeyCode::Char('b'));
     assert_verb_parity("question", HumanStatus::Ready, "?", KeyCode::Char('?'));
+    assert_verb_parity("commands", HumanStatus::Ready, ":", KeyCode::Char(':'));
     assert_verb_parity("add", HumanStatus::Ready, "+", KeyCode::Char('+'));
     // Archive has no bar seat: it lives in `?` / `:` and on ctrl+f.
     assert_verb_parity("unblock", HumanStatus::Blocked, "b", KeyCode::Char('b'));
@@ -2342,6 +2344,27 @@ fn the_wheel_keeps_scrolling_while_a_step_add_is_open() {
         .iter()
         .any(|row| row.contains("draft survives wheel")));
     assert_eq!(model.input_mode(), BoardInputMode::EditStep);
+}
+
+#[test]
+fn the_board_bar_ends_commands_then_help_and_a_click_on_commands_opens_the_palette() {
+    let (mut domain, mut model, _) = board_with_task("Fix flake", HumanStatus::Started);
+    let keys: Vec<&str> = board_verb_items(&model).iter().map(|v| v.key).collect();
+    assert_eq!(keys[keys.len() - 2..], [":", "?"], "bar: {keys:?}");
+    let hits = board_hit_map(STANDARD, &model);
+    let intent = click(verb_hit_for_chord(&model, &hits, ":"), &model, &hits);
+    assert_eq!(intent, Some(BoardIntent::OpenCommandPalette));
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenCommandPalette,
+        None,
+    )
+    .expect("open the palette");
+    assert_eq!(
+        model.command_surface(),
+        tsk_tui::ui::board::CommandSurface::Palette
+    );
 }
 
 #[test]

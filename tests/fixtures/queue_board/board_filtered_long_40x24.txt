@@ -22,5 +22,5 @@
 │────────────────────────────────────────│
 │ tsk · #release-coordination            │
 │ @integration-agent                     │
-│ enter open · ctrl+s start · ? help     │
+│ enter open · : commands · ? help       │
 └────────────────────────────────────────┘

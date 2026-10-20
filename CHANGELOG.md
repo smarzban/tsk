@@ -42,6 +42,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 - `ctrl+b` and `ctrl+r` open the block and review cards; `Enter` on an empty card still blocks or sets review at once.
 - A footer too narrow for its actions drops whole actions, least likely first, instead of cutting the last one with `…`.
+- The board footer always shows `: commands` beside `? help`; clicking it opens the command palette.
 - Word jumps match macOS Option+arrow: `alt+→` or `ctrl+→` lands at the end of the next word, `alt+←` or `ctrl+←` at the start of the previous one.
 - A row whose title wraps above an open peek or live line shows a dim `│` beside each wrapped line, so the row reads as one block.
 - Help, footers, and the palette name each action verb first and in full (`ctrl+b` **block / unblock**). Help's **SURFACE CONTROLS** group is renamed **PICKERS & EDITING**.

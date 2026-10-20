@@ -648,9 +648,9 @@ fn stage_zero_and_full_task_render_the_standard_tier_at_130x24() {
         .iter()
         .filter(|hit| matches!(hit.target, QueueHitTarget::Verb(_)))
         .count();
-    // The bar is a fixed shape (open · status verbs · help): a started row paints
-    // six entries at every tier, well inside the standard budget.
-    assert_eq!(verbs, 6, "started row bar: {verbs}");
+    // The bar is a fixed shape (open · status verbs · commands · help): a started row
+    // paints seven entries at 130 columns, exactly the standard budget.
+    assert_eq!(verbs, 7, "started row bar: {verbs}");
     assert!(verbs <= usize::from(STANDARD_VERB_BAR_ENTRY_BUDGET));
 
     to_stage(&mut domain, &mut model, WideStage::FullTask);

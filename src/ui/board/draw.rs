@@ -524,16 +524,17 @@ fn relaunch_overlay<'a>(prompt: &DispatchPrompt, relaunch: &RelaunchPrompt) -> Q
 /// Verb bar for the base board list.
 ///
 /// The bar is a prompt, not a keymap: the few things you are most likely to do next from
-/// where the cursor is, then the way out, then `? help`. Everything else lives in `?` and
-/// `:`. Every surface reads the same shape (primary · status · create · out · help). A
-/// narrow footer drops the status and create seats from the right, whole; the primary
-/// action, the way out, and `? help` stay.
+/// where the cursor is, then the way out, then `: commands · ? help`. Everything else lives
+/// in `:` and `?`. Every surface reads the same shape (primary · status · create · out ·
+/// commands · help). A narrow footer drops the status and create seats from the right,
+/// whole; the primary action, the way out, `: commands`, and `? help` stay.
 pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
     const HELP: VerbEntry<'static> = VerbEntry {
         key: "?",
         label: "help",
         shed: 0,
     };
+    const COMMANDS: VerbEntry<'static> = render::COMMANDS_VERB;
     const ADD: VerbEntry<'static> = VerbEntry {
         key: "+",
         label: "add",
@@ -655,6 +656,7 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
                 label: "close",
                 shed: 0,
             },
+            COMMANDS,
             HELP,
         ];
     }
@@ -677,7 +679,7 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
     if model.nav_tab() == crate::ui::queue::NavTab::Projects
         && matches!(model.projects_view(), ProjectsView::Overview)
     {
-        let mut items = Vec::with_capacity(4);
+        let mut items = Vec::with_capacity(5);
         if undo_seat {
             items.push(UNDO);
         }
@@ -688,6 +690,7 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
                 label: "search",
                 shed: 1,
             },
+            COMMANDS,
             HELP,
         ]);
         return items;
@@ -700,7 +703,7 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
             .selection_id
             .and_then(|id| model.group_header_target(id))
             .is_some_and(|target| model.group_target_opens(&target));
-        let mut items = Vec::with_capacity(5);
+        let mut items = Vec::with_capacity(6);
         if undo_seat {
             items.push(UNDO);
         }
@@ -720,12 +723,12 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
                 shed: 1,
             }
         });
-        items.extend([ADD, HELP]);
+        items.extend([ADD, COMMANDS, HELP]);
         return items;
     }
 
-    // On a task row the undo seat keeps only the selected row's first truthful status verb:
-    // exactly the five-seat compact budget with a selection, so no tier clips an action. The
+    // On a task row the undo seat keeps only the selected row's first truthful status verb,
+    // so the compact budget sheds only `+ add` and no tier clips an action. The
     // remaining status verbs stay on their keys and in `:`. On an archived row `ctrl+u`
     // restores that row instead, so the seat stands down there rather than name the wrong
     // action.
@@ -741,10 +744,11 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
             }
         }
         armed.push(ADD);
+        armed.push(COMMANDS);
         armed.push(HELP);
         return armed;
     }
-    let mut entries = Vec::with_capacity(6);
+    let mut entries = Vec::with_capacity(7);
     if let Some(task) = selected_task {
         entries.push(OPEN);
         entries.extend(status_verbs(task.status));
@@ -754,7 +758,7 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
             entries.push(ADD);
         }
     }
-    entries.push(HELP);
+    entries.extend([COMMANDS, HELP]);
     entries
 }
 

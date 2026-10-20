@@ -401,7 +401,7 @@ test("a narrow verb bar drops whole hints and stays one row", async ({
 }) => {
   await open(page, 40);
   const footer = page.locator(".tsk-verbs");
-  await expect(footer).toHaveText("enter open · d done · ? help");
+  await expect(footer).toHaveText("enter open · : commands · ? help");
   const rows = await footer.evaluate(
     (el) =>
       el.getBoundingClientRect().height /

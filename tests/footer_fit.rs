@@ -192,7 +192,7 @@ fn card_legends() -> Vec<(&'static str, Vec<Entry>)> {
 
 /// Why `row` is not whole `entries`: a cut, an unknown or reordered piece, or a missing
 /// essential. `None` when the row is a clean fit.
-fn misfit(row: &str, entries: &[Entry]) -> Option<String> {
+fn misfit(row: &str, entries: &[Entry], width: u16) -> Option<String> {
     let body = row.trim();
     if body.is_empty() {
         return Some("the footer is empty".to_string());
@@ -217,9 +217,18 @@ fn misfit(row: &str, entries: &[Entry]) -> Option<String> {
             None => return Some(format!("{piece:?} in {body:?} is not a whole entry")),
         }
     }
+    // `: commands` is the one essential a row too narrow for every essential gives up.
+    let essentials: Vec<&Entry> = entries.iter().filter(|entry| entry.essential).collect();
+    let essentials_width = 1
+        + essentials
+            .iter()
+            .map(|entry| entry.key.chars().count() + 1 + entry.label.chars().count())
+            .sum::<usize>()
+        + 3 * essentials.len().saturating_sub(1);
     entries
         .iter()
         .enumerate()
+        .filter(|(_, entry)| !(entry.key == ":" && essentials_width > usize::from(width)))
         .find(|(index, entry)| entry.essential && !shown.contains(index))
         .map(|(_, entry)| format!("{body:?} drops essential {} {}", entry.key, entry.label))
 }
@@ -496,7 +505,7 @@ fn every_verb_bar_paints_whole_entries_and_keeps_its_essentials_at_every_width()
         for width in WIDTHS {
             let painted = rows(&model, width, height(width));
             let bar = painted.last().expect("verb row");
-            if let Some(why) = misfit(bar, &entries) {
+            if let Some(why) = misfit(bar, &entries, width) {
                 failures.push(format!("{name} at {width}: {why}"));
             }
         }
@@ -578,7 +587,7 @@ fn every_card_legend_paints_whole_entries_and_keeps_its_essentials_at_every_widt
                 .iter()
                 .find(|(legend, _)| *legend == want)
                 .expect("a declared legend for every card");
-            if let Some(why) = misfit(inner, entries) {
+            if let Some(why) = misfit(inner, entries, width) {
                 failures.push(format!("{name} at {width}: {why}"));
             }
         }

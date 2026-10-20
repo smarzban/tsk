@@ -1464,6 +1464,7 @@ fn a_sub_header_verb_bar_offers_open_and_its_fold_arrow() {
             ("enter", "open"),
             ("←", "fold"),
             ("+", "add"),
+            (":", "commands"),
             ("?", "help")
         ]
     );
@@ -1494,7 +1495,12 @@ fn enter_on_the_desk_sub_header_on_the_desk_keeps_search_and_marks() {
         .collect();
     assert_eq!(
         bar,
-        [("←", "fold"), ("+", "add"), ("?", "help")],
+        [
+            ("←", "fold"),
+            ("+", "add"),
+            (":", "commands"),
+            ("?", "help")
+        ],
         "the bar never offers an Enter that does nothing"
     );
     board.apply(BoardIntent::FocusSearch);

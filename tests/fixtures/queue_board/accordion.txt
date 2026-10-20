@@ -22,5 +22,5 @@
 │                                                                                │
 │────────────────────────────────────────────────────────────────────────────────│
 │ desk                                                                           │
-│ enter open · ctrl+d done · ctrl+n next · ctrl+o inbox · ctrl+b block · ? help  │
+│ enter open · ctrl+d done · ctrl+n next · ctrl+o inbox · : commands · ? help    │
 └────────────────────────────────────────────────────────────────────────────────┘

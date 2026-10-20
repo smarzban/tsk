@@ -28,5 +28,5 @@
 │                                │                                                                             │
 │──────────────────────────────────────────────────────────────────────────────────────────────────────────────│
 │ tsk                                                                               index ◂ project    ← index │
-│ enter open · ctrl+d done · ctrl+n next · ctrl+o inbox · ctrl+b block · ? help                                │
+│ enter open · ctrl+d done · ctrl+n next · ctrl+o inbox · ctrl+b block · : commands · ? help                   │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

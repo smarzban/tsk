@@ -4100,8 +4100,8 @@ fn delete_notice_prefixes_the_board_verb_bar_with_undo_until_undone() {
     let armed: Vec<&str> = board_verb_items(&model).iter().map(|v| v.key).collect();
     assert_eq!(
         armed,
-        vec!["u", "enter", "s", "+", "?"],
-        "armed prompt: undo · open · the row's first truthful status verb · add · help"
+        vec!["u", "enter", "s", "+", ":", "?"],
+        "armed prompt: undo · open · the row's first truthful status verb · add · commands · help"
     );
 
     // The seat belongs to the notice, and the notice belongs to the plain board: any
@@ -4119,7 +4119,7 @@ fn delete_notice_prefixes_the_board_verb_bar_with_undo_until_undone() {
             .iter()
             .map(|v| v.key)
             .collect::<Vec<_>>(),
-        vec!["u", "enter", "s", "+", "?"],
+        vec!["u", "enter", "s", "+", ":", "?"],
         "the seat returns with the notice"
     );
 
@@ -4132,8 +4132,8 @@ fn delete_notice_prefixes_the_board_verb_bar_with_undo_until_undone() {
     let armed: Vec<&str> = board_verb_items(&model).iter().map(|v| v.key).collect();
     assert_eq!(
         armed,
-        vec!["u", "+", "?"],
-        "no selection: undo · add · help"
+        vec!["u", "+", ":", "?"],
+        "no selection: undo · add · commands · help"
     );
 
     apply_intent(&mut domain, &mut model, BoardIntent::Undo, None).expect("undo");
@@ -5099,7 +5099,7 @@ fn ctrl_r_toggles_review_and_ready_and_refuses_on_done() {
 
     // Review lives in NEEDS YOU, so the row stays selected and the bar keeps done/block.
     let verbs: Vec<&str> = board_verb_items(&model).iter().map(|v| v.key).collect();
-    assert_eq!(verbs, vec!["enter", "d", "b", "o", "+", "?"]);
+    assert_eq!(verbs, vec!["enter", "d", "b", "o", "+", ":", "?"]);
 
     apply_intent(&mut domain, &mut model, review.clone(), None).expect("back to ready");
     assert_eq!(domain.get(id).expect("task").status, HumanStatus::Ready);
@@ -6670,8 +6670,8 @@ fn help_card_lists_ctrl_f_and_the_verb_bar_keeps_archive_out_of_its_seats() {
     );
     assert_eq!(
         verbs.iter().map(|entry| entry.key).collect::<Vec<_>>(),
-        vec!["enter", "s", "o", "d", "+", "?"],
-        "ready row bar: open · start · inbox · done · add · help"
+        vec!["enter", "s", "o", "d", "+", ":", "?"],
+        "ready row bar: open · start · inbox · done · add · commands · help"
     );
 
     // The expanded archived group: header shows its toggle, a row shows `f unarchive`.
@@ -6701,7 +6701,12 @@ fn help_card_lists_ctrl_f_and_the_verb_bar_keeps_archive_out_of_its_seats() {
             .iter()
             .map(|entry| (entry.key, entry.label))
             .collect::<Vec<_>>(),
-        vec![("←", "fold"), ("+", "add"), ("?", "help")],
+        vec![
+            ("←", "fold"),
+            ("+", "add"),
+            (":", "commands"),
+            ("?", "help")
+        ],
         "an open archived header offers ← fold, never Enter"
     );
     apply_intent(&mut domain, &mut model, BoardIntent::FoldHeader, None).expect("fold");
@@ -7181,7 +7186,9 @@ fn enter_on_the_archived_tab_opens_a_read_only_focus_that_persists_nothing() {
         "the chip reads `<name> · archived`:\n{frame}"
     );
     assert!(
-        frame.contains("ctrl+u unarchive \u{b7} enter open \u{b7} esc close \u{b7} ? help"),
+        frame.contains(
+            "ctrl+u unarchive \u{b7} enter open \u{b7} esc close \u{b7} : commands \u{b7} ? help"
+        ),
         "the focus verb bar offers only what works here:\n{frame}"
     );
     let backend = TestBackend::new(80, 24);
