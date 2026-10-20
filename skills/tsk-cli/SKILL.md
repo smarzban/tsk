@@ -56,14 +56,21 @@ task's running agent, add `--send`: it sends only that reply and prints `sent to
    text only: trust the exit and refusal codes, then verify with `tsk list … --json`.
 3. **Never blind-retry.** `add`, `status`, `edit`, and `archive` are safe to repeat. `reply`,
    `dispatch`, `steps add`, `steps toggle`, and `steps remove` are not: read the task first.
-4. **Use a known project name or a full path.** With `-p <project>`, unknown or ambiguous names refuse; only an existing absolute directory creates a project ([scope](https://gettsk.sh/docs/cli.md#scope)).
+4. **Use a known project name or a full path.** For `tsk add -p <project>`,
+   unknown or ambiguous names refuse; `tsk list -p` lists nothing for them. Only an
+   existing absolute directory creates a project ([scope](https://gettsk.sh/docs/cli.md#scope)).
 5. **Never pass `--state-dir`** unless the user asked. It points at a different board.
 6. **Ignore notice rows.** Rows the board paints as `N1`… are for the user; no command reaches them.
 7. **Values that start with `-` need `=`:** `--title="-fix parser"`. For `tsk reply`, put `--` first.
-8. **Names are exact.** `--assignee` takes a `config.toml` profile, `--base` an existing branch, `--thread` a [thread name](https://gettsk.sh/docs/capture.md#thread-names).
-9. **After means wait.** `tsk edit T13 --after T12` holds T13 until T12 is done ([after](https://gettsk.sh/docs/board.md#after)).
-10. **Steps are the user's plan.** Add them only when the user wants order of work tracked ([steps](https://gettsk.sh/docs/cli.md#steps)).
-11. **Many tasks at once:** `cat plan.json | tsk add`; on exit 1, retry only the `failed` items ([JSON plans](https://gettsk.sh/docs/cli.md#json-plans)).
+8. **Names are exact.** `--assignee` takes a `config.toml` profile, `--base` an existing branch, and
+   `--thread` a [thread name](https://gettsk.sh/docs/capture.md#thread-names)
+   ([add](https://gettsk.sh/docs/cli.md#add)).
+9. **After means wait.** `tsk edit T13 --after T12` holds T13 until T12 is done
+   ([after](https://gettsk.sh/docs/board.md#after)).
+10. **Steps are the user's plan.** Add them only when the user wants order of work tracked, never
+    for your own bookkeeping ([steps](https://gettsk.sh/docs/cli.md#steps)).
+11. **Many tasks at once:** `cat plan.json | tsk add`; on exit 1, retry only the `failed` items
+    ([JSON plans](https://gettsk.sh/docs/cli.md#json-plans)).
 
 ## Reading the board
 
