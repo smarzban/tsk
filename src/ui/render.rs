@@ -814,6 +814,8 @@ pub enum QueueOverlay<'a> {
         /// The assignee picker's cursor is on a person: the legend offers `ctrl+x remove`.
         removable: bool,
     },
+    /// The task picker: a search box with the chosen tasks pinned above the matches.
+    AfterPicker(AfterPickerPaint<'a>),
     /// Inline title edit surface (accordion row on standard; full takeover on compact).
     EditTitle { draft: String, cursor_col: u16 },
     /// Full-width notes editor (standard or compact takeover).
@@ -1186,6 +1188,8 @@ pub enum QueueHitTarget {
     FormBase,
     /// Shared-form `after` portion of the task-page footer.
     FormAfter,
+    /// One number of the task-page footer's read-only `before T6, T7`: a click opens it.
+    FooterBefore(u64),
     /// Shared-form thread portion of the task-page footer.
     FormThread,
     /// One painted steps step row on the open task page, indexed by the step's
@@ -2136,7 +2140,8 @@ fn paint_footer(
             | QueueOverlay::Help { .. }
             | QueueOverlay::BlockCard(_)
             | QueueOverlay::CleanupConfirm { .. }
-            | QueueOverlay::ScopeDropdown { .. } => &[],
+            | QueueOverlay::ScopeDropdown { .. }
+            | QueueOverlay::AfterPicker(_) => &[],
             QueueOverlay::QuickAdd { recovery, .. } if *recovery => &[],
             QueueOverlay::QuickAdd { .. } => QUICK_ADD_VERBS,
             QueueOverlay::Search { .. } => model.verb_items,
@@ -2474,6 +2479,9 @@ fn paint_overlay(
             paint_scope_dropdown(
                 frame, geo, surface, options, *selected, *tabs, *title, *query, legend, hits,
             );
+        }
+        QueueOverlay::AfterPicker(picker) => {
+            paint_after_picker(frame, geo, surface, picker, hits);
         }
         QueueOverlay::EditTitle {
             ref draft,
@@ -4063,11 +4071,22 @@ fn paint_task_page(
         let mut component_x = 0u16;
         let mut thread_slot = None;
         let mut after_slot = None;
+        let mut before_slots: Vec<(u64, u16, u16)> = Vec::new();
         for component in meta.split(" · ") {
             if component_x >= meta_scope_x {
                 break;
             }
             let component_width = u16::try_from(display_width(component)).unwrap_or(u16::MAX);
+            if let Some(list) = component.strip_prefix("before ") {
+                let mut x = component_x.saturating_add(7);
+                for item in list.split(", ") {
+                    let cells = u16::try_from(display_width(item)).unwrap_or(u16::MAX);
+                    if let Some(number) = item.strip_prefix('T').and_then(|n| n.parse().ok()) {
+                        before_slots.push((number, x, cells));
+                    }
+                    x = x.saturating_add(cells).saturating_add(2);
+                }
+            }
             if component == "thread" || component.starts_with('#') {
                 thread_slot = Some((component_x, component_width));
             }
@@ -4124,6 +4143,13 @@ fn paint_task_page(
                 }
                 if !footer_input_open {
                     hits.push(target, area);
+                }
+            }
+        }
+        if !footer_input_open {
+            for (number, start, cells) in before_slots {
+                for area in footer_field_rects(meta, &rows, &lay, start, cells, width) {
+                    hits.push(QueueHitTarget::FooterBefore(number), area);
                 }
             }
         }
@@ -5152,6 +5178,225 @@ fn paint_scope_dropdown(
     }
 }
 
+/// What the task picker paints: its rows are the pinned block (the chosen tasks, then
+/// **clear all**) followed by the matches, in the model's visible order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AfterPickerPaint<'a> {
+    /// `T5 runs after`.
+    pub title: &'a str,
+    pub query: &'a str,
+    pub rows: &'a [String],
+    /// How many leading rows are the pinned block.
+    pub pinned_rows: usize,
+    pub selected: usize,
+}
+
+/// The task picker's legend.
+const AFTER_PICKER_FOOTER: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "enter",
+        label: "save",
+        shed: 0,
+    },
+    VerbEntry {
+        key: "space",
+        label: "select",
+        shed: 1,
+    },
+    VerbEntry {
+        key: "ctrl+x",
+        label: "remove",
+        shed: 2,
+    },
+    VerbEntry {
+        key: "esc",
+        label: "close",
+        shed: 0,
+    },
+];
+
+/// The match window keeps this many rows whatever the match count, so the card holds one
+/// size while the query changes.
+const AFTER_PICKER_MATCH_ROWS: usize = 8;
+
+/// The task picker card: the query row, the pinned block, then a fixed-height match window
+/// with a scroll bar when the matches overflow it. Every row is a `ListPickerOption` hit in
+/// visible order.
+fn paint_after_picker(
+    frame: &mut Frame<'_>,
+    geo: &TierGeometry,
+    surface: Rect,
+    picker: &AfterPickerPaint<'_>,
+    hits: &mut QueueHitMap,
+) {
+    if geo.row_width == 0 || geo.height == 0 {
+        return;
+    }
+    let bounds = Rect::new(0, 0, geo.row_width, geo.height);
+    let capacity = bounds
+        .height
+        .saturating_sub(modal_chrome_rows(geo.tier, true)) as usize;
+    // The query row and the two rules around the pinned block.
+    let fixed = 3;
+    let avail = capacity.saturating_sub(fixed).max(2);
+    let pinned_rows = picker.pinned_rows.min(picker.rows.len());
+    // Nothing pinned still shows one row, saying so.
+    let pinned_block = pinned_rows.max(1);
+    let match_window = AFTER_PICKER_MATCH_ROWS
+        .min(avail.saturating_sub(pinned_block.min(avail - 1)))
+        .max(1);
+    let pinned_shown = pinned_block.min(avail.saturating_sub(match_window)).max(1);
+    let matches = &picker.rows[pinned_rows..];
+    let selected = picker.selected.min(picker.rows.len().saturating_sub(1));
+    let window = |selected_in: Option<usize>, len: usize, shown: usize| match selected_in {
+        Some(index) if index >= shown => (index + 1 - shown).min(len.saturating_sub(shown)),
+        _ => 0,
+    };
+    let pinned_scroll = window(
+        (selected < pinned_rows).then_some(selected),
+        pinned_rows,
+        pinned_shown,
+    );
+    let match_scroll = window(
+        selected.checked_sub(pinned_rows),
+        matches.len(),
+        match_window,
+    );
+
+    let content = paint_modal_card(
+        frame,
+        geo,
+        surface,
+        bounds,
+        ModalCardSpec {
+            title: picker.title,
+            content_rows: (fixed + pinned_shown + match_window) as u16,
+            min_content_width: 0,
+            legend: AFTER_PICKER_FOOTER,
+            dismiss: None,
+            legend_hits: None,
+        },
+        hits,
+    );
+    if content.width == 0 || content.height == 0 {
+        return;
+    }
+    let width = content.width;
+    let row_rect = |offset: usize| Rect::new(content.x, content.y + offset as u16, width, 1);
+    let mut offset = 0usize;
+    let fits = |offset: usize| offset < content.height as usize;
+
+    // `> query` with the caret after it; an empty query says what to type.
+    let query_line = if picker.query.is_empty() {
+        Line::from(vec![
+            Span::styled("> ".to_string(), style_bold()),
+            Span::styled("type a number or words".to_string(), style_dim()),
+        ])
+    } else {
+        paint_bounded_line(&format!("> {}", picker.query), width, style_bold())
+    };
+    put_line_at(frame, surface, row_rect(offset), query_line);
+    let caret = 2 + display_width(picker.query);
+    place_edit_cursor_at(
+        frame,
+        local_rect(surface, row_rect(offset)),
+        0,
+        u16::try_from(caret).unwrap_or(u16::MAX),
+    );
+    offset += 1;
+
+    let rule = |frame: &mut Frame<'_>, offset: usize| {
+        if fits(offset) {
+            put_line_at(
+                frame,
+                surface,
+                row_rect(offset),
+                Line::from(Span::styled("─".repeat(width as usize), style_dim())),
+            );
+        }
+    };
+    rule(frame, offset);
+    offset += 1;
+
+    let mut paint_row = |frame: &mut Frame<'_>, offset: usize, index: usize, text_width: u16| {
+        if !fits(offset) {
+            return;
+        }
+        let is_selected = index == selected;
+        let marker = if is_selected { "▸ " } else { "  " };
+        let text = format!("{marker}{}", picker.rows[index]);
+        let style = if is_selected {
+            style_reverse()
+        } else {
+            style_plain()
+        };
+        let rect = Rect::new(content.x, content.y + offset as u16, text_width, 1);
+        put_line_at(
+            frame,
+            surface,
+            rect,
+            paint_bounded_line(&text, text_width, style),
+        );
+        hits.push(QueueHitTarget::ListPickerOption(index), rect);
+        hits.push_copyable(rect);
+    };
+    if pinned_rows == 0 {
+        if fits(offset) {
+            put_line_at(
+                frame,
+                surface,
+                row_rect(offset),
+                paint_bounded_line("  nothing selected", width, style_dim()),
+            );
+        }
+    } else {
+        for (slot, index) in (pinned_scroll..pinned_rows).take(pinned_shown).enumerate() {
+            paint_row(frame, offset + slot, index, width);
+        }
+    }
+    offset += pinned_shown;
+    rule(frame, offset);
+    offset += 1;
+
+    let overflow = scrollbar::needs_scrollbar(matches.len(), match_window);
+    let text_width = if overflow {
+        width.saturating_sub(scrollbar::SCROLLBAR_RESERVE_COLS)
+    } else {
+        width
+    };
+    if matches.is_empty() && !picker.query.trim().is_empty() && fits(offset) {
+        put_line_at(
+            frame,
+            surface,
+            row_rect(offset),
+            paint_bounded_line("  no matching tasks", width, style_dim()),
+        );
+    }
+    for slot in 0..match_window.min(matches.len().saturating_sub(match_scroll)) {
+        paint_row(
+            frame,
+            offset + slot,
+            pinned_rows + match_scroll + slot,
+            text_width,
+        );
+    }
+    if overflow {
+        let shown = match_window.min((content.height as usize).saturating_sub(offset));
+        let track = Rect::new(
+            content.x + width.saturating_sub(1),
+            content.y + offset as u16,
+            1,
+            shown as u16,
+        );
+        scrollbar::paint(
+            frame,
+            local_rect(surface, track),
+            match_scroll,
+            matches.len(),
+        );
+    }
+}
+
 enum ListRow {
     Blank,
     /// Section header row for NEEDS YOU, IN MOTION, ON DECK and the drawer.
@@ -5671,7 +5916,10 @@ fn build_list_rows_inner(
             Some(meta.clone()),
         );
         let selected = model.selection_id == Some(task.id)
-            && !matches!(model.overlay, QueueOverlay::ScopeDropdown { .. });
+            && !matches!(
+                model.overlay,
+                QueueOverlay::ScopeDropdown { .. } | QueueOverlay::AfterPicker(_)
+            );
         let marked = model.marked_ids.contains(&task.id);
         // A long title wraps onto continuation lines indented under its own first
         // row; every painted line carries the task's hit target and selection.

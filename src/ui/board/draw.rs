@@ -2425,6 +2425,15 @@ impl OverlayPayloads {
             return Some(launch_overlay(prompt));
         }
         if model.input_mode() == BoardInputMode::ListPicker {
+            if let Some(title) = model.after_picker_title() {
+                return Some(QueueOverlay::AfterPicker(render::AfterPickerPaint {
+                    title,
+                    query: self.list_picker_query.as_deref().unwrap_or(""),
+                    rows: &self.list_picker_options,
+                    pinned_rows: model.after_picker_pinned_rows(),
+                    selected: self.list_picker_selected,
+                }));
+            }
             let title = match model.list_picker_kind() {
                 Some(crate::ui::board::ListPickerKind::ProjectsView) => "view",
                 Some(crate::ui::board::ListPickerKind::Assignee) => "assignee",

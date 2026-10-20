@@ -24,7 +24,7 @@ The footer reads `@assignee · ⎇ <base> · after T202 · before T203 · #threa
 | `@assignee` | The [assignee](/docs/dispatch/#assign): an agent profile, you, or a person. An unassigned task shows `+ assign` when at least one [agent profile](/docs/storage/#configuration) exists. Click to pick |
 | `⎇ <base>` | The base branch. Unset, it shows the repository default, such as `⎇ main (default)`. Click to pick |
 | `after T202, T205` | The tasks this one [runs after](/docs/board/#after). Shown only when set. Click to pick |
-| `before T203` | The tasks that run after this one. Read-only: it changes when you edit theirs |
+| `before T203` | The tasks that run after this one. Read-only: it changes when you edit theirs. Click a number to open that task |
 | `#thread · project` | The thread and the project, or desk |
 
 Below it, the action bar lists the page's keys. In view mode it reads `ctrl+e edit`, the task's status actions, `esc close`, and `: commands`. Each one is clickable; `: commands` opens the command palette.
@@ -52,7 +52,7 @@ The footer shows the same fields in the same order. Clicking a field during an e
 - To assign a new person, use `@` outside an edit and type their name.
 - `Enter` or a second click on Thread opens its editor.
 - The Base picker lists the repository default first, such as **default (main)**, then local and `origin/*` branches. It refreshes after a background fetch. **default** clears the base.
-- The After picker lists tasks that are not done, this project's first. `Space` ticks several and **none** clears. A choice that would close a loop is refused, such as `T202 already runs after T205`.
+- The After picker is a search box over the other tasks. [Task picker](/docs/board/#task-picker).
 
 ### Without an edit
 

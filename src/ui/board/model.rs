@@ -295,7 +295,7 @@ pub enum ListPickerKind {
     WaitingOn,
     /// Explicit dispatch base, including the leading remote-default choice.
     Base,
-    /// The tasks a task runs after: tick several with Space, `none` clears.
+    /// The tasks a task runs after: a search box over the tasks, the chosen ones pinned on top.
     After,
     /// The desk's filter (bare `t` on the desk): a threads tab and a projects tab.
     DeskFilter,
@@ -335,10 +335,12 @@ pub enum ListPickerValue {
     TypedName,
     /// Set this exact branch name, or clear the explicit base with `None`.
     Base(Option<String>),
-    /// One task the target may run after, by number.
+    /// A task-picker match the target may run after, by number.
     After(u64),
-    /// Run after nothing.
-    AfterNone,
+    /// A task the target runs after, pinned on top of the task picker.
+    AfterPinned(u64),
+    /// The task picker's **clear all** row: unpin every task.
+    AfterClearAll,
     /// Informational row, never a selectable or confirmable value.
     Unavailable,
     DeskProjectAll,
@@ -348,13 +350,17 @@ pub enum ListPickerValue {
     Sort(SortBy),
 }
 
-/// The tick column a task-picker label leads with.
-const AFTER_TICKED: &str = "✓ ";
-const AFTER_UNTICKED: &str = "  ";
+/// The task picker's matches stay empty until the query names something.
+pub(super) const AFTER_CLEAR_ALL: &str = "clear all";
 
-fn after_option_label(ticked: bool, rest: &str) -> String {
-    let tick = if ticked { AFTER_TICKED } else { AFTER_UNTICKED };
-    format!("{tick}{rest}")
+/// Whether a task-picker query term names `number` (`202`, `T202`, a prefix of either) or
+/// appears in the task's `text` (its title and project).
+fn after_term_matches(term: &str, number: u64, text: &str) -> bool {
+    let digits = term.strip_prefix('t').unwrap_or(term);
+    (!digits.is_empty()
+        && digits.chars().all(|c| c.is_ascii_digit())
+        && number.to_string().starts_with(digits))
+        || text.contains(term)
 }
 
 /// A waiting-on picker row: you as your handle, as in the assignee picker, else the record's
@@ -416,10 +422,13 @@ pub(super) struct BasePickerTarget {
 pub(super) struct AfterPickerTarget {
     pub ids: Vec<Uuid>,
     pub edit_draft: bool,
-    /// The ticked numbers, in the order they were ticked.
-    pub ticked: Vec<u64>,
-    /// Current links the picker does not list (a done prerequisite): kept unless `none`.
-    pub kept: Vec<u64>,
+    /// The card title: `T5 runs after`, `3 tasks run after`, `new task runs after`.
+    pub title: String,
+    /// The chosen numbers, in display order: Enter saves exactly these.
+    pub pinned: Vec<u64>,
+    /// Labels for current links the search never offers (a done or archived prerequisite),
+    /// so they still show pinned and can be removed.
+    pub unlisted: Vec<(u64, String)>,
 }
 
 /// An open searchable list picker (thread filter / projects view / assignee / base / after).
@@ -5426,10 +5435,9 @@ impl BoardModel {
         picker.base_target
     }
 
-    /// Open the task picker over `ids` (or the open form's draft): the tasks not done, the
-    /// target's project first, then the rest with their project, then **none**. `current` is
-    /// ticked; a current link the picker does not list (a done task) is kept. Space ticks,
-    /// Enter applies.
+    /// Open the task picker over `ids` (or the open form's draft): a search box over the tasks
+    /// not done, the target's project first. `current` starts pinned, a done or archived
+    /// prerequisite too, so every link can be removed. Space pins a match, Enter saves.
     pub(super) fn open_after_picker(
         &mut self,
         ids: Vec<Uuid>,
@@ -5452,46 +5460,63 @@ impl BoardModel {
             })
             .collect();
         candidates.sort_by_key(|task| (task.scope != *scope, task.number));
-        let listed: Vec<u64> = candidates.iter().filter_map(|task| task.number).collect();
-        let ticked: Vec<u64> = current
-            .iter()
-            .copied()
-            .filter(|number| listed.contains(number))
-            .collect();
-        let kept: Vec<u64> = current
-            .iter()
-            .copied()
-            .filter(|number| !listed.contains(number))
-            .collect();
-        let mut options: Vec<ListPickerOption> = candidates
+        let label = |task: &Task, number: u64| {
+            let place = if task.scope == *scope {
+                String::new()
+            } else {
+                match &task.scope {
+                    TaskScope::Project { path } => {
+                        format!(" · {}", crate::ui::render::short_project(path))
+                    }
+                    TaskScope::Global => " · desk".to_string(),
+                }
+            };
+            format!("T{number} {}{place}", terminal_text(&task.title))
+        };
+        let options: Vec<ListPickerOption> = candidates
             .iter()
             .map(|task| {
                 let number = task.number.expect("listed tasks are numbered");
-                let place = if task.scope == *scope {
-                    String::new()
-                } else {
-                    match &task.scope {
-                        TaskScope::Project { path } => {
-                            format!(" · {}", crate::ui::render::short_project(path))
-                        }
-                        TaskScope::Global => " · desk".to_string(),
-                    }
-                };
                 ListPickerOption {
-                    label: after_option_label(
-                        ticked.contains(&number),
-                        &format!("T{number} {}{place}", terminal_text(&task.title)),
-                    ),
+                    label: label(task, number),
                     count: None,
                     value: ListPickerValue::After(number),
                 }
             })
             .collect();
-        options.push(ListPickerOption {
-            label: "none".to_string(),
-            count: None,
-            value: ListPickerValue::AfterNone,
-        });
+        let listed = |number: u64| {
+            options
+                .iter()
+                .any(|option| option.value == ListPickerValue::After(number))
+        };
+        let unlisted: Vec<(u64, String)> = current
+            .iter()
+            .copied()
+            .filter(|number| !listed(*number))
+            .map(|number| {
+                let text = match self.tasks.iter().find(|task| task.number == Some(number)) {
+                    Some(task) => {
+                        let state = if task.soft_deleted {
+                            " · deleted"
+                        } else if task.status == HumanStatus::Done {
+                            " · done"
+                        } else if task.archived {
+                            " · archived"
+                        } else {
+                            ""
+                        };
+                        format!("{}{state}", label(task, number))
+                    }
+                    None => format!("T{number} · deleted"),
+                };
+                (number, text)
+            })
+            .collect();
+        let title = match (ids.len(), own) {
+            (1, Some(number)) => format!("T{number} runs after"),
+            (0 | 1, _) => "new task runs after".to_string(),
+            (count, _) => format!("{count} tasks run after"),
+        };
         self.list_picker = Some(ListPickerState {
             kind: ListPickerKind::After,
             tab: FilterTab::Threads,
@@ -5505,8 +5530,9 @@ impl BoardModel {
             after_target: Some(AfterPickerTarget {
                 ids,
                 edit_draft,
-                ticked,
-                kept,
+                title,
+                pinned: current,
+                unlisted,
             }),
             active: None,
             tabs: None,
@@ -5514,56 +5540,186 @@ impl BoardModel {
         self.input_mode = BoardInputMode::ListPicker;
     }
 
-    /// Space in the task picker: tick or untick the highlighted task.
-    pub(super) fn toggle_after_tick(&mut self) {
-        let Some((index, option)) = self.selected_list_picker_option() else {
-            return;
+    /// The task picker's rows: the pinned tasks (`✓ T202 …`), **clear all** under them, then
+    /// the tasks the query matches. An empty query matches nothing.
+    fn after_picker_rows(&self) -> Vec<(usize, ListPickerOption)> {
+        let Some(picker) = self.list_picker.as_ref() else {
+            return Vec::new();
         };
-        let ListPickerValue::After(number) = option.value else {
-            return;
+        let Some(target) = picker.after_target.as_ref() else {
+            return Vec::new();
         };
-        let Some(picker) = self.list_picker.as_mut() else {
-            return;
-        };
-        let Some(target) = picker.after_target.as_mut() else {
-            return;
-        };
-        let ticked = if let Some(position) = target.ticked.iter().position(|n| *n == number) {
-            target.ticked.remove(position);
-            false
-        } else {
-            target.ticked.push(number);
-            true
-        };
-        if let Some(option) = picker.options.get_mut(index) {
-            let rest = option
-                .label
-                .strip_prefix(AFTER_TICKED)
-                .or_else(|| option.label.strip_prefix(AFTER_UNTICKED))
-                .unwrap_or(&option.label)
-                .to_string();
-            option.label = after_option_label(ticked, &rest);
+        let mut rows: Vec<ListPickerOption> = target
+            .pinned
+            .iter()
+            .map(|number| {
+                let text = picker
+                    .options
+                    .iter()
+                    .find(|option| option.value == ListPickerValue::After(*number))
+                    .map(|option| option.label.clone())
+                    .or_else(|| {
+                        target
+                            .unlisted
+                            .iter()
+                            .find(|(n, _)| n == number)
+                            .map(|(_, text)| text.clone())
+                    })
+                    .unwrap_or_else(|| format!("T{number}"));
+                ListPickerOption {
+                    label: format!("✓ {text}"),
+                    count: None,
+                    value: ListPickerValue::AfterPinned(*number),
+                }
+            })
+            .collect();
+        if !rows.is_empty() {
+            rows.push(ListPickerOption {
+                label: AFTER_CLEAR_ALL.to_string(),
+                count: None,
+                value: ListPickerValue::AfterClearAll,
+            });
+        }
+        let query = picker.query.to_lowercase();
+        let terms: Vec<&str> = query.split_whitespace().collect();
+        if !terms.is_empty() {
+            rows.extend(
+                picker
+                    .options
+                    .iter()
+                    .filter(|option| match option.value {
+                        ListPickerValue::After(number) => {
+                            !target.pinned.contains(&number) && {
+                                // The title and project, without the leading `T202 `.
+                                let text = option
+                                    .label
+                                    .split_once(' ')
+                                    .map_or("", |(_, rest)| rest)
+                                    .to_lowercase();
+                                terms
+                                    .iter()
+                                    .all(|term| after_term_matches(term, number, &text))
+                            }
+                        }
+                        _ => false,
+                    })
+                    .cloned(),
+            );
+        }
+        rows.into_iter().enumerate().collect()
+    }
+
+    /// The task picker's card title, while it is open.
+    pub fn after_picker_title(&self) -> Option<&str> {
+        self.list_picker
+            .as_ref()?
+            .after_target
+            .as_ref()
+            .map(|target| target.title.as_str())
+    }
+
+    /// How many leading task-picker rows are the pinned block (the pinned tasks and
+    /// **clear all**); the matches follow.
+    pub fn after_picker_pinned_rows(&self) -> usize {
+        self.list_picker
+            .as_ref()
+            .and_then(|picker| picker.after_target.as_ref())
+            .map_or(0, |target| {
+                target.pinned.len() + usize::from(!target.pinned.is_empty())
+            })
+    }
+
+    /// Put the task-picker cursor on the `match_index`-th match (after a query change or a
+    /// pin), or on the first row when nothing matches.
+    fn reseat_after_cursor(&mut self, match_index: usize) {
+        let pinned_rows = self.after_picker_pinned_rows();
+        let rows = self.after_picker_rows().len();
+        if let Some(picker) = self.list_picker.as_mut() {
+            picker.selected = if rows > pinned_rows {
+                (pinned_rows + match_index).min(rows - 1)
+            } else {
+                0
+            };
         }
     }
 
-    /// What Enter in the task picker sets: `none` clears; otherwise the ticked tasks plus any
-    /// kept link, or the highlighted task when nothing is ticked.
+    /// Space (or a click) in the task picker: pin the highlighted match, unpin the highlighted
+    /// pinned task, or clear every pin on **clear all**.
+    pub(super) fn toggle_after_pin(&mut self) {
+        let Some((index, option)) = self.selected_list_picker_option() else {
+            return;
+        };
+        let pinned_rows = self.after_picker_pinned_rows();
+        let Some(target) = self
+            .list_picker
+            .as_mut()
+            .and_then(|picker| picker.after_target.as_mut())
+        else {
+            return;
+        };
+        match option.value {
+            ListPickerValue::After(number) => {
+                target.pinned.push(number);
+                self.reseat_after_cursor(index.saturating_sub(pinned_rows));
+            }
+            ListPickerValue::AfterPinned(number) => {
+                target.pinned.retain(|n| *n != number);
+                self.clamp_after_cursor(index);
+            }
+            ListPickerValue::AfterClearAll => {
+                target.pinned.clear();
+                self.reseat_after_cursor(0);
+            }
+            _ => {}
+        }
+    }
+
+    /// `ctrl+x` in the task picker: unpin the highlighted pinned task.
+    pub(super) fn remove_after_pin(&mut self) -> bool {
+        let Some((index, ListPickerValue::AfterPinned(number))) = self
+            .selected_list_picker_option()
+            .map(|(index, option)| (index, option.value))
+        else {
+            return false;
+        };
+        if let Some(target) = self
+            .list_picker
+            .as_mut()
+            .and_then(|picker| picker.after_target.as_mut())
+        {
+            target.pinned.retain(|n| *n != number);
+        }
+        self.clamp_after_cursor(index);
+        true
+    }
+
+    /// Keep the task-picker cursor at `index` after a row above or under it went away.
+    fn clamp_after_cursor(&mut self, index: usize) {
+        let rows = self.after_picker_rows().len();
+        let pinned_rows = self.after_picker_pinned_rows();
+        if let Some(picker) = self.list_picker.as_mut() {
+            // The last unpin also drops **clear all**: land on the first match instead.
+            picker.selected = if pinned_rows == 0 {
+                0
+            } else {
+                index.min(rows.saturating_sub(1))
+            };
+        }
+    }
+
+    /// What Enter in the task picker saves: exactly the pinned tasks. With nothing pinned, the
+    /// highlighted match is a quick single pick; otherwise nothing, which clears the list.
+    /// **clear all** under the cursor clears.
     pub fn after_picker_choice(&self) -> Option<Vec<u64>> {
         let picker = self.list_picker.as_ref()?;
         let target = picker.after_target.as_ref()?;
-        let (_, option) = self.selected_list_picker_option()?;
-        Some(match option.value {
-            ListPickerValue::AfterNone => Vec::new(),
-            ListPickerValue::After(number) => {
-                let mut chosen = target.kept.clone();
-                if target.ticked.is_empty() {
-                    chosen.push(number);
-                } else {
-                    chosen.extend(target.ticked.iter().copied());
-                }
-                chosen
-            }
-            _ => return None,
+        let highlighted = self
+            .selected_list_picker_option()
+            .map(|(_, option)| option.value);
+        Some(match highlighted {
+            Some(ListPickerValue::AfterClearAll) => Vec::new(),
+            Some(ListPickerValue::After(number)) if target.pinned.is_empty() => vec![number],
+            _ => target.pinned.clone(),
         })
     }
 
@@ -5758,6 +5914,9 @@ impl BoardModel {
         let Some(picker) = self.list_picker.as_ref() else {
             return Vec::new();
         };
+        if picker.kind == ListPickerKind::After {
+            return self.after_picker_rows();
+        }
         let query = picker.query.trim().to_ascii_lowercase();
         let typed = self.typed_picker_value();
         let mut visible: Vec<_> = picker
@@ -5875,6 +6034,7 @@ impl BoardModel {
                 target.selection_pending = false;
             }
         }
+        self.reseat_after_query();
     }
 
     pub(super) fn list_picker_query_delete_word(&mut self) {
@@ -5882,6 +6042,7 @@ impl BoardModel {
             crate::ui::edit::delete_last_word(&mut picker.query);
             picker.selected = 0;
         }
+        self.reseat_after_query();
     }
 
     pub(super) fn list_picker_query_insert_text(&mut self, text: &str) {
@@ -5891,6 +6052,14 @@ impl BoardModel {
             if let Some(target) = picker.base_target.as_mut() {
                 target.selection_pending = false;
             }
+        }
+        self.reseat_after_query();
+    }
+
+    /// A task-picker query change lands the cursor on the first match, past the pinned rows.
+    fn reseat_after_query(&mut self) {
+        if self.list_picker_kind() == Some(ListPickerKind::After) {
+            self.reseat_after_cursor(0);
         }
     }
 

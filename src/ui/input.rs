@@ -158,6 +158,8 @@ pub enum BoardIntent {
     /// Open the task picker for what the selected task, marked set, or After field runs after
     /// (palette **set after…**, the page's After field).
     OpenAfterPicker,
+    /// A click on one number of the task page footer's `before T6, T7`: open that task's page.
+    OpenBeforeTask(u64),
     /// Open the waiting-on picker for who the open block or review waits on: the page's task
     /// (`Enter` on its top line), or the selected task or marked set (palette **set waiting
     /// on…**).
@@ -305,6 +307,8 @@ pub enum BoardIntent {
     ListPickerQueryInsertText(String),
     ListPickerQueryBackspace,
     ListPickerQueryDeleteWord,
+    /// List picker `ctrl+x`: remove the highlighted pinned task from the task picker.
+    ListPickerRemove,
     /// Type into the active lens's search.
     SearchQueryInsert(char),
     /// Paste into the active lens's search.
@@ -1360,6 +1364,18 @@ fn help_bindings() -> Vec<HelpBinding> {
         ),
         help_binding(
             HelpGroup::PickersEditing,
+            "space (after picker)",
+            "pin a task",
+            "after wait select tick",
+        ),
+        help_binding(
+            HelpGroup::PickersEditing,
+            "ctrl+x (after picker)",
+            "remove a pinned task",
+            "after wait unpin clear",
+        ),
+        help_binding(
+            HelpGroup::PickersEditing,
             "ctrl+f (picker)",
             "archive project",
             "hide file",
@@ -2256,6 +2272,7 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::BeginEditScope
         | BoardIntent::OpenBasePicker
         | BoardIntent::OpenAfterPicker
+        | BoardIntent::OpenBeforeTask(_)
         | BoardIntent::OpenOnPicker
         | BoardIntent::ChainAfter
         | BoardIntent::BeginAddStep
@@ -2340,6 +2357,7 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::ListPickerQueryInsertText(_)
         | BoardIntent::ListPickerQueryBackspace
         | BoardIntent::ListPickerQueryDeleteWord
+        | BoardIntent::ListPickerRemove
         | BoardIntent::SearchQueryInsert(_)
         | BoardIntent::SearchQueryInsertText(_)
         | BoardIntent::SearchQueryBackspace
@@ -2749,6 +2767,9 @@ fn map_project_picker(key: KeyEvent) -> Option<BoardIntent> {
 fn map_list_picker(key: KeyEvent) -> Option<BoardIntent> {
     if query_deletes_word(&key) {
         return Some(BoardIntent::ListPickerQueryDeleteWord);
+    }
+    if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('x') {
+        return Some(BoardIntent::ListPickerRemove);
     }
     if let Some(character) = altgr_text_char(&key) {
         return Some(BoardIntent::ListPickerQueryInsert(character));

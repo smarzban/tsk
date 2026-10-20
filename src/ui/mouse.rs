@@ -888,6 +888,7 @@ pub fn map_board_mouse(
             }
             Some(QueueHitTarget::FormBase) => Some(BoardIntent::OpenBasePicker),
             Some(QueueHitTarget::FormAfter) => Some(BoardIntent::OpenAfterPicker),
+            Some(QueueHitTarget::FooterBefore(number)) => Some(BoardIntent::OpenBeforeTask(number)),
             // View mode: `@name` or `+ assign` opens the quick assignee picker.
             Some(QueueHitTarget::FormAssignee) => Some(BoardIntent::OpenAssigneePicker),
             // Step clicks always select. In view mode this remains read-only; the reducer opens

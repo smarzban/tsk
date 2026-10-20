@@ -207,7 +207,7 @@ Set it with:
 - `!w T202` in [quick-add](/docs/capture/),
 - [`tsk edit --after`](/docs/cli/#edit).
 
-The task picker lists the other tasks that are not done, this project's first. `Space` ticks several, and **none** clears the list. A loop is refused: `T202 already runs after T205`. Palette **chain marked tasks in order** makes each marked task run after the one marked before it, in one undo step.
+Palette **chain marked tasks in order** makes each marked task run after the one marked before it, in one undo step.
 
 When the last prerequisite is done, each waiting **ready** task starts in the same save, and an assigned one [dispatches](/docs/dispatch/#dispatch). Review does not count as done. The status row says so, for example `T205 started · T202 done`. Waiting tasks in open, blocked, or review stay put.
 
@@ -215,6 +215,16 @@ When the last prerequisite is done, each waiting **ready** task starts in the sa
 - `ctrl+u` on the done reverts the statuses only. A launched agent keeps running.
 - Starting a waiting task yourself asks first: `Start anyway?`.
 - Deleting a task removes it from every after list, and `ctrl+u` restores the links. A ready task left waiting on nothing does not start.
+
+### Task picker
+
+The task picker is a search box titled `T5 runs after`. The tasks it runs after sit pinned at the top, a done one marked `· done`.
+
+1. Type a task number (`202` or `T202`) or words from its title. Matches list below the pinned tasks, this project's first. Others show their project.
+2. `Space` or a click on a match pins it. `ctrl+x` or a click on a pinned task removes it. **clear all** removes every pinned task.
+3. `Enter` saves exactly the pinned tasks. With none pinned, it saves `runs after nothing`, or picks the highlighted match.
+
+`Esc` closes with no change. A loop is refused and the picker stays open: `T202 already runs after T205`.
 
 ## Notices
 
