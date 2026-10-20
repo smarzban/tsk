@@ -2397,8 +2397,9 @@ fn page_verb_clicks_resolve_through_the_page_legend() {
     assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
 
     // Every seat of the fixed page bar dispatches what its label says: the painted legend
-    // is `ctrl+e edit · <status verbs> · esc close`, indexed exactly as painted. The started
-    // page's six seats outgrow 80 columns, so the bar is read where every seat fits.
+    // is `ctrl+e edit · <status verbs> · esc close · : commands`, indexed exactly as painted.
+    // The started page's seven seats outgrow 80 columns, so the bar is read where every seat
+    // fits.
     let roomy = Rect::new(0, 0, 100, 24);
     let click_verb = |model: &BoardModel, key: &str| -> BoardIntent {
         let verbs = board_verb_items(model);
@@ -2418,13 +2419,14 @@ fn page_verb_clicks_resolve_through_the_page_legend() {
     let verbs: Vec<&str> = board_verb_items(&model).iter().map(|v| v.key).collect();
     assert_eq!(
         verbs,
-        vec!["e", "n", "o", "u", "esc"],
-        "done page bar: edit · ready · inbox · undo · close"
+        vec!["e", "n", "o", "u", "esc", ":"],
+        "done page bar: edit · ready · inbox · undo · close · commands"
     );
+    assert_eq!(click_verb(&model, ":"), BoardIntent::OpenCommandPalette);
     assert_eq!(click_verb(&model, "o"), BoardIntent::Reopen);
     apply_intent(&mut domain, &mut model, BoardIntent::Reopen, None).expect("open");
     let verbs: Vec<&str> = board_verb_items(&model).iter().map(|v| v.key).collect();
-    assert_eq!(verbs, vec!["e", "s", "n", "d", "esc"], "open page bar");
+    assert_eq!(verbs, vec!["e", "s", "n", "d", "esc", ":"], "open page bar");
     assert_eq!(click_verb(&model, "e"), BoardIntent::BeginEditTitle);
     assert_eq!(click_verb(&model, "s"), BoardIntent::PrimaryVerb);
     assert_eq!(
@@ -2439,7 +2441,11 @@ fn page_verb_clicks_resolve_through_the_page_legend() {
     )
     .expect("pick ready");
     let verbs: Vec<&str> = board_verb_items(&model).iter().map(|v| v.key).collect();
-    assert_eq!(verbs, vec!["e", "s", "o", "d", "esc"], "ready page bar");
+    assert_eq!(
+        verbs,
+        vec!["e", "s", "o", "d", "esc", ":"],
+        "ready page bar"
+    );
     assert_eq!(click_verb(&model, "o"), BoardIntent::Reopen);
     apply_intent(
         &mut domain,

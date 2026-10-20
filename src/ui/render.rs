@@ -7136,36 +7136,42 @@ fn fit_verbs(
         next.map(|position| kept.remove(position)).is_some()
     };
 
-    let mut kept: Vec<usize> = (0..entries.len()).collect();
-    while kept.len() > budget && shed_one(&mut kept) {}
-    loop {
-        for compact in [false, true] {
-            if painted(&kept, compact, false) <= width {
-                return FittedVerbs {
-                    kept,
-                    compact,
-                    tight: false,
-                };
+    // Budget, then full labels, then short labels, then one shed at a time. `Err` carries the
+    // essentials that still overflow.
+    let shed_to_fit = |mut kept: Vec<usize>| -> Result<FittedVerbs, Vec<usize>> {
+        while kept.len() > budget && shed_one(&mut kept) {}
+        loop {
+            for compact in [false, true] {
+                if painted(&kept, compact, false) <= width {
+                    return Ok(FittedVerbs {
+                        kept,
+                        compact,
+                        tight: false,
+                    });
+                }
+            }
+            if !shed_one(&mut kept) {
+                return Err(kept);
             }
         }
-        if !shed_one(&mut kept) {
-            break;
-        }
-    }
-    // Essentials that overflow give up `: commands` first, so the bar keeps its separators
-    // and `? help` as long as it did without the seat.
-    let before = kept.len();
-    kept.retain(|&index| entries[index] != COMMANDS_VERB);
-    if kept.len() < before {
-        for compact in [false, true] {
-            if painted(&kept, compact, false) <= width {
-                return FittedVerbs {
-                    kept,
-                    compact,
-                    tight: false,
-                };
-            }
-        }
+    };
+
+    let all: Vec<usize> = (0..entries.len()).collect();
+    let mut kept = match shed_to_fit(all.clone()) {
+        Ok(fit) => return fit,
+        Err(kept) => kept,
+    };
+    // Essentials that overflow give up `: commands` first, and the fit runs again from the
+    // whole row, so a seat shed only to make room for it comes back.
+    if kept.iter().any(|&index| entries[index] == COMMANDS_VERB) {
+        let without: Vec<usize> = all
+            .into_iter()
+            .filter(|&index| entries[index] != COMMANDS_VERB)
+            .collect();
+        kept = match shed_to_fit(without) {
+            Ok(fit) => return fit,
+            Err(kept) => kept,
+        };
     }
     while !kept.is_empty() && painted(&kept, true, true) > width {
         kept.pop();
@@ -7445,6 +7451,20 @@ mod tests {
         assert_eq!(bar(7, 32), " enter open · ? help");
         assert_eq!(bar(7, 19), "enter open ? help");
         assert_eq!(bar(7, 16), "enter open");
+        // A seat shed only to make room for `: commands` comes back once it goes: the armed
+        // undo bar on a group header keeps `← fold` at 44 columns.
+        const HEADER: &[VerbEntry<'static>] = &[
+            verb("u", "undo", 0),
+            verb("enter", "open", 0),
+            verb("←", "fold", 1),
+            verb("+", "add", 1),
+            COMMANDS_VERB,
+            verb("?", "help", 0),
+        ];
+        assert_eq!(
+            plain(&paint_verb_bar(HEADER, 7, 44, true).0),
+            " ctrl+u undo · enter open · ← fold · ? help"
+        );
         // A click on `: commands` names its declared entry.
         let (_, hits) = paint_verb_bar(BAR, 7, 33, true);
         let indices: Vec<usize> = hits.iter().map(|(index, _, _)| *index).collect();

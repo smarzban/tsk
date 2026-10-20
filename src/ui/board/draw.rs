@@ -847,9 +847,10 @@ fn task_page_verb_items(model: &BoardModel, task: &crate::domain::Task) -> Vec<V
                 label: "cancel",
                 shed: 0,
             },
+            render::COMMANDS_VERB,
         ];
     }
-    let mut entries = Vec::with_capacity(6);
+    let mut entries = Vec::with_capacity(7);
     entries.push(VerbEntry {
         key: "e",
         label: "edit",
@@ -861,6 +862,7 @@ fn task_page_verb_items(model: &BoardModel, task: &crate::domain::Task) -> Vec<V
         label: "close",
         shed: 0,
     });
+    entries.push(render::COMMANDS_VERB);
     entries
 }
 

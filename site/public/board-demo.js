@@ -2223,7 +2223,8 @@ import { parseCapture } from "./capture.js";
     ];
   }
 
-  // The task page's verb bar: edit, the task's own status verbs, the way out. An open editor
+  // The task page's verb bar: edit, the task's own status verbs, the way out, `: commands`.
+  // An open editor
   // or an unsaved step session shows its save and cancel keys instead.
   function pageVerbs(task, pageSteps, editing) {
     if (pageSteps.editor)
@@ -2243,12 +2244,14 @@ import { parseCapture } from "./capture.js";
         verb("shift+enter", "save", 0),
         verb("a", "add step", 1),
         verb("esc", "cancel", 0),
+        COMMANDS,
       ];
-    if (!task) return [verb("esc", "close", 0, "close")];
+    if (!task) return [verb("esc", "close", 0, "close"), COMMANDS];
     return [
       verb("e", "edit", 0, "edit"),
       ...statusVerbs(task.status),
       verb("esc", "close", 0, "close"),
+      COMMANDS,
     ];
   }
 
@@ -2267,7 +2270,8 @@ import { parseCapture } from "./capture.js";
     const cells = (text) => [...text].length;
     // The app paints a mutating key as `ctrl+<key>`: measure it so, and the demo's bare-key
     // bar sheds exactly what the app's does.
-    const keyCells = (key) => cells(key) + (/^[sdobrxaeunfgq]$/.test(key) ? 5 : 0);
+    const keyCells = (key) =>
+      cells(key) + (/^[sdobrxaeunfgq]$/.test(key) ? 5 : 0);
     const painted = (kept, compact, tight) =>
       (tight ? 0 : 1) +
       kept.reduce((sum, index) => {
@@ -2290,20 +2294,27 @@ import { parseCapture } from "./capture.js";
       if (at >= 0) kept.splice(at, 1);
       return at >= 0;
     };
-    const kept = entries.map((_, index) => index);
-    while (kept.length > budget && shedOne(kept));
-    for (;;) {
-      for (const compact of [false, true])
-        if (painted(kept, compact, false) <= width)
-          return { kept, compact, tight: false };
-      if (!shedOne(kept)) break;
-    }
-    const at = kept.findIndex((index) => entries[index] === COMMANDS);
-    if (at >= 0) {
-      kept.splice(at, 1);
-      for (const compact of [false, true])
-        if (painted(kept, compact, false) <= width)
-          return { kept, compact, tight: false };
+    // Budget, then full labels, then short ones, then one shed at a time; `kept` is left
+    // holding the essentials that still overflow.
+    const shedToFit = (kept) => {
+      while (kept.length > budget && shedOne(kept));
+      for (;;) {
+        for (const compact of [false, true])
+          if (painted(kept, compact, false) <= width)
+            return { kept, compact, tight: false };
+        if (!shedOne(kept)) return null;
+      }
+    };
+    const all = entries.map((_, index) => index);
+    let kept = [...all];
+    let fit = shedToFit(kept);
+    if (fit) return fit;
+    // Overflowing essentials give up `: commands`, and the fit runs again from the whole
+    // row, so a seat shed only to make room for it comes back.
+    if (kept.some((index) => entries[index] === COMMANDS)) {
+      kept = all.filter((index) => entries[index] !== COMMANDS);
+      fit = shedToFit(kept);
+      if (fit) return fit;
     }
     while (kept.length && painted(kept, true, true) > width) kept.pop();
     return { kept, compact: true, tight: true };
@@ -2357,35 +2368,46 @@ import { parseCapture } from "./capture.js";
     if (id === "file") fileSelected();
   }
 
+  // A status command acts on the task the keys belong to: the project preview's when it
+  // owns them, as the app's palette acts on its focused column.
+  const paletteStatus = (status) =>
+    projectsPreviewFocused() || projectsPreviewPage()
+      ? previewSetStatus(status)
+      : setStatus(status);
+
   function paletteCommands() {
     const q = state.paletteQ.trim().toLowerCase();
     const all = [
       {
         id: "open",
         label: "set status: open",
-        run: () => setStatus("open"),
+        run: () => paletteStatus("open"),
       },
       {
         id: "ready",
         label: "set status: ready",
-        run: () => setStatus("ready"),
+        run: () => paletteStatus("ready"),
       },
       {
         id: "started",
         label: "set status: started",
-        run: () => setStatus("started"),
+        run: () => paletteStatus("started"),
       },
       {
         id: "blocked",
         label: "set status: blocked",
-        run: () => setStatus("blocked"),
+        run: () => paletteStatus("blocked"),
       },
       {
         id: "review",
         label: "set status: review",
-        run: () => setStatus("review"),
+        run: () => paletteStatus("review"),
       },
-      { id: "done", label: "set status: done", run: () => setStatus("done") },
+      {
+        id: "done",
+        label: "set status: done",
+        run: () => paletteStatus("done"),
+      },
       { id: "desk", label: "go desk", run: () => goTab("desk") },
       { id: "projects", label: "go projects", run: () => goTab("projects") },
       {
@@ -3613,6 +3635,12 @@ import { parseCapture } from "./capture.js";
       leaveTaskPage();
       return;
     }
+    if (id === "palette") {
+      state.overlay = "palette";
+      state.paletteQ = "";
+      state.paletteI = 0;
+      return;
+    }
     clearMarks();
     enterTaskStage();
     const task = selectedTask();
@@ -3641,6 +3669,12 @@ import { parseCapture } from "./capture.js";
   function runPreviewPageVerb(id) {
     if (id === "close") {
       leavePreviewTaskPage();
+      return;
+    }
+    if (id === "palette") {
+      state.overlay = "palette";
+      state.paletteQ = "";
+      state.paletteI = 0;
       return;
     }
     clearMarks(preview);
@@ -3679,6 +3713,11 @@ import { parseCapture } from "./capture.js";
     if (id === "help") {
       state.overlay = "help";
       state.helpQ = "";
+    }
+    if (id === "palette") {
+      state.overlay = "palette";
+      state.paletteQ = "";
+      state.paletteI = 0;
     }
   }
 
@@ -4518,7 +4557,9 @@ import { parseCapture } from "./capture.js";
   }
 
   function handlePreviewPageKey(e) {
-    if (!projectsPreviewPage()) return false;
+    // An open Help or palette owns the keys, as it does over any other page.
+    if (!projectsPreviewPage() || ["help", "palette"].includes(state.overlay))
+      return false;
     const task = previewTask();
     const bare = !e.ctrlKey && !e.metaKey && !e.altKey;
     if (preview.editField) {
@@ -4693,6 +4734,14 @@ import { parseCapture } from "./capture.js";
       e.preventDefault();
       state.overlay = "help";
       state.helpQ = "";
+      render();
+      return true;
+    }
+    if (bare && e.key === ":") {
+      e.preventDefault();
+      state.overlay = "palette";
+      state.paletteQ = "";
+      state.paletteI = 0;
       render();
       return true;
     }

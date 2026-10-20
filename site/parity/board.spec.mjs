@@ -986,3 +986,37 @@ test("a click selects a header and a double-click opens or folds it", async ({
   await expect(row(page, 14)).toBeVisible();
   await expect(row(page, 16)).toHaveCount(0);
 });
+
+test("a click on `: commands` opens the palette from every footer that shows it", async ({
+  page,
+}) => {
+  const palette = page.locator(".tsk-palette");
+  const clickOpens = async (selector) => {
+    await page.locator(selector).click();
+    await expect(palette).toBeVisible();
+    await page.locator("#board-demo").focus();
+    await page.keyboard.press("Escape");
+    await expect(palette).toHaveCount(0);
+  };
+  await open(page, 78);
+  await clickOpens('[data-verb="palette"]');
+  await page.keyboard.press("Enter");
+  await clickOpens('[data-page-verb="palette"]');
+
+  await open(page, 110);
+  await page.keyboard.press("3");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("l");
+  await expect(page.locator(".tsk-project-preview.is-live")).toBeVisible();
+  await clickOpens('[data-preview-verb="palette"]');
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".tsk-task-column")).toBeVisible();
+  await clickOpens('[data-preview-page-verb="palette"]');
+  // Its status commands act on the preview's own task.
+  await page.keyboard.press(":");
+  await page.keyboard.type("set status: done");
+  await page.keyboard.press("Enter");
+  await expect(
+    page.locator(".tsk-task-column .tsk-verbs, .tsk-verbs").last(),
+  ).toContainText("u undo");
+});
