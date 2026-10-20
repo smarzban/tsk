@@ -32,7 +32,7 @@ Start an assigned task to dispatch it: `ctrl+s`, palette **set status: started**
 3. runs the assignee's profile command there,
 4. records the dispatch on the task and sets it to started, in one save.
 
-If the launch fails, the task stays unstarted with no dispatch, and the status row says why. tsk removes the worktree, workspace, and new branch that launch created. The message names anything it had to leave, such as a worktree with changes. A started task with a live dispatch shows `◉` instead of `●`.
+If the launch fails, the task stays unstarted with no dispatch, and the status row says why. tsk removes the worktree, workspace, and new branch that launch created. A worktree with changes stays, but its workspace still closes. The message names anything left. A started task with a live dispatch shows `◉` instead of `●`.
 
 The agent's instructions come from the profile's prompt. Without one, a default prompt asks it to open a pull request into the base and set the task to review. See [Configuration](/docs/storage/#configuration).
 

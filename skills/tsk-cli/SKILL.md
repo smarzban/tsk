@@ -129,8 +129,8 @@ Only when the user asks.
 A refusal prints a stable code first: `tsk status: unknown-task: T12 is not on the board`. Branch on
 the code, never the message. `tsk help <command>` lists each command's codes. `project`, `trash`,
 `backup`, and `restore` refuse with a message only. After exit 3 from `dispatch`, or from a start that
-dispatched, a message ending `launch undone` means no agent runs. Otherwise the agent may already run
-without its record: check `herdr agent get t12-<assignee>` and read the task before retrying.
+dispatched, a message ending `the agent may still run` means it may run without its record: check
+`herdr agent get t12-<assignee>` and read the task before retrying.
 
 ## Refine a task
 

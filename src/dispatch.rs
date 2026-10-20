@@ -3391,9 +3391,14 @@ pub fn unrecorded(
     error: DispatchError,
 ) -> DispatchError {
     match undo_launch(host, record, undo) {
-        None if undo.created == Created::Nothing => error,
+        // Typed into the recorded workspace's pane: the agent runs there.
+        None if undo.created == Created::Nothing => error.noting("the agent may still run"),
         None => error.noting("launch undone"),
-        Some(left) => error.noting(&format!("left behind: {left}; the agent may still run")),
+        Some(left) if left.workspace_open => error.noting(&format!(
+            "left behind: {}; the agent may still run",
+            left.what
+        )),
+        Some(left) => error.noting(&format!("left behind: {}", left.what)),
     }
 }
 
@@ -3477,15 +3482,25 @@ enum Created {
     Worktree { branch_from: Option<String> },
 }
 
+/// What an undone launch had to leave.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Leftover {
+    /// What stayed and why, for the error to name.
+    pub what: String,
+    /// The launch's workspace stayed open, so its agent may still run.
+    pub workspace_open: bool,
+}
+
 /// Take back what a launch created after it failed, or after its record could not be saved:
 /// the workspace, the worktree unless it holds changes, and a branch made for the launch
-/// while its tip is still where it started. Returns what stayed and why, or `None` when
-/// nothing did.
+/// while its tip is still where it started. A worktree that stays still loses its workspace,
+/// which stops the agent: with no record, a retry would start a second one beside it.
+/// Returns what stayed, or `None` when nothing did.
 pub fn undo_launch(
     host: &mut impl DispatchHost,
     record: &Dispatch,
     undo: &LaunchUndo,
-) -> Option<String> {
+) -> Option<Leftover> {
     let workspace = &record.herdr_workspace_id;
     let worktree = Path::new(&record.worktree);
     let branch_from = match &undo.created {
@@ -3494,45 +3509,68 @@ pub fn undo_launch(
             return host
                 .close_herdr_workspace(workspace)
                 .err()
-                .map(|error| format!("workspace {workspace} ({error})"));
+                .map(|error| Leftover {
+                    what: format!("workspace {workspace} ({error})"),
+                    workspace_open: true,
+                });
         }
         Created::Worktree { branch_from } => branch_from,
     };
+    let both = |reason: String| Leftover {
+        what: format!(
+            "worktree {} and workspace {workspace} ({reason})",
+            record.worktree
+        ),
+        workspace_open: true,
+    };
+    let checkout = |reason: String| Leftover {
+        what: format!(
+            "worktree {} ({reason}); workspace {workspace} closed",
+            record.worktree
+        ),
+        workspace_open: false,
+    };
     let removed = if host.platform() == HostPlatform::Windows {
-        let preview = CleanupPreview {
-            number: 0,
-            title: String::new(),
-            project: undo.project.clone(),
-            record: record.clone(),
-            inspection: CleanupInspection::default(),
-        };
-        let removed = remove_windows_worktree(host, &preview, true);
-        if removed.is_ok() {
-            host.mark_removal(workspace, false);
-        }
-        removed.map_err(|error| error.reason())
+        // Closing first ends the agent, so nothing holds the checkout git removes.
+        host.close_herdr_workspace(workspace)
+            .map_err(both)
+            .and_then(|()| {
+                let preview = CleanupPreview {
+                    number: 0,
+                    title: String::new(),
+                    project: undo.project.clone(),
+                    record: record.clone(),
+                    inspection: CleanupInspection::default(),
+                };
+                remove_windows_worktree(host, &preview, false)
+                    .map(|()| host.mark_removal(workspace, false))
+                    .map_err(|error| checkout(error.reason()))
+            })
     } else {
         match host.worktree_dirty(worktree) {
             Ok(false) => host.remove_herdr_worktree(workspace),
             Ok(true) => Err(CleanupError::DirtyWorktree.reason()),
             Err(error) => Err(error),
         }
+        .map_err(|reason| match host.close_herdr_workspace(workspace) {
+            Ok(()) => checkout(reason),
+            Err(error) => both(format!("{reason}; {error}")),
+        })
     };
-    if let Err(error) = removed {
-        return Some(format!(
-            "worktree {} and workspace {workspace} ({error})",
-            record.worktree
-        ));
+    if let Err(left) = removed {
+        return Some(left);
     }
     let tip = branch_from.as_deref()?;
+    let branch = |reason: String| Leftover {
+        what: format!("branch {} ({reason})", record.branch),
+        workspace_open: false,
+    };
     match host.delete_branch_at_tip(&undo.project, &record.branch, tip) {
         Ok(BranchDeletion::Removed) => None,
-        Ok(BranchDeletion::Kept(reason)) => {
-            Some(format!("branch {} ({})", record.branch, reason.short()))
-        }
+        Ok(BranchDeletion::Kept(reason)) => Some(branch(reason.short().to_string())),
         // Already gone is what was wanted.
         Err(_) if host.branch_tip(&undo.project, &record.branch) == Ok(None) => None,
-        Err(error) => Some(format!("branch {} ({error})", record.branch)),
+        Err(error) => Some(branch(error)),
     }
 }
 
@@ -3813,7 +3851,7 @@ pub fn launch_with_host(
         // Nothing records this launch: take back what it created, or `tsk clean` never could.
         return Err(match undo_launch(host, &record, &undo) {
             None => error,
-            Some(left) => error.noting(&format!("left behind: {left}")),
+            Some(left) => error.noting(&format!("left behind: {}", left.what)),
         });
     }
     if long_paths_off {
@@ -4337,6 +4375,10 @@ mod tests {
         workspace_gone: bool,
         /// What a Windows profile's program resolves to when only batch files match.
         batch_only: Option<PathBuf>,
+        /// The worktree holds uncommitted work from the start.
+        dirty: bool,
+        /// Why a delete at a tip keeps the branch instead.
+        branch_kept: Option<BranchRetentionReason>,
     }
 
     impl DispatchHost for FakeHost {
@@ -4480,7 +4522,7 @@ mod tests {
         }
 
         fn worktree_dirty(&mut self, _: &Path) -> Result<bool, String> {
-            Ok(self.closed > 0 && self.dirty_after_close)
+            Ok(self.dirty || (self.closed > 0 && self.dirty_after_close))
         }
 
         fn interrupted_removal(
@@ -4542,7 +4584,9 @@ mod tests {
             tip: &str,
         ) -> Result<BranchDeletion, String> {
             self.deleted_at_tip.push(tip.into());
-            Ok(BranchDeletion::Removed)
+            Ok(self
+                .branch_kept
+                .map_or(BranchDeletion::Removed, BranchDeletion::Kept))
         }
 
         fn merge_pull_request(
@@ -5053,29 +5097,167 @@ mod tests {
         fs::remove_dir_all(path).expect("cleanup");
     }
 
-    /// What the launch could not take back is named after the reason it failed, and a worktree
-    /// that stays keeps its branch.
+    /// A worktree the launch cannot remove stays with its work and its branch, but its workspace
+    /// still closes, which stops the agent; the error names what stayed after why it failed.
     #[test]
-    fn a_failed_launch_names_what_it_left_behind() {
+    fn a_failed_launch_keeps_a_worktree_it_cannot_remove_but_closes_its_workspace() {
         let (path, profiles) = profiles();
-        let (mut state, id) = task();
-        let mut host = FakeHost {
+        let launch = |host: FakeHost| {
+            let (mut state, id) = task();
+            let mut host = FakeHost {
+                fail_run: Some("pane gone".into()),
+                base_commit: Some("c0ffee".into()),
+                ..host
+            };
+            let error = run_with_host(&mut state, id, &profiles, false, true, &mut host)
+                .expect_err("launch fails");
+            (error.to_string(), host)
+        };
+        let unix = || FakeHost {
             git: true,
-            fail_run: Some("pane gone".into()),
-            base_commit: Some("c0ffee".into()),
-            herdr_remove_errors: vec!["herdr is busy".into()],
             ..FakeHost::default()
         };
-        let error = run_with_host(&mut state, id, &profiles, false, true, &mut host)
-            .expect_err("launch fails");
+
+        // Uncommitted work: never removed.
+        let (error, host) = launch(FakeHost {
+            dirty: true,
+            ..unix()
+        });
         assert_eq!(
             error,
-            DispatchError::Herdr(
-                "pane gone; left behind: worktree /tmp/worktree and workspace w9 (herdr is busy)"
-                    .into()
-            )
+            "pane gone; left behind: worktree /tmp/worktree (worktree has uncommitted changes); \
+             workspace w9 closed"
         );
+        assert_eq!(host.removed_herdr, 0);
+        assert_eq!(host.closed_ids, vec!["w9".to_string()]);
         assert!(host.deleted_at_tip.is_empty());
+
+        // Herdr refuses the removal.
+        let (error, host) = launch(FakeHost {
+            herdr_remove_errors: vec!["herdr is busy".into()],
+            ..unix()
+        });
+        assert_eq!(
+            error,
+            "pane gone; left behind: worktree /tmp/worktree (herdr is busy); workspace w9 closed"
+        );
+        assert_eq!(host.closed_ids, vec!["w9".to_string()]);
+        assert!(host.deleted_at_tip.is_empty());
+
+        // And the close too: the workspace stays open.
+        let (error, host) = launch(FakeHost {
+            herdr_remove_errors: vec!["herdr is busy".into()],
+            close_error: Some("herdr is gone".into()),
+            ..unix()
+        });
+        assert_eq!(
+            error,
+            "pane gone; left behind: worktree /tmp/worktree and workspace w9 \
+             (herdr is busy; herdr is gone)"
+        );
+        assert!(host.closed_ids.is_empty());
+
+        // Windows closes first; a refused close removes nothing.
+        let (error, host) = launch(FakeHost {
+            close_error: Some("herdr is gone".into()),
+            ..windows_host()
+        });
+        assert_eq!(
+            error,
+            "pane gone; left behind: worktree /tmp/worktree and workspace w9 (herdr is gone)"
+        );
+        assert_eq!(host.removed_git, 0);
+
+        // A branch that moved off its start stays; the checkout is already gone.
+        let (error, host) = launch(FakeHost {
+            branch_kept: Some(BranchRetentionReason::Advanced),
+            ..unix()
+        });
+        assert_eq!(
+            error,
+            "pane gone; left behind: branch tsk/t1-ship-dispatch (branch changed)"
+        );
+        assert_eq!(host.removed_herdr, 1);
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    /// A launch whose record does not land is taken back; its error ends `launch undone`, or
+    /// says what stayed, and `the agent may still run` only while its workspace is open.
+    #[test]
+    fn an_unrecorded_launch_says_whether_its_agent_may_still_run() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let mut first = FakeHost {
+            git: true,
+            base_commit: Some("c0ffee".into()),
+            ..FakeHost::default()
+        };
+        let launched =
+            run_with_host(&mut state, id, &profiles, false, true, &mut first).expect("dispatch");
+        let unrecorded_with = |host: FakeHost, result: &DispatchResult| {
+            let mut host = host;
+            let error = unrecorded(
+                &mut host,
+                &result.record,
+                &result.undo,
+                DispatchError::Store("disk full".into()),
+            );
+            assert_eq!(error.code(), "store-error");
+            (error.to_string(), host)
+        };
+
+        let (error, host) = unrecorded_with(FakeHost::default(), &launched);
+        assert_eq!(error, "disk full; launch undone");
+        assert_eq!(host.removed_herdr, 1);
+        let (error, host) = unrecorded_with(
+            FakeHost {
+                dirty: true,
+                ..FakeHost::default()
+            },
+            &launched,
+        );
+        assert_eq!(
+            error,
+            "disk full; left behind: worktree /tmp/worktree (worktree has uncommitted changes); \
+             workspace w9 closed"
+        );
+        assert_eq!(host.closed_ids, vec!["w9".to_string()]);
+        let (error, _) = unrecorded_with(
+            FakeHost {
+                dirty: true,
+                close_error: Some("herdr is gone".into()),
+                ..FakeHost::default()
+            },
+            &launched,
+        );
+        assert!(
+            error.ends_with(
+                "(worktree has uncommitted changes; herdr is gone); the agent may still run"
+            ),
+            "{error}"
+        );
+        let (error, _) = unrecorded_with(
+            FakeHost {
+                branch_kept: Some(BranchRetentionReason::Advanced),
+                ..FakeHost::default()
+            },
+            &launched,
+        );
+        assert_eq!(
+            error,
+            "disk full; left behind: branch tsk/t1-ship-dispatch (branch changed)"
+        );
+
+        // A relaunch typed into the recorded workspace's pane has nothing to take back.
+        let mut again = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        let relaunched =
+            run_with_host(&mut state, id, &profiles, true, true, &mut again).expect("relaunch");
+        let (error, host) = unrecorded_with(FakeHost::default(), &relaunched);
+        assert_eq!(error, "disk full; the agent may still run");
+        assert_eq!((host.removed_herdr, host.closed), (0, 0));
         fs::remove_dir_all(path).expect("cleanup");
     }
 
