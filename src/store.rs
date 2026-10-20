@@ -3,7 +3,8 @@
 //! Atomic write: unique temp file in the same directory, then rename over the target.
 //! Concurrent writers take an exclusive lock on `tsk.json.lock` and merge by
 //! task id plus each record's revision, so writers do not drop sibling records.
-//! A store whose `format_version` differs from this binary is refused rather than rewritten.
+//! A store newer than this binary is refused rather than rewritten; older and dev versions open
+//! as the current format.
 //! Each successful replace retains the previous document as `tsk.json.1`.
 
 use std::env;
