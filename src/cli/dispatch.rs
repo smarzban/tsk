@@ -99,7 +99,12 @@ mod tests {
         let (state_dir, host) = system_host(Some(dir.clone()));
         assert_eq!(state_dir, dir);
         let launcher = host.launcher_path("w1").expect("launcher path");
-        assert_eq!(launcher, dir.join("launchers").join("dispatch-w1.ps1"));
+        let name = if cfg!(windows) {
+            "dispatch-w1.ps1"
+        } else {
+            "dispatch-w1.sh"
+        };
+        assert_eq!(launcher, dir.join("launchers").join(name));
 
         let (default, host) = system_host(None);
         assert_eq!(default, default_state_dir());

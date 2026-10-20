@@ -17331,7 +17331,12 @@ mod quick_assign_tests {
             .launcher_path("w1")
             .expect("launcher path");
         assert!(launcher.starts_with(&temp.dir), "{}", launcher.display());
-        assert_eq!(launcher.file_name(), Some("dispatch-w1.ps1".as_ref()));
+        let name = if cfg!(windows) {
+            "dispatch-w1.ps1"
+        } else {
+            "dispatch-w1.sh"
+        };
+        assert_eq!(launcher.file_name(), Some(name.as_ref()));
     }
 
     #[test]

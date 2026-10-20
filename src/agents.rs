@@ -437,7 +437,7 @@ pub struct AgentProfile {
 }
 
 impl AgentProfile {
-    /// Substitute this profile for one task and quote it as one login-shell command.
+    /// Substitute this profile for one task.
     pub fn render(&self, context: &RenderContext<'_>) -> RenderedLaunch {
         let prompt = render_template(self.prompt.as_deref().unwrap_or(DEFAULT_PROMPT), context);
         let mut argv = self
@@ -446,19 +446,7 @@ impl AgentProfile {
             .map(|argument| render_template(argument, context))
             .collect::<Vec<_>>();
         argv.push(prompt);
-        let mut shell_parts = Vec::new();
-        if !self.env.is_empty() {
-            shell_parts.push(shell_quote("env"));
-            shell_parts.extend(
-                self.env
-                    .iter()
-                    .map(|(key, value)| shell_quote(&format!("{key}={value}"))),
-            );
-        }
-        shell_parts.extend(argv.iter().map(|argument| shell_quote(argument)));
-        let shell_argv = shell_parts.join(" ");
         RenderedLaunch {
-            command: format!("$SHELL -lc {}", shell_quote(&shell_argv)),
             argv,
             env: self.env.clone(),
         }
@@ -480,12 +468,44 @@ pub struct RenderContext<'a> {
 /// Fully substituted values ready for a launcher.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderedLaunch {
-    pub command: String,
     pub argv: Vec<String>,
     pub env: BTreeMap<String, String>,
 }
 
 impl RenderedLaunch {
+    /// The launch as a POSIX `sh` script at `launcher`, for `/bin/sh "<launcher>"` in the pane.
+    /// The pane's shell parses only that fixed line, never task text or `env` values, whatever
+    /// shell it is. The script runs twice: first it asks the user's login shell (`$SHELL -l`)
+    /// for the fixed command `/bin/sh "<launcher>" login`, so the agent gets the login
+    /// environment; that second run deletes the script and starts the argv. Every value is
+    /// single-quoted for `/bin/sh` alone, where `'\''` is exact by POSIX. `launcher` must be
+    /// literal inside double quotes in any shell ([`crate::dispatch::sh_launch_line`] checks).
+    pub fn shell_script(&self, launcher: &str) -> String {
+        let login = format!("/bin/sh \"{launcher}\" login");
+        let mut script = format!(
+            "# tsk dispatch launcher: runs once in your login shell, then deletes itself.\n\
+             if [ \"${{1-}}\" != login ]; then\n    \
+             exec \"${{SHELL:-/bin/sh}}\" -l -c {}\n\
+             fi\n\
+             rm -f -- \"$0\"\n\
+             exec",
+            shell_quote(&login)
+        );
+        if !self.env.is_empty() {
+            script.push_str(" env");
+            for (key, value) in &self.env {
+                script.push(' ');
+                script.push_str(&shell_quote(&format!("{key}={value}")));
+            }
+        }
+        for argument in &self.argv {
+            script.push(' ');
+            script.push_str(&shell_quote(argument));
+        }
+        script.push('\n');
+        script
+    }
+
     /// The same launch as a Windows PowerShell 5.1 script, for `powershell -File`. Every value
     /// is embedded base64-encoded UTF-8, so the script is plain ASCII and no task text is ever
     /// parsed as PowerShell. The script deletes itself before it starts the agent.
@@ -958,8 +978,10 @@ fn render_template(template: &str, context: &RenderContext<'_>) -> String {
     rendered
 }
 
+/// One `/bin/sh` single-quoted word. NUL is dropped: no program argument or variable can
+/// carry it.
 fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
+    format!("'{}'", value.replace('\0', "").replace('\'', "'\\''"))
 }
 
 #[cfg(test)]
@@ -1426,7 +1448,6 @@ command = ["pi"]
                 "Task T101\nFirst line\nSecond line\n[ ] parse\n[x] validate",
             ]
         );
-        assert!(rendered.command.starts_with("$SHELL -lc "));
     }
 
     #[test]
@@ -1463,37 +1484,6 @@ command = ["pi"]
         assert!(!rendered.argv.last().expect("prompt").contains("tsk guide"));
     }
 
-    // Runs the rendered POSIX line under /bin/sh; Windows launches through a PowerShell script.
-    #[cfg(unix)]
-    #[test]
-    fn rendering_shell_quotes_a_prompt_containing_a_single_quote() {
-        let profile = AgentProfile {
-            command: vec!["printf".into()],
-            prompt: Some("Don't; printf hacked".into()),
-            env: Default::default(),
-        };
-
-        let rendered = profile.render(&context());
-        // `SHELL=/bin/sh $SHELL ...` would expand `$SHELL` before the assignment applies and run
-        // the ambient shell. Pin the shell by substituting the token in the rendered line instead.
-        let pinned = rendered
-            .command
-            .strip_prefix("$SHELL ")
-            .map(|rest| format!("/bin/sh {rest}"))
-            .expect("rendered command starts with $SHELL");
-        let output = Command::new("/bin/sh")
-            .arg("-c")
-            .arg(pinned)
-            .env_remove("SHELL")
-            .output()
-            .expect("run rendered command");
-        assert!(output.status.success());
-        assert_eq!(
-            String::from_utf8(output.stdout).expect("utf-8"),
-            "Don't; printf hacked"
-        );
-    }
-
     #[test]
     fn rendering_uses_the_builtin_prompt_when_profile_omits_one() {
         let profile = AgentProfile {
@@ -1524,38 +1514,161 @@ then set review again."
         );
     }
 
-    // Runs the rendered POSIX line under /bin/sh; Windows launches through a PowerShell script.
+    /// Run a Unix launcher the way a pane does: `pane -c '<typed line>'`, with `SHELL` set to
+    /// `login`. A fake agent records its arguments and whether `TSK_TEST_KEY` arrived.
+    #[cfg(unix)]
+    fn run_unix_launcher(
+        dir: &TempDir,
+        pane: &str,
+        login: &str,
+        title: &str,
+    ) -> (Vec<String>, String) {
+        use std::os::unix::fs::PermissionsExt;
+        let agent = dir.path().join("agent");
+        fs::write(
+            &agent,
+            "#!/bin/sh\nfor argument; do printf '%s\\0' \"$argument\"; done > \"$TSK_TEST_OUT\"\n\
+             printf '%s' \"${TSK_TEST_KEY+set}\" > \"$TSK_TEST_OUT.env\"\n",
+        )
+        .expect("agent");
+        fs::set_permissions(&agent, fs::Permissions::from_mode(0o755)).expect("chmod");
+        let profile = AgentProfile {
+            command: vec![agent.to_string_lossy().into_owned(), "{title}".into()],
+            prompt: Some("Do T{number}: {title}".into()),
+            env: [("TSK_TEST_KEY".to_string(), "secret value".to_string())].into(),
+        };
+        let rendered = profile.render(&RenderContext { title, ..context() });
+        let launchers = dir.path().join("launchers");
+        fs::create_dir_all(&launchers).expect("launchers");
+        let launcher = launchers.join("dispatch-w1.sh");
+        let launcher_text = launcher.to_string_lossy().into_owned();
+        fs::write(&launcher, rendered.shell_script(&launcher_text)).expect("launcher");
+        let out = dir.path().join("out");
+        let _ = fs::remove_file(&out);
+        let status = Command::new(pane)
+            .arg("-c")
+            .arg(format!("/bin/sh \"{launcher_text}\""))
+            .current_dir(dir.path())
+            .env("SHELL", login)
+            .env("HOME", dir.path())
+            .env("ZDOTDIR", dir.path())
+            .env("TSK_TEST_OUT", &out)
+            .env_remove("TSK_TEST_KEY")
+            .status()
+            .expect("run pane shell");
+        assert!(status.success(), "{pane} / {login}: {status}");
+        assert!(!launcher.exists(), "the launcher deletes itself");
+        let received = fs::read(&out).expect("agent ran");
+        let arguments = String::from_utf8(received)
+            .expect("utf-8")
+            .split_terminator('\0')
+            .map(str::to_string)
+            .collect();
+        let env = fs::read_to_string(dir.path().join("out.env")).expect("env mark");
+        (arguments, env)
+    }
+
+    #[cfg(unix)]
+    const HOSTILE_TITLES: &[&str] = &[
+        "Don't; touch pwned",
+        "x\\'; touch pwned; echo '",
+        "\\'(touch pwned)\\'",
+        "$(touch pwned) and `touch pwned` and ${HOME}",
+        "say \"hi\"; touch pwned",
+        "two\nlines; touch pwned",
+        "del\u{7f}\u{7f}\u{7f}\u{7f}touch pwned",
+        "ctrl \u{15}\u{3}\u{1b}[A touch pwned",
+    ];
+
+    /// Every POSIX shell on the machine, as the pane and as the login shell: task text and
+    /// `env` values reach the agent byte for byte and nothing in them runs.
     #[cfg(unix)]
     #[test]
-    fn rendering_the_builtin_prompt_survives_shell_quoting_of_a_hostile_title() {
-        let profile = AgentProfile {
-            command: vec!["printf".into(), "%s".into()],
-            prompt: None,
-            env: Default::default(),
-        };
-        let context = RenderContext {
-            title: "Don't run `rm -rf $HOME`; echo \"hi\"",
-            ..context()
-        };
+    fn a_unix_launcher_hands_hostile_titles_to_the_agent_verbatim_under_every_shell() {
+        let shells: Vec<&str> = [
+            "/bin/sh",
+            "/bin/bash",
+            "/bin/dash",
+            "/bin/zsh",
+            "/usr/bin/zsh",
+            "/opt/homebrew/bin/zsh",
+        ]
+        .into_iter()
+        .filter(|shell| Path::new(shell).exists())
+        .collect();
+        assert!(shells.len() >= 2, "{shells:?}");
+        for shell in shells {
+            for title in HOSTILE_TITLES {
+                let dir = TempDir::new("launch");
+                let (arguments, env) = run_unix_launcher(&dir, shell, shell, title);
+                assert_eq!(
+                    arguments,
+                    [title.to_string(), format!("Do T101: {title}")],
+                    "{shell}"
+                );
+                assert_eq!(env, "set", "{shell}: the env value arrives");
+                assert!(!dir.path().join("pwned").exists(), "{shell}: {title:?}");
+            }
+        }
+    }
 
-        let rendered = profile.render(&context);
-        let pinned = rendered
-            .command
-            .strip_prefix("$SHELL ")
-            .map(|rest| format!("/bin/sh {rest}"))
-            .expect("rendered command starts with $SHELL");
-        let output = Command::new("/bin/sh")
-            .arg("-c")
-            .arg(pinned)
-            .env_remove("SHELL")
-            .output()
-            .expect("run rendered command");
-        assert!(output.status.success());
-        let printed = String::from_utf8(output.stdout).expect("utf-8");
-        assert_eq!(&printed, rendered.argv.last().expect("appended prompt"));
-        assert!(printed.starts_with(
-            "You were dispatched to T101 (Don't run `rm -rf $HOME`; echo \"hi\") in worktree"
-        ));
+    /// The login shell, whatever it is (fish, nushell…), is handed only a fixed command
+    /// naming the launcher: it never parses task text or `env` values. A recording shell
+    /// stands in for one that is not POSIX.
+    #[cfg(unix)]
+    #[test]
+    fn the_login_shell_parses_only_a_fixed_command_without_task_text() {
+        use std::os::unix::fs::PermissionsExt;
+        for title in HOSTILE_TITLES {
+            let dir = TempDir::new("login");
+            let login = dir.path().join("login-shell");
+            fs::write(
+                &login,
+                "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$TSK_TEST_OUT.login\"\n\
+                 [ \"$1\" = -l ] && [ \"$2\" = -c ] || exit 9\nexec /bin/sh -c \"$3\"\n",
+            )
+            .expect("login shell");
+            fs::set_permissions(&login, fs::Permissions::from_mode(0o755)).expect("chmod");
+            let (arguments, env) =
+                run_unix_launcher(&dir, "/bin/sh", &login.to_string_lossy(), title);
+            assert_eq!(arguments[0], *title);
+            assert_eq!(env, "set");
+            let recorded = fs::read_to_string(dir.path().join("out.login")).expect("recorded");
+            let launcher = dir.path().join("launchers").join("dispatch-w1.sh");
+            assert_eq!(
+                recorded,
+                format!("-l\0-c\0/bin/sh \"{}\" login\0", launcher.display())
+            );
+        }
+    }
+
+    #[test]
+    fn a_unix_launcher_keeps_env_values_and_task_text_off_its_typed_line() {
+        let profile = AgentProfile {
+            command: vec!["agent".into()],
+            prompt: Some("{title}".into()),
+            env: [("API_TOKEN".to_string(), "it's secret".to_string())].into(),
+        };
+        let rendered = profile.render(&context());
+        let script = rendered.shell_script("/state/launchers/dispatch-w1.sh");
+        let (head, start) = script.rsplit_once("\nexec ").expect("final exec");
+        assert!(
+            !head.contains("secret") && !head.contains("Load profiles"),
+            "{head}"
+        );
+        assert_eq!(
+            start,
+            "env 'API_TOKEN=it'\\''s secret' 'agent' 'Load profiles'\n"
+        );
+        assert!(
+            head.contains("-l -c '/bin/sh \"/state/launchers/dispatch-w1.sh\" login'"),
+            "{head}"
+        );
+        assert_eq!(
+            rendered.argv,
+            ["agent", "Load profiles"],
+            "no env in the argv"
+        );
     }
 
     /// Like `TskProgram`: only a name whose every match is a batch file is batch-only, in
@@ -1760,11 +1873,10 @@ LITERAL = "{branch}"
             .render(&context());
         assert_eq!(rendered.env["PI_MODEL"], "anthropic/claude");
         assert_eq!(rendered.env["LITERAL"], "{branch}");
-        assert!(rendered.command.contains("'env'"), "{}", rendered.command);
+        let script = rendered.shell_script("/state/launchers/dispatch-w1.sh");
         assert!(
-            rendered.command.contains("'PI_MODEL=anthropic/claude'"),
-            "{}",
-            rendered.command
+            script.contains("exec env 'LITERAL={branch}' 'PI_MODEL=anthropic/claude' 'pi'"),
+            "{script}"
         );
     }
 }

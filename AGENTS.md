@@ -366,8 +366,12 @@ migration or design work they imply. What the behaviour *is* lives in the docs
   whose profile was removed and renders it as-is.
 - Profiles are argv templates plus an optional prompt. tsk substitutes
   `{number} {title} {notes} {steps} {worktree} {branch} {base}` and nothing else; the
-  prompt is appended as the last argument; the launch is `$SHELL -lc '<quoted argv>'`, one
-  command line, never chained. tsk carries no knowledge of any harness's flags. A malformed
+  prompt is appended as the last argument; the launch is a per-workspace launcher script in
+  the state dir (`launchers/`, owner-only on Unix): POSIX `sh` on Unix, PowerShell on
+  Windows. The pane types only the fixed line that runs it (`sh_launch_line`,
+  `powershell_launch_line`); task text and `env` values never go through the pane's shell,
+  whichever it is. On Unix the script re-runs itself through `$SHELL -l -c` (a fixed string)
+  for the login environment, then execs the argv. tsk carries no knowledge of any harness's flags. A malformed
   `config.toml` never blocks the board or CLI work that does not assign.
 - Starting an assigned task that was never dispatched dispatches it. Every start goes
   through `dispatch::start_route`:

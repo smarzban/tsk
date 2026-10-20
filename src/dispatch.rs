@@ -49,7 +49,7 @@ pub const LONG_PATHS_OFF: &str = "core.longpaths is off, so deep paths in the wo
 /// Which shell a host launches agents through and whose filesystem rules cleanup meets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostPlatform {
-    /// One `$SHELL -lc` command line typed into the pane.
+    /// A per-dispatch `sh` launcher script, run with `/bin/sh` and started in the login shell.
     Unix,
     /// A per-dispatch Windows PowerShell launcher script, run with `powershell -File`.
     Windows,
@@ -731,12 +731,12 @@ pub trait DispatchHost {
     fn platform(&self) -> HostPlatform {
         HostPlatform::Unix
     }
-    /// Store a Windows launcher script for the dispatch in `workspace_id` and return its path.
+    /// Store a launcher script for the dispatch in `workspace_id` and return its path.
     /// It lives under the state dir, never inside the worktree, so it is never committed.
     /// Where the launcher for the dispatch in `workspace_id` goes: absolute, so the pane finds
     /// it from the worktree.
-    fn launcher_path(&self, _workspace_id: &str) -> Result<PathBuf, String> {
-        Err("PowerShell launchers are not supported".into())
+    fn launcher_path(&self, workspace_id: &str) -> Result<PathBuf, String> {
+        unwritten_launcher(workspace_id)
     }
     /// The batch file a Windows profile's `program` resolves to when the launcher would find
     /// nothing else to run ([`crate::agents::batch_only_program`]), with the profile's `env`
@@ -754,8 +754,8 @@ pub trait DispatchHost {
             r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
         ))
     }
-    fn write_launcher(&mut self, _workspace_id: &str, _script: &str) -> Result<PathBuf, String> {
-        Err("PowerShell launchers are not supported".into())
+    fn write_launcher(&mut self, workspace_id: &str, _script: &str) -> Result<PathBuf, String> {
+        unwritten_launcher(workspace_id)
     }
     /// Delete a launcher the agent never ran (a launched one deletes itself). Best effort.
     fn remove_launcher(&mut self, _workspace_id: &str) {}
@@ -924,7 +924,7 @@ const REMOVAL_RETRY_DELAY: Duration = Duration::from_secs(2);
 /// what this avoids, and [`RemovalState`] reports honestly when it happens anyway.
 pub const WINDOWS_REMOVAL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
-/// The real host: git and Herdr processes. Windows launchers and removal marks go under
+/// The real host: git and Herdr processes. Launchers and removal marks go under
 /// `state_dir`. There is no default: every host names the store it writes beside, so a test
 /// cannot reach the real one.
 #[derive(Debug, Clone)]
@@ -955,7 +955,7 @@ impl SystemDispatchHost {
             .parent()
             .and_then(Path::parent)
             .expect("launcher sits in the state dir");
-        let name = launcher_file_name(workspace_id).replace(".ps1", ".removing");
+        let name = format!("{}.removing", launcher_stem(workspace_id));
         Ok(directory.join("cleanups").join(name))
     }
 
@@ -963,7 +963,7 @@ impl SystemDispatchHost {
         let path = self
             .state_dir
             .join("launchers")
-            .join(launcher_file_name(workspace_id));
+            .join(launcher_file_name(workspace_id, HostPlatform::native()));
         // The pane resolves a relative path against the worktree, not where tsk wrote it.
         std::path::absolute(&path)
             .map_err(|error| format!("could not resolve {}: {error}", path.display()))
@@ -1046,9 +1046,30 @@ fn restore_checked_aside(worktree: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// A host without launchers refuses; test hosts get a path they never write, so the Unix
+/// launch line stays the only thing they see.
+#[cfg(not(test))]
+fn unwritten_launcher(_workspace_id: &str) -> Result<PathBuf, String> {
+    Err("launchers are not supported".into())
+}
+
+#[cfg(test)]
+fn unwritten_launcher(workspace_id: &str) -> Result<PathBuf, String> {
+    let name = launcher_file_name(workspace_id, HostPlatform::Unix);
+    Ok(PathBuf::from(format!("/tsk/launchers/{name}")))
+}
+
 /// One launcher per Herdr workspace: a relaunch in the same workspace replaces it, and cleanup
 /// finds it from the dispatch record alone.
-fn launcher_file_name(workspace_id: &str) -> String {
+fn launcher_file_name(workspace_id: &str, platform: HostPlatform) -> String {
+    let extension = match platform {
+        HostPlatform::Unix => "sh",
+        HostPlatform::Windows => "ps1",
+    };
+    format!("{}.{extension}", launcher_stem(workspace_id))
+}
+
+fn launcher_stem(workspace_id: &str) -> String {
     let safe = workspace_id
         .chars()
         .map(|character| {
@@ -1059,7 +1080,7 @@ fn launcher_file_name(workspace_id: &str) -> String {
             }
         })
         .collect::<String>();
-    format!("dispatch-{safe}.ps1")
+    format!("dispatch-{safe}")
 }
 
 /// The pane line that runs a Windows launcher. Herdr can only type a line into the pane's
@@ -1098,6 +1119,31 @@ pub fn powershell_launch_line(powershell: &Path, launcher: &Path) -> Result<Stri
     Ok(format!(
         "{powershell} -NoProfile -ExecutionPolicy Bypass -File \"{launcher}\""
     ))
+}
+
+/// The pane line that runs a Unix launcher: `/bin/sh "<launcher>"`, the only text the pane's
+/// shell parses. It reads literally in sh, bash, zsh, fish, and nushell: the launcher is
+/// refused when it holds a character any of them would still expand or escape inside double
+/// quotes (or bash's history expansion would read).
+pub fn sh_launch_line(launcher: &Path) -> Result<String, DispatchError> {
+    let launcher = launcher.to_string_lossy();
+    if !launcher.starts_with('/') {
+        return Err(DispatchError::Herdr(format!(
+            "launcher path {launcher} is not absolute"
+        )));
+    }
+    if let Some(character) = launcher.chars().find(|character| {
+        character.is_control() || "$`\\\"!\u{201c}\u{201d}\u{201e}".contains(*character)
+    }) {
+        let directory = launcher
+            .rsplit_once("/launchers/")
+            .map_or(launcher.as_ref(), |(directory, _)| directory);
+        return Err(DispatchError::UnsafeStateDir(format!(
+            "the state directory {directory} contains {character:?}, which the pane's shell \
+             would expand; use a state directory without $ ` \\ \" or !"
+        )));
+    }
+    Ok(format!("/bin/sh \"{launcher}\""))
 }
 
 /// `C:/…` or `//server/share/…`, in forward-slash form.
@@ -1439,9 +1485,19 @@ impl DispatchHost for SystemDispatchHost {
     fn write_launcher(&mut self, workspace_id: &str, script: &str) -> Result<PathBuf, String> {
         let path = self.launcher_file(workspace_id)?;
         let directory = path.parent().expect("launcher has a directory");
-        std::fs::create_dir_all(directory)
-            .and_then(|()| std::fs::write(&path, script))
-            .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+        // A Unix launcher carries profile `env` values: owner-only, as config.toml should be.
+        #[cfg(unix)]
+        let written = crate::fsperm::ensure_private_dir(directory)
+            .and_then(|()| match std::fs::remove_file(&path) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+                _ => Ok(()),
+            })
+            .and_then(|()| crate::fsperm::create_private_file(&path))
+            .and_then(|mut file| std::io::Write::write_all(&mut file, script.as_bytes()));
+        #[cfg(not(unix))]
+        let written =
+            std::fs::create_dir_all(directory).and_then(|()| std::fs::write(&path, script));
+        written.map_err(|error| format!("could not write {}: {error}", path.display()))?;
         Ok(path)
     }
 
@@ -2364,9 +2420,7 @@ pub fn clean_planned_with_host(
             workspace,
         )
     };
-    if host.platform() == HostPlatform::Windows {
-        host.remove_launcher(&preview.record.herdr_workspace_id);
-    }
+    host.remove_launcher(&preview.record.herdr_workspace_id);
     host.mark_removal(&preview.record.herdr_workspace_id, false);
     let (branch, branch_reason) = match deletion {
         BranchDeletion::Removed => (BranchCleanup::Removed, None),
@@ -3705,6 +3759,8 @@ pub fn launch_with_host(
         }
         Some(powershell)
     } else {
+        let launcher = host.launcher_path("check").map_err(DispatchError::Herdr)?;
+        sh_launch_line(&launcher)?;
         None
     };
     let mut warning = None;
@@ -3878,8 +3934,8 @@ pub fn launch_with_host(
     })
 }
 
-/// Type the launch line into the pane: on Windows through a launcher script, deleted again
-/// when the pane never ran it.
+/// Type the launch line into the pane: a fixed line that runs a launcher script, deleted again
+/// when the pane never ran it. No task text and no `env` value is ever typed.
 fn run_launch(
     host: &mut impl DispatchHost,
     platform: HostPlatform,
@@ -3889,7 +3945,18 @@ fn run_launch(
     rendered: &crate::agents::RenderedLaunch,
 ) -> Result<(), DispatchError> {
     let line = match platform {
-        HostPlatform::Unix => rendered.command.clone(),
+        HostPlatform::Unix => {
+            let launcher = host
+                .launcher_path(workspace_id)
+                .map_err(DispatchError::Herdr)?;
+            let line = sh_launch_line(&launcher)?;
+            host.write_launcher(
+                workspace_id,
+                &rendered.shell_script(&launcher.to_string_lossy()),
+            )
+            .map_err(DispatchError::Herdr)?;
+            line
+        }
         HostPlatform::Windows => {
             let launcher = host
                 .write_launcher(workspace_id, &rendered.powershell_script())
@@ -3901,9 +3968,7 @@ fn run_launch(
         }
     };
     host.run_in_pane(pane_id, &line).map_err(|error| {
-        if platform == HostPlatform::Windows {
-            host.remove_launcher(workspace_id);
-        }
+        host.remove_launcher(workspace_id);
         DispatchError::Herdr(error)
     })
 }
@@ -4504,14 +4569,16 @@ mod tests {
         }
 
         fn launcher_path(&self, workspace_id: &str) -> Result<PathBuf, String> {
+            let name = launcher_file_name(workspace_id, self.platform());
+            if !self.windows {
+                let state = self.state_dir.as_deref().unwrap_or("/home/some one/tsk");
+                return Ok(PathBuf::from(format!("{state}/launchers/{name}")));
+            }
             let state = self
                 .state_dir
                 .as_deref()
                 .unwrap_or(r"C:\Users\Some One\tsk");
-            Ok(PathBuf::from(format!(
-                r"{state}\launchers\{}",
-                launcher_file_name(workspace_id)
-            )))
+            Ok(PathBuf::from(format!(r"{state}\launchers\{name}")))
         }
 
         fn write_launcher(&mut self, workspace_id: &str, script: &str) -> Result<PathBuf, String> {
@@ -5329,15 +5396,70 @@ mod tests {
         let result =
             run_with_host(&mut state, id, &profiles, false, true, &mut host).expect("dispatch");
         assert_eq!(result.warning, None);
-        assert!(host.launchers.is_empty(), "Unix types the $SHELL line");
-        assert!(host.runs[0].1.starts_with("$SHELL -lc "));
-        assert!(
-            host.runs[0]
-                .1
-                .contains(&format!("'\\''TSK_AGENT={}'\\''", result.assignee)),
-            "the agent's tsk calls know who they are: {}",
-            host.runs[0].1
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    /// The pane types one fixed line; task text and `env` values reach the agent only through
+    /// the launcher file, and never the stored record (tsk.json, `tsk list --json`, backups).
+    #[test]
+    fn unix_dispatch_types_a_fixed_line_and_keeps_task_text_and_env_values_off_it() {
+        let path = std::env::temp_dir().join(format!(
+            "tsk-dispatch-env-profiles-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&path).expect("mkdir");
+        fs::write(
+            path.join("config.toml"),
+            "[agent.implementer]\ncommand = [\"runner\", \"{title}\"]\n\
+             [agent.implementer.env]\nAPI_TOKEN = \"sk-secret-value\"\n",
+        )
+        .expect("agents");
+        let profiles = AgentProfiles::load(&path).expect("profiles");
+        let (mut state, id) = task();
+        let mut host = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        let result =
+            run_with_host(&mut state, id, &profiles, false, true, &mut host).expect("dispatch");
+
+        assert_eq!(
+            host.runs,
+            vec![(
+                "w9:p1".to_string(),
+                "/bin/sh \"/home/some one/tsk/launchers/dispatch-w9.sh\"".to_string()
+            )]
         );
+        assert_eq!(host.launchers.len(), 1, "one launcher per launch");
+        let (workspace, script) = &host.launchers[0];
+        assert_eq!(workspace, "w9");
+        assert!(script.contains("'API_TOKEN=sk-secret-value'"), "{script}");
+        assert!(
+            script.contains(&format!("'TSK_AGENT={}'", result.assignee)),
+            "the agent's tsk calls know who they are: {script}"
+        );
+        assert!(script.contains("'Ship Dispatch!!!'"), "{script}");
+
+        assert!(!result.record.argv.concat().contains("sk-secret-value"));
+        let saved = serde_json::to_string(&state).expect("state");
+        assert!(saved.contains("Ship Dispatch!!!"), "the record is saved");
+        assert!(!saved.contains("sk-secret-value"), "{saved}");
+        assert!(!saved.contains("API_TOKEN"), "{saved}");
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn a_unix_launch_the_pane_never_ran_removes_its_launcher() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let mut host = FakeHost {
+            git: true,
+            fail_run: Some("pane gone".into()),
+            ..FakeHost::default()
+        };
+        run_with_host(&mut state, id, &profiles, false, true, &mut host).expect_err("refused");
+        assert_eq!(host.removed_launchers, ["w9"]);
         fs::remove_dir_all(path).expect("cleanup");
     }
 
@@ -6086,8 +6208,74 @@ mod tests {
 
     #[test]
     fn launcher_files_are_named_from_the_workspace_id_alone() {
-        assert_eq!(launcher_file_name("w7T"), "dispatch-w7T.ps1");
-        assert_eq!(launcher_file_name(r"..\w:1"), "dispatch-___w_1.ps1");
+        assert_eq!(
+            launcher_file_name("w7T", HostPlatform::Windows),
+            "dispatch-w7T.ps1"
+        );
+        assert_eq!(
+            launcher_file_name(r"..\w:1", HostPlatform::Windows),
+            "dispatch-___w_1.ps1"
+        );
+        assert_eq!(
+            launcher_file_name("../w:1", HostPlatform::Unix),
+            "dispatch-___w_1.sh"
+        );
+    }
+
+    #[test]
+    fn the_unix_launch_line_runs_a_literal_launcher_with_bin_sh() {
+        assert_eq!(
+            sh_launch_line(Path::new(
+                "/Users/Some One (work)/tsk & co's/launchers/dispatch-w7T.sh"
+            )),
+            Ok("/bin/sh \"/Users/Some One (work)/tsk & co's/launchers/dispatch-w7T.sh\"".into())
+        );
+        // Every character sh, bash, zsh, fish, or nushell still reads inside double quotes.
+        for state in [
+            "/tsk/$state",
+            "/tsk/$(touch x)",
+            "/tsk/`tick`",
+            "/tsk/back\\slash",
+            "/tsk/dq\"uote",
+            "/tsk/bang!",
+            "/tsk/new\nline",
+            "/tsk/smart\u{201c}quote",
+        ] {
+            let launcher = format!("{state}/launchers/dispatch-w1.sh");
+            let refused = sh_launch_line(Path::new(&launcher)).expect_err(state);
+            assert_eq!(refused.code(), "unsafe-state-dir", "{state:?}");
+            assert!(
+                refused
+                    .to_string()
+                    .starts_with(&format!("the state directory {state} contains")),
+                "{refused}"
+            );
+        }
+        assert_eq!(
+            sh_launch_line(Path::new("tsk/launchers/x.sh")),
+            Err(DispatchError::Herdr(
+                "launcher path tsk/launchers/x.sh is not absolute".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn a_unix_state_dir_the_pane_would_expand_refuses_before_anything_exists() {
+        let (path, profiles) = profiles();
+        let (mut state_doc, id) = task();
+        let before = serde_json::to_value(&state_doc).expect("before");
+        let mut host = FakeHost {
+            git: true,
+            state_dir: Some("/home/$USER/tsk".into()),
+            ..FakeHost::default()
+        };
+        let error = run_with_host(&mut state_doc, id, &profiles, false, true, &mut host)
+            .expect_err("refused");
+        assert_eq!(error.code(), "unsafe-state-dir");
+        assert_eq!((host.creates, host.runs.len()), (0, 0));
+        assert!(host.launchers.is_empty());
+        assert_eq!(serde_json::to_value(&state_doc).expect("after"), before);
+        fs::remove_dir_all(path).expect("cleanup");
     }
 
     const POWERSHELL: &str = r"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe";
@@ -6193,11 +6381,22 @@ mod tests {
             .expect("cwd")
             .join(&relative)
             .join("launchers")
-            .join("dispatch-w_1.ps1");
+            .join(launcher_file_name("w:1", HostPlatform::native()));
         assert!(written.is_absolute(), "{}", written.display());
         assert_eq!(written, expected);
         assert_eq!(host.launcher_path("w:1"), Ok(expected.clone()));
         assert_eq!(fs::read_to_string(&written).expect("launcher"), "script");
+        // It may carry `env` values: owner-only, even over an older readable file.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| fs::metadata(path).expect("mode").permissions().mode() & 0o777;
+            assert_eq!(mode(&written), 0o600);
+            assert_eq!(mode(written.parent().expect("dir")), 0o700);
+            fs::set_permissions(&written, fs::Permissions::from_mode(0o644)).expect("chmod");
+            host.write_launcher("w:1", "again").expect("rewritten");
+            assert_eq!(mode(&written), 0o600);
+        }
         host.remove_launcher("w:1");
         assert!(!expected.exists());
         fs::remove_dir_all(relative).expect("cleanup");
@@ -6406,7 +6605,7 @@ mod tests {
         assert_eq!(state.get(id).expect("task").dispatch, retained);
         assert_eq!(host.creates, 1);
         assert_eq!(host.runs.len(), 1);
-        assert!(host.runs[0].1.contains("/tmp/worktree"));
+        assert!(host.launchers[0].1.contains("/tmp/worktree"));
         fs::remove_dir_all(path).expect("cleanup");
     }
 
@@ -6558,7 +6757,7 @@ mod tests {
             closed.last_reply().map(|reply| reply.text.as_str()),
             Some("postgres")
         );
-        let (_, command) = again_host.runs.first().expect("relaunched");
+        let (_, command) = again_host.launchers.first().expect("relaunched");
         assert!(
             command.contains("last `past_blocks` entry"),
             "the relaunched agent is pointed at the closed block: {command}"
@@ -7536,7 +7735,7 @@ mod tests {
         assert_eq!(result.record.branch, branch);
         assert_eq!(host.created_labels, ["T1 Shorter dispatch branch…"]);
         assert!(result.record.argv.iter().any(|arg| arg == branch));
-        assert!(host.runs[0].1.contains(branch));
+        assert!(host.launchers[0].1.contains(branch));
         fs::remove_dir_all(path).expect("cleanup");
     }
 

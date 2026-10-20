@@ -101,6 +101,18 @@ impl DispatchHost for FakeHost {
     fn run_in_pane(&mut self, _pane_id: &str, _command: &str) -> Result<(), String> {
         Ok(())
     }
+
+    fn launcher_path(&self, workspace_id: &str) -> Result<std::path::PathBuf, String> {
+        Ok(format!("/tsk/launchers/dispatch-{workspace_id}.sh").into())
+    }
+
+    fn write_launcher(
+        &mut self,
+        workspace_id: &str,
+        _script: &str,
+    ) -> Result<std::path::PathBuf, String> {
+        self.launcher_path(workspace_id)
+    }
 }
 
 #[test]
