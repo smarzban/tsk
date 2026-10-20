@@ -4441,6 +4441,19 @@ import { parseCapture } from "./capture.js";
       const keepKeys =
         document.activeElement === frame ||
         frame.contains(document.activeElement);
+      // A repaint (a resize repaints too) rebuilds the focused field: keep its selection
+      // while its text is unchanged, or keys typed next land at the wrong place.
+      const field = document.activeElement;
+      const selection =
+        field?.id && root.contains(field) && field.selectionStart != null
+          ? {
+              id: field.id,
+              value: field.value,
+              start: field.selectionStart,
+              end: field.selectionEnd,
+              direction: field.selectionDirection,
+            }
+          : null;
       root.innerHTML = html;
       const content = root.querySelector(".tsk-task-surface");
       if (content) content.scrollTop = oldScroll;
@@ -4501,6 +4514,17 @@ import { parseCapture } from "./capture.js";
           frame.focus({ preventScroll: true });
         }
       }
+      const refocused = document.activeElement;
+      if (
+        selection &&
+        refocused?.id === selection.id &&
+        refocused.value === selection.value
+      )
+        refocused.setSelectionRange(
+          selection.start,
+          selection.end,
+          selection.direction,
+        );
       frame.classList.toggle(
         "is-focused",
         document.activeElement === frame ||

@@ -21,6 +21,19 @@ pub fn scratch_root(label: &str) -> PathBuf {
     root
 }
 
+/// Clear the host context a child would otherwise inherit: the developer's own Herdr pane
+/// (`HERDR_ENV`, pane and workspace ids) and any `HERDR_PLUGIN_CONTEXT_JSON` a sibling test
+/// set under its env lock while this one spawned. The context key is removed by name: a
+/// sibling may set it after the snapshot below. Callers pass what they need in `envs`.
+fn clear_host_env(command: &mut Command) {
+    command.env_remove("HERDR_PLUGIN_CONTEXT_JSON");
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("HERDR_") {
+            command.env_remove(key);
+        }
+    }
+}
+
 /// Run `tsk` with a terminal stdin but captured stdout. This distinguishes the
 /// production stdout terminal check from an accidental stdin check.
 #[allow(dead_code)]
@@ -55,7 +68,9 @@ pub fn run_with_tty_stdin_and_piped_output(
     // SAFETY: each descriptor has one owned File after a successful openpty.
     let _master = unsafe { File::from_raw_fd(master) };
     let input = unsafe { File::from_raw_fd(slave) };
-    Command::new(env!("CARGO_BIN_EXE_tsk"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tsk"));
+    clear_host_env(&mut command);
+    command
         .args(args)
         .current_dir(cwd)
         .env("TSK_STATE_DIR", root.join("state"))
@@ -126,6 +141,7 @@ impl Session {
             assert_ne!(libc::fcntl(slave, libc::F_SETFD, libc::FD_CLOEXEC), -1);
         }
         let mut command = Command::new(env!("CARGO_BIN_EXE_tsk"));
+        clear_host_env(&mut command);
         command
             .args(args)
             .current_dir(cwd)

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Generate the gitignored /docs/agents/ and /docs/coordinator/ sources from the skills.
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,18 +18,21 @@ for (const [slug, page] of Object.entries(SKILL_PAGES)) {
     .replace(/^﻿/, "")
     .replace(/^# [^\n]+\n+/, "")
     .replace(/\s+$/, "");
-  writeFileSync(
-    join(destDir, `${slug}.md`),
-    [
-      "---",
-      `title: ${page.title}`,
-      `description: ${page.description}`,
-      "---",
-      "",
-      page.lead,
-      "",
-      body,
-      "",
-    ].join("\n"),
-  );
+  const dest = join(destDir, `${slug}.md`);
+  const text = [
+    "---",
+    `title: ${page.title}`,
+    `description: ${page.description}`,
+    "---",
+    "",
+    page.lead,
+    "",
+    body,
+    "",
+  ].join("\n");
+  // Tests run this beside parallel readers of the docs: skip an unchanged page, and replace
+  // a changed one whole so no reader sees it half written.
+  if (existsSync(dest) && readFileSync(dest, "utf8") === text) continue;
+  writeFileSync(`${dest}.tmp`, text);
+  renameSync(`${dest}.tmp`, dest);
 }

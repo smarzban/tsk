@@ -5382,6 +5382,16 @@ impl BoardModel {
         }
     }
 
+    /// Whether a base picker's branch lookup is still running, cancelled or not. Public only
+    /// so tests can wait for its Git child before removing the repository (Windows refuses to
+    /// delete a process's working directory).
+    #[doc(hidden)]
+    pub fn base_picker_lookup_running(&self) -> bool {
+        self.base_picker_workers
+            .lock()
+            .is_ok_and(|workers| !workers.is_empty())
+    }
+
     /// Apply completed branch lookup on the event loop, including idle redraw ticks.
     /// Cancelled and superseded generations cannot overwrite a newly opened picker.
     pub fn poll_base_picker_results(&mut self) -> bool {

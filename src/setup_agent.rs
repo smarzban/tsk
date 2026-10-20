@@ -1499,6 +1499,25 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    /// Lib tests share one process with every Git test: a PATH swap, however short, fails
+    /// their `git` spawns. Inject a `CliSearchPath` instead.
+    #[test]
+    fn no_lib_test_swaps_the_process_path() {
+        let needle = concat!("set_var(", "\"PATH\"");
+        let mut dirs = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+        while let Some(dir) = dirs.pop() {
+            for entry in fs::read_dir(&dir).expect("src dir") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    let text = fs::read_to_string(&path).expect("source");
+                    assert!(!text.contains(needle), "{} swaps PATH", path.display());
+                }
+            }
+        }
+    }
+
     // Unix only: Win32 rejects control characters such as ESC in directory names.
     #[cfg(unix)]
     #[test]
@@ -1513,14 +1532,19 @@ mod tests {
         fs::create_dir_all(root.join("empty-bin")).expect("bin");
         let previous_home = std::env::var_os("HOME");
         let previous_userprofile = std::env::var_os("USERPROFILE");
-        let previous_path = std::env::var_os("PATH");
         std::env::set_var("HOME", &home);
         std::env::set_var("USERPROFILE", &home);
-        std::env::set_var("PATH", root.join("empty-bin"));
+        // An injected search path: a process-wide empty PATH fails every concurrent test's
+        // `git` spawn.
+        let search = CliSearchPath {
+            path: Some(root.join("empty-bin").into_os_string()),
+            #[cfg(windows)]
+            extensions: ".COM;.EXE;.BAT;.CMD".into(),
+        };
         let listed = list_text();
         let mut reader = Cursor::new(b"n\n".to_vec());
         let mut writer = Vec::new();
-        let result = run_interactive_batch(&mut reader, &mut writer, true);
+        let result = run_interactive_batch_with_search(&mut reader, &mut writer, true, &search);
         match previous_home {
             Some(value) => std::env::set_var("HOME", value),
             None => std::env::remove_var("HOME"),
@@ -1528,10 +1552,6 @@ mod tests {
         match previous_userprofile {
             Some(value) => std::env::set_var("USERPROFILE", value),
             None => std::env::remove_var("USERPROFILE"),
-        }
-        match previous_path {
-            Some(value) => std::env::set_var("PATH", value),
-            None => std::env::remove_var("PATH"),
         }
         let result = result.expect("batch");
         assert!(result.declined);

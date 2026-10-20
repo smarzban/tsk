@@ -348,6 +348,28 @@ fn t64_real_board_editor_ctrl_q_stays_live_then_task_page_ctrl_q_exits() {
     assert!(session.wait_exit(Duration::from_secs(30)).success());
 }
 
+/// A PTY board spawned while a sibling test holds a Herdr context in this process's env
+/// opens on its own seeded tasks, not on the sibling's project.
+#[test]
+fn a_pty_board_ignores_a_sibling_tests_host_context() {
+    let root = pty::scratch_root("t64-context-leak");
+    let cwd = root.join("project");
+    fs::create_dir_all(&cwd).expect("project directory");
+    seed_pty_task(&root, &cwd, "T64 leak target");
+    let decoy = root.join("decoy-sibling");
+    fs::create_dir_all(decoy.join(".git")).expect("decoy repo");
+
+    let lock = env_lock();
+    let context = ContextEnv::set(&decoy);
+    let mut session = pty::Session::spawn(root, &cwd, &[], &[], 24, 78);
+    drop(context);
+    drop(lock);
+    let painted = session.output_until("target");
+    assert!(!painted.contains("decoy-sibling"), "{painted}");
+    session.send(b"\x11");
+    assert!(session.wait_exit(Duration::from_secs(30)).success());
+}
+
 #[test]
 fn completing_a_guide_on_the_real_board_records_its_dismissal() {
     let root = pty::scratch_root("dismiss");

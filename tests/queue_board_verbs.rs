@@ -1160,8 +1160,9 @@ fn base_picker_opens_on_cached_branches_with_a_disabled_refreshing_row_and_cance
         stub::write_stub(
             &ssh,
             format!(
-                "#!/bin/sh\ntouch '{}'\nsleep 10\nexit 1\n",
-                repo.join("fetch-started").display()
+                "#!/bin/sh\ntouch '{}'\nwhile [ ! -e '{}' ]; do sleep 0.05; done\nexit 1\n",
+                repo.join("fetch-started").display(),
+                repo.join("fetch-release").display()
             ),
             0o755,
         );
@@ -1187,7 +1188,7 @@ fn base_picker_opens_on_cached_branches_with_a_disabled_refreshing_row_and_cance
     let mut model = BoardModel::from_domain(&domain, Some(repo.clone()));
     let started = std::time::Instant::now();
     apply_intent(&mut domain, &mut model, BoardIntent::OpenBasePicker, None).unwrap();
-    // Well under the fake transport's 10s, with room for a loaded machine's local Git reads.
+    // The fake transport blocks until released; 3s leaves room for a loaded machine's local Git.
     assert!(started.elapsed() < std::time::Duration::from_secs(3));
     // Cached refs paint at once, before the (slow, failing) fetch has returned.
     let labels: Vec<String> = model
@@ -1226,7 +1227,17 @@ fn base_picker_opens_on_cached_branches_with_a_disabled_refreshing_row_and_cance
     apply_intent(&mut domain, &mut model, BoardIntent::CancelListPicker, None).unwrap();
     assert!(cancelled.elapsed() < std::time::Duration::from_secs(3));
     assert_eq!(model.input_mode(), BoardInputMode::Normal);
-    // Bounded worker owns this path after cancel; removing it is safe for its error result.
+    // The cancelled lookup's Git child still runs in the repository: let it fail, and wait
+    // for it before removing the directory (Windows refuses to delete a working directory).
+    std::fs::write(repo.join("fetch-release"), "").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while model.base_picker_lookup_running() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cancelled lookup never finished"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     std::fs::remove_dir_all(repo).unwrap();
 }
 

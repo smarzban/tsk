@@ -26,14 +26,14 @@ const distDir = join(siteRoot, "dist");
 
 const read = (path) => readFile(path, "utf8");
 
+// `npm test` builds dist before any test file starts. A build from inside one file would
+// rewrite generated docs sources while parallel files read them, and a dist left from an
+// earlier build would be stale.
 function ensureDist() {
-  if (existsSync(join(distDir, "index.html"))) return;
-  const result = spawnSync("npm", ["run", "build"], {
-    cwd: siteRoot,
-    encoding: "utf8",
-    stdio: "pipe",
-  });
-  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.ok(
+    existsSync(join(distDir, "index.html")),
+    "dist/ is missing: run `npm test`, or `npm run build` first",
+  );
 }
 
 async function docsFiles() {

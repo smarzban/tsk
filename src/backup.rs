@@ -2206,7 +2206,9 @@ every = "daily"
         assert!(run(&state, RunMode::Due(Trigger::Save), at(DAY))
             .expect("save run")
             .is_empty());
-        drop(slot);
+        // Unlock, as `LockGuard` does: closing alone leaves the lock with any child a parallel
+        // test is spawning at that moment, which shares the open file until it execs.
+        slot.unlock().expect("release the slot");
         // The waiter was started by a board open; it still backs up for the save.
         let results = run(&state, RunMode::Due(Trigger::Open), at(DAY + 1)).expect("waiter");
         assert!(

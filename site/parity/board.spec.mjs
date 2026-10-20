@@ -728,6 +728,7 @@ for (const resolution of ["cancel", "save"]) {
     await page.keyboard.press("Enter");
     await page.keyboard.press("e");
     const editor = page.locator("#tsk-preview-edit");
+    await expect(editor).toBeFocused();
     const originalDraft = await editor.inputValue();
     await editor.fill("Resolved preview title");
     await page.locator("[data-project-row]").first().click();
@@ -859,12 +860,54 @@ test("Tab does not persist an empty task title", async ({ page }) => {
   await page.keyboard.press("Enter");
   const originalTitle = await page.locator(".tsk-task-header").textContent();
   await page.keyboard.press("Control+e");
+  await expect(page.locator("#tsk-edit")).toBeFocused();
   await page.locator("#tsk-edit").fill("");
   await page.keyboard.press("Tab");
   await page.keyboard.press("Escape");
   await expect(page.locator(".tsk-task-header")).toHaveText(
     originalTitle || "",
   );
+});
+
+test("a resize repaint keeps the focused editor's selection", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:4180/");
+  await page.locator('[data-tab="project"]').click();
+  await page.locator("#board-demo").focus();
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Control+e");
+  const editor = page.locator("#tsk-edit");
+  await expect(editor).toBeFocused();
+  const frames = () =>
+    page.evaluate(async () => {
+      for (let frame = 0; frame < 3; frame += 1)
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+  // Opening the editor resizes the board, and that repaint lands a frame later.
+  await frames();
+  const length = await editor.evaluate((el) => {
+    el.select();
+    el.dataset.beforeRepaint = "1";
+    return el.value.length;
+  });
+  expect(length).toBeGreaterThan(1);
+  // The board repaints on resize, as Playwright's fill can race it.
+  await page.evaluate(() => {
+    const demo = document.getElementById("tsk-demo");
+    demo.style.width = `${demo.getBoundingClientRect().width - 9}px`;
+  });
+  await frames();
+  await expect(editor).toBeFocused();
+  expect(
+    await editor.evaluate((el) => [
+      el.dataset.beforeRepaint ?? "repainted",
+      el.selectionStart,
+      el.selectionEnd,
+    ]),
+  ).toEqual(["repainted", 0, length]);
+  await page.keyboard.insertText("X");
+  await expect(editor).toHaveValue("X");
 });
 
 test("project preview expanded quick-add uses the same ring without saving", async ({
