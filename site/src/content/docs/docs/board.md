@@ -220,7 +220,7 @@ When the last prerequisite is done, each waiting **ready** task starts in the sa
 
 The task picker is a search box titled `T5 runs after`. The tasks it runs after sit pinned at the top, a done one marked `· done`.
 
-1. Type a task number (`202` or `T202`) or words from its title. Matches list below the pinned tasks, this project's first. Others show their project.
+1. Type a task number (`202` or `T202`) or a word from its title. Matches list below the pinned tasks, this project's first. Others show their project.
 2. `Space` or a click on a match pins it. `ctrl+x` or a click on a pinned task removes it. **clear all** removes every pinned task.
 3. `Enter` saves exactly the pinned tasks. With none pinned, it saves `runs after nothing`, or picks the highlighted match.
 

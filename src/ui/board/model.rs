@@ -350,7 +350,7 @@ pub enum ListPickerValue {
     Sort(SortBy),
 }
 
-/// The task picker's matches stay empty until the query names something.
+/// The task picker row under the pinned tasks that unpins them all.
 pub(super) const AFTER_CLEAR_ALL: &str = "clear all";
 
 /// Whether a task-picker query term names `number` (`202`, `T202`, a prefix of either) or
