@@ -647,7 +647,7 @@ tsk restore 3f9a1c2e
 
 ## setup
 
-Registers tsk with Herdr, or installs the agent skill.
+Registers tsk with Herdr, or installs the agent skills: `tsk-cli` and the [coordinator skill](/docs/coordinator/).
 
 ```text
 tsk setup [--json]
@@ -665,7 +665,7 @@ tsk setup --detected-ids | --skill-states
 | `herdr --check` | Prints `bound` when both plugin commands are in the Herdr config, otherwise `unbound`. Changes nothing |
 | `agents` | Installs or updates the skill for every detected agent. `--yes` skips the question |
 | `<agent>` | Installs the skill for one agent, below |
-| `--skill-dir <path>` | Installs the skill as `<path>/tsk-cli/SKILL.md` |
+| `--skill-dir <path>` | Installs the skills as `<path>/tsk-cli/SKILL.md` and `<path>/tsk-coordinator/SKILL.md` |
 
 | Agent | Skills directory |
 | --- | --- |
@@ -685,10 +685,10 @@ tsk setup --detected-ids | --skill-states
 
 For the skill:
 
-- An installed skill with the same version refuses with `skill-exists`; `--force` rewrites it. A different version updates without `--force`.
+- Both skills share one version. When both are installed at this version, setup refuses with `skill-exists`; `--force` rewrites them. Otherwise it writes whichever is missing or different.
 - Setup refuses a symlinked skills root, skill folder, or skill file.
 - `--json` prints a machine-readable report.
-- For installers, `--detected-ids` prints the detected agent ids on one line. `--skill-states` prints `embedded <version>`, then one tab-separated `id state version path` line per detected agent, where the state is `missing`, `current`, `outdated`, or `blocked-symlink`.
+- For installers, `--detected-ids` prints the detected agent ids on one line. `--skill-states` prints `embedded <version>`, then one tab-separated `id state version path` line per detected agent, where the state is `missing`, `current`, `outdated`, or `blocked-symlink`. The version and path are the `tsk-cli` skill's. The state covers both skills: a missing coordinator skill reads `outdated`.
 
 **Refusals:** `skill-exists` and failed setups exit 1, invalid arguments exit 2.
 

@@ -48,6 +48,7 @@ Docs pages live in `site/src/content/docs/docs/`.
 | Install, Homebrew, `tsk setup herdr` | `install.md` |
 | Packaging, release steps, installer contracts | `packaging/README.md` |
 | Agent skill | `skills/tsk-cli/SKILL.md` (`tsk guide`, `/docs/agents/`) |
+| Coordinator skill | `skills/tsk-coordinator/SKILL.md` (`/docs/coordinator/`) |
 | Exact rendered output | golden fixtures in `tests/fixtures/` (`tests/queue_board_render.rs`) |
 
 If the docs and the code disagree, the code is the bug or the docs are; fix one in the
@@ -70,7 +71,7 @@ same PR, never leave them apart.
 | `src/context.rs`, `src/scope.rs` | invocation context from Herdr and the cwd, project path resolution |
 | `src/save_recovery.rs` | retry or cancel of one failed save |
 | `src/fsperm.rs` | private file modes for the state directory |
-| `src/setup.rs`, `src/setup/`, `src/setup_agent.rs` | `tsk setup herdr`, agent skill install |
+| `src/setup.rs`, `src/setup/`, `src/setup_agent.rs` | `tsk setup herdr`, agent skill install (`tsk-cli` and `tsk-coordinator`) |
 | `src/board_pane.rs` | `--find-board-pane` lookup for the launchers |
 | `src/guides.rs`, `src/announcements.rs`, `src/delivery.rs` | seeded notice tasks |
 | `src/update.rs` | release check, `tsk update` |
@@ -178,8 +179,8 @@ back.
 
 A change that adds, removes, or alters user-visible behaviour lands in the same PR as its
 docs. User-visible means a key, verb, palette command, mouse target, status message, CLI
-flag or output, exit code, board section, file, or env var. The agent skill counts too: it
-is also `tsk guide` and `/docs/agents/`.
+flag or output, exit code, board section, file, or env var. The agent skills count too:
+`tsk-cli` is also `tsk guide` and `/docs/agents/`; `tsk-coordinator` is `/docs/coordinator/`.
 
 In the same PR:
 
@@ -203,15 +204,20 @@ The web demo uses bare verb keys on purpose (browsers reserve control chords); d
 
 ### Agent skill version
 
-The skill's frontmatter `version:` moves **once per release**, not once per edit.
+The skills' frontmatter `version:` moves **once per release**, not once per edit.
 `tsk setup <agent>` rewrites an installed skill only when the version differs, so a skill
 edit without a bump since the last release leaves every installed copy silently stale.
+
+`skills/tsk-cli` and `skills/tsk-coordinator` share one version and install as a unit: an
+edit to either moves both `version:` lines together. The installer probe keeps one row per
+agent, keyed on `tsk-cli`, so old installers keep working.
 
 1. Find the version the last release shipped: `git show vX.Y.Z:skills/tsk-cli/SKILL.md`.
 2. On the first skill change after that release, bump to one minor above it. Never go
    below a shipped version: those copies are on users' disks.
 3. On every further edit while that number is unreleased, keep it.
 4. After every edit, refresh the FNV-1a content hash pin in `embedded_skill_declares_semver`
+   or `embedded_coordinator_skill_shares_the_version_and_pins_its_hash`
    (`src/setup_agent.rs`). On failure the assertion's `left` value is the new hash; paste
    it in.
 

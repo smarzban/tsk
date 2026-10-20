@@ -22,8 +22,9 @@ pnpm-debug.log*
 # leftover decode/lock scratch (never ship)
 tmp/
 
-# generated from ../../skills/tsk-cli/SKILL.md
+# generated from ../../skills/tsk-cli/SKILL.md and ../../skills/tsk-coordinator/SKILL.md
 src/content/docs/docs/agents.md
+src/content/docs/docs/coordinator.md
 
 # regenerated from public/icon-*.svg
 public/apple-touch-icon.png

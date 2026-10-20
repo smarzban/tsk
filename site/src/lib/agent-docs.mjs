@@ -18,14 +18,34 @@ export const SIDEBAR_SLUGS = [
   "task-page",
   "steps",
   "agents",
+  "coordinator",
   "cli",
   "storage",
 ];
 export const SOURCE_REPO_BASE = "https://github.com/smarzban/tsk/blob/main";
 export const AGENTS_SKILL_REPO_PATH = "skills/tsk-cli/SKILL.md";
+export const COORDINATOR_SKILL_REPO_PATH = "skills/tsk-coordinator/SKILL.md";
 export function agentsSkillFsPath() {
   return resolve(process.cwd(), "../skills/tsk-cli/SKILL.md");
 }
+
+// Docs pages generated from a skill (scripts/sync-agents-page.mjs), keyed by slug.
+export const SKILL_PAGES = {
+  agents: {
+    skillPath: AGENTS_SKILL_REPO_PATH,
+    title: "tsk for agents",
+    description:
+      "The agent workflow printed by tsk guide, including what to do if tsk is not installed.",
+    lead: DEFINITION_SENTENCE,
+  },
+  coordinator: {
+    skillPath: COORDINATOR_SKILL_REPO_PATH,
+    title: "Coordinator skill",
+    description:
+      "How an agent runs builder agents, review, and live tests for you, with the tsk-coordinator skill that tsk setup installs.",
+    lead: "This skill turns your agent into a coordinator of builder agents. `tsk setup` installs it beside the tsk skill, which supplies the board commands.",
+  },
+};
 
 export function slugFromDocsId(id) {
   const value = String(id);
@@ -73,10 +93,11 @@ export function serializeJsonLd(value) {
 }
 
 export function twinSource(slug, filePath) {
-  if (slug === "agents") {
+  const skillPage = SKILL_PAGES[slug];
+  if (skillPage) {
     return {
-      sourcePath: AGENTS_SKILL_REPO_PATH,
-      updatedIso: newestCommitIso(agentsSkillFsPath()),
+      sourcePath: skillPage.skillPath,
+      updatedIso: newestCommitIso(resolve(process.cwd(), "..", skillPage.skillPath)),
     };
   }
   return {

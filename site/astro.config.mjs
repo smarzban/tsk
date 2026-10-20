@@ -109,6 +109,7 @@ export default defineConfig({
           label: 'Reference',
           items: [
             { label: 'tsk for agents', slug: 'docs/agents' },
+            { label: 'Coordinator skill', slug: 'docs/coordinator' },
             { label: 'CLI', slug: 'docs/cli' },
             { label: 'Storage', slug: 'docs/storage' },
           ],

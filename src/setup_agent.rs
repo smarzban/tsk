@@ -1,4 +1,4 @@
-//! Install the embedded agent skill into a host skills directory.
+//! Install the embedded agent skills into a host skills directory.
 
 use std::env;
 use std::fmt;
@@ -6,10 +6,18 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Component, Path, PathBuf};
 
-use crate::cli::guide::SKILL_MD;
+use crate::cli::guide::{COORDINATOR_MD, SKILL_MD};
 
 const SKILL_FOLDER: &str = "tsk-cli";
+const COORDINATOR_FOLDER: &str = "tsk-coordinator";
 const SKILL_FILE: &str = "SKILL.md";
+
+/// Every skill `tsk setup` installs, tsk-cli first. They share one `version:` and install
+/// as one unit, so the installer probes keep one row per agent, keyed on tsk-cli.
+const SKILLS: [(&str, &str); 2] = [
+    (SKILL_FOLDER, SKILL_MD),
+    (COORDINATOR_FOLDER, COORDINATOR_MD),
+];
 
 pub const USAGE: &str = "usage: tsk setup [--json]
        tsk setup herdr [--check]
@@ -84,6 +92,15 @@ pub enum SkillState {
     Blocked,
 }
 
+/// One installed skill file: the tsk skill's fields on `AgentStatus` summarize all of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillFileStatus {
+    pub name: &'static str,
+    pub path: PathBuf,
+    pub installed_version: Option<String>,
+    pub state: SkillState,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentStatus {
     pub id: String,
@@ -91,7 +108,9 @@ pub struct AgentStatus {
     pub skill_path: PathBuf,
     pub present: bool,
     pub installed_version: Option<String>,
+    /// Blocked when any skill is, missing when the tsk skill is, current only when all are.
     pub state: SkillState,
+    pub skills: Vec<SkillFileStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -376,42 +395,48 @@ pub fn install(target: &Target, force: bool) -> Result<InstallOutcome, Error> {
     if root.as_os_str().is_empty() {
         return Err(usage());
     }
-    let folder = root.join(SKILL_FOLDER);
-    let dest = folder.join(SKILL_FILE);
     refuse_symlink(&root)?;
-    refuse_symlink(&folder)?;
-    refuse_symlink(&dest)?;
-
-    let previous = if path_present(&dest)? {
-        let existing = fs::read_to_string(&dest).map_err(io_error)?;
-        let installed = frontmatter_version(&existing);
-        if !force {
-            if let Some(ref version) = installed {
-                if version.as_str() == embedded_skill_version().as_str() {
-                    return Err(Error::Exists(dest));
-                }
-            }
+    let embedded = embedded_skill_version();
+    // `Some(installed version)` when the tsk skill file was already there.
+    let mut previous: Option<Option<String>> = None;
+    let mut pending = Vec::new();
+    for (index, (name, contents)) in SKILLS.into_iter().enumerate() {
+        let folder = root.join(name);
+        let dest = folder.join(SKILL_FILE);
+        refuse_symlink(&folder)?;
+        refuse_symlink(&dest)?;
+        let installed = if path_present(&dest)? {
+            let existing = fs::read_to_string(&dest).map_err(io_error)?;
+            Some(frontmatter_version(&existing))
+        } else {
+            None
+        };
+        let current = matches!(&installed, Some(Some(version)) if *version == embedded);
+        if index == 0 {
+            previous = installed;
         }
-        Some(installed)
-    } else {
-        None
-    };
+        if force || !current {
+            pending.push((folder, dest, contents));
+        }
+    }
+    let primary = root.join(SKILL_FOLDER).join(SKILL_FILE);
+    if pending.is_empty() {
+        return Err(Error::Exists(primary));
+    }
 
-    let had_file = previous.is_some();
-    let previous_version = previous.flatten();
-
-    fs::create_dir_all(&folder).map_err(io_error)?;
-    refuse_symlink(&root)?;
-    refuse_symlink(&folder)?;
-    refuse_symlink(&dest)?;
-    write_replace(&folder, &dest, SKILL_MD)?;
-    if had_file {
-        Ok(InstallOutcome::Updated {
-            path: dest,
-            previous: previous_version,
-        })
-    } else {
-        Ok(InstallOutcome::Written(dest))
+    for (folder, dest, contents) in pending {
+        fs::create_dir_all(&folder).map_err(io_error)?;
+        refuse_symlink(&root)?;
+        refuse_symlink(&folder)?;
+        refuse_symlink(&dest)?;
+        write_replace(&folder, &dest, contents)?;
+    }
+    match previous {
+        Some(previous) => Ok(InstallOutcome::Updated {
+            path: primary,
+            previous,
+        }),
+        None => Ok(InstallOutcome::Written(primary)),
     }
 }
 
@@ -433,24 +458,53 @@ fn detect_with_search(search: &CliSearchPath) -> Result<Vec<AgentStatus>, Error>
         if !agent_present(&home, &target, &skills_root, search) {
             continue;
         }
-        let (installed_version, state) = match skill_status(&skills_root, &skill_path)? {
-            SkillStatusDetail::Blocked => (None, SkillState::Blocked),
-            SkillStatusDetail::Missing => (None, SkillState::Missing),
-            SkillStatusDetail::Ready { version } => {
-                let state = match &version {
-                    Some(v) if v.as_str() == embedded.as_str() => SkillState::Current,
-                    _ => SkillState::Outdated,
+        let root_blocked = is_symlink(&skills_root)?;
+        let mut skills = Vec::new();
+        for (name, _) in SKILLS {
+            let path = skills_root.join(name).join(SKILL_FILE);
+            let (installed_version, state) =
+                match skill_status(root_blocked, &skills_root.join(name), &path)? {
+                    SkillStatusDetail::Blocked => (None, SkillState::Blocked),
+                    SkillStatusDetail::Missing => (None, SkillState::Missing),
+                    SkillStatusDetail::Ready { version } => {
+                        let state = match &version {
+                            Some(v) if v.as_str() == embedded.as_str() => SkillState::Current,
+                            _ => SkillState::Outdated,
+                        };
+                        (version, state)
+                    }
                 };
-                (version, state)
-            }
+            skills.push(SkillFileStatus {
+                name,
+                path,
+                installed_version,
+                state,
+            });
+        }
+        let primary = &skills[0];
+        let state = if skills
+            .iter()
+            .any(|skill| skill.state == SkillState::Blocked)
+        {
+            SkillState::Blocked
+        } else if primary.state == SkillState::Missing {
+            SkillState::Missing
+        } else if skills
+            .iter()
+            .all(|skill| skill.state == SkillState::Current)
+        {
+            SkillState::Current
+        } else {
+            SkillState::Outdated
         };
         out.push(AgentStatus {
             id: target.name().to_string(),
             skills_root,
             skill_path,
             present: true,
-            installed_version,
+            installed_version: primary.installed_version.clone(),
             state,
+            skills,
         });
     }
     Ok(out)
@@ -467,12 +521,7 @@ pub fn detected_ids() -> Result<Vec<String>, Error> {
 pub fn skill_states_text() -> Result<String, Error> {
     let mut out = format!("embedded\t{}\n", embedded_skill_version());
     for agent in detect()? {
-        let state = match agent.state {
-            SkillState::Missing => "missing",
-            SkillState::Current => "current",
-            SkillState::Outdated => "outdated",
-            SkillState::Blocked => "blocked-symlink",
-        };
+        let state = state_word(agent.state);
         // The path is display-only; a tab or newline inside it would forge a row.
         let path: String = agent
             .skill_path
@@ -571,8 +620,8 @@ fn run_interactive_batch_with_search(
             SkillState::Missing => "not installed".to_string(),
             SkillState::Current => format!("current v{embedded}"),
             SkillState::Outdated => match &status.installed_version {
-                Some(v) => format!("v{v} → v{embedded}"),
-                None => format!("update to v{embedded}"),
+                Some(v) if *v != embedded => format!("v{v} → v{embedded}"),
+                _ => format!("update to v{embedded}"),
             },
             SkillState::Blocked => "blocked (symlink)".to_string(),
         };
@@ -681,7 +730,7 @@ pub fn list_text() -> String {
          grok      {}\n\
          codex     {}\n\
          opencode  {}\n\
-         --skill-dir <path>  write <path>/tsk-cli/SKILL.md\n\
+         --skill-dir <path>  write <path>/tsk-cli/SKILL.md and <path>/tsk-coordinator/SKILL.md\n\
          --detected-ids      print detected agent ids (for installers)\n",
         display(".claude/skills"),
         display(".pi/agent/skills"),
@@ -704,15 +753,25 @@ pub fn detection_json() -> Result<String, Error> {
             "skills_root": agent.skills_root.display().to_string(),
             "skill_path": agent.skill_path.display().to_string(),
             "installed_version": agent.installed_version,
-            "state": match agent.state {
-                SkillState::Missing => "missing",
-                SkillState::Current => "current",
-                SkillState::Outdated => "outdated",
-                SkillState::Blocked => "blocked-symlink",
-            },
+            "state": state_word(agent.state),
+            "skills": agent.skills.iter().map(|skill| serde_json::json!({
+                "name": skill.name,
+                "path": skill.path.display().to_string(),
+                "installed_version": skill.installed_version,
+                "state": state_word(skill.state),
+            })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
     });
     Ok(format!("{payload}\n"))
+}
+
+fn state_word(state: SkillState) -> &'static str {
+    match state {
+        SkillState::Missing => "missing",
+        SkillState::Current => "current",
+        SkillState::Outdated => "outdated",
+        SkillState::Blocked => "blocked-symlink",
+    }
 }
 
 fn named_target(id: &str) -> Result<Target, Error> {
@@ -835,8 +894,12 @@ enum SkillStatusDetail {
     Ready { version: Option<String> },
 }
 
-fn skill_status(root: &Path, dest: &Path) -> Result<SkillStatusDetail, Error> {
-    if is_symlink(root)? || is_symlink(&root.join(SKILL_FOLDER))? || is_symlink(dest)? {
+fn skill_status(
+    root_blocked: bool,
+    folder: &Path,
+    dest: &Path,
+) -> Result<SkillStatusDetail, Error> {
+    if root_blocked || is_symlink(folder)? || is_symlink(dest)? {
         return Ok(SkillStatusDetail::Blocked);
     }
     if !path_present(dest)? {
@@ -1168,6 +1231,93 @@ mod tests {
         );
     }
 
+    fn fnv1a(text: &str) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in text.bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash
+    }
+
+    /// The coordinator skill installs with the tsk skill and shares its version, so the same
+    /// once-per-release bump covers both files and the installer probe stays one row per agent.
+    #[test]
+    fn embedded_coordinator_skill_shares_the_version_and_pins_its_hash() {
+        assert_eq!(
+            frontmatter_version(COORDINATOR_MD),
+            Some(embedded_skill_version())
+        );
+        assert!(COORDINATOR_MD.contains("\nname: tsk-coordinator\n"));
+        assert_eq!(
+            fnv1a(COORDINATOR_MD),
+            0x888b_2ad3_90e3_c45c,
+            "skills/tsk-coordinator/SKILL.md changed: refresh this hash pin, and bump both skills' `version:` only if this is the first skill edit since the last release"
+        );
+    }
+
+    #[test]
+    fn install_writes_both_skills_and_refreshes_a_missing_coordinator() {
+        let root = test_root("both-skills");
+        let _ = fs::remove_dir_all(&root);
+        let target = Target::SkillDir(root.clone());
+        let outcome = install(&target, false).expect("first install");
+        assert_eq!(outcome.kind(), "written");
+        assert_eq!(outcome.path(), root.join("tsk-cli/SKILL.md"));
+        let coordinator = root.join("tsk-coordinator/SKILL.md");
+        assert_eq!(
+            fs::read_to_string(&coordinator).expect("coordinator"),
+            COORDINATOR_MD
+        );
+        assert!(matches!(install(&target, false), Err(Error::Exists(_))));
+
+        // A tsk skill installed before the coordinator shipped: setup adds the coordinator.
+        fs::remove_dir_all(root.join("tsk-coordinator")).expect("remove");
+        let outcome = install(&target, false).expect("refresh");
+        assert_eq!(outcome.kind(), "updated");
+        assert_eq!(
+            fs::read_to_string(&coordinator).expect("coordinator"),
+            COORDINATOR_MD
+        );
+        assert!(matches!(install(&target, false), Err(Error::Exists(_))));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn detect_reports_a_missing_coordinator_as_outdated() {
+        let _lock = env_lock();
+        let _omp_env = OmpEnvGuard::cleared();
+        let root = test_root("detect-coordinator");
+        let _ = fs::remove_dir_all(&root);
+        let skills = root.join("home/.cursor/skills");
+        fs::create_dir_all(skills.join("tsk-cli")).expect("tsk-cli");
+        fs::write(skills.join("tsk-cli/SKILL.md"), SKILL_MD).expect("tsk-cli skill");
+        fs::create_dir_all(root.join("empty-bin")).expect("bin");
+        let previous_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", root.join("home"));
+        let search = CliSearchPath {
+            path: Some(root.join("empty-bin").into_os_string()),
+            #[cfg(windows)]
+            extensions: ".COM;.EXE;.BAT;.CMD".into(),
+        };
+        let before = detect_with_search(&search);
+        fs::create_dir_all(skills.join("tsk-coordinator")).expect("coordinator");
+        fs::write(skills.join("tsk-coordinator/SKILL.md"), COORDINATOR_MD).expect("skill");
+        let after = detect_with_search(&search);
+        match previous_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        let before = before.expect("detect");
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].state, SkillState::Outdated);
+        assert_eq!(before[0].installed_version, Some(embedded_skill_version()));
+        assert_eq!(before[0].skills[1].state, SkillState::Missing);
+        let after = after.expect("detect");
+        assert_eq!(after[0].state, SkillState::Current);
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn embedded_skill_uses_json_for_agent_list_reads() {
         assert!(SKILL_MD.contains("**Read JSON, not presentation.**"));
@@ -1299,6 +1449,11 @@ mod tests {
         assert_eq!(result.applied[0].0, "cursor");
         let dest = root.join("home/.cursor/skills/tsk-cli/SKILL.md");
         assert_eq!(fs::read_to_string(&dest).expect("written"), SKILL_MD);
+        let coordinator = root.join("home/.cursor/skills/tsk-coordinator/SKILL.md");
+        assert_eq!(
+            fs::read_to_string(&coordinator).expect("written"),
+            COORDINATOR_MD
+        );
         let transcript = String::from_utf8_lossy(&writer);
         assert!(
             transcript.contains("Install or update the tsk skill for cursor?"),

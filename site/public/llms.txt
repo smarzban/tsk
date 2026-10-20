@@ -35,6 +35,7 @@ The human works the board in a TUI; agents read and write the same tasks with th
 - `tsk dispatch T12` launches an assigned project task's agent in Herdr. `tsk clean T12` removes its worktree and merged branch; never clean the worktree you run in.
 - Inside a dispatched agent, `TSK_AGENT` names the profile as the author of each change.
 - Guide: https://gettsk.sh/docs/agents.md
+- Coordinating other agents (briefs, review gate, live tests): https://gettsk.sh/docs/coordinator.md
 
 ## Docs
 
@@ -47,6 +48,7 @@ The human works the board in a TUI; agents read and write the same tasks with th
 - Task page: https://gettsk.sh/docs/task-page.md
 - Steps: https://gettsk.sh/docs/steps.md
 - tsk for agents: https://gettsk.sh/docs/agents.md
+- Coordinator skill: https://gettsk.sh/docs/coordinator.md
 - CLI: https://gettsk.sh/docs/cli.md
 - Storage: https://gettsk.sh/docs/storage.md
 

@@ -63,14 +63,19 @@ More: [Herdr setup details](#herdr-setup-details).
 
 ## Agent skill
 
-The skill teaches your agent to read and update the board.
+`tsk setup` installs two skills for each agent:
+
+| Skill | Teaches your agent to |
+| --- | --- |
+| `tsk-cli` | Read and update the board |
+| `tsk-coordinator` | Run builder agents for you: brief them, review their pull requests, and live-test. [Coordinator skill](/docs/coordinator/) |
 
 ```sh
 tsk setup        # find your agents and ask once
 tsk setup pi     # install for one agent
 ```
 
-In a terminal, bare `tsk setup` finds your installed agents and asks once to install or update the skill for all of them. To install for one agent, name it: `pi`, `omp`, `claude`, `cursor`, `grok`, `codex`, or `opencode`.
+In a terminal, bare `tsk setup` finds your installed agents and asks once to install or update the skills for all of them. To install for one agent, name it: `pi`, `omp`, `claude`, `cursor`, `grok`, `codex`, or `opencode`.
 
 Skill directories and options: [`tsk setup`](/docs/cli/#setup).
 
@@ -97,7 +102,7 @@ Give your agent the task number to work on it. [Board guide](/docs/board/).
 After it replaces the binary, `tsk update` refreshes what you already set up:
 
 - **Herdr plugin:** re-registered without asking when both plugin shortcuts are bound, on any keys. Reload Herdr's config afterwards. If Herdr is installed but not set up, it asks as a first install does.
-- **Agent skills:** outdated skills are updated. In a terminal it asks once, for example `tsk skill installed for claude (v1.2.0), codex (v1.2.0); update to v1.3.0? [Y/n]`; without one it updates them unattended. It never adds a skill for an agent that had none, unless no agent has one: then it offers the first-install ask.
+- **Agent skills:** outdated skills are updated. In a terminal it asks once, for example `tsk skill installed for claude (v1.2.0), codex (v1.2.0); update to v1.3.0? [Y/n]`; without one it updates them unattended. An agent with the tsk skill also gets the coordinator skill. It never adds a skill for an agent that had none, unless no agent has one: then it offers the first-install ask.
 - A refresh that fails leaves the new binary in place and prints the `tsk setup` command to run.
 
 Close and reopen running boards to use the new binary.

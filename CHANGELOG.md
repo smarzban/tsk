@@ -36,6 +36,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - `[board]` in `config.toml` sets the group and sort a fresh desk or project board opens with, and `me` the name the board calls you.
 - Back up tasks and `config.toml` to git on every save or daily. `tsk backup setup` makes a private GitHub repository with `gh`; `tsk backup add <git-url>` adds any other.
 - `tsk edit --append-notes` adds text below a task's notes after a blank line, without rewriting them.
+- `tsk setup` also installs the `tsk-coordinator` skill: your agent can brief builder agents, gate their pull requests with a review, live-test, and report back on the board.
 - `tsk restore` lists the newest 20 backed-up versions per machine (`--all` for every one) and puts the one you pick back, keeping the replaced store.
 
 ### Changed

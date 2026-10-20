@@ -1010,6 +1010,12 @@ fn agents_yes_force_rewrites_a_current_skill() {
     assert_ne!(stale, skill_source());
     fs::write(&skill, &stale).expect("seed stale claude skill");
     fs::write(&cursor_skill, &stale).expect("seed stale cursor skill");
+    // The coordinator skill installs beside it; only both current count as current.
+    for agent in [".claude", ".cursor"] {
+        let coordinator = home.join(agent).join("skills/tsk-coordinator/SKILL.md");
+        fs::create_dir_all(coordinator.parent().expect("skill dir")).expect("skills dir");
+        fs::write(&coordinator, &stale).expect("seed stale coordinator skill");
+    }
     let previous_home = std::env::var_os("HOME");
     let previous_path = std::env::var_os("PATH");
     std::env::set_var("HOME", &home);
@@ -1052,6 +1058,8 @@ fn agents_yes_force_rewrites_a_current_skill() {
     for path in [&skill, &cursor_skill] {
         assert_eq!(fs::read_to_string(path).expect("rewritten"), skill_source());
     }
+    let coordinator = home.join(".claude/skills/tsk-coordinator/SKILL.md");
+    assert_ne!(fs::read_to_string(coordinator).expect("rewritten"), stale);
     assert_eq!(
         interactive_force.code, 2,
         "agents --force without --yes is a usage error: {interactive_force:?}"
@@ -1176,6 +1184,15 @@ fn skill_states_probe_lists_each_detected_agent_with_state_version_and_path() {
         ),
     )
     .expect("current cursor skill");
+    fs::create_dir_all(home.join(".cursor/skills/tsk-coordinator")).expect("coordinator folder");
+    fs::write(
+        home.join(".cursor/skills/tsk-coordinator/SKILL.md"),
+        format!(
+            "---\nname: tsk-coordinator\nversion: {}\n---\ncurrent\n",
+            tsk_tui::setup_agent::embedded_skill_version()
+        ),
+    )
+    .expect("current cursor coordinator skill");
     fs::create_dir_all(home.join(".grok/skills")).expect("Grok skills root");
     fs::create_dir_all(root.join("elsewhere\ttab")).expect("symlink target with a tab");
     std::os::unix::fs::symlink(

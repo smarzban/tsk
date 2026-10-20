@@ -5,6 +5,9 @@ use super::CliOutput;
 /// Full `skills/tsk-cli/SKILL.md`, including YAML frontmatter.
 pub const SKILL_MD: &str = include_str!("../../skills/tsk-cli/SKILL.md");
 
+/// Full `skills/tsk-coordinator/SKILL.md`, installed beside the tsk skill.
+pub const COORDINATOR_MD: &str = include_str!("../../skills/tsk-coordinator/SKILL.md");
+
 /// Skill body after the closing `---` fence and one following blank line.
 pub fn body() -> &'static str {
     strip_frontmatter(SKILL_MD)
