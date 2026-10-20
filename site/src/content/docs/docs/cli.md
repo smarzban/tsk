@@ -87,7 +87,7 @@ tsk add [--file <path|->] [--state-dir <dir>]
 | `-t`, `--title <title>` | Title, required without a plan |
 | `-n`, `--notes <notes>` | Notes; blank notes are left out |
 | `-p`, `--project`, `--desk` | [Scope](#scope) |
-| `--thread <name>` | [Thread](/docs/capture/) label |
+| `--thread <name>` | A [thread name](/docs/capture/#thread-names) |
 | `--assignee <name>` | An agent profile from [`config.toml`](/docs/storage/#configuration) |
 | `--unassign` | No assignee |
 | `--base <branch>` | Dispatch from this existing branch of the project ([base branch](/docs/dispatch/#base-branch)) |
@@ -105,6 +105,8 @@ Output is `added <title>`, or `task already exists`. With `--json`:
 | `id`, `number`, `title` | The task |
 | `project` | Project path, or `null` on the desk |
 | `assignee` | Agent profile, or `null` |
+
+**Refusals:** codes and exits in the [exit contract](#exit-contract).
 
 ```sh
 tsk add -t "Fix login timeout" -n "Reproduce on a slow connection" -p atlas --thread auth
@@ -168,6 +170,8 @@ tsk list [<task>] [-p <project> | --desk | --all] [--thread <name> | --no-thread
 `--group` and `--sort` work like the board's [group and sort](/docs/board/#group-and-sort). They never arrange by something every row shares: `project` needs `--all`, and `thread` and `assignee` do not combine with a thread or assignee filter.
 
 These are usage errors (exit 2): `--group` or `--sort` with `--done`, `--archived`, or `--deleted`; two scope flags or two status filters; `--thread` with `--no-thread`; a value flag given twice; and an unknown task address.
+
+**Refusals:** none. Bad flags and an unknown task address are usage errors, exit 2 ([exit contract](#exit-contract)).
 
 ```sh
 tsk list --all --thread release --json
@@ -270,6 +274,8 @@ tsk status <task> review [--done <text>] [--check <text>]... [--next <text>] [--
 `<status>` is `open`, `ready`, `started` (or `start`), `blocked`, `review`, or `done`. The command sets that status directly, and repeating it is safe. Output is `status T12 <status> <title>`, sometimes followed by a second line that says what else happened.
 
 When an agent dispatched by tsk runs the command, it acts as that agent: blocks, reviews, and replies carry its profile name, and its own start never launches another copy. Everyone else acts as `you`. See [storage](/docs/storage/) for the `TSK_AGENT` variable behind this.
+
+**Refusals:** codes and exits in the [exit contract](#exit-contract), by status and flag.
 
 ```sh
 tsk status T12 ready
@@ -385,6 +391,8 @@ tsk edit <task> [--title <title>] [--notes <notes>] [--assignee <name> | --unass
 - `--after` takes tasks in any project. It refuses the task itself, a task not on the board, or a done one (`invalid-after`), and a link that would close a loop (`after-loop`). There is no `--before`: set the other task's `--after`.
 - Output is `edited T12 <title>`. Repeating the same values is safe.
 
+**Refusals:** codes and exits in the [exit contract](#exit-contract).
+
 ```sh
 tsk edit T205 --after T202 --after T12
 ```
@@ -413,6 +421,8 @@ tsk steps <task> remove <step-short-id> [--state-dir <dir>]
 
 A moved step keeps its id and its checked state. Read the task before retrying an uncertain result.
 
+**Refusals:** codes and exits in the [exit contract](#exit-contract).
+
 ```sh
 tsk steps T12 add "Write the failing test" --first
 ```
@@ -435,6 +445,8 @@ tsk reply <task> <text> [--send] [--state-dir <dir>]
 - Output is `replied T12 as <author> <title>`.
 - With `--send`, a second line says `sent to @claude` or `not sent: <reason>`. The reply is stored either way and the exit is 0. A reply that was not sent goes out later, when you unblock the task or send the review back.
 - `--send` only sends your own replies, inside Herdr, to the agent tsk dispatched for the task. To answer and unblock in one step, use the board's [reply box](/docs/board/#block-review-reply).
+
+**Refusals:** codes and exits in the [exit contract](#exit-contract).
 
 ```sh
 tsk reply T12 "Use postgres" --send
@@ -459,6 +471,8 @@ tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]
 - Output is `dispatched T12 to @claude in <worktree>`.
 - A refusal changes nothing. Exit 3 means the launch may have run without its record saved: check Herdr (`herdr agent get t12-claude`) and read the task before retrying. The same holds for a `tsk status T12 started` that dispatched.
 - On Windows dispatch is a preview ([Windows](/docs/dispatch/#windows-preview)).
+
+**Refusals:** codes and exits in the [exit contract](#exit-contract).
 
 ```sh
 tsk dispatch T12 --base main
@@ -492,9 +506,12 @@ Output is one line: `cleaned T12: worktree <path> (removed), branch <name> (kept
 | `branch` | `name`, `outcome` (`removed` or `kept`), and `reason` for a kept branch |
 | `workspace` | `id`, and `outcome`: `removed`, `kept`, or `missing` |
 | `warning` | A failed fetch, or a workspace Herdr would not close; `null` otherwise |
-| `merge` | With `--merge`: `pr`, `url`, `method`, and `remote_branch` (`kept`, `deleted`, or `null`), plus `"status": "done"` |
+| `merge` | With `--merge`: `pr`, `url`, `method`, and `remote_branch` (`kept`, `deleted`, or `null`) |
+| `status` | With `--merge`: `done` |
 
 When a step after the merge fails, `--merge --json` prints `number`, `merge`, `status`, and `error`. `status` is `null` when done was not saved. `error` has `stage` (`done` or `cleanup`), `code`, and `message`.
+
+**Refusals:** codes and exits in the [exit contract](#exit-contract).
 
 ```sh
 tsk clean T12 --json
@@ -510,6 +527,8 @@ tsk archive <task> [--state-dir <dir>]
 
 Output is `archived T12 <title>`. Repeating it is safe.
 
+**Refusals:** codes and exits in the [exit contract](#exit-contract).
+
 ```sh
 tsk archive T12
 ```
@@ -523,6 +542,8 @@ tsk unarchive <task> [--state-dir <dir>]
 ```
 
 Output is `unarchived T12 <title>`. Repeating it is safe.
+
+**Refusals:** codes and exits in the [exit contract](#exit-contract).
 
 ```sh
 tsk unarchive T12
@@ -539,6 +560,8 @@ tsk project unarchive <name> [--state-dir <dir>]
 
 Output is `archived project <name>` or `unarchived project <name>`. Repeating it is safe. A name with no tasks refuses: `no project named <name> has tasks`.
 
+**Refusals:** a message with no code, exit 1 ([exit contract](#exit-contract)).
+
 ```sh
 tsk project archive atlas
 ```
@@ -554,6 +577,8 @@ tsk trash restore <task> [--state-dir <dir>]
 A deleted task first stays on the board, where undo brings it back. It moves to trash later ([deleted tasks](/docs/storage/#deleted-tasks)). A task that is not in trash refuses: `T12 is not in trash`. `tsk list --deleted` shows both kinds.
 
 Output is `restored T12 <title>`.
+
+**Refusals:** a message with no code, exit 1 ([exit contract](#exit-contract)).
 
 ```sh
 tsk trash restore T12
@@ -579,6 +604,8 @@ tsk backup remove <target> [--state-dir <dir>]
 | `list` | Shows each target with its frequency, last backup, and last error |
 | `remove <target>` | Removes a target by its number in `list`, URL, or path. Backups already pushed stay |
 
+**Refusals:** a message with no code, exit 1 ([exit contract](#exit-contract)).
+
 ```sh
 tsk backup add git@gitlab.com:me/tsk-backup.git --every daily
 ```
@@ -600,6 +627,8 @@ tsk restore [<version>] [--all] [--state-dir <dir>]
 - A restore keeps the replaced store beside it and prints its path. It never changes `config.toml`.
 - It refuses and replaces nothing when there are no targets or the id is unknown. It also refuses while a board or quick capture is open, and for a version from a newer tsk.
 - `tsk restore T12` is not a version: it points at `tsk trash restore T12`.
+
+**Refusals:** a message with no code, exit 1 ([exit contract](#exit-contract)).
 
 ```sh
 tsk restore 3f9a1c2e
@@ -649,7 +678,8 @@ For the skill:
 - Setup refuses a symlinked skills root, skill folder, or skill file.
 - `--json` prints a machine-readable report.
 - For installers, `--detected-ids` prints the detected agent ids on one line. `--skill-states` prints `embedded <version>`, then one tab-separated `id state version path` line per detected agent, where the state is `missing`, `current`, `outdated`, or `blocked-symlink`.
-- Exit 0 on success, 1 on a refusal or failure, 2 for invalid arguments.
+
+**Refusals:** `skill-exists` and failed setups exit 1, invalid arguments exit 2.
 
 ```sh
 tsk setup claude
@@ -659,6 +689,12 @@ tsk setup claude
 
 Installs the latest stable release over a copy the installer put there, then refreshes a registered Herdr plugin and outdated agent skills. A Homebrew copy prints `brew update && brew upgrade tsk` instead. Reopen a running board afterwards. [Upgrade](/docs/install/#upgrade).
 
+```text
+tsk update
+```
+
+**Refusals:** an update that could not be installed exits 1.
+
 ```sh
 tsk update
 ```
@@ -666,6 +702,12 @@ tsk update
 ## guide
 
 Prints the [agent skill](/docs/agents/), the workflow `tsk setup` installs, without its frontmatter.
+
+```text
+tsk guide
+```
+
+**Refusals:** none.
 
 ```sh
 tsk guide

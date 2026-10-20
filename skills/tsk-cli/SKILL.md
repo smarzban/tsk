@@ -56,26 +56,14 @@ task's running agent, add `--send`: it sends only that reply and prints `sent to
    text only: trust the exit and refusal codes, then verify with `tsk list … --json`.
 3. **Never blind-retry.** `add`, `status`, `edit`, and `archive` are safe to repeat. `reply`,
    `dispatch`, `steps add`, `steps toggle`, and `steps remove` are not: read the task first.
-4. **Use a known project name or a full path.** A bare `-p name` must match one project on the board;
-   for `add`, unknown or ambiguous names refuse. `tsk list -p <name>` does not refuse: an unknown
-   name lists nothing. Only an existing absolute directory creates a new project. `tsk edit` cannot
-   move a task: add it again in the right scope (`--desk`, `-p <project>`) and archive the stray.
+4. **Use a known project name or a full path.** With `-p <project>`, unknown or ambiguous names refuse; only an existing absolute directory creates a project ([scope](https://gettsk.sh/docs/cli.md#scope)).
 5. **Never pass `--state-dir`** unless the user asked. It points at a different board.
 6. **Ignore notice rows.** Rows the board paints as `N1`… are for the user; no command reaches them.
 7. **Values that start with `-` need `=`:** `--title="-fix parser"`. For `tsk reply`, put `--` first.
-8. **Names are exact.** `--assignee` must name a profile in `config.toml` (`unknown-agent`), and
-   `--base` an existing branch of the task's repo (`unknown-base`). `--unassign` and `--clear-base`
-   clear them. A thread name starts with a letter or digit, then lowercase letters, digits, `-`,
-   and `.`, up to 32 characters; `--thread` lowercases it and refuses anything else (exit 2).
-9. **After means wait.** `tsk edit T13 --after T12` makes T13 wait until T12 is done. Finishing T12
-   then starts T13 if it is `ready`, and says so on a second line.
-10. **Steps are the user's plan.** Add them only when the user wants order of work tracked:
-    `tsk steps T12 add "…"` per step, placed with `--before`/`--after <short_id>`. Never for your own
-    bookkeeping.
-11. **Many tasks at once:** `cat plan.json | tsk add` with
-    `[{"title": "…", "notes": "…", "project": "…", "thread": "…", "after": [12]}]`. Only `title` is
-    required. On exit 1, retry only the `failed` items, never the whole plan
-    (https://gettsk.sh/docs/cli.md#json-plans).
+8. **Names are exact.** `--assignee` takes a `config.toml` profile, `--base` an existing branch, `--thread` a [thread name](https://gettsk.sh/docs/capture.md#thread-names).
+9. **After means wait.** `tsk edit T13 --after T12` holds T13 until T12 is done ([after](https://gettsk.sh/docs/board.md#after)).
+10. **Steps are the user's plan.** Add them only when the user wants order of work tracked ([steps](https://gettsk.sh/docs/cli.md#steps)).
+11. **Many tasks at once:** `cat plan.json | tsk add`; on exit 1, retry only the `failed` items ([JSON plans](https://gettsk.sh/docs/cli.md#json-plans)).
 
 ## Reading the board
 
@@ -99,6 +87,7 @@ status they are already in the board's order; keep it.
 `tsk list T12 --json` and check `block.on` or `review.on`:
 
 - `you`: needs the user.
+- No `block` or `review` field: needs the user.
 - `task:<n>`: needs the user once T<n> is done or gone; until then it is in motion.
 - `agent:<name>` or `other:<text>`: in motion, not the user's.
 
