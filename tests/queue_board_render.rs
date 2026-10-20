@@ -636,6 +636,7 @@ fn full_thread_selector_and_dropdown_values_are_not_capped_to_the_old_prefix_bud
             tabs: None,
             title: Some("thread"),
             query: None,
+            removable: false,
         };
         let dropdown = paint(width, height, &model).0.join("\n");
         assert!(
@@ -1227,6 +1228,7 @@ fn overlay_rows_are_padded_exact_no_base_bleed() {
             tabs: None,
             title: None,
             query: None,
+            removable: false,
         };
         let (rows, _geo) = paint(80, 24, &model);
         let desk_row = rows
@@ -7260,15 +7262,15 @@ fn live_line_says_what_is_going_on_for_every_case() {
         (5, Some("T21 was deleted · unblock it · 5m")),
         // A purged blocker has no time to show.
         (6, Some("T99 was deleted · unblock it")),
-        (7, Some("waiting on design team")),
+        (7, Some("blocked on design team · 1m")),
         (8, Some("after T22 (started), T23 (open)")),
         // Every prerequisite done: nothing left to say.
         (9, None),
         // A plain started task, assigned or not, says nothing.
         (10, None),
         (11, None),
-        (12, Some("waiting on T22")),
-        (13, Some("@pi reviewing")),
+        (12, Some("blocked on T22 · 1m")),
+        (13, Some("@claude needs a review from @pi · 1m")),
         (20, None),
         (22, None),
         (23, None),

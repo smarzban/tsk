@@ -521,7 +521,7 @@ fn base_detail(base: &Option<String>) -> Option<EventDetail> {
 }
 
 /// Document version written by this binary.
-pub const STORE_FORMAT_VERSION: u32 = 14;
+pub const STORE_FORMAT_VERSION: u32 = 15;
 
 fn default_next_notice_number() -> u64 {
     1
@@ -610,6 +610,14 @@ pub struct DomainState {
     /// merge so a plain union can never resurrect a record this process just removed.
     #[serde(skip)]
     project_intents: BTreeMap<String, bool>,
+    /// Person names removed from the assignee picker. Tasks keep them; only the picker's
+    /// list skips them. Absent before v15, and left out of the document while empty.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    hidden_assignees: BTreeSet<String>,
+    /// This process's not-yet-saved hide (true) and unhide (false) intents, re-applied after
+    /// every disk merge the way `project_intents` are.
+    #[serde(skip)]
+    hidden_intents: BTreeMap<String, bool>,
     /// LIFO undo records for soft-delete and complete.
     pub(super) undo_stack: Vec<UndoEntry>,
     /// Tasks this process moved to `done` since the caller last took them, oldest first.
@@ -638,6 +646,8 @@ impl DomainState {
             tasks: Vec::new(),
             projects: BTreeMap::new(),
             project_intents: BTreeMap::new(),
+            hidden_assignees: BTreeSet::new(),
+            hidden_intents: BTreeMap::new(),
             undo_stack: Vec::new(),
             completed: Vec::new(),
             pending_launches: Vec::new(),
@@ -741,6 +751,40 @@ impl DomainState {
             return Ok(false);
         }
         Err(DomainError::UnknownProject(path.to_string()))
+    }
+
+    /// Person names the assignee picker leaves out.
+    pub fn hidden_assignees(&self) -> &BTreeSet<String> {
+        &self.hidden_assignees
+    }
+
+    /// Remove a person name from the assignee picker, undoably. Tasks keep the name.
+    /// `false` when it was already hidden.
+    pub fn hide_assignee(&mut self, name: &str) -> bool {
+        if !self.set_assignee_hidden(name, true) {
+            return false;
+        }
+        self.undo_stack.push(UndoEntry::HideAssignee {
+            name: name.to_string(),
+        });
+        true
+    }
+
+    /// Put a hidden name back on the assignee picker. `false` when it was not hidden.
+    pub(crate) fn unhide_assignee(&mut self, name: &str) -> bool {
+        self.set_assignee_hidden(name, false)
+    }
+
+    fn set_assignee_hidden(&mut self, name: &str, hidden: bool) -> bool {
+        let changed = if hidden {
+            self.hidden_assignees.insert(name.to_string())
+        } else {
+            self.hidden_assignees.remove(name)
+        };
+        if changed {
+            self.hidden_intents.insert(name.to_string(), hidden);
+        }
+        changed
     }
 
     fn has_project_task(&self, path: &str) -> bool {
@@ -1554,6 +1598,10 @@ impl DomainState {
         assignee: Option<Assignee>,
     ) -> Result<bool, DomainError> {
         let ids = self.prevalidate_batch_ids(ids)?;
+        // Assigning a removed name again puts it back on the picker.
+        let unhidden = assignee
+            .as_ref()
+            .is_some_and(|assignee| self.unhide_assignee(&assignee.name));
         let changed = ids
             .into_iter()
             .filter(|id| {
@@ -1562,7 +1610,7 @@ impl DomainState {
             })
             .collect::<Vec<_>>();
         if changed.is_empty() {
-            return Ok(false);
+            return Ok(unhidden);
         }
         let at = SystemTime::now();
         let name = assignee.as_ref().map(|assignee| assignee.name.clone());
@@ -2340,6 +2388,7 @@ impl DomainState {
             }
         }
         self.merge_project_records(&other.projects);
+        self.merge_hidden_assignees(&other.hidden_assignees);
         self.drop_tasks_trashed_elsewhere(other);
         self.merge_undo_entries(other);
     }
@@ -2366,6 +2415,7 @@ impl DomainState {
         self.next_task_number = self.next_task_number.max(disk.next_task_number);
         self.next_notice_number = self.next_notice_number.max(disk.next_notice_number);
         self.merge_project_records(&disk.projects);
+        self.merge_hidden_assignees(&disk.hidden_assignees);
         self.drop_tasks_trashed_elsewhere(disk);
         self.merge_undo_entries(disk);
         Ok(())
@@ -2383,6 +2433,19 @@ impl DomainState {
                     .insert(path.clone(), ProjectRecord { archived: true });
             } else {
                 self.projects.remove(path);
+            }
+        }
+    }
+
+    /// Take the disk's hidden names, then re-apply this process's unsaved hides and unhides,
+    /// as [`Self::merge_project_records`] does for archived projects.
+    fn merge_hidden_assignees(&mut self, disk: &BTreeSet<String>) {
+        self.hidden_assignees = disk.clone();
+        for (name, hidden) in &self.hidden_intents {
+            if *hidden {
+                self.hidden_assignees.insert(name.clone());
+            } else {
+                self.hidden_assignees.remove(name);
             }
         }
     }
@@ -2484,6 +2547,7 @@ impl DomainState {
             task.merge_base_revision = None;
         }
         self.project_intents.clear();
+        self.hidden_intents.clear();
     }
 
     fn merge_undo_entries(&mut self, other: &DomainState) {
@@ -2550,6 +2614,7 @@ impl DomainState {
                             }
                             UndoEntry::SetAfter { .. } => task.last_event_at(TaskEventKind::Edited),
                             UndoEntry::SetOn { .. } => task.last_event_at(TaskEventKind::OnSet),
+                            UndoEntry::HideAssignee { .. } => None,
                             // A live entry's target was last changed by the action it records.
                             UndoEntry::Status { .. }
                             | UndoEntry::Steps { .. }
@@ -2605,7 +2670,8 @@ impl DomainState {
     /// assignment so every save path and `locked_transition` gets it.
     ///
     /// 1. Drop entries whose target task is missing, or whose `expected_revision`
-    ///    no longer matches the task's current revision (stale, can never succeed).
+    ///    no longer matches the task's current revision (stale, can never succeed), and
+    ///    name removals whose name is no longer hidden.
     /// 2. Evict the oldest entries until the stack fits [`UNDO_CAP`].
     ///
     /// Order matters: stale entries go first so the cap never evicts a live entry
@@ -2614,13 +2680,17 @@ impl DomainState {
     /// because pruning happens only at save.
     pub(crate) fn prune_undo_for_persistence(&mut self) {
         self.undo_stack.retain(|entry| {
-            let targets = entry.targets();
-            !targets.is_empty()
-                && targets.into_iter().all(|(id, expected_revision)| {
-                    self.tasks
-                        .iter()
-                        .find(|task| task.id == id)
-                        .is_some_and(|task| task.revision == expected_revision)
+            let leaves = entry.leaf_entries();
+            !leaves.is_empty()
+                && leaves.into_iter().all(|leaf| match leaf {
+                    // A removed name is live while it is still hidden.
+                    UndoEntry::HideAssignee { name } => self.hidden_assignees.contains(name),
+                    leaf => leaf.targets().into_iter().all(|(id, expected_revision)| {
+                        self.tasks
+                            .iter()
+                            .find(|task| task.id == id)
+                            .is_some_and(|task| task.revision == expected_revision)
+                    }),
                 })
         });
         if self.undo_stack.len() > UNDO_CAP {

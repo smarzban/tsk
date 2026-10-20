@@ -275,6 +275,10 @@ pub enum BoardIntent {
     /// Open the assignee picker over the selected task, the marked set, or the open task
     /// page (bare `@`, the page's footer assignee, palette **set assignee**).
     OpenAssigneePicker,
+    /// `ctrl+x` in the assignee picker: remove the person name under the cursor from the list.
+    RemoveAssigneeName,
+    /// `ctrl+u` in the assignee picker: put back the name `ctrl+x` just removed.
+    ListPickerUndo,
     /// Focus the active board lens's search field (`/` or a click).
     FocusSearch,
     /// Pin the live query and return input to normal board keys.
@@ -1107,6 +1111,18 @@ fn help_bindings() -> Vec<HelpBinding> {
             "enter (option)",
             "reply with selected option (task page)",
             "answer question blocked",
+        ),
+        help_binding(
+            HelpGroup::PickersEditing,
+            "ctrl+x (assignee)",
+            "remove a person from the list",
+            "assign typo name hide forget",
+        ),
+        help_binding(
+            HelpGroup::TaskActions,
+            "w (blocked / review)",
+            "change who it waits on (task page)",
+            "hand off waiting on blocked review",
         ),
         help_binding(
             HelpGroup::TaskActions,
@@ -2310,6 +2326,8 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::OpenThreadFilterPicker
         | BoardIntent::OpenProjectsViewPicker
         | BoardIntent::OpenAssigneePicker
+        | BoardIntent::RemoveAssigneeName
+        | BoardIntent::ListPickerUndo
         | BoardIntent::ListPickerNext
         | BoardIntent::ListPickerPrev
         | BoardIntent::ListPickerTabNext

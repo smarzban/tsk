@@ -84,11 +84,11 @@ The login test fails only on CI. Which way?
 claude · 3m   Recommend 2; it is a one-line change.
 you · 1m      Go with 2.
 
-1-2 choose · r reply · ctrl+s reply and unblock
+1-2 choose · r reply · ctrl+s reply and unblock · w waiting on
 ────────────────────────────────────────────────
 ```
 
-- The top line says who the block waits on and for how long, like the peek: `@claude blocked on you · 2h`, `waiting on T202`, or `T202 is done · unblock it · 1h`.
+- The top line says who raised the block, who it waits on, and for how long, like the peek: `@claude blocked on you · 2h`, `@claude blocked on T202 · 5m`, or `T202 is done · unblock it · 1h`.
 - Below it come the why, the needs, the numbered options, and the replies. Each reply shows `you` or the agent profile, and its age. A deleted reply leaves a dim `deleted` stub.
 - The last line lists only the keys that work at the cursor. A block that waits on another task or on something else shows `ctrl+b unblock` there.
 - When the block closes, it moves to the paper trail.
@@ -101,7 +101,7 @@ From the page:
 | --- | --- |
 | Open the reply box | `r` |
 | Open it starting from option N | `1`…`9`, or `Enter` on the option |
-| Change who it [waits on](#waiting-on) (top line selected) | `Enter` |
+| Change who it [waits on](#waiting-on) | `w`, or `Enter` on the top line |
 | Edit why, on, and needs (top line selected), or your selected reply | `ctrl+e` |
 | Delete your selected reply | `ctrl+x` |
 
@@ -138,10 +138,11 @@ Check
 you · 5m      B still fails on an empty string.
 
 tab next field · enter cycle check · r feedback · ctrl+s send back · ctrl+d approve
+w waiting on
 ───────────────────────────────────────────────────────────────────────────────────
 ```
 
-- The top line says who the review is on: `@claude needs your review · 40m`, or `@pi reviewing` for a review on someone else.
+- The top line says who asked for the review, who it is on, and for how long: `@claude needs your review · 40m`, or `@claude needs a review from @pi · 1m`.
 - Below it come what was done, what is next, the checks, and your feedback. Checks are `✓` passed, `✗` failed, or `○` open.
 - Passed checks fold into a dim `N passed ▸` line. A check you pass stays in place until the page opens again, or until you fold the line.
 - The page opens on the first open check.
@@ -159,7 +160,7 @@ From the page:
 | Open the feedback box | `r` |
 | Send back, with nothing typed | `ctrl+s` |
 | Approve | `ctrl+d` |
-| Change who it [waits on](#waiting-on) (top line selected) | `Enter` |
+| Change who it [waits on](#waiting-on) | `w`, or `Enter` on the top line |
 | Edit done, checks, next, and on (top line selected), or your selected feedback | `ctrl+e` |
 | Delete your selected feedback | `ctrl+x` |
 
@@ -181,15 +182,16 @@ In the box:
 
 ## Waiting on
 
-Hand an open block or review to someone else without touching the rest of it. Select the top line and press `Enter`, or use **set waiting on…** in the palette for the selected task or a marked set.
+Hand an open block or review to someone else without touching the rest of it. On a blocked or review page, press `w` wherever the cursor is, or `Enter` on the top line. On the board, use **set waiting on…** in the palette for the selected task or a marked set.
 
-1. The picker lists you, every agent profile, and the current choice, then **type a name…**. The current choice is selected.
+1. The picker lists you, every agent profile, and the current choice, then **type a name…**. The current choice is selected and marked, such as `@sam · current`.
 2. `←` / `→` or `↑` / `↓` move through the choices. Type to filter, or to give a name.
 3. `Enter` saves. `Esc` changes nothing.
 
 A typed name reads like an [assignee name](/docs/dispatch/#assignee-names): `you` and `me` are you, a profile's name is that agent, and anything else is kept as typed, such as `coordinator`. On a block, a task number such as `T202` makes it wait on that task.
 
 - The block or review round stays the same: its text, checks, and replies are kept.
+- The top line keeps its sentence and its age, and names the new one: `@claude blocked on you · 42s` becomes `@claude blocked on @pi · 48s`.
 - The paper trail records one entry, such as `on: you → @pi`. One `ctrl+u` undoes it, for one task or a marked set.
 - With tasks marked, a task with no open block or review refuses the whole set.
 - From the CLI: [`tsk edit T12 --on`](/docs/cli/#edit).

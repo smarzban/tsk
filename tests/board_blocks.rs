@@ -211,7 +211,7 @@ fn ctrl_b_card_blocks_on_another_task_which_rides_in_motion_until_that_task_is_d
     assert!(board[at].contains("□"), "{}", board[at]);
     assert!(board[at].trim_end().ends_with("client"), "{}", board[at]);
     // The open peek leads with the live line's text, then the why.
-    assert_eq!(board[at + 1].trim_end(), "    │ waiting on T1");
+    assert_eq!(board[at + 1].trim_end(), "    │ blocked on T1 · 0s");
     assert_eq!(board[at + 2].trim_end(), "    │ needs the endpoint");
 
     domain.complete(api).unwrap();
@@ -509,7 +509,7 @@ fn the_page_leads_with_the_blocked_section_and_a_rule_above_the_notes() {
     );
     assert_eq!(
         page[top + 8],
-        "  1-2 choose · r reply · ctrl+s reply and unblock",
+        "  1-2 choose · r reply · ctrl+s reply and unblock · w waiting on",
         "{joined}"
     );
     let rule = page[top + 9].trim();
@@ -591,11 +591,20 @@ fn the_action_line_follows_the_cursor() {
             .iter()
             .rposition(|row| row.starts_with("  ───"))
             .expect("rule");
-        page[rule - 1].trim().to_string()
+        // The key rows above the rule, back to the blank row, read as one line.
+        let start = page[..rule]
+            .iter()
+            .rposition(|row| row.trim().is_empty())
+            .map_or(0, |blank| blank + 1);
+        page[start..rule]
+            .iter()
+            .map(|row| row.trim())
+            .collect::<Vec<_>>()
+            .join(" · ")
     };
     assert_eq!(
         action(&model),
-        "1-2 choose · r reply · ctrl+s reply and unblock"
+        "1-2 choose · r reply · ctrl+s reply and unblock · w waiting on"
     );
     press(
         &mut domain,
@@ -605,7 +614,7 @@ fn the_action_line_follows_the_cursor() {
     assert_eq!(model.block_target(), Some(BlockTarget::Heading));
     assert_eq!(
         action(&model),
-        "enter set waiting on · ctrl+e edit · 1-2 choose · r reply · ctrl+s reply and unblock"
+        "ctrl+e edit · 1-2 choose · r reply · ctrl+s reply and unblock · w waiting on"
     );
     press(
         &mut domain,
@@ -614,7 +623,7 @@ fn the_action_line_follows_the_cursor() {
     );
     assert_eq!(
         action(&model),
-        "enter choose · 1-2 choose · r reply · ctrl+s reply and unblock"
+        "enter choose · 1-2 choose · r reply · ctrl+s reply and unblock · w waiting on"
     );
     for _ in 0..2 {
         press(
@@ -626,7 +635,7 @@ fn the_action_line_follows_the_cursor() {
     assert!(model.stored_step_selected());
     assert_eq!(
         action(&model),
-        "enter check / uncheck · 1-2 choose · r reply · ctrl+s reply and unblock"
+        "enter check / uncheck · 1-2 choose · r reply · ctrl+s reply and unblock · w waiting on"
     );
 }
 
@@ -750,11 +759,11 @@ fn a_block_on_another_task_says_so_on_top_and_offers_ctrl_b() {
     let page = page_body(&rows(&model, 80, 30));
     let joined = page.join("\n");
     assert!(
-        joined.contains("  waiting on T2\n\n  needs the schema"),
+        joined.contains("  blocked on T2 · 0s\n\n  needs the schema"),
         "{joined}"
     );
     assert!(
-        joined.contains("  r reply · ctrl+b unblock\n  ───"),
+        joined.contains("  r reply · ctrl+b unblock · w waiting on\n  ───"),
         "{joined}"
     );
     assert!(!joined.contains("choose"), "{joined}");
@@ -1531,4 +1540,58 @@ fn the_action_line_says_collapse_on_an_open_trail_record() {
         "{}",
         action(&model)
     );
+}
+
+/// Handing a block or review to someone else keeps the top line's sentence: only the who
+/// changes, and the raiser and the age stay. Handing it back to you says you again.
+#[test]
+fn the_top_line_keeps_its_sentence_when_the_waiting_on_changes() {
+    use tsk_tui::domain::ReviewDraft;
+    use tsk_tui::ui::render::status_line;
+    let (mut domain, ids) = numbered_domain(&["asked", "reviewed", "mine"]);
+    domain
+        .block(ids[0], BlockDraft::default(), "claude")
+        .expect("block");
+    domain
+        .review(ids[1], ReviewDraft::default(), "claude")
+        .expect("review");
+    domain
+        .block(ids[2], BlockDraft::default(), OWNER)
+        .expect("your block");
+    let line = |domain: &DomainState, id: Uuid| {
+        let task = domain.get(id).expect("task");
+        let block = task.block.as_ref().expect("open record");
+        let now = block.at + std::time::Duration::from_secs(48);
+        status_line(task, domain.tasks(), now).expect("top line")
+    };
+    let cases = [
+        (
+            ids[0],
+            BlockOn::Agent("pi".into()),
+            "@claude blocked on @pi · 48s",
+        ),
+        (ids[0], BlockOn::Task(3), "@claude blocked on T3 · 48s"),
+        (
+            ids[0],
+            BlockOn::Other("coordinator".into()),
+            "@claude blocked on coordinator · 48s",
+        ),
+        (ids[0], BlockOn::You, "@claude blocked on you · 48s"),
+        (
+            ids[1],
+            BlockOn::Agent("pi".into()),
+            "@claude needs a review from @pi · 48s",
+        ),
+        (
+            ids[1],
+            BlockOn::Other("coordinator".into()),
+            "@claude needs a review from coordinator · 48s",
+        ),
+        (ids[1], BlockOn::You, "@claude needs your review · 48s"),
+        (ids[2], BlockOn::Agent("pi".into()), "blocked on @pi · 48s"),
+    ];
+    for (id, on, expected) in cases {
+        domain.set_on_batch(&[(id, on.clone())]).expect("set on");
+        assert_eq!(line(&domain, id), expected, "{on:?}");
+    }
 }

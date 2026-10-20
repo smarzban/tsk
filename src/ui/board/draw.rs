@@ -1918,7 +1918,7 @@ fn section_action_keys(
         Some("enter add step")
     } else {
         match selected {
-            Some(BlockTarget::Heading) => Some("enter set waiting on · ctrl+e edit"),
+            Some(BlockTarget::Heading) => Some("ctrl+e edit"),
             Some(BlockTarget::Option(_)) => Some("enter choose"),
             Some(BlockTarget::Check(_)) => Some("enter cycle check"),
             Some(BlockTarget::PassedFold) if form.block.passed_open => Some("enter hide passed"),
@@ -1961,6 +1961,7 @@ fn section_action_keys(
     } else {
         keys.push("ctrl+b unblock".to_string());
     }
+    keys.push("w waiting on".to_string());
     keys
 }
 
@@ -2448,6 +2449,7 @@ impl OverlayPayloads {
                 }),
                 title: Some(title),
                 query: self.list_picker_query.as_deref(),
+                removable: model.assignee_picker_person().is_some(),
             });
         }
         if model.popup() == BoardPopup::ProjectPicker {
@@ -2457,6 +2459,7 @@ impl OverlayPayloads {
                 tabs: self.scope_tabs,
                 title: None,
                 query: None,
+                removable: false,
             });
         }
         None

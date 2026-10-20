@@ -428,21 +428,22 @@ pub fn status_line(task: &Task, tasks: &[Task], now: SystemTime) -> Option<Strin
             .iter()
             .find(|other| other.number == Some(number) && !other.is_notice())
     };
+    // Who raised the block or review, and since when: kept whoever it waits on.
+    let asker = block
+        .map(|block| block.by.as_str())
+        .filter(|by| *by != crate::domain::OWNER)
+        .map(|by| format!("@{by} "))
+        .unwrap_or_default();
+    let since = block
+        .map(|block| block.at)
+        .unwrap_or_else(|| task.status_changed_at());
     Some(match wait {
         BlockWait::You => {
-            let asker = block
-                .map(|block| block.by.as_str())
-                .filter(|by| *by != crate::domain::OWNER)
-                .map(|by| format!("@{by} "))
-                .unwrap_or_default();
             let what = if review {
                 "needs your review"
             } else {
                 "blocked on you"
             };
-            let since = block
-                .map(|block| block.at)
-                .unwrap_or_else(|| task.status_changed_at());
             format!("{asker}{what}{}", age(Some(since)))
         }
         BlockWait::BlockerDone(number) => format!(
@@ -455,11 +456,12 @@ pub fn status_line(task: &Task, tasks: &[Task], now: SystemTime) -> Option<Strin
         ),
         BlockWait::Elsewhere => {
             let on = block.map(|block| block.on.label()).unwrap_or_default();
-            if review {
-                format!("{on} reviewing")
+            let what = if review {
+                format!("needs a review from {on}")
             } else {
-                format!("waiting on {on}")
-            }
+                format!("blocked on {on}")
+            };
+            format!("{asker}{what}{}", age(Some(since)))
         }
     })
 }
@@ -800,6 +802,8 @@ pub enum QueueOverlay<'a> {
         title: Option<&'a str>,
         /// Search query echoed in the card title (searchable list pickers).
         query: Option<&'a str>,
+        /// The assignee picker's cursor is on a person: the legend offers `ctrl+x remove`.
+        removable: bool,
     },
     /// Inline title edit surface (accordion row on standard; full takeover on compact).
     EditTitle { draft: String, cursor_col: u16 },
@@ -2455,9 +2459,11 @@ fn paint_overlay(
             tabs,
             title,
             query,
+            removable,
         } => {
+            let legend = removable.then_some(ASSIGNEE_PERSON_FOOTER);
             paint_scope_dropdown(
-                frame, geo, surface, options, *selected, *tabs, *title, *query, hits,
+                frame, geo, surface, options, *selected, *tabs, *title, *query, legend, hits,
             );
         }
         QueueOverlay::EditTitle {
@@ -3048,6 +3054,31 @@ const SCOPE_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
         key: "enter",
         label: "choose",
+        shed: 0,
+    },
+    VerbEntry {
+        key: "esc",
+        label: "close",
+        shed: 0,
+    },
+];
+
+/// The assignee picker on a person row: `ctrl+x remove` joins the legend. A narrow card sheds
+/// `↑↓ move`, then `enter choose`, before the removal key nobody would guess.
+const ASSIGNEE_PERSON_FOOTER: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "↑↓",
+        label: "move",
+        shed: 2,
+    },
+    VerbEntry {
+        key: "enter",
+        label: "choose",
+        shed: 1,
+    },
+    VerbEntry {
+        key: "ctrl+x",
+        label: "remove",
         shed: 0,
     },
     VerbEntry {
@@ -4884,6 +4915,7 @@ fn paint_scope_dropdown(
     tabs: Option<PickerTabsPaint>,
     title_override: Option<&str>,
     query: Option<&str>,
+    legend: Option<&'static [VerbEntry<'static>]>,
     hits: &mut QueueHitMap,
 ) {
     if geo.row_width == 0 || (tabs.is_none() && title_override.is_none() && options.is_empty()) {
@@ -4957,7 +4989,7 @@ fn paint_scope_dropdown(
             } else {
                 0
             },
-            legend: match tabs {
+            legend: legend.unwrap_or(match tabs {
                 // Every tabbed filter and view picker takes the same keys, so one legend.
                 Some(PickerTabsPaint::Filter { .. } | PickerTabsPaint::DeskFilter { .. }) => {
                     FILTER_PICKER_FOOTER
@@ -4968,7 +5000,7 @@ fn paint_scope_dropdown(
                 }) => ARCHIVED_TAB_FOOTER,
                 Some(_) => PROJECT_PICKER_FOOTER,
                 None => SCOPE_FOOTER,
-            },
+            }),
             dismiss: None,
             legend_hits: None,
         },

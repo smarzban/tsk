@@ -37,6 +37,15 @@ Every place you type an assignee reads the name the same way:
 - Starting a task assigned to you or a person only sets it started. It never dispatches and never asks to relaunch.
 - A task keeps the name of a profile you later remove. It stays an agent, so its start refuses until the profile is back.
 
+### Remove a name from the list
+
+The picker lists every person ever assigned, so a typo stays. In the picker, select the person and press `ctrl+x`.
+
+- The status row says `dana removed from the list`. `ctrl+u` puts it back, in the picker or after it closes.
+- Tasks keep the name: nothing is unassigned.
+- Profiles, `@you`, **type a name…**, and **none** cannot be removed. Profiles live in `config.toml`.
+- Type the name and assign it again to put it back on the list.
+
 ## Dispatch
 
 Start an assigned task to dispatch it: `ctrl+s`, palette **set status: started**, or [`tsk status T12 started`](/docs/cli/#status). A dispatch:

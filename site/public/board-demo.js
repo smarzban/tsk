@@ -2519,17 +2519,20 @@ import { parseCapture } from "./capture.js";
     }
     const block = openBlock(task);
     const review = task.status === "review";
+    // Who raised it and since when stay, whoever it waits on.
+    const asker = block?.by && block.by !== "you" ? `@${block.by} ` : "";
+    const since = age(block?.at ?? statusAt(task));
     if (wait.kind === "you") {
-      const asker = block?.by && block.by !== "you" ? `@${block.by} ` : "";
       const what = review ? "needs your review" : "blocked on you";
-      return `${asker}${what} · ${age(block?.at ?? statusAt(task))}`;
+      return `${asker}${what} · ${since}`;
     }
     if (wait.kind === "done")
       return `T${wait.number} is done · unblock it · ${age(statusAt(liveTask(wait.number)))}`;
     // A deleted task leaves the demo's board entirely, so there is no age to show.
     if (wait.kind === "gone") return `T${wait.number} was deleted · unblock it`;
     const on = block ? blockOn(block).label : "";
-    return review ? `${on} reviewing` : `waiting on ${on}`;
+    const what = review ? `needs a review from ${on}` : `blocked on ${on}`;
+    return `${asker}${what} · ${since}`;
   }
 
   // The dim line a peek opens with. An archived task says nothing.

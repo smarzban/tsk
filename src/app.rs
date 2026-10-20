@@ -1206,6 +1206,27 @@ fn board_keyboard_intent(
             return Some(BoardIntent::OpenOnPicker);
         }
     }
+    // The assignee picker's own chords: `ctrl+x` removes the person under the cursor from the
+    // list, `ctrl+u` puts back a name it just removed. Other pickers leave both alone.
+    if mode == BoardInputMode::ListPicker
+        && model.list_picker_kind() == Some(crate::ui::board::ListPickerKind::Assignee)
+        && key.modifiers == KeyModifiers::CONTROL
+    {
+        match key.code {
+            KeyCode::Char('x') => return Some(BoardIntent::RemoveAssigneeName),
+            KeyCode::Char('u') => return Some(BoardIntent::ListPickerUndo),
+            _ => {}
+        }
+    }
+    // Bare `w` on a page showing its BLOCKED or REVIEW section opens the waiting-on picker
+    // wherever the cursor rests, like `Enter` on the top line.
+    if mode == BoardInputMode::TaskPage
+        && key.code == KeyCode::Char('w')
+        && key.modifiers.is_empty()
+        && model.page_section_open()
+    {
+        return Some(BoardIntent::OpenOnPicker);
+    }
     // `ctrl+s` on a page showing its BLOCKED or REVIEW section unblocks, or sends the review
     // back, the way the reply box's `ctrl+s` does with nothing typed.
     if mode == BoardInputMode::TaskPage
@@ -14135,7 +14156,8 @@ mod quick_assign_tests {
             at("○ tests pass")
                 < at("tab next field · enter cycle check · r feedback · ctrl+s send back")
         );
-        assert!(at("ctrl+d approve") < at("see PR #41 for the diff"));
+        assert!(at("ctrl+d approve") < at("w waiting on"));
+        assert!(at("w waiting on") < at("see PR #41 for the diff"));
         for gone in ["REVIEW", "round", "done   ", "next   "] {
             assert!(!screen.contains(gone), "{gone}:\n{screen}");
         }
@@ -14248,7 +14270,7 @@ mod quick_assign_tests {
             assert!(at("   2 passed ▸") < at("builder · "));
             assert!(at("builder · ") < at("you · "));
             assert!(at("you · ") < at("tab next field · enter cycle check"));
-            assert!(at("ctrl+d approve\n  ───") > at("tab next"));
+            assert!(at("w waiting on\n  ───") > at("tab next"));
             assert!(!joined.contains("A works"), "folded: {joined}");
             let builder = section
                 .iter()
@@ -17454,8 +17476,8 @@ mod quick_assign_tests {
             model
                 .selected_list_picker_option()
                 .map(|(_, option)| option.label),
-            Some("@you".to_string()),
-            "the current value is preselected"
+            Some("@you · current".to_string()),
+            "the current value is preselected and marked"
         );
         let right = key(&model, KeyCode::Right, KeyModifiers::NONE);
         apply_intent(&mut domain, &mut model, right, None).expect("cycle");
@@ -17517,7 +17539,7 @@ mod quick_assign_tests {
             model
                 .selected_list_picker_option()
                 .map(|(_, option)| option.label),
-            Some("@pi".to_string())
+            Some("@pi · current".to_string())
         );
         type_query(&mut domain, &mut model, "coordinator");
         let enter = key(&model, KeyCode::Enter, KeyModifiers::NONE);
@@ -17563,13 +17585,183 @@ mod quick_assign_tests {
             .into_iter()
             .map(|(_, option)| option.label)
             .collect();
-        assert_eq!(labels, ["@you", "@builder", "coordinator", "type a name…"]);
+        assert_eq!(
+            labels,
+            ["@you", "@builder", "coordinator · current", "type a name…"]
+        );
         assert_eq!(
             model
                 .selected_list_picker_option()
                 .map(|(_, option)| option.label),
-            Some("coordinator".to_string())
+            Some("coordinator · current".to_string())
         );
+    }
+
+    /// `ctrl+x` on a person row takes the name off the `@` list and offers itself in the legend
+    /// there only. Tasks keep the name; `ctrl+u` brings it back, in the picker or after it.
+    #[test]
+    fn ctrl_x_removes_a_person_from_the_assignee_list_and_undo_restores_it() {
+        let temp = Temp::new("hide-name", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["typo", "pick"]);
+        domain
+            .assign(ids[0], Some(crate::domain::Assignee::person("dnaa")))
+            .expect("assign the typo");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        select(&mut domain, &mut model, ids[1]);
+        let open = key(&model, KeyCode::Char('@'), KeyModifiers::NONE);
+        apply_intent(&mut domain, &mut model, open.clone(), None).expect("open");
+        assert_eq!(
+            picker_labels(&model),
+            ["@builder", "@you", "@dnaa", "type a name…", "none"]
+        );
+        let (screen, _) = board_screen(&model, 100, 30);
+        assert!(!screen.contains("ctrl+x remove"), "{screen}");
+
+        // A profile and you refuse, and say why.
+        let chord = |model: &BoardModel, letter: char| {
+            board_keyboard_intent(
+                model,
+                model.input_mode(),
+                KeyEvent::new(KeyCode::Char(letter), KeyModifiers::CONTROL),
+            )
+            .expect("picker chord")
+        };
+        let remove = chord(&model, 'x');
+        assert_eq!(remove, BoardIntent::RemoveAssigneeName);
+        let outcome = apply_intent(&mut domain, &mut model, remove.clone(), None).expect("x");
+        assert_eq!(outcome, IntentOutcome::None);
+        assert_eq!(model.message(), Some("agents are removed in config.toml"));
+        let down = key(&model, KeyCode::Down, KeyModifiers::NONE);
+        apply_intent(&mut domain, &mut model, down.clone(), None).expect("move");
+        apply_intent(&mut domain, &mut model, remove.clone(), None).expect("x on you");
+        assert_eq!(model.message(), Some("only a person's name can be removed"));
+        assert!(domain.hidden_assignees().is_empty());
+
+        apply_intent(&mut domain, &mut model, down, None).expect("move");
+        let (screen, _) = board_screen(&model, 100, 30);
+        assert!(screen.contains("ctrl+x remove"), "{screen}");
+        assert!(super::board_intent_may_persist(&model, &remove));
+        let outcome = apply_intent(&mut domain, &mut model, remove, None).expect("remove");
+        assert_eq!(outcome, IntentOutcome::Persist);
+        assert_eq!(model.message(), Some("dnaa removed from the list"));
+        assert_eq!(model.input_mode(), BoardInputMode::ListPicker);
+        assert_eq!(
+            picker_labels(&model),
+            ["@builder", "@you", "type a name…", "none"]
+        );
+        assert_eq!(
+            domain.get(ids[0]).expect("task").assigned(),
+            Some(crate::domain::Assignee::person("dnaa")),
+            "the task keeps its assignee"
+        );
+        assert!(matches!(
+            domain.last_undo(),
+            Some(UndoEntry::HideAssignee { name }) if name == "dnaa"
+        ));
+
+        // ctrl+u in the picker puts it back where it was.
+        let undo = chord(&model, 'u');
+        assert_eq!(undo, BoardIntent::ListPickerUndo);
+        let outcome = apply_intent(&mut domain, &mut model, undo, None).expect("undo");
+        assert_eq!(outcome, IntentOutcome::Persist);
+        assert_eq!(model.message(), Some("dnaa back on the list"));
+        assert!(picker_labels(&model).contains(&"@dnaa".to_string()));
+
+        // Removed again, then undone from the board once the picker is closed.
+        let remove = chord(&model, 'x');
+        apply_intent(&mut domain, &mut model, remove, None).expect("remove again");
+        let esc = key(&model, KeyCode::Esc, KeyModifiers::NONE);
+        apply_intent(&mut domain, &mut model, esc, None).expect("close");
+        temp.store
+            .reload_merge_save(&mut domain)
+            .expect("save the removal");
+        let reloaded = temp.store.load().expect("reload");
+        assert!(reloaded.hidden_assignees().contains("dnaa"));
+        let undo = key(&model, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        apply_intent(&mut domain, &mut model, undo, None).expect("board undo");
+        assert_eq!(model.message(), Some("dnaa back on the list"));
+        assert!(domain.hidden_assignees().is_empty());
+    }
+
+    /// A removed name comes back when it is typed and assigned again, even to a task that
+    /// already carries it.
+    #[test]
+    fn typing_a_removed_name_again_puts_it_back_on_the_list() {
+        let temp = Temp::new("unhide-name", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["dana's"]);
+        domain
+            .assign(ids[0], Some(crate::domain::Assignee::person("dana")))
+            .expect("assign");
+        assert!(domain.hide_assignee("dana"));
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        select(&mut domain, &mut model, ids[0]);
+        let open = key(&model, KeyCode::Char('@'), KeyModifiers::NONE);
+        apply_intent(&mut domain, &mut model, open.clone(), None).expect("open");
+        assert!(!picker_labels(&model).contains(&"@dana".to_string()));
+        type_query(&mut domain, &mut model, "dana");
+        let enter = key(&model, KeyCode::Enter, KeyModifiers::NONE);
+        let outcome = apply_intent(&mut domain, &mut model, enter, None).expect("assign");
+        assert_eq!(outcome, IntentOutcome::Persist);
+        assert!(domain.hidden_assignees().is_empty());
+        model.sync_from_domain(&domain);
+        apply_intent(&mut domain, &mut model, open, None).expect("reopen");
+        assert!(picker_labels(&model).contains(&"@dana".to_string()));
+    }
+
+    /// Bare `w` opens the waiting-on picker from anywhere on a blocked or review page: an
+    /// option, a check. A page with no block or review leaves `w` alone.
+    #[test]
+    fn w_opens_the_waiting_on_picker_from_anywhere_on_a_block_or_review_page() {
+        let temp = Temp::new("w-key", &["pi"]);
+        let (mut domain, _, ids) = board(&temp, &["asked", "reviewed", "plain"]);
+        domain
+            .block(
+                ids[0],
+                crate::domain::BlockDraft {
+                    why: Some("which db?".into()),
+                    options: vec!["postgres".into(), "sqlite".into()],
+                    ..Default::default()
+                },
+                "claude",
+            )
+            .expect("block");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        let fresh = |domain: &DomainState| {
+            let mut model = BoardModel::from_domain(domain, Some(PathBuf::from(PROJECT)));
+            model.set_selected_project(Some(PathBuf::from(PROJECT)));
+            model.set_agent_profiles(&temp.profiles());
+            model
+        };
+        let w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE);
+
+        let mut model = fresh(&domain);
+        select(&mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        while !model.block_option_selected() {
+            apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("tab");
+        }
+        let (screen, _) = board_screen(&model, 100, 30);
+        assert!(screen.contains("w waiting on"), "{screen}");
+        let intent = board_keyboard_intent(&model, model.input_mode(), w).expect("w");
+        assert_eq!(intent, BoardIntent::OpenOnPicker);
+        apply_intent(&mut domain, &mut model, intent, None).expect("open");
+        assert_eq!(model.list_picker_kind(), Some(ListPickerKind::WaitingOn));
+
+        let mut model = fresh(&domain);
+        review_page(&temp, &mut domain, &mut model, ids[1], &["tests pass"]);
+        assert!(model.review_check_selected());
+        let intent = board_keyboard_intent(&model, model.input_mode(), w).expect("w");
+        assert_eq!(intent, BoardIntent::OpenOnPicker);
+        apply_intent(&mut domain, &mut model, intent, None).expect("open");
+        assert_eq!(model.list_picker_kind(), Some(ListPickerKind::WaitingOn));
+
+        let mut model = fresh(&domain);
+        select(&mut domain, &mut model, ids[2]);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+        assert_eq!(board_keyboard_intent(&model, model.input_mode(), w), None);
     }
 
     /// A marked-set assignment whose save fails enters recovery, and Retry lands the whole set

@@ -139,7 +139,7 @@ On a blocked page or a review:
 | Reply with option N, prefilled | `1`…`9`, or `Enter` on the option |
 | Unblock, or send the review back, with nothing typed | `ctrl+s` |
 | Approve the review | `ctrl+d` |
-| Change who it [waits on](/docs/task-page/#waiting-on), top line selected | `Enter` |
+| Change who it [waits on](/docs/task-page/#waiting-on) | `w`, or `Enter` on the top line |
 | Cycle the selected check: open → passed → failed → open | `Enter` |
 | Show / fold the passed checks | `Enter` on the `N passed` line |
 
@@ -178,7 +178,7 @@ In the step editor, `ctrl+d` and `ctrl+o` still act on the task, and `ctrl+x` st
 - The word and line keys work in every text field: Title, Notes, steps, Thread, and quick-add.
 - A word is a run of non-space characters, as with Option+arrow in macOS. In Notes, word moves cross line breaks and a word delete stops at one.
 - In Notes, `ctrl+u` at a line start joins the line above, and `ctrl+k` at a line end joins the next line.
-- Search, the palette, Help, and the pickers you type into have no cursor. There, `alt+Backspace` and `ctrl+w` delete the query's last word, and `ctrl+u` and `ctrl+k` do nothing.
+- Search, the palette, Help, and the pickers you type into have no cursor. There, `alt+Backspace` and `ctrl+w` delete the query's last word, and `ctrl+u` and `ctrl+k` do nothing. The assignee picker's `ctrl+u` is the exception: it puts back a removed name.
 - Outside text fields, `ctrl+u` is undo.
 - Paste keeps line breaks in Notes and turns them into spaces in one-line fields.
 - On macOS, `Cmd+←` and `Cmd+→` arrive as `ctrl+a` and `ctrl+e`, and `Cmd+Backspace` as `ctrl+u`.
@@ -210,6 +210,7 @@ In the Herdr popup, `shift+Enter` saves and closes it. `Esc` or `ctrl+c` discard
 | Filter and view pickers (`t`, `v`) | type to filter · `↑` / `↓` select · `Tab` or `←` / `→` switch tabs, `shift+Tab` back · `Enter` chooses · `Esc` closes |
 | Group, sort, assignee, and base pickers | type to filter · `↑` / `↓` or `Tab` select · `Enter` applies · `Esc` closes with no change |
 | Assignee and waiting-on pickers, **type a name…** | the row shows what you typed, such as `@dana` · `Enter` applies it |
+| Assignee picker, a person selected | `ctrl+x` [removes the name](/docs/dispatch/#remove-a-name-from-the-list) from the list · `ctrl+u` puts it back |
 | Waiting-on picker | as the assignee picker, and `←` / `→` also move |
 | After picker | as above, and `Space` ticks several · `Enter` applies the ticked tasks or the highlighted one · **none** clears |
 | Board search (`/`) | type or paste · `Backspace` · `Enter` pins the query · `Esc` clears and closes |

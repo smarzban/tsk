@@ -1123,6 +1123,8 @@ pub struct BoardModel {
     /// Scope paths of archived projects, carried from domain state so the lens
     /// query can filter hidden tasks without re-deriving from records.
     pub(super) archived_projects: BTreeSet<String>,
+    /// Person names removed from the assignee picker, from the store.
+    pub(super) hidden_assignees: BTreeSet<String>,
     /// Defined profile names loaded once for this session.
     pub(super) agent_names: Vec<String>,
     pub(super) this_repo: Option<PathBuf>,
@@ -2301,6 +2303,7 @@ impl BoardModel {
             clock: None,
             tasks,
             archived_projects: BTreeSet::new(),
+            hidden_assignees: BTreeSet::new(),
             agent_names: Vec::new(),
             this_repo: this_repo.clone(),
             default_branches: DefaultBranchCache::default(),
@@ -3232,6 +3235,7 @@ impl BoardModel {
     ) -> Self {
         let mut model = Self::from_tasks(state.tasks().to_vec(), this_repo);
         model.archived_projects = state.archived_projects();
+        model.hidden_assignees = state.hidden_assignees().clone();
         if let Some(repo) = model.this_repo.clone() {
             if model.is_archived_project_path(&repo) {
                 model.selected_project = None;
@@ -3316,6 +3320,7 @@ impl BoardModel {
         }
         self.tasks = state.tasks().to_vec();
         self.archived_projects = state.archived_projects();
+        self.hidden_assignees = state.hidden_assignees().clone();
         if self
             .undo_hint
             .as_ref()
@@ -3613,6 +3618,7 @@ impl BoardModel {
         // should keep the existing seat instead of paying that cost or dropping its session.
         let mut right = BoardModel::from_tasks(self.tasks.clone(), self.this_repo.clone());
         right.archived_projects = self.archived_projects.clone();
+        right.hidden_assignees = self.hidden_assignees.clone();
         right.agent_names = self.agent_names.clone();
         right.set_layout_defaults(self.layout_defaults);
         right.board_location = BoardLocation::Project(path.clone());
@@ -5092,39 +5098,7 @@ impl BoardModel {
     /// assigned on the board, `type a name…`, then **none** last. `current` (the cursor task's
     /// assignee) is preselected, else the first row. Nothing changes until Enter.
     pub(super) fn open_assignee_picker(&mut self, ids: Vec<Uuid>, current: Option<Assignee>) {
-        let mut choices: Vec<Assignee> = self
-            .agent_names
-            .iter()
-            .map(|name| Assignee::agent(name.clone()))
-            .collect();
-        choices.push(Assignee::you());
-        let people: BTreeSet<String> = self
-            .tasks
-            .iter()
-            .filter(|task| !task.soft_deleted && !task.is_notice())
-            .filter_map(Task::assigned)
-            .filter(|assignee| assignee.is_person() && assignee.name != crate::domain::OWNER)
-            .map(|assignee| assignee.name)
-            .collect();
-        choices.extend(people.into_iter().map(Assignee::person));
-        let mut options: Vec<ListPickerOption> = choices
-            .into_iter()
-            .map(|assignee| ListPickerOption {
-                label: crate::ui::render::assignee_handle(&assignee.name),
-                count: None,
-                value: ListPickerValue::Assignee(Some(assignee)),
-            })
-            .collect();
-        options.push(ListPickerOption {
-            label: TYPE_A_NAME.to_string(),
-            count: None,
-            value: ListPickerValue::TypedName,
-        });
-        options.push(ListPickerOption {
-            label: "none".to_string(),
-            count: None,
-            value: ListPickerValue::Assignee(None),
-        });
+        let options = self.assignee_picker_options();
         // An unassigned task starts on the first row, so Enter right away assigns.
         let selected = current
             .and_then(|current| {
@@ -5148,6 +5122,78 @@ impl BoardModel {
             tabs: None,
         });
         self.input_mode = BoardInputMode::ListPicker;
+    }
+
+    /// The assignee picker's rows: every profile, `@you`, each person named on a live task
+    /// and not removed from the list, `type a name…`, and `none`.
+    fn assignee_picker_options(&self) -> Vec<ListPickerOption> {
+        let mut choices: Vec<Assignee> = self
+            .agent_names
+            .iter()
+            .map(|name| Assignee::agent(name.clone()))
+            .collect();
+        choices.push(Assignee::you());
+        let people: BTreeSet<String> = self
+            .tasks
+            .iter()
+            .filter(|task| !task.soft_deleted && !task.is_notice())
+            .filter_map(Task::assigned)
+            .filter(|assignee| assignee.is_person() && assignee.name != crate::domain::OWNER)
+            .map(|assignee| assignee.name)
+            .filter(|name| !self.hidden_assignees.contains(name))
+            .collect();
+        choices.extend(people.into_iter().map(Assignee::person));
+        let mut options: Vec<ListPickerOption> = choices
+            .into_iter()
+            .map(|assignee| ListPickerOption {
+                label: crate::ui::render::assignee_handle(&assignee.name),
+                count: None,
+                value: ListPickerValue::Assignee(Some(assignee)),
+            })
+            .collect();
+        options.push(ListPickerOption {
+            label: TYPE_A_NAME.to_string(),
+            count: None,
+            value: ListPickerValue::TypedName,
+        });
+        options.push(ListPickerOption {
+            label: "none".to_string(),
+            count: None,
+            value: ListPickerValue::Assignee(None),
+        });
+        options
+    }
+
+    /// The person name under the assignee picker's cursor, the one row `ctrl+x` removes.
+    /// `None` on a profile, `@you`, `type a name…`, `none`, or any other picker.
+    pub fn assignee_picker_person(&self) -> Option<String> {
+        if self.list_picker_kind() != Some(ListPickerKind::Assignee) {
+            return None;
+        }
+        match self.selected_list_picker_option()?.1.value {
+            ListPickerValue::Assignee(Some(assignee))
+                if assignee.is_person() && assignee.name != crate::domain::OWNER =>
+            {
+                Some(assignee.name)
+            }
+            _ => None,
+        }
+    }
+
+    /// Rebuild the open assignee picker's rows after a name left or rejoined the list. The
+    /// cursor stays on the same row number, clamped to the rows left.
+    pub(super) fn refresh_assignee_picker(&mut self) {
+        if self.list_picker_kind() != Some(ListPickerKind::Assignee) {
+            return;
+        }
+        let options = self.assignee_picker_options();
+        if let Some(picker) = self.list_picker.as_mut() {
+            picker.options = options;
+        }
+        let last = self.visible_list_picker_options().len().saturating_sub(1);
+        if let Some(picker) = self.list_picker.as_mut() {
+            picker.selected = picker.selected.min(last);
+        }
     }
 
     /// Open on the branches already on disk (bounded local queries, never the network). Unless
@@ -5543,7 +5589,8 @@ impl BoardModel {
 
     /// Open the waiting-on picker over `target`: you, every defined profile, the record's
     /// current value when it is none of those, then `type a name…` (a task number on a block,
-    /// or any text). The current value is preselected. Nothing changes until Enter.
+    /// or any text). The current value is preselected and marked `· current`. Nothing changes
+    /// until Enter.
     pub(super) fn open_on_picker(&mut self, target: OnPickerTarget, current: Option<BlockOn>) {
         let mut choices: Vec<BlockOn> = std::iter::once(BlockOn::You)
             .chain(self.agent_names.iter().cloned().map(BlockOn::Agent))
@@ -5552,14 +5599,22 @@ impl BoardModel {
             choices.push(current.clone());
         }
         let selected = current
-            .and_then(|current| choices.iter().position(|on| *on == current))
+            .as_ref()
+            .and_then(|current| choices.iter().position(|on| on == current))
             .unwrap_or(0);
         let mut options: Vec<ListPickerOption> = choices
             .into_iter()
-            .map(|on| ListPickerOption {
-                label: on_choice_label(&on),
-                count: None,
-                value: ListPickerValue::WaitingOn(on),
+            .map(|on| {
+                let label = on_choice_label(&on);
+                ListPickerOption {
+                    label: if current.as_ref() == Some(&on) {
+                        format!("{label} · current")
+                    } else {
+                        label
+                    },
+                    count: None,
+                    value: ListPickerValue::WaitingOn(on),
+                }
             })
             .collect();
         options.push(ListPickerOption {

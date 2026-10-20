@@ -90,6 +90,8 @@ struct UndoNote {
     /// Tasks that were started before the undo: only these can leave a running agent behind.
     was_started: Vec<Uuid>,
     restores_status: bool,
+    /// A name removed from the assignee picker that the undo puts back.
+    restored_name: Option<String>,
 }
 
 /// The board's word for the action an undo leaf recorded. `domain` is the state before the
@@ -119,6 +121,7 @@ fn undo_action_word(domain: &DomainState, leaf: &UndoEntry) -> &'static str {
         UndoEntry::SetAfter { .. } => "after",
         UndoEntry::SetOn { .. } => "waiting on",
         UndoEntry::Steps { .. } => "steps",
+        UndoEntry::HideAssignee { .. } => "remove",
         UndoEntry::Batch { .. } => "undo",
     }
 }
@@ -177,12 +180,19 @@ impl UndoNote {
                     | UndoEntry::Status { .. }
                     | UndoEntry::Block { .. }
             ),
+            restored_name: match first {
+                UndoEntry::HideAssignee { name } => Some(name.clone()),
+                _ => None,
+            },
         })
     }
 
     /// `done undone · T202 back to started · T203 back to ready · @claude kept running`, read
     /// from the state after the undo.
     fn message(&self, domain: &DomainState) -> String {
+        if let Some(name) = &self.restored_name {
+            return format!("{} back on the list", crate::domain::display_name(name));
+        }
         let mut message = format!(
             "{} undone · {}",
             self.action,
@@ -298,7 +308,9 @@ fn stale_undo_message(domain: &DomainState, id: Uuid) -> String {
         Some(UndoEntry::SetAfter { .. }) => "since its after change",
         Some(UndoEntry::SetOn { .. }) => "since its waiting-on change",
         Some(UndoEntry::Steps { .. }) => "since its step change",
-        Some(UndoEntry::Batch { .. }) | None => "since the undoable action",
+        Some(UndoEntry::HideAssignee { .. } | UndoEntry::Batch { .. }) | None => {
+            "since the undoable action"
+        }
     };
     let cause = task.and_then(|task| match leaf {
         Some(UndoEntry::Archive {
@@ -400,6 +412,8 @@ pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> boo
                 | BoardIntent::QuickAddSave
                 | BoardIntent::QuickAddSaveNext
                 | BoardIntent::ChainAfter
+                | BoardIntent::RemoveAssigneeName
+                | BoardIntent::ListPickerUndo
         )
 }
 
@@ -2321,6 +2335,8 @@ fn apply_board_intent(
             model.set_message(format!("chained {chain}"));
             return Ok(IntentOutcome::Persist);
         }
+        BoardIntent::RemoveAssigneeName => return Ok(remove_assignee_name(domain, model)),
+        BoardIntent::ListPickerUndo => return undo_assignee_name(domain, model),
         BoardIntent::ListPickerNext => {
             model.move_list_picker(true);
             return Ok(IntentOutcome::None);
@@ -4302,6 +4318,62 @@ fn open_on_picker(domain: &DomainState, model: &mut BoardModel) {
     };
     model.clear_message();
     model.open_on_picker(OnPickerTarget { records }, current);
+}
+
+/// `ctrl+x` in the assignee picker: take the person under the cursor off the list. Tasks keep
+/// the name; assigning it again puts it back. Profiles, `@you`, and the fixed rows refuse.
+fn remove_assignee_name(domain: &mut DomainState, model: &mut BoardModel) -> IntentOutcome {
+    if model.list_picker_kind() != Some(crate::ui::board::ListPickerKind::Assignee) {
+        return IntentOutcome::None;
+    }
+    let Some(name) = model.assignee_picker_person() else {
+        let agent = matches!(
+            model.selected_list_picker_option(),
+            Some((_, option)) if matches!(
+                &option.value,
+                ListPickerValue::Assignee(Some(assignee)) if !assignee.is_person()
+            )
+        );
+        model.set_message(if agent {
+            "agents are removed in config.toml"
+        } else {
+            "only a person's name can be removed"
+        });
+        return IntentOutcome::None;
+    };
+    if !domain.hide_assignee(&name) {
+        return IntentOutcome::None;
+    }
+    model.sync_from_domain(domain);
+    model.refresh_assignee_picker();
+    model.set_message(format!(
+        "{} removed from the list",
+        crate::domain::display_name(&name)
+    ));
+    IntentOutcome::Persist
+}
+
+/// `ctrl+u` in the assignee picker: undo a name removal on top of the undo stack and show the
+/// name again. Any other undo waits until the picker closes.
+fn undo_assignee_name(
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+) -> Result<IntentOutcome, DomainError> {
+    if model.list_picker_kind() != Some(crate::ui::board::ListPickerKind::Assignee) {
+        return Ok(IntentOutcome::None);
+    }
+    let Some(entry @ UndoEntry::HideAssignee { .. }) = domain.last_undo().cloned() else {
+        model.set_message("nothing to undo here");
+        return Ok(IntentOutcome::None);
+    };
+    let note = UndoNote::read(domain, &entry);
+    domain.undo()?;
+    model.sync_from_domain(domain);
+    model.refresh_assignee_picker();
+    if let Some(note) = note {
+        model.set_message(note.message(domain));
+    }
+    Ok(IntentOutcome::Persist)
 }
 
 /// The refusal for a task with no open block or review to change.
