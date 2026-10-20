@@ -686,6 +686,9 @@ fn apply_board_intent(
         intent,
         BoardIntent::CloseLayer | BoardIntent::OpenTaskPage | BoardIntent::StageLeft
     );
+    // A focused task page acts on its own task: bind the selection to it before the intent,
+    // so verbs and pickers reach the page's task even when the board does not paint it (a
+    // `before` link to a done task with the drawer shut opens without moving the board).
     if model.focused_surface() == FocusedSurface::Task
         && !closes_the_page
         && matches!(

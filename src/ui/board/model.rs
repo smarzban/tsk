@@ -6483,8 +6483,6 @@ impl BoardModel {
 
     /// Mark targets when the task list owns input, otherwise the cursor target.
     pub fn verb_target_ids(&self) -> Vec<Uuid> {
-        // An open task page acts on its own task, which the board selection may not be (a
-        // `before` link to a task the board cannot paint opens without moving it).
         if self.task_list_owns_input() && self.mark_mode && !self.marked_ids.is_empty() {
             self.marked_ids.iter().copied().collect()
         } else {
