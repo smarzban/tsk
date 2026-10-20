@@ -4359,8 +4359,6 @@ impl BoardModel {
         }
     }
 
-    /// Whether the peek's closing line names the assignee: not where an assignee filter or
-    /// the `@name` View already says it.
     /// Whether board rows paint without their `└─` message lines (`z`).
     pub fn messages_hidden(&self) -> bool {
         self.messages_hidden
@@ -4377,6 +4375,8 @@ impl BoardModel {
         hidden
     }
 
+    /// Whether the peek's closing line names the assignee: not where an assignee filter or
+    /// the `@name` View already says it.
     pub fn assignee_label_shown(&self) -> bool {
         match self.effective_lens() {
             BoardLens::Desk => !matches!(self.desk_filter.assignee, AssigneeFilter::Named(_)),
