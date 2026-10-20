@@ -3438,7 +3438,7 @@ fn help_card_lists_every_binding_scrolls_and_closes_on_esc() {
     for (chord, action) in [
         ("ctrl+x / ctrl+delete", "delete"),
         ("ctrl+c", "cancel editing"),
-        ("ctrl+c", "quit (board, task page, Help)"),
+        ("ctrl+c", "quit (board, pages, Help, launch card)"),
         ("ctrl+s", "start"),
         ("ctrl+e", "go to line end (text input)"),
         ("ctrl+←", "move one word left (text input)"),
@@ -6266,16 +6266,20 @@ fn delete_mark_shows_press_again_footer_message() {
 
 /// `ctrl+x` in a new-step row discards that draft row only: never the step it was opened
 /// below (marked in view, staged in an edit session), and never the task when no step is
-/// selected.
+/// selected. An empty or blank row too, which any other verb closes before it runs.
 #[test]
 fn ctrl_x_in_a_new_step_row_discards_only_that_draft() {
     let delete = map_key(BoardInputMode::EditStep, ctrl(KeyCode::Char('x'))).expect("ctrl+x");
     assert_eq!(delete, BoardIntent::SoftDelete);
-    for (steps, view) in [
+    let cases = [
         (&["alpha step", "bravo step"][..], true),
         (&["alpha step", "bravo step"][..], false),
         (&[][..], true),
-    ] {
+    ];
+    for ((steps, view), draft) in cases
+        .into_iter()
+        .flat_map(|case| ["draft", "", "   "].map(|draft| (case, draft)))
+    {
         let (mut domain, mut model, id) = board_with_steps("Draft row", None, steps);
         if view && !steps.is_empty() {
             apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None)
@@ -6286,33 +6290,42 @@ fn ctrl_x_in_a_new_step_row_discards_only_that_draft() {
         assert_eq!(model.task_editing(), !view);
         let add = map_key(BoardInputMode::TaskPage, ctrl(KeyCode::Char('a'))).expect("ctrl+a");
         apply_intent(&mut domain, &mut model, add, None).expect("open the add row");
-        apply_intent(
-            &mut domain,
-            &mut model,
-            BoardIntent::EditInsertText("draft".into()),
-            None,
-        )
-        .expect("type the draft");
+        if !draft.is_empty() {
+            apply_intent(
+                &mut domain,
+                &mut model,
+                BoardIntent::EditInsertText(draft.into()),
+                None,
+            )
+            .expect("type the draft");
+        }
         assert_eq!(model.input_mode(), BoardInputMode::EditStep);
 
         let outcome = apply_intent(&mut domain, &mut model, delete.clone(), None).expect("ctrl+x");
-        assert_eq!(outcome, IntentOutcome::None);
-        assert_eq!(model.input_mode(), BoardInputMode::TaskPage, "{steps:?}");
-        assert_eq!(model.message(), None, "{steps:?} arms no delete");
+        let case = format!("{steps:?} view={view} draft={draft:?}");
+        assert_eq!(outcome, IntentOutcome::None, "{case}");
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage, "{case}");
+        assert_eq!(model.message(), None, "{case} arms no delete");
         assert_eq!(
             model.task_editing(),
             !view,
             "the edit session stays as it was"
         );
         let page = rendered_board(&model, 80, 24);
-        assert!(!page.contains("draft"), "the draft row is gone:\n{page}");
-        assert!(!page.contains('✗'), "no step is marked:\n{page}");
+        assert!(
+            !page.contains("draft"),
+            "{case}: the draft row is gone:\n{page}"
+        );
+        assert!(!page.contains('✗'), "{case}: no step is marked:\n{page}");
         for step in steps {
-            assert!(page.contains(step), "{step} is not staged away:\n{page}");
+            assert!(
+                page.contains(step),
+                "{case}: {step} is not staged away:\n{page}"
+            );
         }
         let task = domain.get(id).expect("task");
-        assert!(!task.soft_deleted);
-        assert_eq!(task.steps.len(), steps.len());
+        assert!(!task.soft_deleted, "{case}");
+        assert_eq!(task.steps.len(), steps.len(), "{case}");
     }
 }
 

@@ -247,7 +247,7 @@ With the right board focused, board keys act on that board.
 | Close the top layer: a picker, the palette, Help, search, the peek, the task page, or the right column | `Esc` |
 | Quit at the board root, with no confirmation | `Esc` |
 | Quit from any surface except text entry | `ctrl+q` |
-| Quit from the board, the task page, Help, or the archived-project card | `ctrl+c` |
+| Quit from the board, the task page, quick-add details, Help, or the archived-project card | `ctrl+c` |
 | Cancel a field, an edit, the block or review card, or the reply box | `Esc` or `ctrl+c` |
 
 - With tasks marked, `Esc` first leaves multi-select and clears the marks. In a picker you type into, a card, or the reply box, it closes that first and keeps them.

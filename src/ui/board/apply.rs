@@ -531,6 +531,9 @@ pub fn apply_intent(
                 | BoardIntent::ShiftEnterAsCtrlJ
                 | BoardIntent::BeginAddStep
                 | BoardIntent::BeginAppendStep
+                // The delete verb discards the row itself; parked first, it would fall
+                // through to the step above or the task.
+                | BoardIntent::SoftDelete
         )
     {
         let _ = model.park_rename_step_draft();

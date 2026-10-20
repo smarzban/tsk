@@ -1047,7 +1047,7 @@ fn help_bindings() -> Vec<HelpBinding> {
         help_binding(
             HelpGroup::AppControls,
             "ctrl+c",
-            "quit (board, task page, Help)",
+            "quit (board, pages, Help, launch card)",
             "exit close app",
         ),
         help_binding(

@@ -202,6 +202,47 @@ test("docs paint keys as keycaps and leave flags as code", async () => {
   }
 });
 
+test("demo paints a block on a done or gone task like one on you", async () => {
+  const demo = await read("../public/board-demo.js");
+  // Lift the glyph rule and the block helpers it reads out of the demo's closure.
+  const lift = (start) => {
+    const at = demo.indexOf(start);
+    assert.ok(at >= 0, `${start} is in the demo`);
+    let depth = 0;
+    for (let i = demo.indexOf("{", at); i < demo.length; i++) {
+      if (demo[i] === "{") depth++;
+      else if (demo[i] === "}" && --depth === 0) return demo.slice(at, i + 1);
+    }
+    throw new Error(`${start} never closes`);
+  };
+  const line = (pattern) => {
+    const match = demo.match(pattern);
+    assert.ok(match, `${pattern} is in the demo`);
+    return match[0];
+  };
+  const source = [
+    lift("const GLYPH = {"),
+    lift("const taskGlyph = (task) => {"),
+    lift("function blockOn(block) {"),
+    lift("function blockWait(task) {"),
+    line(/const isReview = [^\n]*;/),
+    line(/const liveTask = \(number\) =>\s*[^;]*;/),
+    "return taskGlyph;",
+  ].join(";\n");
+  const tasks = [
+    { number: 1, status: "done" },
+    { number: 2, status: "blocked", block: { kind: "blocked", on: "task:1" } },
+    { number: 3, status: "blocked", block: { kind: "blocked", on: "task:9" } },
+    { number: 4, status: "started" },
+    { number: 5, status: "blocked", block: { kind: "blocked", on: "task:4" } },
+    { number: 6, status: "blocked", block: { kind: "blocked", on: "agent:pi" } },
+    { number: 7, status: "blocked", block: { kind: "blocked", on: "you" } },
+  ];
+  const taskGlyph = new Function("state", source)({ tasks });
+  const glyphs = Object.fromEntries(tasks.map((task) => [task.number, taskGlyph(task)]));
+  assert.deepEqual(glyphs, { 1: "✓", 2: "■", 3: "■", 4: "●", 5: "□", 6: "□", 7: "■" });
+});
+
 test("every chord the docs name paints as a keycap", async () => {
   const { isKeyName } = await import("../src/plugins/rehype-kbd.mjs");
   const docsDir = new URL("../src/content/docs/docs/", import.meta.url);
