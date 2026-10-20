@@ -90,8 +90,8 @@ struct UndoNote {
     /// Tasks that were started before the undo: only these can leave a running agent behind.
     was_started: Vec<Uuid>,
     restores_status: bool,
-    /// A name removed from the assignee picker that the undo puts back.
-    restored_name: Option<String>,
+    /// What the undo says instead when it only moves a name on or off the assignee picker.
+    name_note: Option<String>,
 }
 
 /// The board's word for the action an undo leaf recorded. `domain` is the state before the
@@ -122,6 +122,7 @@ fn undo_action_word(domain: &DomainState, leaf: &UndoEntry) -> &'static str {
         UndoEntry::SetOn { .. } => "waiting on",
         UndoEntry::Steps { .. } => "steps",
         UndoEntry::HideAssignee { .. } => "remove",
+        UndoEntry::ShowAssignee { .. } => "assignee",
         UndoEntry::Batch { .. } => "undo",
     }
 }
@@ -180,8 +181,15 @@ impl UndoNote {
                     | UndoEntry::Status { .. }
                     | UndoEntry::Block { .. }
             ),
-            restored_name: match first {
-                UndoEntry::HideAssignee { name } => Some(name.clone()),
+            name_note: match first {
+                UndoEntry::HideAssignee { name } => Some(format!(
+                    "{} back on the list",
+                    crate::domain::display_name(name)
+                )),
+                UndoEntry::ShowAssignee { name } => Some(format!(
+                    "{} removed from the list",
+                    crate::domain::display_name(name)
+                )),
                 _ => None,
             },
         })
@@ -190,8 +198,8 @@ impl UndoNote {
     /// `done undone · T202 back to started · T203 back to ready · @claude kept running`, read
     /// from the state after the undo.
     fn message(&self, domain: &DomainState) -> String {
-        if let Some(name) = &self.restored_name {
-            return format!("{} back on the list", crate::domain::display_name(name));
+        if let Some(note) = &self.name_note {
+            return note.clone();
         }
         let mut message = format!(
             "{} undone · {}",
@@ -308,9 +316,12 @@ fn stale_undo_message(domain: &DomainState, id: Uuid) -> String {
         Some(UndoEntry::SetAfter { .. }) => "since its after change",
         Some(UndoEntry::SetOn { .. }) => "since its waiting-on change",
         Some(UndoEntry::Steps { .. }) => "since its step change",
-        Some(UndoEntry::HideAssignee { .. } | UndoEntry::Batch { .. }) | None => {
-            "since the undoable action"
-        }
+        Some(
+            UndoEntry::HideAssignee { .. }
+            | UndoEntry::ShowAssignee { .. }
+            | UndoEntry::Batch { .. },
+        )
+        | None => "since the undoable action",
     };
     let cause = task.and_then(|task| match leaf {
         Some(UndoEntry::Archive {
@@ -2463,6 +2474,14 @@ fn apply_board_intent(
                 return Ok(IntentOutcome::None);
             }
             model.pending_form_assignee_sync = Some(target.ids.clone());
+            // Every task already had the name: the assignment only put it back on the list.
+            if let Some(UndoEntry::ShowAssignee { name }) = domain.last_undo() {
+                model.set_message(format!(
+                    "{} back on the list",
+                    crate::domain::display_name(name)
+                ));
+                return Ok(IntentOutcome::Persist);
+            }
             let subject = match target.ids.as_slice() {
                 [id] => domain
                     .get(*id)

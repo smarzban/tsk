@@ -17704,6 +17704,7 @@ mod quick_assign_tests {
         let enter = key(&model, KeyCode::Enter, KeyModifiers::NONE);
         let outcome = apply_intent(&mut domain, &mut model, enter, None).expect("assign");
         assert_eq!(outcome, IntentOutcome::Persist);
+        assert_eq!(model.message(), Some("dana back on the list"));
         assert!(domain.hidden_assignees().is_empty());
         model.sync_from_domain(&domain);
         apply_intent(&mut domain, &mut model, open, None).expect("reopen");

@@ -1622,3 +1622,202 @@ fn reload_merge_save_keeps_hidden_names_from_both_writers() {
         "the unhide wins over the disk copy"
     );
 }
+
+/// Assigning a removed name puts it back on the list inside the assignment's undo: one `ctrl+u`
+/// unassigns and hides it again, and the next undoes the removal, across saves. Assigning a
+/// name the task already has only shows it again, as its own undo entry; with the name shown
+/// already, it records nothing.
+#[test]
+fn assigning_a_removed_name_shows_it_inside_the_assignment_undo() {
+    use tsk_tui::domain::Assignee;
+    let dir = temp_state_dir();
+    let _guard = TempDirGuard(dir.clone());
+    let store = TaskStore::new(&dir);
+    let mut state = DomainState::new();
+    let kept = state
+        .create(
+            "Kept",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    let fresh = state
+        .create(
+            "Fresh",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    state
+        .assign(kept, Some(Assignee::person("dana")))
+        .expect("assign dana");
+    assert!(state.hide_assignee("dana"));
+    store.reload_merge_save(&mut state).expect("save the hide");
+
+    state
+        .assign(fresh, Some(Assignee::person("dana")))
+        .expect("assign dana again");
+    assert!(state.hidden_assignees().is_empty());
+    store
+        .reload_merge_save(&mut state)
+        .expect("save the assignment");
+    let mut state = store.load().expect("reload");
+    state.undo().expect("undo the assignment");
+    assert_eq!(state.get(fresh).expect("task").assignee, None);
+    assert!(state.hidden_assignees().contains("dana"), "hidden again");
+    store.reload_merge_save(&mut state).expect("save the undo");
+    let mut state = store.load().expect("reload");
+    state.undo().expect("undo the removal");
+    assert!(
+        state.hidden_assignees().is_empty(),
+        "the removal undoes next"
+    );
+
+    // The task already has the name: only the list changes, and undo hides it again.
+    assert!(state.hide_assignee("dana"));
+    let before = undo_top(&state);
+    assert!(state
+        .assign(kept, Some(Assignee::person("dana")))
+        .expect("same name"));
+    assert!(state.hidden_assignees().is_empty());
+    state.undo().expect("undo the re-show");
+    assert!(state.hidden_assignees().contains("dana"));
+    assert_eq!(undo_top(&state), before, "nothing else undone");
+    state.undo().expect("undo the removal");
+    let top = undo_top(&state);
+    assert!(!state
+        .assign(kept, Some(Assignee::person("dana")))
+        .expect("nothing to do"));
+    assert_eq!(undo_top(&state), top, "no entry for no change");
+}
+
+/// An undone removal stays undone through a save: the disk copy of its entry is not merged
+/// back, so a later `ctrl+u` has nothing to replay.
+#[test]
+fn an_undone_removal_is_not_merged_back_from_disk() {
+    let dir = temp_state_dir();
+    let _guard = TempDirGuard(dir.clone());
+    let store = TaskStore::new(&dir);
+    let mut state = DomainState::new();
+    assert!(state.hide_assignee("dnaa"));
+    store.reload_merge_save(&mut state).expect("save the hide");
+    state.undo().expect("undo the hide");
+    store.reload_merge_save(&mut state).expect("save the undo");
+    assert_eq!(undo_top(&state), serde_json::Value::Null);
+    state.undo().expect("nothing to undo");
+    assert!(state.hidden_assignees().is_empty());
+    assert_eq!(
+        undo_top(&store.load().expect("reload")),
+        serde_json::Value::Null
+    );
+}
+
+/// Every way of assigning a person puts a removed name back: a new task, the CLI edit, and the
+/// task page's edit.
+#[test]
+fn every_assignment_path_shows_a_removed_name() {
+    use tsk_tui::domain::Assignee;
+    let dana = || Some(Assignee::person("dana"));
+    let mut state = DomainState::new();
+    assert!(state.hide_assignee("dana"));
+    state
+        .create_configured(
+            "New",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+            dana(),
+            None,
+        )
+        .expect("create");
+    assert!(state.hidden_assignees().is_empty(), "create");
+
+    let id = state
+        .create(
+            "Edited",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    assert!(state.hide_assignee("dana"));
+    state
+        .edit_with_assignee_and_base(id, "Edited", None, TaskScope::Global, None, dana(), None)
+        .expect("cli edit");
+    assert!(state.hidden_assignees().is_empty(), "cli edit");
+
+    let id = state
+        .create(
+            "Paged",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    assert!(state.hide_assignee("dana"));
+    state
+        .edit_with_step_changes_and_base(
+            id,
+            "Paged",
+            None,
+            TaskScope::Global,
+            None,
+            dana(),
+            None,
+            &[],
+            &[],
+            &[],
+            None,
+        )
+        .expect("page edit");
+    assert!(state.hidden_assignees().is_empty(), "page edit");
+}
+
+/// Two boards: one removes a name and saves, the other (loaded before) assigns that name and
+/// merge-saves. The assignment wins: the name is back on the list on disk.
+#[test]
+fn an_assignment_merged_after_another_writers_removal_shows_the_name() {
+    use tsk_tui::domain::Assignee;
+    let dir = temp_state_dir();
+    let _guard = TempDirGuard(dir.clone());
+    let store = TaskStore::new(&dir);
+    let mut seed = DomainState::new();
+    let id = seed
+        .create(
+            "Seed",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    store.save(&seed).expect("seed");
+
+    let mut a = store.load().expect("writer A");
+    let mut b = store.load().expect("writer B");
+    assert!(b.hide_assignee("dana"));
+    store.save(&b).expect("B hides dana");
+
+    a.assign(id, Some(Assignee::person("dana")))
+        .expect("A assigns dana");
+    store.reload_merge_save(&mut a).expect("A merge-save");
+    assert!(
+        store.load().expect("reload").hidden_assignees().is_empty(),
+        "the assignment shows the name again"
+    );
+}
+
+/// The top undo entry as stored, or null.
+fn undo_top(state: &DomainState) -> serde_json::Value {
+    serde_json::to_value(state).expect("state serializes")["undo_stack"]
+        .as_array()
+        .and_then(|stack| stack.last().cloned())
+        .unwrap_or_default()
+}

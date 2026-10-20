@@ -775,6 +775,35 @@ impl DomainState {
         self.set_assignee_hidden(name, false)
     }
 
+    /// Hide a name again when the assignment that showed it is undone.
+    pub(crate) fn rehide_assignee(&mut self, name: &str) {
+        self.set_assignee_hidden(name, true);
+    }
+
+    /// Assigning a person names them again: the name goes back on the picker. The intent is
+    /// recorded even when this copy shows the name already, so a hide another writer saved
+    /// meanwhile does not survive this assignment's merge. When this copy had it hidden, the
+    /// returned entry hides it again on undo, inside the assignment's own undo entry.
+    fn show_assigned(&mut self, assignee: Option<&Assignee>) -> Option<UndoEntry> {
+        let name = assignee
+            .filter(|assignee| assignee.is_person() && assignee.name != super::OWNER)?
+            .name
+            .clone();
+        let was_hidden = self.hidden_assignees.remove(&name);
+        self.hidden_intents.insert(name.clone(), false);
+        was_hidden.then_some(UndoEntry::ShowAssignee { name })
+    }
+
+    /// Whether a name entry still describes the hidden set: a removal while the name is hidden,
+    /// a re-show while it is not. Entries about tasks are always live here.
+    pub(crate) fn name_leaf_is_live(&self, leaf: &UndoEntry) -> bool {
+        match leaf {
+            UndoEntry::HideAssignee { name } => self.hidden_assignees.contains(name),
+            UndoEntry::ShowAssignee { name } => !self.hidden_assignees.contains(name),
+            _ => true,
+        }
+    }
+
     fn set_assignee_hidden(&mut self, name: &str, hidden: bool) -> bool {
         let changed = if hidden {
             self.hidden_assignees.insert(name.to_string())
@@ -872,6 +901,7 @@ impl DomainState {
         base: Option<String>,
     ) -> Result<Uuid, DomainError> {
         let id = self.create(title, notes, scope, provenance, thread)?;
+        self.show_assigned(assignee.as_ref());
         let task = self.task_mut(id)?;
         task.set_assigned(assignee);
         task.base = base;
@@ -1598,10 +1628,8 @@ impl DomainState {
         assignee: Option<Assignee>,
     ) -> Result<bool, DomainError> {
         let ids = self.prevalidate_batch_ids(ids)?;
-        // Assigning a removed name again puts it back on the picker.
-        let unhidden = assignee
-            .as_ref()
-            .is_some_and(|assignee| self.unhide_assignee(&assignee.name));
+        // Assigning a removed name again puts it back on the picker, undone with the assignment.
+        let shown = self.show_assigned(assignee.as_ref());
         let changed = ids
             .into_iter()
             .filter(|id| {
@@ -1610,7 +1638,8 @@ impl DomainState {
             })
             .collect::<Vec<_>>();
         if changed.is_empty() {
-            return Ok(unhidden);
+            // Nothing to reassign: only the name came back, and that alone is the undo.
+            return Ok(shown.map(|entry| self.undo_stack.push(entry)).is_some());
         }
         let at = SystemTime::now();
         let name = assignee.as_ref().map(|assignee| assignee.name.clone());
@@ -1634,6 +1663,7 @@ impl DomainState {
                 expected_revision: task.revision,
             });
         }
+        entries.extend(shown);
         self.undo_stack.push(if entries.len() == 1 {
             entries.pop().expect("one assignment undo")
         } else {
@@ -2025,6 +2055,7 @@ impl DomainState {
         let changed_assignee = self.get(id).is_some_and(|task| task.assigned() != assignee);
         let changed_base = self.get(id).is_some_and(|task| task.base != base);
         self.edit(id, title, notes, scope, thread)?;
+        self.show_assigned(assignee.as_ref());
         let task = self.task_mut(id)?;
         let at = task.updated_at;
         if changed_assignee {
@@ -2142,6 +2173,7 @@ impl DomainState {
         let changed_base = task.base != base;
         task.scope = scope;
         task.thread = thread;
+        let shown = assignee.clone();
         task.set_assigned(assignee);
         task.base = base;
         task.steps.retain(|step| !removals.contains(&step.id));
@@ -2195,6 +2227,7 @@ impl DomainState {
         );
         task.history
             .extend((0..added_count).map(|_| event(TaskEventKind::StepAdded, at, None, None)));
+        self.show_assigned(shown.as_ref());
         Ok(())
     }
 
@@ -2561,7 +2594,13 @@ impl DomainState {
                     task.merge_base_revision == Some(expected) && task.revision != expected
                 })
             });
-            if superseded {
+            // A name entry undone here (or by an assignment) no longer matches the merged
+            // hidden set: importing it back would let `ctrl+u` replay it.
+            let stale_name = incoming
+                .leaf_entries()
+                .into_iter()
+                .any(|leaf| !self.name_leaf_is_live(leaf));
+            if superseded || stale_name {
                 continue;
             }
             let incoming_leaves = incoming.leaf_entries();
@@ -2614,7 +2653,7 @@ impl DomainState {
                             }
                             UndoEntry::SetAfter { .. } => task.last_event_at(TaskEventKind::Edited),
                             UndoEntry::SetOn { .. } => task.last_event_at(TaskEventKind::OnSet),
-                            UndoEntry::HideAssignee { .. } => None,
+                            UndoEntry::HideAssignee { .. } | UndoEntry::ShowAssignee { .. } => None,
                             // A live entry's target was last changed by the action it records.
                             UndoEntry::Status { .. }
                             | UndoEntry::Steps { .. }
@@ -2671,7 +2710,7 @@ impl DomainState {
     ///
     /// 1. Drop entries whose target task is missing, or whose `expected_revision`
     ///    no longer matches the task's current revision (stale, can never succeed), and
-    ///    name removals whose name is no longer hidden.
+    ///    name entries the hidden set no longer matches.
     /// 2. Evict the oldest entries until the stack fits [`UNDO_CAP`].
     ///
     /// Order matters: stale entries go first so the cap never evicts a live entry
@@ -2679,20 +2718,41 @@ impl DomainState {
     /// In-memory `undo()` on a stale top entry is unchanged (refuse, retain)
     /// because pruning happens only at save.
     pub(crate) fn prune_undo_for_persistence(&mut self) {
-        self.undo_stack.retain(|entry| {
-            let leaves = entry.leaf_entries();
-            !leaves.is_empty()
-                && leaves.into_iter().all(|leaf| match leaf {
-                    // A removed name is live while it is still hidden.
-                    UndoEntry::HideAssignee { name } => self.hidden_assignees.contains(name),
-                    leaf => leaf.targets().into_iter().all(|(id, expected_revision)| {
-                        self.tasks
-                            .iter()
-                            .find(|task| task.id == id)
-                            .is_some_and(|task| task.revision == expected_revision)
-                    }),
-                })
-        });
+        let stack = std::mem::take(&mut self.undo_stack);
+        // A removal that a later assignment undid comes live again once that assignment's
+        // entry is undone, so it stays while that entry does.
+        let shown_later = |index: usize, name: &str| {
+            stack[index + 1..].iter().any(|later| {
+                later.leaf_entries().into_iter().any(
+                    |leaf| matches!(leaf, UndoEntry::ShowAssignee { name: shown } if shown == name),
+                )
+            })
+        };
+        let keep: Vec<bool> = stack
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let leaves = entry.leaf_entries();
+                !leaves.is_empty()
+                    && leaves.into_iter().all(|leaf| match leaf {
+                        UndoEntry::HideAssignee { name } => {
+                            self.name_leaf_is_live(leaf) || shown_later(index, name)
+                        }
+                        UndoEntry::ShowAssignee { .. } => self.name_leaf_is_live(leaf),
+                        leaf => leaf.targets().into_iter().all(|(id, expected_revision)| {
+                            self.tasks
+                                .iter()
+                                .find(|task| task.id == id)
+                                .is_some_and(|task| task.revision == expected_revision)
+                        }),
+                    })
+            })
+            .collect();
+        self.undo_stack = stack
+            .into_iter()
+            .zip(keep)
+            .filter_map(|(entry, keep)| keep.then_some(entry))
+            .collect();
         if self.undo_stack.len() > UNDO_CAP {
             let excess = self.undo_stack.len() - UNDO_CAP;
             self.undo_stack.drain(..excess);

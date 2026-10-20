@@ -44,7 +44,7 @@ The picker lists every person ever assigned, so a typo stays. In the picker, sel
 - The status row says `dana removed from the list`. `ctrl+u` puts it back, in the picker or after it closes.
 - Tasks keep the name: nothing is unassigned.
 - Profiles, `@you`, **type a name…**, and **none** cannot be removed. Profiles live in `config.toml`.
-- Type the name and assign it again to put it back on the list.
+- Assign the name again, anywhere you assign, to put it back on the list. Undoing that assignment removes it again.
 
 ## Dispatch
 
