@@ -346,7 +346,8 @@ fn add_target_locked(
 }
 
 /// Remove the `[[backup]]` entry `selector` names: its URL or path as written or as
-/// `tsk backup list` shows it, or its number there. Its status is forgotten; backups already pushed stay.
+/// `tsk backup list` shows it, or its number there. Its status is forgotten; backups
+/// already pushed stay.
 pub fn remove_target(state_dir: &Path, selector: &str) -> Result<Target, String> {
     // Under the run lock: a run reads its targets and saves its status under it, so it never
     // pushes to this target afterwards or writes its status back.
