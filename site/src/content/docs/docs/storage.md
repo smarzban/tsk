@@ -248,6 +248,7 @@ tsk restore 3f9a1c2e    # restore one version without asking
 - Quit every board and quick capture on the store first: restore refuses while one is open.
 - The store it replaces is kept as `tsk.json.pre-restore-<time>`, in UTC. The newest five copies are kept.
 - A version from an older tsk migrates on the next open. One from a newer tsk is refused until you update.
+- Task numbers never go backwards: new tasks continue after the highest number the replaced store or trash held.
 - Restore never changes `config.toml`. It prints the `git show` command for the `config.toml` saved with that version, so you can copy settings over by hand.
 - A task number such as `T12` is not a version. To bring back a deleted task, use `tsk trash restore T12`.
 

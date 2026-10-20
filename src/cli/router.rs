@@ -1,5 +1,7 @@
 //! Positional command router.
 
+use std::path::PathBuf;
+
 /// The process surface selected from the binary argv.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
@@ -36,6 +38,31 @@ pub enum Surface {
 /// The internal flag of the detached agent-naming helper.
 pub const NAME_AGENT_FLAG: &str = "--name-agent";
 
+/// The store `tsk capture` opens, from the arguments after `capture`: `--state-dir <dir>`
+/// or `--state-dir=<dir>`, else `None` for the default. Any other argument is refused.
+pub fn capture_state_dir<S: AsRef<str>>(
+    tail: impl IntoIterator<Item = S>,
+) -> Result<Option<PathBuf>, &'static str> {
+    let mut tail = tail.into_iter();
+    let mut state_dir = None;
+    while let Some(arg) = tail.next() {
+        let arg = arg.as_ref();
+        let dir = match arg.strip_prefix("--state-dir=") {
+            Some(dir) => dir.to_owned(),
+            None if arg == "--state-dir" => tail
+                .next()
+                .ok_or("--state-dir needs a directory")?
+                .as_ref()
+                .to_owned(),
+            None => return Err("capture takes only --state-dir"),
+        };
+        if dir.is_empty() || state_dir.replace(PathBuf::from(dir)).is_some() {
+            return Err("capture takes one non-empty --state-dir");
+        }
+    }
+    Ok(state_dir)
+}
+
 /// Select a process surface from argv-style arguments, including argv0.
 ///
 /// Global help and internal launcher flags are recognized only before the first
@@ -57,7 +84,7 @@ pub fn route<S: AsRef<str>>(
     let _argv0 = args.next();
     let mut global = None;
 
-    for arg in args {
+    while let Some(arg) = args.next() {
         let arg = arg.as_ref();
         if arg.starts_with('-') {
             let surface = match arg {
@@ -77,7 +104,16 @@ pub fn route<S: AsRef<str>>(
             return Surface::Usage;
         }
         return match arg {
-            "capture" => Surface::Capture,
+            "capture" => {
+                let tail: Vec<S> = args.collect();
+                // A lone `--help` is the capture reference, which the binary entry prints.
+                let help = matches!(&tail[..], [only] if only.as_ref() == "--help");
+                if help || capture_state_dir(tail).is_ok() {
+                    Surface::Capture
+                } else {
+                    Surface::Usage
+                }
+            }
             "add" => Surface::Add,
             "steps" => Surface::Steps,
             "list" => Surface::List,
@@ -111,7 +147,8 @@ pub fn route<S: AsRef<str>>(
 
 #[cfg(test)]
 mod tests {
-    use super::{route, Surface};
+    use super::{capture_state_dir, route, Surface};
+    use std::path::PathBuf;
 
     #[test]
     fn add_dash_t_capture_stays_add() {
@@ -174,6 +211,30 @@ mod tests {
             route(["tsk", "--find-board-tab", "extra"], None),
             Surface::Usage
         );
+    }
+
+    #[test]
+    fn capture_takes_a_state_dir_and_nothing_else() {
+        assert_eq!(route(["tsk", "capture"], None), Surface::Capture);
+        assert_eq!(route(["tsk", "capture", "--help"], None), Surface::Capture);
+        for tail in [&["--state-dir", "/tmp/x"][..], &["--state-dir=/tmp/x"]] {
+            let args = ["tsk", "capture"].iter().chain(tail).copied();
+            assert_eq!(route(args, None), Surface::Capture, "{tail:?}");
+            assert_eq!(
+                capture_state_dir(tail.iter()),
+                Ok(Some(PathBuf::from("/tmp/x")))
+            );
+        }
+        for tail in [
+            &["--state-dir"][..],
+            &["--state-dir="],
+            &["--help", "--state-dir=/tmp/x"],
+            &["--state-dir", "/a", "--state-dir", "/b"],
+            &["extra"],
+        ] {
+            let args = ["tsk", "capture"].iter().chain(tail).copied();
+            assert_eq!(route(args, None), Surface::Usage, "{tail:?}");
+        }
     }
 
     #[test]

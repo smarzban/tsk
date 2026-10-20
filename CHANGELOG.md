@@ -60,6 +60,9 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - `Esc` on a selected Thread on the task page cancels only the thread, not the whole edit.
 - `ctrl+x` in a new step's row discards that row, instead of removing the step above it or deleting a task.
 - `tsk steps` takes `--` before step text that starts with `-`, as `tsk reply` does.
+- `tsk restore` of an older version keeps task numbering going, so new tasks never reuse a number a deleted task still holds.
+- `tsk trash restore` gives a task the next free number when another task holds its old one, so no two tasks share a number.
+- `tsk capture --state-dir <dir>` saves into that store instead of the default one; any other argument is refused.
 
 ## v0.12.0
 

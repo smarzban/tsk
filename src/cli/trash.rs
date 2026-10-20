@@ -11,6 +11,8 @@ pub struct TrashRestoreResult {
     /// Painted id (`T<n>` or `N<n>`), from [`Task::board_identifier`].
     pub identifier: String,
     pub title: String,
+    /// The number it had in trash, when a live task held it and it took a new one.
+    pub renumbered_from: Option<u64>,
 }
 
 /// A trash failure after parsing and before presenting output.
@@ -35,15 +37,16 @@ pub fn run_restore(
         TaskAddress::Id(id) => (TrashTarget::Id(id), id.to_string()),
     };
     match store.restore_from_trash(target) {
-        Ok(line) => {
-            let Some(identifier) = line.task.board_identifier() else {
+        Ok(restored) => {
+            let Some(identifier) = restored.task.board_identifier() else {
                 return Err(TrashCliError::Store(
                     "trashed task has no board identifier".to_string(),
                 ));
             };
             Ok(TrashRestoreResult {
                 identifier,
-                title: line.task.title,
+                title: restored.task.title,
+                renumbered_from: restored.renumbered_from,
             })
         }
         Err(TrashError::NotInTrash) => Err(TrashCliError::NotInTrash(format!(

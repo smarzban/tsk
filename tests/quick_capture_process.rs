@@ -168,3 +168,38 @@ fn capture_popup_from_an_aliased_launch_repo_saves_the_stored_scope() {
     assert!(session.wait_exit(Duration::from_secs(5)).success());
     assert_eq!(saved_scope(&root, "popup alias capture"), stored);
 }
+
+#[test]
+fn capture_saves_into_the_state_dir_it_was_given() {
+    let root = pty::scratch_root("capture-state-dir");
+    let cwd = root.join("outside");
+    fs::create_dir_all(&cwd).unwrap();
+    let other = root.join("other");
+    let default_store = TaskStore::new(root.join("state"));
+    let other_arg = other.display().to_string();
+    let mut session = pty::Session::spawn(
+        root.clone(),
+        &cwd,
+        &["capture", "--state-dir", &other_arg],
+        &[],
+        24,
+        78,
+    );
+    session.output_until("cancel");
+    session.send(b"into the other store");
+    std::thread::sleep(Duration::from_millis(100));
+    session.send(b"\x1b[13;2u");
+    assert!(session.wait_exit(Duration::from_secs(5)).success());
+    let saved = TaskStore::new(&other).load().unwrap();
+    assert!(
+        saved
+            .tasks()
+            .iter()
+            .any(|task| task.title == "into the other store"),
+        "the task lands in --state-dir"
+    );
+    assert!(
+        default_store.load().unwrap().tasks().is_empty(),
+        "the default store is untouched"
+    );
+}

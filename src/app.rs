@@ -3,7 +3,7 @@
 use std::env;
 use std::error::Error;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -94,19 +94,19 @@ pub fn load_snapshot(state: &DomainState) -> InvocationSnapshot {
 
 /// Load store + snapshot into domain and board view-model (no TTY).
 pub fn load_board() -> Result<(TaskStore, DomainState, BoardModel), Box<dyn Error>> {
-    load_board_inner(true)
+    load_board_inner(default_state_dir(), true)
 }
 
 /// Load store + snapshot for the quick-capture popup (no TTY).
 pub fn load_board_for_quick_capture() -> Result<(TaskStore, DomainState, BoardModel), Box<dyn Error>>
 {
-    load_board_inner(false)
+    load_board_inner(default_state_dir(), false)
 }
 
 fn load_board_inner(
+    state_dir: PathBuf,
     full_board_open: bool,
 ) -> Result<(TaskStore, DomainState, BoardModel), Box<dyn Error>> {
-    let state_dir = default_state_dir();
     let store = TaskStore::new(state_dir.clone());
     if full_board_open {
         seed_full_board_files_without_blocking_open(&store);
@@ -296,9 +296,21 @@ pub fn load_board_model() -> Result<BoardModel, Box<dyn Error>> {
 /// Pass `capture` argv (or `TSK_MODE=capture`) for the quick-capture popup: the board
 /// session seeded onto the expanded quick-add page (exits after save or cancel).
 pub fn run(args: impl IntoIterator<Item = impl AsRef<str>>) -> Result<(), Box<dyn Error>> {
-    match resolve_mode(args) {
+    let args: Vec<String> = args
+        .into_iter()
+        .map(|arg| arg.as_ref().to_owned())
+        .collect();
+    match resolve_mode(&args) {
         AppMode::Board => run_board(),
-        AppMode::Capture => run_capture(),
+        AppMode::Capture => {
+            // The router already refused any other argument after `capture`.
+            let tail = args.iter().skip_while(|arg| *arg != "capture").skip(1);
+            let state_dir = crate::cli::router::capture_state_dir(tail)
+                .ok()
+                .flatten()
+                .unwrap_or_else(default_state_dir);
+            run_capture(state_dir)
+        }
     }
 }
 
@@ -336,16 +348,16 @@ pub fn quick_capture_finished(model: &BoardModel) -> bool {
 ///
 /// The popup lives exactly as long as that draft: a persisted save closes it, an
 /// explicit discard closes it, and a failed save keeps it open in recovery.
-fn run_capture() -> Result<(), Box<dyn Error>> {
-    let _presence = hold_board_presence();
-    let (store, mut domain, mut model) = load_board_for_quick_capture()?;
+fn run_capture(state_dir: PathBuf) -> Result<(), Box<dyn Error>> {
+    let _presence = hold_board_presence(&state_dir);
+    let (store, mut domain, mut model) = load_board_inner(state_dir, false)?;
     let snapshot = load_snapshot(&domain);
     seed_quick_capture(&mut domain, &mut model, &snapshot);
     run_board_loop(store, domain, model, true)
 }
 
 fn run_board() -> Result<(), Box<dyn Error>> {
-    let _presence = hold_board_presence();
+    let _presence = hold_board_presence(&default_state_dir());
     let (store, domain, model) = load_board()?;
     crate::git_base::remember_fetches_in(store.path());
     run_board_loop(store, domain, model, false)
@@ -354,10 +366,8 @@ fn run_board() -> Result<(), Box<dyn Error>> {
 /// Held for the whole session, taken before the first load, so `tsk restore` refuses while
 /// this process could still write back tasks the restored store no longer holds. Best effort:
 /// a store that cannot take the lock still opens.
-fn hold_board_presence() -> Option<crate::store::BoardPresence> {
-    TaskStore::new(default_state_dir())
-        .hold_board_presence()
-        .ok()
+fn hold_board_presence(state_dir: &Path) -> Option<crate::store::BoardPresence> {
+    TaskStore::new(state_dir).hold_board_presence().ok()
 }
 
 fn run_board_loop(

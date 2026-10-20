@@ -219,6 +219,16 @@ pub struct TrashLine {
     pub task: Task,
 }
 
+/// A task [`TaskStore::restore_from_trash`] brought back.
+#[derive(Debug, Clone)]
+pub struct TrashRestore {
+    /// The task as it is live now.
+    pub task: Task,
+    /// Its number in trash, when a task on the board already held it and the restore
+    /// gave it the next free one instead.
+    pub renumbered_from: Option<u64>,
+}
+
 /// Address one trash line by its task's human number or id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrashTarget {
@@ -468,7 +478,9 @@ impl TaskStore {
     /// Restore one task from trash into the live state under the exclusive lock:
     /// `soft_deleted = false`, a `restored` history event, a new revision,
     /// `updated_at` now. Refuses when no line matches or the id already exists
-    /// live, both as [`TrashError::NotInTrash`].
+    /// live, both as [`TrashError::NotInTrash`]. A number another task holds (after a
+    /// whole-store restore rolled numbering back) is given up for the next free one, so
+    /// two tasks never share a number.
     ///
     /// Order under the lock: find the line, insert the restored task, replace the
     /// live document, then rewrite the trash without the line. A crash between the
@@ -479,7 +491,7 @@ impl TaskStore {
     /// Once the live document is durable the restore has happened, so a failure of the
     /// trailing trash rewrite is not an error: the stale line is hidden by every reader
     /// and dropped by the next trash rewrite (which removes lines whose id is live).
-    pub fn restore_from_trash(&self, target: TrashTarget) -> Result<TrashLine, TrashError> {
+    pub fn restore_from_trash(&self, target: TrashTarget) -> Result<TrashRestore, TrashError> {
         self.restore_from_trash_with(target, &StdFilesystem)
     }
 
@@ -487,7 +499,7 @@ impl TaskStore {
         &self,
         target: TrashTarget,
         filesystem: &F,
-    ) -> Result<TrashLine, TrashError> {
+    ) -> Result<TrashRestore, TrashError> {
         let _guard = self.lock_exclusive().map_err(TrashError::Store)?;
         let mut state = self.load_unlocked().map_err(TrashError::Store)?;
         let lines = self.load_trash_unlocked().map_err(TrashError::Store)?;
@@ -503,7 +515,15 @@ impl TaskStore {
             return Err(TrashError::NotInTrash);
         }
         let restored_id = line.task.id;
-        state.insert_restored(line.task.clone());
+        let mut task = line.task;
+        // Soft-deleted tasks count too: undo can still bring them back.
+        let renumbered_from = task
+            .number
+            .filter(|&number| state.tasks().iter().any(|live| live.number == Some(number)));
+        if renumbered_from.is_some() {
+            task.number = None;
+        }
+        state.insert_restored(task);
         state.assign_numbers_for_persistence();
         state.prune_undo_for_persistence();
         state.clear_merge_bases();
@@ -513,7 +533,14 @@ impl TaskStore {
         // that readers hide and the next trash rewrite removes.
         let _ =
             self.rewrite_trash_filtered(filesystem, |candidate| candidate.task.id != restored_id);
-        Ok(line)
+        let task = state
+            .get(restored_id)
+            .cloned()
+            .expect("the task was just restored");
+        Ok(TrashRestore {
+            task,
+            renumbered_from,
+        })
     }
 
     /// Hold the exclusive store lock across a state transition and its durable replacement.
@@ -805,6 +832,11 @@ impl TaskStore {
     /// older format is written as is and migrates on the next open like any older store. The
     /// replaced document is first copied to `tsk.json.pre-restore-<UTC time>`; that path is
     /// returned (`None` when there was no live document).
+    ///
+    /// The one change to the bytes: task numbering never goes backwards. When the replaced
+    /// document or the trash holds a number at or past the restored `next_task_number`, the
+    /// counter is raised past it (see [`numbering_floor`]), so new tasks never reuse a number
+    /// a trashed task still carries.
     pub fn restore_document(
         &self,
         document: &[u8],
@@ -829,6 +861,11 @@ impl TaskStore {
         let _guard = self.lock_exclusive().map_err(RestoreError::Store)?;
         self.sweep_orphan_temps();
         let file = self.state_file();
+        let trash = self.load_trash_unlocked().unwrap_or_default();
+        let replaced = fs::read(&file).ok();
+        let floor = numbering_floor(replaced.as_deref(), &trash);
+        let raised = raise_next_task_number(document, floor);
+        let document = raised.as_deref().unwrap_or(document);
         let kept = if file.exists() {
             let mut kept = self.path.join(format!(
                 "{PRE_RESTORE_PREFIX}{}",
@@ -1122,6 +1159,49 @@ pub fn check_document(document: &[u8]) -> Result<(), RestoreError> {
     parsed
         .map(drop)
         .map_err(|error| RestoreError::Invalid(format!("not a readable store: {error}")))
+}
+
+/// The lowest `next_task_number` a restore may leave: one past every number the replaced
+/// document allocated or holds, and every number trash holds. Tolerant of a damaged replaced
+/// document (restore is how it gets repaired): an unreadable one contributes nothing.
+fn numbering_floor(replaced: Option<&[u8]>, trash: &[TrashLine]) -> u64 {
+    let replaced = replaced
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
+        .map_or(1, |value| next_number_in(&value));
+    let trashed = trash
+        .iter()
+        .filter_map(|line| line.task.number)
+        .max()
+        .map_or(1, |number| number.saturating_add(1));
+    replaced.max(trashed)
+}
+
+/// One past the highest task number a store document allocated or holds.
+fn next_number_in(document: &serde_json::Value) -> u64 {
+    let counter = document["next_task_number"].as_u64().unwrap_or(1);
+    let held = document["tasks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|task| task["number"].as_u64())
+        .max()
+        .map_or(1, |number| number.saturating_add(1));
+    counter.max(held)
+}
+
+/// `document` with `next_task_number` raised to `floor`, or `None` when it already reaches
+/// it. A document the raise would make unreadable is left as is.
+fn raise_next_task_number(document: &[u8], floor: u64) -> Option<Vec<u8>> {
+    let mut value: serde_json::Value = serde_json::from_slice(document).ok()?;
+    if next_number_in(&value) >= floor {
+        return None;
+    }
+    value
+        .as_object_mut()?
+        .insert("next_task_number".into(), floor.into());
+    let raised = serde_json::to_string_pretty(&value).ok()?.into_bytes();
+    check_document(&raised).ok()?;
+    Some(raised)
 }
 
 /// A store document's `format_version`, when it has one.
@@ -2548,6 +2628,36 @@ mod tests {
         }
     }
 
+    /// A soft-deleted task numbered `number`, as trash holds it.
+    fn numbered_trash_line(title: &str, number: u64) -> TrashLine {
+        let mut state = DomainState::new();
+        let id = state
+            .create(
+                title,
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create");
+        state.soft_delete(id).expect("soft delete");
+        let mut task = state.get(id).expect("task").clone();
+        task.number = Some(number);
+        TrashLine {
+            deleted_at: SystemTime::now(),
+            task,
+        }
+    }
+
+    fn write_trash_lines(dir: &Path, lines: &[TrashLine]) {
+        let mut content = String::new();
+        for line in lines {
+            content.push_str(&serde_json::to_string(line).expect("encode"));
+            content.push('\n');
+        }
+        fs::write(trash_path(dir), content).expect("write trash");
+    }
+
     #[test]
     fn load_trash_skips_a_torn_non_utf8_tail() {
         let dir = temp_dir("trash-non-utf8");
@@ -3518,7 +3628,7 @@ mod tests {
     }
 
     #[test]
-    fn restore_round_trips_bytes_and_keeps_the_replaced_store() {
+    fn restore_round_trips_the_document_and_keeps_the_replaced_store() {
         let dir = temp_dir("restore-round-trip");
         let _guard = TempDirGuard(dir.clone());
         saved_with_titles(&dir, &["one"]);
@@ -3537,15 +3647,84 @@ mod tests {
             Some("tsk.json.pre-restore-20261016T072348Z")
         );
         assert_eq!(fs::read(&kept).expect("kept"), replaced);
-        assert_eq!(fs::read(dir.join(STATE_FILE)).expect("live"), backup);
+        // The backup comes back as it was, except numbering continues after the replaced
+        // store's T2 instead of handing that number out again.
+        let json =
+            |bytes: &[u8]| -> serde_json::Value { serde_json::from_slice(bytes).expect("json") };
+        let mut expected = json(&backup);
+        expected["next_task_number"] = serde_json::json!(3);
+        assert_eq!(
+            json(&fs::read(dir.join(STATE_FILE)).expect("live")),
+            expected
+        );
         assert_eq!(titles(&store.load().expect("load")), ["one"]);
-        // A second restore in the same second keeps both replaced stores.
+        // A second restore in the same second keeps both replaced stores, and a document
+        // whose numbering already reaches the floor is written byte for byte.
         let second = store
             .restore_document(&replaced, now)
             .expect("restore again")
             .expect("kept");
         assert_ne!(second, kept);
+        assert_eq!(fs::read(dir.join(STATE_FILE)).expect("live"), replaced);
         assert_eq!(titles(&store.load().expect("load")), ["one", "two"]);
+    }
+
+    #[test]
+    fn restore_never_hands_out_a_number_trash_still_holds() {
+        let dir = temp_dir("restore-trash-floor");
+        let _guard = TempDirGuard(dir.clone());
+        saved_with_titles(&dir, &["one"]);
+        let backup = fs::read(dir.join(STATE_FILE)).expect("backup bytes");
+        saved_with_titles(&dir, &["two", "three"]);
+        let store = TaskStore::new(&dir);
+        // T3 moves to trash, then the live store is lost: only trash remembers T3.
+        write_trash_lines(&dir, &[numbered_trash_line("three", 3)]);
+        fs::remove_file(dir.join(STATE_FILE)).expect("lose the live store");
+
+        store
+            .restore_document(&backup, SystemTime::now())
+            .expect("restore");
+        let mut state = store.load().expect("load");
+        let fresh = state
+            .create(
+                "after restore",
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create");
+        store.reload_merge_save(&mut state).expect("save");
+        let live = store.load().expect("reload");
+        assert_eq!(live.get(fresh).and_then(|task| task.number), Some(4));
+        // Trash survives the whole-store restore, and its task comes back with its number.
+        assert_eq!(read_trash_lines(&dir).len(), 1);
+        let restored = store
+            .restore_from_trash(TrashTarget::Number(3))
+            .expect("trash restore");
+        assert_eq!(restored.task.number, Some(3));
+        assert_eq!(restored.renumbered_from, None);
+    }
+
+    #[test]
+    fn trash_restore_takes_a_new_number_when_a_task_holds_its_old_one() {
+        let dir = temp_dir("trash-restore-renumber");
+        let _guard = TempDirGuard(dir.clone());
+        saved_with_titles(&dir, &["one", "two"]);
+        // A trash line from elsewhere (another machine, a purged counter) also carries T2.
+        write_trash_lines(&dir, &[numbered_trash_line("old two", 2)]);
+        let store = TaskStore::new(&dir);
+
+        let restored = store
+            .restore_from_trash(TrashTarget::Number(2))
+            .expect("trash restore");
+        assert_eq!(restored.renumbered_from, Some(2));
+        assert_eq!(restored.task.number, Some(3));
+        let live = store.load().expect("load");
+        let mut numbers: Vec<_> = live.tasks().iter().filter_map(|task| task.number).collect();
+        numbers.sort_unstable();
+        assert_eq!(numbers, [1, 2, 3], "no two tasks share a number");
+        assert!(read_trash_lines(&dir).is_empty());
     }
 
     #[test]

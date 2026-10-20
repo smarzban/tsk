@@ -587,7 +587,7 @@ tsk trash restore <task> [--state-dir <dir>]
 
 A deleted task first stays on the board, where undo brings it back. It moves to trash later ([deleted tasks](/docs/storage/#deleted-tasks)). A task that is not in trash refuses: `T12 is not in trash`. `tsk list --deleted` shows both kinds.
 
-Output is `restored T12 <title>`.
+Output is `restored T12 <title>`. When another task already holds that number, the task takes the next free one: `restored T52 <title> (was T12: another task holds that number)`.
 
 **Refusals:** a message with no code, exit 1 ([exit contract](#exit-contract)).
 

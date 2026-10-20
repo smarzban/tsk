@@ -2305,11 +2305,18 @@ pub fn trash_usage(reason: &str) -> CliOutput {
 
 pub fn trash_restored(result: TrashRestoreResult) -> CliOutput {
     CliOutput {
-        stdout: format!(
-            "restored {} {}\n",
-            result.identifier,
-            terminal_text(&result.title)
-        ),
+        stdout: match result.renumbered_from {
+            None => format!(
+                "restored {} {}\n",
+                result.identifier,
+                terminal_text(&result.title)
+            ),
+            Some(was) => format!(
+                "restored {} {} (was T{was}: another task holds that number)\n",
+                result.identifier,
+                terminal_text(&result.title)
+            ),
+        },
         stderr: String::new(),
         code: 0,
     }

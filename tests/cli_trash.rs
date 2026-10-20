@@ -349,3 +349,35 @@ fn restore_notice_by_uuid_prints_n_id_and_does_not_panic() {
     assert_eq!(restored.number, None);
     assert_eq!(restored.board_identifier().as_deref(), Some("N1"));
 }
+
+#[test]
+fn restore_renumbers_a_task_whose_number_a_live_task_holds() {
+    let elsewhere = temp_state_dir("renumber-source");
+    let _elsewhere = TempDirGuard(elsewhere.clone());
+    for title in ["one", "two", "three"] {
+        assert_eq!(add_task(&elsewhere, title).code, 0);
+    }
+    trash_task(&elsewhere, "two", "three");
+    // This board already has its own T2 when the trash line carrying T2 arrives.
+    let dir = temp_state_dir("renumber");
+    let _guard = TempDirGuard(dir.clone());
+    for title in ["first", "second"] {
+        assert_eq!(add_task(&dir, title).code, 0);
+    }
+    fs::copy(elsewhere.join("trash.jsonl"), dir.join("trash.jsonl")).expect("copy trash");
+
+    let output = restore(&dir, "T2");
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    assert_eq!(
+        output.stdout,
+        "restored T3 two (was T2: another task holds that number)\n"
+    );
+    let state = TaskStore::new(&dir).load().expect("load");
+    let mut numbers: Vec<_> = state
+        .tasks()
+        .iter()
+        .filter_map(|task| task.number)
+        .collect();
+    numbers.sort_unstable();
+    assert_eq!(numbers, [1, 2, 3], "no two tasks share a number");
+}
