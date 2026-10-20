@@ -1,0 +1,65 @@
+{
+  "run_id": "run-1",
+  "repo": "smarzban/tsk",
+  "target": "/workspace",
+  "source_ref": {
+    "commit": "c6b8de10c28c7aa530b18655e46b3d45440040ea",
+    "base_audited": "82e934e9dc77192fedb184f986b1e1a26c3a8a7d",
+    "worktree_dirty": false,
+    "commits": [
+      "c6b8de1 Align landing status cycle blocked/review labels with docs. (#220)"
+    ]
+  },
+  "profile": "standard",
+  "scope": "scoped-delta",
+  "scope_paths": [
+    "site/public/landing.js",
+    "site/src/pages/index.astro"
+  ],
+  "budget": null,
+  "execution_policy": "sandboxed-source-and-local-only",
+  "selected_companion_files": [
+    "CLIENT-SIDE.md"
+  ],
+  "prior_run_paths": [
+    "/home/ubuntu/security-audit-skill/smarzban-tsk/prior-2026-10-17/security-audit/2026-10-17/coverage-ledger.json",
+    "/home/ubuntu/security-audit-skill/smarzban-tsk/prior-2026-10-17/security-audit/2026-10-17/findings.json",
+    "/home/ubuntu/security-audit-skill/smarzban-tsk/prior-2026-10-17/security-audit/2026-10-17/architecture.md"
+  ],
+  "prior_ledger_status": "compatible ledger and findings from origin/security-audit/2026-10-17 at 82e934e9; earlier branch origin/security-audit/2026-10-16 exists and was already consumed by that run",
+  "shared_file_owners": {
+    "parent": "run-1"
+  },
+  "run_status": "complete",
+  "execution_note": "Source review only. unshare, prlimit, and timeout exist. No bubblewrap or firejail, and no read-only target mount was prepared, so target-controlled execution was not approved. No confirmed finding depended on execution.",
+  "carried_exclusions": [],
+  "notes": "Scoped delta. Only site/public/landing.js changed (two static section labels). windows-state-dir-acl re-checked by Phase 3 and Phase 5; source blobs identical to 82e934e; still needs_validation. No new confirmed findings. No fix PR.",
+  "promotion_allowlists": {
+    "hunter-cycle": {
+      "files": [],
+      "per_file_bytes": 4096,
+      "cumulative_bytes": 0
+    },
+    "hunter-obvious": {
+      "files": [],
+      "per_file_bytes": 4096,
+      "cumulative_bytes": 0
+    }
+  },
+  "sandbox": "unshare, prlimit, and timeout exist. bubblewrap and firejail do not. No read-only target mount. Target-controlled execution is not approved.",
+  "agents_spent": {
+    "reconnaissance": 4,
+    "hunters_wave_1": 2,
+    "post_wave_critic": 1,
+    "final_clean_critic": 1,
+    "phase3_verifier": 1,
+    "phase5_verifier": 1
+  },
+  "final_critic": "stop true, no missing units, no reassign ids",
+  "phase5": {
+    "windows-state-dir-acl": "verified; same fingerprint, verdict, and root cause; lines re-read at c6b8de10"
+  },
+  "carried_needs_validation": [
+    "windows-state-dir-acl"
+  ]
+}

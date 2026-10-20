@@ -1,0 +1,1440 @@
+[
+  {
+    "coverage_id": ".github%2Fworkflows%2Fci.yml%23pull_request::.github%2Fworkflows%2Fci.yml%23permissions::.github%2Fworkflows::SUPPLY-CHAIN-AND-RELEASE.md%23CI%20and%20automation%20attack%20classes",
+    "canonical_refs": {
+      "surface": ".github/workflows/ci.yml#pull_request",
+      "boundary": ".github/workflows/ci.yml#permissions",
+      "subsystem": ".github/workflows",
+      "attack_class": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes"
+    },
+    "surface": "GitHub Actions workflows",
+    "boundary": "pull_request token permissions",
+    "subsystem": ".github/workflows/ci.yml",
+    "attack_class": "Untrusted PR code reaching secrets",
+    "starting_paths": [
+      ".github/workflows/ci.yml"
+    ],
+    "ordinary_attack_class_block": null,
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Injection",
+        "reason": "Workflows did not change between the audited SHAs."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside this delta. Source is unchanged since 82e934e9, which the 2026-10-17 run already recorded."
+    ]
+  },
+  {
+    "coverage_id": "CHANGELOG.md%23Unreleased::src%2Fmain.rs%23main::repository-delta::ATTACK-CLASSES.md%23Obvious%20things",
+    "canonical_refs": {
+      "surface": "CHANGELOG.md#Unreleased",
+      "boundary": "src/main.rs#main",
+      "subsystem": "repository-delta",
+      "attack_class": "ATTACK-CLASSES.md#Obvious things"
+    },
+    "surface": "v0.12.0 delta files for secrets, debug gates, and command execution",
+    "boundary": "No production debug flag or secret store in the changed files",
+    "subsystem": "repository delta",
+    "attack_class": "Obvious exposures in the audited diff",
+    "starting_paths": [
+      "CHANGELOG.md",
+      "Cargo.lock",
+      "Cargo.toml",
+      "herdr-plugin.toml",
+      "site/public/capture.js",
+      "site/src/version.mjs",
+      "site/test/capture-thread.test.mjs",
+      "src/announcements/catalog.toml"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Obvious things",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Wildcard",
+        "reason": "Thread normalization, notice rendering, and the version handoff each have their own assigned unit. No remaining changed path is uncategorized."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside this delta. Source is unchanged since 82e934e9, which the 2026-10-17 run already recorded."
+    ]
+  },
+  {
+    "coverage_id": "Cargo.toml%23version::site%2Fpublic%2Finstall.sh%23TSK_CURRENT_VERSION::src%2Fcli%2Fupdate.rs::SUPPLY-CHAIN-AND-RELEASE.md%23Release%20and%20update%20attack%20classes",
+    "canonical_refs": {
+      "surface": "Cargo.toml#version",
+      "boundary": "site/public/install.sh#TSK_CURRENT_VERSION",
+      "subsystem": "src/cli/update.rs",
+      "attack_class": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes"
+    },
+    "surface": "Compiled 0.12.0 version handed to the updater",
+    "boundary": "install.sh accepts TSK_CURRENT_VERSION only as a dotted release tag",
+    "subsystem": "src/cli/update.rs",
+    "attack_class": "Release version string reaches the installer environment",
+    "starting_paths": [
+      "Cargo.toml",
+      "herdr-plugin.toml",
+      "site/src/version.mjs",
+      "src/cli/update.rs",
+      "src/update.rs",
+      "site/public/install.sh",
+      "CHANGELOG.md"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "SUPPLY-CHAIN-AND-RELEASE.md#Core discipline",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Universal moves",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Dependency and build-input attack classes",
+        "reason": "Cargo.lock changes only this package version. No dependency coordinate moved."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "No workflow file changed in this delta."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "The version handoff is an environment variable into a local installer, not an HTTP session."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "site/src/version.mjs is a static header string, not DOM from the capture parser."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+        "reason": "The updater runs as the invoking user. Helper confusion is not this handoff."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "No model or tool call consumes the version."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "The version is a compile-time string, not a binary parser."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Comparing two dotted versions is fixed work."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside this delta. Source is unchanged since 82e934e9, which the 2026-10-17 run already recorded."
+    ]
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Fboard-demo.js%23innerHTML::site%2Fpublic%2Fboard-demo.js%23esc::site%2Fpublic::CLIENT-SIDE.md%23DOM%20and%20object-state%20attack%20classes",
+    "canonical_refs": {
+      "surface": "site/public/board-demo.js#innerHTML",
+      "boundary": "site/public/board-demo.js#esc",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#DOM and object-state attack classes"
+    },
+    "surface": "Board demo capture thread names reaching innerHTML",
+    "boundary": "esc() before innerHTML",
+    "subsystem": "site/public",
+    "attack_class": "DOM XSS in the static board demo",
+    "starting_paths": [
+      "site/public/board-demo.js",
+      "site/public/capture.js",
+      "site/test/capture-thread.test.mjs",
+      "src/domain/thread.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "CLIENT-SIDE.md#Core discipline",
+      "CLIENT-SIDE.md#DOM and object-state attack classes",
+      "CLIENT-SIDE.md#Universal moves",
+      "CLIENT-SIDE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Cross-origin messaging and network attack classes",
+        "reason": "The demo does not call postMessage or open a credentialed socket."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Service-worker and browser-storage attack classes",
+        "reason": "No service worker or token storage in board-demo.js."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Cross-site information leak classes",
+        "reason": "The demo renders a bundled fixture, not a credentialed cross-origin state."
+      },
+      {
+        "block": "CLIENT-SIDE.md#UI-redress and navigation attack classes",
+        "reason": "capture.js only changes thread normalization. The demo adds no frame, redirect, or window.open."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "tsk has no HTTP server or browser session."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud workload or IAM selector in the binary."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No RPC server; Herdr socket peer identity is outside this delta."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "Single OS-user store; no tenant field is an authorization boundary."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk copies a static skill file and does not dispatch model tool calls."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "Changed UI modules contain no unsafe and no binary loader."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Editing and setup run in the invoking process; no shared service quota."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside this delta. Source is unchanged since 82e934e9, which the 2026-10-17 run already recorded."
+    ]
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Flanding.js%23c6b8de1::site%2Fpublic%2Flanding.js%23steps::site%2Fpublic::ATTACK-CLASSES.md%23Obvious%20things",
+    "canonical_refs": {
+      "surface": "site/public/landing.js#c6b8de1",
+      "boundary": "site/public/landing.js#steps",
+      "subsystem": "site/public",
+      "attack_class": "ATTACK-CLASSES.md#Obvious things"
+    },
+    "surface": "Commit c6b8de1 landing.js diff",
+    "boundary": "Static section label literals with no secret or debug gate",
+    "subsystem": "site/public landing diff",
+    "attack_class": "Obvious exposures in the landing label diff",
+    "starting_paths": [
+      "site/public/landing.js"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Obvious things",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "DOM write of the same labels is the other in-scope unit."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Injection",
+        "reason": "Injection of the cycle strings is the other in-scope unit."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Cryptography and secrets",
+        "reason": "The obvious-things block already covers hardcoded secrets in this two-line diff."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-obvious",
+    "reviewed_paths": [
+      "site/public/landing.js"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-obvious",
+        "reviewed_paths": [
+          "site/public/landing.js"
+        ],
+        "invariant": "The c6b8de1 diff literals contain no hardcoded password, API key, token, or secret",
+        "method": "source",
+        "result": "git diff 82e934e9dc77192fedb184f986b1e1a26c3a8a7d c6b8de10c28c7aa530b18655e46b3d45440040ea changes only site/public/landing.js lines 53 and 67: steps[].sec for status blocked and review, from the literal ON DECK to the literal NEEDS YOU. Both strings are static section labels. A case-insensitive search of site/public/landing.js found no password, secret, apikey, token, Bearer, or BEGIN PRIVATE KEY material.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-obvious",
+        "reviewed_paths": [
+          "site/public/landing.js"
+        ],
+        "invariant": "No TODO, FIXME, HACK, or XXX comment in the changed file references security",
+        "method": "source",
+        "result": "site/public/landing.js has no TODO, FIXME, HACK, or XXX comment. The diff adds no comment.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-obvious",
+        "reviewed_paths": [
+          "site/public/landing.js"
+        ],
+        "invariant": "The landing label diff does not introduce a debug or dev mode",
+        "method": "source",
+        "result": "site/public/landing.js contains no debug or dev-mode flag and does not read process.env, location, search params, or request headers. The two changed sec literals are unconditional display strings.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-obvious",
+        "reviewed_paths": [
+          "site/public/landing.js"
+        ],
+        "invariant": "The changed literals are not credentials",
+        "method": "source",
+        "result": "NEEDS YOU and the surrounding steps fields are display copy. The file never sends them to a credential, storage, or network API.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-obvious",
+        "reviewed_paths": [
+          "site/public/landing.js"
+        ],
+        "invariant": "The changed file does not expose an unprotected debug or status HTTP handler",
+        "method": "source",
+        "result": "site/public/landing.js is a browser IIFE with no HTTP server and no route table. Not applicable to this diff.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-obvious",
+        "reviewed_paths": [
+          "site/public/landing.js"
+        ],
+        "invariant": "The assigned diff does not check in dotenv or key material",
+        "method": "source",
+        "result": "The commit touches only site/public/landing.js. That file is not a dotenv, credentials, pem, or key file.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-obvious",
+        "reviewed_paths": [
+          "site/public/landing.js"
+        ],
+        "invariant": "The two-line label diff does not weaken gitignore coverage",
+        "method": "source",
+        "result": ".gitignore is unchanged in the assigned range. Not applicable to this diff.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-obvious",
+        "reviewed_paths": [
+          "site/public/landing.js"
+        ],
+        "invariant": "The assigned diff does not change a dependency lockfile",
+        "method": "source",
+        "result": "No package manifest or lockfile is in the diff. A CVE scan was not performed.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-obvious",
+        "reviewed_paths": [
+          "site/public/landing.js"
+        ],
+        "invariant": "The changed file does not eval or dynamically import attacker-controlled input",
+        "method": "source",
+        "result": "site/public/landing.js contains no eval, Function constructor, child_process, or dynamic import. The new sec strings are textContent values in paint.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-obvious",
+        "reviewed_paths": [
+          "site/public/landing.js"
+        ],
+        "invariant": "The label diff does not set CORS or cookies or redirects or error bodies",
+        "method": "source",
+        "result": "site/public/landing.js sets no response headers, does not read document.cookie, does not assign location, and does not return an error body. Catch blocks for pointer capture and clipboard do not print a stack.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": []
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Flanding.js%23data-copy::site%2Fpublic%2Flanding.js%23clipboard::site%2Fpublic::CLIENT-SIDE.md%23DOM%20and%20object-state%20attack%20classes",
+    "canonical_refs": {
+      "surface": "site/public/landing.js#data-copy",
+      "boundary": "site/public/landing.js#clipboard",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#DOM and object-state attack classes"
+    },
+    "surface": "Landing install copy button",
+    "boundary": "clipboard write of shell example text",
+    "subsystem": "site/public landing copy",
+    "attack_class": "Clipboard read of page text",
+    "starting_paths": [
+      "site/public/landing.js"
+    ],
+    "ordinary_attack_class_block": null,
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "Unchanged by c6b8de1 and not reached by steps[].sec. Recorded so a later full pass can review it. Not a covered claim."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Unchanged by c6b8de1 and not reached by steps[].sec. Recorded so a later full pass can review it. Not a covered claim."
+    ]
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Flanding.js%23readout::site%2Fpublic%2Flanding.js%23columns::site%2Fpublic::CLIENT-SIDE.md%23DOM%20and%20object-state%20attack%20classes",
+    "canonical_refs": {
+      "surface": "site/public/landing.js#readout",
+      "boundary": "site/public/landing.js#columns",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#DOM and object-state attack classes"
+    },
+    "surface": "Landing column readout",
+    "boundary": "innerHTML of a measured column count",
+    "subsystem": "site/public landing layout",
+    "attack_class": "DOM XSS in the column readout",
+    "starting_paths": [
+      "site/public/landing.js"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "Unchanged by c6b8de1 and not reached by steps[].sec. Recorded so a later full pass can review it. Not a covered claim."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Unchanged by c6b8de1 and not reached by steps[].sec. Recorded so a later full pass can review it. Not a covered claim."
+    ]
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Flanding.js%23steps::site%2Fpublic%2Flanding.js%23paint::site%2Fpublic::CLIENT-SIDE.md%23DOM%20and%20object-state%20attack%20classes",
+    "canonical_refs": {
+      "surface": "site/public/landing.js#steps",
+      "boundary": "site/public/landing.js#paint",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#DOM and object-state attack classes"
+    },
+    "surface": "Landing status-cycle section labels",
+    "boundary": "paint assigns step fields with textContent",
+    "subsystem": "site/public landing script",
+    "attack_class": "DOM XSS from the status-cycle labels",
+    "starting_paths": [
+      "site/public/landing.js",
+      "site/src/pages/index.astro"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "CLIENT-SIDE.md#Core discipline",
+      "CLIENT-SIDE.md#DOM and object-state attack classes",
+      "CLIENT-SIDE.md#Universal moves",
+      "CLIENT-SIDE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Cross-origin messaging and network attack classes",
+        "reason": "landing.js has no postMessage, WebSocket, or credentialed fetch on the status-cycle path."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Service-worker and browser-storage attack classes",
+        "reason": "The cycle writes no worker, cache, or storage."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Cross-site information leak classes",
+        "reason": "The labels are public page copy and do not distinguish a protected cross-origin state."
+      },
+      {
+        "block": "CLIENT-SIDE.md#UI-redress and navigation attack classes",
+        "reason": "The cycle does not navigate or complete a framed state change."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Access control",
+        "reason": "The landing page has no authenticator or per-resource authorization."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Resource and file handling",
+        "reason": "The cycle does not read or write files."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Cryptography and secrets",
+        "reason": "Obvious-exposure review of the same diff is a separate unit."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Business logic",
+        "reason": "Section labels do not drive task status. The unread status field is display data only."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Feature abuse and data leakage",
+        "reason": "No export, search, or notification path is in this diff."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Chained vulnerabilities and trust boundaries",
+        "reason": "The changed strings stop at textContent and are not consumed by a later trust decision."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Wildcard",
+        "reason": "The changed path is the cycle DOM write. Other sinks in the file are separate out-of-scope units."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Obvious things",
+        "reason": "Assigned as its own unit for the same diff."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-cycle",
+    "reviewed_paths": [
+      "site/public/landing.js",
+      "site/src/pages/index.astro",
+      "site/vercel.json"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-cycle",
+        "reviewed_paths": [
+          "site/public/landing.js",
+          "site/src/pages/index.astro",
+          "site/vercel.json"
+        ],
+        "invariant": "A page visitor cannot choose the blocked or review section label. paint copies only author-owned step fields into text nodes.",
+        "method": "source",
+        "result": "steps is a closed array of object literals inside the landing IIFE. The blocked entry (line 53) and the review entry (line 67) set sec to the author string NEEDS YOU. The local index i advances only by (i + 1) % steps.length. paint (lines 80-85) assigns s.sec, s.glyph, s.key, and s.next with textContent and never reads s.status. prefers-reduced-motion still calls paint once, on the unchanged inbox literal. index.astro seeds the data-cycle nodes as static text (lines 515-528) and loads /landing.js with a static script tag (line 711). The cycle path does not read location, document.referrer, window.name, postMessage, storage, or dataset. textContent does not parse HTML. site/vercel.json sets no Content-Security-Policy for / or /landing.js; that header gap has no attacker-controlled source on this path.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-cycle",
+        "reviewed_paths": [
+          "site/public/landing.js",
+          "site/src/pages/index.astro"
+        ],
+        "invariant": "DOM clobbering cannot retarget or supply the cycle labels. The nodes are selected by data-attribute querySelector inside author markup, and no shadowed global, form property, or init flag is trusted.",
+        "method": "source",
+        "result": "cycle, sec, glyph, key, and next come from querySelector([data-cycle]) and nested querySelector calls for the data-cycle attributes. The cycle markup in index.astro has no id or name an attacker can preserve, and the page does not interpolate a visitor value into that block. The script never reads a clobbered document or form property to choose the label or to decide whether to paint.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-cycle",
+        "reviewed_paths": [
+          "site/public/landing.js"
+        ],
+        "invariant": "Prototype pollution cannot change the painted labels. There is no recursive write of an attacker-controlled key, and each painted field is an own property of an object literal.",
+        "method": "source",
+        "result": "The cycle path performs no JSON.parse, Object.assign, deep merge, or path assignment. s.sec, s.glyph, s.key, and s.next are own properties of the step literals, so a polluted Object.prototype would not replace them. No gadget on this path consumes a polluted property for execution, navigation, authorization, or rendering.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-cycle",
+        "reviewed_paths": [
+          "site/public/landing.js"
+        ],
+        "invariant": "The changed NEEDS YOU literals stop at the cycle text nodes and do not reach the file's other sinks.",
+        "method": "source",
+        "result": "cols.innerHTML interpolates a measured column count. Pin paint copies author data-pin-copy templates into bodyEl.innerHTML. The copy button reads data-copy-source innerText. tsk:set-stage sends the literals board or split. None of those reads steps or the cycle text nodes.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "Blocked and review steps[].sec are the author literals NEEDS YOU (site/public/landing.js lines 53 and 67). paint assigns them, with glyph, key, and next, through textContent, which does not parse HTML. A visitor cannot supply those strings through the URL, referrer, window.name, storage, or messages. site/vercel.json sets no Content-Security-Policy for / or /landing.js; that header gap does not open an injection on this path because the cycle has no attacker-controlled source."
+    ]
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Flanding.js%23tsk%3Aset-stage::site%2Fpublic%2Fboard-demo.js%23stage::site%2Fpublic::CLIENT-SIDE.md%23Cross-origin%20messaging%20and%20network%20attack%20classes",
+    "canonical_refs": {
+      "surface": "site/public/landing.js#tsk:set-stage",
+      "boundary": "site/public/board-demo.js#stage",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#Cross-origin messaging and network attack classes"
+    },
+    "surface": "Landing layout stage event",
+    "boundary": "CustomEvent detail is board or split",
+    "subsystem": "site/public landing layout event",
+    "attack_class": "Stage event influencing the board demo",
+    "starting_paths": [
+      "site/public/landing.js"
+    ],
+    "ordinary_attack_class_block": null,
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Cross-origin messaging and network attack classes",
+        "reason": "The event detail is a same-document literal and the diff does not touch it."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Unchanged by c6b8de1. The event detail is not taken from steps[].sec."
+    ]
+  },
+  {
+    "coverage_id": "site%2Fsrc%2Fpages%2Findex.astro%23BOARD_PINS::site%2Fpublic%2Flanding.js%23pin-paint::site%2Fpublic::CLIENT-SIDE.md%23DOM%20and%20object-state%20attack%20classes",
+    "canonical_refs": {
+      "surface": "site/src/pages/index.astro#BOARD_PINS",
+      "boundary": "site/public/landing.js#pin-paint",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#DOM and object-state attack classes"
+    },
+    "surface": "Landing pin callout HTML",
+    "boundary": "innerHTML of author BOARD_PINS templates",
+    "subsystem": "site/public landing pins",
+    "attack_class": "DOM XSS in pin callouts",
+    "starting_paths": [
+      "site/public/landing.js",
+      "site/src/pages/index.astro"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "Unchanged by c6b8de1 and not reached by steps[].sec. Recorded so a later full pass can review it. Not a covered claim."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Unchanged by c6b8de1 and not reached by steps[].sec. Recorded so a later full pass can review it. Not a covered claim."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fannouncements%2Fcatalog.toml%23announcement::src%2Fui%2Fedit.rs%23wrap_text::src%2Fannouncements.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/announcements/catalog.toml#announcement",
+      "boundary": "src/ui/edit.rs#wrap_text",
+      "subsystem": "src/announcements.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "What's new catalog notes seeded onto the board",
+    "boundary": "wrap_text runs terminal_text on each notice character before paint",
+    "subsystem": "src/announcements.rs",
+    "attack_class": "Terminal control injection via What's new notes",
+    "starting_paths": [
+      "src/announcements/catalog.toml",
+      "src/announcements.rs",
+      "src/ui/edit.rs",
+      "src/ui/markdown.rs",
+      "src/ui/render.rs",
+      "src/cli/presenter.rs",
+      "src/domain/task.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "This path has no HTTP parser, cache, or session."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud workload or IAM selector is on this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No RPC or broker identity is on this path."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "tsk has one local store and no tenant isolator."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk does not call a model or dispatch tool arguments."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "The changed notice path is safe Rust string handling with no unsafe block."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Catalog seeding is a fixed in-binary table, not attacker-sized work."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "Notice text is painted by the terminal UI, not inserted into HTML."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+        "reason": "Seeding writes the same user's store. Windows ACL is a separate carried unit."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+        "reason": "The catalog is compile-time text, not an update artifact. Version handoff is a separate unit."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside this delta. Source is unchanged since 82e934e9, which the 2026-10-17 run already recorded."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fcli%2Fpresenter.rs%23setup_agent_batch::src%2Fui%2Fmod.rs%23terminal_text::src%2Fsetup_agent.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/cli/presenter.rs#setup_agent_batch",
+      "boundary": "src/ui/mod.rs#terminal_text",
+      "subsystem": "src/setup_agent.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Setup batch and listing stdout for skill and plugin paths",
+    "boundary": "terminal_text rewrites C0/C1 before human setup output",
+    "subsystem": "src/setup_agent.rs and src/setup.rs",
+    "attack_class": "Terminal control injection via setup path output",
+    "starting_paths": [
+      "src/cli/presenter.rs",
+      "src/setup.rs",
+      "src/setup_agent.rs",
+      "src/ui/mod.rs",
+      "src/setup/tests.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "tsk has no HTTP server or browser session."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud workload or IAM selector in the binary."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No RPC server; Herdr socket peer identity is outside this delta."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "Single OS-user store; no tenant field is an authorization boundary."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk copies a static skill file and does not dispatch model tool calls."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "Changed UI modules contain no unsafe and no binary loader."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Editing and setup run in the invoking process; no shared service quota."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Deep-link, callback, and navigation attack classes",
+        "reason": "Setup does not register a URI scheme or deep link."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Webview and native-bridge attack classes",
+        "reason": "No webview in the setup path."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+        "reason": "Setup talks to the herdr CLI, not a socket this unit owns."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "Setup output is a terminal, not a browser DOM."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside this delta. Source is unchanged since 82e934e9, which the 2026-10-17 run already recorded."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fcli%2Fupdate.rs%23run_for::src%2Fcli%2Fupdate.rs%23hardened_curl::src%2Fcli%2Fupdate.rs::SUPPLY-CHAIN-AND-RELEASE.md%23Release%20and%20update%20attack%20classes",
+    "canonical_refs": {
+      "surface": "src/cli/update.rs#run_for",
+      "boundary": "src/cli/update.rs#hardened_curl",
+      "subsystem": "src/cli/update.rs",
+      "attack_class": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes"
+    },
+    "surface": "Release installer download and shell handoff",
+    "boundary": "0700 download dir and fd-to-shell",
+    "subsystem": "src/cli/update.rs",
+    "attack_class": "Installer script substitution",
+    "starting_paths": [
+      "src/cli/update.rs",
+      "site/public/install.sh"
+    ],
+    "ordinary_attack_class_block": null,
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Injection",
+        "reason": "The explicit tsk update installer path is outside the delta. The background curl env lead is a separate in-scope unit."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside this delta. Source is unchanged since 82e934e9, which the 2026-10-17 run already recorded."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fcontext.rs%23HERDR_PLUGIN_CONTEXT_JSON::src%2Fboard_pane.rs%23is_flag_safe_pane_id::src%2Fcontext.rs::DESKTOP-MOBILE-AND-LOCAL-IPC.md%23Local%20IPC%20and%20exported-component%20attack%20classes",
+    "canonical_refs": {
+      "surface": "src/context.rs#HERDR_PLUGIN_CONTEXT_JSON",
+      "boundary": "src/board_pane.rs#is_flag_safe_pane_id",
+      "subsystem": "src/context.rs",
+      "attack_class": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes"
+    },
+    "surface": "Herdr pane lookup and plugin context JSON",
+    "boundary": "No peer authentication on HERDR_PLUGIN_CONTEXT_JSON",
+    "subsystem": "src/context.rs",
+    "attack_class": "Host-injected capture context",
+    "starting_paths": [
+      "src/context.rs",
+      "src/board_pane.rs",
+      "scripts/open-board.sh"
+    ],
+    "ordinary_attack_class_block": null,
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Injection",
+        "reason": "Not in the delta and not one of the four narrative prior leads."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside this delta. Source is unchanged since 82e934e9, which the 2026-10-17 run already recorded."
+    ]
+  },
+  {
+    "coverage_id": "src%2Ffsperm.rs%23ensure_private_dir::src%2Ffsperm.rs%23tighten_file::src%2Fstore.rs::DESKTOP-MOBILE-AND-LOCAL-IPC.md%23Privileged-helper%20and%20local-file%20attack%20classes",
+    "canonical_refs": {
+      "surface": "src/fsperm.rs#ensure_private_dir",
+      "boundary": "src/fsperm.rs#tighten_file",
+      "subsystem": "src/store.rs",
+      "attack_class": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes"
+    },
+    "surface": "State directory creation on Windows",
+    "boundary": "ensure_private_dir claims no ACL hardening off Unix",
+    "subsystem": "src/store.rs",
+    "attack_class": "Windows state directory readable by another OS principal",
+    "starting_paths": [
+      "src/fsperm.rs",
+      "src/store.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "tsk has no HTTP server or browser session."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud workload or IAM selector in the binary."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No RPC server; Herdr socket peer identity is outside this delta."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "Single OS-user store; no tenant field is an authorization boundary."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk copies a static skill file and does not dispatch model tool calls."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "Changed UI modules contain no unsafe and no binary loader."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Editing and setup run in the invoking process; no shared service quota."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Webview and native-bridge attack classes",
+        "reason": "State files are not exposed through a webview."
+      }
+    ],
+    "prior_status": "prior_needs_validation",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "verifier-windows",
+    "reviewed_paths": [
+      "src/fsperm.rs",
+      "src/store.rs",
+      "site/src/content/docs/docs/storage.md"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "verifier-windows",
+        "reviewed_paths": [
+          "src/fsperm.rs",
+          "src/store.rs",
+          "site/src/content/docs/docs/storage.md"
+        ],
+        "invariant": "Unix owner-only modes are applied. Windows create and tighten paths set no security descriptor, and the inherited DACL is not visible in source.",
+        "method": "source",
+        "result": "At c6b8de10, src/fsperm.rs and src/store.rs match 82e934e. ensure_private_dir creates with create_dir_all and tightens only under cfg(unix). create_private_file sets mode 0600 only under cfg(unix). tighten_file is a no-op off Unix. default_state_dir still uses LOCALAPPDATA\\\\tsk or USERPROFILE\\\\.tsk. The inherited DACL was not observed on this Linux host, so the record stays needs_validation with fingerprint windows-state-dir-acl.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "windows-state-dir-acl"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "src%2Fsetup_agent.rs%23omp_config_root::src%2Fsetup_agent.rs%23normalize_absolute_path::src%2Fsetup_agent.rs::ATTACK-CLASSES.md%23Resource%20and%20file%20handling",
+    "canonical_refs": {
+      "surface": "src/setup_agent.rs#omp_config_root",
+      "boundary": "src/setup_agent.rs#normalize_absolute_path",
+      "subsystem": "src/setup_agent.rs",
+      "attack_class": "ATTACK-CLASSES.md#Resource and file handling"
+    },
+    "surface": "OMP skill root from PI_CONFIG_DIR",
+    "boundary": "Lexical normalization under HOME after stripping the absolute root",
+    "subsystem": "src/setup_agent.rs",
+    "attack_class": "Path components in PI_CONFIG_DIR leaving the home directory",
+    "starting_paths": [
+      "src/setup_agent.rs",
+      "tests/cli_setup_agent.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "tsk has no HTTP server or browser session."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud workload or IAM selector in the binary."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No RPC server; Herdr socket peer identity is outside this delta."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "Single OS-user store; no tenant field is an authorization boundary."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk copies a static skill file and does not dispatch model tool calls."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "Changed UI modules contain no unsafe and no binary loader."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Editing and setup run in the invoking process; no shared service quota."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Deep-link, callback, and navigation attack classes",
+        "reason": "No deep link selects the skill directory."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+        "reason": "The input is an environment variable, not an IPC peer."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside this delta. Source is unchanged since 82e934e9, which the 2026-10-17 run already recorded."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fsetup_agent.rs%23skill_states_text::src%2Fcli%2Fpresenter.rs%23setup_probe::src%2Fsetup_agent.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/setup_agent.rs#skill_states_text",
+      "boundary": "src/cli/presenter.rs#setup_probe",
+      "subsystem": "src/setup_agent.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Installer skill-state probe tsk setup --skill-states",
+    "boundary": "Control characters in the TSV path field are replaced before stdout",
+    "subsystem": "src/setup_agent.rs",
+    "attack_class": "Tab-separated probe row forgery",
+    "starting_paths": [
+      "src/setup_agent.rs",
+      "src/cli/presenter.rs",
+      "src/cli/mod.rs",
+      "tests/cli_setup_agent.rs",
+      "site/public/install.sh"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "SUPPLY-CHAIN-AND-RELEASE.md#Core discipline",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Universal moves",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Dependency and build-input attack classes",
+        "reason": "This unit is the probe producer, not crate resolution."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "CI workflows did not change in the delta."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside this delta. Source is unchanged since 82e934e9, which the 2026-10-17 run already recorded."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fstore.rs%23TaskStore::src%2Ffsperm.rs%23tighten_private_dir::src%2Fstore.rs::ATTACK-CLASSES.md%23Resource%20and%20file%20handling",
+    "canonical_refs": {
+      "surface": "src/store.rs#TaskStore",
+      "boundary": "src/fsperm.rs#tighten_private_dir",
+      "subsystem": "src/store.rs",
+      "attack_class": "ATTACK-CLASSES.md#Resource and file handling"
+    },
+    "surface": "Unix state file modes and trash lifecycle",
+    "boundary": "0700/0600 and flock on tsk.json",
+    "subsystem": "src/store.rs",
+    "attack_class": "Another OS user reading the store on Unix",
+    "starting_paths": [
+      "src/store.rs",
+      "src/fsperm.rs"
+    ],
+    "ordinary_attack_class_block": null,
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Injection",
+        "reason": "Unix permission hardening did not change in this delta. Windows ACLs are a separate in-scope unit."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside this delta. Source is unchanged since 82e934e9, which the 2026-10-17 run already recorded."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fui%2Fedit.rs%23delete_word_left::src%2Fui%2Fboard%2Fapply.rs%23apply::src%2Fui::ATTACK-CLASSES.md%23Wildcard",
+    "canonical_refs": {
+      "surface": "src/ui/edit.rs#delete_word_left",
+      "boundary": "src/ui/board/apply.rs#apply",
+      "subsystem": "src/ui",
+      "attack_class": "ATTACK-CLASSES.md#Wildcard"
+    },
+    "surface": "Text-editing delta outside the named injection and chord gates",
+    "boundary": "Same-user editor invariants in src/ui/edit.rs",
+    "subsystem": "src/ui",
+    "attack_class": "Uncategorized defects in the editing change",
+    "starting_paths": [
+      "src/ui/edit.rs",
+      "src/ui/board/apply.rs",
+      "src/ui/board/model.rs",
+      "tests/queue_board_edit.rs",
+      "tests/queue_board_verbs.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Wildcard",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Obvious things",
+        "reason": "Obvious exposures are a separate unit."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside this delta. Source is unchanged since 82e934e9, which the 2026-10-17 run already recorded."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fui%2Fedit.rs%23escaped_draft_rows::src%2Fui%2Fmod.rs%23terminal_text::src%2Fui::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/ui/edit.rs#escaped_draft_rows",
+      "boundary": "src/ui/mod.rs#terminal_text",
+      "subsystem": "src/ui",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Editor draft and verb-bar paint after the word-key change",
+    "boundary": "terminal_text and present_line on draft bytes before the terminal",
+    "subsystem": "src/ui",
+    "attack_class": "Terminal control injection via edited task text",
+    "starting_paths": [
+      "src/ui/edit.rs",
+      "src/ui/render.rs",
+      "src/ui/input.rs",
+      "src/ui/board/apply.rs",
+      "src/app.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "tsk has no HTTP server or browser session."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud workload or IAM selector in the binary."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No RPC server; Herdr socket peer identity is outside this delta."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "Single OS-user store; no tenant field is an authorization boundary."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk copies a static skill file and does not dispatch model tool calls."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "Changed UI modules contain no unsafe and no binary loader."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Editing and setup run in the invoking process; no shared service quota."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+        "reason": "This unit is terminal paint of drafts, not a privileged file helper."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside this delta. Source is unchanged since 82e934e9, which the 2026-10-17 run already recorded."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fui%2Finput.rs%23word_chord::src%2Fapp.rs%23save%20recovery%20allowlist::src%2Fui::ATTACK-CLASSES.md%23Business%20logic",
+    "canonical_refs": {
+      "surface": "src/ui/input.rs#word_chord",
+      "boundary": "src/app.rs#save recovery allowlist",
+      "subsystem": "src/ui",
+      "attack_class": "ATTACK-CLASSES.md#Business logic"
+    },
+    "surface": "New word, line, and Enter chords on the task page and quick-add",
+    "boundary": "Keyboard boundary and save-recovery allowlist in src/app.rs",
+    "subsystem": "src/ui",
+    "attack_class": "Editing chords changing status or skipping save recovery",
+    "starting_paths": [
+      "src/ui/input.rs",
+      "src/app.rs",
+      "src/ui/board/apply.rs",
+      "src/ui/mouse.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "tsk has no HTTP server or browser session."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud workload or IAM selector in the binary."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No RPC server; Herdr socket peer identity is outside this delta."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "Single OS-user store; no tenant field is an authorization boundary."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk copies a static skill file and does not dispatch model tool calls."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "Changed UI modules contain no unsafe and no binary loader."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Editing and setup run in the invoking process; no shared service quota."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Access control",
+        "reason": "There is no permission check to bypass; the only gate is the same-user save-recovery allowlist."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside this delta. Source is unchanged since 82e934e9, which the 2026-10-17 run already recorded."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fui%2Fmod.rs%23present_line::src%2Fui%2Fmod.rs%23terminal_text::src%2Fui::ATTACK-CLASSES.md%23Feature%20abuse%20and%20data%20leakage",
+    "canonical_refs": {
+      "surface": "src/ui/mod.rs#present_line",
+      "boundary": "src/ui/mod.rs#terminal_text",
+      "subsystem": "src/ui",
+      "attack_class": "ATTACK-CLASSES.md#Feature abuse and data leakage"
+    },
+    "surface": "present_line and terminal_text of stored titles and paths",
+    "boundary": "Documented non-handling of Unicode bidi and format controls",
+    "subsystem": "src/ui",
+    "attack_class": "Bidirectional control characters in terminal presentation",
+    "starting_paths": [
+      "src/ui/mod.rs",
+      "src/ui/render.rs",
+      "src/cli/presenter.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Feature abuse and data leakage",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "tsk has no HTTP server or browser session."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud workload or IAM selector in the binary."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No RPC server; Herdr socket peer identity is outside this delta."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "Single OS-user store; no tenant field is an authorization boundary."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk copies a static skill file and does not dispatch model tool calls."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "Changed UI modules contain no unsafe and no binary loader."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Editing and setup run in the invoking process; no shared service quota."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside this delta. Source is unchanged since 82e934e9, which the 2026-10-17 run already recorded."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fupdate.rs%23spawn_fetch::src%2Fcli%2Fupdate.rs%23curl_path::src%2Fupdate.rs::SUPPLY-CHAIN-AND-RELEASE.md%23Release%20and%20update%20attack%20classes",
+    "canonical_refs": {
+      "surface": "src/update.rs#spawn_fetch",
+      "boundary": "src/cli/update.rs#curl_path",
+      "subsystem": "src/update.rs",
+      "attack_class": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes"
+    },
+    "surface": "Background release check on board open",
+    "boundary": "Absolute TSK_UPDATE_CURL plus hardened_curl argv",
+    "subsystem": "src/update.rs",
+    "attack_class": "Update client executes an env-selected curl",
+    "starting_paths": [
+      "src/update.rs",
+      "src/cli/update.rs",
+      "src/app.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "SUPPLY-CHAIN-AND-RELEASE.md#Core discipline",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Universal moves",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "tsk has no HTTP server or browser session."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud workload or IAM selector in the binary."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No RPC server; Herdr socket peer identity is outside this delta."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "Single OS-user store; no tenant field is an authorization boundary."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk copies a static skill file and does not dispatch model tool calls."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "Changed UI modules contain no unsafe and no binary loader."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Editing and setup run in the invoking process; no shared service quota."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Dependency and build-input attack classes",
+        "reason": "This unit is the runtime updater, not crate resolution."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "CI workflows are outside the scoped delta."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside this delta. Source is unchanged since 82e934e9, which the 2026-10-17 run already recorded."
+    ]
+  }
+]
