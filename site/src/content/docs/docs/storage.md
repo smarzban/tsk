@@ -243,7 +243,9 @@ tsk restore
 
 ## Store version
 
-Older tsk refuses a newer store. tsk keeps a `tsk.json.v<N>` copy when it upgrades the file; to roll back, copy it over `tsk.json`.
+Older tsk refuses a newer store. tsk keeps a `tsk.json.v<N>` copy when it upgrades the file.
+
+To roll back: quit every board, then copy `tsk.json.v<N>` over `tsk.json`. Changes made since the upgrade are lost.
 
 ## Deleted tasks
 
