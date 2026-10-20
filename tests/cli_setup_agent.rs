@@ -1385,3 +1385,149 @@ fn skill_updates_stage_and_rename_without_following_a_planted_symlink() {
     );
     let _ = fs::remove_dir_all(root);
 }
+
+fn coordinator_source() -> &'static str {
+    include_str!("../skills/tsk-coordinator/SKILL.md")
+}
+
+#[test]
+#[cfg(unix)]
+fn coordinator_symlinks_block_the_agent_and_setup_refuses_them() {
+    let _lock = env_lock();
+    let _omp_env = OmpEnvGuard::cleared();
+    let root = temp_dir("coordinator-symlink");
+    let home = root.join("home");
+    for agent in [".cursor", ".grok"] {
+        let tsk_cli = home.join(agent).join("skills/tsk-cli");
+        fs::create_dir_all(&tsk_cli).expect("tsk-cli folder");
+        fs::write(tsk_cli.join("SKILL.md"), skill_source()).expect("current tsk-cli skill");
+    }
+    // Cursor: the coordinator folder is a symlink. Grok: its SKILL.md is.
+    let elsewhere = root.join("elsewhere");
+    fs::create_dir_all(&elsewhere).expect("symlink target dir");
+    std::os::unix::fs::symlink(&elsewhere, home.join(".cursor/skills/tsk-coordinator"))
+        .expect("folder symlink");
+    let target_file = root.join("target.md");
+    fs::write(&target_file, "not a skill\n").expect("symlink target file");
+    fs::create_dir_all(home.join(".grok/skills/tsk-coordinator")).expect("coordinator folder");
+    std::os::unix::fs::symlink(
+        &target_file,
+        home.join(".grok/skills/tsk-coordinator/SKILL.md"),
+    )
+    .expect("file symlink");
+    fs::create_dir_all(root.join("empty-bin")).expect("empty bin");
+    let previous_home = std::env::var_os("HOME");
+    let previous_path = std::env::var_os("PATH");
+    std::env::set_var("HOME", &home);
+    std::env::set_var("PATH", root.join("empty-bin"));
+    let probe = cli_non_tty(&["tsk", "setup", "--skill-states"]);
+    let cursor = cli_non_tty(&["tsk", "setup", "cursor"]);
+    let grok = cli_non_tty(&["tsk", "setup", "grok", "--force"]);
+    match previous_home {
+        Some(value) => std::env::set_var("HOME", value),
+        None => std::env::remove_var("HOME"),
+    }
+    match previous_path {
+        Some(value) => std::env::set_var("PATH", value),
+        None => std::env::remove_var("PATH"),
+    }
+    assert_eq!(probe.code, 0, "{probe:?}");
+    for id in ["cursor", "grok"] {
+        let row: Vec<&str> = probe
+            .stdout
+            .lines()
+            .find(|line| line.starts_with(&format!("{id}\t")))
+            .unwrap_or_else(|| panic!("{id} row: {}", probe.stdout))
+            .split('\t')
+            .collect();
+        assert_eq!(row[1], "blocked-symlink", "{row:?}");
+        assert!(row[3].ends_with("tsk-cli/SKILL.md"), "{row:?}");
+    }
+    for output in [&cursor, &grok] {
+        assert_ne!(output.code, 0, "{output:?}");
+        assert!(output.stderr.contains("refusing symlink"), "{output:?}");
+    }
+    assert!(
+        fs::read_dir(&elsewhere)
+            .expect("target dir")
+            .next()
+            .is_none(),
+        "nothing written through the folder symlink"
+    );
+    assert_eq!(
+        fs::read_to_string(&target_file).expect("target file"),
+        "not a skill\n"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn setup_json_lists_each_skill_per_agent() {
+    let _lock = env_lock();
+    let _omp_env = OmpEnvGuard::cleared();
+    let root = temp_dir("json-skills");
+    let home = root.join("home");
+    fs::create_dir_all(home.join(".cursor")).expect("cursor marker");
+    fs::create_dir_all(root.join("empty-bin")).expect("empty bin");
+    let previous_home = std::env::var_os("HOME");
+    let previous_userprofile = std::env::var_os("USERPROFILE");
+    let previous_path = std::env::var_os("PATH");
+    std::env::set_var("HOME", &home);
+    std::env::set_var("USERPROFILE", &home);
+    std::env::set_var("PATH", root.join("empty-bin"));
+    let before = cli_non_tty(&["tsk", "setup", "--json"]);
+    let install = cli_non_tty(&["tsk", "setup", "cursor"]);
+    let after = cli_non_tty(&["tsk", "setup", "--json"]);
+    match previous_home {
+        Some(value) => std::env::set_var("HOME", value),
+        None => std::env::remove_var("HOME"),
+    }
+    match previous_userprofile {
+        Some(value) => std::env::set_var("USERPROFILE", value),
+        None => std::env::remove_var("USERPROFILE"),
+    }
+    match previous_path {
+        Some(value) => std::env::set_var("PATH", value),
+        None => std::env::remove_var("PATH"),
+    }
+    assert_eq!(install.code, 0, "{install:?}");
+    let version = tsk_tui::setup_agent::embedded_skill_version();
+    for (output, state, installed) in [
+        (&before, "missing", serde_json::Value::Null),
+        (&after, "current", serde_json::Value::from(version.clone())),
+    ] {
+        assert_eq!(output.code, 0, "{output:?}");
+        let payload: serde_json::Value =
+            serde_json::from_str(&output.stdout).expect("setup --json");
+        let agent = &payload["agents"][0];
+        assert_eq!(agent["id"], "cursor");
+        assert_eq!(agent["state"], state);
+        let skills = agent["skills"].as_array().expect("skills array");
+        let names: Vec<&str> = skills
+            .iter()
+            .map(|skill| skill["name"].as_str().expect("name"))
+            .collect();
+        assert_eq!(names, ["tsk-cli", "tsk-coordinator"]);
+        for skill in skills {
+            let mut keys: Vec<&str> = skill
+                .as_object()
+                .expect("skill object")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(keys, ["installed_version", "name", "path", "state"]);
+            let name = skill["name"].as_str().expect("name");
+            let path = home.join(".cursor/skills").join(name).join("SKILL.md");
+            assert_eq!(skill["path"], path.display().to_string());
+            assert_eq!(skill["state"], state);
+            assert_eq!(skill["installed_version"], installed);
+        }
+        assert_eq!(agent["skill_path"], skills[0]["path"]);
+    }
+    assert_eq!(
+        fs::read_to_string(home.join(".cursor/skills/tsk-coordinator/SKILL.md")).expect("written"),
+        coordinator_source()
+    );
+    let _ = fs::remove_dir_all(root);
+}

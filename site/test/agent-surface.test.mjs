@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import test from "node:test";
+import yaml from "js-yaml";
 
 import {
   formatTwin,
@@ -360,6 +361,24 @@ test("agents_page_notice_plus_skill_body_matches_source", async () => {
   assert.match(generated, /^title:\s*tsk for agents/m);
   assert.doesNotMatch(body, /^# /m);
   assert.equal(body, `${NOTICE}\n\n${skillBody}`);
+});
+
+// Agents load skills with a real YAML parser: one invalid frontmatter line drops the skill.
+test("every_shipped_skill_has_valid_yaml_frontmatter", async () => {
+  const skillsDir = join(repoRoot, "skills");
+  const names = (await readdir(skillsDir, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+  assert.ok(names.includes("tsk-cli") && names.includes("tsk-coordinator"), names.join(", "));
+  for (const name of names) {
+    const source = await read(join(skillsDir, name, "SKILL.md"));
+    const frontmatter = source.match(/^---\n([\s\S]*?)\n---\n/)?.[1];
+    assert.ok(frontmatter, `${name} needs frontmatter`);
+    const data = yaml.load(frontmatter, { schema: yaml.FAILSAFE_SCHEMA });
+    assert.equal(data.name, name);
+    assert.equal(typeof data.description, "string", `${name} description`);
+    assert.match(data.version, /^\d+\.\d+\.\d+$/, `${name} version`);
+  }
 });
 
 test("coordinator_page_lead_plus_skill_body_matches_source", async () => {
