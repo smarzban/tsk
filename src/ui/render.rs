@@ -666,7 +666,8 @@ pub struct VerbEntry<'a> {
     pub key: &'a str,
     pub label: &'a str,
     /// How readily the entry leaves a footer too narrow for it ([`fit_verbs`]). `0` is
-    /// essential (the primary action, save, the way out, `? help`) and stays; otherwise the
+    /// essential (the primary action, save, the way out, `? help`) and stays (all but
+    /// [`COMMANDS_VERB`], which goes when the essentials overflow); otherwise the
     /// highest number goes first, the rightmost among equals.
     pub shed: u8,
 }
