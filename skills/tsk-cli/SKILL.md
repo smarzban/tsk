@@ -56,7 +56,8 @@ task's running agent, add `--send`: it sends only that reply and prints `sent to
 2. **Read JSON, not presentation.** Always add `--json` to `tsk list`. Write commands may answer in
    text only: trust the exit and refusal codes, then verify with `tsk list … --json`.
 3. **Never blind-retry.** `add`, `status`, `edit`, and `archive` are safe to repeat. `reply`,
-   `dispatch`, `steps add`, `steps toggle`, and `steps remove` are not: read the task first.
+   `dispatch`, `edit --append-notes`, `steps add`, `steps toggle`, and `steps remove` are not:
+   read the task first.
 4. **Use a known project name or a full path.** For `tsk add -p <project>`,
    unknown or ambiguous names refuse; `tsk list -p` lists nothing for them. Only an
    existing absolute directory creates a project ([scope](https://gettsk.sh/docs/cli.md#scope)).
@@ -144,6 +145,9 @@ criteria, no design document, no code. It ends with a better task on the board.
 > **Hard gate: propose, then write.** Show the full rewrite (title and notes) and get a yes before
 > any `tsk edit` or `tsk add`. `edit --notes` replaces the whole body; a silent write loses the
 > user's own words.
+>
+> To add to the notes, such as a brief, use `tsk edit T12 --append-notes "…"`. Never rewrite the
+> user's notes with `--notes` without asking.
 
 1. **Read.** `tsk list T12 --json` for the task as written. Then `tsk list --json` (and `--all
    --json` when the task may belong elsewhere) for neighbours in the same project or thread:

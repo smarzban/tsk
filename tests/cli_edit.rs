@@ -315,6 +315,79 @@ fn edit_notes_keeps_newlines_and_tabs_like_add() {
 }
 
 #[test]
+fn edit_append_notes_adds_below_the_notes_after_one_blank_line() {
+    let dir = temp_state_dir("append");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "keep me").code, 0);
+    assert_eq!(edit(&dir, &["T1", "--notes", "user text\n\n \n"]).code, 0);
+    let before = TaskStore::new(&dir).load().expect("load").tasks()[0].clone();
+
+    let output = edit(&dir, &["T1", "--append-notes", "## Brief\nagent text"]);
+    assert_eq!(output.code, 0, "{:?}", output.stderr);
+    assert_eq!(output.stdout, "edited T1 keep me\n");
+    let mut state = TaskStore::new(&dir).load().expect("load");
+    let task = state.tasks()[0].clone();
+    assert_eq!(
+        task.notes.as_deref(),
+        Some("user text\n\n## Brief\nagent text"),
+        "one blank line, the old trailing whitespace not doubled"
+    );
+    let edited = task
+        .history
+        .iter()
+        .filter(|event| event.kind == TaskEventKind::Edited)
+        .collect::<Vec<_>>();
+    let before_edited = before
+        .history
+        .iter()
+        .filter(|event| event.kind == TaskEventKind::Edited)
+        .count();
+    assert_eq!(edited.len(), before_edited + 1, "one paper trail entry");
+    let detail = edited.last().and_then(|event| event.detail.as_ref());
+    assert_eq!(
+        detail.map(|detail| detail.fields.clone()),
+        Some(vec![tsk_tui::domain::EditedField::Notes])
+    );
+
+    // Like --notes, an edit is not an undo step: undo leaves the appended notes.
+    state.undo().expect("undo");
+    assert_eq!(
+        state.tasks()[0].notes.as_deref(),
+        Some("user text\n\n## Brief\nagent text")
+    );
+}
+
+#[test]
+fn edit_append_notes_to_empty_notes_becomes_the_notes_with_other_fields() {
+    let dir = temp_state_dir("append-empty");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "old").code, 0);
+    assert_eq!(edit(&dir, &["T1", "--notes="]).code, 0);
+
+    let output = edit(&dir, &["T1", "--append-notes=-5 degrees", "--title", "new"]);
+    assert_eq!(output.code, 0, "{:?}", output.stderr);
+    let task = TaskStore::new(&dir).load().expect("load").tasks()[0].clone();
+    assert_eq!(task.notes.as_deref(), Some("-5 degrees"));
+    assert_eq!(task.title, "new");
+}
+
+#[test]
+fn edit_append_notes_refuses_with_notes_and_blank_text() {
+    let dir = temp_state_dir("append-usage");
+    let _guard = TempDirGuard(dir.clone());
+    assert_eq!(add_task(&dir, "keep me").code, 0);
+    for args in [
+        &["T1", "--notes", "a", "--append-notes", "b"][..],
+        &["T1", "--append-notes", " "][..],
+    ] {
+        let output = edit(&dir, args);
+        assert_eq!(output.code, 2, "{args:?}");
+    }
+    let task = TaskStore::new(&dir).load().expect("load").tasks()[0].clone();
+    assert_eq!(task.notes.as_deref(), Some("original notes"));
+}
+
+#[test]
 fn edit_refuses_empty_title_and_control_chars_without_mutation() {
     let dir = temp_state_dir("refusals");
     let _guard = TempDirGuard(dir.clone());
@@ -372,7 +445,7 @@ fn edit_without_fields_is_usage() {
     assert!(output
         .stderr
         .contains(
-        "title, notes, assignee, base, after, on, --unassign, --clear-base, or --clear-after is required"
+        "title, notes, append-notes, assignee, base, after, on, --unassign, --clear-base, or --clear-after is required"
     ));
 }
 
@@ -387,6 +460,8 @@ fn edit_help_names_title_notes_and_equals_forms() {
         "--notes",
         "--title=<value>",
         "--notes=<value>",
+        "--append-notes <text>",
+        "--append-notes=<value>",
         "Arguments",
         "Options",
         "Refusals (exit 1):",

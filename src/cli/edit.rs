@@ -17,6 +17,8 @@ use uuid::Uuid;
 pub struct EditFields {
     pub title: Option<String>,
     pub notes: Option<String>,
+    /// Text added below the stored notes, after one blank line.
+    pub append_notes: Option<String>,
     /// `None` leaves it unchanged, `Some(None)` clears it. A name is read by the name rule.
     pub assignee: Option<Option<String>>,
     /// `None` leaves it unchanged, `Some(None)` clears it.
@@ -79,7 +81,8 @@ impl EditError {
 
 /// Replace the supplied title and/or notes, keeping scope and thread.
 ///
-/// Whitespace-only notes clear the field. Repeating the stored values writes nothing.
+/// Whitespace-only notes clear the field. Repeating the stored values writes nothing; a
+/// repeated append adds its text again.
 pub fn run(
     target: TaskAddress,
     fields: EditFields,
@@ -118,6 +121,7 @@ pub fn run(
     let edit = Edit {
         title: fields.title,
         notes: fields.notes,
+        append_notes: fields.append_notes,
         assignee,
         base: fields.base,
         after: fields.after,
@@ -151,6 +155,7 @@ pub fn run(
 struct Edit {
     title: Option<String>,
     notes: Option<String>,
+    append_notes: Option<String>,
     assignee: Option<Option<Assignee>>,
     base: Option<Option<String>>,
     after: Option<Vec<u64>>,
@@ -195,6 +200,14 @@ fn apply(
         Some(value) if value.trim().is_empty() => None,
         Some(value) => Some(value.to_string()),
         None => found.notes.clone(),
+    };
+    // Appended under the lock, to the notes as stored now, so a concurrent edit is kept.
+    let next_notes = match (fields.append_notes.as_deref(), next_notes) {
+        (Some(text), Some(notes)) if !notes.trim().is_empty() => {
+            Some(format!("{}\n\n{text}", notes.trim_end()))
+        }
+        (Some(text), _) => Some(text.to_string()),
+        (None, notes) => notes,
     };
     let next_assignee = fields
         .assignee

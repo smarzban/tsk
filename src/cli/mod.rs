@@ -462,6 +462,7 @@ fn run_edit(args: Vec<String>) -> CliOutput {
     };
     if input.title.is_none()
         && input.notes.is_none()
+        && input.append_notes.is_none()
         && input.assignee.is_none()
         && !input.unassign
         && input.base.is_none()
@@ -471,7 +472,7 @@ fn run_edit(args: Vec<String>) -> CliOutput {
         && input.on.is_none()
     {
         return presenter::edit_usage(
-            "title, notes, assignee, base, after, on, --unassign, --clear-base, or --clear-after is required",
+            "title, notes, append-notes, assignee, base, after, on, --unassign, --clear-base, or --clear-after is required",
         );
     }
     let assignee = if input.unassign {
@@ -492,6 +493,7 @@ fn run_edit(args: Vec<String>) -> CliOutput {
         edit::EditFields {
             title: input.title,
             notes: input.notes,
+            append_notes: input.append_notes,
             assignee,
             base,
             after: if input.clear_after {

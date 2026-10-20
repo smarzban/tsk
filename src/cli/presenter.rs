@@ -126,7 +126,7 @@ const STATUS_USAGE: &[&str] = &[
     "tsk status <task> review [--done <text>] [--check <text>]... [--next <text>] [--on <who>]",
 ];
 const EDIT_USAGE: &[&str] = &[
-    "tsk edit <task> [--title <title>] [--notes <notes>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--after <task>]... [--clear-after] [--on <who>] [--state-dir <dir>]",
+    "tsk edit <task> [--title <title>] [--notes <notes> | --append-notes <text>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--after <task>]... [--clear-after] [--on <who>] [--state-dir <dir>]",
 ];
 const STEPS_USAGE: &[&str] = &[
     "tsk steps <task> add <text> [<place>] [--state-dir <dir>]",
@@ -2056,6 +2056,10 @@ pub fn edit_help() -> CliOutput {
                     ("-t, --title <title>", "replace the title"),
                     ("-n, --notes <notes>", "replace the notes; blank clears them"),
                     (
+                        "--append-notes <text>",
+                        "add text below the notes after a blank line",
+                    ),
+                    (
                         "--assignee <name>",
                         "assign an agent profile from config.toml, me, or a person's name",
                     ),
@@ -2080,7 +2084,7 @@ pub fn edit_help() -> CliOutput {
                     ("--state-dir <dir>", "use another board store"),
                     (
                         "--flag=<value>",
-                        "use = for a value that starts with -: --title=<value>, --notes=<value>, --on=<value>",
+                        "use = for a value that starts with -: --title=<value>, --notes=<value>, --append-notes=<value>, --on=<value>",
                     ),
                 ],
             ),

@@ -377,13 +377,14 @@ tsk status T12 review --done "Opened PR #42" --check "tests pass" --next "docs"
 Changes a task's title, notes, assignee, dispatch base, the tasks it runs after, or who its open block or review waits on. Scope and thread stay as they are: to move a task, add it again in the right scope and archive the old one.
 
 ```text
-tsk edit <task> [--title <title>] [--notes <notes>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--after <task>]... [--clear-after] [--on <who>] [--state-dir <dir>]
+tsk edit <task> [--title <title>] [--notes <notes> | --append-notes <text>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--after <task>]... [--clear-after] [--on <who>] [--state-dir <dir>]
 ```
 
 | Flag | Meaning |
 | --- | --- |
 | `-t`, `--title <title>` | Replace the title |
 | `-n`, `--notes <notes>` | Replace the notes. Blank clears them; newlines and tabs are kept |
+| `--append-notes <text>` | Add text below the notes after one blank line, or set it as the notes when there are none |
 | `--assignee <name>` | Assign an agent profile from [`config.toml`](/docs/storage/#configuration), `me`, or a person ([names](/docs/dispatch/#assignee-names)) |
 | `--unassign` | Clear the assignee |
 | `--base <branch>` | Dispatch from this existing branch, not a tag or commit (`unknown-base`) |
@@ -395,6 +396,7 @@ tsk edit <task> [--title <title>] [--notes <notes>] [--assignee <name> | --unass
 - `--after` takes tasks in any project. It refuses the task itself, a task not on the board, or a done one (`invalid-after`), and a link that would close a loop (`after-loop`). There is no `--before`: set the other task's `--after`.
 - `--on` keeps the round, its text, checks, and replies. A task with no open block or review refuses with `not-blocked`.
 - Output is `edited T12 <title>`, plus `assigned T12 to @dana (not an agent profile)` for a person. Repeating the same values is safe.
+- `--append-notes` is not safe to repeat: a second run adds the text again. Read the task before retrying an uncertain result.
 
 **Refusals:** codes and exits in the [exit contract](#exit-contract).
 

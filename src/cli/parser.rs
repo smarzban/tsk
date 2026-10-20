@@ -682,6 +682,8 @@ pub struct FlagEdit {
     pub task: Option<TaskAddress>,
     pub title: Option<String>,
     pub notes: Option<String>,
+    /// `--append-notes`: text added below the stored notes.
+    pub append_notes: Option<String>,
     pub assignee: Option<String>,
     pub unassign: bool,
     pub base: Option<String>,
@@ -722,6 +724,7 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
         task: None,
         title: None,
         notes: None,
+        append_notes: None,
         assignee: None,
         unassign: false,
         base: None,
@@ -761,6 +764,14 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
             }
             "-n" | "--notes" => {
                 parsed.notes = Some(value(flag)?);
+                index += 2;
+            }
+            flag if flag.starts_with("--append-notes=") => {
+                parsed.append_notes = Some(flag["--append-notes=".len()..].to_owned());
+                index += 1;
+            }
+            "--append-notes" => {
+                parsed.append_notes = Some(value(flag)?);
                 index += 2;
             }
             flag if flag.starts_with("--assignee=") => {
@@ -831,6 +842,16 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
     }
     if parsed.clear_after && !parsed.after.is_empty() {
         return Err("--clear-after cannot be used with --after".into());
+    }
+    if parsed.append_notes.is_some() && parsed.notes.is_some() {
+        return Err("--append-notes cannot be used with --notes".into());
+    }
+    if parsed
+        .append_notes
+        .as_deref()
+        .is_some_and(|text| text.trim().is_empty())
+    {
+        return Err("--append-notes needs text".into());
     }
     Ok(parsed)
 }
@@ -1113,6 +1134,7 @@ mod tests {
                 task: Some(TaskAddress::Number(12)),
                 title: Some("-fix parser".into()),
                 notes: Some("-5 degrees".into()),
+                append_notes: None,
                 assignee: None,
                 unassign: false,
                 base: None,
@@ -1141,6 +1163,25 @@ mod tests {
         assert!(parse_flag_edit(&args("edit", &["T5", "--after", "x2"])).is_err());
         assert!(parse_flag_edit(&args("edit", &["T5", "--after", "0"])).is_err());
         assert!(parse_flag_edit(&args("edit", &["T5", "--after", "2", "--clear-after"])).is_err());
+        let append = parse_flag_edit(&args("edit", &["T5", "--append-notes", "more"]))
+            .expect("append-notes");
+        assert_eq!(append.append_notes.as_deref(), Some("more"));
+        assert_eq!(append.notes, None);
+        let append = parse_flag_edit(&args("edit", &["T5", "--append-notes=-5 degrees"]))
+            .expect("append-notes=");
+        assert_eq!(append.append_notes.as_deref(), Some("-5 degrees"));
+        assert_eq!(
+            parse_flag_edit(&args(
+                "edit",
+                &["T5", "--notes", "a", "--append-notes", "b"]
+            )),
+            Err("--append-notes cannot be used with --notes".into())
+        );
+        assert!(parse_flag_edit(&args("edit", &["T5", "--append-notes=b", "-n", "a"])).is_err());
+        assert_eq!(
+            parse_flag_edit(&args("edit", &["T5", "--append-notes= "])),
+            Err("--append-notes needs text".into())
+        );
         assert!(
             parse_flag_edit(&args("edit", &["T5", "--clear-after"]))
                 .expect("clear")

@@ -29,7 +29,7 @@ The human works the board in a TUI; agents read and write the same tasks with th
 
 - Run `tsk guide` first: it prints the workflow and the rules. `tsk help <command>` is the syntax reference.
 - Read with `tsk list --json`. `tsk list T12 --json` returns one task in full: notes, steps, block, review, dispatch, and `activity`.
-- Write with `tsk add`, `tsk edit`, and `tsk steps`. Read the exit code before any retry; `tsk dispatch` and some `tsk steps` commands are not idempotent.
+- Write with `tsk add`, `tsk edit`, and `tsk steps`. Read the exit code before any retry; `tsk dispatch`, `tsk edit --append-notes`, and some `tsk steps` commands are not idempotent.
 - When your work is finished, hand it back: `tsk status T12 review --done "…" --check "…"`. Set `done` only when the user says so.
 - When you need the human: `tsk status T12 blocked --why "…" --option "…"`, then stop. `tsk reply T12 "…"` answers a block or adds review feedback.
 - `tsk dispatch T12` launches an assigned project task's agent in Herdr. `tsk clean T12` removes its worktree and merged branch; never clean the worktree you run in.
