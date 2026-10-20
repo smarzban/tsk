@@ -233,7 +233,8 @@ test("task-page demo actions ignore board marks and use the open task", async ({
   await page.keyboard.press("d");
   await page.keyboard.press("Escape");
   await expect(row(page, 12)).toHaveCount(0);
-  await expect(row(page, 13)).toBeVisible();
+  // T23, the marked row, stays a review.
+  await expect(row(page, 23).locator(".tsk-row-glyph")).toHaveText("▲");
   await expect(page.locator("#tsk-demo")).not.toContainText(
     "selected · esc clear",
   );
@@ -431,6 +432,19 @@ test("the split's status row names its stage as the app does", async ({
   await expect(page.locator(".tsk-stage-hint")).toHaveText(
     (await readReference("status-hint-split-110"))[0],
   );
+});
+
+// An archived task stays put when its last prerequisite finishes, as in the app.
+test("a done leaves an archived waiting task ready", async ({ page }) => {
+  await open(page, 78);
+  await selectTask(page, 25);
+  await page.keyboard.press("f");
+  await expect(row(page, 25)).toHaveCount(0);
+  await selectTask(page, 24);
+  await page.keyboard.press("d");
+  await page.keyboard.press("z");
+  await page.locator("[data-archived-header]").dblclick();
+  await expect(row(page, 25).locator(".tsk-row-glyph")).toHaveText("○");
 });
 
 // Done on the last task another waits on starts the waiting one, and one undo reverses both.

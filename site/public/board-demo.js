@@ -2686,8 +2686,8 @@ import { parseCapture } from "./capture.js";
   }
 
   // Set `status` on `tasks` for a seat. A status change closes the open block or review. A
-  // done starts each ready task whose last unfinished prerequisite it was, as the app does,
-  // and the done's undo brings both back. Returns the tasks set.
+  // done starts each ready, unarchived task whose last unfinished prerequisite it was, as the
+  // app does, and the done's undo brings both back. Returns the tasks set.
   function changeStatus(form, tasks, status) {
     const changed = tasks.filter((task) => task.status !== status);
     const finishing = new Set(
@@ -2696,6 +2696,7 @@ import { parseCapture } from "./capture.js";
     const released = state.tasks.filter(
       (task) =>
         task.status === "ready" &&
+        !task.archived &&
         !changed.includes(task) &&
         (task.after || []).some((number) => finishing.has(number)) &&
         waitingAfter(task).every((number) => finishing.has(number)),
