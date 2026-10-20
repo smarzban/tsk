@@ -298,6 +298,7 @@ fn command_help_lines_have_no_trailing_whitespace() {
         &["setup", "--help"],
         &["update", "--help"],
         &["guide", "--help"],
+        &["capture", "--help"],
     ] {
         let output = executable(args);
         assert_eq!(output.status.code(), Some(0), "{args:?}");
@@ -332,6 +333,7 @@ fn help_fits_80_columns_and_examples_never_wrap() {
         "setup",
         "update",
         "guide",
+        "capture",
     ] {
         let args: Vec<&str> = ["tsk", "help", command]
             .into_iter()
@@ -380,6 +382,7 @@ fn every_command_help_purpose_is_a_capitalized_sentence() {
         &["setup", "--help"],
         &["update", "--help"],
         &["guide", "--help"],
+        &["capture", "--help"],
     ] {
         let output = help(&["tsk", args[0], "--help"]);
         let purpose = output
@@ -401,6 +404,17 @@ fn help_operand_matches_verb_help_byte_for_byte() {
     assert_eq!(via_help.status.code(), Some(0));
     assert!(via_help.stderr.is_empty());
     assert_eq!(via_help.stdout, direct.stdout);
+}
+
+#[test]
+fn capture_help_prints_without_opening_the_popup() {
+    let via_help = executable(&["help", "capture"]);
+    let direct = executable(&["capture", "--help"]);
+    assert_eq!(via_help.status.code(), Some(0));
+    assert!(via_help.stderr.is_empty());
+    assert!(String::from_utf8_lossy(&via_help.stdout).starts_with("usage: tsk capture"));
+    assert_eq!(via_help.stdout, direct.stdout);
+    assert_eq!(direct.status.code(), Some(0));
 }
 
 #[test]

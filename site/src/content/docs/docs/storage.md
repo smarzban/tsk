@@ -226,7 +226,15 @@ Saves and board opens never wait for a backup: when a target is due, tsk backs i
 - `tsk backup` runs every target in the foreground and exits 1 if any failed.
 - Background backups have no terminal, so git must reach the repository without a prompt. After a first backup that worked, `add` and `setup` check that a background backup can reach it too, and say so when it cannot.
 - The usual cause is an ssh key with a passphrase and no ssh-agent the board can see, for example a board started in Herdr from a shell without `SSH_AUTH_SOCK`. Load the key into an agent every shell sees (on macOS, `UseKeychain yes` and `AddKeysToAgent yes` in `~/.ssh/config`), or use https with a credential helper.
-- tsk runs your own `git` with your credentials and stores no tokens. Background backups commit as `tsk`, without signing or hooks.
+- tsk runs your own `git` with your credentials. Background backups commit as `tsk`, without signing or hooks.
+
+### Credentials
+
+Prefer ssh or a credential helper to a token in a backup URL. A URL such as `https://me:TOKEN@github.com/me/tsk-backup.git` works, with these limits:
+
+- `config.toml` keeps the URL as you wrote it, token included.
+- Backups never push the token: the pushed `config.toml` has it removed.
+- Every command prints the URL with its credentials as `***`, such as `https://***@github.com/me/tsk-backup.git`. `tsk backup remove` takes that form too.
 
 ## Restore
 
@@ -235,7 +243,7 @@ tsk restore             # list versions, then choose one
 tsk restore 3f9a1c2e    # restore one version without asking
 ```
 
-`tsk restore` lists the versions every target holds, newest first, with an id, time, host name, task count, and target. It shows the newest 20 per machine; `--all` shows every one. In a terminal it asks which to restore.
+`tsk restore` lists the versions every target holds, newest first, with an id, time, host name, task count, and target. It shows the newest 20 per machine; `--all` shows every one. An id restores the version it names, shown or not. In a terminal it asks which to restore.
 
 - Quit every board and quick capture on the store first: restore refuses while one is open.
 - The store it replaces is kept as `tsk.json.pre-restore-<time>`, in UTC. The newest five copies are kept.

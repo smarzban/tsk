@@ -99,6 +99,9 @@ fn run_verb<R: Read>(
             presenter::guide_help()
         }
         Some("guide") => guide::run(),
+        Some("capture") if args.get(2).map(String::as_str) == Some("--help") => {
+            presenter::capture_help()
+        }
         Some("update") if args.get(2).map(String::as_str) == Some("--help") => {
             presenter::update_help()
         }
@@ -144,6 +147,7 @@ fn run_help(args: Vec<String>) -> CliOutput {
             code: 0,
         },
         [verb] => match verb.as_str() {
+            "capture" => presenter::capture_help(),
             "add" => presenter::add_help(),
             "steps" => presenter::steps_help(),
             "list" => presenter::list_help(None),

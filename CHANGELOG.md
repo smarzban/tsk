@@ -51,6 +51,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ### Fixed
 
+- `tsk help capture` and `tsk capture --help` print the capture reference instead of failing or opening the popup.
 - `ctrl+u` names what it undid or why it refused, and undoing a done puts back the task's earlier status instead of open. Thanks @LukasGold (#173).
 - Saving a task with a step's text cleared reopens that step with `text required` on its row, as for an empty new step. Thanks @LukasGold (#173).
 - A project reached through a symlinked path, such as `/tmp/repo` and `/private/tmp/repo` on macOS, is one project.

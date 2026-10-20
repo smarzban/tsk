@@ -181,22 +181,57 @@ pub fn parse_targets(content: &str) -> Result<Vec<Target>, String> {
     let Some(item) = document.get("backup") else {
         return Ok(Vec::new());
     };
+    let entries =
+        backup_entries(item).ok_or("config.toml: backup must be a list of [[backup]] tables")?;
     let mut targets = Vec::new();
-    if let Some(tables) = item.as_array_of_tables() {
-        for (index, table) in tables.iter().enumerate() {
-            targets.push(parse_target(index, table)?);
-        }
-    } else if let Some(array) = item.as_array() {
-        for (index, value) in array.iter().enumerate() {
-            let table = value
-                .as_inline_table()
-                .ok_or_else(|| format!("config.toml: backup {} must be a table", index + 1))?;
-            targets.push(parse_target(index, table)?);
-        }
-    } else {
-        return Err("config.toml: backup must be a list of [[backup]] tables".into());
+    for (index, table) in entries.into_iter().enumerate() {
+        let table =
+            table.ok_or_else(|| format!("config.toml: backup {} must be a table", index + 1))?;
+        targets.push(parse_target(index, table)?);
     }
     Ok(targets)
+}
+
+/// The entries of `backup` in both shapes the loader takes: `[[backup]]` tables, or an
+/// inline `backup = [{ … }]` list (`None` for an element that is not a table). `None` when
+/// `backup` is neither. The loader and [`sanitized_config`] both read through it, so a shape
+/// one accepts is never missed by the other.
+fn backup_entries(item: &toml_edit::Item) -> Option<Vec<Option<&dyn TableLike>>> {
+    if let Some(tables) = item.as_array_of_tables() {
+        return Some(
+            tables
+                .iter()
+                .map(|table| Some(table as &dyn TableLike))
+                .collect(),
+        );
+    }
+    let array = item.as_array()?;
+    Some(
+        array
+            .iter()
+            .map(|value| value.as_inline_table().map(|table| table as &dyn TableLike))
+            .collect(),
+    )
+}
+
+/// [`backup_entries`], writable, skipping elements that are not tables.
+fn backup_entries_mut(item: &mut toml_edit::Item) -> Vec<&mut dyn TableLike> {
+    if item.is_array_of_tables() {
+        return item
+            .as_array_of_tables_mut()
+            .into_iter()
+            .flat_map(|tables| tables.iter_mut())
+            .map(|table| table as &mut dyn TableLike)
+            .collect();
+    }
+    match item.as_array_mut() {
+        Some(array) => array
+            .iter_mut()
+            .filter_map(|value| value.as_inline_table_mut())
+            .map(|table| table as &mut dyn TableLike)
+            .collect(),
+        None => Vec::new(),
+    }
 }
 
 fn parse_target(index: usize, table: &dyn TableLike) -> Result<Target, String> {
@@ -249,6 +284,20 @@ pub fn add_target(
     location: &str,
     every: Option<Every>,
 ) -> Result<(Target, AddOutcome), String> {
+    // Under the run lock, like a remove: two edits of config.toml never interleave, so
+    // neither drops the other's target.
+    with_run_lock(state_dir, true, || {
+        Ok(add_target_locked(state_dir, location, every))
+    })
+    .map_err(|error| error.to_string())
+    .and_then(|added| added)
+}
+
+fn add_target_locked(
+    state_dir: &Path,
+    location: &str,
+    every: Option<Every>,
+) -> Result<(Target, AddOutcome), String> {
     let existing = load_targets(state_dir)?;
     let content = crate::agents::read_config(state_dir)
         .map_err(|error| format!("could not read config.toml: {error}"))?
@@ -296,8 +345,8 @@ pub fn add_target(
     Ok((target, AddOutcome::Added))
 }
 
-/// Remove the `[[backup]]` entry `selector` names: its URL or path as `tsk backup list` shows
-/// it, or its number there. Its status is forgotten; backups already pushed stay.
+/// Remove the `[[backup]]` entry `selector` names: its URL or path as written or as
+/// `tsk backup list` shows it, or its number there. Its status is forgotten; backups already pushed stay.
 pub fn remove_target(state_dir: &Path, selector: &str) -> Result<Target, String> {
     // Under the run lock: a run reads its targets and saves its status under it, so it never
     // pushes to this target afterwards or writes its status back.
@@ -319,6 +368,7 @@ fn remove_target_locked(state_dir: &Path, selector: &str) -> Result<Target, Stri
             let absolute = absolute_path(selector);
             targets.iter().position(|target| {
                 target.location == selector
+                    || shown_location(&target.location) == selector
                     || absolute
                         .as_deref()
                         .is_some_and(|path| target.location == path)
@@ -470,7 +520,7 @@ pub fn failure_message(state_dir: &Path) -> Option<String> {
         let error = status.targets.get(&target.key())?.last_error.as_deref()?;
         Some(format!(
             "backup failed: {} (tsk backup list)",
-            first_line(error)
+            redacted(first_line(error))
         ))
     })
 }
@@ -964,12 +1014,10 @@ pub fn sanitized_config(content: &str) -> Option<String> {
             }
         }
     }
-    // A token written into a target's URL (`https://user:token@host/…`) stays here too.
-    if let Some(backups) = document
-        .get_mut("backup")
-        .and_then(|item| item.as_array_of_tables_mut())
-    {
-        for table in backups.iter_mut() {
+    // A token written into a target's URL (`https://user:token@host/…`) is removed, in
+    // either shape the loader takes.
+    if let Some(backups) = document.get_mut("backup") {
+        for table in backup_entries_mut(backups) {
             let stripped = table
                 .get("url")
                 .and_then(|url| url.as_str())
@@ -993,16 +1041,55 @@ pub fn sanitized_config(content: &str) -> Option<String> {
 /// over http(s) a bare user name is often a token, so it goes too. scp-style `git@host:path`
 /// carries no password and is left as is.
 pub fn without_credentials(url: &str) -> Option<String> {
+    let (scheme, kept, host) = credentials(url)?;
+    let kept = kept.map(|user| format!("{user}@")).unwrap_or_default();
+    Some(format!("{scheme}://{kept}{host}"))
+}
+
+/// `url` as tsk prints it: the credentials [`without_credentials`] removes read `***`
+/// (`https://***@host/…`, `ssh://git:***@host/…`). Anything else is shown as written.
+pub fn shown_location(url: &str) -> String {
+    match credentials(url) {
+        Some((scheme, Some(user), host)) => format!("{scheme}://{user}:***@{host}"),
+        Some((scheme, None, host)) => format!("{scheme}://***@{host}"),
+        None => url.to_string(),
+    }
+}
+
+/// `text` with every URL in it shown as [`shown_location`] shows it: git's messages quote
+/// the URL they failed on, credentials included.
+pub fn redacted(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("://") {
+        let start = rest[..at]
+            .rfind(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')))
+            .map_or(0, |index| index + 1);
+        let end = rest[at..]
+            .find(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '<' | '>' | '`'))
+            .map_or(rest.len(), |index| at + index);
+        out.push_str(&rest[..start]);
+        out.push_str(&shown_location(&rest[start..end]));
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A `url` whose `scheme://userinfo@` part holds a secret, split into its scheme, the user
+/// name a redaction keeps, and the rest from the host on. `None` when it holds no secret.
+fn credentials(url: &str) -> Option<(&str, Option<&str>, &str)> {
     let (scheme, rest) = url.split_once("://")?;
     let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let (userinfo, host) = rest[..authority_end].rsplit_once('@')?;
+    let (userinfo, _) = rest[..authority_end].rsplit_once('@')?;
+    let host = &rest[userinfo.len() + 1..];
     let http = scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
     let kept = match userinfo.split_once(':') {
         None if !http => return None,
-        Some((user, _)) if !http && !user.is_empty() => format!("{user}@"),
-        _ => String::new(),
+        Some((user, _)) if !http && !user.is_empty() => Some(user),
+        _ => None,
     };
-    Some(format!("{scheme}://{kept}{host}{}", &rest[authority_end..]))
+    Some((scheme, kept, host))
 }
 
 /// Pushes a backup tries before recording the rejection as the target's error. Each retry
@@ -1109,7 +1196,7 @@ fn backup_to_git(
         if push.status.success() {
             return Ok(RunOutcome::Written(format!(
                 "{} {relative}",
-                target.location
+                shown_location(&target.location)
             )));
         }
         last_error = git_failure("push", &push);
@@ -1234,7 +1321,10 @@ fn sync_clone(state_dir: &Path, target: &Target) -> Result<GitClone, String> {
     fsperm::ensure_private_dir(&repos).map_err(|error| error.to_string())?;
     let dir = repos.join(target.id());
     if dir.join(".git").is_dir() {
-        git_ok(&dir, &["remote", "set-url", "origin", &target.location])?;
+        git_ok(
+            &dir,
+            &["remote", "set-url", "origin", "--", &target.location],
+        )?;
         git_ok(&dir, &["fetch", "--quiet", "--prune", "origin"])?;
     } else {
         let _ = fs::remove_dir_all(&dir);
@@ -1246,6 +1336,7 @@ fn sync_clone(state_dir: &Path, target: &Target) -> Result<GitClone, String> {
                 "--no-checkout",
                 "--config",
                 "core.symlinks=false",
+                "--",
                 &target.location,
             ])
             .arg(&dir);
@@ -1369,7 +1460,7 @@ fn git_failure(verb: &str, output: &std::process::Output) -> String {
     } else {
         lines[lines.len().saturating_sub(4)..].join(" / ")
     };
-    format!("git {verb} failed: {detail}")
+    format!("git {verb} failed: {}", redacted(&detail))
 }
 
 /// One restorable copy.
@@ -1383,7 +1474,7 @@ pub struct Version {
     pub machine: String,
     /// The machine id: the directory under `machines/` the version came from.
     pub machine_id: String,
-    /// The target's URL or path.
+    /// The target's URL or path, as [`shown_location`] shows it.
     pub target: String,
     /// Tasks in the copy (notices and deleted tasks excluded); `None` when unreadable.
     pub tasks: Option<usize>,
@@ -1503,7 +1594,7 @@ fn git_versions(state_dir: &Path, target: &Target, all: bool) -> Result<Vec<Vers
                     .clone()
                     .unwrap_or_else(|| machine.chars().take(8).collect()),
                 machine_id: machine.to_string(),
-                target: target.location.clone(),
+                target: shown_location(&target.location),
                 tasks,
                 order,
                 source,
@@ -2278,6 +2369,28 @@ every = "daily"
     }
 
     #[test]
+    fn add_waits_for_a_running_backup() {
+        let root = TempDir::new("add-lock");
+        let remote = bare_repo(&root.0);
+        let state = state_with_target(&root.0, &remote, "");
+        let running = open_lock(&state, RUN_LOCK_FILE).expect("lock");
+        running.lock().expect("hold the run lock");
+        let adder = {
+            let state = state.clone();
+            std::thread::spawn(move || add_target(&state, "/srv/other.git", None))
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            load_targets(&state).expect("targets").len(),
+            1,
+            "config.toml untouched while a run holds the lock"
+        );
+        running.unlock().expect("release");
+        adder.join().expect("adder").expect("added");
+        assert_eq!(load_targets(&state).expect("targets").len(), 2);
+    }
+
+    #[test]
     fn only_machine_id_directories_are_listed() {
         let root = TempDir::new("hostile-machine");
         let remote = bare_repo(&root.0);
@@ -2327,6 +2440,52 @@ every = "daily"
         );
         assert_eq!(without_credentials("ssh://git@host/a.git"), None);
         assert_eq!(without_credentials("https://github.com/a@b.git"), None);
+    }
+
+    #[test]
+    fn credentials_in_an_inline_backup_list_are_never_pushed() {
+        let config = "backup = [{ url = \"https://me:ghp_s3cret@github.com/me/b.git\" }, { url = \"ssh://git:pw@host/x.git\", every = \"daily\" }]\n";
+        assert_eq!(parse_targets(config).expect("parses").len(), 2);
+        let pushed = sanitized_config(config).expect("parses");
+        assert!(
+            !pushed.contains("s3cret") && !pushed.contains(":pw@"),
+            "{pushed}"
+        );
+        assert!(pushed.contains("https://github.com/me/b.git"), "{pushed}");
+        assert!(pushed.contains("ssh://git@host/x.git"), "{pushed}");
+    }
+
+    #[test]
+    fn shown_locations_and_messages_hide_credentials() {
+        assert_eq!(
+            shown_location("https://me:ghp_s3cret@github.com/me/b.git"),
+            "https://***@github.com/me/b.git"
+        );
+        assert_eq!(
+            shown_location("https://TOKEN@github.com/a.git"),
+            "https://***@github.com/a.git"
+        );
+        assert_eq!(
+            shown_location("ssh://git:pw@host/x.git"),
+            "ssh://git:***@host/x.git"
+        );
+        for plain in [
+            "ssh://git@host/a.git",
+            "git@github.com:me/b.git",
+            "/srv/tsk.git",
+            "https://github.com/a@b.git",
+        ] {
+            assert_eq!(shown_location(plain), plain);
+        }
+        assert_eq!(
+            redacted("fatal: unable to access 'https://me:s3cret@example.invalid/b.git/': Could not resolve host"),
+            "fatal: unable to access 'https://***@example.invalid/b.git/': Could not resolve host"
+        );
+        assert_eq!(
+            redacted("ssh://git:pw@a/x and https://t@b/y"),
+            "ssh://git:***@a/x and https://***@b/y"
+        );
+        assert_eq!(redacted("no url here"), "no url here");
     }
 
     #[test]

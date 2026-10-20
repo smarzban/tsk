@@ -2270,7 +2270,7 @@ pub fn restore_help() -> CliOutput {
                 "Arguments",
                 &[(
                     "<version>",
-                    "a version id from the list; without one, a terminal asks which",
+                    "a version id, even one only --all lists; without one, a terminal asks",
                 )],
             ),
             group(
@@ -2582,6 +2582,21 @@ pub fn update_help() -> CliOutput {
         exit: exit_line(
             "latest stable release installed or staged, or Homebrew guidance printed",
             Some("update failed"),
+            false,
+        ),
+    })
+}
+
+pub fn capture_help() -> CliOutput {
+    help(HelpDoc {
+        usage: vec!["tsk capture".into()],
+        purpose: "Open quick capture in this terminal. A save or a discard exits.".into(),
+        groups: Vec::new(),
+        examples: vec!["tsk capture".into()],
+        refusals: Vec::new(),
+        exit: exit_line(
+            "saved or discarded",
+            Some("the terminal could not open it"),
             false,
         ),
     })

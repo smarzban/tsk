@@ -631,15 +631,16 @@ tsk restore [<version>] [--all] [--state-dir <dir>]
 
 | Flag | Meaning |
 | --- | --- |
-| `<version>` | Restore this version without asking |
+| `<version>` | Restore this version without asking, including one only `--all` lists |
 | `--all` | List every version, not the newest 20 per machine |
 
 - The list shows each version's id, time, host, task count, and target, newest first. In a terminal it then asks which to restore; Enter cancels.
 - A restore keeps the replaced store beside it and prints its path. It never changes `config.toml`.
 - It refuses and replaces nothing when there are no targets or the id is unknown. It also refuses while a board or quick capture is open, and for a version from a newer tsk.
-- `tsk restore T12` is not a version: it points at `tsk trash restore T12`.
+- `tsk restore T12` is not a version: it points at `tsk trash restore T12`. A bare number, such as a `#` from the list, refuses and asks for the id.
+- A backup URL's credentials print as `***` ([credentials](/docs/storage/#credentials)).
 
-**Refusals:** a message with no code, exit 1 ([exit contract](#exit-contract)).
+**Refusals:** a message with no code, exit 1 ([exit contract](#exit-contract)). A failure while replacing the store exits 3.
 
 ```sh
 tsk restore 3f9a1c2e
@@ -749,6 +750,6 @@ A refusal prints `tsk <command>: <code>: <message>` on stderr, such as `tsk stat
 | `clean` | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `herdr-failed`; on Windows `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`; with `--merge` also `gh-unavailable`, `no-pr`, `pr-not-open`, `pr-base-mismatch`, `merge-failed`, `merge-config` |
 | `archive`, `unarchive` | `unknown-task`, `soft-deleted-task` |
 
-`project`, `trash`, `backup`, and `restore` refuse with a message only: `tsk <command>: <message>`, exit 1. `dispatch` and `clean` print `store-error` as the code of an exit 3.
+`project`, `trash`, `backup`, and `restore` refuse with a message only: `tsk <command>: <message>`, exit 1. A store that cannot be read or written exits 3 from `project`, `trash`, and `restore`. `dispatch` and `clean` print `store-error` as the code of an exit 3.
 
 After an uncertain `add`, check `tsk list --all --json`, and `--done` or `--archived` when a match could be there. With a task number, read the task directly.

@@ -48,6 +48,8 @@ fn main() -> ExitCode {
             }
         },
         Surface::Setup | Surface::Guide | Surface::Help => headless_main(args),
+        // `capture --help` is reference text like every other verb's: the headless runner owns it.
+        Surface::Capture if args.len() == 3 && args[2] == "--help" => headless_main(args),
         Surface::Board | Surface::Capture => match tsk_tui::store::require_home_or_override(&args)
             .map_err(|message| message.into())
             .and_then(|()| tsk_tui::run(args))

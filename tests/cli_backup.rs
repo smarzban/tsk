@@ -324,6 +324,121 @@ fn restore_of_a_task_number_points_at_trash_even_without_targets() {
 }
 
 #[test]
+fn a_row_number_is_not_sent_to_the_trash() {
+    let state = TempDir::new("restore-row");
+    let restored = tsk(&state.0, &["restore", "2"]);
+    assert_eq!(restored.status.code(), Some(1));
+    let message = stderr(&restored);
+    assert!(message.contains("2 is not a version id"), "{message}");
+    assert!(!message.contains("did you mean"), "{message}");
+}
+
+/// `tsk` with git told to fetch and push `url` from the local `repo`: a credential URL that
+/// reaches a real repository without a network.
+fn tsk_reaching(state: &Path, url: &str, repo: &str, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_tsk"))
+        .args(args)
+        .arg("--state-dir")
+        .arg(state)
+        .env_remove("TSK_AGENT")
+        .env("TSK_NO_UPDATE_CHECK", "1")
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", format!("url.{repo}.insteadOf"))
+        .env("GIT_CONFIG_VALUE_0", url)
+        .output()
+        .expect("run tsk")
+}
+
+#[test]
+fn credentials_in_a_target_url_are_never_printed() {
+    let root = TempDir::new("credentials");
+    let repo = bare_repo(&root.0);
+    let url = "https://me:ghp_S3CRET@example.invalid/me/b.git";
+    let shown = "https://***@example.invalid/me/b.git";
+    let state = root.0.join("state");
+    add(&state, "kept private");
+    let run = |args: &[&str]| {
+        let output = tsk_reaching(&state, url, &repo, args);
+        let text = format!("{}{}", stdout(&output), stderr(&output));
+        assert!(
+            !text.contains("S3CRET"),
+            "{args:?} printed the token: {text}"
+        );
+        (output, text)
+    };
+    let (added, text) = run(&["backup", "add", url]);
+    assert_eq!(added.status.code(), Some(0), "{text}");
+    assert!(text.contains(&format!("added target {shown}")), "{text}");
+    assert!(
+        text.contains(&format!("backed up to {shown} machines/")),
+        "{text}"
+    );
+    let (_, text) = run(&["backup", "list"]);
+    assert!(text.contains(&format!("1. {shown}")), "{text}");
+    let (_, text) = run(&["backup"]);
+    assert!(text.contains(&format!("{shown} is up to date")), "{text}");
+    let (listed, text) = run(&["restore"]);
+    assert_eq!(listed.status.code(), Some(0), "{text}");
+    assert!(text.contains(shown), "{text}");
+    // The location as list shows it names the target.
+    let (removed, text) = run(&["backup", "remove", shown]);
+    assert_eq!(removed.status.code(), Some(0), "{text}");
+    assert!(
+        text.contains(&format!("removed git target {shown}")),
+        "{text}"
+    );
+    assert_eq!(commits(&repo), 1);
+
+    // An unreachable one: git's errors quote the URL.
+    let lost = root.0.join("lost");
+    add(&lost, "kept private too");
+    let failed = tsk(&lost, &["backup", "add", url]);
+    let text = format!("{}{}", stdout(&failed), stderr(&failed));
+    assert_eq!(failed.status.code(), Some(1), "{text}");
+    for args in [&["backup", "list"][..], &["backup"], &["restore"]] {
+        let output = tsk(&lost, args);
+        let text = format!("{text}{}{}", stdout(&output), stderr(&output));
+        assert!(
+            !text.contains("S3CRET"),
+            "{args:?} printed the token: {text}"
+        );
+        assert!(text.contains(shown), "{args:?}: {text}");
+    }
+}
+
+#[test]
+fn an_id_restores_a_version_past_the_newest_twenty() {
+    let root = TempDir::new("past-twenty");
+    let repo = bare_repo(&root.0);
+    let state = root.0.join("state");
+    add(&state, "version 1");
+    let added = tsk(&state, &["backup", "add", &repo, "--every", "daily"]);
+    assert_eq!(added.status.code(), Some(0), "{}", stderr(&added));
+    for n in 2..=21 {
+        add(&state, &format!("version {n}"));
+        let now = tsk(&state, &["backup"]);
+        assert_eq!(now.status.code(), Some(0), "{}", stderr(&now));
+    }
+    let rows = |args: &[&str]| -> Vec<String> {
+        let listed = tsk(&state, args);
+        assert_eq!(listed.status.code(), Some(0), "{}", stderr(&listed));
+        stdout(&listed)
+            .lines()
+            .skip(1)
+            .filter(|line| !line.starts_with("Restore one"))
+            .map(str::to_string)
+            .collect()
+    };
+    assert_eq!(rows(&["restore"]).len(), 20);
+    let every = rows(&["restore", "--all"]);
+    assert_eq!(every.len(), 21);
+    let oldest = every[20].split_whitespace().nth(1).expect("id").to_string();
+    let restored = tsk(&state, &["restore", &oldest]);
+    assert_eq!(restored.status.code(), Some(0), "{}", stderr(&restored));
+    assert!(stdout(&restored).starts_with(&format!("restored {oldest} (1 tasks")));
+}
+
+#[test]
 fn backup_add_checks_a_detached_run_reaches_the_target_too() {
     let state = TempDir::new("probe-ok");
     add(&state.0, "reachable");
