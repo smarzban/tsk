@@ -19,7 +19,7 @@ tsk list
 | [`tsk add`](#add) | Add a task, or every task in a JSON plan |
 | [`tsk list`](#list) | Read tasks |
 | [`tsk status`](#status) | Set a task's status, block it, or put it up for review |
-| [`tsk edit`](#edit) | Change a task's title, notes, assignee, base, or after list |
+| [`tsk edit`](#edit) | Change a task's title, notes, assignee, base, after list, or who its block or review waits on |
 | [`tsk steps`](#steps) | Add, toggle, rename, move, or remove a step |
 | [`tsk reply`](#reply) | Answer a block, or give feedback on a review |
 | [`tsk dispatch`](#dispatch) | Launch a task's assigned agent in its own worktree |
@@ -88,7 +88,7 @@ tsk add [--file <path|->] [--state-dir <dir>]
 | `-n`, `--notes <notes>` | Notes; blank notes are left out |
 | `-p`, `--project`, `--desk` | [Scope](#scope) |
 | `--thread <name>` | A [thread name](/docs/capture/#thread-names) |
-| `--assignee <name>` | An agent profile from [`config.toml`](/docs/storage/#configuration) |
+| `--assignee <name>` | An agent profile from [`config.toml`](/docs/storage/#configuration), `me`, or a person ([names](/docs/dispatch/#assignee-names)) |
 | `--unassign` | No assignee |
 | `--base <branch>` | Dispatch from this existing branch of the project ([base branch](/docs/dispatch/#base-branch)) |
 | `--clear-base` | Dispatch from the project's default branch |
@@ -97,14 +97,14 @@ tsk add [--file <path|->] [--state-dir <dir>]
 
 An add is safe to repeat. A live task with the same title, project, thread, assignee, and base counts as already there, even when done or archived: the add changes nothing and reports `existing`. Adding into an archived project refuses with `project-archived`.
 
-Output is `added <title>`, or `task already exists`. With `--json`:
+Output is `added <title>`, or `task already exists`. An assignee that is not a profile adds a line, so a typo shows: `assigned T12 to @dana (not an agent profile)`. With `--json`:
 
 | Field | Value |
 | --- | --- |
 | `outcome` | `created` or `existing` |
 | `id`, `number`, `title` | The task |
 | `project` | Project path, or `null` on the desk |
-| `assignee` | Agent profile, or `null` |
+| `assignee`, `assignee_kind` | As in [list](#json-fields) |
 
 **Refusals:** codes and exits in the [exit contract](#exit-contract).
 
@@ -129,14 +129,14 @@ A plan is a JSON array of task objects, read from `--file` or piped to `tsk add`
 | `notes` | Notes |
 | `project` | A project name or path. Omitted: the default [scope](#scope). `null`: the desk |
 | `thread` | Thread name, or `null` |
-| `assignee` | Agent profile, or `null` |
+| `assignee` | An assignee name, as for `--assignee`, or `null` |
 | `base` | Dispatch base branch, or `null` for the default branch |
 | `after` | Tasks this one [runs after](/docs/board/#after), such as `[202]` or `["T202"]`, in any project |
 
 The result is one JSON object with three arrays: `created`, `existing`, and `failed`. Each entry carries the item's index `i`. Created and existing entries add `id`, `number`, and `title`; failed ones add `title`, `code`, and `error`.
 
 - Valid items save even when others fail. Retry only the failed items.
-- An item's refusal codes include `invalid-item`, `invalid-thread`, and `invalid-after` (an unknown or done task).
+- An item's refusal codes include `invalid-item`, `invalid-thread`, `invalid-assignee`, and `invalid-after` (an unknown or done task).
 - Item flags and `--file` do not mix. With item flags, piped input is ignored.
 - A leading byte order mark, which Windows PowerShell 5.1 writes, is ignored.
 
@@ -158,7 +158,7 @@ tsk list [<task>] [-p <project> | --desk | --all] [--thread <name> | --no-thread
 | `<task>` | That task in full, wherever it is, including done and archived. A deleted task shows until it moves to [trash](#trash). Takes no other filter |
 | `--thread <name>` | Tasks on that thread. With `--all`, across every project and the desk |
 | `--no-thread` | Tasks without a thread |
-| `--assignee <name>` | Tasks assigned to that agent profile |
+| `--assignee <name>` | Tasks assigned to that name. `me` lists yours |
 | `--open`, `--ready` | Only that status |
 | `--done` | Done tasks |
 | `--archived` | Archived tasks, and tasks in archived projects, in any status |
@@ -196,7 +196,8 @@ tsk list --all --thread release --json
 | `number` | Task number: `12` for T12 |
 | `title`, `status` | Title and status |
 | `project` | Project path, or `null` on the desk |
-| `thread`, `assignee`, `base` | Thread, agent profile, and explicit base branch, each `null` when unset |
+| `thread`, `assignee`, `base` | Thread, assignee name, and explicit base branch, each `null` when unset. An assignee of `you` is you |
+| `assignee_kind` | `agent` for an agent profile, `person` for you or a named person, `null` when unassigned |
 | `after` | Tasks this one runs after, in order, each `{"task": 202, "done": false}`. A task gone from the board reads as done |
 | `before` | Numbers of the tasks that run after this one |
 | `block` | The open block, below. Absent when there is none |
@@ -224,7 +225,7 @@ Times such as `at` are `[seconds, nanoseconds]` since the Unix epoch.
 | --- | --- |
 | `why`, `needs` | What stops the work, what would unblock it; `null` when unset |
 | `options` | Suggested answers |
-| `on` | Who it waits on: `you`, `task:<number>`, or `other:<text>` |
+| `on` | Who it waits on: `you`, `task:<number>`, `agent:<profile>`, or `other:<text>` |
 | `by`, `at`, `edited` | Who opened it, when, and whether it was edited since |
 | `replies` | Each `at`, `by`, `text`, plus `edited: true` and `sent: true` when they apply |
 | `answered` | `true` when the last reply is yours |
@@ -247,7 +248,7 @@ Times such as `at` are `[seconds, nanoseconds]` since the Unix epoch.
 | --- | --- |
 | `at` | When |
 | `by` | `you`, the agent profile that made the change, or `null` on old events |
-| `kind` | `created`, `edited`, `status_set`, `completed`, `reopened`, `soft_deleted`, `restored`, `archived`, `unarchived`, `step_added`, `step_checked`, `step_unchecked`, `step_renamed`, `step_removed`, `assigned`, `base_set`, `dispatched`, `cleaned`, `block_edited`, `replied`, `reply_edited`, `reply_deleted`, `review_edited`, or `check_set` |
+| `kind` | `created`, `edited`, `status_set`, `completed`, `reopened`, `soft_deleted`, `restored`, `archived`, `unarchived`, `step_added`, `step_checked`, `step_unchecked`, `step_renamed`, `step_removed`, `assigned`, `base_set`, `dispatched`, `cleaned`, `block_edited`, `replied`, `reply_edited`, `reply_deleted`, `review_edited`, `check_set`, or `on_set` |
 | `detail` | What changed, below, or `null` |
 
 | Event | `detail` |
@@ -257,6 +258,7 @@ Times such as `at` are `[seconds, nanoseconds]` since the Unix epoch.
 | `base_set` | `base`; absent when cleared |
 | `dispatched` | `branch`, `base`, `sha`, `relaunch: true` on a relaunch, and `after` as above |
 | `cleaned` | `outcome`: `removed`, `branch_kept`, or `missing` |
+| `on_set` | `on_from` and `on_to`, shaped like a block's `on` |
 | `edited` | `fields`: any of `title`, `notes`, `thread`, `project`, `after` |
 
 ## status
@@ -337,12 +339,13 @@ tsk status T12 done --merge
 | `--why <text>` | What stops the work |
 | `--needs <text>` | What would unblock it |
 | `--option <text>` | One suggested answer; repeat for more |
-| `--on <who>` | Who it waits on: `you` (the default), another task (`T202`), or any other text |
+| `--on <who>` | Who it waits on: `you` (the default), another task (`T202`), an agent profile (`pi` or `@pi`), or any other text |
 
 - Each text is at most 4 KB (`text-too-long`). A task number for `--on` must name another task on the board (`invalid-blocker`).
 - A task has one open block. Running the command again edits it, replacing only the fields given.
 - `blocked` with no flags opens a block with no reason.
 - Leaving `blocked` by any route closes the block into `past_blocks`.
+- `me` and your [configured name](/docs/storage/#board-defaults) also mean you, on a block and a review.
 - A block on you shows under NEEDS YOU. One on another task stays IN MOTION until that task is done or gone, then needs you. One on anything else stays IN MOTION ([sections](/docs/board/#sections-and-status)).
 
 ```sh
@@ -371,25 +374,27 @@ tsk status T12 review --done "Opened PR #42" --check "tests pass" --next "docs"
 
 ## edit
 
-Changes a task's title, notes, assignee, dispatch base, or the tasks it runs after. Scope and thread stay as they are: to move a task, add it again in the right scope and archive the old one.
+Changes a task's title, notes, assignee, dispatch base, the tasks it runs after, or who its open block or review waits on. Scope and thread stay as they are: to move a task, add it again in the right scope and archive the old one.
 
 ```text
-tsk edit <task> [--title <title>] [--notes <notes>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--after <task>]... [--clear-after] [--state-dir <dir>]
+tsk edit <task> [--title <title>] [--notes <notes>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--after <task>]... [--clear-after] [--on <who>] [--state-dir <dir>]
 ```
 
 | Flag | Meaning |
 | --- | --- |
 | `-t`, `--title <title>` | Replace the title |
 | `-n`, `--notes <notes>` | Replace the notes. Blank clears them; newlines and tabs are kept |
-| `--assignee <name>` | Assign an agent profile from [`config.toml`](/docs/storage/#configuration) |
+| `--assignee <name>` | Assign an agent profile from [`config.toml`](/docs/storage/#configuration), `me`, or a person ([names](/docs/dispatch/#assignee-names)) |
 | `--unassign` | Clear the assignee |
 | `--base <branch>` | Dispatch from this existing branch, not a tag or commit (`unknown-base`) |
 | `--clear-base` | Dispatch from the project's default branch |
 | `--after <task>` | Run after this task; repeat for more. Replaces the list |
 | `--clear-after` | Run after nothing |
+| `--on <who>` | Change who the open block or review waits on, as for [block](#block) and [review](#review) `--on` |
 
 - `--after` takes tasks in any project. It refuses the task itself, a task not on the board, or a done one (`invalid-after`), and a link that would close a loop (`after-loop`). There is no `--before`: set the other task's `--after`.
-- Output is `edited T12 <title>`. Repeating the same values is safe.
+- `--on` keeps the round, its text, checks, and replies. A task with no open block or review refuses with `not-blocked`.
+- Output is `edited T12 <title>`, plus `assigned T12 to @dana (not an agent profile)` for a person. Repeating the same values is safe.
 
 **Refusals:** codes and exits in the [exit contract](#exit-contract).
 
@@ -729,12 +734,12 @@ A refusal prints `tsk <command>: <code>: <message>` on stderr, such as `tsk stat
 
 | Command | Refusal codes |
 | --- | --- |
-| `add` | `empty-title`, `invalid-title`, `unknown-project`, `project-archived`, `unknown-agent`, `unknown-base`; in a plan also `invalid-item`, `invalid-thread`, `invalid-after` |
+| `add` | `empty-title`, `invalid-title`, `unknown-project`, `project-archived`, `unknown-base`; in a plan also `invalid-item`, `invalid-thread`, `invalid-assignee`, `invalid-after` |
 | `status` | `unknown-task`, `soft-deleted-task`, `text-too-long`, `invalid-blocker` |
 | `status … started` | `after-not-done`, `agent-gone`, and the `dispatch` codes `needs-git-project`, `unknown-agent`, `agent-config`, `unknown-base`, `no-default-base`, `herdr-failed`; on Windows `unsupported-platform`, `unsafe-state-dir` |
 | `status … done --clean` | The `clean` codes except `not-dispatched` and `already-cleaned` |
 | `status … done --merge` | Every `clean` code, with `--merge` |
-| `edit` | `unknown-task`, `soft-deleted-task`, `empty-title`, `invalid-title`, `unknown-agent`, `unknown-base`, `invalid-after`, `after-loop` |
+| `edit` | `unknown-task`, `soft-deleted-task`, `empty-title`, `invalid-title`, `unknown-base`, `invalid-after`, `after-loop`; with `--on` also `not-blocked`, `invalid-blocker`, `text-too-long` |
 | `steps` | `unknown-task`, `soft-deleted-task`, `empty-step-text`, `invalid-step-text`, `unknown-step`, `ambiguous-step`, `same-step` |
 | `reply` | `unknown-task`, `soft-deleted-task`, `not-blocked`, `empty-reply`, `text-too-long` |
 | `dispatch` | `unknown-task`, `soft-deleted-task`, `done-task`, `archived-task`, `no-assignee`, `unknown-agent`, `agent-config`, `already-dispatched`, `not-in-herdr`, `needs-git-project`, `unknown-base`, `no-default-base`, `herdr-failed`; on Windows `unsupported-platform`, `unsafe-state-dir` |

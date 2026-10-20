@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tsk_tui::domain::{Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope};
+use tsk_tui::domain::{
+    BlockDraft, Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope,
+};
 use tsk_tui::ui::board::{apply_intent, BoardInputMode, BoardModel};
 use tsk_tui::ui::input::{map_key, BoardIntent};
 
@@ -59,7 +61,7 @@ fn promised_labels(cell: &str) -> Vec<String> {
         let part = part.trim().to_lowercase();
         if matches!(
             part.as_str(),
-            "set assignee" | "set base" | "set after (wait for)…"
+            "set assignee" | "set waiting on…" | "set base" | "set after (wait for)…"
         ) {
             labels.push(part);
         } else if let Some(rest) = part.strip_prefix("set ") {
@@ -105,6 +107,26 @@ fn selected_model(dispatched: bool) -> BoardModel {
             )
             .expect("dispatch");
     }
+    let model = BoardModel::from_tasks(domain.tasks().to_vec(), None);
+    assert!(model.selected_id().is_some(), "a task must be selected");
+    model
+}
+
+/// One blocked task, selected.
+fn blocked_model() -> BoardModel {
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "blocked witness",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("seed task");
+    domain
+        .block(id, BlockDraft::default(), "you")
+        .expect("block");
     let model = BoardModel::from_tasks(domain.tasks().to_vec(), None);
     assert!(model.selected_id().is_some(), "a task must be selected");
     model
@@ -179,6 +201,7 @@ fn board_md_palette_table_matches_the_palette_catalog() {
     let mut model = selected_model(false);
     let with_selection = labels(&model);
     let with_dispatch = labels(&selected_model(true));
+    let with_block = labels(&blocked_model());
     let with_marks = labels(&marked_model());
 
     model.begin_save_recovery("disk full");
@@ -196,6 +219,7 @@ fn board_md_palette_table_matches_the_palette_catalog() {
                 &with_selection
             }
             "A task with a dispatch record is selected" => &with_dispatch,
+            "A task with an open block or review is selected or marked" => &with_block,
             "Two or more tasks are marked" => &with_marks,
             "A save has failed" => &recovery,
             "A task-page step is selected" => &with_step,
@@ -220,6 +244,10 @@ fn board_md_palette_table_matches_the_palette_catalog() {
             | "Two or more tasks are marked" => assert!(
                 !always.contains(label),
                 "{label:?} is documented as selection-only but the empty board offers it"
+            ),
+            "A task with an open block or review is selected or marked" => assert!(
+                !with_selection.contains(label),
+                "{label:?} is documented for an open block or review but a plain selection offers it"
             ),
             "Always" => {
                 assert!(
@@ -288,6 +316,20 @@ fn board_md_palette_table_matches_the_palette_catalog() {
                 ]
             ),
             "a dispatched board offers {label:?} but board.md's table does not list it"
+        );
+    }
+    for label in &with_block {
+        assert!(
+            covers(
+                label,
+                &[
+                    "Always",
+                    "A task list has focus",
+                    "A task is selected",
+                    "A task with an open block or review is selected or marked"
+                ]
+            ),
+            "a blocked board offers {label:?} but board.md's table does not list it"
         );
     }
     for label in &with_marks {

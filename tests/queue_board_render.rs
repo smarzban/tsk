@@ -50,6 +50,7 @@ fn task(id: u128, title: &str, status: HumanStatus, scope: TaskScope, secs_ago: 
         notes: None,
         thread: None,
         assignee: None,
+        assignee_kind: Default::default(),
         base: None,
         dispatch: None,
         after: Vec::new(),

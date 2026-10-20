@@ -21,7 +21,7 @@ The footer reads `@assignee · ⎇ <base> · after T202 · before T203 · #threa
 
 | Slot | Shows |
 | --- | --- |
-| `@assignee` | The agent profile. An unassigned task shows `+ assign` when at least one [agent profile](/docs/storage/#configuration) exists. Click to pick |
+| `@assignee` | The [assignee](/docs/dispatch/#assign): an agent profile, you, or a person. An unassigned task shows `+ assign` when at least one [agent profile](/docs/storage/#configuration) exists. Click to pick |
 | `⎇ <base>` | The base branch. Unset, it shows the repository default, such as `⎇ main (default)`. Click to pick |
 | `after T202, T205` | The tasks this one [runs after](/docs/board/#after). Shown only when set. Click to pick |
 | `before T203` | The tasks that run after this one. Read-only: it changes when you edit theirs |
@@ -40,13 +40,14 @@ The footer shows the same fields in the same order. Clicking a field during an e
 | Title | One line, required |
 | Notes | Free text, shown as [Markdown](#notes-markdown) |
 | Steps | The checklist. [Steps](/docs/steps/) |
-| Assignee | One agent profile, or none |
+| Assignee | An agent profile, you, or none. The task's current person stays on the list |
 | Base | An existing local or remote branch that dispatch starts from, not a tag or commit. Unset uses the repository default. [Base branch](/docs/dispatch/#base-branch) |
 | After | The tasks this one waits for |
 | Thread | A [thread name](/docs/capture/#thread-names), optional |
 | Scope | The project, or desk. Archived projects are not offered |
 
 - `Enter` on Assignee, Base, After, or Scope opens its picker. `Space` or `←` / `→` cycles Assignee and Scope in place.
+- To assign a new person, use `@` outside an edit and type their name.
 - `Enter` or a second click on Thread opens its editor.
 - The Base picker lists the repository default first, such as **default (main)**, then local and `origin/*` branches. It refreshes after a background fetch. **default** clears the base.
 - The After picker lists tasks that are not done, this project's first. `Space` ticks several and **none** clears. A choice that would close a loop is refused, such as `T202 already runs after T205`.
@@ -100,6 +101,7 @@ From the page:
 | --- | --- |
 | Open the reply box | `r` |
 | Open it starting from option N | `1`…`9`, or `Enter` on the option |
+| Change who it [waits on](#waiting-on) (top line selected) | `Enter` |
 | Edit why, on, and needs (top line selected), or your selected reply | `ctrl+e` |
 | Delete your selected reply | `ctrl+x` |
 
@@ -157,6 +159,7 @@ From the page:
 | Open the feedback box | `r` |
 | Send back, with nothing typed | `ctrl+s` |
 | Approve | `ctrl+d` |
+| Change who it [waits on](#waiting-on) (top line selected) | `Enter` |
 | Edit done, checks, next, and on (top line selected), or your selected feedback | `ctrl+e` |
 | Delete your selected feedback | `ctrl+x` |
 
@@ -176,11 +179,26 @@ In the box:
 - The empty box reads `feedback to @claude…`. Like the reply box, it belongs to the round it opened on.
 - Editing the checks keeps the state of every check whose text is unchanged.
 
+## Waiting on
+
+Hand an open block or review to someone else without touching the rest of it. Select the top line and press `Enter`, or use **set waiting on…** in the palette for the selected task or a marked set.
+
+1. The picker lists you, every agent profile, and the current choice, then **type a name…**. The current choice is selected.
+2. `←` / `→` or `↑` / `↓` move through the choices. Type to filter, or to give a name.
+3. `Enter` saves. `Esc` changes nothing.
+
+A typed name reads like an [assignee name](/docs/dispatch/#assignee-names): `you` and `me` are you, a profile's name is that agent, and anything else is kept as typed, such as `coordinator`. On a block, a task number such as `T202` makes it wait on that task.
+
+- The block or review round stays the same: its text, checks, and replies are kept.
+- The paper trail records one entry, such as `on: you → @pi`. One `ctrl+u` undoes it, for one task or a marked set.
+- With tasks marked, a task with no open block or review refuses the whole set.
+- From the CLI: [`tsk edit T12 --on`](/docs/cli/#edit).
+
 ## Paper trail
 
 Below the steps, the paper trail lists who did what to the task, newest first. It opens collapsed as `PAPER TRAIL · 14 ▸`. Press `g`, or `Enter` on the heading, to expand it.
 
-- An agent's entries name its profile, such as `@claude`. Yours read `you`.
+- An agent's entries name its profile, such as `@claude`. Yours read `you`, or your [configured name](/docs/storage/#board-defaults).
 - The same entry by the same author within a minute groups into one: `3 steps checked`.
 - Closed blocks and review rounds end in `▸`. `Enter` or a click expands one in place.
 - The trail stays expanded while you stay on the task, and collapses when another task opens.
@@ -190,6 +208,7 @@ Below the steps, the paper trail lists who did what to the task, newest first. I
 | Created | `created · you 3d` |
 | Status change | `open → started · @claude 2m`, `started · after T202` (its last prerequisite was done) |
 | Assignee, base | `assigned @claude`, `unassigned`, `base ⎇ origin/dev`, `base cleared` |
+| Waiting on | `on: you → @pi` |
 | Dispatch | `dispatched tsk/t12-fix from origin/main @ 3333b79`, or `relaunched …` |
 | Cleanup | `cleaned · worktree removed, branch kept` |
 | Edits | `title edited`, `notes edited`, `after edited`: which fields, never the text |

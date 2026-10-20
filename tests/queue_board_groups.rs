@@ -318,10 +318,7 @@ fn assigned_board() -> Board {
         (board.desk, "claude"),
         (board.beta, "pi"),
     ] {
-        board
-            .domain
-            .assign(id, Some(name.to_string()))
-            .expect("assign");
+        board.domain.assign(id, Some(name.into())).expect("assign");
     }
     board.model.sync_from_domain(&board.domain);
     board

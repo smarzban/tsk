@@ -709,8 +709,17 @@ fn list_all_groups_each_status_by_concise_scope_for_every_filter() {
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
             vec![
-                "after", "assignee", "base", "before", "id", "number", "project", "status",
-                "thread", "title"
+                "after",
+                "assignee",
+                "assignee_kind",
+                "base",
+                "before",
+                "id",
+                "number",
+                "project",
+                "status",
+                "thread",
+                "title"
             ]
         );
     }
@@ -1581,6 +1590,7 @@ fn list_equals_project_form_accepts_dash_leading_scope() {
             "status": "ready",
             "project": "-maintenance",
             "assignee": null,
+            "assignee_kind": null,
             "base": null,
             "thread": null,
             "after": [],
@@ -1770,7 +1780,7 @@ fn list_task_prints_step_lines_with_state_and_short_id() {
     ]);
     assert_eq!(json.code, 0);
     let expected_json = format!(
-        "[{{\"id\":\"{}\",\"number\":1,\"project\":null,\"status\":\"open\",\"title\":\"steps target\",\"notes\":\"First note\\nSecond note\",\"steps\":[{{\"id\":\"{}\",\"done\":true,\"short_id\":\"aaa1\",\"text\":\"First step\"}},{{\"id\":\"aaa22222-0000-4000-8000-000000000002\",\"done\":false,\"short_id\":\"aaa2\",\"text\":\"Second step\"}}],\"assignee\":null,\"base\":null,\"thread\":\"release\",\"after\":[],\"before\":[],\"activity\":",
+        "[{{\"id\":\"{}\",\"number\":1,\"project\":null,\"status\":\"open\",\"title\":\"steps target\",\"notes\":\"First note\\nSecond note\",\"steps\":[{{\"id\":\"{}\",\"done\":true,\"short_id\":\"aaa1\",\"text\":\"First step\"}},{{\"id\":\"aaa22222-0000-4000-8000-000000000002\",\"done\":false,\"short_id\":\"aaa2\",\"text\":\"Second step\"}}],\"assignee\":null,\"assignee_kind\":null,\"base\":null,\"thread\":\"release\",\"after\":[],\"before\":[],\"activity\":",
         task, first_step.id
     );
     assert_eq!(
@@ -1890,7 +1900,7 @@ fn list_task_without_steps_keeps_task_rows_and_rejects_conflicting_flags() {
     assert_eq!(rows[0]["thread"], serde_json::Value::Null);
     let raw = plain_json.stdout.as_str();
     assert!(
-        raw.contains("\"status\":\"ready\",\"title\":\"plain target\",\"notes\":null,\"steps\":[],\"assignee\":null,\"base\":null,\"thread\":null"),
+        raw.contains("\"status\":\"ready\",\"title\":\"plain target\",\"notes\":null,\"steps\":[],\"assignee\":null,\"assignee_kind\":null,\"base\":null,\"thread\":null"),
         "direct JSON keeps empty detail fields and their contract order: {raw}"
     );
 

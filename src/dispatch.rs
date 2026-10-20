@@ -2806,8 +2806,8 @@ pub fn run_with_host(
 /// What starting a task does, decided before any status change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartRoute {
-    /// A plain status change: the task is unassigned, its agent is still running, or the
-    /// caller is that agent.
+    /// A plain status change: the task is unassigned or assigned to a person, its agent is
+    /// still running, or the caller is that agent.
     Plain,
     /// Assigned and never dispatched: dispatch it, which starts it.
     Dispatch,
@@ -2881,7 +2881,8 @@ pub fn start_route_checked(
     host: &mut impl DispatchHost,
 ) -> (StartRoute, AgentCheck) {
     let plain = (StartRoute::Plain, AgentCheck::NotChecked);
-    let Some(assignee) = task.assignee.as_deref() else {
+    // Unassigned, or assigned to a person (you, or a named one): nothing to launch or ask.
+    let Some(assignee) = task.agent_assignee() else {
         return plain;
     };
     // An agent starting its own task never launches another copy of itself.
@@ -3232,7 +3233,7 @@ pub fn deliver_reply(
     host: &mut impl DispatchHost,
 ) -> Option<Delivery> {
     let number = task.number?;
-    let expected = agent_name(number, task.assignee.as_deref()?);
+    let expected = agent_name(number, task.agent_assignee()?);
     match check {
         AgentCheck::NotChecked => None,
         AgentCheck::NotInHerdr => Some(Delivery::NotInHerdr),
@@ -3611,7 +3612,12 @@ fn check_inner(
 ) -> Result<EligibleDispatch, DispatchError> {
     let task = state.get(id).cloned().ok_or(DispatchError::UnknownTask)?;
     let number = task.number.ok_or(DispatchError::UnknownTask)?;
-    let assignee = task.assignee.clone().ok_or(DispatchError::NoAssignee)?;
+    // A person (you, or a named one) is never dispatched, even when a profile later takes
+    // their name.
+    let assignee = task
+        .agent_assignee()
+        .map(str::to_string)
+        .ok_or(DispatchError::NoAssignee)?;
     if !in_herdr {
         return Err(DispatchError::NotInHerdr);
     }
@@ -7258,8 +7264,8 @@ mod tests {
     }
 
     #[test]
-    fn cleaned_marker_is_optional_and_store_format_stays_v13() {
-        assert_eq!(crate::domain::STORE_FORMAT_VERSION, 13);
+    fn cleaned_marker_is_optional_and_store_format_stays_v14() {
+        assert_eq!(crate::domain::STORE_FORMAT_VERSION, 14);
         let record = Dispatch {
             argv: vec!["agent".into()],
             worktree: "/tmp/worktree".into(),

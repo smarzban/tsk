@@ -12,6 +12,76 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// The author name of the board's owner, for blocks, replies and closers.
 pub const OWNER: &str = "you";
 
+thread_local! {
+    static OWNER_NAME: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The name your handle shows: `[board] me` from `config.toml`, else `you`. It changes only how
+/// your handle reads; stored data and JSON always say `you`.
+pub fn owner_name() -> String {
+    OWNER_NAME
+        .with(|name| name.borrow().clone())
+        .unwrap_or_else(|| OWNER.to_string())
+}
+
+/// Show this thread's handles for you as `name` (`None`: `you`). The board and the CLI set it
+/// once at startup, like [`super::acting_as`] sets the actor; tests set it on their own thread.
+pub fn set_owner_name(name: Option<String>) {
+    OWNER_NAME.with(|owner| *owner.borrow_mut() = name);
+}
+
+/// Run `work` with this thread's handles for you shown as `name`, then put the previous name
+/// back. The CLI wraps every verb in it with the store's `[board] me`.
+pub fn with_owner_name<T>(name: Option<String>, work: impl FnOnce() -> T) -> T {
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            OWNER_NAME.with(|owner| *owner.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore =
+        Restore(OWNER_NAME.with(|owner| std::mem::replace(&mut *owner.borrow_mut(), name)));
+    work()
+}
+
+/// Whether a typed name means you: `you`, `me`, or your configured name, in any case.
+pub fn is_owner_alias(input: &str) -> bool {
+    let input = input.trim();
+    input.eq_ignore_ascii_case(OWNER)
+        || input.eq_ignore_ascii_case("me")
+        || input.eq_ignore_ascii_case(&owner_name())
+}
+
+/// How a stored name reads in a handle: `you` reads as your configured name.
+pub fn display_name(name: &str) -> String {
+    if name == OWNER {
+        owner_name()
+    } else {
+        name.to_string()
+    }
+}
+
+/// Read a typed waiting-on value by the name rule. Empty, `you`, `me`, or your configured name is
+/// you. On a block a task address (`T12`, `t12`, `12`) is that task. A name `is_profile` accepts,
+/// with or without `@`, is that agent. Anything else is other text, kept as typed.
+pub fn resolve_on(input: &str, kind: BlockKind, is_profile: impl Fn(&str) -> bool) -> BlockOn {
+    let value = input.trim();
+    let name = value.strip_prefix('@').unwrap_or(value);
+    if value.is_empty() || is_owner_alias(name) {
+        return BlockOn::You;
+    }
+    if kind == BlockKind::Blocked {
+        if let task @ BlockOn::Task(_) = BlockOn::parse_input(value) {
+            return task;
+        }
+    }
+    match super::normalize_thread(name) {
+        Ok(name) if is_profile(&name) => BlockOn::Agent(name),
+        _ => BlockOn::Other(value.to_string()),
+    }
+}
+
 /// Set by dispatch in the launched agent's environment to its profile name.
 pub const AGENT_ENV: &str = "TSK_AGENT";
 
@@ -164,10 +234,11 @@ impl BlockOn {
         BlockOn::Other(value.to_string())
     }
 
-    /// The short label painted on board rows: `T169`, `@pi` or the free text.
+    /// The short label painted on board rows: `T169`, `@pi` or the free text. You read as
+    /// your configured name.
     pub fn label(&self) -> String {
         match self {
-            BlockOn::You => OWNER.to_string(),
+            BlockOn::You => owner_name(),
             BlockOn::Task(number) => format!("T{number}"),
             BlockOn::Agent(name) => format!("@{name}"),
             BlockOn::Other(text) => text.clone(),
@@ -1197,5 +1268,194 @@ mod review_tests {
         assert_eq!(serde_json::from_value::<Block>(value).unwrap(), block);
         assert_eq!(BlockOn::Agent("pi".into()).label(), "@pi");
         assert!(serde_json::from_str::<BlockOn>("\"agent:\"").is_err());
+    }
+}
+
+#[cfg(test)]
+mod on_tests {
+    use super::*;
+    use crate::domain::{
+        DomainError, DomainState, EventDetail, HumanStatus, ProvenanceOrigin, TaskEventKind,
+        TaskScope, UndoEntry,
+    };
+    use uuid::Uuid;
+
+    fn task(state: &mut DomainState) -> Uuid {
+        state
+            .create("t", None, TaskScope::Global, ProvenanceOrigin::Manual, None)
+            .expect("create")
+    }
+
+    fn is_profile(name: &str) -> bool {
+        name == "pi"
+    }
+
+    /// Changing who a record waits on keeps the record (its round, text, checks, and replies),
+    /// records one `on_set` event with both values, and one undo entry puts it back.
+    #[test]
+    fn set_on_changes_only_who_and_undoes_in_one_step() {
+        let mut state = DomainState::new();
+        let id = task(&mut state);
+        let draft = ReviewDraft::from_input(Some("built"), &["works".into()], None, BlockOn::You)
+            .expect("draft");
+        state.review(id, draft, "claude").expect("review");
+        state.reply(id, "looks close", OWNER).expect("feedback");
+        let before = state.get(id).unwrap().block.clone().expect("round");
+
+        assert!(state
+            .set_on(id, BlockOn::Agent("pi".into()))
+            .expect("set on"));
+        let after = state.get(id).unwrap().block.clone().expect("same round");
+        assert_eq!(after.on, BlockOn::Agent("pi".into()));
+        assert_eq!(
+            Block {
+                on: BlockOn::You,
+                ..after.clone()
+            },
+            before,
+            "nothing but on changes, and the round is not marked edited"
+        );
+        let event = state
+            .get(id)
+            .unwrap()
+            .history
+            .last()
+            .cloned()
+            .expect("event");
+        assert_eq!(event.kind, TaskEventKind::OnSet);
+        assert_eq!(
+            event.detail,
+            Some(EventDetail {
+                on_from: Some(BlockOn::You),
+                on_to: Some(BlockOn::Agent("pi".into())),
+                ..EventDetail::default()
+            })
+        );
+        assert!(matches!(state.last_undo(), Some(UndoEntry::SetOn { .. })));
+        assert!(
+            !state.set_on(id, BlockOn::Agent("pi".into())).expect("same"),
+            "the same value changes nothing"
+        );
+
+        state.undo().expect("undo");
+        let restored = state.get(id).unwrap().block.clone().expect("still open");
+        assert_eq!(restored.on, BlockOn::You);
+        assert_eq!(restored.replies, before.replies);
+        assert_eq!(state.get(id).unwrap().status, HumanStatus::Review);
+    }
+
+    /// A marked set is one undo entry; a task with no open record refuses the whole set.
+    #[test]
+    fn set_on_batch_is_one_undo_entry_and_refuses_a_task_with_nothing_open() {
+        let mut state = DomainState::new();
+        let blocked = task(&mut state);
+        let reviewed = task(&mut state);
+        let open = task(&mut state);
+        state
+            .block(blocked, BlockDraft::default(), "claude")
+            .expect("block");
+        state
+            .review(reviewed, ReviewDraft::default(), "claude")
+            .expect("review");
+        let other = BlockOn::Other("coordinator".into());
+
+        assert_eq!(
+            state.set_on_batch(&[(blocked, other.clone()), (open, other.clone())]),
+            Err(DomainError::NotBlocked(open))
+        );
+        assert!(state
+            .get(blocked)
+            .unwrap()
+            .block
+            .as_ref()
+            .unwrap()
+            .on
+            .is_you());
+
+        assert!(state
+            .set_on_batch(&[(blocked, other.clone()), (reviewed, other.clone())])
+            .expect("batch"));
+        assert!(matches!(
+            state.last_undo(),
+            Some(UndoEntry::Batch { entries }) if entries.len() == 2
+        ));
+        state.undo().expect("undo");
+        for id in [blocked, reviewed] {
+            assert!(state.get(id).unwrap().block.as_ref().unwrap().on.is_you());
+        }
+    }
+
+    /// The name rule: you (and its aliases), a task on a block, a profile with or without `@`,
+    /// else the text as typed.
+    #[test]
+    fn resolve_on_follows_the_name_rule() {
+        for you in ["", "you", "You", "me", "@me"] {
+            assert_eq!(
+                resolve_on(you, BlockKind::Blocked, is_profile),
+                BlockOn::You
+            );
+        }
+        assert_eq!(
+            resolve_on("T202", BlockKind::Blocked, is_profile),
+            BlockOn::Task(202)
+        );
+        assert_eq!(
+            resolve_on("T202", BlockKind::Review, is_profile),
+            BlockOn::Other("T202".into()),
+            "a review never waits on a task"
+        );
+        for agent in ["pi", "@pi", "PI"] {
+            assert_eq!(
+                resolve_on(agent, BlockKind::Blocked, is_profile),
+                BlockOn::Agent("pi".into())
+            );
+        }
+        assert_eq!(
+            resolve_on(" @coordinator ", BlockKind::Review, is_profile),
+            BlockOn::Other("@coordinator".into())
+        );
+    }
+
+    /// `[board] me` changes how you read and adds an alias; stored values stay `you`.
+    #[test]
+    fn the_owner_name_shows_for_you_and_is_an_alias() {
+        assert_eq!(owner_name(), OWNER);
+        with_owner_name(Some("saeed".into()), || {
+            assert_eq!(BlockOn::You.label(), "saeed");
+            assert_eq!(BlockOn::You.wire(), OWNER);
+            assert_eq!(display_name(OWNER), "saeed");
+            assert_eq!(display_name("dana"), "dana");
+            for alias in ["you", "me", "Saeed", "@saeed"] {
+                assert_eq!(
+                    resolve_on(alias, BlockKind::Review, is_profile),
+                    BlockOn::You
+                );
+            }
+            assert_eq!(
+                crate::domain::resolve_assignee("saeed", is_profile),
+                Ok(crate::domain::Assignee::you())
+            );
+        });
+        assert_eq!(owner_name(), OWNER, "the name is put back");
+        assert_eq!(
+            resolve_on("saeed", BlockKind::Review, is_profile),
+            BlockOn::Other("saeed".into())
+        );
+    }
+
+    #[test]
+    fn resolve_assignee_reads_you_a_profile_or_a_person() {
+        use crate::domain::{resolve_assignee, Assignee};
+        assert_eq!(resolve_assignee("me", is_profile), Ok(Assignee::you()));
+        assert_eq!(
+            resolve_assignee("@pi", is_profile),
+            Ok(Assignee::agent("pi"))
+        );
+        assert_eq!(
+            resolve_assignee("Dana", is_profile),
+            Ok(Assignee::person("dana"))
+        );
+        assert!(resolve_assignee("dana smith", is_profile).is_err());
+        assert!(resolve_assignee("", is_profile).is_err());
     }
 }

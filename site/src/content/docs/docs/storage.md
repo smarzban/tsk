@@ -110,7 +110,7 @@ method = "squash"   # "merge" (the default), "squash", or "rebase"
 
 ### Board defaults
 
-The `[board]` table sets the [group and sort](/docs/board/#group-and-sort) a fresh board starts with:
+The `[board]` table sets the [group and sort](/docs/board/#group-and-sort) a fresh board starts with, and the name the board calls you:
 
 ```toml
 [board]
@@ -118,11 +118,19 @@ group = "assignee"        # desk: none, project, thread, or assignee
 sort = "recent"           # desk: recent, project, thread, title, or assignee
 project_group = "thread"  # project boards: none, thread, or assignee
 project_sort = "title"    # project boards: recent, thread, title, or assignee
+me = "sam"                # your name on the board; the default is you
 ```
 
 - A missing key keeps its default: `none` and `recent`.
 - The project keys also set the wide Projects preview.
 - `g` and `s` change the layout for the session only. Nothing is written back.
+
+`me` replaces `@you` wherever the board names you. That covers assignee labels, pickers, filter, group, and sort, who a block or review waits on, and the paper trail.
+
+- Sentences addressed to you keep "you". `tsk list --json` still says `you`.
+- The CLI takes `you`, `me`, or your name for yourself, in `--assignee` and `--on`.
+- The name follows the [thread name](/docs/capture/#thread-names) rules.
+- A name that is also an agent profile is an error: the board says so on its status row and calls you `you`.
 
 ### Errors
 
@@ -134,7 +142,7 @@ An unknown key or a bad value in one table never blocks the others. A file that 
 | Unknown key inside `[agent.<name>]`, `[merge]`, `[board]`, or `[[backup]]` | That table is an error |
 | Broken profile | The board opens without profiles and shows the error on its status row. `tsk add` and `tsk edit` with an assignee exit 2 without saving |
 | Broken `[merge]` | Only merging refuses: the cleanup card says why, and the CLI refuses with `merge-config` |
-| Broken `[board]` | The board opens at the default layout and shows the error on its status row |
+| Broken `[board]` | The board opens at the default layout and shows the error on its status row. A bad `me` leaves the layout alone and names you `you` |
 
 ## Git backups
 

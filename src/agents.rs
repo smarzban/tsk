@@ -11,7 +11,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use toml_edit::{DocumentMut, TableLike};
 
-use crate::domain::{normalize_thread, thread_refusal_message};
+use crate::domain::{
+    normalize_thread, resolve_assignee, resolve_on, thread_refusal_message, Assignee, BlockKind,
+    BlockOn,
+};
 use crate::ui::queue::{GroupBy, SortBy};
 
 const CONFIG_FILE: &str = "config.toml";
@@ -134,16 +137,19 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 
 # The group and sort a fresh board starts from (`g` and `s` change them for
 # the session only). `group` and `sort` set the desk; `project_group` and
-# `project_sort` set every project board.
+# `project_sort` set every project board. `me` is the name the board shows
+# for you, such as `@sam` on a task assigned to you, instead of `you`.
 #   group          "none", "project", "thread", or "assignee"
 #   sort           "recent", "project", "thread", "title", or "assignee"
 #   project_group  "none", "thread", or "assignee"
 #   project_sort   "recent", "thread", "title", or "assignee"
+#   me             lowercase letters, digits, - and .; not an agent's name
 # [board]
 # group = "project"
 # sort = "recent"
 # project_group = "thread"
 # project_sort = "title"
+# me = "sam"
 
 # --- Backups ------------------------------------------------------------------
 
@@ -335,6 +341,86 @@ impl AgentProfiles {
 
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.profiles.keys().map(String::as_str)
+    }
+
+    /// Read a typed assignee by the name rule against these profiles: you, a profile (an
+    /// agent), or any other valid name (a person).
+    pub fn resolve_assignee(&self, input: &str) -> Result<Assignee, String> {
+        resolve_assignee(input, |name| self.profiles.contains_key(name))
+            .map_err(|error| thread_refusal_message(error).replacen("thread", "assignee", 1))
+    }
+
+    /// Read a typed waiting-on value by the name rule against these profiles. Task addresses
+    /// count only on a block.
+    pub fn resolve_on(&self, input: &str, kind: BlockKind) -> BlockOn {
+        resolve_on(input, kind, |name| self.profiles.contains_key(name))
+    }
+}
+
+/// `[board] me` in `config.toml`: the name your handle shows instead of `you`. It never names
+/// an agent profile, and it changes no stored data.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OwnerName {
+    pub name: Option<String>,
+    /// Why the setting was not used: a bad name, or one an agent profile already has.
+    pub error: Option<String>,
+}
+
+impl OwnerName {
+    /// Read `[board] me` from `<state_dir>/config.toml`, checked against `profiles`. A missing
+    /// file, table, or key is no name; a refused name keeps `you` and says why.
+    pub fn load(state_dir: impl AsRef<Path>, profiles: &AgentProfiles) -> Self {
+        let path = state_dir.as_ref().join(CONFIG_FILE);
+        match fs::read_to_string(&path) {
+            Ok(content) => Self::parse(&content, profiles),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => Self::default(),
+            Err(source) => Self {
+                name: None,
+                error: Some(AgentLoadError::Io { path, source }.to_string()),
+            },
+        }
+    }
+
+    fn parse(content: &str, profiles: &AgentProfiles) -> Self {
+        let refuse = |message: String| Self {
+            name: None,
+            error: Some(
+                AgentLoadError::InvalidDocument {
+                    message: format!("[board] {message}"),
+                }
+                .to_string(),
+            ),
+        };
+        let Ok(document) = content.parse::<DocumentMut>() else {
+            // The profile loader reports a malformed file.
+            return Self::default();
+        };
+        let Some(item) = document
+            .get("board")
+            .and_then(|board| board.as_table_like())
+            .and_then(|board| board.get("me"))
+        else {
+            return Self::default();
+        };
+        let Some(value) = item.as_str() else {
+            return refuse("me must be a string".into());
+        };
+        let name = match normalize_thread(value.trim()) {
+            Ok(name) => name,
+            Err(error) => {
+                return refuse(format!(
+                    "me {value:?}: {}",
+                    thread_refusal_message(error).replacen("thread", "name", 1)
+                ));
+            }
+        };
+        if profiles.get(&name).is_some() {
+            return refuse(format!("me {name:?} is an agent profile"));
+        }
+        Self {
+            name: Some(name),
+            error: None,
+        }
     }
 }
 
@@ -655,6 +741,10 @@ impl BoardDefaults {
             .filter(|sort| *sort != SortBy::Project)
             .collect();
         for (key, item) in table.iter() {
+            // `me` is read on its own ([`OwnerName`]), so a bad name never resets the layout.
+            if key == "me" {
+                continue;
+            }
             if !matches!(key, "group" | "sort" | "project_group" | "project_sort") {
                 return Err(invalid(format!("unknown key {key:?}")));
             }
@@ -1142,6 +1232,39 @@ command = ["pi"]
         }
     }
 
+    /// `[board] me` is read on its own: a valid name shows for you, a bad one or a profile's
+    /// name keeps `you` and says why, and none of it touches the layout defaults.
+    #[test]
+    fn board_me_names_you_unless_it_is_bad_or_a_profile() {
+        let profiles = AgentProfiles::parse("[agent.pi]\ncommand = [\"pi\"]\n").expect("profiles");
+        let read = |content: &str| OwnerName::parse(content, &profiles);
+        assert_eq!(read(""), OwnerName::default());
+        assert_eq!(
+            read("[board]\nme = \"Saeed\"\n"),
+            OwnerName {
+                name: Some("saeed".into()),
+                error: None
+            }
+        );
+        for (content, needle) in [
+            ("[board]\nme = \"pi\"\n", "me \"pi\" is an agent profile"),
+            ("[board]\nme = \"sam smith\"\n", "use letters, numbers"),
+            ("[board]\nme = 7\n", "me must be a string"),
+        ] {
+            let owner = read(content);
+            assert_eq!(owner.name, None, "{content}");
+            let error = owner.error.expect("refused");
+            assert!(error.starts_with("config.toml: [board] "), "{error}");
+            assert!(error.contains(needle), "{error}");
+        }
+        assert_eq!(
+            BoardDefaults::parse("[board]\nme = \"pi\"\ngroup = \"thread\"\n")
+                .expect("me never breaks the layout")
+                .group,
+            GroupBy::Thread
+        );
+    }
+
     #[test]
     fn starter_board_example_parses_once_uncommented() {
         assert_eq!(
@@ -1169,6 +1292,10 @@ command = ["pi"]
                 project_group: GroupBy::Thread,
                 project_sort: SortBy::Title,
             }
+        );
+        assert_eq!(
+            OwnerName::parse(&uncommented, &AgentProfiles::default()).name,
+            Some("sam".to_string())
         );
     }
 

@@ -51,7 +51,7 @@ Buy coffee !p !a
 | `!t` | No thread |
 | `!t name` | That thread |
 | `!a` | Unassigned |
-| `!a name` | That agent profile, lowercased; it must exist |
+| `!a name` | That agent profile, you (`!a me`), or a person, by the [assignee name](/docs/dispatch/#assignee-names) rules |
 | `!b branch` | The dispatch base: an existing local or remote branch in the task's repository |
 | `!w T202` | Run after T202 ("wait for"). Repeat for several. `!w 202` works too |
 

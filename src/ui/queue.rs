@@ -127,7 +127,7 @@ impl AssigneeFilter {
     pub fn label(&self) -> String {
         match self {
             AssigneeFilter::All => "all".to_string(),
-            AssigneeFilter::Named(name) => format!("@{name}"),
+            AssigneeFilter::Named(name) => crate::ui::render::assignee_handle(name),
             AssigneeFilter::Unassigned => "unassigned".to_string(),
         }
     }
@@ -1447,7 +1447,8 @@ fn group_key(task: &Task, group: GroupBy) -> (String, String) {
         (GroupBy::Assignee, _, _) => match task.assignee.as_deref() {
             Some(name) => {
                 let name = name.to_ascii_lowercase();
-                (format!("a:{name}"), format!("@{name}"))
+                let label = crate::ui::render::assignee_handle(&name);
+                (format!("a:{name}"), label)
             }
             None => ("unassigned".to_string(), "unassigned".to_string()),
         },
@@ -1458,8 +1459,8 @@ fn group_key(task: &Task, group: GroupBy) -> (String, String) {
 }
 
 /// Stable in-place sort by the chosen key. Desk tasks sort after projects, unthreaded
-/// tasks after threads, and unassigned tasks after assigned ones; notice rows lead
-/// regardless.
+/// tasks after threads, and unassigned tasks after assigned ones, with yours first; notice
+/// rows lead regardless.
 fn sort_rows(rows: &mut [&Task], sort: SortBy) {
     let key = |task: &Task| -> (bool, String) {
         match sort {
@@ -1474,6 +1475,8 @@ fn sort_rows(rows: &mut [&Task], sort: SortBy) {
             },
             SortBy::Title => (false, task.title.to_lowercase()),
             SortBy::Assignee => match task.assignee.as_deref() {
+                // Yours sort first: the empty key precedes every name.
+                Some(crate::domain::OWNER) => (false, String::new()),
                 Some(assignee) => (false, assignee.to_lowercase()),
                 None => (true, String::new()),
             },
@@ -1533,6 +1536,7 @@ mod tests {
             notes: None,
             thread: thread.map(str::to_string),
             assignee: None,
+            assignee_kind: Default::default(),
             base: None,
             dispatch: None,
             after: Vec::new(),

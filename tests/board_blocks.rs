@@ -605,7 +605,7 @@ fn the_action_line_follows_the_cursor() {
     assert_eq!(model.block_target(), Some(BlockTarget::Heading));
     assert_eq!(
         action(&model),
-        "ctrl+e edit · 1-2 choose · r reply · ctrl+s reply and unblock"
+        "enter set waiting on · ctrl+e edit · 1-2 choose · r reply · ctrl+s reply and unblock"
     );
     press(
         &mut domain,

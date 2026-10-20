@@ -165,10 +165,17 @@ this file names things.
 - **agent profile**: a named entry in `config.toml` that says how to launch one agent: an
   argv template with placeholders, an optional prompt template, and optional environment.
   tsk knows nothing about any harness's flags.
-- **assignee**: the agent profile name a task may carry, shown as `@name`. A label for which
-  agent the task is meant for; it never changes status or triggers anything by itself.
+- **assignee**: the name a task may carry, shown as `@name`: an agent profile, the maintainer
+  (`you`), or a person. It never changes status or triggers anything by itself.
+- **assignee kind**: whether an assignee is an agent or a person, stored on the task. Only an
+  agent dispatches; a removed profile stays an agent. Older stores' assignees are agents.
+- **name rule**: how every typed assignee or "on" value reads: `you`, `me`, or the configured
+  `[board] me` name is you; a profile name is that agent; any other name is a person (or
+  other text for "on"); a task number is a task for a block's "on".
+- **owner name**: `[board] me` in `config.toml`, shown wherever the board names you as a
+  handle. Stored data and JSON keep `you`.
 - **assignee token**: the `!a name` capture directive, sibling of `!p` and `!t`; bare `!a`
-  means unassigned. The name must match a defined profile exactly, or the add refuses.
+  means unassigned. The name follows the name rule.
 - **unassigned**: carrying no assignee.
 - **dispatch**: what starting an assigned, never-dispatched task does (`ctrl+s`,
   `tsk status T12 started`, `tsk dispatch`). It creates a worktree from the task's base,

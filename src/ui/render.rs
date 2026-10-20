@@ -303,6 +303,14 @@ pub fn row_live_line(task: &Task, tasks: &[Task], now: SystemTime) -> Option<Str
     }
 }
 
+/// An assignee as its handle: `@claude`, `@dana`, or `@you` (your configured name).
+pub fn assignee_handle(name: &str) -> String {
+    format!(
+        "@{}",
+        super::terminal_text(&crate::domain::display_name(name))
+    )
+}
+
 /// The row label's lead, in the peek's words: what a block or review waiting elsewhere waits
 /// on (`waiting on @pi`, `waiting on T1`, `@pi reviewing`), then `after T202, T205` for an
 /// on-deck task with unfinished prerequisites, then `before T3, T4` for the unfinished tasks
@@ -5616,7 +5624,7 @@ fn build_list_rows_inner(
             task.assignee
                 .as_deref()
                 .filter(|_| assignee_label)
-                .map(|name| format!("@{name}")),
+                .map(assignee_handle),
             task.base.as_deref().map(|name| format!("⎇ {name}")),
             None,
             Some(meta.clone()),

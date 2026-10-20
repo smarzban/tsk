@@ -104,8 +104,8 @@ impl ReplyEditor {
     fn open(block: &Block, task: &Task, prefill: &str, edit: Option<usize>) -> Self {
         let review = block.is_review();
         let agent = task
-            .assignee
-            .clone()
+            .agent_assignee()
+            .map(str::to_string)
             .or_else(|| (block.by != OWNER).then(|| block.by.clone()));
         let placeholder = match (review, agent) {
             (true, Some(agent)) => format!("feedback to @{agent}…"),
@@ -378,13 +378,19 @@ impl BlockCard {
     }
 
     /// Resolve the typed waiting-on value against the board. A task must exist and must not
-    /// be one of the card's own targets; an agent must be a defined profile.
+    /// be one of the card's own targets; an agent must be a defined profile. Other text
+    /// follows the name rule: you, a profile, or on a block a task, else the text itself.
     fn resolve_on(&self, domain: &DomainState, agents: &[String]) -> Result<BlockOn, String> {
         let text = self.on_text.value().trim();
         match self.on_kind {
             OnKind::You => Ok(BlockOn::You),
             OnKind::Other if text.is_empty() => Err("say what it waits on".to_string()),
-            OnKind::Other => Ok(BlockOn::Other(text.to_string())),
+            OnKind::Other => match crate::domain::resolve_on(text, self.kind, |name| {
+                agents.iter().any(|agent| agent == name)
+            }) {
+                BlockOn::Task(number) => self.resolve_task(domain, number),
+                on => Ok(on),
+            },
             OnKind::Agent => {
                 let name = text.strip_prefix('@').unwrap_or(text).to_ascii_lowercase();
                 if name.is_empty() {
@@ -400,17 +406,23 @@ impl BlockCard {
                 let BlockOn::Task(number) = BlockOn::parse_input(text) else {
                     return Err("type a task number, like T12".to_string());
                 };
-                let found = domain.tasks().iter().find(|task| {
-                    task.number == Some(number) && !task.soft_deleted && !task.is_notice()
-                });
-                match found {
-                    Some(task) if self.targets.contains(&task.id) => {
-                        Err(format!("T{number} cannot wait on itself"))
-                    }
-                    Some(_) => Ok(BlockOn::Task(number)),
-                    None => Err(format!("T{number} is not on the board")),
-                }
+                self.resolve_task(domain, number)
             }
+        }
+    }
+
+    /// A task the card's targets may wait on: live, and not one of them.
+    fn resolve_task(&self, domain: &DomainState, number: u64) -> Result<BlockOn, String> {
+        let found = domain
+            .tasks()
+            .iter()
+            .find(|task| task.number == Some(number) && !task.soft_deleted && !task.is_notice());
+        match found {
+            Some(task) if self.targets.contains(&task.id) => {
+                Err(format!("T{number} cannot wait on itself"))
+            }
+            Some(_) => Ok(BlockOn::Task(number)),
+            None => Err(format!("T{number} is not on the board")),
         }
     }
 }

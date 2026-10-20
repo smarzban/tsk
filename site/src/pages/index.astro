@@ -376,7 +376,7 @@ const softwareApplication = {
                 <div class="agent-body">
                   <p class="agent-line you">webhook retries are applying the same event twice. investigate and add a task.</p>
                   <p class="agent-line say">The handler applies side effects before recording the event ID. Concurrent retries can both get through.</p>
-                  <div class="agent-tool"><span class="tool-name">Bash</span><span class="tool-arg">tsk add -t "Make webhook delivery idempotent" -p launchpad --thread api --json</span><span class="tool-out" data-cli-add-output>&#123;"assignee":null,"id":"00000000-0000-4000-8000-000000000013","number":13,"outcome":"created","project":"/home/agent/work/launchpad","title":"Make webhook delivery idempotent"&#125;</span></div>
+                  <div class="agent-tool"><span class="tool-name">Bash</span><span class="tool-arg">tsk add -t "Make webhook delivery idempotent" -p launchpad --thread api --json</span><span class="tool-out" data-cli-add-output>&#123;"assignee":null,"assignee_kind":null,"id":"00000000-0000-4000-8000-000000000013","number":13,"outcome":"created","project":"/home/agent/work/launchpad","title":"Make webhook delivery idempotent"&#125;</span></div>
                   <div class="agent-tool"><span class="tool-name">Bash</span><span class="tool-arg">tsk steps T13 add "Reproduce duplicate delivery"</span><span class="tool-out" data-cli-step-output>added 3f Reproduce duplicate delivery</span></div>
                   <p class="agent-line say">T13 is on the board with a checklist: reproduce duplicate delivery, persist processed event IDs, and test concurrent retries.</p>
                 </div>
@@ -539,7 +539,7 @@ const softwareApplication = {
           <div class="cli-grid">
             <div class="cli-main">
               <pre class="shell" aria-label="CLI session"><span class="prompt">$</span> tsk add -t "Draft release notes" -p tsk --thread release --json
-<span class="dim">&#123;"assignee":null,"id":"5c1e…","number":32,"outcome":"created","project":"/home/you/tsk","title":"Draft release notes"&#125;</span>
+<span class="dim">&#123;"assignee":null,"assignee_kind":null,"id":"5c1e…","number":32,"outcome":"created","project":"/home/you/tsk","title":"Draft release notes"&#125;</span>
 <span class="prompt">$</span> tsk steps T32 add "Write the failing test"
 <span class="dim">added 9f Write the failing test</span>
 <span class="prompt">$</span> tsk status T32 started

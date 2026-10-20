@@ -973,7 +973,7 @@ fn wrapped_footer_field_hits_follow_unicode_cells_and_every_continuation_clicks(
             project(&scope),
             ProvenanceOrigin::Manual,
             Some(thread),
-            Some(assignee),
+            Some(assignee.into()),
         )
         .expect("create");
     domain.set_base(id, Some(base)).expect("base");

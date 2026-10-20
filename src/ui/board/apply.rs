@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::context::InvocationSnapshot;
 use crate::domain::{
     normalize_thread, status_word, thread_refusal_message, DomainError, DomainState, HumanStatus,
-    TaskScope, ThreadError, UndoEntry,
+    Task, TaskScope, ThreadError, UndoEntry,
 };
 use crate::scope::paths_equivalent;
 use crate::ui::capture::{CaptureField, TITLE_REQUIRED_MESSAGE};
@@ -22,15 +22,16 @@ use super::commands::{resolve_board_command, CommandSurface};
 use super::model::{steps_scroll_to_cursor, steps_scroll_to_row};
 use super::model::{
     BoardForm, BoardInputMode, BoardLocation, BoardModel, IntentOutcome, ListPickerValue,
-    PickerTab, ProjectPickerState, ProjectScopeOption, ProjectsView, StepEditor, StepEditorSave,
-    TaskEditSave, DIRTY_TASK_SWITCH_REFUSAL,
+    OnPickerTarget, PickerTab, ProjectPickerState, ProjectScopeOption, ProjectsView, StepEditor,
+    StepEditorSave, TaskEditSave, DIRTY_TASK_SWITCH_REFUSAL,
 };
 
 /// What the row says when an action that aims at the selection is asked for on a board that
 /// has none. One wording, so the same refusal always reads the same way.
 const NO_SELECTION: &str = "select a task first";
 /// `@` with no `config.toml` profile: the picker would offer only **none**.
-pub const NO_AGENT_PROFILES: &str = "no agent profiles · add one to config.toml";
+/// Enter on an empty `type a name…` row.
+pub(crate) const TYPE_A_NAME_FIRST: &str = "type a name first";
 
 fn base_target_project(domain: &DomainState, ids: &[Uuid]) -> Result<PathBuf, String> {
     for id in ids {
@@ -116,6 +117,7 @@ fn undo_action_word(domain: &DomainState, leaf: &UndoEntry) -> &'static str {
         UndoEntry::Assign { .. } => "assignee",
         UndoEntry::SetBase { .. } => "base",
         UndoEntry::SetAfter { .. } => "after",
+        UndoEntry::SetOn { .. } => "waiting on",
         UndoEntry::Steps { .. } => "steps",
         UndoEntry::Batch { .. } => "undo",
     }
@@ -208,7 +210,7 @@ impl UndoNote {
             .filter_map(|id| domain.get(*id))
             .filter(|task| task.status != HumanStatus::Started)
             .filter(|task| task.dispatch.as_ref().is_some_and(|record| !record.cleaned))
-            .filter_map(|task| task.assignee.clone())
+            .filter_map(|task| task.agent_assignee().map(str::to_string))
             .collect();
         running.sort();
         running.dedup();
@@ -294,6 +296,7 @@ fn stale_undo_message(domain: &DomainState, id: Uuid) -> String {
         Some(UndoEntry::Assign { .. }) => "since it was assigned",
         Some(UndoEntry::SetBase { .. }) => "since its base change",
         Some(UndoEntry::SetAfter { .. }) => "since its after change",
+        Some(UndoEntry::SetOn { .. }) => "since its waiting-on change",
         Some(UndoEntry::Steps { .. }) => "since its step change",
         Some(UndoEntry::Batch { .. }) | None => "since the undoable action",
     };
@@ -356,6 +359,7 @@ pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> boo
             model.list_picker_kind(),
             Some(
                 crate::ui::board::ListPickerKind::Assignee
+                    | crate::ui::board::ListPickerKind::WaitingOn
                     | crate::ui::board::ListPickerKind::Base
                     | crate::ui::board::ListPickerKind::After
             )
@@ -473,6 +477,7 @@ fn read_only_focus_refuses(model: &BoardModel, intent: &BoardIntent) -> bool {
             | BoardIntent::OpenAssigneePicker
             | BoardIntent::OpenBasePicker
             | BoardIntent::OpenAfterPicker
+            | BoardIntent::OpenOnPicker
             | BoardIntent::BeginAddStep
             | BoardIntent::BeginAppendStep
             | BoardIntent::ToggleThreadEditing
@@ -2095,16 +2100,12 @@ fn apply_board_intent(
                 model.set_message(NO_SELECTION);
                 return Ok(IntentOutcome::None);
             }
-            if model.agent_names.is_empty() {
-                model.set_message(NO_AGENT_PROFILES);
-                return Ok(IntentOutcome::None);
-            }
             let current = model
                 .selected_id()
                 .filter(|id| ids.contains(id))
                 .or_else(|| ids.first().copied())
                 .and_then(|id| domain.get(id))
-                .and_then(|task| task.assignee.clone());
+                .and_then(Task::assigned);
             model.clear_message();
             model.open_assignee_picker(ids, current);
             return Ok(IntentOutcome::None);
@@ -2168,6 +2169,15 @@ fn apply_board_intent(
             };
             model.clear_message();
             model.open_base_picker(ids, current, &project, edit_draft);
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::OpenOnPicker => {
+            if model.project_picker.is_some() || model.popup == BoardPopup::SaveRecovery {
+                return Ok(IntentOutcome::None);
+            }
+            model.close_popup();
+            model.close_help();
+            open_on_picker(domain, model);
             return Ok(IntentOutcome::None);
         }
         BoardIntent::OpenAfterPicker => {
@@ -2413,8 +2423,20 @@ fn apply_board_intent(
             let Some((_, option)) = model.selected_list_picker_option() else {
                 return Ok(IntentOutcome::None);
             };
-            let ListPickerValue::Assignee(assignee) = option.value else {
-                return Ok(IntentOutcome::None);
+            let assignee = match option.value {
+                ListPickerValue::Assignee(assignee) => assignee,
+                ListPickerValue::TypedName => match model.typed_picker_value() {
+                    Some(Ok(ListPickerValue::Assignee(assignee))) => assignee,
+                    Some(Err(refusal)) => {
+                        model.set_message(refusal);
+                        return Ok(IntentOutcome::None);
+                    }
+                    _ => {
+                        model.set_message(TYPE_A_NAME_FIRST);
+                        return Ok(IntentOutcome::None);
+                    }
+                },
+                _ => return Ok(IntentOutcome::None),
             };
             let Some(target) = model.close_assignee_picker() else {
                 return Ok(IntentOutcome::None);
@@ -2433,10 +2455,18 @@ fn apply_board_intent(
                 ids => format!("{} tasks", ids.len()),
             };
             model.set_message(match assignee {
-                Some(name) => format!("assigned {subject} to @{name}"),
+                Some(assignee) => format!(
+                    "assigned {subject} to {}",
+                    crate::ui::render::assignee_handle(&assignee.name)
+                ),
                 None => format!("unassigned {subject}"),
             });
             return Ok(IntentOutcome::Persist);
+        }
+        BoardIntent::ConfirmListPicker
+            if model.list_picker_kind() == Some(crate::ui::board::ListPickerKind::WaitingOn) =>
+        {
+            return confirm_on_picker(domain, model);
         }
         BoardIntent::ConfirmListPicker => {
             let drops_project_preview = model.projects_preview_active()
@@ -2761,7 +2791,12 @@ fn apply_board_intent(
             return Ok(IntentOutcome::None);
         }
         BoardIntent::SwitchListPickerTab(forward) => {
-            model.switch_list_picker_tab(None, forward);
+            // The waiting-on picker has no tabs: `←`/`→` cycle its choices.
+            if !model.switch_list_picker_tab(None, forward)
+                && model.list_picker_kind() == Some(crate::ui::board::ListPickerKind::WaitingOn)
+            {
+                model.move_list_picker(forward);
+            }
             return Ok(IntentOutcome::None);
         }
         // The app-level save-recovery boundary handles these while unresolved.
@@ -4216,6 +4251,160 @@ fn quick_add_save(
             Ok(IntentOutcome::None)
         }
     }
+}
+
+/// `Enter` on the task page's BLOCKED or REVIEW top line opens the waiting-on picker for that
+/// task; palette **set waiting on…** opens it for the selected task or the marked set. Every
+/// target needs an open block or review: one without refuses the whole set.
+fn open_on_picker(domain: &DomainState, model: &mut BoardModel) {
+    let task_page = model.input_mode == BoardInputMode::TaskPage
+        && model.form.as_ref().is_some_and(BoardForm::is_task);
+    if !(task_page || model.input_mode == BoardInputMode::Normal) || model.projects_overview() {
+        return;
+    }
+    // The page acts on its own task; the board on the selection or the marked set.
+    let ids: Vec<Uuid> = if task_page {
+        model
+            .form
+            .as_ref()
+            .and_then(BoardForm::task_id)
+            .into_iter()
+            .collect()
+    } else {
+        model.verb_target_ids()
+    }
+    .into_iter()
+    .filter(|id| domain.get(*id).is_some_and(|task| !task.is_notice()))
+    .collect();
+    if ids.is_empty() {
+        model.set_message(NO_SELECTION);
+        return;
+    }
+    let mut records = Vec::with_capacity(ids.len());
+    for id in &ids {
+        let Some(task) = domain.get(*id) else {
+            continue;
+        };
+        match task.block.as_ref() {
+            Some(block) => records.push((*id, block.key(), block.kind)),
+            None => {
+                model.set_message(no_open_record(task));
+                return;
+            }
+        }
+    }
+    let current = match records.as_slice() {
+        [(id, _, _)] => domain
+            .get(*id)
+            .and_then(|task| task.block.as_ref())
+            .map(|block| block.on.clone()),
+        _ => None,
+    };
+    model.clear_message();
+    model.open_on_picker(OnPickerTarget { records }, current);
+}
+
+/// The refusal for a task with no open block or review to change.
+fn no_open_record(task: &Task) -> String {
+    match task.number {
+        Some(number) => format!("T{number} has no open block or review"),
+        None => "no open block or review".to_string(),
+    }
+}
+
+/// Enter on the waiting-on picker: change who every target's open record waits on, in place
+/// and as one undo entry. A task must be live, and a block never waits on itself. A record
+/// closed or replaced since the picker opened refuses the whole set.
+fn confirm_on_picker(
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+) -> Result<IntentOutcome, DomainError> {
+    let Some((_, option)) = model.selected_list_picker_option() else {
+        return Ok(IntentOutcome::None);
+    };
+    let on = match option.value {
+        ListPickerValue::WaitingOn(on) => on,
+        ListPickerValue::TypedName => match model.typed_picker_value() {
+            Some(Ok(ListPickerValue::WaitingOn(on))) => on,
+            _ => {
+                model.set_message(TYPE_A_NAME_FIRST);
+                return Ok(IntentOutcome::None);
+            }
+        },
+        _ => return Ok(IntentOutcome::None),
+    };
+    let on = match on {
+        crate::domain::BlockOn::Other(text) => {
+            match crate::domain::block_text(Some(&text), crate::domain::BlockField::On) {
+                Ok(Some(text)) => crate::domain::BlockOn::Other(text),
+                Ok(None) => crate::domain::BlockOn::You,
+                Err(field) => {
+                    model.set_message(DomainError::TextTooLong(field).to_string());
+                    return Ok(IntentOutcome::None);
+                }
+            }
+        }
+        on => on,
+    };
+    let Some(target) = model
+        .list_picker
+        .as_ref()
+        .and_then(|picker| picker.on_target.clone())
+    else {
+        return Ok(IntentOutcome::None);
+    };
+    if let crate::domain::BlockOn::Task(number) = on {
+        let found = domain
+            .tasks()
+            .iter()
+            .find(|task| task.number == Some(number) && !task.soft_deleted && !task.is_notice());
+        match found {
+            Some(task) if target.records.iter().any(|(id, _, _)| *id == task.id) => {
+                model.set_message(format!("T{number} cannot wait on itself"));
+                return Ok(IntentOutcome::None);
+            }
+            Some(_) => {}
+            None => {
+                model.set_message(format!("T{number} is not on the board"));
+                return Ok(IntentOutcome::None);
+            }
+        }
+    }
+    let changed_elsewhere = target.records.iter().any(|(id, key, _)| {
+        domain
+            .get(*id)
+            .and_then(|task| task.block.as_ref())
+            .map(crate::domain::Block::key)
+            .as_ref()
+            != Some(key)
+    });
+    model.close_on_picker();
+    if changed_elsewhere {
+        model.set_message("that block or review changed elsewhere");
+        return Ok(IntentOutcome::None);
+    }
+    let changes: Vec<(Uuid, crate::domain::BlockOn)> = target
+        .records
+        .iter()
+        .map(|(id, _, _)| (*id, on.clone()))
+        .collect();
+    let changed = domain.set_on_batch(&changes)?;
+    model.clear_marks();
+    if !changed {
+        return Ok(IntentOutcome::None);
+    }
+    let subject = match target.records.as_slice() {
+        [(id, _, _)] => domain
+            .get(*id)
+            .and_then(|task| task.number)
+            .map_or_else(|| "task".to_string(), |number| format!("T{number}")),
+        records => format!("{} tasks", records.len()),
+    };
+    model.set_message(format!(
+        "set {subject} waiting {}",
+        crate::activity::on_text(&on)
+    ));
+    Ok(IntentOutcome::Persist)
 }
 
 fn normalize_optional_thread(value: &str) -> Result<Option<String>, ThreadError> {

@@ -5,23 +5,37 @@ description: Hand a task to an agent in its own worktree and Herdr workspace, th
 
 Dispatch hands a task to a coding agent. The agent gets its own Git branch, worktree, and Herdr workspace. When you complete the task, tsk tidies them up.
 
-Dispatch needs [Herdr](/docs/install/#add-to-herdr), a task in a project that is a Git repository, and an assignee. Assigning works everywhere. On Windows, dispatch is a [preview](#windows-preview).
+Dispatch needs [Herdr](/docs/install/#add-to-herdr), a task in a project that is a Git repository, and an agent assignee. Assigning works everywhere. On Windows, dispatch is a [preview](#windows-preview).
 
 ## Assign
 
-An assignee names one agent profile from [`config.toml`](/docs/storage/#configuration). Assigning only labels the task: it decides what a later start does.
+An assignee says who does the task: an agent profile from [`config.toml`](/docs/storage/#configuration), you, or another person. Assigning only labels the task: it decides what a later start does.
 
 | Where | How |
 | --- | --- |
-| Board, peek, or task page | `@` opens the assignee picker: every profile, then **none** |
+| Board, peek, or task page | `@` opens the assignee picker: every profile, `@you`, the people already assigned, **type a name…**, then **none** |
 | Palette | **set assignee** |
 | Quick-add | `!a name` ([capture](/docs/capture/)) |
 | Task page | The **Assignee** field, or the footer's `@name` |
 | CLI | `tsk add --assignee`, `tsk edit --assignee` ([CLI](/docs/cli/#edit)) |
 
-With tasks marked, one choice assigns the whole set, and one `ctrl+u` undoes it. With no profile defined, `@` says so and opens nothing. A task keeps the name of a profile you later remove.
+With tasks marked, one choice assigns the whole set, and one `ctrl+u` undoes it. Rows never show the assignee. The peek and task page footers show it as `@claude`.
 
-Rows never show the assignee. The peek and task page footers show it as `@claude`.
+### Assignee names
+
+Every place you type an assignee reads the name the same way:
+
+| You type | The assignee |
+| --- | --- |
+| `you`, `me`, or your [configured name](/docs/storage/#board-defaults) | You, shown as `@you` |
+| An agent profile's name, with or without `@` | That agent |
+| Any other name | A person, such as `@dana` |
+
+- In the picker, type the name and choose its row. A typed profile name picks the listed profile.
+- The CLI says when a name is not a profile, so a typo shows: `assigned T12 to @dana (not an agent profile)`.
+- A name follows the [thread name](/docs/capture/#thread-names) rules and is stored in lowercase.
+- Starting a task assigned to you or a person only sets it started. It never dispatches and never asks to relaunch.
+- A task keeps the name of a profile you later remove. It stays an agent, so its start refuses until the profile is back.
 
 ## Dispatch
 
@@ -46,8 +60,9 @@ start undone · T12 back to ready · @claude kept running
 
 | Task | Start |
 | --- | --- |
-| Unassigned | Sets started. Leave a task unassigned to work on it yourself |
-| Assigned, never dispatched | Dispatches |
+| Unassigned | Sets started |
+| Assigned to you or a person | Sets started; never launches |
+| Assigned to an agent, never dispatched | Dispatches |
 | Dispatched, agent still running | Sets started |
 | Dispatched, agent gone | Asks first: [relaunch](#relaunch) |
 | Assigned, outside Herdr or on the desk | Sets started; the status row says why nothing launched |

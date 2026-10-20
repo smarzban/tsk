@@ -7,7 +7,8 @@ use uuid::Uuid;
 
 use crate::context::InvocationSnapshot;
 use crate::domain::{
-    normalize_thread, thread_refusal_message, DomainError, DomainState, TaskScope,
+    normalize_thread, resolve_assignee, thread_refusal_message, Assignee, DomainError, DomainState,
+    TaskScope,
 };
 use crate::store::{StoreError, TaskStore};
 
@@ -89,7 +90,7 @@ pub fn capture_save_configured(
     notes: Option<String>,
     scope_override: Option<TaskScope>,
     thread: Option<String>,
-    assignee: Option<String>,
+    assignee: Option<Assignee>,
     base: Option<String>,
 ) -> Result<TaskId, CaptureError> {
     let scope = scope_override.unwrap_or_else(|| snapshot.default_scope.clone());
@@ -121,7 +122,7 @@ pub struct QuickAddTokens {
     pub title: String,
     pub scope: Option<TaskScope>,
     pub thread: Option<String>,
-    pub assignee: Option<String>,
+    pub assignee: Option<Assignee>,
     pub base: Option<String>,
     /// `!w T202`, repeatable: the tasks the new task runs after.
     pub after: Vec<u64>,
@@ -176,17 +177,16 @@ pub fn lift_quick_add_tokens(
             }
             "!a" => {
                 let argument = quick_add_token_argument(&words, index);
+                // The name rule: you, an agent profile, or any other name for a person.
                 assignee = match argument {
-                    Some(name) => {
-                        let normalized = normalize_thread(name).map_err(|error| {
-                            thread_refusal_message(error).replacen("thread", "agent name", 1)
-                        })?;
-                        if agent_names.iter().any(|name| name == &normalized) {
-                            Some(normalized)
-                        } else {
-                            return Err(format!("unknown agent {normalized}"));
-                        }
-                    }
+                    Some(name) => Some(
+                        resolve_assignee(name, |name| {
+                            agent_names.iter().any(|agent| agent == name)
+                        })
+                        .map_err(|error| {
+                            thread_refusal_message(error).replacen("thread", "assignee", 1)
+                        })?,
+                    ),
                     None => None,
                 };
                 index += usize::from(argument.is_some()) + 1;

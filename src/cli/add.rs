@@ -8,7 +8,7 @@ use crate::agents::AgentProfiles;
 use crate::cli::parser::FlagAdd;
 use crate::context::snapshot_from_env;
 use crate::domain::{
-    normalize_thread, thread_refusal_message, DomainState, ProvenanceOrigin, TaskScope,
+    normalize_thread, thread_refusal_message, Assignee, DomainState, ProvenanceOrigin, TaskScope,
 };
 use crate::scope::{adopt_stored_identity, resolve_flag_scope, resolve_project_path};
 use crate::store::{default_state_dir, TaskStore};
@@ -22,7 +22,6 @@ pub enum AddError {
     UnknownProject(String),
     /// The resolved scope is an archived project (cwd default or explicit `-p`).
     ProjectArchived(String),
-    UnknownAgent(String),
     UnknownBase(String),
     AgentConfig(String),
     Store(String),
@@ -35,7 +34,6 @@ impl AddError {
             Self::InvalidTitle => "invalid-title",
             Self::UnknownProject(_) => "unknown-project",
             Self::ProjectArchived(_) => "project-archived",
-            Self::UnknownAgent(_) => "unknown-agent",
             Self::UnknownBase(_) => "unknown-base",
             Self::AgentConfig(_) => "agent-config",
             Self::Store(_) => "store-error",
@@ -104,7 +102,7 @@ struct ResolvedPlanItem {
     notes: Option<String>,
     scope: TaskScope,
     thread: Option<String>,
-    assignee: Option<String>,
+    assignee: Option<Assignee>,
     base: Option<String>,
     after: Vec<u64>,
 }
@@ -117,14 +115,14 @@ pub enum FlagAddResult {
         number: u64,
         title: String,
         project: Option<String>,
-        assignee: Option<String>,
+        assignee: Option<Assignee>,
     },
     Existing {
         id: Uuid,
         number: u64,
         title: String,
         project: Option<String>,
-        assignee: Option<String>,
+        assignee: Option<Assignee>,
     },
 }
 
@@ -141,14 +139,16 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
     }
 
     let state_dir = input.state_dir.unwrap_or_else(default_state_dir);
+    // The name rule: you, an agent profile, or any other name for a person. Broken profiles
+    // refuse rather than guess, so a profile's name never becomes a person by accident.
     let assignee = match input.assignee.as_deref() {
         Some(name) => {
             let profiles = AgentProfiles::load(&state_dir)
                 .map_err(|error| AddError::AgentConfig(error.to_string()))?;
             Some(
                 profiles
-                    .resolve_name(name)
-                    .map_err(AddError::UnknownAgent)?,
+                    .resolve_assignee(name)
+                    .map_err(AddError::AgentConfig)?,
             )
         }
         None => None,
@@ -191,7 +191,7 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
                 &title,
                 &scope,
                 thread.as_deref(),
-                assignee.as_deref(),
+                assignee.as_ref(),
                 base.as_deref(),
             ) {
                 Ok(FlagAddResult::Existing {
@@ -201,7 +201,7 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
                         .expect("loaded tasks receive a number before CLI presentation"),
                     title: task.title.clone(),
                     project: scope_project(&task.scope),
-                    assignee: task.assignee.clone(),
+                    assignee: task.assigned(),
                 })
             } else {
                 let project = scope_project(&scope);
@@ -229,7 +229,7 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
                     number,
                     title,
                     project,
-                    assignee: domain.get(id).and_then(|task| task.assignee.clone()),
+                    assignee: domain.get(id).and_then(crate::domain::Task::assigned),
                 })
             };
             let changed = matches!(outcome, Ok(FlagAddResult::Created { .. }));
@@ -311,7 +311,7 @@ pub fn run_plan(
                     &item.title,
                     &item.scope,
                     item.thread.as_deref(),
-                    item.assignee.as_deref(),
+                    item.assignee.as_ref(),
                     item.base.as_deref(),
                 ) {
                     existing.push(Existing {
@@ -392,10 +392,15 @@ fn resolve_plan_items(
             None => snapshot.default_scope.clone(),
         };
         let assignee = match item.assignee.as_deref() {
-            Some(name) => match profiles.resolve_name(name) {
-                Ok(name) => Some(name),
+            Some(name) => match profiles.resolve_assignee(name) {
+                Ok(assignee) => Some(assignee),
                 Err(error) => {
-                    failed.push(fail_item(item.i, Some(item.title), "unknown-agent", error));
+                    failed.push(fail_item(
+                        item.i,
+                        Some(item.title),
+                        "invalid-assignee",
+                        error,
+                    ));
                     continue;
                 }
             },
@@ -427,7 +432,7 @@ fn existing_task<'a>(
     title: &str,
     scope: &TaskScope,
     thread: Option<&str>,
-    assignee: Option<&str>,
+    assignee: Option<&Assignee>,
     base: Option<&str>,
 ) -> Option<&'a crate::domain::Task> {
     // Notice rows are board-only (no CLI address reaches them, not even their UUID) and
@@ -439,7 +444,7 @@ fn existing_task<'a>(
             && task.title == title
             && &task.scope == scope
             && task.thread.as_deref() == thread
-            && task.assignee.as_deref() == assignee
+            && task.assigned().as_ref() == assignee
             && task.base.as_deref() == base
     })
 }
@@ -519,14 +524,17 @@ fn parse_plan_item(i: usize, value: Value) -> Result<PlanItem, Failed> {
 
     let assignee = match object.get("assignee") {
         None | Some(Value::Null) => None,
-        Some(Value::String(assignee)) => normalize_thread(assignee).map(Some).map_err(|error| {
-            fail_item(
-                i,
-                Some(trimmed_title.clone()),
-                "unknown-agent",
-                thread_refusal_message(error).replacen("thread", "agent name", 1),
-            )
-        })?,
+        Some(Value::String(assignee)) => {
+            let name = assignee.strip_prefix('@').unwrap_or(assignee);
+            normalize_thread(name).map(Some).map_err(|error| {
+                fail_item(
+                    i,
+                    Some(trimmed_title.clone()),
+                    "invalid-assignee",
+                    thread_refusal_message(error).replacen("thread", "assignee", 1),
+                )
+            })?
+        }
         Some(_) => {
             return Err(fail_item(
                 i,

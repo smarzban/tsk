@@ -12,8 +12,7 @@ mod model;
 mod selector;
 
 pub use apply::{
-    apply_intent, board_intent_may_persist, NO_AGENT_PROFILES, ROW_DOUBLE_CLICK_WINDOW,
-    SHIFT_ENTER_AS_CTRL_J_HINT,
+    apply_intent, board_intent_may_persist, ROW_DOUBLE_CLICK_WINDOW, SHIFT_ENTER_AS_CTRL_J_HINT,
 };
 pub use block::{BlockCard, BlockCardField, BlockTarget, OnKind};
 #[cfg(test)]

@@ -9,7 +9,7 @@ version: 1.6.0
 tsk is the user's task board. Tasks have a human status (`open` · `ready` · `started` · `blocked` ·
 `review` · `done`) and live on the **desk** (no project) or in a **project** (a Git repo root, named
 by its basename). A task may carry a **thread** label, an **assignee** (an agent profile from
-`config.toml`), and a dispatch **base** branch. The user sees the board in a TUI; you never open it.
+`config.toml`, the user, or a person), and a dispatch **base** branch. The user sees the board in a TUI; you never open it.
 Every read and write goes through the CLI, and the board updates live.
 
 `T12`, `t12`, `12`, and the task's UUID all address the same task. Prefer `T12`: it is what the user
@@ -36,7 +36,8 @@ installer, package manager, or source build unless they asked.
    - Stuck on the user: `tsk status T12 blocked --why "<your question>"`, with `--needs "…"` for what
      would unblock you and one `--option "…"` per answer they can pick. Keep `--needs`, or `--why`
      without it, to one short sentence. `--on T202` waits on another task instead.
-   - Running either again while it is open edits the same review round or block.
+   - Running either again while it is open edits the same review round or block. To change only who
+     it waits on, keeping the round and its replies: `tsk edit T12 --on <who>`.
 5. **Stop.** Say in one line what to look at, then wait. The user answers in your session:
    `[tsk T12 unblocked] …` means the block is closed with their answer. `[tsk T12 reply] …` is a
    reply to the open block or review; the status stays. `[tsk T12 sent back] …`, with any
@@ -63,8 +64,10 @@ task's running agent, add `--send`: it sends only that reply and prints `sent to
 6. **Ignore notice rows.** Rows the board paints as `N1`… are for the user; no command reaches them.
 7. **Values that start with `-` need `=`:** `--title="-fix parser"`. For `tsk reply` and `tsk steps`
    text, put `--` just before it.
-8. **Names are exact.** `--assignee` takes a `config.toml` profile, `--base` an existing branch, and
-   `--thread` a [thread name](https://gettsk.sh/docs/capture.md#thread-names)
+8. **Names are exact.** `--assignee` takes a `config.toml` profile, `me` for the user, or a person's
+   name. A name that is not a profile prints `(not an agent profile)`: check it for typos
+   ([names](https://gettsk.sh/docs/dispatch.md#assignee-names)). `--base` takes an existing branch,
+   and `--thread` a [thread name](https://gettsk.sh/docs/capture.md#thread-names)
    ([add](https://gettsk.sh/docs/cli.md#add)).
 9. **After means wait.** `tsk edit T13 --after T12` holds T13 until T12 is done
    ([after](https://gettsk.sh/docs/board.md#after)).

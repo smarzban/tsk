@@ -158,6 +158,10 @@ pub enum BoardIntent {
     /// Open the task picker for what the selected task, marked set, or After field runs after
     /// (palette **set after…**, the page's After field).
     OpenAfterPicker,
+    /// Open the waiting-on picker for who the open block or review waits on: the page's task
+    /// (`Enter` on its top line), or the selected task or marked set (palette **set waiting
+    /// on…**).
+    OpenOnPicker,
     /// Palette **chain in order**: each marked task runs after the one marked before it.
     ChainAfter,
     /// Open the steps section's one-line editor empty to add an step (page `a`). With a
@@ -645,7 +649,7 @@ const NORMAL_KEYMAP: &[NormalKeyEntry] = &[
         code: KeyCode::Char('@'),
         intent: BoardIntent::OpenAssigneePicker,
         help_chord: "@",
-        help_label: "assign agent",
+        help_label: "assign an agent, you, or a person",
         modifier: NormalModifier::Bare,
     },
     // `r` opens the reply box under a blocked row (the feedback box under a review row): an
@@ -1103,6 +1107,12 @@ fn help_bindings() -> Vec<HelpBinding> {
             "enter (option)",
             "reply with selected option (task page)",
             "answer question blocked",
+        ),
+        help_binding(
+            HelpGroup::TaskActions,
+            "enter (top line)",
+            "change who it waits on (task page)",
+            "hand off waiting on blocked review",
         ),
         help_binding(
             HelpGroup::TaskActions,
@@ -2230,6 +2240,7 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::BeginEditScope
         | BoardIntent::OpenBasePicker
         | BoardIntent::OpenAfterPicker
+        | BoardIntent::OpenOnPicker
         | BoardIntent::ChainAfter
         | BoardIntent::BeginAddStep
         | BoardIntent::BeginAppendStep

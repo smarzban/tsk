@@ -148,8 +148,8 @@ fn send(
     host: &mut impl DispatchHost,
 ) -> SendOutcome {
     let skip = |reason: &str| SendOutcome::Skipped(reason.to_string());
-    let Some(assignee) = task.assignee.clone() else {
-        return skip("the task has no assignee");
+    let Some(assignee) = task.agent_assignee().map(str::to_string) else {
+        return skip("the task has no agent assignee");
     };
     if by != OWNER {
         return skip("only your replies are sent");

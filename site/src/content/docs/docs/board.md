@@ -57,7 +57,7 @@ In a task list, every word you type must match somewhere in the same task, ignor
 
 ## Filter
 
-A **thread** groups related tasks, such as `release` or `login-fix`, and can span projects and the desk. An **assignee** names the [agent profile](/docs/dispatch/#assign) a task is for. Press `t` or click the filter control to narrow a board by either.
+A **thread** groups related tasks, such as `release` or `login-fix`, and can span projects and the desk. An **assignee** names who a task is for: an [agent profile, you, or a person](/docs/dispatch/#assign). Press `t` or click the filter control to narrow a board by either.
 
 | Where | Filter |
 | --- | --- |
@@ -66,7 +66,7 @@ A **thread** groups related tasks, such as `release` or `login-fix`, and can spa
 | Projects view | `v` opens one thread or one assignee across all projects |
 
 - On a project board, the threads tab lists `all`, the threads, then **Without a thread**.
-- The `@assignees` tab lists `all`, each profile as `@name`, any name left on tasks whose profile was removed, then `unassigned`.
+- The `@assignees` tab lists `all`, then `@you` when a task is yours, each profile as `@name`, the other names on tasks (people, and profiles since removed), then `unassigned`.
 - Choices from different tabs combine: `#release @claude` shows release tasks assigned to claude. `all` clears its own tab.
 
 The desk's tabs work the same way, and its projects tab also offers `desk`. The desk filter lasts for the session. A project board's filter clears when you leave that board. A thread or `@name` view lists matching tasks from every project and the desk, grouped by status. There is no `unassigned` view.
@@ -86,7 +86,7 @@ Neither offers what the view already fixes: a project board has no project choic
 
 Grouping adds dim sub-headers inside NEEDS YOU, IN MOTION, ON DECK, and the inbox, such as `▾ #release · 2` or `▾ unassigned · 1`. Each sub-header counts its rows. The group whose newest row changed status most recently comes first. The done drawer and its archived group never group.
 
-Sorting reorders rows inside each group, or inside each section when ungrouped. **recent** is the section's normal order. The others sort by project (desk last), thread (unthreaded last), title, or assignee (unassigned last). Notices still lead.
+Sorting reorders rows inside each group, or inside each section when ungrouped. **recent** is the section's normal order. The others sort by project (desk last), thread (unthreaded last), title, or assignee (yours first, unassigned last). Notices still lead.
 
 The desk, project boards, thread views, and `@name` views each keep their own choice for the session. The desk and project boards start from the board defaults in [`config.toml`](/docs/storage/#configuration), if set; everything else starts ungrouped and sorted by recent. Session changes are never written back.
 
@@ -176,6 +176,8 @@ Marks last for this session only. Any action, `Esc`, or a view change clears the
 | Review | **done**: what was done · **check**: one thing to verify per line · **next** · **on**: you, an agent profile, or other text |
 
 A block or review on you lands in NEEDS YOU. One on another task, an agent, or something else goes to IN MOTION. Leaving `blocked` closes the block. Card keys are under [Keys](/docs/keys/#cards).
+
+To hand an open block or review to someone else later, change who it [waits on](/docs/task-page/#waiting-on) from the task page or the palette. The block or round keeps everything else.
 
 Agents block and ask for review from the [CLI](/docs/cli/#status). Each review is a **round**: after a send-back, the agent's next review opens the next round.
 
@@ -290,7 +292,7 @@ Launching the board inside an archived project asks whether to restore it. Keepi
 - block and review cards, and every other status change,
 - a start that dispatched, leaving the agent running,
 - step changes on the task page,
-- assignee, base, and after changes.
+- assignee, base, after, and waiting-on changes.
 
 A marked set is one undo step. Undo keeps the last 50 actions and never stops an agent.
 
@@ -308,12 +310,13 @@ Press `:` on the board or a task page and type to find an action. Matching takes
 | Group by…, sort by…, fold / unfold group | A task list has focus |
 | Set open/ready/started/blocked/review, edit notes, move to project / desk, delete task | A task is selected |
 | Set assignee, set base, set after (wait for)… | A task is selected |
+| Set waiting on… | A task with an open block or review is selected or marked |
 | Dispatch again | A task with a dispatch record is selected |
 | Chain marked tasks in order | Two or more tasks are marked |
 | Move step up, move step down | A task-page step is selected |
 | Retry save, cancel save | A save has failed |
 
-A task list has focus unless the Projects view or a task page does. **Set assignee**, **set base**, and **set after** act on the marked set when there is one. **Set status: started** works like `ctrl+s`, so an assigned task dispatches. **Dispatch again** clears the marks and [relaunches](/docs/dispatch/#relaunch) the cursor task.
+A task list has focus unless the Projects view or a task page does. **Set assignee**, **set waiting on…**, **set base**, and **set after** act on the marked set when there is one. **Set waiting on…** needs an open block or review on every task it acts on. **Set status: started** works like `ctrl+s`, so a task assigned to an agent dispatches. **Dispatch again** clears the marks and [relaunches](/docs/dispatch/#relaunch) the cursor task. It is not offered for a task assigned to you or a person.
 
 ## Help
 

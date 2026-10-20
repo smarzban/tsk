@@ -60,9 +60,30 @@ where
         .map(|argument| argument.as_ref().to_owned())
         .collect::<Vec<_>>();
     // Every change a verb makes is recorded as made by the agent `TSK_AGENT` names, or you.
-    crate::domain::acting_as(&crate::domain::actor_from_env(), || {
-        run_verb(args, &mut stdin, stdin_is_tty, terminal_width)
+    // Your handle reads as the store's `[board] me`, which typed names also accept.
+    let owner = owner_name(&args);
+    crate::domain::with_owner_name(owner, || {
+        crate::domain::acting_as(&crate::domain::actor_from_env(), || {
+            run_verb(args, &mut stdin, stdin_is_tty, terminal_width)
+        })
     })
+}
+
+/// `[board] me` from the store the verb will use: its `--state-dir`, else the default.
+/// Settings errors are the board's to show; here they only fall back to `you`.
+fn owner_name(args: &[String]) -> Option<String> {
+    let mut words = args.iter().skip(2).take_while(|word| *word != "--");
+    let mut state_dir = None;
+    while let Some(word) = words.next() {
+        if let Some(dir) = word.strip_prefix("--state-dir=") {
+            state_dir = Some(std::path::PathBuf::from(dir));
+        } else if word == "--state-dir" {
+            state_dir = words.next().map(std::path::PathBuf::from);
+        }
+    }
+    let state_dir = state_dir.unwrap_or_else(crate::store::default_state_dir);
+    let profiles = crate::agents::AgentProfiles::load(&state_dir).unwrap_or_default();
+    crate::agents::OwnerName::load(&state_dir, &profiles).name
 }
 
 fn run_verb<R: Read>(
@@ -447,9 +468,10 @@ fn run_edit(args: Vec<String>) -> CliOutput {
         && !input.clear_base
         && input.after.is_empty()
         && !input.clear_after
+        && input.on.is_none()
     {
         return presenter::edit_usage(
-            "title, notes, assignee, base, after, --unassign, --clear-base, or --clear-after is required",
+            "title, notes, assignee, base, after, on, --unassign, --clear-base, or --clear-after is required",
         );
     }
     let assignee = if input.unassign {
@@ -477,6 +499,7 @@ fn run_edit(args: Vec<String>) -> CliOutput {
             } else {
                 (!input.after.is_empty()).then_some(input.after)
             },
+            on: input.on,
         },
         input.state_dir,
     ) {

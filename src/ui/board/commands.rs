@@ -5,6 +5,7 @@ use crate::ui::input::BoardIntent;
 use crate::ui::mouse::BoardPopup;
 
 use super::model::BoardModel;
+use uuid::Uuid;
 
 /// Transient command surface open over the board, never durable state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -95,6 +96,20 @@ impl BoardModel {
                 command("set base", BoardIntent::OpenBasePicker),
                 command("set after (wait for)…", BoardIntent::OpenAfterPicker),
             ]);
+            // Who an open block or review waits on: offered while a target has one. A marked
+            // set with a task that has none still refuses as a whole.
+            let targets: Vec<Uuid> = if self.marks_under_palette() > 0 {
+                self.marked_ids.iter().copied().collect()
+            } else {
+                self.selected_id().into_iter().collect()
+            };
+            if self
+                .tasks
+                .iter()
+                .any(|task| task.block.is_some() && targets.contains(&task.id))
+            {
+                commands.push(command("set waiting on…", BoardIntent::OpenOnPicker));
+            }
             // Two or more marked tasks chain in the order they were marked. The palette owns
             // input while it lists this, so ask about the task list underneath it.
             if self.marks_under_palette() >= 2 {
@@ -104,11 +119,14 @@ impl BoardModel {
                 ));
             }
             // Starting dispatches an assigned task (`set status: started`, `ctrl+s`); dispatch
-            // again is the explicit, cursor-only relaunch.
+            // again is the explicit, cursor-only relaunch. A person is never dispatched.
             if self
                 .selected_id()
                 .and_then(|id| self.tasks.iter().find(|task| task.id == id))
-                .is_some_and(|task| task.dispatch.is_some())
+                .is_some_and(|task| {
+                    task.dispatch.is_some()
+                        && !task.assigned().is_some_and(|assignee| assignee.is_person())
+                })
             {
                 commands.push(command("dispatch again", BoardIntent::DispatchAgain));
             }

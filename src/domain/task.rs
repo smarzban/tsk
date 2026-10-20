@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-    block_text, current_actor, Block, BlockDraft, BlockField, BlockKey, BlockKind, BlockPatch,
-    CheckState, CleanupOutcome, EditedField, EventDetail, ProvenanceOrigin, Reply, Resolution,
-    ReviewDraft, ReviewPatch, TaskEvent, TaskEventKind, UndoEntry, UNDO_CAP,
+    block_text, current_actor, Block, BlockDraft, BlockField, BlockKey, BlockKind, BlockOn,
+    BlockPatch, CheckState, CleanupOutcome, EditedField, EventDetail, ProvenanceOrigin, Reply,
+    Resolution, ReviewDraft, ReviewPatch, TaskEvent, TaskEventKind, UndoEntry, UNDO_CAP,
 };
 use crate::scope::paths_equivalent;
 
@@ -108,9 +108,13 @@ pub struct Task {
     /// Optional normalized thread name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread: Option<String>,
-    /// Optional normalized agent profile name.
+    /// Optional normalized assignee name: an agent profile, `you`, or a person's name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
+    /// What `assignee` names, fixed when it was assigned: an agent profile (a start dispatches
+    /// it) or a person (a start only sets started). Agent while unassigned.
+    #[serde(default, skip_serializing_if = "AssigneeKind::is_agent")]
+    pub assignee_kind: AssigneeKind,
     /// Optional explicit branch from which this task should be dispatched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
@@ -145,6 +149,131 @@ pub struct Task {
     pub created_at: SystemTime,
     #[serde(with = "super::time_serde")]
     pub updated_at: SystemTime,
+}
+
+/// What an assignee name stands for. Decided once, when the task is assigned, and never
+/// re-derived from `config.toml`: a removed profile's name stays an agent, so its start still
+/// refuses instead of silently starting without a launch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssigneeKind {
+    /// An agent profile: starting the task dispatches it.
+    #[default]
+    Agent,
+    /// You (stored as `you`) or a named person: starting the task only sets started.
+    Person,
+}
+
+impl AssigneeKind {
+    pub fn is_agent(&self) -> bool {
+        *self == AssigneeKind::Agent
+    }
+
+    /// The JSON spelling: `agent` or `person`.
+    pub fn name(self) -> &'static str {
+        match self {
+            AssigneeKind::Agent => "agent",
+            AssigneeKind::Person => "person",
+        }
+    }
+}
+
+/// A resolved assignee: the stored name and what it stands for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Assignee {
+    pub name: String,
+    pub kind: AssigneeKind,
+}
+
+impl Assignee {
+    /// An agent profile, by its exact name.
+    pub fn agent(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            kind: AssigneeKind::Agent,
+        }
+    }
+
+    /// A person, by their normalized name.
+    pub fn person(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            kind: AssigneeKind::Person,
+        }
+    }
+
+    /// You, the board's owner.
+    pub fn you() -> Self {
+        Self::person(super::OWNER)
+    }
+
+    pub fn is_person(&self) -> bool {
+        self.kind == AssigneeKind::Person
+    }
+}
+
+/// Read a typed assignee by the name rule: `you`, `me`, or your configured name is you; a name
+/// `is_profile` accepts, with or without `@`, is that agent; any other name is a person. Names
+/// follow the thread-name rules and are stored lowercase.
+pub fn resolve_assignee(
+    input: &str,
+    is_profile: impl Fn(&str) -> bool,
+) -> Result<Assignee, super::ThreadError> {
+    let input = input.trim();
+    let name = input.strip_prefix('@').unwrap_or(input);
+    if !name.is_empty() && super::is_owner_alias(name) {
+        return Ok(Assignee::you());
+    }
+    let name = super::normalize_thread(name)?;
+    Ok(if is_profile(&name) {
+        Assignee::agent(name)
+    } else {
+        Assignee::person(name)
+    })
+}
+
+/// A bare name is an agent profile, as every assignee was before people could be assigned.
+impl From<&str> for Assignee {
+    fn from(name: &str) -> Self {
+        Self::agent(name)
+    }
+}
+
+impl From<String> for Assignee {
+    fn from(name: String) -> Self {
+        Self::agent(name)
+    }
+}
+
+impl Task {
+    /// The assignee with its kind, if any.
+    pub fn assigned(&self) -> Option<Assignee> {
+        self.assignee.as_ref().map(|name| Assignee {
+            name: name.clone(),
+            kind: self.assignee_kind,
+        })
+    }
+
+    /// The assignee's name when it is an agent profile: the agent a start dispatches and
+    /// replies go to. `None` when unassigned or assigned to a person.
+    pub fn agent_assignee(&self) -> Option<&str> {
+        self.assignee
+            .as_deref()
+            .filter(|_| self.assignee_kind == AssigneeKind::Agent)
+    }
+
+    fn set_assigned(&mut self, assignee: Option<Assignee>) {
+        match assignee {
+            Some(Assignee { name, kind }) => {
+                self.assignee = Some(name);
+                self.assignee_kind = kind;
+            }
+            None => {
+                self.assignee = None;
+                self.assignee_kind = AssigneeKind::Agent;
+            }
+        }
+    }
 }
 
 /// Domain command failures.
@@ -374,6 +503,15 @@ fn assigned_detail(assignee: &Option<String>) -> Option<EventDetail> {
     })
 }
 
+/// Detail of an `on_set` event.
+fn on_detail(from: &BlockOn, to: &BlockOn) -> Option<EventDetail> {
+    Some(EventDetail {
+        on_from: Some(from.clone()),
+        on_to: Some(to.clone()),
+        ..EventDetail::default()
+    })
+}
+
 /// Detail of a `base_set` event.
 fn base_detail(base: &Option<String>) -> Option<EventDetail> {
     Some(EventDetail {
@@ -383,7 +521,7 @@ fn base_detail(base: &Option<String>) -> Option<EventDetail> {
 }
 
 /// Document version written by this binary.
-pub const STORE_FORMAT_VERSION: u32 = 13;
+pub const STORE_FORMAT_VERSION: u32 = 14;
 
 fn default_next_notice_number() -> u64 {
     1
@@ -645,6 +783,7 @@ impl DomainState {
             notes,
             thread,
             assignee: None,
+            assignee_kind: AssigneeKind::Agent,
             base: None,
             dispatch: None,
             after: Vec::new(),
@@ -671,7 +810,7 @@ impl DomainState {
         scope: TaskScope,
         provenance: ProvenanceOrigin,
         thread: Option<String>,
-        assignee: Option<String>,
+        assignee: Option<Assignee>,
     ) -> Result<Uuid, DomainError> {
         self.create_configured(title, notes, scope, provenance, thread, assignee, None)
     }
@@ -685,12 +824,12 @@ impl DomainState {
         scope: TaskScope,
         provenance: ProvenanceOrigin,
         thread: Option<String>,
-        assignee: Option<String>,
+        assignee: Option<Assignee>,
         base: Option<String>,
     ) -> Result<Uuid, DomainError> {
         let id = self.create(title, notes, scope, provenance, thread)?;
         let task = self.task_mut(id)?;
-        task.assignee = assignee;
+        task.set_assigned(assignee);
         task.base = base;
         Ok(id)
     }
@@ -977,6 +1116,78 @@ impl DomainState {
         *block = next;
         record_mutation_at(task, TaskEventKind::BlockEdited, at);
         Ok(true)
+    }
+
+    /// Change who the open block or review round waits on, and nothing else: the record, its
+    /// round, text, checks and replies stay. One `on_set` event and one undo entry. Returns
+    /// whether it changed.
+    pub fn set_on(&mut self, id: Uuid, on: BlockOn) -> Result<bool, DomainError> {
+        self.set_on_batch(&[(id, on)])
+    }
+
+    /// [`Self::set_on`] for an ordered set, as one atomic action with one undo entry. Every
+    /// task needs an open record; one without refuses the whole set (`NotBlocked`) before any
+    /// change. Tasks already waiting on their value are left as they are.
+    pub fn set_on_batch(&mut self, changes: &[(Uuid, BlockOn)]) -> Result<bool, DomainError> {
+        let ids: Vec<Uuid> = changes.iter().map(|(id, _)| *id).collect();
+        self.prevalidate_batch_ids(&ids)?;
+        for (id, _) in changes {
+            if self.get(*id).and_then(|task| task.block.as_ref()).is_none() {
+                return Err(DomainError::NotBlocked(*id));
+            }
+        }
+        let at = SystemTime::now();
+        let mut entries = Vec::new();
+        let mut seen = BTreeSet::new();
+        for (id, on) in changes {
+            if !seen.insert(*id) {
+                continue;
+            }
+            let task = self.task_mut(*id)?;
+            let Some(block) = task.block.as_mut() else {
+                continue;
+            };
+            if block.on == *on {
+                continue;
+            }
+            let previous = std::mem::replace(&mut block.on, on.clone());
+            record_event(
+                task,
+                TaskEventKind::OnSet,
+                at,
+                None,
+                on_detail(&previous, on),
+            );
+            entries.push(UndoEntry::SetOn {
+                id: *id,
+                previous,
+                expected_revision: task.revision,
+            });
+        }
+        if entries.is_empty() {
+            return Ok(false);
+        }
+        self.undo_stack.push(if entries.len() == 1 {
+            entries.pop().expect("one waiting-on undo")
+        } else {
+            UndoEntry::Batch { entries }
+        });
+        Ok(true)
+    }
+
+    /// Undo of [`Self::set_on`]: put `on` back on the same open record.
+    pub(crate) fn restore_on(&mut self, id: Uuid, on: BlockOn) -> Result<(), DomainError> {
+        let task = self.task_mut(id)?;
+        let block = task.block.as_mut().ok_or(DomainError::NotBlocked(id))?;
+        let previous = std::mem::replace(&mut block.on, on.clone());
+        record_event(
+            task,
+            TaskEventKind::OnSet,
+            SystemTime::now(),
+            None,
+            on_detail(&previous, &on),
+        );
+        Ok(())
     }
 
     /// Add a reply by `by` to the open block. Returns its index.
@@ -1331,40 +1542,47 @@ impl DomainState {
     }
 
     /// Assign one task and make the change undoable.
-    pub fn assign(&mut self, id: Uuid, assignee: Option<String>) -> Result<bool, DomainError> {
+    pub fn assign(&mut self, id: Uuid, assignee: Option<Assignee>) -> Result<bool, DomainError> {
         self.assign_batch(&[id], assignee)
     }
 
-    /// Assign an ordered set as one atomic, undoable action.
+    /// Assign an ordered set as one atomic, undoable action. The same name with another kind
+    /// counts as a change.
     pub fn assign_batch(
         &mut self,
         ids: &[Uuid],
-        assignee: Option<String>,
+        assignee: Option<Assignee>,
     ) -> Result<bool, DomainError> {
         let ids = self.prevalidate_batch_ids(ids)?;
         let changed = ids
             .into_iter()
-            .filter(|id| self.get(*id).is_some_and(|task| task.assignee != assignee))
+            .filter(|id| {
+                self.get(*id)
+                    .is_some_and(|task| task.assigned() != assignee)
+            })
             .collect::<Vec<_>>();
         if changed.is_empty() {
             return Ok(false);
         }
         let at = SystemTime::now();
+        let name = assignee.as_ref().map(|assignee| assignee.name.clone());
         let mut entries = Vec::with_capacity(changed.len());
         for id in changed {
             let task = self.task_mut(id)?;
             let previous = task.assignee.clone();
-            task.assignee = assignee.clone();
+            let previous_kind = task.assignee_kind;
+            task.set_assigned(assignee.clone());
             record_event(
                 task,
                 TaskEventKind::Assigned,
                 at,
                 None,
-                assigned_detail(&assignee),
+                assigned_detail(&name),
             );
             entries.push(UndoEntry::Assign {
                 id,
                 previous,
+                previous_kind,
                 expected_revision: task.revision,
             });
         }
@@ -1380,10 +1598,11 @@ impl DomainState {
         &mut self,
         id: Uuid,
         assignee: Option<String>,
+        kind: AssigneeKind,
     ) -> Result<(), DomainError> {
         let task = self.task_mut(id)?;
         let detail = assigned_detail(&assignee);
-        task.assignee = assignee;
+        task.set_assigned(assignee.map(|name| Assignee { name, kind }));
         record_event(
             task,
             TaskEventKind::Assigned,
@@ -1752,27 +1971,28 @@ impl DomainState {
         notes: Option<String>,
         scope: TaskScope,
         thread: Option<String>,
-        assignee: Option<String>,
+        assignee: Option<Assignee>,
         base: Option<String>,
     ) -> Result<(), DomainError> {
-        let changed_assignee = self.get(id).is_some_and(|task| task.assignee != assignee);
+        let changed_assignee = self.get(id).is_some_and(|task| task.assigned() != assignee);
         let changed_base = self.get(id).is_some_and(|task| task.base != base);
         self.edit(id, title, notes, scope, thread)?;
         let task = self.task_mut(id)?;
         let at = task.updated_at;
         if changed_assignee {
+            let name = assignee.as_ref().map(|assignee| assignee.name.clone());
             task.history.push(event(
                 TaskEventKind::Assigned,
                 at,
                 None,
-                assigned_detail(&assignee),
+                assigned_detail(&name),
             ));
         }
         if changed_base {
             task.history
                 .push(event(TaskEventKind::BaseSet, at, None, base_detail(&base)));
         }
-        task.assignee = assignee;
+        task.set_assigned(assignee);
         task.base = base;
         Ok(())
     }
@@ -1792,7 +2012,7 @@ impl DomainState {
         notes: Option<String>,
         scope: TaskScope,
         thread: Option<String>,
-        assignee: Option<String>,
+        assignee: Option<Assignee>,
         step_renames: &[(Uuid, String)],
         step_removals: &[Uuid],
         step_adds: &[String],
@@ -1823,7 +2043,7 @@ impl DomainState {
         notes: Option<String>,
         scope: TaskScope,
         thread: Option<String>,
-        assignee: Option<String>,
+        assignee: Option<Assignee>,
         base: Option<String>,
         step_renames: &[(Uuid, String)],
         step_removals: &[Uuid],
@@ -1870,11 +2090,11 @@ impl DomainState {
         let before = task.clone();
         task.title = title.to_string();
         task.notes = notes;
-        let changed_assignee = task.assignee != assignee;
+        let changed_assignee = task.assigned() != assignee;
         let changed_base = task.base != base;
         task.scope = scope;
         task.thread = thread;
-        task.assignee = assignee;
+        task.set_assigned(assignee);
         task.base = base;
         task.steps.retain(|step| !removals.contains(&step.id));
         for (step_id, text) in &actual_renames {
@@ -2329,6 +2549,7 @@ impl DomainState {
                                 task.last_event_at(TaskEventKind::Dispatched)
                             }
                             UndoEntry::SetAfter { .. } => task.last_event_at(TaskEventKind::Edited),
+                            UndoEntry::SetOn { .. } => task.last_event_at(TaskEventKind::OnSet),
                             // A live entry's target was last changed by the action it records.
                             UndoEntry::Status { .. }
                             | UndoEntry::Steps { .. }

@@ -145,7 +145,7 @@ fn edit_sets_and_clears_base_validated_only_against_the_task_project() {
 }
 
 #[test]
-fn edit_assigns_and_unassigns_only_known_profiles() {
+fn edit_assigns_by_the_name_rule_and_unassigns() {
     let dir = temp_state_dir("assignee");
     let _guard = TempDirGuard(dir.clone());
     fs::write(
@@ -164,13 +164,31 @@ fn edit_assigns_and_unassigns_only_known_profiles() {
         Some("reviewer")
     );
 
-    let unknown = edit(&dir, &["T1", "--assignee", "missing"]);
-    assert_eq!(unknown.code, 1);
-    assert!(
-        unknown.stderr.contains("unknown-agent"),
-        "{}",
-        unknown.stderr
+    assert_eq!(
+        assigned.stdout, "edited T1 assign me\n",
+        "an agent needs no note"
     );
+
+    // A name that is not a profile is a person, said out loud so a typo shows.
+    let person = edit(&dir, &["T1", "--assignee", "dana"]);
+    assert_eq!(person.code, 0, "{}", person.stderr);
+    assert_eq!(
+        person.stdout,
+        "edited T1 assign me\nassigned T1 to @dana (not an agent profile)\n"
+    );
+    let task = TaskStore::new(&dir).load().expect("load person").tasks()[0].clone();
+    assert_eq!(task.assignee.as_deref(), Some("dana"));
+    assert_eq!(task.assignee_kind, tsk_tui::domain::AssigneeKind::Person);
+
+    // `you` and `me` are you, stored as `you`.
+    for alias in ["me", "You"] {
+        let mine = edit(&dir, &["T1", "--assignee", alias]);
+        assert_eq!(mine.code, 0, "{}", mine.stderr);
+        assert_eq!(mine.stdout, "edited T1 assign me\n");
+        let task = TaskStore::new(&dir).load().expect("load you").tasks()[0].clone();
+        assert_eq!(task.assignee.as_deref(), Some("you"));
+        assert_eq!(task.assignee_kind, tsk_tui::domain::AssigneeKind::Person);
+    }
 
     let unassigned = edit(&dir, &["T1", "--unassign"]);
     assert_eq!(unassigned.code, 0, "{}", unassigned.stderr);
@@ -354,7 +372,7 @@ fn edit_without_fields_is_usage() {
     assert!(output
         .stderr
         .contains(
-        "title, notes, assignee, base, after, --unassign, --clear-base, or --clear-after is required"
+        "title, notes, assignee, base, after, on, --unassign, --clear-base, or --clear-after is required"
     ));
 }
 
@@ -426,5 +444,88 @@ fn edit_fetches_a_new_remote_base_before_validation() {
             .base
             .as_deref(),
         Some("origin/new-edit")
+    );
+}
+
+/// `tsk edit --on` changes who the open block or review waits on, in place: same record, one
+/// `on_set` event, and the name rule (a profile is an agent, a task number on a block is a
+/// task, anything else is text).
+#[test]
+fn edit_on_changes_the_open_record_in_place_by_the_name_rule() {
+    let dir = temp_state_dir("on");
+    let _guard = TempDirGuard(dir.clone());
+    fs::write(
+        dir.join("config.toml"),
+        "[agent.pi]\ncommand = [\"true\"]\n",
+    )
+    .expect("write profiles");
+    assert_eq!(add_task(&dir, "blocked one").code, 0);
+    assert_eq!(add_task(&dir, "reviewed one").code, 0);
+    let status = |args: &[&str]| {
+        let mut command = vec![
+            "tsk".to_string(),
+            "status".into(),
+            "--state-dir".into(),
+            dir.to_string_lossy().into_owned(),
+        ];
+        command.extend(args.iter().map(|argument| (*argument).to_string()));
+        cli(command)
+    };
+    assert_eq!(status(&["T1", "blocked", "--why", "need creds"]).code, 0);
+    assert_eq!(
+        status(&["T2", "review", "--done", "built", "--check", "works"]).code,
+        0
+    );
+    let block_at = TaskStore::new(&dir).load().expect("load").tasks()[0]
+        .block
+        .clone()
+        .expect("block");
+
+    let agent = edit(&dir, &["T1", "--on", "@pi"]);
+    assert_eq!(agent.code, 0, "{agent:?}");
+    let state = TaskStore::new(&dir).load().expect("reload");
+    let block = state.tasks()[0].block.clone().expect("still blocked");
+    assert_eq!(block.on, tsk_tui::domain::BlockOn::Agent("pi".into()));
+    assert_eq!(
+        block.why.as_deref(),
+        Some("need creds"),
+        "the record keeps its text"
+    );
+    assert_eq!(block.at, block_at.at, "the same record");
+    let event = state.tasks()[0].history.last().cloned().expect("event");
+    assert_eq!(event.kind, TaskEventKind::OnSet);
+
+    let task = edit(&dir, &["T1", "--on", "T2"]);
+    assert_eq!(task.code, 0, "{task:?}");
+    let own = edit(&dir, &["T1", "--on", "T1"]);
+    assert_eq!(own.code, 1, "{own:?}");
+    assert!(own.stderr.contains("invalid-blocker"), "{own:?}");
+
+    let review = edit(&dir, &["T2", "--on", "coordinator"]);
+    assert_eq!(review.code, 0, "{review:?}");
+    let round = TaskStore::new(&dir).load().expect("reload review").tasks()[1]
+        .block
+        .clone()
+        .expect("still in review");
+    assert_eq!(
+        round.on,
+        tsk_tui::domain::BlockOn::Other("coordinator".into())
+    );
+    assert_eq!(round.round, 1, "the same round");
+    assert_eq!(round.checks.len(), 1, "checks kept");
+
+    let mine = edit(&dir, &["T2", "--on", "me"]);
+    assert_eq!(mine.code, 0, "{mine:?}");
+    assert!(TaskStore::new(&dir).load().expect("reload you").tasks()[1]
+        .block
+        .as_ref()
+        .is_some_and(|round| round.on.is_you()));
+
+    assert_eq!(add_task(&dir, "open one").code, 0);
+    let nothing = edit(&dir, &["T3", "--on", "pi"]);
+    assert_eq!(nothing.code, 1, "{nothing:?}");
+    assert!(
+        nothing.stderr.starts_with("tsk edit: not-blocked:"),
+        "{nothing:?}"
     );
 }

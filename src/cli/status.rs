@@ -6,8 +6,8 @@ use crate::agents::AgentProfiles;
 use crate::cli::parser::{BlockFlags, TaskAddress};
 use crate::dispatch::{self, DispatchError, DispatchHost, DispatchResult, StartRoute};
 use crate::domain::{
-    actor_from_env, normalize_thread, BlockDraft, BlockField, BlockKind, BlockOn, BlockPatch,
-    DomainError, DomainState, HumanStatus, ReviewDraft, ReviewPatch, OWNER,
+    actor_from_env, BlockDraft, BlockField, BlockKind, BlockOn, BlockPatch, DomainError,
+    DomainState, HumanStatus, ReviewDraft, ReviewPatch, OWNER,
 };
 use crate::store::{default_state_dir, TaskStore};
 use uuid::Uuid;
@@ -77,11 +77,13 @@ fn run_as(
     actor: &str,
 ) -> Result<StatusResult, StatusError> {
     let state_dir = state_dir.unwrap_or_else(default_state_dir);
-    // A review handed to another agent names its profile. A malformed config never blocks
-    // the status change: the name is then kept as plain text.
-    let review_on = (status == HumanStatus::Review)
-        .then(|| block.on.as_deref().map(|on| review_on(on, &state_dir)))
-        .flatten();
+    // `--on` by the name rule: a block or review handed to an agent names its profile. A
+    // malformed config never blocks the status change: the name is then kept as plain text.
+    let on = BlockKind::for_status(status).and_then(|kind| {
+        let value = block.on.as_deref()?;
+        let profiles = AgentProfiles::load(&state_dir).unwrap_or_default();
+        Some(profiles.resolve_on(value, kind))
+    });
     let store = TaskStore::new(state_dir);
     store
         .locked_transition_if_changed(|state: &mut DomainState| {
@@ -97,14 +99,7 @@ fn run_as(
                     soft_deleted: task.soft_deleted,
                     open: task.block.as_ref().map(|block| block.kind),
                 });
-            Ok(apply(
-                state,
-                found,
-                status,
-                &block,
-                review_on.clone(),
-                actor,
-            ))
+            Ok(apply(state, found, status, &block, on.clone(), actor))
         })
         .map_err(StatusError::Store)?
 }
@@ -429,7 +424,7 @@ impl Closing {
         if task.status == HumanStatus::Ready && message.entries == 0 {
             return None;
         }
-        let assignee = task.assignee.as_deref()?;
+        let assignee = task.agent_assignee()?;
         let (_, check) = dispatch::start_route_checked(task, OWNER, in_herdr, host);
         let delivery =
             dispatch::deliver_reply(task, &check, message.label, message.text.as_deref(), host)?;
@@ -456,28 +451,12 @@ struct Found {
     open: Option<BlockKind>,
 }
 
-/// Read a review's `--on`: `you`, an agent profile (with or without `@`), or any other text.
-fn review_on(value: &str, state_dir: &std::path::Path) -> BlockOn {
-    let value = value.trim();
-    if value.is_empty() || value.eq_ignore_ascii_case(OWNER) {
-        return BlockOn::You;
-    }
-    let name = value.strip_prefix('@').unwrap_or(value);
-    let profile = normalize_thread(name).ok().filter(|name| {
-        AgentProfiles::load(state_dir).is_ok_and(|profiles| profiles.get(name).is_some())
-    });
-    match profile {
-        Some(name) => BlockOn::Agent(name),
-        None => BlockOn::Other(value.to_string()),
-    }
-}
-
 fn apply(
     state: &mut DomainState,
     found: Option<Found>,
     status: HumanStatus,
     flags: &BlockFlags,
-    review_on: Option<BlockOn>,
+    on: Option<BlockOn>,
     actor: &str,
 ) -> (Result<StatusResult, StatusError>, bool) {
     let Some(found) = found else {
@@ -495,7 +474,7 @@ fn apply(
         status,
     };
     let outcome = if status == HumanStatus::Blocked && !flags.is_empty() {
-        let draft = match block_draft(state, flags, number) {
+        let draft = match block_draft(state, flags, on, number) {
             Ok(draft) => draft,
             Err(error) => return (Err(error), false),
         };
@@ -509,7 +488,7 @@ fn apply(
             flags.done.as_deref(),
             &flags.checks,
             flags.next.as_deref(),
-            review_on.unwrap_or_default(),
+            on.unwrap_or_default(),
         ) {
             Ok(draft) => draft,
             Err(field) => return (Err(StatusError::TextTooLong(field)), false),
@@ -531,17 +510,14 @@ fn apply(
     }
 }
 
-/// Validate the flags into a draft. `--on` must name another task on the board.
+/// Validate the flags into a draft. A task `--on` names must be another task on the board.
 fn block_draft(
     state: &DomainState,
     flags: &BlockFlags,
+    on: Option<BlockOn>,
     own_number: u64,
 ) -> Result<BlockDraft, StatusError> {
-    let on = flags
-        .on
-        .as_deref()
-        .map(BlockOn::parse_input)
-        .unwrap_or_default();
+    let on = on.unwrap_or_default();
     if let BlockOn::Task(number) = on {
         let exists = state
             .tasks()
@@ -626,7 +602,7 @@ mod start_tests {
                     },
                     ProvenanceOrigin::Manual,
                     None,
-                    assigned.then(|| "builder".to_string()),
+                    assigned.then(|| "builder".into()),
                 )
                 .expect("create");
             self.store().reload_merge_save(&mut state).expect("save");
@@ -815,6 +791,40 @@ mod start_tests {
         assert!(matches!(outcome, StartOutcome::Status(_)));
         assert_eq!(temp.status(number), HumanStatus::Started);
         assert_eq!(host.ran, 0);
+    }
+
+    /// A person assignee (you, or a named person) never dispatches: a start only sets started,
+    /// even when the name matches a profile, and a dispatch record from an earlier agent
+    /// assignee never asks to relaunch.
+    #[test]
+    fn a_person_assignees_start_only_sets_the_status() {
+        for (person, dispatched) in [
+            (crate::domain::Assignee::you(), false),
+            (crate::domain::Assignee::person("builder"), false),
+            (crate::domain::Assignee::person("dana"), true),
+        ] {
+            let temp = Temp::new("person");
+            let number = temp.task(true, dispatched, HumanStatus::Ready);
+            let mut state = temp.store().load().expect("load");
+            let id = state.tasks()[0].id;
+            state
+                .assign(id, Some(person.clone()))
+                .expect("assign person");
+            temp.store().reload_merge_save(&mut state).expect("save");
+            let mut host = Host {
+                agent: Some(false),
+                ..Host::default()
+            };
+            let outcome = temp
+                .start(number, PLAIN, "you", &mut host)
+                .expect("plain start");
+            assert!(
+                matches!(outcome, StartOutcome::Status(_)),
+                "{person:?}: {outcome:?}"
+            );
+            assert_eq!(temp.status(number), HumanStatus::Started);
+            assert_eq!(host.ran, 0, "{person:?} launched nothing");
+        }
     }
 
     #[test]

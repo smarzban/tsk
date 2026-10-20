@@ -25,7 +25,7 @@ Status, edit, delete, and archive keys take `ctrl`. Bare letters move, open, and
 | Delete, with a second press to confirm | `ctrl+x` or `ctrl+Delete` |
 | Undo the last change ([what undoes](/docs/board/#delete-and-undo)) | `ctrl+u` |
 | Archive / restore | `ctrl+f` |
-| Assign an agent profile, or **none** | `@` |
+| Assign to an agent, you, or a person, or **none** | `@` |
 | Reply to a blocked row, or give feedback on a review row | `r` |
 | Open / close the done drawer | `d` |
 | Group by none, project, thread, or assignee | `g` |
@@ -124,7 +124,7 @@ In view mode, before you start an edit:
 | Edit the title, or the selected step, block, review, or reply | `ctrl+e` |
 | Mark the selected step for removal, then remove it | `ctrl+x` |
 | Delete your selected reply; with nothing selected, delete the task | `ctrl+x` |
-| Assign an agent profile | `@` |
+| Assign to an agent, you, or a person | `@` |
 | Expand / collapse the paper trail | `g`, or `Enter` on its heading |
 | Expand / fold a closed block or review round | `Enter` |
 | Status, undo, and archive, on this task | the [board's](#board) `ctrl` keys |
@@ -139,6 +139,7 @@ On a blocked page or a review:
 | Reply with option N, prefilled | `1`…`9`, or `Enter` on the option |
 | Unblock, or send the review back, with nothing typed | `ctrl+s` |
 | Approve the review | `ctrl+d` |
+| Change who it [waits on](/docs/task-page/#waiting-on), top line selected | `Enter` |
 | Cycle the selected check: open → passed → failed → open | `Enter` |
 | Show / fold the passed checks | `Enter` on the `N passed` line |
 
@@ -208,6 +209,8 @@ In the Herdr popup, `shift+Enter` saves and closes it. `Esc` or `ctrl+c` discard
 | Archived project's board | `ctrl+u` restores · `Esc`, `p`, or `1`–`3` leaves |
 | Filter and view pickers (`t`, `v`) | type to filter · `↑` / `↓` select · `Tab` or `←` / `→` switch tabs, `shift+Tab` back · `Enter` chooses · `Esc` closes |
 | Group, sort, assignee, and base pickers | type to filter · `↑` / `↓` or `Tab` select · `Enter` applies · `Esc` closes with no change |
+| Assignee and waiting-on pickers, **type a name…** | the row shows what you typed, such as `@dana` · `Enter` applies it |
+| Waiting-on picker | as the assignee picker, and `←` / `→` also move |
 | After picker | as above, and `Space` ticks several · `Enter` applies the ticked tasks or the highlighted one · **none** clears |
 | Board search (`/`) | type or paste · `Backspace` · `Enter` pins the query · `Esc` clears and closes |
 | Palette (`:`) | type to filter · `↑` / `↓` or `Tab` / `shift+Tab` select · `Enter` runs · `Esc` closes |

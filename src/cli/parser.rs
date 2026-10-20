@@ -689,8 +689,17 @@ pub struct FlagEdit {
     /// `--after`, repeatable: the task numbers this task runs after, replacing the list.
     pub after: Vec<u64>,
     pub clear_after: bool,
+    /// `--on`: who the open block or review waits on, as typed.
+    pub on: Option<String>,
     pub state_dir: Option<PathBuf>,
     pub help: bool,
+}
+
+/// Parse one `--assignee` value: a name by the thread rules, with or without a leading `@`.
+/// Whether it is you, an agent profile, or a person is decided against `config.toml` later.
+pub fn parse_assignee(value: &str) -> Result<String, String> {
+    normalize_thread(value.strip_prefix('@').unwrap_or(value))
+        .map_err(|error| format!("invalid assignee name · {}", thread_refusal_message(error)))
 }
 
 /// Parse one `--after` value: a task number, with or without its `T`.
@@ -719,6 +728,7 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
         clear_base: false,
         after: Vec::new(),
         clear_after: false,
+        on: None,
         state_dir: None,
         help: false,
     };
@@ -733,6 +743,14 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
                 parsed.title = Some(flag["--title=".len()..].to_owned());
                 index += 1;
             }
+            flag if flag.starts_with("--on=") => {
+                parsed.on = Some(flag["--on=".len()..].to_owned());
+                index += 1;
+            }
+            "--on" => {
+                parsed.on = Some(value(flag)?);
+                index += 2;
+            }
             flag if flag.starts_with("--notes=") => {
                 parsed.notes = Some(flag["--notes=".len()..].to_owned());
                 index += 1;
@@ -746,15 +764,11 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
                 index += 2;
             }
             flag if flag.starts_with("--assignee=") => {
-                parsed.assignee = Some(normalize_thread(&flag["--assignee=".len()..]).map_err(
-                    |error| format!("invalid agent name · {}", thread_refusal_message(error)),
-                )?);
+                parsed.assignee = Some(parse_assignee(&flag["--assignee=".len()..])?);
                 index += 1;
             }
             "--assignee" => {
-                parsed.assignee = Some(normalize_thread(&value(flag)?).map_err(|error| {
-                    format!("invalid agent name · {}", thread_refusal_message(error))
-                })?);
+                parsed.assignee = Some(parse_assignee(&value(flag)?)?);
                 index += 2;
             }
             "--unassign" => {
@@ -1105,6 +1119,7 @@ mod tests {
                 clear_base: false,
                 after: Vec::new(),
                 clear_after: false,
+                on: None,
                 state_dir: None,
                 help: false,
             }
@@ -1454,16 +1469,12 @@ pub fn parse_flag_add(args: &[String]) -> Result<FlagAdd, String> {
                 index += 2;
             }
             flag if flag.starts_with("--assignee=") => {
-                parsed.assignee = Some(normalize_thread(&flag["--assignee=".len()..]).map_err(
-                    |error| format!("invalid agent name · {}", thread_refusal_message(error)),
-                )?);
+                parsed.assignee = Some(parse_assignee(&flag["--assignee=".len()..])?);
                 parsed.has_item_flags = true;
                 index += 1;
             }
             "--assignee" => {
-                parsed.assignee = Some(normalize_thread(&value(flag)?).map_err(|error| {
-                    format!("invalid agent name · {}", thread_refusal_message(error))
-                })?);
+                parsed.assignee = Some(parse_assignee(&value(flag)?)?);
                 parsed.has_item_flags = true;
                 index += 2;
             }

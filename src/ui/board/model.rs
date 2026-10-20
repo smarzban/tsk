@@ -10,7 +10,9 @@ use ratatui::layout::Position;
 use uuid::Uuid;
 
 use crate::context::InvocationSnapshot;
-use crate::domain::{DomainState, HumanStatus, Task, TaskScope, UndoEntry};
+use crate::domain::{
+    Assignee, BlockKey, BlockKind, BlockOn, DomainState, HumanStatus, Task, TaskScope, UndoEntry,
+};
 use crate::scope::{archived_path_contains, paths_equivalent, PathIdentityCache};
 use crate::ui::capture::CaptureField;
 use crate::ui::edit::{seeded_draft, EditBuffer};
@@ -288,6 +290,9 @@ pub enum ListPickerKind {
     ProjectsView,
     /// The quick assignee picker (bare `@`, the task-page footer, palette **set assignee**).
     Assignee,
+    /// Who an open block or review waits on (`Enter` on the task page's top line, palette
+    /// **set waiting on…**).
+    WaitingOn,
     /// Explicit dispatch base, including the leading remote-default choice.
     Base,
     /// The tasks a task runs after: tick several with Space, `none` clears.
@@ -321,8 +326,13 @@ pub enum ListPickerValue {
     ProjectsOverview,
     ProjectsThread(String),
     ProjectsAssignee(String),
-    /// Assign this exact profile name, or clear the assignee with `None`.
-    Assignee(Option<String>),
+    /// Assign this agent profile or person, or clear the assignee with `None`.
+    Assignee(Option<Assignee>),
+    /// Wait on this.
+    WaitingOn(BlockOn),
+    /// The trailing `type a name…` row of the assignee and waiting-on pickers: confirming it
+    /// reads the query by the name rule.
+    TypedName,
     /// Set this exact branch name, or clear the explicit base with `None`.
     Base(Option<String>),
     /// One task the target may run after, by number.
@@ -347,12 +357,46 @@ fn after_option_label(ticked: bool, rest: &str) -> String {
     format!("{tick}{rest}")
 }
 
+/// A waiting-on picker row: you as your handle, as in the assignee picker, else the record's
+/// own words (`@pi`, `T202`, `coordinator`).
+fn on_choice_label(on: &BlockOn) -> String {
+    match on {
+        BlockOn::You => crate::ui::render::assignee_handle(crate::domain::OWNER),
+        other => terminal_text(&other.label()),
+    }
+}
+
 /// What the assignee picker applies to, captured when it opens so a refresh that moves the
 /// cursor underneath it can never redirect the assignment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct AssigneePickerTarget {
     pub ids: Vec<Uuid>,
 }
+
+/// What the waiting-on picker applies to: each task's open record, captured when it opened, so
+/// a record closed or replaced meanwhile refuses instead of moving the new one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct OnPickerTarget {
+    pub records: Vec<(Uuid, BlockKey, BlockKind)>,
+}
+
+impl OnPickerTarget {
+    /// Task addresses read as tasks only when every target is a block.
+    pub(super) fn kind(&self) -> BlockKind {
+        if self
+            .records
+            .iter()
+            .all(|(_, _, kind)| *kind == BlockKind::Blocked)
+        {
+            BlockKind::Blocked
+        } else {
+            BlockKind::Review
+        }
+    }
+}
+
+/// The empty typed row's label in the assignee and waiting-on pickers.
+pub(super) const TYPE_A_NAME: &str = "type a name…";
 
 /// What the branch picker applies to. An edit-ring picker updates only its retained draft;
 /// every other picker target is one atomic domain batch.
@@ -392,6 +436,7 @@ pub(super) struct ListPickerState {
     /// only; the assignee picker also opens over the task page, which must survive it.
     pub return_mode: BoardInputMode,
     pub assignee_target: Option<AssigneePickerTarget>,
+    pub on_target: Option<OnPickerTarget>,
     pub base_target: Option<BasePickerTarget>,
     pub after_target: Option<AfterPickerTarget>,
     /// Source index of the option the board currently applies (painted `✓`).
@@ -467,7 +512,7 @@ pub(super) struct TaskEditSave {
     pub(super) notes: Option<String>,
     pub(super) scope: TaskScope,
     pub(super) thread: Option<String>,
-    pub(super) assignee: Option<String>,
+    pub(super) assignee: Option<Assignee>,
     pub(super) base: Option<String>,
     pub(super) after: Vec<u64>,
     /// Existing-step names staged alongside the ordinary task fields. They reach the
@@ -490,12 +535,12 @@ pub(super) struct BoardForm {
     /// Field-local validation feedback, painted by the footer input rather than status chrome.
     pub(super) thread_refusal: Option<String>,
     /// Optional assignee draft and the defined choices available this session.
-    pub(super) assignee: Option<String>,
+    pub(super) assignee: Option<Assignee>,
     /// Optional explicit dispatch branch. `None` means the repository's remote default.
     pub(super) base: Option<String>,
     /// The tasks this one runs after, by number, as the task picker last set them.
     pub(super) after: Vec<u64>,
-    pub(super) assignee_options: Vec<Option<String>>,
+    pub(super) assignee_options: Vec<Option<Assignee>>,
     pub(super) assignee_selected: usize,
     /// A task page starts view-only. Entering any field makes its steps selectable and editable
     /// for the rest of that page session; closing the page drops the state with the form.
@@ -553,7 +598,7 @@ impl BoardForm {
             archived,
         );
         form.thread = seeded_draft(task.thread.as_deref().unwrap_or_default());
-        form.assignee = task.assignee.clone();
+        form.assignee = task.assigned();
         form.base = task.base.clone();
         form.after = task.after.clone();
         form.set_agent_names(agent_names);
@@ -682,7 +727,7 @@ impl BoardForm {
                 self.select_current_scope();
             }
             CaptureField::Assignee => {
-                self.assignee = task.assignee.clone();
+                self.assignee = task.assigned();
                 self.select_current_assignee();
             }
             CaptureField::Base => self.base = task.base.clone(),
@@ -694,7 +739,10 @@ impl BoardForm {
                 CaptureField::Notes => snapshot.notes = task.notes.clone(),
                 CaptureField::Thread => snapshot.thread = task.thread.clone(),
                 CaptureField::Scope => snapshot.scope = task.scope.clone(),
-                CaptureField::Assignee => snapshot.assignee = task.assignee.clone(),
+                CaptureField::Assignee => {
+                    snapshot.assignee = task.assignee.clone();
+                    snapshot.assignee_kind = task.assignee_kind;
+                }
                 CaptureField::Base => snapshot.base = task.base.clone(),
                 CaptureField::After => snapshot.after = task.after.clone(),
             }
@@ -725,9 +773,12 @@ impl BoardForm {
         };
     }
 
+    /// The Assignee field's choices: none, every profile, then you. A person or removed
+    /// profile the task already has joins at the end, so cycling never drops it unasked.
     pub(super) fn set_agent_names(&mut self, names: &[String]) {
         self.assignee_options = std::iter::once(None)
-            .chain(names.iter().cloned().map(Some))
+            .chain(names.iter().map(|name| Some(Assignee::agent(name.clone()))))
+            .chain(std::iter::once(Some(Assignee::you())))
             .collect();
         self.select_current_assignee();
     }
@@ -747,6 +798,9 @@ impl BoardForm {
     }
 
     fn select_current_assignee(&mut self) {
+        if !self.assignee_options.contains(&self.assignee) {
+            self.assignee_options.push(self.assignee.clone());
+        }
         self.assignee_selected = self
             .assignee_options
             .iter()
@@ -2622,6 +2676,11 @@ impl BoardModel {
         )
     }
 
+    /// Whether `Enter` on the task page lands on the BLOCKED or REVIEW top line.
+    pub fn block_heading_selected(&self) -> bool {
+        self.block_target() == Some(super::block::BlockTarget::Heading)
+    }
+
     /// Whether `Enter` on the task page lands on a review check.
     pub fn review_check_selected(&self) -> bool {
         matches!(
@@ -3100,7 +3159,7 @@ impl BoardModel {
                     form.notes = seeded_draft(task.notes.as_deref().unwrap_or_default());
                     form.thread = seeded_draft(task.thread.as_deref().unwrap_or_default());
                     form.thread_refusal = None;
-                    form.assignee = task.assignee.clone();
+                    form.assignee = task.assigned();
                     form.base = task.base.clone();
                     form.scope = task.scope.clone();
                     form.select_current_scope();
@@ -4578,7 +4637,7 @@ impl BoardModel {
         }];
         assignee_options.extend(self.assignee_view_names(&mut assignees).into_iter().map(
             |(name, count)| ListPickerOption {
-                label: format!("@{name}"),
+                label: crate::ui::render::assignee_handle(&name),
                 count: Some(count),
                 value: ListPickerValue::AssigneeFilterNamed(name),
             },
@@ -4608,6 +4667,7 @@ impl BoardModel {
             query: String::new(),
             return_mode: BoardInputMode::Normal,
             assignee_target: None,
+            on_target: None,
             base_target: None,
             after_target: None,
             active: thread_active,
@@ -4619,18 +4679,20 @@ impl BoardModel {
         });
     }
 
-    /// The assignee names a filter tab lists: every defined profile in `config.toml` order,
-    /// then names still on tasks whose profile was removed (sorted). `counts` holds the
-    /// lowercased assignee counts of the tasks in view; profiles without tasks count zero.
+    /// The assignee names a filter tab lists: you first when any task in view is yours, then
+    /// every defined profile in `config.toml` order, then the other names on tasks (people,
+    /// and profiles since removed; sorted). `counts` holds the lowercased assignee counts of
+    /// the tasks in view; profiles without tasks count zero.
     fn assignee_view_names(&self, counts: &mut BTreeMap<String, usize>) -> Vec<(String, usize)> {
-        let mut names: Vec<(String, usize)> = self
-            .agent_names
-            .iter()
-            .map(|name| {
-                let count = counts.remove(&name.to_ascii_lowercase()).unwrap_or(0);
-                (name.clone(), count)
-            })
+        let mut names: Vec<(String, usize)> = counts
+            .remove(crate::domain::OWNER)
+            .map(|count| (crate::domain::OWNER.to_string(), count))
+            .into_iter()
             .collect();
+        names.extend(self.agent_names.iter().map(|name| {
+            let count = counts.remove(&name.to_ascii_lowercase()).unwrap_or(0);
+            (name.clone(), count)
+        }));
         names.extend(std::mem::take(counts));
         names
     }
@@ -4675,7 +4737,7 @@ impl BoardModel {
             .assignee_view_names(&mut assignees)
             .into_iter()
             .map(|(name, count)| ListPickerOption {
-                label: format!("@{name}"),
+                label: crate::ui::render::assignee_handle(&name),
                 count: Some(count),
                 value: ListPickerValue::ProjectsAssignee(name),
             })
@@ -4721,6 +4783,7 @@ impl BoardModel {
             query: String::new(),
             return_mode: BoardInputMode::Normal,
             assignee_target: None,
+            on_target: None,
             base_target: None,
             after_target: None,
             active,
@@ -4782,7 +4845,7 @@ impl BoardModel {
                 }];
                 options.extend(self.assignee_view_names(&mut assignees).into_iter().map(
                     |(name, count)| ListPickerOption {
-                        label: format!("@{name}"),
+                        label: crate::ui::render::assignee_handle(&name),
                         count: Some(count),
                         value: ListPickerValue::AssigneeFilterNamed(name),
                     },
@@ -4873,6 +4936,7 @@ impl BoardModel {
             query: String::new(),
             return_mode: BoardInputMode::Normal,
             assignee_target: None,
+            on_target: None,
             base_target: None,
             after_target: None,
             active: Some(selected),
@@ -4929,6 +4993,7 @@ impl BoardModel {
             query: String::new(),
             return_mode: BoardInputMode::Normal,
             assignee_target: None,
+            on_target: None,
             base_target: None,
             after_target: None,
             active: Some(selected),
@@ -4963,6 +5028,7 @@ impl BoardModel {
             query: String::new(),
             return_mode: BoardInputMode::Normal,
             assignee_target: None,
+            on_target: None,
             base_target: None,
             after_target: None,
             active: Some(selected),
@@ -5022,29 +5088,48 @@ impl BoardModel {
         true
     }
 
-    /// Open the assignee picker over `ids`: every defined profile, then **none** last.
-    /// `current` (the cursor task's assignee) is preselected, else the first profile. Nothing changes
-    /// until Enter.
-    pub(super) fn open_assignee_picker(&mut self, ids: Vec<Uuid>, current: Option<String>) {
-        let mut options: Vec<ListPickerOption> = self
+    /// Open the assignee picker over `ids`: every defined profile, `@you`, the people already
+    /// assigned on the board, `type a name…`, then **none** last. `current` (the cursor task's
+    /// assignee) is preselected, else the first row. Nothing changes until Enter.
+    pub(super) fn open_assignee_picker(&mut self, ids: Vec<Uuid>, current: Option<Assignee>) {
+        let mut choices: Vec<Assignee> = self
             .agent_names
             .iter()
-            .map(|name| ListPickerOption {
-                label: format!("@{name}"),
+            .map(|name| Assignee::agent(name.clone()))
+            .collect();
+        choices.push(Assignee::you());
+        let people: BTreeSet<String> = self
+            .tasks
+            .iter()
+            .filter(|task| !task.soft_deleted && !task.is_notice())
+            .filter_map(Task::assigned)
+            .filter(|assignee| assignee.is_person() && assignee.name != crate::domain::OWNER)
+            .map(|assignee| assignee.name)
+            .collect();
+        choices.extend(people.into_iter().map(Assignee::person));
+        let mut options: Vec<ListPickerOption> = choices
+            .into_iter()
+            .map(|assignee| ListPickerOption {
+                label: crate::ui::render::assignee_handle(&assignee.name),
                 count: None,
-                value: ListPickerValue::Assignee(Some(name.clone())),
+                value: ListPickerValue::Assignee(Some(assignee)),
             })
             .collect();
+        options.push(ListPickerOption {
+            label: TYPE_A_NAME.to_string(),
+            count: None,
+            value: ListPickerValue::TypedName,
+        });
         options.push(ListPickerOption {
             label: "none".to_string(),
             count: None,
             value: ListPickerValue::Assignee(None),
         });
-        // An unassigned task starts on the first profile, so Enter right away assigns.
+        // An unassigned task starts on the first row, so Enter right away assigns.
         let selected = current
-            .and_then(|name| {
+            .and_then(|current| {
                 options.iter().position(|option| {
-                    option.value == ListPickerValue::Assignee(Some(name.clone()))
+                    option.value == ListPickerValue::Assignee(Some(current.clone()))
                 })
             })
             .unwrap_or(0);
@@ -5056,6 +5141,7 @@ impl BoardModel {
             query: String::new(),
             return_mode: self.input_mode,
             assignee_target: Some(AssigneePickerTarget { ids }),
+            on_target: None,
             base_target: None,
             after_target: None,
             active: None,
@@ -5139,6 +5225,7 @@ impl BoardModel {
             query: String::new(),
             return_mode: self.input_mode,
             assignee_target: None,
+            on_target: None,
             base_target: Some(BasePickerTarget {
                 ids,
                 edit_draft,
@@ -5367,6 +5454,7 @@ impl BoardModel {
             query: String::new(),
             return_mode: self.input_mode,
             assignee_target: None,
+            on_target: None,
             base_target: None,
             after_target: Some(AfterPickerTarget {
                 ids,
@@ -5453,6 +5541,85 @@ impl BoardModel {
         picker.assignee_target
     }
 
+    /// Open the waiting-on picker over `target`: you, every defined profile, the record's
+    /// current value when it is none of those, then `type a name…` (a task number on a block,
+    /// or any text). The current value is preselected. Nothing changes until Enter.
+    pub(super) fn open_on_picker(&mut self, target: OnPickerTarget, current: Option<BlockOn>) {
+        let mut choices: Vec<BlockOn> = std::iter::once(BlockOn::You)
+            .chain(self.agent_names.iter().cloned().map(BlockOn::Agent))
+            .collect();
+        if let Some(current) = current.as_ref().filter(|on| !choices.contains(on)) {
+            choices.push(current.clone());
+        }
+        let selected = current
+            .and_then(|current| choices.iter().position(|on| *on == current))
+            .unwrap_or(0);
+        let mut options: Vec<ListPickerOption> = choices
+            .into_iter()
+            .map(|on| ListPickerOption {
+                label: on_choice_label(&on),
+                count: None,
+                value: ListPickerValue::WaitingOn(on),
+            })
+            .collect();
+        options.push(ListPickerOption {
+            label: TYPE_A_NAME.to_string(),
+            count: None,
+            value: ListPickerValue::TypedName,
+        });
+        self.list_picker = Some(ListPickerState {
+            kind: ListPickerKind::WaitingOn,
+            tab: FilterTab::Threads,
+            options,
+            selected,
+            query: String::new(),
+            return_mode: self.input_mode,
+            assignee_target: None,
+            on_target: Some(target),
+            base_target: None,
+            after_target: None,
+            active: None,
+            tabs: None,
+        });
+        self.input_mode = BoardInputMode::ListPicker;
+    }
+
+    /// Close the waiting-on picker after its choice was applied, restoring the surface it
+    /// opened over.
+    pub(super) fn close_on_picker(&mut self) -> Option<OnPickerTarget> {
+        let picker = self.list_picker.take()?;
+        self.input_mode = picker.return_mode;
+        picker.on_target
+    }
+
+    /// What the typed row of the open assignee or waiting-on picker would apply: the query
+    /// read by the name rule. `None` with an empty query; an invalid name is the refusal.
+    pub(super) fn typed_picker_value(&self) -> Option<Result<ListPickerValue, String>> {
+        let picker = self.list_picker.as_ref()?;
+        let query = picker.query.trim();
+        if query.is_empty() {
+            return None;
+        }
+        let is_profile = |name: &str| self.agent_names.iter().any(|agent| agent == name);
+        match picker.kind {
+            ListPickerKind::Assignee => Some(
+                crate::domain::resolve_assignee(query, is_profile)
+                    .map(|assignee| ListPickerValue::Assignee(Some(assignee)))
+                    .map_err(|error| {
+                        crate::domain::thread_refusal_message(error)
+                            .replacen("thread", "assignee", 1)
+                    }),
+            ),
+            ListPickerKind::WaitingOn => {
+                let kind = picker.on_target.as_ref()?.kind();
+                Some(Ok(ListPickerValue::WaitingOn(crate::domain::resolve_on(
+                    query, kind, is_profile,
+                ))))
+            }
+            _ => None,
+        }
+    }
+
     /// Resolve a quick-picker assignment at the persistence boundary. Once it is on disk
     /// (`saved`), an open task form bound to one of its tasks adopts the new assignee, unless
     /// its own assignee draft was already changed; otherwise a later save of that form would
@@ -5475,7 +5642,7 @@ impl BoardModel {
         let untouched = form
             .task_snapshot
             .as_ref()
-            .is_none_or(|snapshot| snapshot.assignee == form.assignee);
+            .is_none_or(|snapshot| snapshot.assigned() == form.assignee);
         if let (true, Some(task)) = (untouched, tasks.iter().find(|task| task.id == id)) {
             form.reset_field_to_saved(CaptureField::Assignee, task);
         }
@@ -5529,22 +5696,52 @@ impl BoardModel {
     }
 
     /// Options the open picker shows after its search query, as (source index, option).
+    ///
+    /// The typed row of the assignee and waiting-on pickers stays under any query and paints
+    /// what Enter would apply (`@dana`, `T202`), unless a listed row already offers it.
     pub fn visible_list_picker_options(&self) -> Vec<(usize, ListPickerOption)> {
         let Some(picker) = self.list_picker.as_ref() else {
             return Vec::new();
         };
         let query = picker.query.trim().to_ascii_lowercase();
+        let typed = self.typed_picker_value();
         let mut visible: Vec<_> = picker
             .options
             .iter()
             .enumerate()
             .filter(|(_, option)| {
                 option.value == ListPickerValue::Unavailable
+                    || option.value == ListPickerValue::TypedName
                     || query.is_empty()
                     || option.label.to_ascii_lowercase().contains(&query)
             })
             .map(|(index, option)| (index, option.clone()))
             .collect();
+        let listed = |value: &ListPickerValue| {
+            visible
+                .iter()
+                .any(|(_, option): &(usize, ListPickerOption)| option.value == *value)
+        };
+        let typed_label = match &typed {
+            Some(Ok(value)) if listed(value) => None,
+            Some(Ok(ListPickerValue::Assignee(Some(assignee)))) => {
+                Some(Some(crate::ui::render::assignee_handle(&assignee.name)))
+            }
+            Some(Ok(ListPickerValue::WaitingOn(on))) => Some(Some(on_choice_label(on))),
+            Some(_) => Some(Some(terminal_text(picker.query.trim()))),
+            None => Some(None),
+        };
+        match typed_label {
+            None => visible.retain(|(_, option)| option.value != ListPickerValue::TypedName),
+            Some(Some(label)) => {
+                for (_, option) in &mut visible {
+                    if option.value == ListPickerValue::TypedName {
+                        option.label = label.clone();
+                    }
+                }
+            }
+            Some(None) => {}
+        }
         // With only a loading/error row matching, retain the real default choice rather than
         // putting a highlight on an informational row.
         if picker.kind == ListPickerKind::Base
@@ -6383,7 +6580,7 @@ impl BoardModel {
                 && task.notes == pending.notes
                 && task.scope == pending.scope
                 && task.thread == pending.thread
-                && task.assignee == pending.assignee
+                && task.assigned() == pending.assignee
                 && task.base == pending.base
                 && pending.step_renames.iter().all(|(step_id, text)| {
                     task.steps
@@ -6773,7 +6970,7 @@ impl BoardModel {
         if form.title.value() != snapshot.title
             || form.notes.value() != snapshot.notes.as_deref().unwrap_or_default()
             || form.thread.value() != snapshot.thread.as_deref().unwrap_or_default()
-            || form.assignee != snapshot.assignee
+            || form.assignee != snapshot.assigned()
             || form.base != snapshot.base
             || form.after != snapshot.after
             || form.scope != snapshot.scope
@@ -7572,6 +7769,7 @@ mod tests {
             query: String::new(),
             return_mode: BoardInputMode::Normal,
             assignee_target: None,
+            on_target: None,
             base_target: Some(BasePickerTarget {
                 ids,
                 edit_draft: false,
@@ -8204,7 +8402,7 @@ mod tests {
     }
 
     fn assign(domain: &mut DomainState, id: Uuid, name: &str) {
-        domain.assign(id, Some(name.to_string())).expect("assign");
+        domain.assign(id, Some(name.into())).expect("assign");
     }
 
     fn thread(domain: &mut DomainState, id: Uuid, title: &str, scope: TaskScope, name: &str) {

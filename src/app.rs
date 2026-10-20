@@ -115,13 +115,19 @@ fn load_board_inner(
     let state = store.load()?;
     let snapshot = load_snapshot(&state);
     let mut model = BoardModel::from_domain_for_snapshot(&state, &snapshot);
-    let profiles_error = match crate::agents::AgentProfiles::load(&state_dir) {
+    let (profiles, profiles_error) = match crate::agents::AgentProfiles::load(&state_dir) {
         Ok(profiles) => {
             model.set_agent_profiles(&profiles);
-            None
+            (profiles, None)
         }
-        Err(error) => Some(error.to_string()),
+        Err(error) => (
+            crate::agents::AgentProfiles::default(),
+            Some(error.to_string()),
+        ),
     };
+    // `[board] me`: how your handle reads on this board. The board renders on this thread.
+    let owner = crate::agents::OwnerName::load(&state_dir, &profiles);
+    crate::domain::set_owner_name(owner.name);
     // A bad `[board]` opens the board at the built-in layout; a profile error, which
     // blocks assigning, keeps the status row.
     let board_error = match crate::agents::BoardDefaults::load(&state_dir) {
@@ -141,16 +147,20 @@ fn load_board_inner(
     };
     // The first-backup suggestion is recorded as shown, so it is taken only when nothing
     // else wants the status row.
-    let message = profiles_error.or(board_error).or(backup_error).or_else(|| {
-        let tasks = state
-            .tasks()
-            .iter()
-            .filter(|task| !task.is_notice() && !task.soft_deleted)
-            .count();
-        full_board_open
-            .then(|| crate::backup::take_backup_nudge(&state_dir, tasks))
-            .flatten()
-    });
+    let message = profiles_error
+        .or(board_error)
+        .or(owner.error)
+        .or(backup_error)
+        .or_else(|| {
+            let tasks = state
+                .tasks()
+                .iter()
+                .filter(|task| !task.is_notice() && !task.soft_deleted)
+                .count();
+            full_board_open
+                .then(|| crate::backup::take_backup_nudge(&state_dir, tasks))
+                .flatten()
+        });
     if let Some(message) = message {
         model.set_message(message);
     }
@@ -1191,6 +1201,9 @@ fn board_keyboard_intent(
         }
         if model.trail_heading_selected() {
             return Some(BoardIntent::ToggleTrail);
+        }
+        if model.block_heading_selected() {
+            return Some(BoardIntent::OpenOnPicker);
         }
     }
     // `ctrl+s` on a page showing its BLOCKED or REVIEW section unblocks, or sends the review
@@ -3322,7 +3335,7 @@ fn start_launches(task: &crate::domain::Task, in_herdr: bool) -> bool {
 
 /// Assigned, never dispatched, not done, not archived: a start that would launch if it could.
 fn start_assigns_a_launch(task: &crate::domain::Task) -> bool {
-    task.assignee.is_some()
+    task.agent_assignee().is_some()
         && task.dispatch.is_none()
         && task.status != HumanStatus::Done
         && !task.archived
@@ -3454,7 +3467,7 @@ fn route_board_start(
     let Some(task) = targets.first().and_then(|id| domain.get(*id)) else {
         return false;
     };
-    if task.assignee.is_none()
+    if task.agent_assignee().is_none()
         || !start_moves(task, any_status)
         || task.status == HumanStatus::Done
         || task.archived
@@ -3673,7 +3686,7 @@ fn reply_unblock_route(
 ) -> Option<(uuid::Uuid, dispatch::StartRoute, dispatch::AgentCheck)> {
     let id = model.reply_task_id()?;
     let task = domain.get(id)?;
-    if task.assignee.is_none() || task.archived {
+    if task.agent_assignee().is_none() || task.archived {
         return None;
     }
     let (route, check) = dispatch::start_route_checked(task, crate::domain::OWNER, in_herdr, host);
@@ -3695,7 +3708,7 @@ fn deliver_reply_after_start(
     let Some(task) = domain.get(id) else {
         return;
     };
-    let Some(assignee) = task.assignee.as_deref() else {
+    let Some(assignee) = task.agent_assignee() else {
         return;
     };
     let message = dispatch::closing_message(task).unwrap_or(dispatch::ClosingMessage {
@@ -3723,7 +3736,9 @@ fn closing_candidates(
 ) -> Vec<(uuid::Uuid, usize)> {
     ids.into_iter()
         .filter_map(|id| domain.get(id))
-        .filter(|task| task.block.is_some() && task.assignee.is_some() && task.dispatch.is_some())
+        .filter(|task| {
+            task.block.is_some() && task.agent_assignee().is_some() && task.dispatch.is_some()
+        })
         .map(|task| (task.id, task.past_blocks.len()))
         .collect()
 }
@@ -3759,7 +3774,7 @@ fn deliver_closed_records(
         if task.status == HumanStatus::Ready && message.entries == 0 {
             continue;
         }
-        let Some(assignee) = task.assignee.as_deref() else {
+        let Some(assignee) = task.agent_assignee() else {
             continue;
         };
         let (_, check) = dispatch::start_route_checked(task, crate::domain::OWNER, in_herdr, host);
@@ -4957,7 +4972,7 @@ fn handle_board_intent_with_host(
             if let Some(target) = model.pending_reply_start.take() {
                 after_reply = domain
                     .get(target)
-                    .filter(|task| task.assignee.is_some() && !task.archived)
+                    .filter(|task| task.agent_assignee().is_some() && !task.archived)
                     .map(|task| {
                         let route =
                             dispatch::start_route(task, crate::domain::OWNER, in_herdr, host);
@@ -11370,8 +11385,8 @@ mod tests {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("tab");
         assert_eq!(
             board_keyboard_intent(&model, BoardInputMode::TaskPage, enter),
-            Some(BoardIntent::OpenTaskPage),
-            "the heading keeps Enter's page route"
+            Some(BoardIntent::OpenOnPicker),
+            "Enter on the heading opens the waiting-on picker"
         );
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("tab");
         let intent = board_keyboard_intent(&model, BoardInputMode::TaskPage, enter)
@@ -17090,7 +17105,10 @@ mod quick_assign_tests {
             .into_iter()
             .map(|(_, option)| option.label)
             .collect();
-        assert_eq!(labels, ["@builder", "@reviewer", "none"]);
+        assert_eq!(
+            labels,
+            ["@builder", "@reviewer", "@you", "type a name…", "none"]
+        );
         assert_eq!(
             domain.get(ids[0]).expect("task").assignee,
             None,
@@ -17167,7 +17185,7 @@ mod quick_assign_tests {
     }
 
     #[test]
-    fn at_without_profiles_says_why() {
+    fn at_without_profiles_still_offers_you_and_a_typed_name() {
         let temp = Temp::new("at-no-profiles", &[]);
         let (mut domain, mut model, ids) = board(&temp, &["nobody to pick"]);
         select(&mut domain, &mut model, ids[0]);
@@ -17178,8 +17196,13 @@ mod quick_assign_tests {
             None,
         )
         .expect("at without profiles");
-        assert!(!model.list_picker_open());
-        assert_eq!(model.message(), Some(crate::ui::board::NO_AGENT_PROFILES));
+        assert!(model.list_picker_open());
+        let labels: Vec<_> = model
+            .visible_list_picker_options()
+            .into_iter()
+            .map(|(_, option)| option.label)
+            .collect();
+        assert_eq!(labels, ["@you", "type a name…", "none"]);
     }
 
     #[test]
@@ -17220,6 +17243,333 @@ mod quick_assign_tests {
         for id in &ids {
             assert_eq!(domain.get(*id).expect("task").assignee, None);
         }
+    }
+
+    /// Type `text` into the open list picker, key by key.
+    fn type_query(domain: &mut DomainState, model: &mut BoardModel, text: &str) {
+        for character in text.chars() {
+            let intent = key(model, KeyCode::Char(character), KeyModifiers::NONE);
+            apply_intent(domain, model, intent, None).expect("type");
+        }
+    }
+
+    fn picker_labels(model: &BoardModel) -> Vec<String> {
+        model
+            .visible_list_picker_options()
+            .into_iter()
+            .map(|(_, option)| option.label)
+            .collect()
+    }
+
+    /// The picker's typed row assigns any other name as a person, said on the status row; its
+    /// start only sets started: no launch, even in Herdr. `me` picks you.
+    #[test]
+    fn a_typed_name_assigns_a_person_whose_start_never_dispatches() {
+        let temp = Temp::new("typed-person", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["for dana"]);
+        select(&mut domain, &mut model, ids[0]);
+        let open = key(&model, KeyCode::Char('@'), KeyModifiers::NONE);
+        apply_intent(&mut domain, &mut model, open.clone(), None).expect("open picker");
+
+        type_query(&mut domain, &mut model, "builder");
+        assert_eq!(
+            picker_labels(&model),
+            ["@builder"],
+            "a typed profile name is the listed agent, not a second row"
+        );
+        for _ in 0.."builder".len() {
+            apply_intent(
+                &mut domain,
+                &mut model,
+                BoardIntent::ListPickerQueryBackspace,
+                None,
+            )
+            .expect("erase");
+        }
+        type_query(&mut domain, &mut model, "Dana");
+        assert_eq!(picker_labels(&model), ["@dana"]);
+        let enter = key(&model, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(super::board_intent_may_persist(&model, &enter));
+        let mut host = fake_host(&temp);
+        handle(&temp, &mut domain, &mut model, enter, &mut host);
+        let number = domain
+            .get(ids[0])
+            .and_then(|task| task.number)
+            .expect("number");
+        assert_eq!(
+            model.message().map(str::to_string),
+            Some(format!("assigned T{number} to @dana"))
+        );
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(
+            saved.get(ids[0]).expect("task").assigned(),
+            Some(crate::domain::Assignee::person("dana"))
+        );
+
+        let intent = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        let saved = temp.store.load().expect("reload start");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        assert!(task.dispatch.is_none());
+        assert_eq!(
+            (host.launched, host.ran),
+            (0, 0),
+            "a person is never dispatched"
+        );
+
+        apply_intent(&mut domain, &mut model, open, None).expect("reopen");
+        assert_eq!(
+            model
+                .selected_list_picker_option()
+                .map(|(_, option)| option.label),
+            Some("@dana".to_string()),
+            "the board's people are listed, the current one preselected"
+        );
+        type_query(&mut domain, &mut model, "me");
+        assert_eq!(picker_labels(&model), ["@you"]);
+        apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            None,
+        )
+        .expect("assign you");
+        assert_eq!(
+            domain.get(ids[0]).expect("task").assigned(),
+            Some(crate::domain::Assignee::you())
+        );
+    }
+
+    /// Palette **set waiting on…** on a marked set: a row with no open block or review refuses
+    /// the whole set; otherwise one typed value lands on every record as one undo entry.
+    #[test]
+    fn set_waiting_on_for_a_marked_set_is_one_undo_and_needs_open_records() {
+        let temp = Temp::new("on-marks", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["blocked", "reviewed", "open"]);
+        domain
+            .block(ids[0], crate::domain::BlockDraft::default(), "claude")
+            .expect("block");
+        domain
+            .review(ids[1], crate::domain::ReviewDraft::default(), "claude")
+            .expect("review");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        let mark = |domain: &mut DomainState, model: &mut BoardModel, marked: &[uuid::Uuid]| {
+            apply_intent(domain, model, BoardIntent::MarkClear, None).expect("clear");
+            if !model.mark_mode_active() {
+                apply_intent(domain, model, BoardIntent::ToggleMarkMode, None).expect("mode");
+            }
+            for id in marked {
+                select(domain, model, *id);
+                apply_intent(domain, model, BoardIntent::MarkToggle, None).expect("mark");
+            }
+        };
+
+        mark(&mut domain, &mut model, &[ids[0], ids[2]]);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenOnPicker, None).expect("open");
+        assert!(!model.list_picker_open());
+        let open = domain
+            .get(ids[2])
+            .and_then(|task| task.number)
+            .expect("number");
+        assert_eq!(
+            model.message().map(str::to_string),
+            Some(format!("T{open} has no open block or review"))
+        );
+
+        mark(&mut domain, &mut model, &[ids[0], ids[1]]);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenOnPicker, None).expect("open");
+        assert_eq!(model.list_picker_kind(), Some(ListPickerKind::WaitingOn));
+        assert_eq!(picker_labels(&model), ["@you", "@builder", "type a name…"]);
+        type_query(&mut domain, &mut model, "coordinator");
+        assert_eq!(picker_labels(&model), ["coordinator"]);
+        let outcome = apply_intent(
+            &mut domain,
+            &mut model,
+            BoardIntent::ConfirmListPicker,
+            None,
+        )
+        .expect("set on");
+        assert_eq!(outcome, IntentOutcome::Persist);
+        for id in &ids[..2] {
+            let block = domain
+                .get(*id)
+                .and_then(|task| task.block.clone())
+                .expect("open");
+            assert_eq!(
+                block.on,
+                crate::domain::BlockOn::Other("coordinator".into())
+            );
+        }
+        assert!(matches!(
+            domain.last_undo(),
+            Some(UndoEntry::Batch { entries }) if entries.len() == 2
+        ));
+        assert_eq!(model.message(), Some("set 2 tasks waiting on coordinator"));
+        assert!(model.marked_ids().is_empty(), "marks clear after the verb");
+
+        apply_intent(&mut domain, &mut model, BoardIntent::Undo, None).expect("undo");
+        for id in &ids[..2] {
+            assert!(domain
+                .get(*id)
+                .and_then(|task| task.block.as_ref())
+                .is_some_and(|block| block.on.is_you()));
+        }
+    }
+
+    /// `Enter` on the task page's BLOCKED top line opens the waiting-on picker on the current
+    /// value; `←`/`→` cycle the choices and `Enter` saves in place: the same block, one
+    /// paper-trail entry, one undo entry. `Esc` changes nothing.
+    #[test]
+    fn enter_on_the_top_line_changes_who_the_block_waits_on_in_place() {
+        let temp = Temp::new("on-page", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["asked"]);
+        domain
+            .block(
+                ids[0],
+                crate::domain::BlockDraft {
+                    why: Some("need creds".into()),
+                    ..Default::default()
+                },
+                "claude",
+            )
+            .expect("block");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        select(&mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("tab");
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let intent = board_keyboard_intent(&model, model.input_mode(), enter).expect("enter");
+        assert_eq!(intent, BoardIntent::OpenOnPicker);
+
+        apply_intent(&mut domain, &mut model, intent.clone(), None).expect("open");
+        let esc = key(&model, KeyCode::Esc, KeyModifiers::NONE);
+        apply_intent(&mut domain, &mut model, esc, None).expect("cancel");
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+
+        apply_intent(&mut domain, &mut model, intent, None).expect("reopen");
+        assert_eq!(
+            model
+                .selected_list_picker_option()
+                .map(|(_, option)| option.label),
+            Some("@you".to_string()),
+            "the current value is preselected"
+        );
+        let right = key(&model, KeyCode::Right, KeyModifiers::NONE);
+        apply_intent(&mut domain, &mut model, right, None).expect("cycle");
+        assert_eq!(
+            model
+                .selected_list_picker_option()
+                .map(|(_, option)| option.label),
+            Some("@builder".to_string())
+        );
+        let enter = key(&model, KeyCode::Enter, KeyModifiers::NONE);
+        let outcome = apply_intent(&mut domain, &mut model, enter, None).expect("save");
+        assert_eq!(outcome, IntentOutcome::Persist);
+        assert_eq!(model.input_mode(), BoardInputMode::TaskPage);
+        let task = domain.get(ids[0]).expect("task");
+        let block = task.block.clone().expect("the same block");
+        assert_eq!(block.on, crate::domain::BlockOn::Agent("builder".into()));
+        assert_eq!(block.why.as_deref(), Some("need creds"));
+        assert_eq!(
+            crate::activity::paper_trail(task)[0].text,
+            "on: you → @builder"
+        );
+        assert!(matches!(domain.last_undo(), Some(UndoEntry::SetOn { .. })));
+    }
+
+    /// `Enter` on a REVIEW top line hands the round over in place: same round, same checks,
+    /// one paper-trail entry.
+    #[test]
+    fn enter_on_the_review_top_line_hands_the_round_to_a_typed_name() {
+        let temp = Temp::new("on-review", &["pi"]);
+        let (mut domain, mut model, ids) = board(&temp, &["handed"]);
+        domain
+            .review(
+                ids[0],
+                crate::domain::ReviewDraft {
+                    done: Some("built it".into()),
+                    checks: vec![crate::domain::Check {
+                        text: "tests pass".into(),
+                        state: crate::domain::CheckState::Passed,
+                    }],
+                    on: crate::domain::BlockOn::Agent("pi".into()),
+                    ..Default::default()
+                },
+                "claude",
+            )
+            .expect("review");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        select(&mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("page");
+        // A review page opens on its checks; the top line is one stop back.
+        let back = key(&model, KeyCode::BackTab, KeyModifiers::SHIFT);
+        apply_intent(&mut domain, &mut model, back, None).expect("shift+tab");
+        assert!(model.block_heading_selected());
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let intent = board_keyboard_intent(&model, model.input_mode(), enter).expect("enter");
+        assert_eq!(intent, BoardIntent::OpenOnPicker);
+        apply_intent(&mut domain, &mut model, intent, None).expect("open");
+        assert_eq!(
+            model
+                .selected_list_picker_option()
+                .map(|(_, option)| option.label),
+            Some("@pi".to_string())
+        );
+        type_query(&mut domain, &mut model, "coordinator");
+        let enter = key(&model, KeyCode::Enter, KeyModifiers::NONE);
+        let outcome = apply_intent(&mut domain, &mut model, enter, None).expect("save");
+        assert_eq!(outcome, IntentOutcome::Persist);
+        let task = domain.get(ids[0]).expect("task");
+        let review = task.block.clone().expect("the same round");
+        assert_eq!(
+            review.on,
+            crate::domain::BlockOn::Other("coordinator".into())
+        );
+        assert_eq!(review.round, 1);
+        assert_eq!(review.checks.len(), 1);
+        assert_eq!(review.checks[0].state, crate::domain::CheckState::Passed);
+        assert_eq!(
+            crate::activity::paper_trail(task)[0].text,
+            "on: @pi → coordinator"
+        );
+    }
+
+    /// A record waiting on a name no profile has keeps that name as a choice, preselected,
+    /// so cycling away and back never loses it.
+    #[test]
+    fn the_waiting_on_picker_keeps_a_current_name_it_would_not_list() {
+        let temp = Temp::new("on-current", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["asked"]);
+        domain
+            .block(
+                ids[0],
+                crate::domain::BlockDraft {
+                    on: crate::domain::BlockOn::Other("coordinator".into()),
+                    ..Default::default()
+                },
+                "claude",
+            )
+            .expect("block");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        select(&mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::OpenOnPicker, None).expect("open");
+        let labels: Vec<String> = model
+            .visible_list_picker_options()
+            .into_iter()
+            .map(|(_, option)| option.label)
+            .collect();
+        assert_eq!(labels, ["@you", "@builder", "coordinator", "type a name…"]);
+        assert_eq!(
+            model
+                .selected_list_picker_option()
+                .map(|(_, option)| option.label),
+            Some("coordinator".to_string())
+        );
     }
 
     /// A marked-set assignment whose save fails enters recovery, and Retry lands the whole set

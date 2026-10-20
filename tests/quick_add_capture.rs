@@ -995,21 +995,52 @@ fn quick_add_assignee_token_requires_an_exact_profile_and_saves_the_assignee() {
 }
 
 #[test]
-fn unknown_quick_add_assignee_keeps_the_draft_open() {
+fn quick_add_assignee_token_follows_the_name_rule() {
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from("/repos/invocation")));
+    set_agent_profiles(&mut model, &["reviewer"]);
+    let snap = snapshot();
+
+    // Any other name is a person; `me` is you.
+    open(&mut domain, &mut model, &snap);
+    type_title(&mut domain, &mut model, "inspect change !a Dana");
+    assert_eq!(
+        apply(&mut domain, &mut model, BoardIntent::QuickAddSave, None),
+        IntentOutcome::Persist
+    );
+    let task = domain.tasks()[0].clone();
+    assert_eq!(task.assignee.as_deref(), Some("dana"));
+    assert_eq!(task.assignee_kind, tsk_tui::domain::AssigneeKind::Person);
+
+    let mut domain = DomainState::new();
+    open(&mut domain, &mut model, &snap);
+    type_title(&mut domain, &mut model, "mine !a me");
+    assert_eq!(
+        apply(&mut domain, &mut model, BoardIntent::QuickAddSave, None),
+        IntentOutcome::Persist
+    );
+    assert_eq!(
+        domain.tasks()[0].assigned(),
+        Some(tsk_tui::domain::Assignee::you())
+    );
+}
+
+#[test]
+fn malformed_quick_add_assignee_keeps_the_draft_open() {
     let mut domain = DomainState::new();
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from("/repos/invocation")));
     set_agent_profiles(&mut model, &["reviewer"]);
     let snap = snapshot();
 
     open(&mut domain, &mut model, &snap);
-    type_title(&mut domain, &mut model, "inspect change !a missing");
+    type_title(&mut domain, &mut model, "inspect change !a no_such");
     assert_eq!(
         apply(&mut domain, &mut model, BoardIntent::QuickAddSave, None),
         IntentOutcome::None
     );
     assert!(domain.tasks().is_empty());
     assert_eq!(model.input_mode(), BoardInputMode::QuickAdd);
-    assert_eq!(model.quick_add_title_value(), "inspect change !a missing");
+    assert_eq!(model.quick_add_title_value(), "inspect change !a no_such");
 }
 
 #[test]

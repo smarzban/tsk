@@ -17,9 +17,10 @@ The human works the board in a TUI; agents read and write the same tasks with th
 - Thread: a label that groups related work, within a project or across several.
 - Task number: `T12`, `12`, and the task's UUID address the same task.
 - Notice: `N` rows on the desk (starter tasks, What's new) are for the human only. `tsk list` never shows them.
-- Agent profile: an `[agent.<name>]` table in `config.toml` holding the command that launches an agent. A task's assignee names a profile.
-- Dispatch: in Herdr, starting an assigned project task launches its agent in a new Git worktree and Herdr workspace, from the task's base branch.
-- Block: a task waiting on an answer, with why, what it needs, and options to choose from. Replies answer it; unblocking sends them to the running dispatched agent.
+- Agent profile: an `[agent.<name>]` table in `config.toml` holding the command that launches an agent.
+- Assignee: an agent profile, the human (`you`), or a named person. Only an agent assignee dispatches.
+- Dispatch: in Herdr, starting a project task assigned to an agent launches it in a new Git worktree and Herdr workspace, from the task's base branch.
+- Block: a task waiting on an answer, with why, what it needs, and options to choose from. Replies answer it; unblocking sends them to the running dispatched agent. `tsk edit T12 --on <who>` changes who an open block or review waits on.
 - Review: work handed back with what was done and checks to verify. The human marks the checks, then approves or sends it back with feedback.
 - After: a task waits until the tasks it runs after are done. The last done starts it if it is ready.
 - Paper trail: who changed what on a task, newest first.

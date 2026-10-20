@@ -1,10 +1,10 @@
 //! Undo stack for soft-delete, complete, status changes, steps, archive, assignment, base,
-//! block, `after`, and a start that dispatched.
+//! block, who a block or review waits on, `after`, and a start that dispatched.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{DomainError, DomainState, HumanStatus, Step};
+use super::{AssigneeKind, BlockOn, DomainError, DomainState, HumanStatus, Step};
 
 /// Maximum undo entries retained in a saved document.
 pub const UNDO_CAP: usize = 50;
@@ -30,9 +30,13 @@ pub enum UndoEntry {
         previous: HumanStatus,
         expected_revision: Uuid,
     },
+    /// An assignment; reversing restores `previous` with its kind. An entry written before
+    /// store v14 carries no kind and reads as an agent, the only kind there was.
     Assign {
         id: Uuid,
         previous: Option<String>,
+        #[serde(default, skip_serializing_if = "AssigneeKind::is_agent")]
+        previous_kind: AssigneeKind,
         expected_revision: Uuid,
     },
     SetBase {
@@ -80,6 +84,13 @@ pub enum UndoEntry {
         previous: Vec<u64>,
         expected_revision: Uuid,
     },
+    /// A change to who the open block or review round waits on; reversing puts `previous`
+    /// back on the same record.
+    SetOn {
+        id: Uuid,
+        previous: BlockOn,
+        expected_revision: Uuid,
+    },
     Batch {
         entries: Vec<UndoEntry>,
     },
@@ -104,7 +115,8 @@ impl UndoEntry {
                 | UndoEntry::Status { .. }
                 | UndoEntry::Steps { .. }
                 | UndoEntry::Archive { .. }
-                | UndoEntry::SetAfter { .. } => leaves.push(entry),
+                | UndoEntry::SetAfter { .. }
+                | UndoEntry::SetOn { .. } => leaves.push(entry),
             }
         }
 
@@ -162,6 +174,11 @@ impl UndoEntry {
                     ..
                 }
                 | UndoEntry::SetAfter {
+                    id,
+                    expected_revision,
+                    ..
+                }
+                | UndoEntry::SetOn {
                     id,
                     expected_revision,
                     ..
@@ -227,6 +244,11 @@ impl UndoEntry {
                 id: target,
                 expected_revision,
                 ..
+            }
+            | UndoEntry::SetOn {
+                id: target,
+                expected_revision,
+                ..
             } => {
                 if *target == id && *expected_revision == from {
                     *expected_revision = to;
@@ -239,7 +261,12 @@ impl UndoEntry {
         match self {
             UndoEntry::SoftDelete { id, .. } => state.restore(id),
             UndoEntry::Complete { id, previous, .. } => state.restore_uncompleted(id, previous),
-            UndoEntry::Assign { id, previous, .. } => state.restore_assignee(id, previous),
+            UndoEntry::Assign {
+                id,
+                previous,
+                previous_kind,
+                ..
+            } => state.restore_assignee(id, previous, previous_kind),
             UndoEntry::SetBase { id, previous, .. } => state.restore_base(id, previous),
             UndoEntry::Block { id, previous, .. } => state.restore_unblocked(id, previous),
             UndoEntry::Start { id, previous, .. } | UndoEntry::Status { id, previous, .. } => {
@@ -248,6 +275,7 @@ impl UndoEntry {
             UndoEntry::Steps { id, previous, .. } => state.restore_steps(id, previous),
             UndoEntry::Archive { id, previous, .. } => state.restore_archived(id, previous),
             UndoEntry::SetAfter { id, previous, .. } => state.restore_after(id, previous),
+            UndoEntry::SetOn { id, previous, .. } => state.restore_on(id, previous),
             UndoEntry::Batch { entries } => {
                 for entry in entries.into_iter().rev() {
                     entry.reverse(state)?;
@@ -767,6 +795,38 @@ mod tests {
             state.get(id).expect("task exists").status,
             HumanStatus::Open
         );
+    }
+
+    /// Assigning a person over an agent of the same name is a change, and undo puts the
+    /// agent back with its kind, so its start dispatches again.
+    #[test]
+    fn undoing_an_assignment_restores_the_previous_kind() {
+        use crate::domain::{Assignee, AssigneeKind};
+        let mut state = DomainState::new();
+        let id = create_sample(&mut state);
+        state
+            .assign(id, Some(Assignee::agent("dana")))
+            .expect("agent");
+        assert!(state
+            .assign(id, Some(Assignee::person("dana")))
+            .expect("person"));
+        assert_eq!(state.get(id).unwrap().assignee_kind, AssigneeKind::Person);
+        assert_eq!(state.get(id).unwrap().agent_assignee(), None);
+
+        state.undo().expect("undo");
+        let task = state.get(id).unwrap();
+        assert_eq!(task.assigned(), Some(Assignee::agent("dana")));
+        assert_eq!(task.agent_assignee(), Some("dana"));
+
+        state.assign(id, Some(Assignee::you())).expect("you");
+        state.assign(id, None).expect("unassign");
+        assert_eq!(
+            state.get(id).unwrap().assignee_kind,
+            AssigneeKind::Agent,
+            "an unassigned task carries the default kind"
+        );
+        state.undo().expect("undo unassign");
+        assert_eq!(state.get(id).unwrap().assigned(), Some(Assignee::you()));
     }
 
     #[test]

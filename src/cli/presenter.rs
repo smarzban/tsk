@@ -126,7 +126,7 @@ const STATUS_USAGE: &[&str] = &[
     "tsk status <task> review [--done <text>] [--check <text>]... [--next <text>] [--on <who>]",
 ];
 const EDIT_USAGE: &[&str] = &[
-    "tsk edit <task> [--title <title>] [--notes <notes>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--after <task>]... [--clear-after] [--state-dir <dir>]",
+    "tsk edit <task> [--title <title>] [--notes <notes>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--after <task>]... [--clear-after] [--on <who>] [--state-dir <dir>]",
 ];
 const STEPS_USAGE: &[&str] = &[
     "tsk steps <task> add <text> [<place>] [--state-dir <dir>]",
@@ -262,7 +262,10 @@ pub fn add_help() -> CliOutput {
                     ("-t, --title <title>", "the title (required without a plan)"),
                     ("-n, --notes <notes>", "notes"),
                     ("--thread <name>", "a thread label"),
-                    ("--assignee <name>", "an agent profile from config.toml"),
+                    (
+                        "--assignee <name>",
+                        "an agent profile from config.toml, me, or a person's name",
+                    ),
                     ("--unassign", "create without an assignee"),
                     (
                         "--base <branch>",
@@ -290,9 +293,8 @@ pub fn add_help() -> CliOutput {
             "cat plan.json | tsk add".into(),
         ],
         refusals: vec![
-            "empty-title, invalid-title, unknown-project, project-archived".into(),
-            "unknown-agent, unknown-base".into(),
-            "in a plan item: invalid-item, invalid-thread, invalid-after".into(),
+            "empty-title, invalid-title, unknown-project, project-archived, unknown-base".into(),
+            "in a plan item: invalid-item, invalid-thread, invalid-assignee, invalid-after".into(),
         ],
         exit: exit_line(
             "every item created or already there",
@@ -327,7 +329,10 @@ pub fn list_help(_terminal_width: Option<usize>) -> CliOutput {
                 &[
                     ("--thread <name>", "only tasks on this thread"),
                     ("--no-thread", "only tasks without a thread"),
-                    ("--assignee <name>", "only tasks assigned to this agent profile"),
+                    (
+                        "--assignee <name>",
+                        "only tasks assigned to this agent profile or person; me for yours",
+                    ),
                     ("--open, --ready", "only open, or only ready, tasks"),
                     ("--done, --archived", "done or archived tasks instead"),
                     ("--deleted", "deleted tasks instead"),
@@ -387,7 +392,8 @@ pub fn added(result: FlagAddResult, json: bool) -> CliOutput {
                 "number": number,
                 "title": title,
                 "project": project,
-                "assignee": assignee,
+                "assignee": assignee.as_ref().map(|assignee| &assignee.name),
+                "assignee_kind": assignee.as_ref().map(|assignee| assignee.kind.name()),
             })
         ),
         FlagAddResult::Existing {
@@ -404,10 +410,20 @@ pub fn added(result: FlagAddResult, json: bool) -> CliOutput {
                 "number": number,
                 "title": title,
                 "project": project,
-                "assignee": assignee,
+                "assignee": assignee.as_ref().map(|assignee| &assignee.name),
+                "assignee_kind": assignee.as_ref().map(|assignee| assignee.kind.name()),
             })
         ),
-        FlagAddResult::Created { title, .. } => format!("added {}\n", terminal_text(&title)),
+        FlagAddResult::Created {
+            number,
+            title,
+            assignee,
+            ..
+        } => format!(
+            "added {}\n{}",
+            terminal_text(&title),
+            person_line(number, assignee.as_ref())
+        ),
         FlagAddResult::Existing { .. } => "task already exists\n".into(),
     };
     CliOutput {
@@ -464,6 +480,7 @@ fn list_json(result: &ListResult) -> String {
             notes: &'a Option<String>,
             steps: &'a [StepLine],
             assignee: &'a Option<String>,
+            assignee_kind: Option<&'static str>,
             base: &'a Option<String>,
             thread: &'a Option<String>,
             after: &'a [crate::cli::list::AfterLink],
@@ -491,6 +508,7 @@ fn list_json(result: &ListResult) -> String {
             notes: &direct.notes,
             steps: &direct.steps,
             assignee: &row.assignee,
+            assignee_kind: row.assignee_kind,
             base: &row.base,
             thread: &row.thread,
             after: &row.after,
@@ -895,8 +913,8 @@ fn append_row(
     let mut content = terminal_text(&row.title);
     if include_assignee {
         if let Some(assignee) = row.assignee.as_deref() {
-            content.push_str(" @");
-            content.push_str(&terminal_text(assignee));
+            content.push(' ');
+            content.push_str(&crate::ui::render::assignee_handle(assignee));
         }
         if let Some(base) = row.base.as_deref() {
             content.push_str(" ⎇ ");
@@ -967,7 +985,7 @@ fn append_direct_details(
         if has_prior {
             output.push('\n');
         }
-        let assignee = terminal_text(&format!("@{assignee}"));
+        let assignee = crate::ui::render::assignee_handle(assignee);
         append_wrapped(
             output,
             &detail_prefix,
@@ -1827,7 +1845,7 @@ pub fn status_help() -> CliOutput {
                     ("--option <text>", "one suggested answer; repeat for more"),
                     (
                         "--on <who>",
-                        "you (the default), another task such as T202, or any other text",
+                        "you (the default), another task such as T202, an agent profile, or any other text",
                     ),
                 ],
             ),
@@ -2029,7 +2047,7 @@ pub fn status_rejected(error: StatusError, task: TaskAddress) -> CliOutput {
 pub fn edit_help() -> CliOutput {
     help(HelpDoc {
         usage: lines(EDIT_USAGE),
-        purpose: "Change a task's title, notes, assignee, dispatch base, or the tasks it runs after. Scope and thread stay as they are.".into(),
+        purpose: "Change a task's title, notes, assignee, dispatch base, the tasks it runs after, or who its open block or review waits on. Scope and thread stay as they are.".into(),
         groups: vec![
             group("Arguments", &[("<task>", "a task number or UUID")]),
             group(
@@ -2037,7 +2055,10 @@ pub fn edit_help() -> CliOutput {
                 &[
                     ("-t, --title <title>", "replace the title"),
                     ("-n, --notes <notes>", "replace the notes; blank clears them"),
-                    ("--assignee <name>", "assign an agent profile from config.toml"),
+                    (
+                        "--assignee <name>",
+                        "assign an agent profile from config.toml, me, or a person's name",
+                    ),
                     ("--unassign", "clear the assignee"),
                     (
                         "--base <branch>",
@@ -2052,10 +2073,14 @@ pub fn edit_help() -> CliOutput {
                         "run after this task; repeat for more, replaces the list",
                     ),
                     ("--clear-after", "run after nothing"),
+                    (
+                        "--on <who>",
+                        "who the open block or review waits on, as for tsk status",
+                    ),
                     ("--state-dir <dir>", "use another board store"),
                     (
                         "--flag=<value>",
-                        "use = for a value that starts with -: --title=<value>, --notes=<value>",
+                        "use = for a value that starts with -: --title=<value>, --notes=<value>, --on=<value>",
                     ),
                 ],
             ),
@@ -2064,10 +2089,11 @@ pub fn edit_help() -> CliOutput {
             "tsk edit T12 --title \"Fix timeout on slow connections\"".into(),
             "tsk edit T12 --assignee claude --base main".into(),
             "tsk edit T205 --after T202 --after T12".into(),
+            "tsk edit T12 --on coordinator".into(),
         ],
         refusals: vec![
-            "unknown-task, soft-deleted-task, empty-title, invalid-title".into(),
-            "unknown-agent, unknown-base".into(),
+            "unknown-task, soft-deleted-task, empty-title, invalid-title, unknown-base".into(),
+            "--on: not-blocked (nothing open to change), invalid-blocker, text-too-long".into(),
             "invalid-after: the task itself, one not on the board, or one already done".into(),
             "after-loop: the link would close a loop".into(),
         ],
@@ -2079,12 +2105,27 @@ pub fn edit_help() -> CliOutput {
     })
 }
 
+/// The line that makes a typed person visible, so a mistyped profile is caught:
+/// `assigned T12 to @dana (not an agent profile)`. Empty for an agent, you, or no assignee.
+fn person_line(number: u64, assignee: Option<&crate::domain::Assignee>) -> String {
+    match assignee {
+        Some(assignee) if assignee.is_person() && assignee.name != crate::domain::OWNER => {
+            format!(
+                "assigned T{number} to @{} (not an agent profile)\n",
+                terminal_text(&assignee.name)
+            )
+        }
+        _ => String::new(),
+    }
+}
+
 pub fn edited(result: EditResult) -> CliOutput {
     CliOutput {
         stdout: format!(
-            "edited T{} {}\n",
+            "edited T{} {}\n{}",
             result.number,
-            terminal_text(&result.title)
+            terminal_text(&result.title),
+            person_line(result.number, result.assignee.as_ref())
         ),
         stderr: String::new(),
         code: 0,
@@ -2100,6 +2141,13 @@ pub fn edit_rejected(error: EditError, task: TaskAddress) -> CliOutput {
         EditError::UnknownBase(detail) => (format!("unknown-base: {}", terminal_text(&detail)), 1),
         EditError::InvalidAfter(detail) => (format!("invalid-after: {detail}"), 1),
         EditError::AfterLoop(detail) => (format!("after-loop: {detail}"), 1),
+        EditError::NotBlocked => (
+            format!(
+                "not-blocked: {} has no open block or review; nothing to change",
+                task.display()
+            ),
+            1,
+        ),
         EditError::AgentConfig(detail) => (detail, 2),
         EditError::Store(detail) => (detail, 3),
         other => (task_refusal_message(other.code(), task), 1),
@@ -2442,7 +2490,6 @@ pub fn rejected(error: AddError) -> CliOutput {
                 1,
             )
         }
-        AddError::UnknownAgent(detail) => (format!("unknown-agent: {}", terminal_text(detail)), 1),
         AddError::UnknownBase(detail) => (format!("unknown-base: {}", terminal_text(detail)), 1),
         AddError::AgentConfig(detail) => (detail.clone(), 2),
         AddError::Store(detail) => (detail.clone(), 3),

@@ -1697,7 +1697,7 @@ fn retargeted_task_page_keeps_all_assignee_options_and_the_saved_value() {
         None,
     )
     .expect("edit retargeted assignee");
-    for _ in 0..3 {
+    for _ in 0..4 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormAssigneeNext, None)
             .expect("cycle full assignee ring");
     }
@@ -1707,7 +1707,7 @@ fn retargeted_task_page_keeps_all_assignee_options_and_the_saved_value() {
     assert_eq!(
         domain.get(second).expect("second").assignee.as_deref(),
         Some("reviewer"),
-        "the retargeted form must include unassigned and both configured profiles"
+        "the retargeted form must include unassigned, both configured profiles, and you"
     );
 }
 

@@ -166,7 +166,7 @@ fn add_base_validates_against_the_resolved_task_project_and_persists() {
 }
 
 #[test]
-fn add_assignee_flag_and_json_plan_require_known_profiles_and_round_trip() {
+fn add_assignee_flag_and_json_plan_follow_the_name_rule_and_round_trip() {
     let _env = env_lock();
     let dir = temp_state_dir("assignee");
     write_agents(&dir);
@@ -188,6 +188,7 @@ fn add_assignee_flag_and_json_plan_require_known_profiles_and_round_trip() {
     let added_json: serde_json::Value =
         serde_json::from_str(&output.stdout).expect("add JSON result");
     assert_eq!(added_json["assignee"], "reviewer");
+    assert_eq!(added_json["assignee_kind"], "agent");
     assert_eq!(
         task_store(&dir).load().expect("load").tasks()[0]
             .assignee
@@ -216,25 +217,53 @@ fn add_assignee_flag_and_json_plan_require_known_profiles_and_round_trip() {
         Some("reviewer")
     );
 
-    let unknown = add(
+    // Any other name is a person, said out loud so a mistyped profile is caught.
+    let person = add(
         &[
             "tsk".into(),
             "add".into(),
             "--state-dir".into(),
             state_dir_arg(&dir),
             "--title".into(),
-            "unknown".into(),
+            "for dana".into(),
             "--assignee".into(),
-            "missing".into(),
+            "@Dana".into(),
         ],
         true,
     );
-    assert_eq!(unknown.code, 1);
-    assert!(
-        unknown.stderr.contains("unknown-agent"),
-        "{}",
-        unknown.stderr
+    assert_eq!(person.code, 0, "{}", person.stderr);
+    assert_eq!(
+        person.stdout,
+        "added for dana\nassigned T3 to @dana (not an agent profile)\n"
     );
+    let state = task_store(&dir).load().expect("reload person");
+    let dana = state
+        .tasks()
+        .iter()
+        .find(|task| task.title == "for dana")
+        .expect("dana");
+    assert_eq!(dana.assignee.as_deref(), Some("dana"));
+    assert_eq!(dana.assignee_kind, tsk_tui::domain::AssigneeKind::Person);
+
+    // `me` is you: no person line, stored as `you`.
+    let mine = add(
+        &[
+            "tsk".into(),
+            "add".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+            "--title".into(),
+            "mine".into(),
+            "--assignee".into(),
+            "me".into(),
+            "--json".into(),
+        ],
+        true,
+    );
+    assert_eq!(mine.code, 0, "{}", mine.stderr);
+    let mine_json: serde_json::Value = serde_json::from_str(&mine.stdout).expect("mine JSON");
+    assert_eq!(mine_json["assignee"], "you");
+    assert_eq!(mine_json["assignee_kind"], "person");
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -307,7 +336,7 @@ fn malformed_agent_profiles_are_lazy_and_assignment_is_a_usage_error() {
 }
 
 #[test]
-fn json_plan_unknown_assignee_refuses_only_that_item() {
+fn json_plan_unknown_assignee_is_a_person() {
     let _env = env_lock();
     let dir = temp_state_dir("plan-unknown-agent");
     write_agents(&dir);
@@ -329,15 +358,22 @@ fn json_plan_unknown_assignee_refuses_only_that_item() {
         ],
         true,
     );
-    assert_eq!(output.code, 1, "{output:?}");
+    assert_eq!(output.code, 0, "{output:?}");
     let report: serde_json::Value = serde_json::from_str(&output.stdout).expect("plan report");
     assert_eq!(report["created"][0]["i"], 0);
-    assert_eq!(report["failed"][0]["i"], 1);
-    assert_eq!(report["failed"][0]["code"], "unknown-agent");
+    assert_eq!(report["created"][1]["i"], 1);
     let state = task_store(&dir).load().expect("load state");
-    assert_eq!(state.tasks().len(), 1);
-    assert_eq!(state.tasks()[0].title, "valid sibling");
+    assert_eq!(state.tasks().len(), 2);
     assert_eq!(state.tasks()[0].assignee.as_deref(), Some("reviewer"));
+    assert_eq!(
+        state.tasks()[0].assignee_kind,
+        tsk_tui::domain::AssigneeKind::Agent
+    );
+    assert_eq!(state.tasks()[1].assignee.as_deref(), Some("missing"));
+    assert_eq!(
+        state.tasks()[1].assignee_kind,
+        tsk_tui::domain::AssigneeKind::Person
+    );
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -368,7 +404,7 @@ fn json_plan_malformed_assignee_values_refuse_per_item() {
     assert_eq!(output.code, 1, "{output:?}");
     let report: serde_json::Value = serde_json::from_str(&output.stdout).expect("plan report");
     assert_eq!(report["failed"][0]["i"], 0);
-    assert_eq!(report["failed"][0]["code"], "unknown-agent");
+    assert_eq!(report["failed"][0]["code"], "invalid-assignee");
     assert_eq!(report["failed"][1]["i"], 1);
     assert_eq!(report["failed"][1]["code"], "invalid-item");
     assert_eq!(report["created"][0]["i"], 2);
@@ -2296,7 +2332,8 @@ fn flag_add_json_reports_created_and_existing_resolved_tasks() {
     assert_eq!(created["project"], project_text);
     let id = created["id"].as_str().expect("created id").to_owned();
     assert_eq!(created["assignee"], serde_json::Value::Null);
-    assert_eq!(created.as_object().expect("created object").len(), 6);
+    assert_eq!(created["assignee_kind"], serde_json::Value::Null);
+    assert_eq!(created.as_object().expect("created object").len(), 7);
 
     let existing = add(&args, true);
     assert_eq!(existing.code, 0);
@@ -2308,7 +2345,7 @@ fn flag_add_json_reports_created_and_existing_resolved_tasks() {
     assert_eq!(existing["title"], "json task");
     assert_eq!(existing["project"], project.to_string_lossy().as_ref());
     assert_eq!(existing["assignee"], serde_json::Value::Null);
-    assert_eq!(existing.as_object().expect("existing object").len(), 6);
+    assert_eq!(existing.as_object().expect("existing object").len(), 7);
 
     let global = add(
         &[

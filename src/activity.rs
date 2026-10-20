@@ -41,10 +41,10 @@ impl TrailEntry {
     }
 }
 
-/// `you`, or `@profile`.
+/// `you` (or your configured name), or `@profile`.
 pub fn author(by: &str) -> String {
     if by == OWNER {
-        OWNER.to_string()
+        crate::domain::owner_name()
     } else {
         format!("@{by}")
     }
@@ -186,7 +186,7 @@ pub fn event_text(event: &TaskEvent) -> Option<String> {
         TaskEventKind::Assigned => match detail {
             None => "assignee changed".to_string(),
             Some(detail) => match detail.assignee.as_deref() {
-                Some(name) => format!("assigned @{name}"),
+                Some(name) => format!("assigned @{}", crate::domain::display_name(name)),
                 None => "unassigned".to_string(),
             },
         },
@@ -231,6 +231,12 @@ pub fn event_text(event: &TaskEvent) -> Option<String> {
             }
             Some(CleanupOutcome::Missing) => "cleaned · worktree already gone".to_string(),
         },
+        TaskEventKind::OnSet => {
+            match detail.and_then(|detail| detail.on_from.as_ref().zip(detail.on_to.as_ref())) {
+                Some((from, to)) => format!("on: {} → {}", from.label(), to.label()),
+                None => "waiting on changed".to_string(),
+            }
+        }
         TaskEventKind::SoftDeleted => "deleted".to_string(),
         TaskEventKind::Restored => "restored".to_string(),
         TaskEventKind::Archived => "archived".to_string(),
@@ -580,6 +586,39 @@ mod tests {
         let lines = record_lines(&task.past_blocks[0], SystemTime::now());
         assert!(lines.iter().any(|line| line.text == "need creds"));
         assert!(lines.iter().any(|line| line.text == "here"));
+    }
+
+    /// A waiting-on change reads `on: you → @pi`; your configured name replaces your handle
+    /// (the author and an assignment to you) but never a sentence about you.
+    #[test]
+    fn waiting_on_changes_and_your_handle_read_as_your_name() {
+        let mut state = DomainState::new();
+        let id = new_task(&mut state);
+        state
+            .block(id, BlockDraft::default(), "claude")
+            .expect("block");
+        state
+            .set_on(id, BlockOn::Agent("pi".into()))
+            .expect("set on");
+        state
+            .assign(id, Some(crate::domain::Assignee::you()))
+            .expect("assign you");
+        let task = state.get(id).expect("task").clone();
+        assert_eq!(texts(&task)[..2], ["assigned @you", "on: you → @pi"]);
+        crate::domain::with_owner_name(Some("saeed".into()), || {
+            let trail = paper_trail(&task);
+            assert_eq!(trail[0].text, "assigned @saeed");
+            assert_eq!(trail[1].text, "on: saeed → @pi");
+            assert!(trail[0].line(SystemTime::now()).contains(" · saeed "));
+            let mut closed = state.clone();
+            closed
+                .set_status(id, HumanStatus::Started)
+                .expect("unblock");
+            let task = closed.get(id).expect("task");
+            assert!(paper_trail(task)
+                .iter()
+                .any(|entry| entry.text == "blocked on @pi"));
+        });
     }
 
     #[test]

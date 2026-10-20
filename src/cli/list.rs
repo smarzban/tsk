@@ -28,7 +28,8 @@ pub struct ListInput {
     pub ready: bool,
     /// Normalized at the argv boundary so filtering only compares valid names.
     pub thread: Option<String>,
-    /// Exact normalized assignee filter. Removed profiles remain listable.
+    /// Exact normalized assignee filter: a profile, a person, or `you` (also `me` or your
+    /// configured name). Removed profiles remain listable.
     pub assignee: Option<String>,
     /// Unthreaded tasks only: the board filter's `without a thread`.
     pub no_thread: bool,
@@ -70,6 +71,8 @@ pub(crate) struct ListRow {
     pub(crate) project: Option<String>,
     pub(crate) thread: Option<String>,
     pub(crate) assignee: Option<String>,
+    /// `agent` or `person` (you, or a named person); `null` when unassigned.
+    pub(crate) assignee_kind: Option<&'static str>,
     pub(crate) base: Option<String>,
     /// The tasks this one runs after, in its own order, each with whether it is done.
     pub(crate) after: Vec<AfterLink>,
@@ -181,9 +184,7 @@ pub fn parse(args: &[String]) -> Result<ListInput, String> {
             }
             flag if flag.starts_with("--assignee=") => {
                 once("--assignee")?;
-                input.assignee = Some(normalize_thread(&flag["--assignee=".len()..]).map_err(
-                    |error| format!("invalid agent name · {}", thread_refusal_message(error)),
-                )?);
+                input.assignee = Some(assignee_filter(&flag["--assignee=".len()..])?);
                 index += 1;
             }
             "--json" => {
@@ -204,9 +205,7 @@ pub fn parse(args: &[String]) -> Result<ListInput, String> {
             }
             "--assignee" => {
                 once("--assignee")?;
-                input.assignee = Some(normalize_thread(&value(flag)?).map_err(|error| {
-                    format!("invalid agent name · {}", thread_refusal_message(error))
-                })?);
+                input.assignee = Some(assignee_filter(&value(flag)?)?);
                 index += 2;
             }
             "--no-thread" => {
@@ -365,6 +364,17 @@ pub fn parse(args: &[String]) -> Result<ListInput, String> {
         return Err("--group project and --sort project need --all".into());
     }
     Ok(input)
+}
+
+/// Read `--assignee` for a filter: a name with or without `@`, where `you`, `me`, and your
+/// configured name all mean the stored `you`.
+fn assignee_filter(value: &str) -> Result<String, String> {
+    let name = crate::cli::parser::parse_assignee(value)?;
+    Ok(if crate::domain::is_owner_alias(&name) {
+        crate::domain::OWNER.to_string()
+    } else {
+        name
+    })
 }
 
 fn parse_group(value: &str) -> Result<GroupBy, String> {
@@ -618,6 +628,7 @@ fn row_for(task: &crate::domain::Task, domain: &DomainState) -> ListRow {
         },
         thread: task.thread.clone(),
         assignee: task.assignee.clone(),
+        assignee_kind: task.assignee.as_ref().map(|_| task.assignee_kind.name()),
         base: task.base.clone(),
         after: task
             .after

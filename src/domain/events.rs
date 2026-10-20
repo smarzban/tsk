@@ -41,6 +41,8 @@ pub enum TaskEventKind {
     ReplyDeleted,
     ReviewEdited,
     CheckSet,
+    /// Who the open block or review round waits on changed, with nothing else.
+    OnSet,
 }
 
 /// One append-only history record on a task: what happened, when, who did it, and what
@@ -128,6 +130,11 @@ pub struct EventDetail {
     /// The prerequisite whose completion started this task (a start or dispatch it caused).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<u64>,
+    /// Who an `on_set` event's record waited on before and after.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_from: Option<super::BlockOn>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_to: Option<super::BlockOn>,
 }
 
 impl EventDetail {
