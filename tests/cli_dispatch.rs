@@ -510,6 +510,100 @@ fn dispatch_refusals_print_stable_codes_and_persist_nothing() {
     fs::remove_dir_all(dir).expect("cleanup");
 }
 
+#[test]
+fn show_prompt_prints_the_layered_launch_for_any_status_and_writes_nothing() {
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cli-dispatch-show-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&dir).expect("mkdir");
+    fs::write(
+        dir.join("config.toml"),
+        "[project.\"/repos/app\"]\nreview_on = \"coordinator\"\nprompt_append = \"Run the full gate.\"\n\
+         [agent.implementer]\ncommand = [\"runner\", \"--flag\"]\nprompt_append = \"Say hi to {on}.\"\n\
+         [agent.implementer.env]\nAPI_TOKEN = \"sk-secret-value\"\n",
+    )
+    .expect("config");
+    let store = TaskStore::new(&dir);
+    let mut state = DomainState::new();
+    let id = state
+        .create_assigned(
+            "Ship it",
+            None,
+            TaskScope::Project {
+                path: "/repos/app".into(),
+            },
+            ProvenanceOrigin::Manual,
+            None,
+            Some("implementer".into()),
+        )
+        .expect("task");
+    state.set_base(id, Some("main".into())).expect("base");
+    state.set_status(id, HumanStatus::Done).expect("done");
+    store.save(&state).expect("save");
+    let before = fs::read(dir.join("tsk.json")).expect("state bytes");
+    let entries = || {
+        let mut names = fs::read_dir(&dir)
+            .expect("state dir")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let listed = entries();
+
+    let output = run_with(
+        [
+            "tsk",
+            "dispatch",
+            "T1",
+            "--show-prompt",
+            "--state-dir",
+            dir.to_str().expect("utf-8 path"),
+        ],
+        Cursor::new(Vec::<u8>::new()),
+        true,
+    );
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    let stdout = &output.stdout;
+    assert!(
+        stdout.starts_with(
+            "T1 for @implementer, nothing launched\ncommand: runner --flag\n\
+             env: API_TOKEN, TSK_AGENT (values not shown)\n\
+             not dispatched yet: worktree and branch are what a dispatch would pick\n\
+             prompt:\nYou were dispatched to T1 (Ship it) in worktree "
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("on branch tsk/t1-ship-it, based on main.\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("`tsk status 1 review --on coordinator --done"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.ends_with("reviews it does.\n\nRun the full gate.\n\nSay hi to coordinator.\n"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("sk-secret-value"), "{stdout}");
+    assert_eq!(fs::read(dir.join("tsk.json")).expect("after"), before);
+    assert_eq!(entries(), listed, "nothing new in the state dir");
+
+    let again = run_with(
+        ["tsk", "dispatch", "T1", "--show-prompt", "--again"],
+        Cursor::new(Vec::<u8>::new()),
+        true,
+    );
+    assert_eq!(again.code, 2);
+    assert!(again
+        .stderr
+        .contains("--show-prompt and --again cannot be combined"));
+    fs::remove_dir_all(dir).expect("cleanup");
+}
+
 /// The Windows launcher hands a hostile prompt and the profile's env to a real program
 /// (`tsk.exe`, which stores the prompt as a task's notes) through Windows PowerShell 5.1
 /// exactly: quotes, `$`, `%`, cmd metacharacters, a newline, backslashes, non-ASCII.
@@ -537,21 +631,25 @@ fn windows_launcher_delivers_argv_and_env_verbatim_through_powershell() {
             "-n".into(),
         ],
         prompt: Some(prompt.into()),
+        prompt_append: None,
         env: [(
             "TSK_STATE_DIR".to_string(),
             state.to_string_lossy().into_owned(),
         )]
         .into(),
     };
-    let rendered = profile.render(&RenderContext {
-        number: 1,
-        title: "a \"quoted\" title\\",
-        notes: "",
-        steps: "",
-        worktree: "C:\\w",
-        branch: "tsk/t1",
-        base: "main",
-    });
+    let rendered = profile.render(
+        &RenderContext {
+            number: 1,
+            title: "a \"quoted\" title\\",
+            notes: "",
+            steps: "",
+            worktree: "C:\\w",
+            branch: "tsk/t1",
+            base: "main",
+        },
+        None,
+    );
     let launcher = dir.join("launcher.ps1");
     fs::write(&launcher, rendered.powershell_script()).expect("launcher");
 
@@ -582,15 +680,18 @@ fn run_windows_launcher(
     profile: &tsk_tui::agents::AgentProfile,
     title: &str,
 ) -> std::process::Output {
-    let rendered = profile.render(&tsk_tui::agents::RenderContext {
-        number: 1,
-        title,
-        notes: "",
-        steps: "",
-        worktree: "C:\\w",
-        branch: "tsk/t1",
-        base: "main",
-    });
+    let rendered = profile.render(
+        &tsk_tui::agents::RenderContext {
+            number: 1,
+            title,
+            notes: "",
+            steps: "",
+            worktree: "C:\\w",
+            branch: "tsk/t1",
+            base: "main",
+        },
+        None,
+    );
     let launcher = dir.join(format!(
         "launcher-{}.ps1",
         SEQ.fetch_add(1, Ordering::Relaxed)
@@ -652,6 +753,7 @@ fn windows_launcher_hands_arguments_through_an_npm_powershell_shim_intact() {
             .map(String::from)
             .to_vec(),
         prompt: Some(prompt.into()),
+        prompt_append: None,
         env: env.clone().into(),
     };
     let output = run_windows_launcher(&dir, &bin, &notes, "first title\\");
@@ -662,6 +764,7 @@ fn windows_launcher_hands_arguments_through_an_npm_powershell_shim_intact() {
             .map(String::from)
             .to_vec(),
         prompt: Some("second".into()),
+        prompt_append: None,
         env: env.into(),
     };
     let output = run_windows_launcher(&dir, &bin, &empty, "unused");
@@ -699,6 +802,7 @@ fn windows_launcher_refuses_a_batch_only_program_before_cmd_sees_task_text() {
     let profile = AgentProfile {
         command: vec!["batchonly".into()],
         prompt: Some("{title}".into()),
+        prompt_append: None,
         env: Default::default(),
     };
     let title = format!("x\" & echo pwned > \"{}\" & rem \"", injected.display());

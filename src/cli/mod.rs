@@ -199,6 +199,12 @@ fn run_dispatch(args: Vec<String>) -> CliOutput {
     let Some(task) = input.task else {
         return presenter::dispatch_usage("task number is required");
     };
+    if input.show_prompt {
+        return match dispatch::show_prompt(task, input.base.as_deref(), input.state_dir) {
+            Ok(preview) => presenter::prompt_preview(preview),
+            Err(error) => presenter::dispatch_rejected(error, task),
+        };
+    }
     share_fetch_window(&input.state_dir);
     match dispatch::run(task, input.again, input.base, input.state_dir) {
         Ok(result) => presenter::dispatched(result),

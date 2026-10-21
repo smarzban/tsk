@@ -39,7 +39,7 @@ Where tsk keeps your tasks and settings, how to configure it, and how to back it
 
 ## Configuration
 
-`config.toml` in the state directory holds agent profiles, the merge method, board defaults, and [backup targets](#settings).
+`config.toml` in the state directory holds agent profiles, project settings, the merge method, board defaults, and [backup targets](#settings).
 
 - The first full board open writes a starter file when none exists. It explains each setting and holds commented examples that take effect only when you uncomment them.
 - Quick capture, the CLI, and setup never create the file. tsk never replaces an existing file, even an empty one.
@@ -62,6 +62,7 @@ PI_PROVIDER = "anthropic"
 | --- | --- | --- |
 | `command` | Yes | The program and its arguments, as a list of strings |
 | `prompt` | No | The agent's first message. Without it, tsk uses its default prompt |
+| `prompt_append` | No | Text added after the default prompt. A profile sets `prompt` or `prompt_append`, not both |
 | `env` | No | Environment variables for this agent only, as strings |
 
 - A name follows the thread rules: lowercase letters, digits, `-` and `.`, starting with a letter or digit, up to 32 characters. Quote a name with dots: `[agent."review.strict"]`.
@@ -69,7 +70,7 @@ PI_PROVIDER = "anthropic"
 
 ### Prompt and placeholders
 
-The prompt goes to the command as its last argument. Both `command` and `prompt` can use these placeholders; tsk replaces nothing else.
+The prompt goes to the command as its last argument. `command`, `prompt`, and both `prompt_append` keys can use these placeholders; tsk replaces nothing else.
 
 | Placeholder | Value |
 | --- | --- |
@@ -80,8 +81,9 @@ The prompt goes to the command as its last argument. Both `command` and `prompt`
 | `{worktree}` | The task's worktree path |
 | `{branch}` | The task branch |
 | `{base}` | The short base branch name, such as `dispatch` for `origin/dispatch` |
+| `{on}` | Who the agent hands review to: the project's [`review_on`](#project-settings), or `you` |
 
-Without `prompt`, tsk sends this default. A profile's own `prompt` replaces it entirely.
+Without `prompt`, tsk sends this default. A profile's own `prompt` replaces it entirely. To keep the default and add to it, use `prompt_append`.
 
 ```text
 You were dispatched to T{number} ({title}) in worktree {worktree} on branch {branch}, based on {base}.
@@ -90,10 +92,39 @@ You were dispatched to T{number} ({title}) in worktree {worktree} on branch {bra
 2. Read the repo's agent instructions (AGENTS.md or CLAUDE.md) if present.
 3. Work only on {branch}. Run the project's checks before saying you are done.
 4. Push and open a pull request into {base}. Never merge it.
-5. Set the task to review with what you did and what to check: `tsk status {number} review --done "…" --check "…"`, one `--check` per thing to verify, adding `--next` for what comes after. When you need a human, block it with your question: `tsk status {number} blocked --why "…"`, adding `--needs` and one `--option` per choice, then stop.
+5. Set the task to review with what you did and what to check: `tsk status {number} review --on {on} --done "…" --check "…"`, one `--check` per thing to verify, adding `--next` for what comes after. When you need a decision, block it with your question: `tsk status {number} blocked --on {on} --why "…"`, adding `--needs` and one `--option` per choice, then stop. If your notes name someone else to hand it to, use that name instead of {on}.
 6. On a relaunch, first read whichever record closed last (`closed_at`) in `tsk list {number} --json`: the `replies` of the last `past_blocks` entry, or the `feedback` and failed `checks` of the last `past_reviews` entry when it was `sent_back`.
 7. A message `[tsk T{number} sent back] …` is review feedback, with any failed checks: address it, then set review again.
+8. Never set the task to done; the person who reviews it does.
 ```
+
+The prompt an agent gets is built in this order, with a blank line between parts:
+
+1. The profile's `prompt`, or the default.
+2. The project's `prompt_append`, for a task in that project.
+3. The profile's `prompt_append`.
+
+[`tsk dispatch T12 --show-prompt`](/docs/cli/#dispatch) prints the result for one task without launching anything.
+
+### Project settings
+
+A `[project."<path>"]` table holds dispatch settings for one repository. It lives only in your `config.toml`, so your workflow never lands in the repository.
+
+```toml
+[project."~/code/my-app"]
+review_on = "coordinator"
+prompt_append = "Run `make check` before review."
+```
+
+| Key | Value |
+| --- | --- |
+| `review_on` | Who agents hand review to, the `{on}` placeholder. `you` (the default), an agent profile's name for that agent, or any other name, as [`--on`](/docs/cli/#status) reads it |
+| `prompt_append` | Text added after the prompt, before the profile's own `prompt_append` |
+
+- The key is the repository's path. `~` is your home folder, and a trailing slash or a symlinked spelling of the same folder still matches.
+- When two keys name the same repository, the first one in the file wins.
+- Desk tasks have no project, so they get no project settings and `{on}` is `you`.
+- An unknown key, or a `review_on` that is not a valid name, is an [error](#errors) like a broken profile.
 
 How tsk launches the command:
 
@@ -144,8 +175,8 @@ An unknown key or a bad value in one table never blocks the others. A file that 
 | Mistake | What happens |
 | --- | --- |
 | Unknown top-level key or table | Ignored, so a file written for a newer tsk still loads |
-| Unknown key inside `[agent.<name>]`, `[merge]`, `[board]`, or `[[backup]]` | That table is an error |
-| Broken profile | The board opens without profiles and shows the error on its status row. `tsk add` and `tsk edit` with an assignee exit 2 without saving |
+| Unknown key inside `[agent.<name>]`, `[project."<path>"]`, `[merge]`, `[board]`, or `[[backup]]` | That table is an error |
+| Broken profile or `[project."<path>"]` | The board opens without profiles and shows the error on its status row. `tsk add` and `tsk edit` with an assignee exit 2 without saving |
 | Broken `[merge]` | Only merging refuses: the cleanup card says why, and the CLI refuses with `merge-config` |
 | Broken `[board]` | The board opens at the default layout and shows the error on its status row. A bad `me` leaves the layout alone and names you `you` |
 

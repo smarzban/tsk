@@ -12,8 +12,8 @@ use crate::cli::status::{StatusError, StatusResult};
 use crate::cli::steps::{StepLine, StepsError, StepsResult};
 use crate::cli::trash::{TrashCliError, TrashRestoreResult};
 use crate::dispatch::{
-    BranchCleanup, CleanupError, CleanupResult, DispatchError, DispatchResult, WorkspaceCleanup,
-    WorktreeCleanup,
+    BranchCleanup, CleanupError, CleanupResult, DispatchError, DispatchResult, PromptPreview,
+    WorkspaceCleanup, WorktreeCleanup,
 };
 use crate::domain::HumanStatus;
 use crate::ui::queue::{GroupBy, SortBy};
@@ -136,8 +136,10 @@ const STEPS_USAGE: &[&str] = &[
     "tsk steps <task> remove <step-short-id> [--state-dir <dir>]",
 ];
 const REPLY_USAGE: &[&str] = &["tsk reply <task> <text> [--send] [--state-dir <dir>]"];
-const DISPATCH_USAGE: &[&str] =
-    &["tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]"];
+const DISPATCH_USAGE: &[&str] = &[
+    "tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]",
+    "tsk dispatch <task> --show-prompt [--base <branch>] [--state-dir <dir>]",
+];
 const CLEAN_USAGE: &[&str] = &["tsk clean <task> [--merge] [--json] [--state-dir <dir>]"];
 const PROJECT_USAGE: &[&str] = &[
     "tsk project archive <name> [--state-dir <dir>]",
@@ -1559,6 +1561,10 @@ pub fn dispatch_help() -> CliOutput {
                         "--base <branch>",
                         "start from this existing branch, for this launch only",
                     ),
+                    (
+                        "--show-prompt",
+                        "print the command and prompt a dispatch would send; launch nothing",
+                    ),
                     ("--state-dir <dir>", "use another board store"),
                 ],
             ),
@@ -1567,6 +1573,7 @@ pub fn dispatch_help() -> CliOutput {
             "tsk dispatch T12".into(),
             "tsk dispatch T12 --base main".into(),
             "tsk dispatch T12 --again".into(),
+            "tsk dispatch T12 --show-prompt".into(),
         ],
         refusals: vec![
             "unknown-task, soft-deleted-task, done-task, archived-task".into(),
@@ -1785,6 +1792,48 @@ pub fn dispatched(result: DispatchResult) -> CliOutput {
             .warning
             .map(|warning| format!("tsk dispatch: warning: {}\n", terminal_text(&warning)))
             .unwrap_or_default(),
+        code: 0,
+    }
+}
+
+/// `tsk dispatch --show-prompt`: the command line, the `env` names, then the prompt verbatim.
+pub fn prompt_preview(preview: PromptPreview) -> CliOutput {
+    let (prompt, command) = preview
+        .argv
+        .split_last()
+        .expect("a rendered launch ends with its prompt");
+    let command = command
+        .iter()
+        .map(|argument| {
+            let argument = terminal_text(argument);
+            if argument.is_empty() || argument.contains(char::is_whitespace) {
+                format!("'{}'", argument.replace('\'', "'\\''"))
+            } else {
+                argument
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut stdout = format!(
+        "T{} for @{}, nothing launched\ncommand: {command}\nenv: {} (values not shown)\n",
+        preview.number,
+        terminal_text(&preview.assignee),
+        terminal_text(&preview.env_names.join(", ")),
+    );
+    if preview.predicted {
+        stdout.push_str("not dispatched yet: worktree and branch are what a dispatch would pick\n");
+    }
+    if preview.desk {
+        stdout.push_str("desk task: a start only sets the status, so worktree, branch, and base stay unfilled\n");
+    }
+    stdout.push_str("prompt:\n");
+    for line in prompt.split('\n') {
+        stdout.push_str(&terminal_text(line));
+        stdout.push('\n');
+    }
+    CliOutput {
+        stdout,
+        stderr: String::new(),
         code: 0,
     }
 }

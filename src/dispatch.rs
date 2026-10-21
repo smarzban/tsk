@@ -3501,6 +3501,8 @@ pub struct EligibleDispatch {
     task: Task,
     profile: crate::agents::AgentProfile,
     project: PathBuf,
+    /// The `[project."<path>"]` settings for `project`, if `config.toml` has them.
+    settings: Option<crate::agents::ProjectSettings>,
     again: bool,
 }
 
@@ -3743,6 +3745,7 @@ fn check_inner(
             return Err(DispatchError::AlreadyDispatched(existing.worktree.clone()));
         }
     }
+    let settings = profiles.project(&project).cloned();
     Ok(EligibleDispatch {
         id,
         number,
@@ -3750,7 +3753,118 @@ fn check_inner(
         task,
         profile,
         project,
+        settings,
         again,
+    })
+}
+
+/// What `tsk dispatch --show-prompt` prints: the launch a dispatch would run now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptPreview {
+    pub number: u64,
+    pub assignee: String,
+    /// The rendered command, with the prompt as its last argument.
+    pub argv: Vec<String>,
+    /// The names of the profile's `env` variables; their values are never shown.
+    pub env_names: Vec<String>,
+    /// The task has no dispatch record, so its worktree and branch are predicted.
+    pub predicted: bool,
+    /// A desk task: nothing dispatches it, and its worktree, branch, and base stay unfilled.
+    pub desk: bool,
+}
+
+/// Render the launch the task's assignee would get, without launching or writing anything.
+/// Any status works, and Herdr is not needed. A dispatched task renders from its record; any
+/// other task from the names a first dispatch would take, with the base from the task, `base`,
+/// or the repository's local default. A desk task keeps the placeholders it cannot fill.
+pub fn preview_prompt(
+    state: &DomainState,
+    id: Uuid,
+    profiles: &AgentProfiles,
+    base_override: Option<&str>,
+) -> Result<PromptPreview, DispatchError> {
+    let task = state.get(id).ok_or(DispatchError::UnknownTask)?;
+    let number = task.number.ok_or(DispatchError::UnknownTask)?;
+    let assignee = task
+        .agent_assignee()
+        .map(str::to_string)
+        .ok_or(DispatchError::NoAssignee)?;
+    let profile = profiles
+        .get(&assignee)
+        .ok_or_else(|| DispatchError::UnknownAgent(assignee.clone()))?;
+    let project = match &task.scope {
+        TaskScope::Project { path } => Some(PathBuf::from(path)),
+        TaskScope::Global => None,
+    };
+    let settings = project
+        .as_deref()
+        .and_then(|project| profiles.project(project));
+    let (worktree, branch, base) = match &task.dispatch {
+        Some(record) => (
+            record.worktree.clone(),
+            record.branch.clone(),
+            record
+                .base
+                .as_deref()
+                .map(|base| {
+                    crate::git_base::short_name_for_remote(base, record.base_remote.as_deref())
+                })
+                .unwrap_or_default(),
+        ),
+        None => {
+            let branch = DispatchNames::new(number, &task.title).branch(number, 1);
+            let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+                .filter(|home| !home.is_empty())
+                .map(PathBuf::from);
+            let worktree = match (&project, home) {
+                (Some(project), Some(home)) => project.file_name().map(|repo| {
+                    home.join(".herdr/worktrees")
+                        .join(repo)
+                        .join(herdr_worktree_directory(&branch))
+                        .to_string_lossy()
+                        .into_owned()
+                }),
+                _ => None,
+            };
+            let base = base_override
+                .or(task.base.as_deref())
+                .map(str::to_string)
+                .or_else(|| {
+                    project
+                        .as_deref()
+                        .and_then(crate::git_base::default_branch_name)
+                });
+            let branch = project.as_ref().map(|_| branch);
+            (
+                worktree.unwrap_or_else(|| "{worktree}".into()),
+                branch.unwrap_or_else(|| "{branch}".into()),
+                base.unwrap_or_else(|| "{base}".into()),
+            )
+        }
+    };
+    let steps = rendered_steps(task);
+    let rendered = profile.render(
+        &RenderContext {
+            number,
+            title: &task.title,
+            notes: task.notes.as_deref().unwrap_or_default(),
+            steps: &steps,
+            worktree: &worktree,
+            branch: &branch,
+            base: &base,
+        },
+        settings,
+    );
+    let mut env_names = rendered.env.keys().cloned().collect::<Vec<_>>();
+    env_names.push(crate::domain::AGENT_ENV.to_string());
+    env_names.sort();
+    Ok(PromptPreview {
+        number,
+        assignee,
+        argv: rendered.argv,
+        env_names,
+        predicted: task.dispatch.is_none() && project.is_some(),
+        desk: project.is_none(),
     })
 }
 
@@ -3767,6 +3881,7 @@ pub fn launch_with_host(
         task,
         profile,
         project,
+        settings,
         ..
     } = eligible;
     let number = *number;
@@ -3913,15 +4028,18 @@ pub fn launch_with_host(
         .as_deref()
         .map(|base| crate::git_base::short_name_for_remote(base, base_remote.as_deref()))
         .unwrap_or_default();
-    let rendered = profile.render(&RenderContext {
-        number,
-        title: &task.title,
-        notes: task.notes.as_deref().unwrap_or_default(),
-        steps: &steps,
-        worktree: &worktree,
-        branch: &branch,
-        base: &short_base,
-    });
+    let rendered = profile.render(
+        &RenderContext {
+            number,
+            title: &task.title,
+            notes: task.notes.as_deref().unwrap_or_default(),
+            steps: &steps,
+            worktree: &worktree,
+            branch: &branch,
+            base: &short_base,
+        },
+        settings.as_ref(),
+    );
     let launch = run_launch(
         host,
         platform,
@@ -5514,6 +5632,103 @@ mod tests {
 
     /// The pane types one fixed line; task text and `env` values reach the agent only through
     /// the launcher file, and never the stored record (tsk.json, `tsk list --json`, backups).
+    fn layered_profiles() -> AgentProfiles {
+        let path = std::env::temp_dir().join(format!(
+            "tsk-dispatch-layered-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&path).expect("mkdir");
+        fs::write(
+            path.join("config.toml"),
+            "[project.\"/repos/app/\"]\nreview_on = \"coordinator\"\n\
+             prompt_append = \"Project rule for T{number}.\"\n\
+             [agent.implementer]\ncommand = [\"runner\"]\nprompt_append = \"Profile rule.\"\n",
+        )
+        .expect("config");
+        let profiles = AgentProfiles::load(&path).expect("profiles");
+        fs::remove_dir_all(path).expect("cleanup");
+        profiles
+    }
+
+    #[test]
+    fn a_dispatch_sends_the_projects_review_on_and_both_prompt_appends() {
+        let profiles = layered_profiles();
+        let (mut state, id) = task();
+        let mut host = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        let result =
+            run_with_host(&mut state, id, &profiles, false, true, &mut host).expect("dispatch");
+        let prompt = result.record.argv.last().expect("prompt");
+        assert!(
+            prompt.contains(&format!(
+                "`tsk status {} review --on coordinator --done",
+                result.number
+            )),
+            "{prompt}"
+        );
+        assert!(
+            prompt.ends_with(&format!(
+                "the person who reviews it does.\n\nProject rule for T{}.\n\nProfile rule.",
+                result.number
+            )),
+            "{prompt}"
+        );
+    }
+
+    #[test]
+    fn a_prompt_preview_renders_like_a_dispatch_and_changes_nothing() {
+        let profiles = layered_profiles();
+        let (mut state, id) = task();
+        state.set_base(id, Some("release".into())).expect("base");
+        let before = serde_json::to_string(&state).expect("state");
+        let preview = preview_prompt(&state, id, &profiles, None).expect("preview");
+        assert_eq!(serde_json::to_string(&state).expect("state"), before);
+        assert!(preview.predicted && !preview.desk);
+        assert_eq!(preview.env_names, [crate::domain::AGENT_ENV]);
+        let prompt = preview.argv.last().expect("prompt");
+        assert!(
+            prompt.contains("on branch tsk/t1-ship-dispatch, based on release."),
+            "{prompt}"
+        );
+        assert!(prompt.contains("review --on coordinator"), "{prompt}");
+        assert!(
+            prompt.ends_with("Project rule for T1.\n\nProfile rule."),
+            "{prompt}"
+        );
+
+        // A desk task has no project settings: the default, the profile's own text, and you.
+        let desk = state
+            .create_assigned(
+                "Desk work",
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                None,
+                Some("implementer".into()),
+            )
+            .expect("desk task");
+        state.assign_numbers_for_persistence();
+        let preview = preview_prompt(&state, desk, &profiles, None).expect("preview");
+        assert!(preview.desk && !preview.predicted);
+        let prompt = preview.argv.last().expect("prompt");
+        assert!(
+            prompt.contains("in worktree {worktree} on branch {branch}, based on {base}."),
+            "{prompt}"
+        );
+        assert!(prompt.contains("review --on you"), "{prompt}");
+        assert!(!prompt.contains("Project rule"), "{prompt}");
+        assert!(prompt.ends_with("\n\nProfile rule."), "{prompt}");
+
+        state.assign(desk, None).expect("unassign");
+        assert_eq!(
+            preview_prompt(&state, desk, &profiles, None).map(|_| ()),
+            Err(DispatchError::NoAssignee)
+        );
+    }
+
     #[test]
     fn unix_dispatch_types_a_fixed_line_and_keeps_task_text_and_env_values_off_it() {
         let path = std::env::temp_dir().join(format!(

@@ -57,7 +57,7 @@ Start an assigned task to dispatch it: `ctrl+s`, palette **set status: started**
 
 If the launch fails, the task stays unstarted with no dispatch, and the status row says why. tsk removes the worktree, workspace, and new branch that launch created. A worktree with changes stays, but its workspace still closes. The message names anything left. A started task with a live dispatch shows `◉` instead of `●`.
 
-The agent's instructions come from the profile's prompt. Without one, a default prompt asks it to open a pull request into the base and set the task to review. See [Configuration](/docs/storage/#configuration).
+The agent's instructions come from the profile's prompt. Without one, a default prompt asks it to open a pull request into the base and set the task to review. A profile's `prompt_append` adds your own lines to the default, and a project's settings can add more and name who gets the review. See [prompt and placeholders](/docs/storage/#prompt-and-placeholders) and [project settings](/docs/storage/#project-settings). `tsk dispatch T12 --show-prompt` prints what an agent would get.
 
 `ctrl+u` right after a dispatch undoes the start only. The agent keeps running in its worktree, and the status row says so:
 

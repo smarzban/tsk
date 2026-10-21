@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use crate::agents::AgentProfiles;
 use crate::cli::parser::TaskAddress;
-use crate::dispatch::{self, DispatchError, DispatchHost, DispatchResult, SystemDispatchHost};
+use crate::dispatch::{
+    self, DispatchError, DispatchHost, DispatchResult, PromptPreview, SystemDispatchHost,
+};
 use crate::store::{default_state_dir, TaskStore};
 
 pub fn run(
@@ -28,6 +30,27 @@ pub fn run(
         let _ = dispatch::spawn_agent_naming_process(naming);
     }
     Ok(result)
+}
+
+/// `--show-prompt`: render the task's launch from a read-only load. Nothing is saved.
+pub fn show_prompt(
+    target: TaskAddress,
+    base_override: Option<&str>,
+    state_dir: Option<PathBuf>,
+) -> Result<PromptPreview, DispatchError> {
+    let state_dir = state_dir.unwrap_or_else(default_state_dir);
+    let state = TaskStore::new(&state_dir)
+        .load()
+        .map_err(|error| DispatchError::Store(error.to_string()))?;
+    let id = state
+        .tasks()
+        .iter()
+        .find(|task| target.matches(task))
+        .map(|task| task.id)
+        .ok_or(DispatchError::UnknownTask)?;
+    let profiles = AgentProfiles::load(&state_dir)
+        .map_err(|error| DispatchError::AgentConfig(error.to_string()))?;
+    dispatch::preview_prompt(&state, id, &profiles, base_override)
 }
 
 /// The board store the command works on, and a real host whose launchers live beside it.

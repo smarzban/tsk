@@ -623,7 +623,7 @@ fn basename_matches(path: &str, token: &str) -> bool {
         .is_some_and(|basename| basename.eq_ignore_ascii_case(token))
 }
 
-fn expand_home(token: &str) -> String {
+pub(crate) fn expand_home(token: &str) -> String {
     let home = std::env::var_os("HOME").filter(|value| !value.is_empty());
     #[cfg(windows)]
     let home = home.or_else(|| std::env::var_os("USERPROFILE").filter(|value| !value.is_empty()));

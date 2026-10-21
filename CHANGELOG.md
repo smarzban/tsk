@@ -19,6 +19,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 ### Added
 
 - Agent profiles in `config.toml`. The first board open writes a commented starter with examples for Claude Code, Codex, Pi, and Grok.
+- Agent prompts: `prompt_append` adds to the default prompt, and `[project."<path>"]` adds per-repository lines and `review_on`. `tsk dispatch T12 --show-prompt` previews it.
 - Assign a task to an agent profile, yourself, or a named person with `@`, `!a name`, or `--assignee`. Only an agent dispatches. `v` on Projects shows one assignee's tasks.
 - Dispatch: in Herdr, starting an assigned project task (`ctrl+s`, `tsk status T12 started`, `tsk dispatch`) launches its agent in its own Git worktree and workspace. Windows: preview.
 - Set the branch a dispatch starts from with `!b branch`, the task page's Base field, or `tsk add`/`tsk edit --base`; otherwise it is the repository's default branch.

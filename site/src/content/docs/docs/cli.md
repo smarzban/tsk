@@ -468,12 +468,14 @@ Launches an assigned task's agent in its own Git worktree and Herdr workspace, t
 
 ```text
 tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]
+tsk dispatch <task> --show-prompt [--base <branch>] [--state-dir <dir>]
 ```
 
 | Flag | Meaning |
 | --- | --- |
 | `--base <branch>` | Start from this existing branch, for this launch only. The task's base stays |
 | `--again` | Relaunch a dispatched task. Keeps the recorded base and recreates a cleaned worktree |
+| `--show-prompt` | Print the command and [prompt](/docs/storage/#prompt-and-placeholders) a dispatch would send. Launches nothing and saves nothing |
 
 - Dispatch needs Herdr, a task in a project that is a Git repository, and an assignee with a profile in [`config.toml`](/docs/storage/#configuration).
 - The base is `--base`, else the task's base, else the repository's default branch. Never the branch you run the command in. [Base branch](/docs/dispatch/#base-branch).
@@ -487,6 +489,24 @@ tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]
 
 ```sh
 tsk dispatch T12 --base main
+```
+
+### Preview the prompt
+
+`--show-prompt` works for any status, on the desk, and outside Herdr. It still needs an assignee with a profile: otherwise it refuses with `no-assignee` or `unknown-agent`.
+
+- A dispatched task shows its recorded worktree, branch, and base.
+- Any other task shows the branch and worktree a first dispatch would pick, and says so. The base is `--base`, the task's base, or the repository's default branch.
+- A desk task keeps `{worktree}`, `{branch}`, and `{base}` as written, and says so.
+- `env` values never print, only their names.
+
+```text
+T12 for @claude, nothing launched
+command: claude
+env: TSK_AGENT (values not shown)
+not dispatched yet: worktree and branch are what a dispatch would pick
+prompt:
+You were dispatched to T12 (Fix the parser) in worktree …
 ```
 
 ## clean

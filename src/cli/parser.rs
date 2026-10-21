@@ -55,6 +55,8 @@ pub struct FlagDispatch {
     pub task: Option<TaskAddress>,
     pub again: bool,
     pub base: Option<String>,
+    /// `--show-prompt`: print the launch a dispatch would run, launch nothing.
+    pub show_prompt: bool,
     pub state_dir: Option<PathBuf>,
     pub help: bool,
 }
@@ -67,6 +69,7 @@ pub fn parse_flag_dispatch(args: &[String]) -> Result<FlagDispatch, String> {
         task: None,
         again: false,
         base: None,
+        show_prompt: false,
         state_dir: None,
         help: false,
     };
@@ -79,6 +82,10 @@ pub fn parse_flag_dispatch(args: &[String]) -> Result<FlagDispatch, String> {
         match flag {
             "--again" => {
                 parsed.again = true;
+                index += 1;
+            }
+            "--show-prompt" => {
+                parsed.show_prompt = true;
                 index += 1;
             }
             flag if flag.starts_with("--base=") => {
@@ -112,6 +119,9 @@ pub fn parse_flag_dispatch(args: &[String]) -> Result<FlagDispatch, String> {
                 index += 1;
             }
         }
+    }
+    if parsed.show_prompt && parsed.again {
+        return Err("--show-prompt and --again cannot be combined".into());
     }
     Ok(parsed)
 }

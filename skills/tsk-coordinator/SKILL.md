@@ -45,6 +45,8 @@ With tsk, run `tsk guide` first: the tsk skill owns every command. This skill ne
 5. **Wait on a completion signal.** Every prompt needs one; never assume you will notice.
    - With tsk, the task status is the signal: the builder sets `review` (with `--on` naming you)
      or `blocked`. Poll `tsk list T12 --json`, not the agent's internals.
+     `review_on` under the project's `[project."<path>"]` in `config.toml` puts your name in the
+     default prompt's `--on` ([project settings](https://gettsk.sh/docs/storage.md#project-settings)).
    - Without tsk, have the agent message you when done, or watch its status in a background loop.
 6. **Review gate.** Run it on every pull request ([below](#review-gate)).
 7. **Live test.** Run the change the way its user would ([below](#live-test)).
