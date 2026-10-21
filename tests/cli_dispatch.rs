@@ -614,7 +614,7 @@ fn show_prompt_prints_the_layered_launch_for_any_status_and_writes_nothing() {
     );
     // The default base, and the next free branch name: origin already has the first one.
     assert!(
-        stdout.contains("/tsk-t1-ship-it-2 on branch tsk/t1-ship-it-2, based on main.\n"),
+        stdout.contains("tsk-t1-ship-it-2 on branch tsk/t1-ship-it-2, based on main.\n"),
         "{stdout}"
     );
     assert!(

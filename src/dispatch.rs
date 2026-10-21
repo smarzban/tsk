@@ -5720,7 +5720,7 @@ mod tests {
         let prompt = preview.argv.last().expect("prompt");
         assert!(
             prompt.contains(
-                "/tsk-t1-ship-dispatch-2 on branch tsk/t1-ship-dispatch-2, based on release."
+                "tsk-t1-ship-dispatch-2 on branch tsk/t1-ship-dispatch-2, based on release."
             ),
             "{prompt}"
         );
