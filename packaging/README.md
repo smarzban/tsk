@@ -106,11 +106,13 @@ python3 scripts/release.py assemble <tag> <output-directory>
    - Smoke `tsk setup herdr` under isolated roots ([AGENTS.md](../AGENTS.md#isolated-state)).
    - Rehearse the update path against a throwaway `HOME` holding an outdated skill and a
      Herdr config on a custom key. Isolate every root the update touches: `HOME`,
-     `TSK_STATE_DIR`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, and `HERDR_SOCKET_PATH`. Any one
-     left out lets the refresh reach the daily Herdr plugin, skills, or store:
+     `TSK_STATE_DIR`, `HERDR_CONFIG_PATH`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, and
+     `HERDR_SOCKET_PATH`. Any one left out lets the refresh reach the daily Herdr plugin,
+     skills, or store:
 
      ```sh
      env HOME=/tmp/x/home TSK_STATE_DIR=/tmp/x/state \
+       HERDR_CONFIG_PATH=/tmp/x/home/.config/herdr/config.toml \
        XDG_CONFIG_HOME=/tmp/x/home/.config XDG_STATE_HOME=/tmp/x/home/.local/state \
        HERDR_SOCKET_PATH=/tmp/x/none.sock \
        TSK_VERSION=vX.Y.Z TSK_UPDATE=1 TSK_CURRENT_VERSION=vPREV TSK_INSTALL_DIR=/tmp/x/bin \
