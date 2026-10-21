@@ -31,46 +31,40 @@
       {
         sec: "inbox",
         glyph: "◌",
-        status: "open",
         key: "ctrl+n",
         next: "ready",
       },
       {
         sec: "ON DECK",
         glyph: "○",
-        status: "ready",
         key: "ctrl+s",
         next: "started",
       },
       {
         sec: "IN MOTION",
         glyph: "●",
-        status: "started",
         key: "ctrl+b",
         next: "blocked",
       },
       {
         sec: "NEEDS YOU",
         glyph: "■",
-        status: "blocked",
         key: "ctrl+b",
         next: "ready",
       },
       {
         sec: "ON DECK",
         glyph: "○",
-        status: "ready",
         key: "ctrl+r",
         next: "review",
       },
       {
         sec: "NEEDS YOU",
         glyph: "▲",
-        status: "review",
         key: "ctrl+d",
         next: "done",
       },
-      { sec: "DONE", glyph: "✓", status: "done", key: "ctrl+o", next: "open" },
+      { sec: "DONE", glyph: "✓", key: "ctrl+o", next: "open" },
     ];
     const sec = cycle.querySelector("[data-cycle-sec]");
     const glyph = cycle.querySelector("[data-cycle-glyph]");

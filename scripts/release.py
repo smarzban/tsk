@@ -184,7 +184,7 @@ def main():
             package(args.tag, args.target, args.binary, args.out)
         else:
             assemble(args.tag, args.out)
-    except (ValueError, OSError, tarfile.TarError, zipfile.BadZipFile, zipfile.LargeZipFile) as error:
+    except (ValueError, OSError, tarfile.TarError, zipfile.BadZipFile) as error:
         parser.exit(1, f"release: {error}\n")
 
 

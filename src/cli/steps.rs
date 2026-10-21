@@ -336,9 +336,6 @@ pub(crate) enum ShortIdResolution {
 ///
 /// A printed short id is never empty, so the empty operand addresses no step
 /// rather than whichever step a bare prefix match would hit.
-///
-/// SHORTCUT(T-5): linear scan per lookup; fine for typed step lists, index by
-/// prefix if lists ever grow unbounded.
 pub(crate) fn resolve_step_short_id(steps: &[Step], short_id: &str) -> ShortIdResolution {
     if short_id.is_empty() {
         return ShortIdResolution::None;

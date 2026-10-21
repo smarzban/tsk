@@ -266,8 +266,13 @@ fn load_board_uses_seeded_update_json_in_state_dir() {
 
 #[test]
 fn semver_notice_matches_public_compare() {
+    let current = env!("CARGO_PKG_VERSION");
+    assert_eq!(notice_for("v0.6.1", current), None);
+    assert!(!tsk_tui::update::is_newer("v0.6.1", current));
+    let newer = "v99.0.0";
+    assert!(tsk_tui::update::is_newer(newer, current));
     assert_eq!(
-        notice_for("v0.6.1", env!("CARGO_PKG_VERSION")).is_some(),
-        tsk_tui::update::is_newer("v0.6.1", env!("CARGO_PKG_VERSION"))
+        notice_for(newer, current).as_deref(),
+        Some("v99.0.0 available, run tsk update")
     );
 }

@@ -41,9 +41,7 @@
       return;
     }
 
-    root.classList.add("theme-animating");
     commit();
-    window.setTimeout(() => root.classList.remove("theme-animating"), 500);
   }
 
   // Ensure a theme is painted even if the head script was skipped: prefer the

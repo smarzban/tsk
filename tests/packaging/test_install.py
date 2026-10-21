@@ -187,7 +187,6 @@ echo installed-fixture
                 os.close(slave)
             os.close(master)
 
-    @unittest.skipIf(os.name == "nt", "Unix installer smoke")
     @unittest.skipUnless(os.environ.get("TSK_TEST_BINARY"), "set TSK_TEST_BINARY to smoke a built executable")
     def test_installed_real_binary_runs_isolated_cli(self):
         system, arch = platform.system(), platform.machine()
@@ -501,7 +500,6 @@ echo installed-fixture
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((dest / "tsk").exists())
         self.assertFalse(self.setup_log.exists())
-        # T41: the closing block says why setup did not run and uses the full binary path.
         self.assertIn("Done. Run tsk in a project directory to open the board.", result.stdout)
         self.assertIn("Custom install directory: setup was not run. When you are ready:", result.stdout)
         self.assertIn(f"    Herdr plugin:  {dest}/tsk setup herdr", result.stdout)

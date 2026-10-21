@@ -141,7 +141,7 @@ pub const SELECTOR_CHIP_MAX_CELLS: u16 = 24;
 /// Compact verb bar keeps at most this many entries.
 pub const COMPACT_VERB_BAR_ENTRY_BUDGET: u16 = 5;
 
-/// Full standard verb-bar set: ctrl+s · enter · ctrl+d · ctrl+b · : · ? · +.
+/// Seat budget for the standard verb bar (how many entries fit).
 pub const STANDARD_VERB_BAR_ENTRY_BUDGET: u16 = 7;
 
 /// Minimum width for the standard board tier. This is the default Herdr split amendment.
@@ -416,7 +416,7 @@ mod tests {
             );
             // Width ≥ 120 still reports Standard; there is no wide tier here.
             if w >= 120 {
-                assert_eq!(g.tier, Tier::Standard, "wide not returned in M1 at {w}x{h}");
+                assert_eq!(g.tier, Tier::Standard, "wide not returned at {w}x{h}");
             }
         }
     }

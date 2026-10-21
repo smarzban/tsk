@@ -39,5 +39,5 @@ Vercel should use this repository with **Root Directory** `site`.
 `vercel.json` pins install / build / output. Production is
 https://gettsk.sh.
 
-Ignore builds that do not touch `site/**` so a Rust-only commit does not
-rebuild the landing page.
+Ignore builds that do not touch `site/**` or `skills/**` so a Rust-only
+commit does not rebuild the landing page (see `vercel.json`).

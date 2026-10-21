@@ -10,7 +10,7 @@ function displayCells(character) {
       : 1;
 }
 
-export function wrapText(value, width, cells = displayCells) {
+export function wrapText(value, width) {
   width = Math.max(1, width);
   return String(value)
     .split(/\r\n|\r|\n/)
@@ -23,7 +23,7 @@ export function wrapText(value, width, cells = displayCells) {
           used = 0,
           soft;
         while (end < chars.length) {
-          const size = cells(chars[end]);
+          const size = displayCells(chars[end]);
           if (used + size > width && end > start) {
             end = soft ?? end;
             break;
