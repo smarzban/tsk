@@ -320,6 +320,25 @@ fn a_profile_error_wins_the_status_row_over_a_broken_backup() {
 }
 
 #[test]
+fn a_board_error_wins_the_status_row_over_a_broken_backup() {
+    let _env = env_lock();
+    suppress_background_fetch();
+    let dir = temp_state_dir("board-over-backup");
+    let _dir_guard = TempDirGuard(dir.clone());
+    let _env_guard = EnvVarGuard::set("TSK_STATE_DIR", &dir);
+    fs::write(
+        dir.join("config.toml"),
+        "[board]\nsort = \"sideways\"\n\n[[backup]]\nurl = \"/tmp/b.git\"\nevery = \"Daily\"\n",
+    )
+    .expect("write broken board and backup");
+
+    let model = load_board_model().expect("open");
+    let message = model.message().expect("status row");
+    assert!(message.contains("sideways"), "{message}");
+    assert!(!message.contains("backup off"), "{message}");
+}
+
+#[test]
 fn pending_resize_event_paints_before_it_is_returned() {
     let key = Event::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
     let mut pending = Some(key.clone());

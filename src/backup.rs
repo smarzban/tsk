@@ -236,6 +236,9 @@ fn backup_entries_mut(item: &mut toml_edit::Item) -> Vec<&mut dyn TableLike> {
 
 fn parse_target(index: usize, table: &dyn TableLike) -> Result<Target, String> {
     let invalid = |message: String| format!("config.toml: [[backup]] {}: {message}", index + 1);
+    // Redact before quoting: an escape such as `\n` glued to a URL's scheme would hide its
+    // credentials from [`redacted`] once the error is shown.
+    let quoted = |text: &str| format!("{:?}", redacted(text));
     let string = |key: &str| -> Result<Option<String>, String> {
         match table.get(key) {
             None => Ok(None),
@@ -247,14 +250,14 @@ fn parse_target(index: usize, table: &dyn TableLike) -> Result<Target, String> {
     };
     match string("kind")?.as_deref() {
         None | Some("git") => {}
-        Some(other) => return Err(invalid(format!("kind {other:?} is not git"))),
+        Some(other) => return Err(invalid(format!("kind {} is not git", quoted(other)))),
     }
     if let Some(key) = table
         .iter()
         .map(|(key, _)| key)
         .find(|key| !["kind", "url", "every"].contains(key))
     {
-        return Err(invalid(format!("unknown key {key:?}")));
+        return Err(invalid(format!("unknown key {}", quoted(key))));
     }
     let location = string("url")?
         .filter(|value| !value.trim().is_empty())
@@ -262,7 +265,7 @@ fn parse_target(index: usize, table: &dyn TableLike) -> Result<Target, String> {
     let mut target = Target::new(location);
     if let Some(word) = string("every")? {
         target.every = Every::parse(&word)
-            .ok_or_else(|| invalid(format!("every {word:?} is not save or daily")))?;
+            .ok_or_else(|| invalid(format!("every {} is not save or daily", quoted(&word))))?;
     }
     Ok(target)
 }
@@ -2383,6 +2386,21 @@ every = "daily"
         assert!(message.starts_with("backup off: "), "{message}");
         assert!(!message.contains("S3CRET"), "{message}");
         assert!(message.contains("***@h"), "{message}");
+    }
+
+    #[test]
+    fn an_escape_glued_to_a_scheme_never_shows_a_token() {
+        let root = TempDir::new("broken-escape");
+        for extra in [
+            "every = \"\\nhttps://TOKEN@h/x.git\"\n",
+            "kind = \"\\nhttps://TOKEN@h/x.git\"\n",
+            "\"\\nhttps://TOKEN@h/x.git\" = 1\n",
+        ] {
+            let state = state_with_target(&root.0, &root.0.join("r.git"), extra);
+            let message = failure_message(&state).expect("shown");
+            assert!(!message.contains("TOKEN"), "{extra}: {message}");
+            assert!(message.contains("https://***@h"), "{extra}: {message}");
+        }
     }
 
     #[test]

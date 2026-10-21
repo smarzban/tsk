@@ -443,6 +443,23 @@ fn a_usage_error_never_echoes_a_token() {
 }
 
 #[test]
+fn a_broken_backup_config_never_prints_a_token() {
+    let state = TempDir::new("broken-escape");
+    fs::write(
+        state.0.join("config.toml"),
+        "[[backup]]\nurl = \"/srv/b.git\"\nevery = \"\\nhttps://TOKEN@h/x.git\"\n",
+    )
+    .expect("config");
+    for args in [&["backup"][..], &["backup", "list"], &["restore"]] {
+        let output = tsk(&state.0, args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        let text = stderr(&output);
+        assert!(!text.contains("TOKEN"), "{args:?}: {text}");
+        assert!(text.contains("https://***@h"), "{args:?}: {text}");
+    }
+}
+
+#[test]
 fn an_id_restores_a_version_past_the_newest_twenty() {
     let root = TempDir::new("past-twenty");
     let repo = bare_repo(&root.0);
