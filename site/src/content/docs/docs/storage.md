@@ -250,7 +250,7 @@ tsk restore 3f9a1c2e    # restore one version without asking
 `tsk restore` lists the versions every target holds, newest first, with an id, time, host name, task count, and target. It shows the newest 20 per machine; `--all` shows every one. An id restores the version it names, shown or not. In a terminal it asks which to restore.
 
 - Quit every board and quick capture on the store first: restore refuses while one is open.
-- A command still running when the restore lands, such as a `tsk dispatch` mid-launch, saves nothing and says the store was restored. Run it again.
+- A command still running when the restore lands, such as a `tsk dispatch` mid-launch, keeps nothing and says the store was restored. When its launch was undone, run it again. When an agent it started may still run, check or stop it first.
 - The store it replaces is kept as `tsk.json.pre-restore-<time>`, in UTC. The newest five copies are kept.
 - A version from an older tsk migrates on the next open. One from a newer tsk is refused until you update.
 - Task numbers never go backwards: new tasks continue after the highest number the replaced store or trash held.

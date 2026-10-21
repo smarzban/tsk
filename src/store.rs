@@ -1509,7 +1509,7 @@ impl std::fmt::Display for StoreError {
             ),
             StoreError::Restored => write!(
                 f,
-                "the store was restored from a backup while this command ran; nothing it changed was saved"
+                "the store was restored from a backup while this command ran; its changes are not in the restored store"
             ),
         }
     }

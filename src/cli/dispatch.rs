@@ -77,14 +77,9 @@ pub fn run_with_host_base(
         base_override,
         host,
     )?;
-    store.reload_merge_save(&mut state).map_err(|error| {
-        dispatch::unrecorded(
-            host,
-            &result.record,
-            &result.undo,
-            DispatchError::Store(error.to_string()),
-        )
-    })?;
+    store
+        .reload_merge_save(&mut state)
+        .map_err(|error| dispatch::unrecorded_save(host, &result.record, &result.undo, &error))?;
     Ok(result)
 }
 

@@ -2703,9 +2703,9 @@ impl DomainState {
             .collect()
     }
 
-    /// Remove the given tasks and every undo entry targeting one of them.
-    /// Take a saved copy's trash purge: drop `trashed`, and take `saved`'s copy of every task
-    /// and its undo stack, so a link the purge unlinked keeps the revision that went to disk.
+    /// Take a trash purge another copy of this state saved: drop `trashed`, and take `saved`'s
+    /// copy of every task whose revision differs and its undo stack, so a link the purge
+    /// unlinked keeps the revision that went to disk instead of being unlinked again.
     pub(crate) fn adopt_trash_purge(&mut self, saved: &DomainState, trashed: &BTreeSet<Uuid>) {
         self.tasks.retain(|task| !trashed.contains(&task.id));
         for task in &mut self.tasks {
@@ -2718,6 +2718,7 @@ impl DomainState {
         self.undo_stack = saved.undo_stack.clone();
     }
 
+    /// Remove the given tasks and every undo entry targeting one of them.
     pub(crate) fn remove_tasks(&mut self, ids: &BTreeSet<Uuid>) {
         self.unlink_removed(ids);
         self.tasks.retain(|task| !ids.contains(&task.id));

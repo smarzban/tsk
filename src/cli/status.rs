@@ -1,6 +1,6 @@
 //! Headless human-status changes.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::agents::AgentProfiles;
 use crate::cli::parser::{BlockFlags, TaskAddress};
@@ -150,7 +150,7 @@ pub fn run_done_with_host(
 ) -> Result<(StatusResult, Vec<dispatch::Released>), StatusError> {
     let state_dir = state_dir.unwrap_or_else(default_state_dir);
     let store = TaskStore::new(&state_dir);
-    let (result, mut released, launches) = store
+    let (result, mut released, launches, token) = store
         .locked_transition_if_changed(|state: &mut DomainState| {
             let found = state
                 .tasks()
@@ -179,29 +179,59 @@ pub fn run_done_with_host(
                 Vec::new()
             };
             let launches = state.take_pending_launches();
-            Ok(((result, released, launches), changed))
+            let token = state.restore_token().map(str::to_owned);
+            Ok(((result, released, launches, token), changed))
         })
         .map_err(StatusError::Store)?;
     let result = result?;
     if !launches.is_empty() {
-        // The done and the starts are durable: launch outside the lock, then record.
-        let mut state = store
-            .load()
-            .map_err(|error| StatusError::Store(error.to_string()))?;
-        for (id, after) in launches {
-            state.hold_launch(id, after);
-        }
-        let launched = dispatch::launch_released_with_host(&mut state, &state_dir, in_herdr, host);
-        let recorded = store.reload_merge_save(&mut state);
-        released.extend(launched.into_iter().map(|mut released| {
-            if let Err(error) = &recorded {
-                released.start = dispatch::unsaved(released.start, error.to_string());
-            }
-            released
-        }));
+        released.extend(launch_released_after_done(
+            &store,
+            &state_dir,
+            in_herdr,
+            host,
+            launches,
+            token.as_deref(),
+        )?);
         released.sort_by_key(|released| released.number);
     }
     Ok((result, released))
+}
+
+/// Launch what a durable done released, outside the lock, then record the launches. `token` is
+/// the restore token the done's transition loaded with: a restore since then replaced the
+/// store, so what the done released may not be there and nothing launches.
+fn launch_released_after_done(
+    store: &TaskStore,
+    state_dir: &Path,
+    in_herdr: bool,
+    host: &mut impl DispatchHost,
+    launches: Vec<(Uuid, u64)>,
+    token: Option<&str>,
+) -> Result<Vec<dispatch::Released>, StatusError> {
+    let mut state = store
+        .load()
+        .map_err(|error| StatusError::Store(error.to_string()))?;
+    if state.restore_token() != token {
+        return Err(StatusError::Store(format!(
+            "{}; nothing launched: check the task, then run it again",
+            crate::store::StoreError::Restored
+        )));
+    }
+    for (id, after) in launches {
+        state.hold_launch(id, after);
+    }
+    let launched = dispatch::launch_released_with_host(&mut state, state_dir, in_herdr, host);
+    let recorded = store.reload_merge_save(&mut state);
+    Ok(launched
+        .into_iter()
+        .map(|mut released| {
+            if let Err(error) = &recorded {
+                released.start = dispatch::unsaved(released.start, error);
+            }
+            released
+        })
+        .collect())
 }
 
 /// What `tsk status <task> started` did.
@@ -679,6 +709,8 @@ mod start_tests {
         edit_on_refusal: Option<PathBuf>,
         /// A launch leaves this store unreadable, so saving its record fails.
         break_store_on_launch: Option<PathBuf>,
+        /// A whole-store restore of this document lands in this store as a launch runs.
+        restore_on_launch: Option<(PathBuf, Vec<u8>)>,
         /// Every workspace whose worktree was removed.
         removed: Vec<String>,
     }
@@ -734,6 +766,11 @@ mod start_tests {
             }
             if let Some(dir) = self.break_store_on_launch.take() {
                 std::fs::write(dir.join("tsk.json"), "{").expect("break the store");
+            }
+            if let Some((dir, document)) = self.restore_on_launch.take() {
+                TaskStore::new(dir)
+                    .restore_document(&document, std::time::SystemTime::now())
+                    .expect("restore");
             }
             self.ran += 1;
             Ok(())
@@ -1187,6 +1224,98 @@ mod start_tests {
         );
         let message = dispatch::released_message(&released).expect("message");
         assert!(message.starts_with(&warnings[0]), "{message}");
+    }
+
+    /// A restore lands while the agent a done released launches. Its record cannot save over the
+    /// restored store: the done stands as the command's result, and the warning says the agent
+    /// runs without a record and to check or stop it before running again.
+    #[test]
+    fn a_restore_while_a_released_agent_launches_keeps_the_restored_store() {
+        let temp = Temp::new("released-restore");
+        let (first, second) = released_pair(&temp);
+        let backup = std::fs::read(temp.0.join("tsk.json")).expect("backup");
+        let mut host = Host {
+            restore_on_launch: Some((temp.0.clone(), backup)),
+            ..Host::default()
+        };
+        let (result, released) = run_done_with_host(
+            TaskAddress::Number(first),
+            Some(temp.0.clone()),
+            true,
+            "you",
+            &mut host,
+        )
+        .expect("the done itself saved before the restore");
+        assert_eq!(result.status, HumanStatus::Done);
+        assert_eq!(host.ran, 1, "the agent launched before the restore");
+        let warnings = dispatch::released_warnings(&released);
+        assert_eq!(warnings.len(), 1, "{released:?}");
+        assert!(
+            warnings[0].starts_with(&format!(
+                "T{second}'s agent @builder is running but its record did not save"
+            )) && warnings[0].ends_with(
+                "the store was restored from a backup while this command ran; its changes are \
+                 not in the restored store; check or stop it before running again"
+            ),
+            "{warnings:?}"
+        );
+        assert_eq!(temp.status(first), HumanStatus::Open, "the restored store");
+        assert_eq!(temp.status(second), HumanStatus::Ready);
+        let state = temp.store().load().expect("load");
+        assert!(state.tasks().iter().all(|task| task.dispatch.is_none()));
+    }
+
+    /// A restore lands after a done's transition and before its launch tail loads the store. The
+    /// tail refuses before launching: the restored store's release may not be the done's.
+    #[test]
+    fn a_restore_before_the_launch_tail_launches_nothing() {
+        let temp = Temp::new("released-restore-gap");
+        let (first, second) = released_pair(&temp);
+        let backup = std::fs::read(temp.0.join("tsk.json")).expect("backup");
+        let store = temp.store();
+        let mut state = store.load().expect("load");
+        let token = state.restore_token().map(str::to_owned);
+        let id = |number| {
+            state
+                .tasks()
+                .iter()
+                .find(|task| task.number == Some(number))
+                .expect("task")
+                .id
+        };
+        let launches = vec![(id(second), first)];
+        state
+            .set_status(id(first), HumanStatus::Done)
+            .expect("done");
+        store.reload_merge_save(&mut state).expect("the done");
+        store
+            .restore_document(&backup, std::time::SystemTime::now())
+            .expect("restore");
+        let restored = std::fs::read(temp.0.join("tsk.json")).expect("restored");
+
+        let mut host = Host::default();
+        let error = launch_released_after_done(
+            &store,
+            &temp.0,
+            true,
+            &mut host,
+            launches,
+            token.as_deref(),
+        )
+        .expect_err("the store was restored since the done");
+        let StatusError::Store(detail) = error else {
+            panic!("a store error, exit 3: {error:?}");
+        };
+        assert!(
+            detail.starts_with("the store was restored from a backup while this command ran")
+                && detail.ends_with("; nothing launched: check the task, then run it again"),
+            "{detail}"
+        );
+        assert_eq!(host.ran, 0, "no agent launched");
+        assert_eq!(
+            std::fs::read(temp.0.join("tsk.json")).expect("live"),
+            restored
+        );
     }
 
     #[test]

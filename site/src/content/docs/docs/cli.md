@@ -480,7 +480,7 @@ tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]
 - A dispatched task refuses with `already-dispatched`. Use `--again` to relaunch on purpose.
 - Output is `dispatched T12 to @claude in <worktree>`.
 - A refusal changes nothing. A launch that fails removes what it created ([Dispatch](/docs/dispatch/#dispatch)).
-- Exit 3 after a launch means its record was not saved. tsk then takes the launch back, and the message ends `launch undone` or names what stayed. When it ends `the agent may still run`, check Herdr (`herdr agent get t12-claude`) and read the task before retrying. The same holds for a `tsk status T12 started` that dispatched.
+- Exit 3 after a launch means its record was not saved. tsk then takes the launch back, and the message says `launch undone` or names what stayed. When it says `the agent may still run`, check Herdr (`herdr agent get t12-claude`) and read the task before retrying. The same holds for a `tsk status T12 started` that dispatched.
 - On Windows dispatch is a preview ([Windows](/docs/dispatch/#windows-preview)).
 
 **Refusals:** codes and exits in the [exit contract](#exit-contract).

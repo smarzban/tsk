@@ -260,7 +260,10 @@ fn a_restore_during_a_dispatch_refuses_its_save_and_keeps_the_restored_store() {
         message.starts_with("the store was restored from a backup while this command ran"),
         "{message}"
     );
-    assert!(message.ends_with("; launch undone"), "{message}");
+    assert!(
+        message.ends_with("; launch undone: run it again"),
+        "{message}"
+    );
     let restored = store.load().expect("load");
     let titles: Vec<&str> = restored
         .tasks()

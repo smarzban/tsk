@@ -3154,7 +3154,7 @@ pub fn save_releasing_with_host(
         let recorded = store.reload_merge_save(local);
         released.extend(launched.into_iter().map(|mut released| {
             if let Err(error) = &recorded {
-                released.start = unsaved(released.start, error.to_string());
+                released.start = unsaved(released.start, error);
             }
             released
         }));
@@ -3169,11 +3169,18 @@ pub fn save_releasing_with_host(
 }
 
 /// What a released launch's outcome means once the save after it failed: the done and the start
-/// are durable, the record or the rollback to ready is not.
-pub fn unsaved(start: ReleasedStart, error: String) -> ReleasedStart {
+/// are durable, the record or the rollback to ready is not. A running agent whose record a
+/// restore refused is to be checked or stopped before anything runs again.
+pub fn unsaved(start: ReleasedStart, error: &crate::store::StoreError) -> ReleasedStart {
     match start {
-        ReleasedStart::Dispatched(result) => ReleasedStart::Unrecorded(result, error),
-        ReleasedStart::BackToReady(reason) => ReleasedStart::NotLaunched(reason, error),
+        ReleasedStart::Dispatched(result) => {
+            let error = match error {
+                crate::store::StoreError::Restored => format!("{error}; {RESTORED_LAUNCH_KEPT}"),
+                _ => error.to_string(),
+            };
+            ReleasedStart::Unrecorded(result, error)
+        }
+        ReleasedStart::BackToReady(reason) => ReleasedStart::NotLaunched(reason, error.to_string()),
         other => other,
     }
 }
@@ -3437,6 +3444,11 @@ pub fn run_with_host_base(
         .map_err(|error| unrecorded(host, &record, &undo, error))
 }
 
+/// The next step after a restore refused a launch's record: the launch was taken back.
+const RESTORED_LAUNCH_UNDONE: &str = "run it again";
+/// The next step after a restore refused a launch's record: an agent or its leftovers remain.
+const RESTORED_LAUNCH_KEPT: &str = "check or stop it before running again";
+
 /// A launch whose record did not land: take it back, so a retry never starts a second agent
 /// beside it, and say whether that worked.
 pub fn unrecorded(
@@ -3445,15 +3457,37 @@ pub fn unrecorded(
     undo: &LaunchUndo,
     error: DispatchError,
 ) -> DispatchError {
+    error.noting(&take_back(host, record, undo).0)
+}
+
+/// [`unrecorded`] for a failed record save. A save a restore refused also names the next step:
+/// run it again once the launch is undone, otherwise check or stop what stayed first.
+pub fn unrecorded_save(
+    host: &mut impl DispatchHost,
+    record: &Dispatch,
+    undo: &LaunchUndo,
+    error: &crate::store::StoreError,
+) -> DispatchError {
+    let (note, undone) = take_back(host, record, undo);
+    let note = match (error, undone) {
+        (crate::store::StoreError::Restored, true) => format!("{note}: {RESTORED_LAUNCH_UNDONE}"),
+        (crate::store::StoreError::Restored, false) => format!("{note}: {RESTORED_LAUNCH_KEPT}"),
+        _ => note,
+    };
+    DispatchError::Store(error.to_string()).noting(&note)
+}
+
+/// Undo a launch whose record did not land: what to say about it, and whether it was undone.
+fn take_back(host: &mut impl DispatchHost, record: &Dispatch, undo: &LaunchUndo) -> (String, bool) {
     match undo_launch(host, record, undo) {
         // Typed into the recorded workspace's pane: the agent runs there.
-        None if undo.created == Created::Nothing => error.noting("the agent may still run"),
-        None => error.noting("launch undone"),
-        Some(left) if left.workspace_open => error.noting(&format!(
-            "left behind: {}; the agent may still run",
-            left.what
-        )),
-        Some(left) => error.noting(&format!("left behind: {}", left.what)),
+        None if undo.created == Created::Nothing => ("the agent may still run".into(), false),
+        None => ("launch undone".into(), true),
+        Some(left) if left.workspace_open => (
+            format!("left behind: {}; the agent may still run", left.what),
+            false,
+        ),
+        Some(left) => (format!("left behind: {}", left.what), false),
     }
 }
 
@@ -4453,6 +4487,8 @@ mod tests {
         dirty: bool,
         /// Why a delete at a tip keeps the branch instead.
         branch_kept: Option<BranchRetentionReason>,
+        /// A whole-store restore of this document lands in this store as a pane command runs.
+        restore_on_run: Option<(PathBuf, Vec<u8>)>,
     }
 
     impl DispatchHost for FakeHost {
@@ -4698,6 +4734,11 @@ mod tests {
 
         fn run_in_pane(&mut self, pane: &str, command: &str) -> Result<(), String> {
             self.runs.push((pane.into(), command.into()));
+            if let Some((dir, document)) = self.restore_on_run.take() {
+                crate::store::TaskStore::new(dir)
+                    .restore_document(&document, SystemTime::now())
+                    .expect("restore");
+            }
             if let Some(error) = self.fail_run.clone() {
                 Err(error)
             } else {
@@ -4877,6 +4918,75 @@ mod tests {
         );
         let disk = store.load().expect("load");
         assert_eq!(disk.get(ids[2]).expect("task").status, HumanStatus::Started);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A restore lands while the agent a board done released launches. The record save after it
+    /// cannot write over the restored store: the launch is reported unrecorded with the next
+    /// step, and the caller's copy reloads, so its next save lands.
+    #[test]
+    fn a_restore_while_a_released_agent_launches_keeps_the_restored_store() {
+        let (dir, _) = profiles();
+        let store = crate::store::TaskStore::new(&dir);
+        let mut local = store.load().expect("the board's copy");
+        let scope = TaskScope::Project {
+            path: "/repos/app".into(),
+        };
+        let first = local
+            .create("first", None, scope.clone(), ProvenanceOrigin::Manual, None)
+            .expect("create");
+        let second = local
+            .create_assigned(
+                "second",
+                None,
+                scope,
+                ProvenanceOrigin::Manual,
+                None,
+                Some("implementer".into()),
+            )
+            .expect("create");
+        store.reload_merge_save(&mut local).expect("save");
+        let first_number = local.get(first).and_then(|task| task.number).expect("T1");
+        local.set_after(second, &[first_number]).expect("after");
+        store.reload_merge_save(&mut local).expect("save");
+        local.set_status(second, HumanStatus::Ready).expect("ready");
+        store.reload_merge_save(&mut local).expect("save");
+        let backup = fs::read(dir.join("tsk.json")).expect("backup");
+
+        local.set_status(first, HumanStatus::Done).expect("done");
+        let mut host = FakeHost {
+            git: true,
+            restore_on_run: Some((dir.clone(), backup)),
+            ..FakeHost::default()
+        };
+        let released = save_releasing_with_host(&store, &mut local, "owner", true, None, &mut host)
+            .expect("the done saved before the restore");
+        assert_eq!(host.runs.len(), 1, "the agent launched before the restore");
+        let warnings = released_warnings(&released);
+        assert_eq!(warnings.len(), 1, "{released:?}");
+        assert!(
+            warnings[0].ends_with(
+                "the store was restored from a backup while this command ran; its changes are \
+                 not in the restored store; check or stop it before running again"
+            ),
+            "{warnings:?}"
+        );
+        let disk = store.load().expect("load");
+        assert_eq!(disk.get(first).expect("T1").status, HumanStatus::Open);
+        assert_eq!(disk.get(second).expect("T2").status, HumanStatus::Ready);
+        assert!(disk.get(second).expect("T2").dispatch.is_none());
+
+        assert_eq!(
+            local.get(first).expect("T1").status,
+            HumanStatus::Open,
+            "reloaded"
+        );
+        local
+            .edit(first, "first, edited", None, TaskScope::Global, None)
+            .expect("edit");
+        store
+            .reload_merge_save(&mut local)
+            .expect("the reloaded copy saves");
         let _ = fs::remove_dir_all(dir);
     }
 
