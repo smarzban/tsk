@@ -2582,29 +2582,38 @@ every = "daily"
 
     #[test]
     fn a_stored_error_never_holds_a_token() {
-        // git quotes the first inside a URL, the second outside one.
-        for (url, shown) in [
-            (
-                "file:///nope/https://me:S3CRET@h/x.git",
-                "https://***@h/x.git",
-            ),
-            ("git://me:S3CRET@127.0.0.1:9/x.git", "***@127.0.0.1"),
-        ] {
-            let root = TempDir::new("stored-error");
-            let state = state_with_target(&root.0, Path::new(url), "");
-            write_store(&state, "a1");
-            let results = run(&state, RunMode::Now, at(DAY)).expect("run");
-            let returned = results[0].1.clone().expect_err("unreachable");
-            let stored = load_status(&state)
-                .targets
-                .values()
-                .find_map(|record| record.last_error.clone())
-                .expect("an error is recorded");
-            for error in [returned, stored, failure_message(&state).expect("shown")] {
-                assert!(!error.contains("S3CRET"), "{error}");
-                assert!(error.contains(shown), "{error}");
-            }
+        // git quotes the token outside a URL here.
+        let root = TempDir::new("stored-error");
+        let url = "git://me:S3CRET@127.0.0.1:9/x.git";
+        let state = state_with_target(&root.0, Path::new(url), "");
+        write_store(&state, "a1");
+        let results = run(&state, RunMode::Now, at(DAY)).expect("run");
+        let returned = results[0].1.clone().expect_err("unreachable");
+        let stored = load_status(&state)
+            .targets
+            .values()
+            .find_map(|record| record.last_error.clone())
+            .expect("an error is recorded");
+        for error in [returned, stored, failure_message(&state).expect("shown")] {
+            assert!(!error.contains("S3CRET"), "{error}");
+            assert!(error.contains("***@127.0.0.1"), "{error}");
         }
+    }
+
+    #[test]
+    fn a_target_error_never_holds_a_token_inside_a_url() {
+        // git strips userinfo from the http(s) URLs it quotes, and Git for Windows rewrites a
+        // `file://` path through its shell, so no real run is portable here: this is the
+        // message git prints for `file:///nope/https://me:S3CRET@h/x.git` on Unix.
+        let target = Target::new("file:///nope/https://me:S3CRET@h/x.git".to_string());
+        let error = target_error(
+            &target,
+            "git clone failed: fatal: '/nope/https://me:S3CRET@h/x.git' does not appear to be a \
+             git repository"
+                .to_string(),
+        );
+        assert!(!error.contains("S3CRET"), "{error}");
+        assert!(error.contains("'/nope/https://***@h/x.git'"), "{error}");
     }
 
     #[test]
