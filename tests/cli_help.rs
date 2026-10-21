@@ -412,9 +412,20 @@ fn capture_help_prints_without_opening_the_popup() {
     let direct = executable(&["capture", "--help"]);
     assert_eq!(via_help.status.code(), Some(0));
     assert!(via_help.stderr.is_empty());
-    assert!(String::from_utf8_lossy(&via_help.stdout).starts_with("usage: tsk capture"));
+    assert!(String::from_utf8_lossy(&via_help.stdout)
+        .starts_with("usage: tsk capture [--state-dir <dir>]"));
     assert_eq!(via_help.stdout, direct.stdout);
     assert_eq!(direct.status.code(), Some(0));
+}
+
+#[test]
+fn capture_refuses_another_argument_and_says_why() {
+    let output = executable(&["capture", "--bogus"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "tsk capture: unknown argument --bogus\nusage: tsk capture [--state-dir <dir>]\n"
+    );
 }
 
 #[test]

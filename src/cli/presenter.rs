@@ -152,6 +152,7 @@ const BACKUP_USAGE: &[&str] = &[
     "tsk backup remove <target> [--state-dir <dir>]",
 ];
 const RESTORE_USAGE: &[&str] = &["tsk restore [<version>] [--all] [--state-dir <dir>]"];
+const CAPTURE_USAGE: &[&str] = &["tsk capture [--state-dir <dir>]"];
 
 fn lines(usage: &[&str]) -> Vec<String> {
     usage.iter().map(|line| (*line).to_string()).collect()
@@ -2295,6 +2296,10 @@ pub fn restore_help() -> CliOutput {
     })
 }
 
+pub fn capture_usage(reason: &str) -> CliOutput {
+    usage_error("capture", reason, CAPTURE_USAGE)
+}
+
 pub fn restore_usage(reason: &str) -> CliOutput {
     usage_error("restore", reason, RESTORE_USAGE)
 }
@@ -2596,9 +2601,12 @@ pub fn update_help() -> CliOutput {
 
 pub fn capture_help() -> CliOutput {
     help(HelpDoc {
-        usage: vec!["tsk capture".into()],
+        usage: lines(CAPTURE_USAGE),
         purpose: "Open quick capture in this terminal. A save or a discard exits.".into(),
-        groups: Vec::new(),
+        groups: vec![group(
+            "Options",
+            &[("--state-dir <dir>", "use another board store")],
+        )],
         examples: vec!["tsk capture".into()],
         refusals: Vec::new(),
         exit: exit_line(

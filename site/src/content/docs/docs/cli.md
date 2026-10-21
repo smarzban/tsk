@@ -15,7 +15,7 @@ tsk list
 | Command | Does |
 | --- | --- |
 | `tsk` | Open the board |
-| `tsk capture` | Open [quick capture](/docs/capture/); saving or discarding exits |
+| `tsk capture [--state-dir <dir>]` | Open [quick capture](/docs/capture/); saving or discarding exits. Any other argument is a usage error, exit 2 |
 | [`tsk add`](#add) | Add a task, or every task in a JSON plan |
 | [`tsk list`](#list) | Read tasks |
 | [`tsk status`](#status) | Set a task's status, block it, or put it up for review |

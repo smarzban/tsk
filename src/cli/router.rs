@@ -39,10 +39,11 @@ pub enum Surface {
 pub const NAME_AGENT_FLAG: &str = "--name-agent";
 
 /// The store `tsk capture` opens, from the arguments after `capture`: `--state-dir <dir>`
-/// or `--state-dir=<dir>`, else `None` for the default. Any other argument is refused.
+/// or `--state-dir=<dir>`, else `None` for the default. Any other argument is refused with
+/// the reason.
 pub fn capture_state_dir<S: AsRef<str>>(
     tail: impl IntoIterator<Item = S>,
-) -> Result<Option<PathBuf>, &'static str> {
+) -> Result<Option<PathBuf>, String> {
     let mut tail = tail.into_iter();
     let mut state_dir = None;
     while let Some(arg) = tail.next() {
@@ -54,10 +55,13 @@ pub fn capture_state_dir<S: AsRef<str>>(
                 .ok_or("--state-dir needs a directory")?
                 .as_ref()
                 .to_owned(),
-            None => return Err("capture takes only --state-dir"),
+            None => return Err(format!("unknown argument {arg}")),
         };
-        if dir.is_empty() || state_dir.replace(PathBuf::from(dir)).is_some() {
-            return Err("capture takes one non-empty --state-dir");
+        if dir.is_empty() {
+            return Err("--state-dir needs a directory".into());
+        }
+        if state_dir.replace(PathBuf::from(dir)).is_some() {
+            return Err("--state-dir given twice".into());
         }
     }
     Ok(state_dir)
@@ -84,7 +88,7 @@ pub fn route<S: AsRef<str>>(
     let _argv0 = args.next();
     let mut global = None;
 
-    while let Some(arg) = args.next() {
+    for arg in args {
         let arg = arg.as_ref();
         if arg.starts_with('-') {
             let surface = match arg {
@@ -104,16 +108,8 @@ pub fn route<S: AsRef<str>>(
             return Surface::Usage;
         }
         return match arg {
-            "capture" => {
-                let tail: Vec<S> = args.collect();
-                // A lone `--help` is the capture reference, which the binary entry prints.
-                let help = matches!(&tail[..], [only] if only.as_ref() == "--help");
-                if help || capture_state_dir(tail).is_ok() {
-                    Surface::Capture
-                } else {
-                    Surface::Usage
-                }
-            }
+            // The binary entry checks capture's own arguments, so a refusal can say why.
+            "capture" => Surface::Capture,
             "add" => Surface::Add,
             "steps" => Surface::Steps,
             "list" => Surface::List,
@@ -215,25 +211,28 @@ mod tests {
 
     #[test]
     fn capture_takes_a_state_dir_and_nothing_else() {
-        assert_eq!(route(["tsk", "capture"], None), Surface::Capture);
-        assert_eq!(route(["tsk", "capture", "--help"], None), Surface::Capture);
+        assert_eq!(capture_state_dir([] as [&str; 0]), Ok(None));
         for tail in [&["--state-dir", "/tmp/x"][..], &["--state-dir=/tmp/x"]] {
-            let args = ["tsk", "capture"].iter().chain(tail).copied();
-            assert_eq!(route(args, None), Surface::Capture, "{tail:?}");
             assert_eq!(
                 capture_state_dir(tail.iter()),
                 Ok(Some(PathBuf::from("/tmp/x")))
             );
         }
-        for tail in [
-            &["--state-dir"][..],
-            &["--state-dir="],
-            &["--help", "--state-dir=/tmp/x"],
-            &["--state-dir", "/a", "--state-dir", "/b"],
-            &["extra"],
+        for (tail, reason) in [
+            (&["--state-dir"][..], "--state-dir needs a directory"),
+            (&["--state-dir="], "--state-dir needs a directory"),
+            (&["--help", "--state-dir=/tmp/x"], "unknown argument --help"),
+            (
+                &["--state-dir", "/a", "--state-dir", "/b"],
+                "--state-dir given twice",
+            ),
+            (&["extra"], "unknown argument extra"),
         ] {
-            let args = ["tsk", "capture"].iter().chain(tail).copied();
-            assert_eq!(route(args, None), Surface::Usage, "{tail:?}");
+            assert_eq!(
+                capture_state_dir(tail.iter()),
+                Err(reason.into()),
+                "{tail:?}"
+            );
         }
     }
 

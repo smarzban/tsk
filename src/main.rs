@@ -50,16 +50,29 @@ fn main() -> ExitCode {
         Surface::Setup | Surface::Guide | Surface::Help => headless_main(args),
         // `capture --help` is reference text like every other verb's: the headless runner owns it.
         Surface::Capture if args.len() == 3 && args[2] == "--help" => headless_main(args),
-        Surface::Board | Surface::Capture => match tsk_tui::store::require_home_or_override(&args)
-            .map_err(|message| message.into())
-            .and_then(|()| tsk_tui::run(args))
-        {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(err) => {
-                eprintln!("tsk: {err}");
-                ExitCode::from(1)
+        Surface::Capture => {
+            match tsk_tui::cli::router::capture_state_dir(args.get(2..).unwrap_or_default()) {
+                Ok(_) => board_main(args),
+                Err(reason) => {
+                    eprint!("{}", tsk_tui::cli::presenter::capture_usage(&reason).stderr);
+                    ExitCode::from(2)
+                }
             }
-        },
+        }
+        Surface::Board => board_main(args),
+    }
+}
+
+fn board_main(args: Vec<String>) -> ExitCode {
+    match tsk_tui::store::require_home_or_override(&args)
+        .map_err(|message| message.into())
+        .and_then(|()| tsk_tui::run(args))
+    {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("tsk: {err}");
+            ExitCode::from(1)
+        }
     }
 }
 
