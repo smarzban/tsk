@@ -1992,6 +1992,12 @@ fn apply_board_intent(
             model.move_project_picker(false);
             return Ok(IntentOutcome::None);
         }
+        BoardIntent::ProjectPickerCycleSort => {
+            if model.project_picker.is_some() {
+                model.set_project_sort(model.project_sort().next());
+            }
+            return Ok(IntentOutcome::None);
+        }
         BoardIntent::ProjectPickerSwitchTab | BoardIntent::SelectPickerTab(_) => {
             if let Some(picker) = model.project_picker.as_mut() {
                 picker.tab = match intent {
@@ -2878,10 +2884,10 @@ fn apply_board_intent(
             return open_group_target(model, target);
         }
         BoardIntent::OpenGroupPicker | BoardIntent::OpenSortPicker => {
-            if model.project_picker.is_some()
-                || model.popup == BoardPopup::SaveRecovery
-                || !model.task_list_owns_input()
-            {
+            // The Projects view sorts its rows; it has no grouping.
+            let owner = model.task_list_owns_input()
+                || (intent == BoardIntent::OpenSortPicker && model.projects_index_owns_input());
+            if model.project_picker.is_some() || model.popup == BoardPopup::SaveRecovery || !owner {
                 return Ok(IntentOutcome::None);
             }
             model.close_command_surface();
@@ -3009,7 +3015,9 @@ fn apply_board_intent(
                     if task.status == HumanStatus::Done {
                         skipped_done += 1;
                     }
-                    let label = task.board_identifier().unwrap_or_else(|| "task".to_string());
+                    let label = task
+                        .board_identifier()
+                        .unwrap_or_else(|| "this task".to_string());
                     refusal = Some(ctrl_s_refusal(&label, task.status));
                 }
             }

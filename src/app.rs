@@ -12972,7 +12972,10 @@ mod quick_assign_tests {
         }
         handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
         let saved = temp.store.load().expect("reload");
-        assert_eq!(saved.get(ids[0]).expect("task").status, HumanStatus::Blocked);
+        assert_eq!(
+            saved.get(ids[0]).expect("task").status,
+            HumanStatus::Blocked
+        );
         assert!(saved.get(ids[0]).expect("task").block.is_some());
         assert_eq!(saved.get(ids[1]).expect("task").status, HumanStatus::Open);
     }
@@ -12994,7 +12997,10 @@ mod quick_assign_tests {
         let intent = ctrl_s(&model);
         handle(&temp, &mut domain, &mut model, intent, &mut host);
         let saved = temp.store.load().expect("reload");
-        assert_eq!(saved.get(ids[0]).expect("task").status, HumanStatus::Started);
+        assert_eq!(
+            saved.get(ids[0]).expect("task").status,
+            HumanStatus::Started
+        );
         assert_eq!((host.launched, host.ran), (0, 0), "no relaunch");
         assert_eq!(
             host.prompts,
@@ -13039,8 +13045,7 @@ mod quick_assign_tests {
             handle(&temp, &mut domain, &mut model, intent, &mut host);
             assert_eq!(model.message(), Some(expected));
         }
-        apply_intent(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer, None)
-            .expect("drawer");
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer, None).expect("drawer");
         select(&mut domain, &mut model, ids[2]);
         let intent = ctrl_s(&model);
         handle(&temp, &mut domain, &mut model, intent, &mut host);

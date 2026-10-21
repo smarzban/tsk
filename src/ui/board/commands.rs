@@ -164,6 +164,12 @@ impl BoardModel {
                     BoardIntent::ToggleMessages,
                 ),
             ]);
+        } else if self.projects_overview()
+            && self.input_mode == super::BoardInputMode::Normal
+            && self.project_picker.is_none()
+        {
+            // The Projects view sorts its project rows.
+            commands.push(command("sort by…", BoardIntent::OpenSortPicker));
         }
         commands.extend_from_slice(&[
             command("show all keys", BoardIntent::OpenHelp),

@@ -111,7 +111,7 @@ covers them all.
 | `Enter` | Open the selected task |
 | `→` / `←` or `l` / `h` | Narrow pane: peek at a task, close the peek. Wide pane: move between board and task |
 | `+` | Add a task |
-| `ctrl+s` | Start an open or ready task |
+| `ctrl+s` | Start an open, ready, or blocked task |
 | `ctrl+n` | Pick a task: move it to ready |
 | `ctrl+o` | Send a task back to the open inbox |
 | `ctrl+r` | Send a task to review with what was done and what to check, or back to ready |

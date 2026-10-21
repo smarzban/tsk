@@ -2,7 +2,7 @@
 │                                │                                                                             │
 │ desk  ·  tsk ▾  ·  projects    │  tsk                                 group: none ▾   sort: recent ▾   all ▾ │
 │                                │                                                                             │
-│                     Overview ▾ │  IN MOTION ───────────────────────────────────────────────────────────────1 │
+│      sort: name ▾   Overview ▾ │  IN MOTION ───────────────────────────────────────────────────────────────1 │
 │                                │                                                                             │
 │   PROJECT NEED MOTION DECK   … │ ▸ ● T1 Smoke-test worktree dispatch                                         │
 │                                │                                                                             │

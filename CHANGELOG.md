@@ -39,6 +39,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - `tsk edit --append-notes` adds text below a task's notes after a blank line, without rewriting them.
 - `tsk setup` also installs the `tsk-coordinator` skill: your agent can brief builder agents, gate their pull requests with a review, live-test, and report back on the board.
 - `tsk restore` lists the newest 20 backed-up versions per machine (`--all` for every one) and puts the one you pick back, keeping the replaced store.
+- Sort the project picker and the Projects view by name or age with `s`. Both list projects A–Z by name by default. Thanks @LukasGold (#250).
 
 ### Changed
 
@@ -49,6 +50,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - A row whose title wraps above an open peek or live line shows a dim `│` beside each wrapped line, so the row reads as one block.
 - Help, footers, and the palette name each action verb first and in full (`ctrl+b` **block / unblock**). Help's **SURFACE CONTROLS** group is renamed **PICKERS & EDITING**.
 - The archived-project launch card puts each option on its own line; `↑`/`↓` and `Enter` pick one, as on the cleanup card.
+- `ctrl+s` starts a blocked task, closing its block; one `ctrl+u` reopens it. On a task it cannot start, the status row says why. Thanks @LukasGold (#252).
 
 ### Fixed
 

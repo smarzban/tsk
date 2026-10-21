@@ -24,7 +24,7 @@ use crate::ui::mouse::BoardPopup;
 pub use crate::ui::queue::BoardTab;
 use crate::ui::queue::{
     self, visible_row_ids, AssigneeFilter, BoardFilter, BoardLens, DeskFilter, GroupBy, NavTab,
-    ProjectFilter, ProjectRow, QueueView, SectionKind, SortBy, ThreadFilter,
+    ProjectFilter, ProjectRow, ProjectSort, QueueView, SectionKind, SortBy, ThreadFilter,
 };
 use crate::ui::selection;
 use crate::ui::terminal_text;
@@ -346,6 +346,7 @@ pub enum ListPickerValue {
     DeskProject(String),
     Group(GroupBy),
     Sort(SortBy),
+    ProjectSort(ProjectSort),
 }
 
 /// Whether a task-picker query term names `number` (`202`, `T202`, a prefix of either) or
@@ -1165,6 +1166,8 @@ pub struct BoardModel {
     pub(super) search_pinned: bool,
     /// The projects index's selected row cursor. Session-only.
     pub(super) projects_selected: usize,
+    /// The order of the project picker and the Projects view. Session-only.
+    pub(super) project_sort: ProjectSort,
     /// Open searchable list picker (thread filter / projects view). Session-only.
     pub(super) list_picker: Option<ListPickerState>,
     base_picker_results: Arc<Mutex<Vec<BasePickerResult>>>,
@@ -2330,6 +2333,7 @@ impl BoardModel {
             search_query: String::new(),
             search_pinned: false,
             projects_selected: 0,
+            project_sort: ProjectSort::default(),
             list_picker: None,
             base_picker_results: Arc::default(),
             base_picker_workers: Arc::default(),
@@ -4175,7 +4179,12 @@ impl BoardModel {
                 push(PathBuf::from(path), &mut from_tasks);
             }
         }
-        from_tasks.sort();
+        queue::sort_projects(
+            &mut from_tasks,
+            |path| path.to_string_lossy().into_owned(),
+            &self.tasks,
+            self.project_sort,
+        );
         for path in from_tasks {
             push(path, &mut paths);
         }
@@ -4200,9 +4209,54 @@ impl BoardModel {
         self.project_picker.as_ref().map(|picker| picker.tab)
     }
 
-    /// Archived tab entries: sorted scope paths of the archived projects.
+    /// Archived tab entries: the archived projects' scope paths in the project sort.
     pub fn archived_project_options(&self) -> Vec<PathBuf> {
-        self.archived_projects.iter().map(PathBuf::from).collect()
+        let mut paths: Vec<PathBuf> = self.archived_projects.iter().map(PathBuf::from).collect();
+        queue::sort_projects(
+            &mut paths,
+            |path| path.to_string_lossy().into_owned(),
+            &self.tasks,
+            self.project_sort,
+        );
+        paths
+    }
+
+    /// The order of the project picker and the Projects view.
+    pub fn project_sort(&self) -> ProjectSort {
+        self.project_sort
+    }
+
+    /// Put both project lists in `sort` order, keeping the picker's highlight and the
+    /// Projects view's cursor on the project they were on.
+    pub(super) fn set_project_sort(&mut self, sort: ProjectSort) {
+        let row = self.selected_project_row().map(|row| row.path);
+        let picked = self.project_picker.as_ref().map(|picker| {
+            (
+                picker.options.get(picker.selected).cloned(),
+                picker.archived.get(picker.archived_selected).cloned(),
+            )
+        });
+        self.project_sort = sort;
+        if let Some(path) = row {
+            if let Some(index) = self.project_rows().iter().position(|row| row.path == path) {
+                self.projects_selected = index;
+            }
+        }
+        if let Some((option, archived)) = picked {
+            self.refresh_project_picker();
+            if let Some(picker) = self.project_picker.as_mut() {
+                if let Some(index) = option
+                    .and_then(|option| picker.options.iter().position(|known| *known == option))
+                {
+                    picker.selected = index;
+                }
+                if let Some(index) = archived
+                    .and_then(|path| picker.archived.iter().position(|known| *known == path))
+                {
+                    picker.archived_selected = index;
+                }
+            }
+        }
     }
 
     /// Rebuild the open selector's lists from the current snapshot and clamp both
@@ -4252,6 +4306,14 @@ impl BoardModel {
             layout.sort,
         );
         if self.projects_overview() {
+            // The current repository's row stays first ("here"); the rest take the sort.
+            queue::sort_projects(
+                &mut view.projects,
+                |row| row.path.clone(),
+                &self.tasks,
+                self.project_sort,
+            );
+            view.projects.sort_by_key(|row| !row.current);
             // Overview rows retain their existing name-or-path substring search.
             let query = self.search_query.trim().to_lowercase();
             if !query.is_empty() {
@@ -5040,24 +5102,35 @@ impl BoardModel {
         });
     }
 
-    /// Open the sort-by picker (bare `s`) on any task board.
+    /// Open the sort-by picker (bare `s`) on any task board, or the project orders on the
+    /// Projects view.
     pub(super) fn open_sort_picker(&mut self) {
-        if self.projects_overview() {
-            return;
-        }
-        let current = self.layout().sort;
-        let options: Vec<ListPickerOption> = self
-            .sort_choices()
-            .into_iter()
-            .map(|sort| ListPickerOption {
-                label: sort.word().to_string(),
-                count: None,
-                value: ListPickerValue::Sort(sort),
-            })
-            .collect();
+        let (options, current): (Vec<ListPickerOption>, ListPickerValue) =
+            if self.projects_overview() {
+                let options = ProjectSort::ALL
+                    .into_iter()
+                    .map(|sort| ListPickerOption {
+                        label: sort.label().to_string(),
+                        count: None,
+                        value: ListPickerValue::ProjectSort(sort),
+                    })
+                    .collect();
+                (options, ListPickerValue::ProjectSort(self.project_sort))
+            } else {
+                let options = self
+                    .sort_choices()
+                    .into_iter()
+                    .map(|sort| ListPickerOption {
+                        label: sort.word().to_string(),
+                        count: None,
+                        value: ListPickerValue::Sort(sort),
+                    })
+                    .collect();
+                (options, ListPickerValue::Sort(self.layout().sort))
+            };
         let selected = options
             .iter()
-            .position(|option| option.value == ListPickerValue::Sort(current))
+            .position(|option| option.value == current)
             .unwrap_or(0);
         self.list_picker = Some(ListPickerState {
             kind: ListPickerKind::SortBy,
@@ -6159,6 +6232,10 @@ impl BoardModel {
                 self.layout_mut().sort = *sort;
                 true
             }
+            (ListPickerKind::SortBy, ListPickerValue::ProjectSort(sort)) => {
+                self.set_project_sort(*sort);
+                true
+            }
             _ => false,
         };
         if applied {
@@ -6439,6 +6516,11 @@ impl BoardModel {
             || (self.focused_surface() == FocusedSurface::Board
                 && self.input_mode == BoardInputMode::TaskPage);
         list_mode && self.project_picker.is_none() && !self.projects_overview()
+    }
+
+    /// Whether the Projects view's project rows take the keys: no layer, picker, or form over them.
+    pub(crate) fn projects_index_owns_input(&self) -> bool {
+        self.input_mode_local() == BoardInputMode::Normal && self.projects_overview()
     }
 
     /// Whether this model's task list owns resolved input, including while a task page is parked.

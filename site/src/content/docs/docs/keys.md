@@ -16,7 +16,7 @@ Status, edit, delete, and archive keys take `ctrl`. Bare letters move, open, and
 | Peek / close the peek, below 110 columns | `→` / `←` or `l` / `h` |
 | Add a task | `+` |
 | Edit title | `ctrl+e` |
-| Start; an assigned task [dispatches](/docs/dispatch/#dispatch) to its agent | `ctrl+s` |
+| Start, a blocked task too; an assigned task [dispatches](/docs/dispatch/#dispatch) to its agent | `ctrl+s` |
 | Set ready | `ctrl+n` |
 | Set open (back to the inbox) | `ctrl+o` |
 | Mark done | `ctrl+d` |
@@ -29,7 +29,7 @@ Status, edit, delete, and archive keys take `ctrl`. Bare letters move, open, and
 | Reply to a blocked row, or give feedback on a review row | `r` |
 | Open / close the done drawer | `d` |
 | Group by none, project, thread, or assignee | `g` |
-| Sort by recent, project, thread, title, or assignee | `s` |
+| Sort by recent, project, thread, title, or assignee; on the Projects view, sort the projects | `s` |
 | Fold / unfold the cursor's group | `f` |
 | Fold / unfold every group in view | `shift+F` |
 | Hide / show agent messages, the [live lines](/docs/board/#rows) under rows | `z` |
@@ -66,7 +66,7 @@ Group sub-headers, the inbox, and archived in the done drawer are headers.
 | Mark the current task, then move | `shift+↑` / `shift+↓` |
 
 - With tasks marked, status keys, `ctrl+x`, `ctrl+f`, `@`, and the palette's set commands act on the whole set. `Enter`, `ctrl+e`, and task-page keys stay on the cursor.
-- `ctrl+s` starts each open or ready task in the set and skips the rest.
+- `ctrl+s` starts each open, ready, or blocked task in the set and skips the rest.
 - `ctrl+b` and `ctrl+r` skip done tasks and send the rest to blocked or review through one card. If every one already has that status, they all return to ready.
 - `ctrl+n` and `ctrl+o` also reopen done tasks.
 - One `ctrl+u` reverses the whole set.
@@ -205,7 +205,7 @@ In the Herdr popup, `shift+Enter` saves and closes it. `Esc` or `ctrl+c` discard
 
 | Surface | Keys |
 | --- | --- |
-| Project picker (`p`) | `↑` / `↓` or `j` / `k` select · `Tab` or `←` / `→` switch tabs · `Enter` opens · `Esc` or `q` closes |
+| Project picker (`p`) | `↑` / `↓` or `j` / `k` select · `Tab` or `←` / `→` switch tabs · `s` [changes the order](/docs/board/#sort-the-projects) · `Enter` opens · `Esc` or `q` closes |
 | Project picker, archive | `ctrl+f` archives the selected project · on the archived tab, `ctrl+f` or `ctrl+u` restores |
 | Archived project's board | `ctrl+u` restores · `Esc`, `p`, or `1`–`3` leaves |
 | Filter and view pickers (`t`, `v`) | type to filter · `↑` / `↓` select · `Tab` or `←` / `→` switch tabs, `shift+Tab` back · `Enter` chooses · `Esc` closes |

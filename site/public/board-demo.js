@@ -471,6 +471,8 @@ import { parseCapture } from "./capture.js";
     paletteI: 0,
     helpQ: "",
     pickerI: 0,
+    // The project picker's and the Projects view's shared order (session-only).
+    projectSort: "name A–Z",
     editField: null,
     editDraft: "",
     quickExpanded: false,
@@ -749,6 +751,7 @@ import { parseCapture } from "./capture.js";
     return ["none", "project", "thread", "assignee"].filter((g) => g !== slot);
   }
   function sortChoices(owner = "outer") {
+    if (owner === "projects") return PROJECT_SORTS;
     const slot = layoutSlot(owner);
     return ["recent", "project", "thread", "title", "assignee"].filter(
       (sort) => sort !== slot,
@@ -757,14 +760,15 @@ import { parseCapture } from "./capture.js";
   // The header's group and sort controls: full words, or keyed (`g:thread`) when narrow.
   // The header's group and sort controls: full words, or keyed (`g:thread`) when narrow.
   // `idle` keeps a control sitting at its own default.
+  // The projects index passes no group and its own default sort.
   function layoutControls(layout, compact, idle = true) {
     const controls = [];
-    if (idle || layout.group !== "none")
+    if (layout.group !== undefined && (idle || layout.group !== "none"))
       controls.push({
         kind: "group",
         label: `${compact ? "g:" : "group: "}${layout.group} ▾`,
       });
-    if (idle || layout.sort !== "recent")
+    if (idle || layout.sort !== (layout.defaultSort ?? "recent"))
       controls.push({
         kind: "sort",
         label: `${compact ? "s:" : "sort: "}${layout.sort} ▾`,
@@ -1094,8 +1098,15 @@ import { parseCapture } from "./capture.js";
   function openLayoutPicker(kind) {
     const owner =
       projectsPreviewFocused() && !preview.page ? "preview" : "outer";
-    if (owner === "outer" && (projectsOverview() || taskFocus())) return;
     if (steps.dirty || steps.editor || previewHasUnsavedWork()) return;
+    // The Projects view sorts its projects.
+    if (owner === "outer" && kind === "sort" && projectsOverview()) {
+      state.layoutOwner = "projects";
+      state.overlay = kind;
+      state.filterI = Math.max(0, PROJECT_SORTS.indexOf(state.projectSort));
+      return;
+    }
+    if (owner === "outer" && (projectsOverview() || taskFocus())) return;
     state.layoutOwner = owner;
     state.overlay = kind;
     const layout = boardLayout(owner);
@@ -1110,6 +1121,12 @@ import { parseCapture } from "./capture.js";
     const choices = kind === "group" ? groupChoices(owner) : sortChoices(owner);
     const value = choices[index];
     if (value === undefined) return;
+    if (owner === "projects") {
+      state.projectSort = value;
+      state.overlay = null;
+      state.layoutOwner = "outer";
+      return;
+    }
     boardLayout(owner)[kind] = value;
     const form = layoutOwnerForm();
     clearMarks(form);
@@ -1267,21 +1284,45 @@ import { parseCapture } from "./capture.js";
     return true;
   }
 
-  function pickerOptions() {
-    const set = new Set();
-    for (const t of state.tasks) if (t.project) set.add(t.project);
-    return ["desk", ...[...set].sort()];
-  }
-
-  function projectNames() {
-    const names = new Set(
-      state.tasks.filter((t) => t.project && !t.archived).map((t) => t.project),
-    );
+  // The project orders, as the picker lists them, and the Projects view header's words.
+  const PROJECT_SORTS = ["name A–Z", "name Z–A", "newest first", "oldest first"];
+  const PROJECT_SORT_WORDS = {
+    "name A–Z": "name",
+    "name Z–A": "name Z–A",
+    "newest first": "newest",
+    "oldest first": "oldest",
+  };
+  // `names` in the project order, the launch project first. A project's age is its first
+  // task's; names compare ignoring case.
+  function sortProjects(names) {
+    const first = (name) =>
+      Math.min(
+        ...state.tasks.filter((t) => t.project === name).map((t) => t.createdAt),
+      );
+    const byName = (a, b) =>
+      byteOrder(a.toLowerCase(), b.toLowerCase()) || byteOrder(a, b);
+    const order = {
+      "name A–Z": byName,
+      "name Z–A": (a, b) => byName(b, a),
+      "newest first": (a, b) => first(b) - first(a) || byName(a, b),
+      "oldest first": (a, b) => first(a) - first(b) || byName(a, b),
+    }[state.projectSort];
     return [...names].sort((a, b) => {
       if (a === launchProject()) return -1;
       if (b === launchProject()) return 1;
-      return a.localeCompare(b);
+      return order(a, b);
     });
+  }
+
+  function pickerOptions() {
+    const set = new Set();
+    for (const t of state.tasks) if (t.project) set.add(t.project);
+    return ["desk", ...sortProjects(set)];
+  }
+
+  function projectNames() {
+    const live = state.tasks.filter((t) => t.project && !t.archived);
+    return sortProjects(new Set(live.map((t) => t.project)));
   }
 
   function projectPath(name) {
@@ -3266,20 +3307,37 @@ import { parseCapture } from "./capture.js";
     setStatus(status);
   }
 
-  function primaryVerb() {
-    const bulk = state.markMode && state.markedIds.size > 0;
-    const tasks = targetTasks();
-    const changed = tasks.filter(
-      (task) => task.status === "open" || task.status === "ready",
+  // Start the open, ready, and blocked tasks among `tasks`; a blocked task's block closes.
+  // Returns the started tasks and the status row's line: a marked set's skipped done tasks,
+  // or why the one cursor task cannot start.
+  function startTasks(tasks, bulk) {
+    const changed = tasks.filter((task) =>
+      ["open", "ready", "blocked"].includes(task.status),
     );
     const skippedDone = tasks.filter((task) => task.status === "done").length;
-    for (const task of changed) logStatus(task, "started");
-    clearMarks();
-    state.pendingDelete = null;
-    state.message =
-      bulk && skippedDone
+    for (const task of changed) {
+      logStatus(task, "started");
+      delete task.block;
+    }
+    const refused = !bulk && !changed.length ? tasks[0] : null;
+    const message = refused
+      ? refused.status === "review"
+        ? `T${refused.number} is in review: r or the task page`
+        : refused.status === "done"
+          ? `T${refused.number} is done: n or o reopens it`
+          : `T${refused.number} is already started`
+      : bulk && skippedDone
         ? `started ${changed.length} · skipped ${skippedDone} done (n or o reopens them)`
         : "";
+    return { changed, message };
+  }
+
+  function primaryVerb() {
+    const bulk = state.markMode && state.markedIds.size > 0;
+    const { changed, message } = startTasks(targetTasks(), bulk);
+    clearMarks();
+    state.pendingDelete = null;
+    state.message = message;
     flashTasks(changed);
   }
 
@@ -3313,18 +3371,10 @@ import { parseCapture } from "./capture.js";
 
   function previewPrimaryVerb() {
     const bulk = preview.markMode && preview.markedIds.size > 0;
-    const tasks = targetTasks(preview);
-    const changed = tasks.filter(
-      (task) => task.status === "open" || task.status === "ready",
-    );
-    const skippedDone = tasks.filter((task) => task.status === "done").length;
-    for (const task of changed) logStatus(task, "started");
+    const { changed, message } = startTasks(targetTasks(preview), bulk);
     clearMarks(preview);
     preview.pendingDelete = null;
-    preview.message =
-      bulk && skippedDone
-        ? `started ${changed.length} · skipped ${skippedDone} done (n or o reopens them)`
-        : "";
+    preview.message = message;
     flashTasks(changed);
   }
 
@@ -3651,7 +3701,7 @@ import { parseCapture } from "./capture.js";
       <div class="tsk-box tsk-palette" role="dialog" aria-label="project">
         <div class="tsk-box-top"><span class="tsk-box-title">project</span><button type="button" class="tsk-box-close" data-close="1" aria-label="close">[x]</button></div>
         <div class="tsk-box-body">${list}</div>
-        <div class="tsk-box-foot">↑/↓ move · enter choose · esc close</div>
+        <div class="tsk-box-foot">↑/↓ move · enter choose · s sort: ${esc(state.projectSort)} · esc close</div>
       </div>`;
   }
 
@@ -4091,7 +4141,7 @@ import { parseCapture } from "./capture.js";
           ? 32
           : terminalColumns();
     // The desk's filter chip and the group / sort controls left of it; the projects index
-    // lists projects, so it has no layout controls.
+    // has only its project sort.
     const headerColumns = rail
       ? 32
       : isWideSplit() && state.stage === "split"
@@ -4103,14 +4153,14 @@ import { parseCapture } from "./capture.js";
     ).join("  ·  ").length;
     const deskChipLabel = isDeskLens() ? deskFilterLabel() : null;
     const chipLabel = filter === null ? deskChipLabel : filter;
-    const fit = index
-      ? { layout: [], chip: chipLabel !== null }
-      : fittedLayout(
-          boardLayout(),
-          chipLabel,
-          filter === null && deskChipLabel === "all",
-          headerColumns - 6 - tabsWidth,
-        );
+    const fit = fittedLayout(
+      index
+        ? { sort: PROJECT_SORT_WORDS[state.projectSort], defaultSort: "name" }
+        : boardLayout(),
+      chipLabel,
+      filter === null && deskChipLabel === "all",
+      headerColumns - 6 - tabsWidth,
+    );
     const indicator = layoutButtons(fit.layout);
     const chipGap = indicator ? ' style="margin-left:1ch"' : "";
     const deskChip =
@@ -5469,6 +5519,17 @@ import { parseCapture } from "./capture.js";
       if (e.key === "ArrowUp" || e.key === "k") {
         e.preventDefault();
         state.pickerI = Math.max(0, state.pickerI - 1);
+        render();
+      }
+      // `s` steps to the next order; the highlight stays on its project.
+      if (e.key === "s") {
+        e.preventDefault();
+        const name = opts[state.pickerI];
+        state.projectSort =
+          PROJECT_SORTS[
+            (PROJECT_SORTS.indexOf(state.projectSort) + 1) % PROJECT_SORTS.length
+          ];
+        state.pickerI = Math.max(0, pickerOptions().indexOf(name));
         render();
       }
       return;

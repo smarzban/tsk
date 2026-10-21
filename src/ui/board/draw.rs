@@ -2125,9 +2125,18 @@ fn nav_paint(model: &BoardModel) -> NavPaint {
         slot2_label,
         slot2_project: model.selected_project().is_some() || model.focus_is_archived(),
         chip,
-        layout: (!model.projects_overview()).then(|| render::LayoutPaint {
-            group: model.layout().group.word(),
-            sort: model.layout().sort.word(),
+        layout: Some(if model.projects_overview() {
+            render::LayoutPaint {
+                group: None,
+                sort: model.project_sort().word(),
+                default_sort: crate::ui::queue::ProjectSort::default().word(),
+            }
+        } else {
+            render::LayoutPaint {
+                group: Some(model.layout().group.word()),
+                sort: model.layout().sort.word(),
+                default_sort: crate::ui::queue::SortBy::default().word(),
+            }
         }),
     }
 }
@@ -2301,6 +2310,7 @@ impl OverlayPayloads {
             .map(|tab| render::PickerTabsPaint::Project {
                 archived_active: tab == PickerTab::Archived,
                 archived_count: model.archived_project_options().len(),
+                sort: model.project_sort().label(),
             });
         Self {
             help_lines,

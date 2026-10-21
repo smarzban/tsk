@@ -398,8 +398,9 @@ fn fixture_model_on_tab<'a>(
                 optional: active == NavTab::Desk,
             }),
             layout: Some(LayoutPaint {
-                group: "none",
+                group: Some("none"),
                 sort: "recent",
+                default_sort: "recent",
             }),
         },
         surface: tsk_tui::ui::render::BoardSurface::Desk,
@@ -5827,7 +5828,9 @@ fn archived_tab_verb_bar_advertises_ctrl_u_enter_esc() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        frame.contains("ctrl+u unarchive \u{b7} enter open \u{b7} esc close"),
+        frame.contains(
+            "ctrl+u unarchive \u{b7} enter open \u{b7} s sort: name A–Z \u{b7} esc close"
+        ),
         "the archived tab's footer reads its own verbs:\n{frame}"
     );
 }
@@ -5854,7 +5857,9 @@ fn project_picker_main_tab_advertises_archive_without_leaking_to_thread_picker()
     .expect("project picker");
     let main = board_rows(&model, 80, 24).join("\n");
     assert!(
-        main.contains("↑↓ move \u{b7} enter choose \u{b7} ctrl+f archive \u{b7} esc close"),
+        main.contains(
+            "↑↓ move \u{b7} enter choose \u{b7} s sort: name A–Z \u{b7} ctrl+f archive \u{b7} esc close"
+        ),
         "main project picker must advertise archive:\n{main}"
     );
 

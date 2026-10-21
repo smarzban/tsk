@@ -1057,27 +1057,30 @@ pub struct NavPaint {
     pub slot2_project: bool,
     /// Right-side control of the active destination.
     pub chip: Option<NavChipPaint>,
-    /// The group and sort controls, beside the chip; `None` on the projects index, which
-    /// lists projects, not tasks.
+    /// The group and sort controls, beside the chip. The projects index sorts its projects
+    /// and has no group control.
     pub layout: Option<LayoutPaint>,
 }
 
-/// The current group and sort words the header's two layout controls paint.
+/// The current group and sort words the header's layout controls paint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LayoutPaint {
-    pub group: &'static str,
+    /// `None` on the projects index, which has no group control.
+    pub group: Option<&'static str>,
     pub sort: &'static str,
+    /// The sort a fresh board (or the projects index) starts on.
+    pub default_sort: &'static str,
 }
 
 impl LayoutPaint {
     /// Ungrouped: a fresh board's grouping.
     pub fn group_is_default(&self) -> bool {
-        self.group == "none"
+        self.group.is_none_or(|group| group == "none")
     }
 
-    /// Recent order: a fresh board's sort.
+    /// A fresh board's sort.
     pub fn sort_is_default(&self) -> bool {
-        self.sort == "recent"
+        self.sort == self.default_sort
     }
 }
 
@@ -1115,6 +1118,8 @@ pub enum PickerTabsPaint {
     Project {
         archived_active: bool,
         archived_count: usize,
+        /// The project order's name, painted in the footer as `s sort: name A–Z`.
+        sort: &'static str,
     },
     /// A two-tab list picker: `threads` first, then `second` (the project Filter / View
     /// picker's `@assignees`).
@@ -2999,51 +3004,58 @@ const PALETTE_FOOTER: &[VerbEntry<'static>] = &[
     },
 ];
 
-/// Legend footer for the project-scope card.
+/// Legend footer for the project-scope card, with `s` naming the current order (`sort`).
+/// A narrow card sheds `↑↓ move`, then the sort, then `enter choose`, keeping the seat that
+/// is not guessable (`ctrl+f archive`) beside the way out.
 /// AC-40: the picker's archived tab has its own verbs. `ctrl+f` still unarchives, it is
 /// simply not advertised beside the chord that reads as the undo of filing.
-const ARCHIVED_TAB_FOOTER: &[VerbEntry<'static>] = &[
-    VerbEntry {
-        key: "ctrl+u",
-        label: "unarchive",
-        shed: 0,
-    },
-    VerbEntry {
-        key: "enter",
-        label: "open",
-        shed: 1,
-    },
-    VerbEntry {
-        key: "esc",
-        label: "close",
-        shed: 0,
-    },
-];
-
-/// A narrow card sheds `↑↓ move`, then `enter choose`, keeping the seat that is not
-/// guessable (`ctrl+f archive`) beside the way out.
-const PROJECT_PICKER_FOOTER: &[VerbEntry<'static>] = &[
-    VerbEntry {
-        key: "↑↓",
-        label: "move",
+fn project_picker_footer(archived_tab: bool, sort: &str) -> Vec<VerbEntry<'_>> {
+    let sort = VerbEntry {
+        key: "s",
+        label: sort,
         shed: 2,
-    },
-    VerbEntry {
-        key: "enter",
-        label: "choose",
-        shed: 1,
-    },
-    VerbEntry {
-        key: "ctrl+f",
-        label: "archive",
-        shed: 0,
-    },
-    VerbEntry {
+    };
+    let esc = VerbEntry {
         key: "esc",
         label: "close",
         shed: 0,
-    },
-];
+    };
+    if archived_tab {
+        return vec![
+            VerbEntry {
+                key: "ctrl+u",
+                label: "unarchive",
+                shed: 0,
+            },
+            VerbEntry {
+                key: "enter",
+                label: "open",
+                shed: 1,
+            },
+            sort,
+            esc,
+        ];
+    }
+    vec![
+        VerbEntry {
+            key: "↑↓",
+            label: "move",
+            shed: 3,
+        },
+        VerbEntry {
+            key: "enter",
+            label: "choose",
+            shed: 1,
+        },
+        sort,
+        VerbEntry {
+            key: "ctrl+f",
+            label: "archive",
+            shed: 0,
+        },
+        esc,
+    ]
+}
 
 /// Every tabbed filter / view picker's legend: `tab` (or `←` / `→`) switches tabs. A narrow
 /// card keeps that seat, which is not guessable, beside the way out.
@@ -4998,6 +5010,28 @@ fn paint_scope_dropdown(
     };
     let above = scroll > 0;
     let below = scroll + rows < options.len();
+    let sort_label;
+    let project_footer;
+    let legend = match (legend, tabs) {
+        (Some(legend), _) => legend,
+        // Every tabbed filter and view picker takes the same keys, so one legend.
+        (None, Some(PickerTabsPaint::Filter { .. } | PickerTabsPaint::DeskFilter { .. })) => {
+            FILTER_PICKER_FOOTER
+        }
+        (
+            None,
+            Some(PickerTabsPaint::Project {
+                archived_active,
+                sort,
+                ..
+            }),
+        ) => {
+            sort_label = format!("sort: {sort}");
+            project_footer = project_picker_footer(archived_active, &sort_label);
+            &project_footer
+        }
+        (None, None) => SCOPE_FOOTER,
+    };
     let default_title = "project";
     let base_title = title_override.unwrap_or(default_title);
     let title = match query {
@@ -5015,7 +5049,16 @@ fn paint_scope_dropdown(
         ModalCardSpec {
             title: &title,
             content_rows: (rows + tabs_rows + usize::from(tabs.is_some())) as u16,
-            min_content_width: if title_override.is_some() {
+            // The project picker widens to hold its whole footer, sort included, while the
+            // frame has room; a narrower frame sheds footer entries instead.
+            min_content_width: if matches!(tabs, Some(PickerTabsPaint::Project { .. })) {
+                let cells: usize = legend
+                    .iter()
+                    .map(|entry| display_width(entry.key) + 1 + display_width(entry.label))
+                    .sum::<usize>()
+                    + 3 * legend.len().saturating_sub(1);
+                cells.min(u16::MAX as usize) as u16
+            } else if title_override.is_some() {
                 options
                     .iter()
                     .map(|option| display_width(option) + 2)
@@ -5032,18 +5075,7 @@ fn paint_scope_dropdown(
             } else {
                 0
             },
-            legend: legend.unwrap_or(match tabs {
-                // Every tabbed filter and view picker takes the same keys, so one legend.
-                Some(PickerTabsPaint::Filter { .. } | PickerTabsPaint::DeskFilter { .. }) => {
-                    FILTER_PICKER_FOOTER
-                }
-                Some(PickerTabsPaint::Project {
-                    archived_active: true,
-                    ..
-                }) => ARCHIVED_TAB_FOOTER,
-                Some(_) => PROJECT_PICKER_FOOTER,
-                None => SCOPE_FOOTER,
-            }),
+            legend,
             dismiss: None,
             legend_hits: None,
         },
@@ -5073,6 +5105,7 @@ fn paint_scope_dropdown(
             PickerTabsPaint::Project {
                 archived_active,
                 archived_count,
+                ..
             } => vec![
                 (
                     " projects ".to_string(),
@@ -7125,10 +7158,10 @@ fn header_controls(
         } else {
             ("group: ", "sort: ")
         };
-        if idle || !layout.group_is_default() {
+        if let Some(word) = layout.group.filter(|_| idle || !layout.group_is_default()) {
             controls.push((
                 QueueHitTarget::NavGroup,
-                format!(" {group}{} \u{25be} ", layout.group),
+                format!(" {group}{word} \u{25be} "),
             ));
         }
         if idle || !layout.sort_is_default() {

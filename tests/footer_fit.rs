@@ -141,6 +141,7 @@ fn card_legends() -> Vec<(&'static str, Vec<Entry>)> {
             vec![
                 entry("↑↓", "move", false),
                 entry("enter", "choose", false),
+                entry("s", "sort: name A–Z", false),
                 entry("ctrl+f", "archive", true),
                 entry("esc", "close", true),
             ],
@@ -150,6 +151,7 @@ fn card_legends() -> Vec<(&'static str, Vec<Entry>)> {
             vec![
                 entry("ctrl+u", "unarchive", true),
                 entry("enter", "open", false),
+                entry("s", "sort: name A–Z", false),
                 entry("esc", "close", true),
             ],
         ),

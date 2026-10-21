@@ -1864,9 +1864,16 @@ fn bulk_start_preserves_per_task_eligibility_and_toggle_verbs_are_all_or_nothing
     assert_eq!(domain.get(open).expect("open").status, HumanStatus::Started);
     assert_eq!(
         domain.get(blocked).expect("blocked").status,
-        HumanStatus::Blocked,
-        "bulk start skips blocked tasks"
+        HumanStatus::Started,
+        "bulk start starts blocked tasks too"
     );
+    domain
+        .set_status(open, HumanStatus::Open)
+        .expect("back to open");
+    domain
+        .set_status(blocked, HumanStatus::Blocked)
+        .expect("back to blocked");
+    model.sync_from_domain(&domain);
 
     mark_tasks(&mut domain, &mut model, &[open, blocked]);
     apply_intent(&mut domain, &mut model, BoardIntent::ToggleBlock, None)
@@ -2653,7 +2660,7 @@ fn space_on_done_is_silent_noop() {
 }
 
 #[test]
-fn space_on_doing_is_silent_noop() {
+fn ctrl_s_on_doing_changes_nothing_and_says_so() {
     let (mut domain, mut model, id) = board_with_task("already going", HumanStatus::Started);
     let before = domain.get(id).expect("task").clone();
 
@@ -2663,7 +2670,7 @@ fn space_on_doing_is_silent_noop() {
     let after = domain.get(id).expect("task");
     assert_eq!(after.status, before.status);
     assert_eq!(after.revision, before.revision);
-    assert_eq!(model.message(), None, "started primary stays silent");
+    assert_eq!(model.message(), Some("this task is already started"));
 }
 
 #[test]

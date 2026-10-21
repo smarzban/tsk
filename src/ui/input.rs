@@ -478,6 +478,9 @@ pub enum BoardIntent {
     /// Picker `Tab` / `←` / `→`: flip the project selector between its main and
     /// archived tabs. Reducer lands in.
     ProjectPickerSwitchTab,
+    /// Picker bare `s`: step both project lists to the next order (name A–Z, name Z–A, newest
+    /// first, oldest first).
+    ProjectPickerCycleSort,
     /// Launch card: unarchive the archived project the default pointed at.
     LaunchUnarchive,
     /// Launch card: keep the project archived; quick-add goes to the desk this session.
@@ -1404,6 +1407,12 @@ fn help_bindings() -> Vec<HelpBinding> {
             "ctrl+u (picker)",
             "unarchive project",
             "restore",
+        ),
+        help_binding(
+            HelpGroup::PickersEditing,
+            "s (project picker)",
+            "next project order",
+            "sort projects name newest oldest",
         ),
         help_binding(
             HelpGroup::PickersEditing,
@@ -2463,6 +2472,7 @@ pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction>
         | BoardIntent::ToggleArchivedGroup
         | BoardIntent::ToggleInboxGroup
         | BoardIntent::ProjectPickerSwitchTab
+        | BoardIntent::ProjectPickerCycleSort
         | BoardIntent::SelectPickerTab(_)
         | BoardIntent::LaunchUnarchive
         | BoardIntent::LaunchKeepArchived
@@ -2779,6 +2789,7 @@ fn map_project_picker(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Char('j') | KeyCode::Down => Some(BoardIntent::ProjectPickerNext),
         KeyCode::Char('k') | KeyCode::Up => Some(BoardIntent::ProjectPickerPrev),
         KeyCode::Tab | KeyCode::Left | KeyCode::Right => Some(BoardIntent::ProjectPickerSwitchTab),
+        KeyCode::Char('s') => Some(BoardIntent::ProjectPickerCycleSort),
         _ => None,
     }
 }

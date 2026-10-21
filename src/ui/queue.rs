@@ -3,6 +3,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
+use std::time::SystemTime;
 
 use uuid::Uuid;
 
@@ -315,6 +316,116 @@ impl SortBy {
     pub fn from_word(word: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|sort| sort.word() == word)
     }
+}
+
+/// The order of the project lists: the project picker and the Projects view. Session-only,
+/// never written to `config.toml`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProjectSort {
+    /// By project name, case-insensitive; ties by path.
+    #[default]
+    NameAsc,
+    NameDesc,
+    /// By the project's earliest task, newest project first.
+    Newest,
+    Oldest,
+}
+
+impl ProjectSort {
+    pub const ALL: [ProjectSort; 4] = [
+        ProjectSort::NameAsc,
+        ProjectSort::NameDesc,
+        ProjectSort::Newest,
+        ProjectSort::Oldest,
+    ];
+
+    /// The picker's and the picker footer's name for the order.
+    pub fn label(self) -> &'static str {
+        match self {
+            ProjectSort::NameAsc => "name A–Z",
+            ProjectSort::NameDesc => "name Z–A",
+            ProjectSort::Newest => "newest first",
+            ProjectSort::Oldest => "oldest first",
+        }
+    }
+
+    /// The Projects view header's word (`sort: name ▾`).
+    pub fn word(self) -> &'static str {
+        match self {
+            ProjectSort::NameAsc => "name",
+            ProjectSort::NameDesc => "name Z–A",
+            ProjectSort::Newest => "newest",
+            ProjectSort::Oldest => "oldest",
+        }
+    }
+
+    /// The order `s` in the project picker steps to.
+    pub fn next(self) -> Self {
+        let at = Self::ALL.iter().position(|sort| *sort == self).unwrap_or(0);
+        Self::ALL[(at + 1) % Self::ALL.len()]
+    }
+}
+
+/// Put `items` in `sort` order, reading each item's project path with `path_of`. A project's
+/// age is its earliest task's creation: tsk keeps no project date. A project with no task
+/// yet (the current repository, before its first capture) counts as the newest.
+pub fn sort_projects<T: Clone>(
+    items: &mut [T],
+    path_of: impl Fn(&T) -> String,
+    tasks: &[Task],
+    sort: ProjectSort,
+) {
+    let identities = PathIdentityCache::default();
+    // Earliest task per stored spelling first, so aliases are matched once per spelling.
+    let mut earliest: HashMap<&str, SystemTime> = HashMap::new();
+    for task in tasks.iter().filter(|task| !task.soft_deleted) {
+        if let TaskScope::Project { path } = &task.scope {
+            earliest
+                .entry(path.as_str())
+                .and_modify(|at| *at = (*at).min(task.created_at))
+                .or_insert(task.created_at);
+        }
+    }
+    let mut keyed: Vec<(String, String, Option<SystemTime>, usize)> = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let path = path_of(item);
+            let first = earliest
+                .iter()
+                .filter(|(spelling, _)| identities.equivalent(spelling, &path))
+                .map(|(_, at)| *at)
+                .min();
+            (short_project_name(&path).to_lowercase(), path, first, index)
+        })
+        .collect();
+    keyed.sort_by(|a, b| {
+        let by_name = || a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1));
+        match sort {
+            ProjectSort::NameAsc => by_name(),
+            ProjectSort::NameDesc => by_name().reverse(),
+            // `None` (no task yet) is the newest: it sorts after every time, then reverses.
+            ProjectSort::Newest => match (a.2, b.2) {
+                (None, None) => Ordering::Equal,
+                (None, Some(_)) => Ordering::Less,
+                (Some(_), None) => Ordering::Greater,
+                (Some(a), Some(b)) => b.cmp(&a),
+            }
+            .then_with(by_name),
+            ProjectSort::Oldest => match (a.2, b.2) {
+                (None, None) => Ordering::Equal,
+                (None, Some(_)) => Ordering::Greater,
+                (Some(_), None) => Ordering::Less,
+                (Some(a), Some(b)) => a.cmp(&b),
+            }
+            .then_with(by_name),
+        }
+    });
+    let sorted: Vec<T> = keyed
+        .into_iter()
+        .map(|(_, _, _, index)| items[index].clone())
+        .collect();
+    items.clone_from_slice(&sorted);
 }
 
 /// One sub-group of a status section: a dim, foldable sub-header over its rows.

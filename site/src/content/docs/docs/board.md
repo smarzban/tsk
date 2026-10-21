@@ -42,6 +42,21 @@ The Projects view counts each project's work:
 
 Archived tasks and archived projects are left out. A dim `·` means zero, and `here` marks the project the board opened in. At 100 columns or wider, the view also lists threads. At 110 it can show a project's board beside it ([Wide layout](#wide-layout)).
 
+### Sort the projects
+
+The project picker and the Projects view share one order:
+
+| Order | Lists projects |
+| --- | --- |
+| **name A–Z** | By name, ignoring case. The default |
+| **name Z–A** | By name, reversed |
+| **newest first** | By when their first task was added, newest first |
+| **oldest first** | The same, oldest first |
+
+- In the project picker, `s` steps to the next order, and the footer names it: `s sort: name A–Z`. The desk and `here` stay on top, and the archived tab uses the same order.
+- On the Projects view, `s` or the `sort: name ▾` control opens the orders. The `here` project stays first.
+- The choice lasts for this session only.
+
 ## Search
 
 Press `/` to filter the rows the current tab shows. Typing filters at once: empty sections disappear, and section counts show only matches.
@@ -163,7 +178,7 @@ A blocked task's peek shows the block instead of notes: who it waits on, the why
 With tasks marked, these act on the whole set as one save and one undo step: status changes, delete, archive, assignee, base, after, and waiting on. `Enter`, editing, task-page actions, and relaunch stay on the cursor.
 
 - Starting a set that would launch agents opens [one card first](/docs/dispatch/#start-a-marked-set).
-- Starting moves only open and ready tasks. It skips marked done tasks, and the status row counts them.
+- Starting moves only open, ready, and blocked tasks. It skips marked done tasks, and the status row counts them.
 - Block and review also skip marked done tasks, and the status row counts them. The rest move together: if every one already has that status, all return to ready. Otherwise all move to it, through one card.
 
 Marks last for this session only. Any action, `Esc`, or a view change clears them: fold, group, sort, filter, tab, project, or done drawer. Removing the last mark leaves the mode on.
@@ -177,7 +192,7 @@ Marks last for this session only. Any action, `Esc`, or a view change clears the
 | Block | **why** it stops · **on**: you, another task, or other text · **needs**: what would unblock it |
 | Review | **done**: what was done · **check**: one thing to verify per line · **next** · **on**: you, an agent profile, or other text |
 
-A block or review on you lands in NEEDS YOU. One on another task, an agent, or something else goes to IN MOTION. Leaving `blocked` closes the block. Card keys are under [Keys](/docs/keys/#cards).
+A block or review on you lands in NEEDS YOU. One on another task, an agent, or something else goes to IN MOTION. Leaving `blocked` closes the block: `ctrl+b` returns the task to ready, and `ctrl+s` starts it. One `ctrl+u` reopens the block. Card keys are under [Keys](/docs/keys/#cards).
 
 To hand an open block or review to someone else later, change who it [waits on](/docs/task-page/#waiting-on) from the task page or the palette. The block or round keeps everything else.
 
@@ -320,6 +335,7 @@ Press `:` on the board or a task page and type to find an action. Matching takes
 | --- | --- |
 | Add task, undo, show / hide done drawer, show all keys, quit | Always |
 | Group by…, sort by…, fold / unfold group, hide agent messages | A task list has focus |
+| Sort by… | The Projects view has focus |
 | Set open/ready/started/blocked/review, edit notes, move to project / desk, delete task | A task is selected |
 | Set assignee, set base, set after (wait for)… | A task is selected |
 | Set waiting on… | A task with an open block or review is selected or marked |
