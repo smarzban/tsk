@@ -629,6 +629,10 @@ pub struct DomainState {
     /// kept with a failed save so Retry still launches them.
     #[serde(skip)]
     pub(super) pending_launches: Vec<(Uuid, u64)>,
+    /// The store's restore token when this state was loaded; `None` for a state never loaded
+    /// from a store. Transient: a merge-save refuses a state loaded before a whole-store restore.
+    #[serde(skip)]
+    restore_token: Option<String>,
 }
 
 impl Default for DomainState {
@@ -651,11 +655,21 @@ impl DomainState {
             undo_stack: Vec::new(),
             completed: Vec::new(),
             pending_launches: Vec::new(),
+            restore_token: None,
         }
     }
 
     pub fn format_version(&self) -> u32 {
         self.format_version
+    }
+
+    /// The store's restore token when this state was loaded (see `TaskStore::load`).
+    pub(crate) fn restore_token(&self) -> Option<&str> {
+        self.restore_token.as_deref()
+    }
+
+    pub(crate) fn set_restore_token(&mut self, token: String) {
+        self.restore_token = Some(token);
     }
 
     /// Inspect the top undo entry without consuming it.
@@ -2690,6 +2704,20 @@ impl DomainState {
     }
 
     /// Remove the given tasks and every undo entry targeting one of them.
+    /// Take a saved copy's trash purge: drop `trashed`, and take `saved`'s copy of every task
+    /// and its undo stack, so a link the purge unlinked keeps the revision that went to disk.
+    pub(crate) fn adopt_trash_purge(&mut self, saved: &DomainState, trashed: &BTreeSet<Uuid>) {
+        self.tasks.retain(|task| !trashed.contains(&task.id));
+        for task in &mut self.tasks {
+            if let Some(persisted) = saved.get(task.id) {
+                if persisted.revision != task.revision {
+                    *task = persisted.clone();
+                }
+            }
+        }
+        self.undo_stack = saved.undo_stack.clone();
+    }
+
     pub(crate) fn remove_tasks(&mut self, ids: &BTreeSet<Uuid>) {
         self.unlink_removed(ids);
         self.tasks.retain(|task| !ids.contains(&task.id));

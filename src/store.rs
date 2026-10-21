@@ -30,6 +30,11 @@ const LOCK_FILE: &str = "tsk.json.lock";
 /// restore can refuse while one is open (its next save would write back tasks the restored
 /// document no longer holds).
 const BOARD_LOCK_FILE: &str = "board.lock";
+/// A fresh random token each whole-store restore writes before its swap. A state remembers
+/// the token it loaded with, and a merge-save refuses one loaded before a restore: its
+/// snapshot would write back every task the restored document no longer holds. Absent until
+/// the first restore. A sidecar, not a document field, so `tsk.json` keeps its shape.
+const RESTORE_TOKEN_FILE: &str = "tsk.json.restore-token";
 /// Prefix of the copy a restore keeps of the document it replaced.
 const PRE_RESTORE_PREFIX: &str = "tsk.json.pre-restore-";
 /// Trash file for tasks removed from the live store, rewritten atomically on
@@ -659,6 +664,12 @@ impl TaskStore {
         let _guard = self.lock_exclusive()?;
         let disk = self.load_unlocked()?;
         check_format_version(disk.format_version())?;
+        if local
+            .restore_token()
+            .is_some_and(|token| Some(token) != disk.restore_token())
+        {
+            return Err(StoreError::Restored);
+        }
         local
             .merge_for_save(&disk)
             .map_err(|message| StoreError::Io(io::Error::other(message)))?;
@@ -671,6 +682,8 @@ impl TaskStore {
         // state too, along with any undo entry targeting it: otherwise a stale undo
         // would resurrect it (its number was cleared by the persisted sync) under a
         // fresh task number.
+        // The purge already unlinked `after` lists on the saved copy: take those tasks rather
+        // than unlinking again under fresh revisions the disk never saw.
         let trashed: std::collections::BTreeSet<Uuid> = local
             .tasks()
             .iter()
@@ -678,7 +691,7 @@ impl TaskStore {
             .filter(|id| durable.get(*id).is_none())
             .collect();
         if !trashed.is_empty() {
-            local.remove_tasks(&trashed);
+            local.adopt_trash_purge(&durable, &trashed);
         }
         local.sync_numbers_from_persisted(&durable);
         local.clear_merge_bases();
@@ -699,6 +712,26 @@ impl TaskStore {
     ) -> Result<DomainState, StoreError> {
         self.sweep_orphan_temps();
         self.tighten_state_files();
+        let token = self.restore_token()?;
+        let mut state = self.load_document(supported, migrations)?;
+        state.set_restore_token(token);
+        Ok(state)
+    }
+
+    /// The restore token on disk, empty before the first restore.
+    fn restore_token(&self) -> Result<String, StoreError> {
+        match fs::read_to_string(self.path.join(RESTORE_TOKEN_FILE)) {
+            Ok(token) => Ok(token.trim().to_string()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn load_document(
+        &self,
+        supported: u32,
+        migrations: fn(serde_json::Value, u32) -> Result<serde_json::Value, StoreError>,
+    ) -> Result<DomainState, StoreError> {
         let file = self.state_file();
         if !file.exists() {
             return Ok(DomainState::new());
@@ -896,21 +929,34 @@ impl TaskStore {
         } else {
             None
         };
+        // Before the swap: a crash between the two only makes a stale writer run again, while
+        // the reverse order could leave a restored store any stale snapshot still saves over.
+        self.write_private_atomic(
+            &self.path.join(RESTORE_TOKEN_FILE),
+            Uuid::new_v4().to_string().as_bytes(),
+        )
+        .map_err(|e| RestoreError::Store(e.into()))?;
+        self.write_private_atomic(&file, document)
+            .map_err(|e| RestoreError::Store(e.into()))?;
+        prune_pre_restore(&self.path);
+        Ok(kept)
+    }
+
+    /// Replace `target` with `content`: private temp in the state dir, sync, replace, dir sync.
+    fn write_private_atomic(&self, target: &Path, content: &[u8]) -> io::Result<()> {
         let tmp = self.unique_tmp_path();
         let write_result = (|| -> io::Result<()> {
             let mut temp_file = fsperm::create_private_file(&tmp)?;
-            temp_file.write_all(document)?;
+            temp_file.write_all(content)?;
             temp_file.sync_all()?;
             drop(temp_file);
-            fsperm::replace_file(&tmp, &file)?;
+            fsperm::replace_file(&tmp, target)?;
             StdFilesystem.sync_directory(&self.path)
         })();
-        if let Err(error) = write_result {
+        if write_result.is_err() {
             let _ = fs::remove_file(&tmp);
-            return Err(RestoreError::Store(error.into()));
         }
-        prune_pre_restore(&self.path);
-        Ok(kept)
+        write_result
     }
 
     /// Move soft-deleted tasks undo can no longer reach (or that aged past the
@@ -1120,6 +1166,7 @@ fn is_private_state_name(name: &str) -> bool {
         || name == LOCK_FILE
         || name == TRASH_FILE
         || name == BOARD_LOCK_FILE
+        || name == RESTORE_TOKEN_FILE
         || name.starts_with(PRE_RESTORE_PREFIX)
         || crate::backup::is_private_state_name(name)
         || name == "update.json"
@@ -1443,7 +1490,12 @@ fn retain_last_good_with(
 pub enum StoreError {
     Io(io::Error),
     Json(serde_json::Error),
-    UnsupportedFormat { found: u32, supported: u32 },
+    UnsupportedFormat {
+        found: u32,
+        supported: u32,
+    },
+    /// The store was restored from a backup after this state was loaded; nothing was saved.
+    Restored,
 }
 
 impl std::fmt::Display for StoreError {
@@ -1455,6 +1507,10 @@ impl std::fmt::Display for StoreError {
                 f,
                 "store format {found} is unsupported by this tsk (expected {supported})"
             ),
+            StoreError::Restored => write!(
+                f,
+                "the store was restored from a backup while this command ran; nothing it changed was saved"
+            ),
         }
     }
 }
@@ -1464,7 +1520,7 @@ impl std::error::Error for StoreError {
         match self {
             StoreError::Io(e) => Some(e),
             StoreError::Json(e) => Some(e),
-            StoreError::UnsupportedFormat { .. } => None,
+            StoreError::UnsupportedFormat { .. } | StoreError::Restored => None,
         }
     }
 }
@@ -3801,11 +3857,11 @@ mod tests {
         assert_eq!(loaded.format_version(), STORE_FORMAT_VERSION);
     }
 
-    /// What a board that stays open across a restore does: its next save merges the disk and
-    /// writes back every task it holds that the restored document lacks. Restore therefore
-    /// refuses while a board holds `board.lock`.
+    /// A board that stays open across a restore holds every task the restored document lacks.
+    /// Its next save is refused, so every save after it would land in Save Recovery. Restore
+    /// therefore refuses while a board holds `board.lock`.
     #[test]
-    fn an_open_board_would_resurrect_tasks_so_restore_refuses_while_one_is_open() {
+    fn an_open_board_would_lose_its_saves_so_restore_refuses_while_one_is_open() {
         let dir = temp_dir("restore-board-open");
         let _guard = TempDirGuard(dir.clone());
         saved_with_titles(&dir, &["old"]);
@@ -3829,11 +3885,11 @@ mod tests {
                 None,
             )
             .expect("create");
-        store.reload_merge_save(&mut board).expect("board save");
-        assert!(
-            titles(&store.load().expect("load")).contains(&"created after the backup".to_string()),
-            "the open board wrote back a task the restore removed"
-        );
+        assert!(matches!(
+            store.reload_merge_save(&mut board),
+            Err(StoreError::Restored)
+        ));
+        assert_eq!(titles(&store.load().expect("load")), ["old"]);
 
         // So restore refuses while any board or quick capture is open, and works once it quits.
         let presence = store.hold_board_presence().expect("board presence");
@@ -3856,6 +3912,92 @@ mod tests {
             .restore_document(&backup, SystemTime::now())
             .expect("restores once every board quit");
         assert_eq!(titles(&store.load().expect("load")), ["old"]);
+    }
+
+    /// A writer that loaded before a restore saves after it (the CLI's load, slow work, save).
+    /// Its merge would write back every task the restored document lacks and the old task
+    /// counter, so the save refuses and leaves the restored store as it is.
+    #[test]
+    fn a_snapshot_loaded_before_a_restore_cannot_save_over_it() {
+        let dir = temp_dir("restore-stale-snapshot");
+        let _guard = TempDirGuard(dir.clone());
+        saved_with_titles(&dir, &["old"]);
+        let backup = fs::read(dir.join(STATE_FILE)).expect("backup");
+        saved_with_titles(&dir, &["created after the backup"]);
+        let store = TaskStore::new(&dir);
+
+        let mut stale = store.load().expect("load before the restore");
+        let first = stale.tasks()[0].id;
+        stale.complete(first).expect("a change of its own");
+        store
+            .restore_document(&backup, SystemTime::now())
+            .expect("restore");
+        let restored = fs::read(dir.join(STATE_FILE)).expect("restored");
+        assert!(matches!(
+            store.reload_merge_save(&mut stale),
+            Err(StoreError::Restored)
+        ));
+        assert_eq!(fs::read(dir.join(STATE_FILE)).expect("live"), restored);
+
+        // A fresh load after the restore saves.
+        saved_with_titles(&dir, &["after the restore"]);
+        assert_eq!(
+            titles(&store.load().expect("load")),
+            ["after the restore", "old"]
+        );
+        store
+            .restore_document(&backup, SystemTime::now())
+            .expect("a second restore");
+        let mut stale = store.load().expect("load");
+        store
+            .restore_document(&backup, SystemTime::now())
+            .expect("a third restore");
+        assert!(
+            matches!(
+                store.reload_merge_save(&mut stale),
+                Err(StoreError::Restored)
+            ),
+            "every restore gives the store a new token"
+        );
+    }
+
+    /// Trash purge unlinks a leftover `after` link once, on the copy that goes to disk. The
+    /// caller takes that copy, so its next edit of the task saves rather than seeing the task
+    /// as changed during save.
+    #[test]
+    fn a_trash_purge_unlinks_once_so_the_next_edit_saves() {
+        let dir = temp_dir("trash-purge-unlink");
+        let _guard = TempDirGuard(dir.clone());
+        let store = TaskStore::new(&dir);
+        let seeded = saved_with_titles(&dir, &["one", "two", "three"]);
+        let [one, two, three] = [0, 1, 2].map(|index| seeded.tasks()[index].id);
+
+        // A writer that never saw the delete links T3 to T1 after it. Its link is a newer undo
+        // entry than the delete, so the same save moves T1 to trash and drops the link.
+        let mut local = store.load().expect("load");
+        let mut deleter = store.load().expect("load");
+        deleter.soft_delete(one).expect("delete");
+        store.reload_merge_save(&mut deleter).expect("save delete");
+        local.set_after(three, &[1]).expect("link");
+        store.reload_merge_save(&mut local).expect("purge save");
+        let disk = store.load().expect("disk");
+        assert!(disk.get(one).is_none(), "T1 moved to trash");
+        assert!(local.get(one).is_none());
+        let saved = disk.get(three).expect("T3");
+        assert!(saved.after.is_empty());
+        assert_eq!(local.get(three).expect("T3").revision, saved.revision);
+        assert!(disk.get(two).is_some());
+
+        local
+            .edit(three, "three, edited", None, TaskScope::Global, None)
+            .expect("an edit of the unlinked task");
+        store
+            .reload_merge_save(&mut local)
+            .expect("nobody else changed T3");
+        assert_eq!(
+            store.load().expect("load").get(three).expect("T3").title,
+            "three, edited"
+        );
     }
 
     #[test]

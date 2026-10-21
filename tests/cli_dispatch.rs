@@ -30,6 +30,8 @@ fn system_host() -> tsk_tui::dispatch::SystemDispatchHost {
 struct FakeHost {
     inspection: Option<CleanupInspection>,
     removed: usize,
+    /// A store and document a whole-store restore swaps in while the agent launches.
+    restore_during_launch: Option<(PathBuf, Vec<u8>)>,
 }
 
 impl DispatchHost for FakeHost {
@@ -99,6 +101,11 @@ impl DispatchHost for FakeHost {
     }
 
     fn run_in_pane(&mut self, _pane_id: &str, _command: &str) -> Result<(), String> {
+        if let Some((dir, document)) = self.restore_during_launch.take() {
+            TaskStore::new(dir)
+                .restore_document(&document, std::time::SystemTime::now())
+                .expect("restore while the agent launches");
+        }
         Ok(())
     }
 
@@ -189,6 +196,79 @@ fn successful_cli_dispatch_persists_record_and_started_together() {
         relaunched.record.base_ref.as_deref(),
         Some("refs/heads/main")
     );
+    fs::remove_dir_all(dir).expect("cleanup");
+}
+
+/// A restore that lands while `tsk dispatch` launches replaces the store the command loaded.
+/// Its save must refuse rather than write back the task the restore removed.
+#[test]
+fn a_restore_during_a_dispatch_refuses_its_save_and_keeps_the_restored_store() {
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cli-dispatch-restore-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&dir).expect("mkdir");
+    fs::write(
+        dir.join("config.toml"),
+        "[agent.implementer]\ncommand = [\"runner\", \"{prompt}\"]\n",
+    )
+    .expect("profiles");
+    let store = TaskStore::new(&dir);
+    let mut state = DomainState::new();
+    state
+        .create(
+            "backed up",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("task");
+    store.save(&state).expect("save");
+    let backup = fs::read(dir.join("tsk.json")).expect("backup");
+    let mut state = store.load().expect("load");
+    state
+        .create_assigned(
+            "created after the backup",
+            None,
+            TaskScope::Project {
+                path: "/repos/app".into(),
+            },
+            ProvenanceOrigin::Manual,
+            None,
+            Some("implementer".into()),
+        )
+        .expect("task");
+    store.reload_merge_save(&mut state).expect("save");
+
+    let mut host = FakeHost {
+        restore_during_launch: Some((dir.clone(), backup.clone())),
+        ..FakeHost::default()
+    };
+    let error = dispatch::run_with_host(
+        TaskAddress::Number(2),
+        false,
+        Some(dir.clone()),
+        true,
+        &mut host,
+    )
+    .expect_err("the restore replaced the store dispatch loaded");
+    assert_eq!(error.code(), "store-error");
+    let message = error.to_string();
+    assert!(
+        message.starts_with("the store was restored from a backup while this command ran"),
+        "{message}"
+    );
+    assert!(message.ends_with("; launch undone"), "{message}");
+    let restored = store.load().expect("load");
+    let titles: Vec<&str> = restored
+        .tasks()
+        .iter()
+        .map(|task| task.title.as_str())
+        .collect();
+    assert_eq!(titles, ["backed up"], "the dispatch wrote nothing back");
+    assert_eq!(restored.next_task_number, 3, "numbering stays past T2");
     fs::remove_dir_all(dir).expect("cleanup");
 }
 
