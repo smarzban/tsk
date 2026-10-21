@@ -208,7 +208,7 @@ fn rest_has_char(chars: &[char], from: usize, needle: char) -> bool {
 
 fn can_open_underscore(chars: &[char], i: usize) -> bool {
     let left_ok = i == 0 || !chars[i - 1].is_alphanumeric();
-    left_ok && rest_has_char(chars, i + 1, '_')
+    left_ok && (i + 1..chars.len()).any(|j| chars[j] == '_' && can_close_underscore(chars, j))
 }
 
 fn can_close_underscore(chars: &[char], i: usize) -> bool {
@@ -354,6 +354,26 @@ mod tests {
                 "{sample}"
             );
         }
+    }
+
+    #[test]
+    fn underscore_without_a_valid_closer_stays_literal() {
+        let line = paint_md_line("_file_name and **bold** `code`", 60, style_plain());
+        let flat: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(flat, "_file_name and bold `code`");
+        assert!(!has_mod(&line, Modifier::UNDERLINED));
+        let bold = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "bold")
+            .expect("strong span");
+        assert!(bold.style.add_modifier.contains(Modifier::BOLD));
+        let code = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "`code`")
+            .expect("code span");
+        assert!(code.style.add_modifier.contains(Modifier::DIM));
     }
 
     #[test]
