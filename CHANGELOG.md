@@ -12,6 +12,8 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ## Unreleased
 
+## v0.13.0
+
 ### Breaking
 
 - Store format 6: assignees, dispatch, blocks, reviews, after, paper trail, wider undo. Older tsk refuses it; to roll back, restore the `tsk.json.v5` copy.
