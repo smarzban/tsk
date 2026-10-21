@@ -209,6 +209,16 @@ fn board_md_palette_table_matches_the_palette_catalog() {
 
     let with_step = labels(&step_selected_model());
 
+    let mut projects = BoardModel::from_tasks(Vec::new(), None);
+    apply_intent(
+        &mut DomainState::new(),
+        &mut projects,
+        BoardIntent::SelectNavTab(tsk_tui::ui::queue::NavTab::Projects),
+        None,
+    )
+    .expect("projects view");
+    let on_projects = labels(&projects);
+
     let mut documented: Vec<(String, &str)> = Vec::new();
     for row in &rows {
         let (actions, when) = (&row[0], &row[1]);
@@ -223,6 +233,7 @@ fn board_md_palette_table_matches_the_palette_catalog() {
             "Two or more tasks are marked" => &with_marks,
             "A save has failed" => &recovery,
             "A task-page step is selected" => &with_step,
+            "The Projects view has focus" => &on_projects,
             other => panic!("unknown palette condition {other:?} in board.md"),
         };
         for label in promised_labels(actions) {

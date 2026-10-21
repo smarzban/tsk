@@ -5050,11 +5050,24 @@ fn paint_scope_dropdown(
             title: &title,
             content_rows: (rows + tabs_rows + usize::from(tabs.is_some())) as u16,
             // The project picker widens to hold its whole footer, sort included, while the
-            // frame has room; a narrower frame sheds footer entries instead.
+            // frame has room; a narrower frame sheds footer entries instead. It is measured
+            // with the longest order, so `s` never resizes the card.
             min_content_width: if matches!(tabs, Some(PickerTabsPaint::Project { .. })) {
+                let widest = crate::ui::queue::ProjectSort::ALL
+                    .iter()
+                    .map(|sort| display_width(sort.label()))
+                    .max()
+                    .unwrap_or(0);
                 let cells: usize = legend
                     .iter()
-                    .map(|entry| display_width(entry.key) + 1 + display_width(entry.label))
+                    .map(|entry| {
+                        let label = if entry.key == "s" {
+                            widest + display_width("sort: ")
+                        } else {
+                            display_width(entry.label)
+                        };
+                        display_width(entry.key) + 1 + label
+                    })
                     .sum::<usize>()
                     + 3 * legend.len().saturating_sub(1);
                 cells.min(u16::MAX as usize) as u16
