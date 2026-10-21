@@ -30,7 +30,7 @@ Where tsk keeps your tasks and settings, how to configure it, and how to back it
 | `trash.jsonl` | [Deleted tasks](#deleted-tasks) |
 | `delivery.json` | Which [starter tasks](#starter-tasks) and release notes this directory has received |
 | `backup-status.json` | Each backup target's last success, last attempt, and last error |
-| `machine-id` | This directory's id, which names its folder in a backup repository |
+| `machine-id` | This directory's id, which names its folder in a backup repository. Set once, from the host name |
 | `backup-repos/` | Local clones of backup targets |
 | `update.json` | The cached [update check](#update-check) |
 | `fetch-stamps.json` | When each repository's remote was last fetched. Dispatch, the base picker, and cleanup reuse a fetch from the last 60 seconds. Safe to delete |
@@ -239,7 +239,9 @@ every = "save"             # "save" (the default) or "daily"
 
 ### What is pushed
 
-Each machine writes its own folder, `machines/<machine-id>/`:
+Each machine writes its own folder, `machines/<machine-id>/`, such as `machines/devbox-664a1c4a/`: the host name plus eight random characters. The name is set once and stays when the host is renamed. Two machines with the same host name get different folders.
+
+The folder holds:
 
 - `tsk.json`, byte for byte.
 - `config.toml`, with every value under `[agent.<name>.env]` replaced by `"<not backed up>"` and credentials removed from backup URLs. Fill the values in by hand after copying a profile over.

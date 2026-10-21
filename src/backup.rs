@@ -7,7 +7,7 @@
 //! `backup-status.json`.
 //!
 //! Layout, shared with the cross-machine sync that builds on it: a target holds
-//! `machines/<machine-id>/` with `tsk.json`, `config.toml` (agent `env` values removed), and
+//! `machines/<machine-id>/` (`<host>-<8 hex>`, or 32 hex for older ids) with `tsk.json`, `config.toml` (agent `env` values removed), and
 //! `machine.toml` (host name, tsk version), one commit per backup. The repository root is left
 //! free on purpose: the later sync (T253) puts its shared file there.
 
@@ -1654,9 +1654,7 @@ fn git_versions(state_dir: &Path, target: &Target, all: bool) -> Result<Vec<Vers
             versions.push(Version {
                 id: version_id(target, machine, commit),
                 at,
-                machine: hostname
-                    .clone()
-                    .unwrap_or_else(|| machine.chars().take(8).collect()),
+                machine: hostname.clone().unwrap_or_else(|| machine_label(machine)),
                 machine_id: machine.to_string(),
                 target: shown_location(&target.location),
                 tasks,
@@ -1763,12 +1761,16 @@ pub fn count_tasks(bytes: &[u8]) -> Option<usize> {
 /// This state directory's machine id, generated once and kept in `machine-id` (never in
 /// `tsk.json`, so a restored store does not carry another machine's id).
 pub fn machine_id(state_dir: &Path) -> io::Result<String> {
+    machine_id_with(state_dir, &hostname())
+}
+
+fn machine_id_with(state_dir: &Path, host: &str) -> io::Result<String> {
     let path = state_dir.join(MACHINE_ID_FILE);
     if let Some(id) = read_machine_id(&path) {
         return Ok(id);
     }
     fsperm::ensure_private_dir(state_dir)?;
-    let id = uuid::Uuid::new_v4().simple().to_string();
+    let id = new_machine_id(host);
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -1793,10 +1795,48 @@ fn read_machine_id(path: &Path) -> Option<String> {
     is_machine_id(&id).then_some(id)
 }
 
+/// A new machine id, `<host>-<8 random hex>`: readable in the repository, and fixed once
+/// written, so a later host rename never moves the folder. Ids written before this form (32
+/// hex) are kept as they are.
+fn new_machine_id(host: &str) -> String {
+    let mut label = String::new();
+    for c in host.chars().take(32) {
+        let c = if c.is_ascii_lowercase() || c.is_ascii_digit() {
+            c
+        } else {
+            '-'
+        };
+        if c != '-' || (!label.is_empty() && !label.ends_with('-')) {
+            label.push(c);
+        }
+    }
+    let label = label.trim_end_matches('-');
+    let label = if label.is_empty() { "machine" } else { label };
+    let random = uuid::Uuid::new_v4().simple().to_string();
+    format!("{label}-{}", &random[..8])
+}
+
 /// The shape of a machine id, and so of every `machines/<id>/` directory tsk lists: anything
 /// else in a shared repository is skipped, since its name ends up in a printed command.
+/// Lowercase letters and digits with single interior hyphens, which both id forms satisfy.
 fn is_machine_id(id: &str) -> bool {
-    (8..=64).contains(&id.len()) && id.chars().all(|c| c.is_ascii_alphanumeric())
+    (8..=64).contains(&id.len())
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && !id.starts_with('-')
+        && !id.ends_with('-')
+        && !id.contains("--")
+}
+
+/// How a version names its machine when the commit carries no host name: the readable id
+/// itself, or the first 8 characters of an old 32-hex one.
+fn machine_label(id: &str) -> String {
+    if id.contains('-') {
+        id.to_string()
+    } else {
+        id.chars().take(8).collect()
+    }
 }
 
 /// The host name's first label, lowercased, as letters, digits, and hyphens.
@@ -2235,11 +2275,87 @@ every = "daily"
         let dir = TempDir::new("machine");
         let first = machine_id(&dir.0).expect("id");
         assert_eq!(machine_id(&dir.0).expect("again"), first);
-        assert!(first.chars().all(|c| c.is_ascii_hexdigit()), "{first}");
+        assert!(is_machine_id(&first), "{first}");
         let host = hostname();
         assert!(host
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
+    }
+
+    fn is_readable_id(id: &str, host: &str) -> bool {
+        id.strip_prefix(host)
+            .and_then(|rest| rest.strip_prefix('-'))
+            .is_some_and(|random| {
+                random.len() == 8
+                    && random
+                        .chars()
+                        .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+            })
+    }
+
+    #[test]
+    fn a_new_machine_id_names_the_host_and_survives_a_rename() {
+        let dir = TempDir::new("readable-machine");
+        let first = machine_id_with(&dir.0, "devbox").expect("id");
+        assert!(is_readable_id(&first, "devbox"), "{first}");
+        assert!(is_machine_id(&first), "{first}");
+        assert_eq!(machine_id_with(&dir.0, "laptop").expect("renamed"), first);
+        let other = TempDir::new("readable-machine");
+        let second = machine_id_with(&other.0, "devbox").expect("id");
+        assert_ne!(second, first, "two machines with one host name stay apart");
+    }
+
+    #[test]
+    fn an_old_hex_machine_id_is_kept() {
+        let dir = TempDir::new("old-machine");
+        let old = "664a1c4ad56949789cfd7fad8a698b90";
+        fs::write(dir.0.join(MACHINE_ID_FILE), format!("{old}\n")).expect("write");
+        assert_eq!(machine_id_with(&dir.0, "devbox").expect("id"), old);
+    }
+
+    #[test]
+    fn any_host_name_makes_a_valid_machine_id() {
+        for (host, label) in [
+            ("my--box", "my-box"),
+            ("a---b-", "a-b"),
+            ("-x", "x"),
+            ("", "machine"),
+            ("---", "machine"),
+            (&"h".repeat(40), &"h".repeat(32)),
+        ] {
+            let id = new_machine_id(host);
+            assert!(is_machine_id(&id), "{host:?} -> {id}");
+            assert!(is_readable_id(&id, label), "{host:?} -> {id}");
+        }
+    }
+
+    #[test]
+    fn machine_ids_are_lowercase_words_joined_by_single_hyphens() {
+        for id in [
+            "664a1c4ad56949789cfd7fad8a698b90",
+            "devbox-664a1c4a",
+            "my-mac-mini-0123abcd",
+            &"a".repeat(64),
+        ] {
+            assert!(is_machine_id(id), "{id}");
+        }
+        for id in [
+            "-devbox1",
+            "devbox1-",
+            "dev--box1",
+            "Devbox-664a1c4a",
+            "../machine",
+            "dev box-1234",
+            "abc1234",
+            &"a".repeat(65),
+        ] {
+            assert!(!is_machine_id(id), "{id}");
+        }
+        assert_eq!(
+            machine_label("664a1c4ad56949789cfd7fad8a698b90"),
+            "664a1c4a"
+        );
+        assert_eq!(machine_label("devbox-664a1c4a"), "devbox-664a1c4a");
     }
 
     #[test]
@@ -2534,6 +2650,52 @@ every = "daily"
         assert!(failures.is_empty(), "{failures:?}");
         assert_eq!(versions.len(), 1, "{versions:?}");
         assert!(versions.iter().all(|v| is_machine_id(&v.machine_id)));
+    }
+
+    #[test]
+    fn a_repository_with_old_and_new_machine_folders_lists_and_restores_both() {
+        let root = TempDir::new("mixed-machines");
+        let remote = bare_repo(&root.0);
+        let state = state_with_target(&root.0, &remote, "");
+        let mine = write_store(&state, "mine");
+        run(&state, RunMode::Now, at(DAY)).expect("run");
+        let new = machine_id(&state).expect("machine");
+        assert!(new.contains('-'), "{new}");
+        // A machine still on an old 32-hex id, backing up without a host name.
+        let old = "664a1c4ad56949789cfd7fad8a698b90";
+        let work = root.0.join("work");
+        git_in(
+            &root.0,
+            &["clone", "--quiet", remote.to_str().expect("utf-8"), "work"],
+        );
+        let folder = work.join("machines").join(old);
+        fs::create_dir_all(&folder).expect("dir");
+        fs::write(folder.join("tsk.json"), "{\"tasks\":[]}").expect("file");
+        git_in(&work, &["add", "-A"]);
+        git_in(&work, &["commit", "--quiet", "-m", "tsk backup"]);
+        git_in(&work, &["push", "--quiet", "origin", "HEAD"]);
+        let (versions, failures) = list_versions(&state, true).expect("list");
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(versions.len(), 2, "{versions:?}");
+        let by_id = |id: &str| {
+            versions
+                .iter()
+                .find(|v| v.machine_id == id)
+                .unwrap_or_else(|| panic!("{id} in {versions:?}"))
+        };
+        assert_eq!(by_id(old).machine, "664a1c4a");
+        assert_eq!(read_version(by_id(old)).expect("old"), b"{\"tasks\":[]}");
+        assert_eq!(by_id(&new).machine, hostname());
+        assert_eq!(read_version(by_id(&new)).expect("new"), mine);
+        let listed = git_in(&remote, &["ls-tree", "-r", "--name-only", "HEAD"]);
+        assert!(
+            listed.contains(&format!("machines/{new}/tsk.json")),
+            "{listed}"
+        );
+        assert!(
+            listed.contains(&format!("machines/{old}/tsk.json")),
+            "{listed}"
+        );
     }
 
     #[test]
