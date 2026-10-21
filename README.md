@@ -114,13 +114,18 @@ covers them all.
 | `ctrl+s` | Start an open, ready, or blocked task |
 | `ctrl+n` | Pick a task: move it to ready |
 | `ctrl+o` | Send a task back to the open inbox |
+| `ctrl+b` | Block a task with a reason, or unblock it back to ready |
 | `ctrl+r` | Send a task to review with what was done and what to check, or back to ready |
 | `ctrl+d` | Mark the selected task done |
+| `ctrl+u` | Undo the last change |
+| `@` | Assign a task to an agent, yourself, or a person |
 | `shift+M` | Enter or leave multi-select |
 | `shift+↑` / `shift+↓` | In multi-select, mark the current task, then move |
 | `Space` or click | In multi-select, mark or unmark a task |
 | `p` | Switch projects |
 | `d` | Show or hide done tasks |
+| `/` | Search the board |
+| `:` | Open the command palette |
 | `?` | Show every shortcut |
 
 [Full keymap](https://gettsk.sh/docs/keys/) ·

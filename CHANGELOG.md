@@ -28,15 +28,17 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - `m` on the cleanup card merges the task's pull request with `gh`, then completes the task and cleans up. `[merge] method` in `config.toml` picks the method; CLI: `--merge`.
 - Block with a reason: `ctrl+b` asks why and what you need. Answer on the task page, under the row (`r`), or with `tsk reply`. Unblocking sends replies to the agent.
 - Review with checks: `ctrl+r` asks what was done and what to check. Mark checks, give feedback (`r`, `tsk reply`), then approve (`ctrl+d`) or send back (`ctrl+s`).
+- A block or review waiting on someone else moves to IN MOTION as `□` or `△` with `waiting on @name`, so NEEDS YOU holds only yours. Thanks @joops (#171).
+- A started task with a live dispatched agent shows `◉`.
 - Change who a block or review waits on, keeping its replies: `w` on its task page, palette **set waiting on…**, or `tsk edit --on`.
 - A blocked or review row addressed to you shows the asker's words on a dim line under it. `z` hides these lines, leaving `✉`; `[board] messages` sets the default.
 - Paper trail: the task page lists who did what, newest first, below the steps, and drops created and updated dates from its footer. `tsk list T12` shows it as `activity`.
-- After: a task can wait for other tasks in any project (`!w T202`, the After field, `tsk edit --after`). When the last one is done, a waiting ready task starts.
+- After: a task can wait for other tasks in any project (`!w T202`, the After field, `tsk edit --after`). When the last one is done, a waiting ready task starts. Thanks @ffittschen (#124).
 - Agents block and hand back for review with `tsk status`, and use `tsk dispatch`, `tsk clean`, and `tsk reply`. Agent skill 1.6.0 covers them; `tsk update` refreshes installed copies.
-- `ctrl+u` undoes status changes, step changes, and archiving; a marked set is one step. Undoing a start that launched an agent leaves the agent running. Thanks @LukasGold (#173).
+- `ctrl+u` undoes status changes, step changes, and archiving; a marked set is one step. Undoing a start that launched an agent leaves the agent running. Thanks @LukasGold (#173, #252).
 - Group and sort by assignee with `g` and `s` or `tsk list --group assignee` and `--sort assignee`. The `t` filter gains an `@assignees` tab.
 - `[board]` in `config.toml` sets the group and sort a fresh desk or project board opens with, and `me` the name the board calls you.
-- Back up tasks and `config.toml` to git on every save or daily. `tsk backup setup` makes a private GitHub repository with `gh`; `tsk backup add <git-url>` adds any other.
+- Back up tasks and `config.toml` to git on every save or daily. `tsk backup setup` makes a private GitHub repository with `gh`; `tsk backup add <git-url>` adds any other. Thanks @ari-becker (#128).
 - `tsk edit --append-notes` adds text below a task's notes after a blank line, without rewriting them.
 - `tsk setup` also installs the `tsk-coordinator` skill: your agent can brief builder agents, gate their pull requests with a review, live-test, and report back on the board.
 - `tsk restore` lists the newest 20 backed-up versions per machine (`--all` for every one) and puts the one you pick back, keeping the replaced store.
