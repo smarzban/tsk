@@ -55,6 +55,24 @@ fn take_verb_targets(model: &mut BoardModel) -> (Vec<Uuid>, bool) {
     (targets, bulk)
 }
 
+/// Whether `ctrl+s` moves a task in `status` to started. A blocked task starts too: its block
+/// closes as an unblock in the same save and the same undo entry.
+pub fn ctrl_s_starts(status: HumanStatus) -> bool {
+    matches!(
+        status,
+        HumanStatus::Open | HumanStatus::Ready | HumanStatus::Blocked
+    )
+}
+
+/// Why `ctrl+s` leaves the one cursor task `label` in `status` alone, for the status row.
+fn ctrl_s_refusal(label: &str, status: HumanStatus) -> String {
+    match status {
+        HumanStatus::Review => format!("{label} is in review: ctrl+r or the task page"),
+        HumanStatus::Done => format!("{label} is done: ctrl+n or ctrl+o reopens it"),
+        _ => format!("{label} is already started"),
+    }
+}
+
 /// Block and review targets without their done tasks, and how many were dropped.
 fn without_done(domain: &DomainState, targets: Vec<Uuid>) -> (Vec<Uuid>, usize) {
     let count = targets.len();
@@ -2979,16 +2997,28 @@ fn apply_board_intent(
             }
             let mut moving = Vec::with_capacity(targets.len());
             let mut skipped_done = 0usize;
+            let mut refusal = None;
             for id in targets {
-                let Some(status) = domain.get(id).map(|task| task.status) else {
+                let Some(task) = domain.get(id) else {
                     model.set_message("that task is no longer here");
                     return Ok(IntentOutcome::None);
                 };
-                if matches!(status, HumanStatus::Open | HumanStatus::Ready) {
+                if ctrl_s_starts(task.status) {
                     moving.push(id);
-                } else if status == HumanStatus::Done {
-                    skipped_done += 1;
+                } else {
+                    if task.status == HumanStatus::Done {
+                        skipped_done += 1;
+                    }
+                    let label = task.board_identifier().unwrap_or_else(|| "task".to_string());
+                    refusal = Some(ctrl_s_refusal(&label, task.status));
                 }
+            }
+            // The one cursor task that cannot start says why rather than doing nothing.
+            if !bulk && moving.is_empty() {
+                if let Some(refusal) = refusal {
+                    model.set_message(refusal);
+                }
+                return Ok(IntentOutcome::None);
             }
             // A marked set that held done tasks says so: start never reopens them.
             if bulk && skipped_done > 0 {

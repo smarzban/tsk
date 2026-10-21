@@ -3367,13 +3367,13 @@ fn run_board_dispatch(
     }
 }
 
-/// Whether a start verb moves `task` to started: `ctrl+s` starts open and ready tasks, the
+/// Whether a start verb moves `task` to started: `ctrl+s` starts open, ready, and blocked tasks, the
 /// palette's **set status: started** any task not started yet.
 fn start_moves(task: &crate::domain::Task, any_status: bool) -> bool {
     if any_status {
         task.status != HumanStatus::Started
     } else {
-        matches!(task.status, HumanStatus::Open | HumanStatus::Ready)
+        crate::ui::board::ctrl_s_starts(task.status)
     }
 }
 
@@ -4956,12 +4956,13 @@ fn handle_board_intent_with_host(
         intent
     };
 
-    // Leaving a block outside the reply box (`ctrl+b`, palette set status) sends the agent the
+    // Leaving a block outside the reply box (`ctrl+b`, `ctrl+s`, palette set status) sends the agent the
     // block's replies once the change is durable, like the box's `ctrl+s`.
     let mut closing = if !save_recovery.is_pending()
         && matches!(
             intent,
             BoardIntent::ToggleBlock
+                | BoardIntent::PrimaryVerb
                 | BoardIntent::SetStatus(HumanStatus::Ready | HumanStatus::Started)
         ) {
         closing_candidates(domain, model.verb_target_ids())
@@ -12922,6 +12923,134 @@ mod quick_assign_tests {
                 assert_eq!(host.prompts, [], "nothing to send");
             }
         }
+    }
+
+    /// `ctrl+s` on a blocked task starts it: the block closes as an unblock in one save, and
+    /// one `ctrl+u` puts the task back to blocked with that block open again.
+    #[test]
+    fn ctrl_s_starts_a_blocked_task_and_one_undo_restores_the_block() {
+        let temp = Temp::new("ctrl-s-blocked", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["waits on me"]);
+        blocked_row(&temp, &mut domain, &mut model, ids[0]);
+        let mut host = fake_host(&temp);
+        let intent = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Started);
+        assert!(task.block.is_none(), "the block closed");
+        assert_eq!(task.past_blocks.len(), 1);
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let saved = temp.store.load().expect("reload");
+        let task = saved.get(ids[0]).expect("task");
+        assert_eq!(task.status, HumanStatus::Blocked);
+        assert_eq!(
+            task.block.as_ref().and_then(|block| block.why.as_deref()),
+            Some("which db?")
+        );
+    }
+
+    /// A marked set's blocked tasks start with the rest, and one `ctrl+u` reverses them all.
+    #[test]
+    fn ctrl_s_on_a_marked_set_starts_its_blocked_tasks_too() {
+        let temp = Temp::new("ctrl-s-blocked-set", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["blocked one", "open one"]);
+        blocked_row(&temp, &mut domain, &mut model, ids[0]);
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleMarkMode, None)
+            .expect("mark mode");
+        // Newest row first: `blocked_row` just clicked the first, and a second click opens it.
+        for id in ids.iter().rev() {
+            select(&mut domain, &mut model, *id);
+            apply_intent(&mut domain, &mut model, BoardIntent::MarkToggle, None).expect("mark");
+        }
+        let mut host = fake_host(&temp);
+        let intent = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        let saved = temp.store.load().expect("reload");
+        for id in &ids {
+            assert_eq!(saved.get(*id).expect("task").status, HumanStatus::Started);
+        }
+        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(saved.get(ids[0]).expect("task").status, HumanStatus::Blocked);
+        assert!(saved.get(ids[0]).expect("task").block.is_some());
+        assert_eq!(saved.get(ids[1]).expect("task").status, HumanStatus::Open);
+    }
+
+    /// `ctrl+s` on a blocked task whose agent still runs sends it the unblock, like `ctrl+b`.
+    #[test]
+    fn ctrl_s_on_a_blocked_task_sends_its_running_agent_the_unblock() {
+        let temp = Temp::new("ctrl-s-blocked-agent", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["agent asks"]);
+        dispatched_before(&temp, &mut domain, &mut model, ids[0], HumanStatus::Started);
+        blocked_row(&temp, &mut domain, &mut model, ids[0]);
+        domain
+            .reply(ids[0], "use postgres", crate::domain::OWNER)
+            .expect("reply");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        let mut host = fake_host(&temp);
+        agent_running(&domain, &mut host, ids[0]);
+        let intent = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(saved.get(ids[0]).expect("task").status, HumanStatus::Started);
+        assert_eq!((host.launched, host.ran), (0, 0), "no relaunch");
+        assert_eq!(
+            host.prompts,
+            [(
+                "w0:p1".to_string(),
+                "[tsk T1 unblocked] use postgres".to_string()
+            )]
+        );
+    }
+
+    /// A cursor task `ctrl+s` cannot start says why on the status row.
+    #[test]
+    fn ctrl_s_on_a_task_it_cannot_start_says_why() {
+        let temp = Temp::new("ctrl-s-refusal", &["builder"]);
+        let (mut domain, mut model, ids) = board(&temp, &["in review", "running", "finished"]);
+        domain
+            .review(
+                ids[0],
+                crate::domain::ReviewDraft::from_input(
+                    Some("did it"),
+                    &[],
+                    None,
+                    Default::default(),
+                )
+                .expect("draft"),
+                "builder",
+            )
+            .expect("review");
+        domain
+            .set_status(ids[1], HumanStatus::Started)
+            .expect("started");
+        domain.set_status(ids[2], HumanStatus::Done).expect("done");
+        temp.store.reload_merge_save(&mut domain).expect("save");
+        model.sync_from_domain(&domain);
+        let mut host = fake_host(&temp);
+        for (id, expected) in [
+            (ids[0], "T1 is in review: ctrl+r or the task page"),
+            (ids[1], "T2 is already started"),
+        ] {
+            select(&mut domain, &mut model, id);
+            let intent = ctrl_s(&model);
+            handle(&temp, &mut domain, &mut model, intent, &mut host);
+            assert_eq!(model.message(), Some(expected));
+        }
+        apply_intent(&mut domain, &mut model, BoardIntent::ToggleDoneDrawer, None)
+            .expect("drawer");
+        select(&mut domain, &mut model, ids[2]);
+        let intent = ctrl_s(&model);
+        handle(&temp, &mut domain, &mut model, intent, &mut host);
+        assert_eq!(
+            model.message(),
+            Some("T3 is done: ctrl+n or ctrl+o reopens it")
+        );
+        let saved = temp.store.load().expect("reload");
+        assert_eq!(saved.get(ids[0]).expect("task").status, HumanStatus::Review);
+        assert_eq!(saved.get(ids[2]).expect("task").status, HumanStatus::Done);
     }
 
     /// Your `entries` on `id`'s open record, one save each, then one more you deleted.
