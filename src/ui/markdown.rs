@@ -103,7 +103,8 @@ fn line_prefix(text: &str) -> (Vec<Span<'static>>, &str, bool) {
 enum InlineKind {
     Plain,
     Strong,
-    Em,
+    /// Emphasis opened by `*` or `_`; close only on the same character.
+    Em(char),
     Code,
 }
 
@@ -121,7 +122,7 @@ fn inline_spans(text: &str, base: Style) -> Vec<Span<'static>> {
         let style = match kind {
             InlineKind::Plain => base,
             InlineKind::Strong => base.add_modifier(Modifier::BOLD),
-            InlineKind::Em => base.add_modifier(Modifier::UNDERLINED),
+            InlineKind::Em(_) => base.add_modifier(Modifier::UNDERLINED),
             InlineKind::Code => style_dim(),
         };
         spans.push(Span::styled(std::mem::take(buf), style));
@@ -144,11 +145,13 @@ fn inline_spans(text: &str, base: Style) -> Vec<Span<'static>> {
                         buf.push('*');
                         i += 1;
                     }
-                } else if (chars[i] == '*' && rest_has_char(&chars, i + 1, '*'))
-                    || (chars[i] == '_' && can_open_underscore(&chars, i))
-                {
+                } else if chars[i] == '*' && rest_has_char(&chars, i + 1, '*') {
                     flush(&mut buf, kind, &mut spans);
-                    kind = InlineKind::Em;
+                    kind = InlineKind::Em('*');
+                    i += 1;
+                } else if chars[i] == '_' && can_open_underscore(&chars, i) {
+                    flush(&mut buf, kind, &mut spans);
+                    kind = InlineKind::Em('_');
                     i += 1;
                 } else {
                     buf.push(chars[i]);
@@ -165,8 +168,8 @@ fn inline_spans(text: &str, base: Style) -> Vec<Span<'static>> {
                     i += 1;
                 }
             }
-            InlineKind::Em => {
-                if chars[i] == '*' || chars[i] == '_' {
+            InlineKind::Em(delim) => {
+                if chars[i] == delim && (delim != '_' || can_close_underscore(&chars, i)) {
                     flush(&mut buf, kind, &mut spans);
                     kind = InlineKind::Plain;
                     i += 1;
@@ -206,6 +209,10 @@ fn rest_has_char(chars: &[char], from: usize, needle: char) -> bool {
 fn can_open_underscore(chars: &[char], i: usize) -> bool {
     let left_ok = i == 0 || !chars[i - 1].is_alphanumeric();
     left_ok && rest_has_char(chars, i + 1, '_')
+}
+
+fn can_close_underscore(chars: &[char], i: usize) -> bool {
+    i + 1 >= chars.len() || !chars[i + 1].is_alphanumeric()
 }
 
 fn bound_styled_line(spans: Vec<Span<'static>>, width: usize) -> Line<'static> {
@@ -328,6 +335,25 @@ mod tests {
         let ident = paint_md_line("test_foo", 40, style_plain());
         let flat: String = ident.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(flat, "test_foo");
+    }
+
+    #[test]
+    fn em_keeps_matching_delimiter_across_inner_underscores() {
+        for sample in ["*file_name*", "_file_name_", "*foo*", "_foo_"] {
+            let line = paint_md_line(sample, 40, style_plain());
+            let flat: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            let expected = sample.trim_matches(|c| c == '*' || c == '_');
+            assert_eq!(flat, expected, "{sample}");
+            let body = line
+                .spans
+                .iter()
+                .find(|s| s.content.as_ref() == expected)
+                .unwrap_or_else(|| panic!("em body for {sample}"));
+            assert!(
+                body.style.add_modifier.contains(Modifier::UNDERLINED),
+                "{sample}"
+            );
+        }
     }
 
     #[test]
