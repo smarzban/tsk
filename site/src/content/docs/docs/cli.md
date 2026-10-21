@@ -495,8 +495,9 @@ tsk dispatch T12 --base main
 
 `--show-prompt` works for any status, on the desk, and outside Herdr. It still needs an assignee with a profile: otherwise it refuses with `no-assignee` or `unknown-agent`.
 
-- A dispatched task shows its recorded worktree, branch, and base.
-- Any other task shows the branch and worktree a first dispatch would pick, and says so. The base is `--base`, the task's base, or the repository's default branch.
+- A dispatched task shows its recorded worktree, branch, and base. `--base` does not change them.
+- Any other task shows the branch, worktree, and base a first dispatch would pick, and says so. It picks them the same way, skipping branch names already taken, but from what was last fetched: the preview never fetches.
+- The worktree path assumes Herdr keeps worktrees in its default folder.
 - A desk task keeps `{worktree}`, `{branch}`, and `{base}` as written, and says so.
 - `env` values never print, only their names.
 

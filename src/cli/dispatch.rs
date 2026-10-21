@@ -50,7 +50,8 @@ pub fn show_prompt(
         .ok_or(DispatchError::UnknownTask)?;
     let profiles = AgentProfiles::load(&state_dir)
         .map_err(|error| DispatchError::AgentConfig(error.to_string()))?;
-    dispatch::preview_prompt(&state, id, &profiles, base_override)
+    let (_, mut host) = system_host(Some(state_dir));
+    dispatch::preview_prompt(&state, id, &profiles, base_override, &mut host)
 }
 
 /// The board store the command works on, and a real host whose launchers live beside it.

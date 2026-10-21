@@ -595,6 +595,14 @@ pub trait DispatchHost {
             warning: None,
         })
     }
+    /// [`Self::resolve_base_choice`] from refs already fetched, for a preview: no network.
+    fn resolve_base_cached(
+        &mut self,
+        project: &Path,
+        explicit: Option<&str>,
+    ) -> Result<crate::git_base::ResolvedBase, String> {
+        self.resolve_base_choice(project, explicit)
+    }
     /// Whether a first dispatch must not take `branch`: a local or remote-tracking branch of that
     /// name, or a registered worktree in the directory Herdr would derive from it, exists.
     fn branch_taken(&mut self, _project: &Path, _branch: &str) -> Result<bool, String> {
@@ -1165,6 +1173,14 @@ impl DispatchHost for SystemDispatchHost {
         explicit: Option<&str>,
     ) -> Result<crate::git_base::ResolvedBase, String> {
         crate::git_base::resolve(project, explicit)
+    }
+
+    fn resolve_base_cached(
+        &mut self,
+        project: &Path,
+        explicit: Option<&str>,
+    ) -> Result<crate::git_base::ResolvedBase, String> {
+        crate::git_base::resolve_cached(project, explicit)
     }
 
     fn create_worktree(
@@ -3775,13 +3791,14 @@ pub struct PromptPreview {
 
 /// Render the launch the task's assignee would get, without launching or writing anything.
 /// Any status works, and Herdr is not needed. A dispatched task renders from its record; any
-/// other task from the names a first dispatch would take, with the base from the task, `base`,
-/// or the repository's local default. A desk task keeps the placeholders it cannot fill.
+/// other project task from the branch and base a first dispatch would take, resolved the same
+/// way from refs already fetched. A desk task keeps the placeholders it cannot fill.
 pub fn preview_prompt(
     state: &DomainState,
     id: Uuid,
     profiles: &AgentProfiles,
     base_override: Option<&str>,
+    host: &mut impl DispatchHost,
 ) -> Result<PromptPreview, DispatchError> {
     let task = state.get(id).ok_or(DispatchError::UnknownTask)?;
     let number = task.number.ok_or(DispatchError::UnknownTask)?;
@@ -3811,36 +3828,42 @@ pub fn preview_prompt(
                 })
                 .unwrap_or_default(),
         ),
-        None => {
-            let branch = DispatchNames::new(number, &task.title).branch(number, 1);
-            let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-                .filter(|home| !home.is_empty())
-                .map(PathBuf::from);
-            let worktree = match (&project, home) {
-                (Some(project), Some(home)) => project.file_name().map(|repo| {
-                    home.join(".herdr/worktrees")
-                        .join(repo)
-                        .join(herdr_worktree_directory(&branch))
-                        .to_string_lossy()
-                        .into_owned()
-                }),
-                _ => None,
-            };
-            let base = base_override
-                .or(task.base.as_deref())
-                .map(str::to_string)
-                .or_else(|| {
-                    project
-                        .as_deref()
-                        .and_then(crate::git_base::default_branch_name)
-                });
-            let branch = project.as_ref().map(|_| branch);
-            (
-                worktree.unwrap_or_else(|| "{worktree}".into()),
-                branch.unwrap_or_else(|| "{branch}".into()),
-                base.unwrap_or_else(|| "{base}".into()),
-            )
-        }
+        None => match &project {
+            Some(project) => {
+                // The same choices `launch_with_host` makes for a first dispatch.
+                let explicit = base_override.or(task.base.as_deref());
+                let choice = host
+                    .resolve_base_cached(project, explicit)
+                    .map_err(|reason| {
+                        if explicit.is_some() {
+                            DispatchError::UnknownBase(reason)
+                        } else {
+                            DispatchError::NoDefaultBase(reason)
+                        }
+                    })?;
+                let base = crate::git_base::short_name_for_remote(
+                    &choice.reference,
+                    choice.remote.as_deref(),
+                );
+                let names = DispatchNames::new(number, &task.title);
+                let branch = free_branch(host, project, &names, number)?;
+                let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+                    .filter(|home| !home.is_empty())
+                    .map(PathBuf::from);
+                let worktree = home
+                    .zip(project.file_name())
+                    .map(|(home, repo)| {
+                        home.join(".herdr/worktrees")
+                            .join(repo)
+                            .join(herdr_worktree_directory(&branch))
+                            .to_string_lossy()
+                            .into_owned()
+                    })
+                    .unwrap_or_else(|| "{worktree}".into());
+                (worktree, branch, base)
+            }
+            None => ("{worktree}".into(), "{branch}".into(), "{base}".into()),
+        },
     };
     let steps = rendered_steps(task);
     let rendered = profile.render(
@@ -5684,13 +5707,21 @@ mod tests {
         let (mut state, id) = task();
         state.set_base(id, Some("release".into())).expect("base");
         let before = serde_json::to_string(&state).expect("state");
-        let preview = preview_prompt(&state, id, &profiles, None).expect("preview");
+        // A leftover branch of the first name moves the preview on, as a dispatch would.
+        let mut host = FakeHost {
+            git: true,
+            taken: vec!["tsk/t1-ship-dispatch".into()],
+            ..FakeHost::default()
+        };
+        let preview = preview_prompt(&state, id, &profiles, None, &mut host).expect("preview");
         assert_eq!(serde_json::to_string(&state).expect("state"), before);
         assert!(preview.predicted && !preview.desk);
         assert_eq!(preview.env_names, [crate::domain::AGENT_ENV]);
         let prompt = preview.argv.last().expect("prompt");
         assert!(
-            prompt.contains("on branch tsk/t1-ship-dispatch, based on release."),
+            prompt.contains(
+                "/tsk-t1-ship-dispatch-2 on branch tsk/t1-ship-dispatch-2, based on release."
+            ),
             "{prompt}"
         );
         assert!(prompt.contains("review --on coordinator"), "{prompt}");
@@ -5711,7 +5742,8 @@ mod tests {
             )
             .expect("desk task");
         state.assign_numbers_for_persistence();
-        let preview = preview_prompt(&state, desk, &profiles, None).expect("preview");
+        let preview =
+            preview_prompt(&state, desk, &profiles, Some("main"), &mut host).expect("preview");
         assert!(preview.desk && !preview.predicted);
         let prompt = preview.argv.last().expect("prompt");
         assert!(
@@ -5724,8 +5756,45 @@ mod tests {
 
         state.assign(desk, None).expect("unassign");
         assert_eq!(
-            preview_prompt(&state, desk, &profiles, None).map(|_| ()),
+            preview_prompt(&state, desk, &profiles, None, &mut host).map(|_| ()),
             Err(DispatchError::NoAssignee)
+        );
+    }
+
+    #[test]
+    fn a_prompt_preview_of_a_dispatched_task_reads_its_record() {
+        let profiles = layered_profiles();
+        let (mut state, id) = task();
+        let mut host = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        run_with_host(&mut state, id, &profiles, false, true, &mut host).expect("dispatch");
+        // A record the next dispatch would never pick: a renamed worktree and branch, and a
+        // remote base that shortens with its recorded remote.
+        let mut record = state
+            .get(id)
+            .and_then(|task| task.dispatch.clone())
+            .expect("record");
+        record.worktree = "/work/kept-T1".into();
+        record.branch = "tsk/t1-kept".into();
+        record.base = Some("upstream/release".into());
+        record.base_remote = Some("upstream".into());
+        state.record_dispatch(id, record).expect("record");
+        let before = serde_json::to_string(&state).expect("state");
+
+        let mut fresh = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        let preview =
+            preview_prompt(&state, id, &profiles, Some("main"), &mut fresh).expect("preview");
+        assert_eq!(serde_json::to_string(&state).expect("state"), before);
+        assert!(!preview.predicted && !preview.desk);
+        let prompt = preview.argv.last().expect("prompt");
+        assert!(
+            prompt.contains("in worktree /work/kept-T1 on branch tsk/t1-kept, based on release."),
+            "{prompt}"
         );
     }
 

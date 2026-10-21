@@ -518,11 +518,48 @@ fn show_prompt_prints_the_layered_launch_for_any_status_and_writes_nothing() {
         SEQ.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir_all(&dir).expect("mkdir");
+    // A clone whose origin has main, release, and a leftover branch of the first dispatch name.
+    let repos = dir.with_extension("repos");
+    let (origin, clone) = (repos.join("origin"), repos.join("app"));
+    fs::create_dir_all(&origin).expect("origin");
+    let git = |path: &Path, args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+    };
+    git(&origin, &["init", "-q", "-b", "main"]);
+    git(
+        &origin,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+    );
+    git(&origin, &["branch", "release"]);
+    git(&origin, &["branch", "tsk/t1-ship-it"]);
+    git(
+        &repos,
+        &["clone", "-q", origin.to_str().expect("utf-8"), "app"],
+    );
+    let project = clone.to_str().expect("utf-8 path");
     fs::write(
         dir.join("config.toml"),
-        "[project.\"/repos/app\"]\nreview_on = \"coordinator\"\nprompt_append = \"Run the full gate.\"\n\
-         [agent.implementer]\ncommand = [\"runner\", \"--flag\"]\nprompt_append = \"Say hi to {on}.\"\n\
-         [agent.implementer.env]\nAPI_TOKEN = \"sk-secret-value\"\n",
+        format!(
+            "[project.'{project}']\nreview_on = \"coordinator\"\nprompt_append = \"Run the full gate.\"\n\
+             [agent.implementer]\ncommand = [\"runner\", \"--flag\"]\nprompt_append = \"Say hi to {{on}}.\"\n\
+             [agent.implementer.env]\nAPI_TOKEN = \"sk-secret-value\"\n"
+        ),
     )
     .expect("config");
     let store = TaskStore::new(&dir);
@@ -532,14 +569,13 @@ fn show_prompt_prints_the_layered_launch_for_any_status_and_writes_nothing() {
             "Ship it",
             None,
             TaskScope::Project {
-                path: "/repos/app".into(),
+                path: project.into(),
             },
             ProvenanceOrigin::Manual,
             None,
             Some("implementer".into()),
         )
         .expect("task");
-    state.set_base(id, Some("main".into())).expect("base");
     state.set_status(id, HumanStatus::Done).expect("done");
     store.save(&state).expect("save");
     let before = fs::read(dir.join("tsk.json")).expect("state bytes");
@@ -576,8 +612,9 @@ fn show_prompt_prints_the_layered_launch_for_any_status_and_writes_nothing() {
         ),
         "{stdout}"
     );
+    // The default base, and the next free branch name: origin already has the first one.
     assert!(
-        stdout.contains("on branch tsk/t1-ship-it, based on main.\n"),
+        stdout.contains("/tsk-t1-ship-it-2 on branch tsk/t1-ship-it-2, based on main.\n"),
         "{stdout}"
     );
     assert!(
@@ -592,6 +629,60 @@ fn show_prompt_prints_the_layered_launch_for_any_status_and_writes_nothing() {
     assert_eq!(fs::read(dir.join("tsk.json")).expect("after"), before);
     assert_eq!(entries(), listed, "nothing new in the state dir");
 
+    // `--base` resolves like a dispatch: a remote branch reads by its short name.
+    let based = run_with(
+        [
+            "tsk",
+            "dispatch",
+            "T1",
+            "--show-prompt",
+            "--base",
+            "origin/release",
+            "--state-dir",
+            dir.to_str().expect("utf-8 path"),
+        ],
+        Cursor::new(Vec::<u8>::new()),
+        true,
+    );
+    assert_eq!(based.code, 0, "{}", based.stderr);
+    assert!(
+        based
+            .stdout
+            .contains("on branch tsk/t1-ship-it-2, based on release.\n"),
+        "{}",
+        based.stdout
+    );
+    assert!(
+        based.stdout.contains("pull request into release."),
+        "{}",
+        based.stdout
+    );
+    let unknown = run_with(
+        [
+            "tsk",
+            "dispatch",
+            "T1",
+            "--show-prompt",
+            "--base",
+            "nope",
+            "--state-dir",
+            dir.to_str().expect("utf-8 path"),
+        ],
+        Cursor::new(Vec::<u8>::new()),
+        true,
+    );
+    assert_eq!(unknown.code, 1);
+    assert!(
+        unknown.stderr.starts_with("tsk dispatch: unknown-base:"),
+        "{}",
+        unknown.stderr
+    );
+    assert!(
+        !clone.join(".git/FETCH_HEAD").exists(),
+        "a preview never fetches"
+    );
+    assert_eq!(fs::read(dir.join("tsk.json")).expect("after"), before);
+
     let again = run_with(
         ["tsk", "dispatch", "T1", "--show-prompt", "--again"],
         Cursor::new(Vec::<u8>::new()),
@@ -602,6 +693,7 @@ fn show_prompt_prints_the_layered_launch_for_any_status_and_writes_nothing() {
         .stderr
         .contains("--show-prompt and --again cannot be combined"));
     fs::remove_dir_all(dir).expect("cleanup");
+    fs::remove_dir_all(repos).expect("cleanup repos");
 }
 
 /// The Windows launcher hands a hostile prompt and the profile's env to a real program

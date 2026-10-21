@@ -915,10 +915,25 @@ pub fn remote_for_ref(project: &Path, reference: &str) -> Option<String> {
 }
 
 pub fn resolve(project: &Path, explicit: Option<&str>) -> Result<ResolvedBase, String> {
+    resolve_with(project, explicit, true)
+}
+
+/// [`resolve`] from the refs already fetched: the same names, no network.
+pub fn resolve_cached(project: &Path, explicit: Option<&str>) -> Result<ResolvedBase, String> {
+    resolve_with(project, explicit, false)
+}
+
+fn resolve_with(
+    project: &Path,
+    explicit: Option<&str>,
+    fetch: bool,
+) -> Result<ResolvedBase, String> {
     let mut warning = None;
     let selected_remote;
     let reference = if let Some(base) = explicit {
-        let refreshed = refresh_explicit_remote(project, base);
+        let refreshed = fetch
+            .then(|| refresh_explicit_remote(project, base))
+            .flatten();
         if let Some((remote, Err(reason))) = &refreshed {
             warning = Some(format!("{reason}; using cached {remote} ref"));
         }
@@ -942,7 +957,7 @@ pub fn resolve(project: &Path, explicit: Option<&str>) -> Result<ResolvedBase, S
         };
         let target = upstream.unwrap_or(local);
         selected_remote = remote;
-        if let Some(remote) = selected_remote.as_deref() {
+        if let Some(remote) = selected_remote.as_deref().filter(|_| fetch) {
             if refreshed
                 .as_ref()
                 .is_none_or(|(fetched, _)| fetched != remote)
@@ -958,14 +973,14 @@ pub fn resolve(project: &Path, explicit: Option<&str>) -> Result<ResolvedBase, S
         // Refresh origin/HEAD with the branches: an existing local symbolic ref can be stale
         // after the hosting service changes its default. The window is reused only when its
         // fetch refreshed the default too.
-        match fetch_remote_with_head(project, "origin") {
-            Err(reason) => {
+        match fetch.then(|| fetch_remote_with_head(project, "origin")) {
+            None | Some(Ok(FetchOutcome::Fetched | FetchOutcome::Reused)) => {}
+            Some(Err(reason)) => {
                 warning = Some(format!("{reason}; using cached origin default ref"));
             }
-            Ok(FetchOutcome::FetchedStaleHead) => {
+            Some(Ok(FetchOutcome::FetchedStaleHead)) => {
                 warning = Some("could not refresh origin/HEAD; using cached default ref".into());
             }
-            Ok(FetchOutcome::Fetched | FetchOutcome::Reused) => {}
         }
         default_ref(project)?
     };
