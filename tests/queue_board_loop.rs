@@ -267,6 +267,59 @@ fn malformed_agent_profiles_degrade_to_a_painted_board_status() {
 }
 
 #[test]
+fn a_broken_backup_config_is_painted_on_the_board_status_row() {
+    let _env = env_lock();
+    suppress_background_fetch();
+    let dir = temp_state_dir("broken-backup");
+    let _dir_guard = TempDirGuard(dir.clone());
+    let _env_guard = EnvVarGuard::set("TSK_STATE_DIR", &dir);
+    fs::write(
+        dir.join("config.toml"),
+        "[[backup]]\nurl = \"/tmp/b.git\"\nevery = \"Daily\"\n",
+    )
+    .expect("write broken backup");
+
+    let model = load_board_model().expect("a broken backup must not block open");
+    let message = model.message().expect("backup config error on status row");
+    assert!(message.starts_with("backup off: config.toml"), "{message}");
+
+    let backend = TestBackend::new(80, 24);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal
+        .draw(|frame| {
+            let _ = draw_board(frame, &model);
+        })
+        .expect("draw board");
+    let painted = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(painted.contains("backup off"), "{painted}");
+}
+
+#[test]
+fn a_profile_error_wins_the_status_row_over_a_broken_backup() {
+    let _env = env_lock();
+    suppress_background_fetch();
+    let dir = temp_state_dir("profile-over-backup");
+    let _dir_guard = TempDirGuard(dir.clone());
+    let _env_guard = EnvVarGuard::set("TSK_STATE_DIR", &dir);
+    fs::write(
+        dir.join("config.toml"),
+        "[agent.Reviewer]\ncommand = [\"true\"]\n\n[[backup]]\nurl = \"/tmp/b.git\"\nevery = \"Daily\"\n",
+    )
+    .expect("write broken profile and backup");
+
+    let model = load_board_model().expect("open");
+    let message = model.message().expect("status row");
+    assert!(message.contains("Reviewer"), "{message}");
+    assert!(!message.contains("backup off"), "{message}");
+}
+
+#[test]
 fn pending_resize_event_paints_before_it_is_returned() {
     let key = Event::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
     let mut pending = Some(key.clone());

@@ -179,6 +179,7 @@ An unknown key or a bad value in one table never blocks the others. A file that 
 | Broken profile or `[project."<path>"]` | The board opens without profiles and shows the error on its status row. `tsk add` and `tsk edit` with an assignee exit 2 without saving |
 | Broken `[merge]` | Only merging refuses: the cleanup card says why, and the CLI refuses with `merge-config` |
 | Broken `[board]` | The board opens at the default layout and shows the error on its status row. A bad `me` leaves the layout alone and names you `you` |
+| Broken `[[backup]]` | No backup runs. Every full board open shows `backup off:` and the error on its status row. `tsk backup`, `tsk backup list`, and `tsk restore` exit 1 with the error |
 
 ## Git backups
 
@@ -258,6 +259,7 @@ Once the store holds 10 tasks and no target is set, one board open says `No back
 Saves and board opens never wait for a backup: when a target is due, tsk backs it up in the background.
 
 - A failure shows in `tsk backup list`, and on the status row at every full board open until the target succeeds.
+- A broken `[[backup]]` table stops every backup until you fix it ([errors](#errors)).
 - `tsk backup` runs every target in the foreground and exits 1 if any failed.
 - Background backups have no terminal, so git must reach the repository without a prompt. After a first backup that worked, `add` and `setup` check that a background backup can reach it too, and say so when it cannot.
 - The usual cause is an ssh key with a passphrase and no ssh-agent the board can see, for example a board started in Herdr from a shell without `SSH_AUTH_SOCK`. Load the key into an agent every shell sees (on macOS, `UseKeychain yes` and `AddKeysToAgent yes` in `~/.ssh/config`), or use https with a credential helper.

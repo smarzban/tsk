@@ -525,15 +525,19 @@ pub fn statuses(state_dir: &Path) -> Result<Vec<(Target, TargetStatus)>, String>
         .collect())
 }
 
-/// The first failing target's error, for the status row of every full board open until
-/// that target succeeds. Reads only: `backup-status.json` is replaced whole, so this never
+/// A broken `[[backup]]` configuration, which runs no backup at all, or else the first
+/// failing target's error: for the status row of every full board open until it is fixed or
+/// the target succeeds. Reads only: `backup-status.json` is replaced whole, so this never
 /// waits for a run.
 pub fn failure_message(state_dir: &Path) -> Option<String> {
-    // Most boards have no targets: answer without reading config.toml.
-    if !state_dir.join(STATUS_FILE).exists() {
+    let targets = match load_targets(state_dir) {
+        Ok(targets) => targets,
+        Err(error) => return Some(format!("backup off: {}", redacted(first_line(&error)))),
+    };
+    // Most boards have no targets, and a target never run has no error yet.
+    if targets.is_empty() || !state_dir.join(STATUS_FILE).exists() {
         return None;
     }
-    let targets = load_targets(state_dir).ok()?;
     let status = load_status(state_dir);
     targets.iter().find_map(|target| {
         let error = status.targets.get(&target.key())?.last_error.as_deref()?;
@@ -2343,6 +2347,42 @@ every = "daily"
         let results = run(&state, RunMode::Now, at(DAY + 1)).expect("run");
         assert!(results[0].1.is_ok(), "{results:?}");
         assert_eq!(failure_message(&state), None, "gone once it succeeds");
+    }
+
+    #[test]
+    fn a_broken_backup_config_shows_on_every_board_open_with_or_without_a_status_file() {
+        let root = TempDir::new("broken-config");
+        let state = state_with_target(&root.0, &root.0.join("r.git"), "every = \"Daily\"\n");
+        let expected =
+            "backup off: config.toml: [[backup]] 1: every \"Daily\" is not save or daily";
+        assert!(!state.join(STATUS_FILE).exists());
+        assert_eq!(failure_message(&state).as_deref(), Some(expected));
+        save_status(&state, &StatusFile::default()).expect("status");
+        assert_eq!(failure_message(&state).as_deref(), Some(expected));
+        assert!(!any_due(&state, Trigger::Open, DAY), "still runs nothing");
+    }
+
+    #[test]
+    fn a_config_without_targets_shows_nothing() {
+        let root = TempDir::new("no-targets");
+        fs::write(root.0.join("config.toml"), "[board]\n").expect("config");
+        assert_eq!(failure_message(&root.0), None);
+        save_status(&root.0, &StatusFile::default()).expect("status");
+        assert_eq!(failure_message(&root.0), None);
+    }
+
+    #[test]
+    fn a_broken_backup_config_message_never_holds_a_token() {
+        let root = TempDir::new("broken-token");
+        let state = state_with_target(
+            &root.0,
+            &root.0.join("r.git"),
+            "every = \"https://me:S3CRET@h/x.git\"\n",
+        );
+        let message = failure_message(&state).expect("shown");
+        assert!(message.starts_with("backup off: "), "{message}");
+        assert!(!message.contains("S3CRET"), "{message}");
+        assert!(message.contains("***@h"), "{message}");
     }
 
     #[test]
